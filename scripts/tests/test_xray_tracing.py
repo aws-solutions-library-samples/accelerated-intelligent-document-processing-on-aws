@@ -477,25 +477,39 @@ def _vcs_ignored(paths: list[Path], root: Path) -> set[Path]:
 def _runtime_sources(directory: Path) -> tuple[Path, ...]:
     """The first-party Python sources committed under this function's `CodeUri`.
 
-    Cached, and that is about cost rather than tidiness: the rules below re-walk
-    the same directory for every function they examine, and the module makes
-    more than one pass, so this was called 290 times over 134 distinct
-    directories -- 290 `git check-ignore` spawns, measured at 3.4s. Returning a
-    tuple keeps the cached value immutable, so a caller cannot corrupt the entry
-    for every later one.
+    Cached because the rules below re-walk the same directory for every function
+    they examine and the module makes more than one pass, so this is called
+    roughly twice per distinct directory -- one `git check-ignore` spawn each
+    without the cache. Returning a tuple keeps the cached value immutable, so a
+    caller cannot corrupt the entry for every later one.
 
-    ⚠️ **The ignore check costs more than it saves on a clean checkout, and that
-    is accepted.** Measured on a worktree with nothing staged, this module takes
-    11.3s with the check and 7.6s without; on a machine with the staged copy it
-    is a large win, because the walk it replaces reads 6,495 files. The point is
-    correctness rather than speed -- without it the gate's verdict depends on
-    whether somebody has built a feature locally -- so do not read the exclusion
-    as an optimisation.
+    ⚠️ **The cache is keyed on the directory, not on its contents.** A test that
+    writes files, calls this, then writes more and calls it again gets the first
+    answer back and no indication of it. Every test here writes everything before
+    its first call and uses a fresh `tmp_path`, so none is affected today; if you
+    need a re-read, call `_runtime_sources.cache_clear()`.
 
-    Replacing the per-directory spawns with one whole-repository
-    `git ls-files -o -i --exclude-standard` was measured and rejected: it lists
-    371,617 paths and 37MB in 10.3s here, which is worse than every spawn it
-    would remove.
+    ⚠️ **The ignore check is a correctness fix, not an optimisation, and on a
+    clean checkout it costs rather than saves.** Without it the gate's verdict
+    depends on whether somebody has built a feature locally, which is the whole
+    reason it is here; where output *is* staged it also happens to be much
+    faster, because the walk it replaces reads thousands of vendored files. No
+    seconds are quoted because they are a property of the machine and of what
+    that machine has built -- on a clean worktree the whole staged tree, and the
+    cost of excluding it, simply is not there. Measure it rather than trusting a
+    number: run `pytest scripts/tests/test_xray_tracing.py` with and without the
+    `_vcs_ignored` call, discarding the first run of each as a cold-cache
+    outlier.
+
+    ⚠️ **One batched `check-ignore` from the repository root would be cheaper
+    than the per-directory spawns**, and gives a byte-identical ignored set --
+    `.gitignore` resolution is hierarchical and does not depend on the directory
+    asked from. It is not done here because the candidate lists would have to be
+    batched across directories, which this function cannot do alone. What was
+    measured and rejected is a different alternative: one whole-repository
+    `git ls-files -o -i --exclude-standard`, whose output is proportional to
+    everything the machine has ever built rather than to the templates, and so
+    is far worse on exactly the checkout that needs the filter most.
 
     ⚠️ **Files the repository ignores are excluded, and that is load-bearing
     rather than tidiness.** The walk is an `rglob` over the `CodeUri`, so

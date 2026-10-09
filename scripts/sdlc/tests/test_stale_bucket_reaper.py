@@ -223,9 +223,18 @@ def test_never_raises_on_api_error(cbd, monkeypatch):
 # ---------------------------------------------------------------------------
 
 #: The role the CodeBuild project runs as, and so the only one whose grants
-#: decide whether the reaper can make its call.
+#: decide whether the reaper can make its call. That is a premise about
+#: `ServiceRole` on the project, not about this constant, so the test asserts it
+#: rather than assuming it -- repointing `ServiceRole` at the supplied-role
+#: parameter denies the reaper again while every grant named here is untouched.
 REAPER_ROLE = "CodeBuildRole"
 REAPER_ACTION = "s3:ListAllMyBuckets"
+
+#: Accepted in place of the specific action: a consolidated `s3:*` still grants
+#: it. Without this, narrowing *or widening* the statement both fail, and the
+#: widening case would report "no longer granted s3:ListAllMyBuckets" about a
+#: policy that grants it — sending the reader after the wrong thing.
+REAPER_ACTION_EQUIVALENTS = frozenset({REAPER_ACTION, "s3:*"})
 
 
 def _as_list(value):
@@ -270,6 +279,66 @@ def _statements_for_role(template: dict, role: str) -> list[dict]:
     return statements
 
 
+#: Routes to a role this collector deliberately does not model:
+#:
+#:   * `Roles: [!Sub '${CodeBuildRole}']` rather than `!Ref` (same value),
+#:   * a statement or policy wrapped in `Fn::If`,
+#:   * an `AWS::IAM::ManagedPolicy` attached to the role,
+#:   * `AWS::IAM::RolePolicy`.
+#:
+#: Each makes the grant *invisible* here, so the test fails rather than passing
+#: -- the safe direction, loud and wrong-way-correct. Written down because the
+#: reach of a collector is the thing a reader cannot infer from reading it, and
+#: a false failure that names nothing costs an afternoon.
+_UNMODELLED_ATTACHMENT_ROUTES = (
+    "Fn::If-wrapped policies, !Sub role references, "
+    "AWS::IAM::ManagedPolicy, AWS::IAM::RolePolicy"
+)
+
+
+def _referenced_logical_ids(node) -> set[str]:
+    """Every logical id a value refers to, through `Ref` or `Fn::GetAtt`.
+
+    ⚠️ **Exact ids, not a substring search.** `ServiceRole` here is an `Fn::If`
+    choosing between `!GetAtt CodeBuildRole.Arn` and `!Ref CodeBuildRoleArn`, and
+    `CodeBuildRole` is a *prefix* of `CodeBuildRoleArn` -- so asking whether the
+    role's name appears anywhere in the stringified value answers yes even when
+    the project has been repointed at the supplied-role parameter, which is
+    precisely the case this exists to detect. Walking the structure and taking
+    the ids whole is the only way to tell those two apart.
+    """
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "Ref" and isinstance(value, str):
+                found.add(value)
+            elif key == "Fn::GetAtt":
+                parts = value if isinstance(value, list) else str(value).split(".")
+                if parts:
+                    found.add(str(parts[0]))
+            else:
+                found |= _referenced_logical_ids(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _referenced_logical_ids(item)
+    return found
+
+
+def _runs_as_role(template: dict, role: str) -> bool:
+    """Whether any CodeBuild project in `template` runs as `role`.
+
+    The premise behind pinning one role's grants. `Fn::If` is not evaluated --
+    a project that runs as this role on *either* branch counts, because the
+    question is whether the role is still in play at all.
+    """
+    return any(
+        role
+        in _referenced_logical_ids((body.get("Properties") or {}).get("ServiceRole"))
+        for body in (template.get("Resources") or {}).values()
+        if body.get("Type") == "AWS::CodeBuild::Project"
+    )
+
+
 def test_the_codebuild_role_can_list_the_accounts_buckets():
     """The reaper's first call must be permitted *to its own role*, on `Resource: '*'`.
 
@@ -288,6 +357,22 @@ def test_the_codebuild_role_can_list_the_accounts_buckets():
     from test_iam_trust_policy_partitions import load_template
 
     template = load_template(PIPELINE_TEMPLATE)
+
+    # The premise first: pinning this role's grants says nothing unless the
+    # CodeBuild project still runs as it. Repointing `ServiceRole` at the
+    # supplied-role parameter denies the reaper while leaving every grant below
+    # exactly as it is, so without this the test passes and the reaper is broken.
+    assert REAPER_ROLE in (template.get("Resources") or {}), (
+        f"{PIPELINE_TEMPLATE.name} declares no {REAPER_ROLE} resource. Everything "
+        f"below is keyed on that logical id, and the grants would still be found "
+        f"through a dangling `!Ref` in a policy, so this is checked first."
+    )
+    assert _runs_as_role(template, REAPER_ROLE), (
+        f"no AWS::CodeBuild::Project in {PIPELINE_TEMPLATE.name} runs as "
+        f"{REAPER_ROLE}, so pinning that role's grants says nothing about whether "
+        f"the reaper can list the account"
+    )
+
     statements = _statements_for_role(template, REAPER_ROLE)
     assert statements, (
         f"no IAM statements found for {REAPER_ROLE} in {PIPELINE_TEMPLATE.name} — "
@@ -299,13 +384,16 @@ def test_the_codebuild_role_can_list_the_accounts_buckets():
         statement
         for statement in statements
         if statement.get("Effect") == "Allow"
-        and REAPER_ACTION in _as_list(statement.get("Action"))
+        and REAPER_ACTION_EQUIVALENTS & set(_as_list(statement.get("Action")))
     ]
     assert granting, (
-        f"{REAPER_ROLE} is no longer granted {REAPER_ACTION} in "
+        f"{REAPER_ROLE} is no longer granted {REAPER_ACTION} (or `s3:*`) in "
         f"{PIPELINE_TEMPLATE.name}. cleanup_stale_idp_buckets calls list_buckets "
         f"as its first action and swallows the AccessDenied, so removing this "
-        f"makes the bucket reaper a no-op that still reports success."
+        f"makes the bucket reaper a no-op that still reports success. If the "
+        f"grant IS there, check how it reaches the role: this collector reads "
+        f"inline `Policies` and an `AWS::IAM::Policy` naming the role via `!Ref`, "
+        f"and does not model {_UNMODELLED_ATTACHMENT_ROUTES}."
     )
 
     assert any("*" in _as_list(statement.get("Resource")) for statement in granting), (
