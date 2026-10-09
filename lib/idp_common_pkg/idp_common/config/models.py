@@ -2624,13 +2624,16 @@ class ModelConfigLimitsConfig(BaseModel):
 class FactExtractionConfig(BaseModel):
     """Fact extraction configuration for rule validation"""
 
-    # Claude Sonnet 4.5, not Claude 3.5 Sonnet (20240620). That model has reached
-    # end of life — Bedrock's GetFoundationModel answers ResourceNotFoundException
-    # for it — and it is in no model enum, so it could not be selected in the UI
-    # either. No config preset under config_library/ sets this field, so the
-    # default is what rule validation actually ran on.
+    # No config preset under config_library/ sets this field, so this default is
+    # what rule validation actually runs on — which makes it worth keeping on a
+    # model AWS has not deprecated. Claude Sonnet 4.5 moved to LEGACY on
+    # 2026-10-08 (EOL 2027-04-08, recorded in LEGACY_EXAMPLES in
+    # scripts/tests/test_model_surface_consistency.py), and a LEGACY model takes
+    # no further Service Quota increases, so it is a poor thing to inherit by
+    # default. Sonnet 4.6 is Active and is the Sonnet-class default elsewhere in
+    # system_defaults/.
     model: str = Field(
-        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         description="Bedrock model ID for fact extraction",
     )
     system_prompt: str = Field(
@@ -2663,10 +2666,10 @@ class FactExtractionConfig(BaseModel):
 class RuleValidationOrchestratorConfig(BaseModel):
     """Rule validation summarization configuration"""
 
-    # See FactExtractionConfig.model above: Claude 3.5 Sonnet (20240620) is
-    # end-of-life and absent from every enum.
+    # See FactExtractionConfig.model above for why this default tracks the
+    # Active Sonnet rather than a LEGACY one.
     model: str = Field(
-        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         description="Bedrock model ID for rule validation summarization",
     )
     system_prompt: str = Field(
@@ -2700,7 +2703,7 @@ class Z3RuleTranslatorConfig(BaseModel):
     """Z3 engine: translates natural language rules to SMT-LIB RuleJSON"""
 
     model: str = Field(
-        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         max_length=256,
         description="Bedrock model ID for rule translation",
     )

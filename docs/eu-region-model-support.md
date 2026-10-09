@@ -16,19 +16,21 @@ The following table shows all US to EU model mappings currently configured in th
 |----------|----------|-------|
 | `us.amazon.nova-lite-v1:0` | `eu.amazon.nova-lite-v1:0` | Direct mapping |
 | `us.amazon.nova-pro-v1:0` | `eu.amazon.nova-pro-v1:0` | Direct mapping |
-| `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Nova Premier reached end of life on 2026-09-14 and cannot be selected any more; the row remains so that a configuration stored before its removal is rewritten onto a working model when the stack is deployed in an EU region |
+| `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Nova Premier reached end of life on 2026-09-14 and cannot be selected any more; the row remains so that a configuration stored before its removal is rewritten onto a working model when the stack is deployed in an EU region |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | **Fallback mapping.** Claude 3 Haiku is end-of-life in both regions, so the row exists to move a configuration stored before its removal onto the current Haiku-class model |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
 | `us.anthropic.claude-haiku-5-5` | `eu.anthropic.claude-haiku-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
-| `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude 3.5 Sonnet is end-of-life; the EU twin was no better than the US original |
-| `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude 3.7 Sonnet is end-of-life; same reason |
-| `us.anthropic.claude-sonnet-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-20250514-v1:0` | Direct mapping |
-| `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | Direct mapping |
+| `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude 3.5 Sonnet is end-of-life; the EU twin was no better than the US original |
+| `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude 3.7 Sonnet is end-of-life; same reason |
+| `us.anthropic.claude-sonnet-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude Sonnet 4 reaches end of life on 2026-10-14 in both regions, so its EU twin is no better than the US original |
+| `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | Direct mapping. Legacy from 2026-10-08, end of life 2027-04-08; still invocable, so the row stays |
 | `us.anthropic.claude-sonnet-4-6` | `eu.anthropic.claude-sonnet-4-6` | Direct mapping |
 | `us.anthropic.claude-sonnet-4-6:1m` | `eu.anthropic.claude-sonnet-4-6:1m` | Direct mapping |
-| `us.anthropic.claude-opus-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude Opus 4 is end-of-life, so this row is reachable only by a configuration stored before its removal |
-| `us.anthropic.claude-opus-4-1-20250805-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
+| `us.anthropic.claude-sonnet-5` | `eu.anthropic.claude-sonnet-5` | Direct mapping |
+| `us.anthropic.claude-sonnet-5:1m` | `eu.anthropic.claude-sonnet-5:1m` | Direct mapping |
+| `us.anthropic.claude-opus-4-20250514-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | **Fallback mapping.** Claude Opus 4 is end-of-life, so this row is reachable only by a configuration stored before its removal. Opus 4.5 keeps it on an Opus rather than demoting it to a Sonnet |
+| `us.anthropic.claude-opus-4-1-20250805-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | **Fallback mapping.** Claude Opus 4.1 is legacy (end of life 2027-01-08) and has no EU profile |
 | `us.anthropic.claude-opus-4-5-20251101-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | Direct mapping |
 | `us.anthropic.claude-opus-4-6-v1` | `eu.anthropic.claude-opus-4-6-v1` | Direct mapping |
 | `us.anthropic.claude-opus-4-6-v1:1m` | `eu.anthropic.claude-opus-4-6-v1:1m` | Direct mapping |
@@ -40,8 +42,8 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.anthropic.claude-opus-5:1m` | `eu.anthropic.claude-opus-5:1m` | Direct mapping |
 | `us.anthropic.claude-opus-5-5` | `eu.anthropic.claude-opus-5-5` | Direct mapping |
 | `us.anthropic.claude-opus-5-5:1m` | `eu.anthropic.claude-opus-5-5:1m` | Direct mapping |
-| `us.meta.llama4-maverick-17b-instruct-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
-| `us.meta.llama4-scout-17b-instruct-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
+| `us.meta.llama4-maverick-17b-instruct-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping** |
+| `us.meta.llama4-scout-17b-instruct-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping** |
 
 ### Mapping Types
 
@@ -114,8 +116,10 @@ Based on the mappings above, the following EU models are supported:
 #### Anthropic Claude Models
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `eu.anthropic.claude-haiku-5-5`
-- `eu.anthropic.claude-sonnet-4-20250514-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- `eu.anthropic.claude-sonnet-4-6`
+- `eu.anthropic.claude-sonnet-5`
+- `eu.anthropic.claude-opus-4-5-20251101-v1:0`
+- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` (legacy; end of life 2027-04-08)
 
 ## Model Mapping Behavior
 
@@ -128,8 +132,8 @@ The system automatically detects the deployment region and applies appropriate m
 ### Mapping Logic
 
 1. **US to EU Mapping**: When deployed in EU regions, US model IDs are automatically mapped to their EU equivalents
-2. **EU to US Mapping**: When deployed in US regions, EU model IDs are mapped back to US equivalents
-3. **Fallback Behavior**: If no mapping exists, the original model ID is returned unchanged
+2. **EU to US Mapping**: When deployed in US regions, EU model IDs are mapped back to US equivalents — but **only through a direct mapping**. A fallback row is one-directional by construction: reversing it would move a working configuration off the model it names and onto the retired or EU-unavailable model the row exists to escape.
+3. **Fallback Behavior**: If no mapping exists in the direction being applied, the original model ID is returned unchanged
 
 ### Configuration Processing
 
@@ -145,11 +149,17 @@ The UpdateConfiguration lambda processes default configurations as follows:
 
 **⚠️ Critical**: Some US models are not directly available in EU regions and use fallback mappings:
 
-- **Claude Opus Models**: Both Opus variants → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- **Claude Opus 4 and 4.1**: neither has an EU inference profile →
+  `eu.anthropic.claude-opus-4-5-20251101-v1:0`, which keeps a stranded Opus
+  configuration on an Opus rather than demoting it to a Sonnet. Opus 4.5 and
+  later each have their own EU profile and are direct mappings.
 - **Nova Premier**: `us.amazon.nova-premier-v1:0` →
-  `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`. Reachable only by a
+  `eu.anthropic.claude-sonnet-4-6`. Reachable only by a
   configuration stored before Nova Premier reached end of life (2026-09-14); it
   can no longer be selected, so nothing new produces this mapping.
+- **Fallback targets are chosen from Active models.** A model AWS has moved to
+  legacy receives no further Service Quota increases, so landing a stranded
+  configuration on one would trade a dead model for a dying one.
 
 ### Implications of Fallback Mappings
 

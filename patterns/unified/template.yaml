@@ -2957,7 +2957,6 @@ Resources:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
-                      - "us.anthropic.claude-sonnet-4-20250514-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-5"
                       - "us.anthropic.claude-sonnet-5:1m"

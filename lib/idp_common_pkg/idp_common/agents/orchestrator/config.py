@@ -68,6 +68,6 @@ def get_chat_companion_model_id() -> str:
         logger.warning(f"Failed to load model ID from configuration: {e}")
 
         # Final fallback to default
-        default_model_id = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        default_model_id = "us.anthropic.claude-sonnet-4-6"
         logger.info(f"Using default chat companion model ID: {default_model_id}")
         return default_model_id

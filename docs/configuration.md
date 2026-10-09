@@ -352,10 +352,12 @@ Two failure shapes to distinguish:
   can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
-  selectable, because they work for accounts that have used them recently — if
-  you hit this error, either pick a current model or request access again in the
-  Bedrock console.
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0` is in this state (legacy from
+  2026-10-08, end of life 2027-04-08). Such models stay selectable, because they
+  work for accounts that have used them recently — if you hit this error, either
+  pick a current model or request access again in the Bedrock console. A legacy
+  model also receives no further Service Quota increases, so it is a poor choice
+  for new work even while it answers; none of this solution's defaults name one.
 
 A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the

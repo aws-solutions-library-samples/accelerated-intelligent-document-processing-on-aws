@@ -146,7 +146,7 @@ per shard.
 extraction:
   agentic:
     enabled: true             # Advanced mode
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: us.anthropic.claude-sonnet-5
 ```
 
 #### Supported models for agentic extraction
@@ -549,7 +549,7 @@ classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     $id: complex-financial-form
     x-aws-idp-document-type: complex-financial-form
-    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-4-20250514-v1:0  # Override!
+    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-5  # Override!
     type: object
     properties:
       account_number:
@@ -1426,7 +1426,7 @@ extraction:
 >    extraction:
 >      confidence:
 >        escalation_enabled: true
->        escalation_model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+>        escalation_model: "us.anthropic.claude-sonnet-5"
 >        max_escalation_rounds: 2
 >    ```
 >

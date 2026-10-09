@@ -15,6 +15,13 @@ from idp_common.config.configuration_manager import (
     ConfigurationManager,  # type: ignore[import-untyped]
 )
 from idp_common.config.merge_utils import merge_config_with_defaults
+
+# One definition of "strip the cross-region profile prefix", shared with the
+# retired-model registry rather than re-spelled here. That module's prefix list is
+# itself held to agree with bedrock.model_utils.REGION_PREFIXES by
+# tests/unit/bedrock/test_region_prefix_parity.py, so a new geo prefix reaches
+# this handler too.
+from idp_common.config.retired_models import base_model_id as _base_model_id
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from pydantic import ValidationError
 
@@ -88,7 +95,7 @@ MODEL_MAPPINGS = {
     # it, and this mapping is what rewrites such a config onto a working model
     # when the stack is deployed in an EU region. Dropping the row would leave
     # that stack pointing at a dead model.
-    "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-6",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
     # Retired source -> LIVE target. Claude 3 Haiku reached end of life in both
     # regions, so mapping it onto its EU twin rewrote a stored config from one dead
@@ -102,16 +109,35 @@ MODEL_MAPPINGS = {
     # There is no ":1m" pair to add: 1M is this model's default window.
     "us.anthropic.claude-haiku-5-5": "eu.anthropic.claude-haiku-5-5",
     # Retired source -> LIVE target, as above: both 3.5 and 3.7 Sonnet are
-    # end-of-life, so the EU twin was no better than the US original.
-    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-sonnet-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
+    # end-of-life, so the EU twin was no better than the US original. Sonnet 4.6
+    # rather than Sonnet 4.5, which moved to LEGACY on 2026-10-08: a rescue row
+    # exists to land a stranded configuration on a model with a future, and a
+    # LEGACY model takes no further Service Quota increases.
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-sonnet-4-6",
+    # Sonnet 4 reaches end of life on 2026-10-14 in both regions, so its EU twin
+    # is no better than the US original — same shape as the 3.5/3.7 rows above.
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-6",
+    # Same model in both regions, and still invocable while LEGACY, so this row
+    # is correct in both directions and stays.
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-sonnet-4-6": "eu.anthropic.claude-sonnet-4-6",
     "us.anthropic.claude-sonnet-4-6:1m": "eu.anthropic.claude-sonnet-4-6:1m",
-    "us.anthropic.claude-opus-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-opus-4-1-20250805-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.anthropic.claude-opus-4-5-20251101-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Sonnet 5 has an EU geo profile and is in the EU enums, but had no row here,
+    # so an EU deployment whose stored config named it kept a `us.` id that is
+    # not callable there — and it is the default extraction model in
+    # system_defaults/base-extraction.yaml.
+    "us.anthropic.claude-sonnet-5": "eu.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-sonnet-5:1m": "eu.anthropic.claude-sonnet-5:1m",
+    # Opus 4 is end-of-life and Opus 4.1 is LEGACY; neither has an EU profile, so
+    # both are rescue rows. Opus 4.5 is the Opus-class EU model, which keeps a
+    # stranded Opus configuration on an Opus rather than silently demoting it to
+    # a Sonnet.
+    "us.anthropic.claude-opus-4-20250514-v1:0": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
+    "us.anthropic.claude-opus-4-1-20250805-v1:0": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
+    # Opus 4.5 DOES have an EU twin. It was mapped onto a Sonnet, which quietly
+    # changed model class for every EU deployment that chose it.
+    "us.anthropic.claude-opus-4-5-20251101-v1:0": "eu.anthropic.claude-opus-4-5-20251101-v1:0",
     "us.anthropic.claude-opus-4-6-v1": "eu.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-opus-4-6-v1:1m": "eu.anthropic.claude-opus-4-6-v1:1m",
     "us.anthropic.claude-opus-4-7": "eu.anthropic.claude-opus-4-7",
@@ -122,9 +148,10 @@ MODEL_MAPPINGS = {
     "us.anthropic.claude-opus-5:1m": "eu.anthropic.claude-opus-5:1m",
     "us.anthropic.claude-opus-5-5": "eu.anthropic.claude-opus-5-5",
     "us.anthropic.claude-opus-5-5:1m": "eu.anthropic.claude-opus-5-5:1m",
-    # Third-party models (US-only, no EU equivalent - fall back to themselves)
-    "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Third-party models with no EU profile at all, so these are rescue rows onto
+    # the Active Sonnet rather than a mapping to an equivalent.
+    "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-6",
+    "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-6",
     # NOT MAPPED, deliberately: OpenAI GPT-6 Astra and xAI Grok.
     #
     # Both have no eu. profile but a global. one that IS callable from the EU, so
@@ -161,13 +188,34 @@ def is_us_region(region: str) -> bool:
 
 
 def get_model_mapping(model_id: str, target_region_type: str) -> str:
-    """Get the equivalent model for the target region type"""
+    """Get the equivalent model for the target region type.
+
+    The EU direction is a plain lookup. The US direction walks the table
+    backwards, and must consider only the rows that name the SAME foundation
+    model on both sides.
+
+    ``MODEL_MAPPINGS`` holds two kinds of row. A *twin* row maps a model onto its
+    own profile in the other region, and reversing it is correct. A *rescue* row
+    maps a retired or EU-unavailable model onto a different, live EU model so a
+    stored configuration that names the dead one still runs; reversing such a row
+    is never right, because it moves a working configuration onto an unrelated
+    model. A plain walk in insertion order could not tell them apart and returned
+    whichever row came first, which was a rescue row in two cases:
+    ``eu.anthropic.claude-haiku-4-5-20251001-v1:0`` resolved to end-of-life Claude
+    3 Haiku and ``eu.anthropic.claude-sonnet-4-5-20250929-v1:0`` to end-of-life
+    Nova Premier. So a redeploy from an EU region to a US one moved the stack onto
+    a model Bedrock no longer serves.
+
+    With no twin row, the id is returned unchanged — the same answer the old walk
+    gave for a model absent from the table entirely, and better than a guess.
+    """
     if target_region_type == "eu":
         return MODEL_MAPPINGS.get(model_id, model_id)
     elif target_region_type == "us":
-        # Reverse mapping for US
         for us_model, eu_model in MODEL_MAPPINGS.items():
-            if model_id == eu_model:
+            if model_id == eu_model and _base_model_id(us_model) == _base_model_id(
+                eu_model
+            ):
                 return us_model
         return model_id
     return model_id

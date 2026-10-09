@@ -149,16 +149,47 @@ _base_model = _retired.base_model_id
 
 # Models this repo offers that AWS has moved to LEGACY: deprecated with a known
 # EOL date, but still invocable by existing users, so they correctly stay
-# selectable. Recorded because `docs/configuration.md` uses one as its worked
-# example of that state, and an example that silently becomes end-of-life teaches
-# the wrong thing. `review_by` is the EOL date read from
-# `list-foundation-models`' `modelLifecycle.endOfLifeTime`; the test below fails
-# once it is reached, which is the prompt to move the model to EOL_MODELS, pull it
-# from the selectable surfaces and pick a new example.
+# selectable. Removing one on the day AWS announces LEGACY would strand every
+# deployed stack whose stored configuration names it, months before the model
+# stops answering.
+#
+# Recorded for two reasons. `docs/configuration.md` uses one as its worked example
+# of that state, and an example that silently becomes end-of-life teaches the
+# wrong thing. And the EOL date is the one fact about a LEGACY model that nothing
+# offline can discover, so it is written down where a test can watch it expire.
+#
+# `review_by` is normally the EOL date read from `list-foundation-models`'
+# `modelLifecycle.endOfLifeTime`. An AWS Health deprecation notice can arrive
+# BEFORE the API carries the dates, and then the notice is the source and the
+# entry says so. The test below fails once `review_by` is reached, which is the
+# prompt to move the model to EOL_MODELS, pull it from the selectable surfaces and
+# pick a new example.
+#
+# A LEGACY model should not be any DEFAULT, which is a separate question this
+# registry does not answer: a default is a model nobody chose, and a LEGACY model
+# takes no further Service Quota increases.
 LEGACY_EXAMPLES = {
     "us.anthropic.claude-sonnet-4-20250514-v1:0": {
         "review_by": "2026-10-14",
-        "note": "endOfLifeTime 2026-10-14T08:00:00Z; cited in docs/configuration.md",
+        "note": (
+            "endOfLifeTime 2026-10-14T08:00:00Z. Already removed from every "
+            "selectable surface and every default, ahead of the date. What is left "
+            "for the date itself: move it to RETIRED_MODELS, drop its two "
+            "cachePoint-allowlist entries in bedrock/client.py, and drop its two "
+            "quota codes from template.yaml. Its pricing.yaml row stays"
+        ),
+    },
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+        "review_by": "2027-04-08",
+        "note": (
+            "LEGACY from 2026-10-08, extended access 2027-01-08, end of life "
+            "2027-04-08 — dates from the AWS Health notice, which is AHEAD of the "
+            "API: list-foundation-models still reported status ACTIVE with no "
+            "endOfLifeTime in us-west-2 and eu-west-1 on 2026-10-09. Re-read "
+            "modelLifecycle once AWS publishes it and correct review_by if it "
+            "differs. Stays selectable and stays a mapping target for its own EU "
+            "twin while invocable; it is no longer any default"
+        ),
     },
     "us.anthropic.claude-opus-4-1-20250805-v1:0": {
         "review_by": "2027-01-08",
@@ -1185,8 +1216,6 @@ RETIRED_LITERAL_EXEMPT = {
     # stack is deployed or updated. Its KEYS must be the dead ids or the rewrite
     # cannot match the config it exists to repair.
     "src/lambda/update_configuration/index.py": '": "',
-    # A doctest example of parsing a model id, not a model anything selects.
-    "lib/idp_common_pkg/idp_common/bedrock/model_utils.py": ">>> get_model_max_output_tokens(",
     # Developer tooling, not shipped and not customer-reachable: a limits-discovery
     # probe list (asking Bedrock about a retired model is a valid probe) and a
     # benchmark alias. Both fail loudly at the API if run, for the caller only.
@@ -1254,8 +1283,7 @@ def test_the_literal_scan_reads_something():
 #: retired literal the file gains. Measured, not chosen — see the test below.
 RETIRED_LITERAL_EXEMPT_COUNTS = {
     "benchmarks/harness/run_classification_bench.py": 1,
-    "lib/idp_common_pkg/idp_common/bedrock/model_utils.py": 1,
-    "lib/idp_common_pkg/idp_common/config/retired_models.py": 7,
+    "lib/idp_common_pkg/idp_common/config/retired_models.py": 8,
     "scripts/discover_model_limits.py": 3,
     "src/lambda/update_configuration/index.py": 5,
 }

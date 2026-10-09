@@ -209,6 +209,10 @@ RUN_ROOTS = [
     "src/lambda/queue_sender",
     "src/lambda/save_reporting_data",
     "src/lambda/test_file_copier",
+    # The US<->EU model swap table. Its reverse direction decides which model a
+    # stack redeployed across regions ends up on, and it silently answered with
+    # two end-of-life models until this suite existed.
+    "src/lambda/update_configuration",
     "src/lambda/user_management",
     "src/lambda/version_check_resolver",
     "src/lambda/workflow_tracker",

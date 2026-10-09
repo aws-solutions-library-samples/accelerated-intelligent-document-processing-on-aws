@@ -275,7 +275,7 @@ To use Bedrock OCR:
    - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
    - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `us.anthropic.claude-sonnet-4-20250514-v1:0`
+   - `us.anthropic.claude-sonnet-4-6`
    - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `us.anthropic.claude-sonnet-4-6`
    - `us.anthropic.claude-sonnet-4-6:1m`
@@ -300,7 +300,7 @@ To use Bedrock OCR:
    - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
    - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `eu.anthropic.claude-sonnet-4-20250514-v1:0`
+   - `eu.anthropic.claude-sonnet-4-6`
    - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `eu.anthropic.claude-sonnet-4-6`
    - `eu.anthropic.claude-sonnet-4-6:1m`
