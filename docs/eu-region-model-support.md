@@ -110,16 +110,29 @@ EU stacks. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 Based on the mappings above, the following EU models are supported:
 
 #### Amazon Nova Models
+- `eu.amazon.nova-2-lite-v1:0`
 - `eu.amazon.nova-lite-v1:0`
 - `eu.amazon.nova-pro-v1:0`
 
 #### Anthropic Claude Models
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `eu.anthropic.claude-haiku-5-5`
-- `eu.anthropic.claude-sonnet-4-6`
-- `eu.anthropic.claude-sonnet-5`
-- `eu.anthropic.claude-opus-4-5-20251101-v1:0`
 - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` (legacy; end of life 2027-04-08)
+- `eu.anthropic.claude-sonnet-4-6`
+- `eu.anthropic.claude-sonnet-4-6:1m`
+- `eu.anthropic.claude-sonnet-5`
+- `eu.anthropic.claude-sonnet-5:1m`
+- `eu.anthropic.claude-opus-4-5-20251101-v1:0`
+- `eu.anthropic.claude-opus-4-6-v1`
+- `eu.anthropic.claude-opus-4-6-v1:1m`
+- `eu.anthropic.claude-opus-4-7`
+- `eu.anthropic.claude-opus-4-7:1m`
+- `eu.anthropic.claude-opus-4-8`
+- `eu.anthropic.claude-opus-4-8:1m`
+- `eu.anthropic.claude-opus-5`
+- `eu.anthropic.claude-opus-5:1m`
+- `eu.anthropic.claude-opus-5-5`
+- `eu.anthropic.claude-opus-5-5:1m`
 
 ## Model Mapping Behavior
 

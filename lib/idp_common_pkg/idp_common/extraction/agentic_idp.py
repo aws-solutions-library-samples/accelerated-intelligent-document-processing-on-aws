@@ -92,7 +92,7 @@ class ModelInvalidToolUseSequence(Exception):
 #: (``config/system_defaults/base-extraction.yaml``).
 _AGENTIC_CAPABLE_EXAMPLE_MODELS = (
     "us.anthropic.claude-sonnet-5",
-    "us.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-sonnet-4-6",
     "us.anthropic.claude-opus-5",
     "us.openai.gpt-6-astra",
     "us.xai.grok-4.6",

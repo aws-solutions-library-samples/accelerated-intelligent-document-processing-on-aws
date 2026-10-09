@@ -154,9 +154,12 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
-- **Anthropic Claude Opus** models (for highest accuracy requirements)
+  - `us.anthropic.claude-sonnet-5` — the shipped extraction default
+  - `us.anthropic.claude-sonnet-4-6` — best balance of speed and cost
+  - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — still selectable, but AWS has
+    moved it to legacy (end of life 2027-04-08)
+- **Anthropic Claude Opus** models (for highest accuracy requirements), e.g.
+  `us.anthropic.claude-opus-5`
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
@@ -1426,7 +1429,7 @@ extraction:
 >    extraction:
 >      confidence:
 >        escalation_enabled: true
->        escalation_model: "us.anthropic.claude-sonnet-5"
+>        escalation_model: "us.anthropic.claude-sonnet-5:1m"
 >        max_escalation_rounds: 2
 >    ```
 >

@@ -1487,15 +1487,11 @@ Configure from these supported models:
 - `us.amazon.nova-2-lite-v1:0`
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `us.anthropic.claude-haiku-5-5`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-6`
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
 - `us.anthropic.claude-sonnet-4-6`
 - `us.anthropic.claude-sonnet-4-6:1m`
-- `us.anthropic.claude-opus-4-5-20251101-v1:0`
-- `us.anthropic.claude-opus-4-1-20250805-v1:0`
+- `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-sonnet-5:1m`
 - `us.anthropic.claude-opus-4-5-20251101-v1:0`
 - `us.anthropic.claude-opus-4-6-v1`
 - `us.anthropic.claude-opus-4-6-v1:1m`
@@ -1512,13 +1508,11 @@ Configure from these supported models:
 - `eu.amazon.nova-2-lite-v1:0`
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `eu.anthropic.claude-haiku-5-5`
-- `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-6`
 - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 - `eu.anthropic.claude-sonnet-4-6`
 - `eu.anthropic.claude-sonnet-4-6:1m`
+- `eu.anthropic.claude-sonnet-5`
+- `eu.anthropic.claude-sonnet-5:1m`
 - `eu.anthropic.claude-opus-4-5-20251101-v1:0`
 - `eu.anthropic.claude-opus-4-6-v1`
 - `eu.anthropic.claude-opus-4-6-v1:1m`
@@ -1530,24 +1524,6 @@ Configure from these supported models:
 - `eu.anthropic.claude-opus-5:1m`
 - `eu.anthropic.claude-opus-5-5`
 - `eu.anthropic.claude-opus-5-5:1m`
-- `qwen.qwen3-vl-235b-a22b`
-- `global.amazon.nova-2-lite-v1:0`
-- `global.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `global.anthropic.claude-haiku-5-5`
-- `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `global.anthropic.claude-sonnet-4-6`
-- `global.anthropic.claude-sonnet-4-6:1m`
-- `global.anthropic.claude-opus-4-5-20251101-v1:0`
-- `global.anthropic.claude-opus-4-6-v1`
-- `global.anthropic.claude-opus-4-6-v1:1m`
-- `global.anthropic.claude-opus-4-7`
-- `global.anthropic.claude-opus-4-7:1m`
-- `global.anthropic.claude-opus-4-8`
-- `global.anthropic.claude-opus-4-8:1m`
-- `global.anthropic.claude-opus-5`
-- `global.anthropic.claude-opus-5:1m`
-- `global.anthropic.claude-opus-5-5`
-- `global.anthropic.claude-opus-5-5:1m`
 
 #### When to Configure Bedrock OCR
 

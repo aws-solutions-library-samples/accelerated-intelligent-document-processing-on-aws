@@ -67,7 +67,11 @@ def get_chat_companion_model_id() -> str:
     except Exception as e:
         logger.warning(f"Failed to load model ID from configuration: {e}")
 
-        # Final fallback to default
-        default_model_id = "us.anthropic.claude-sonnet-4-6"
+        # Final fallback. Matches `agents.chat_companion.model_id` in
+        # config/system_defaults/base-agents.yaml, which is what a deployed stack
+        # resolves — so the path taken when configuration cannot be read runs the
+        # same model, and at the same price, as the path taken when it can. A
+        # Sonnet here would be ~3x the per-token cost of the configured default.
+        default_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
         logger.info(f"Using default chat companion model ID: {default_model_id}")
         return default_model_id

@@ -227,7 +227,7 @@ For documents with extensive tabular data, consider enabling agentic extraction 
 
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-6"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:
