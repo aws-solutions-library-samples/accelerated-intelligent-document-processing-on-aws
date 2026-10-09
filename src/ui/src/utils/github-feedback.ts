@@ -162,25 +162,72 @@ const buildTroubleshootSection = (doc: DocumentContext): string => {
  */
 const MAX_URL_BYTES = 7800;
 const TRUNCATION_NOTE = '\n\n…(truncated — use "Copy full details" in the app and paste the rest here)';
-// Bounded so a pathological input cannot spin; each pass removes at least the
-// overshoot, so two or three are enough in practice.
-const MAX_SHRINK_PASSES = 8;
+// Enough passes for the estimate-driven loop to converge, after which an
+// unconditional halving guarantees termination. The estimate is only a way to
+// get there in two or three passes instead of twenty; correctness comes from the
+// halving and from the final assertion, not from the estimate being right.
+const MAX_SHRINK_PASSES = 24;
 
 /**
- * Truncate, closing an unterminated ``` fence first.
+ * Encoded byte cost of one field, measured with the SAME serializer that
+ * assembles the URL.
+ *
+ * ⚠️ Not `encodeURIComponent`, which disagrees with `URLSearchParams` in both
+ * directions: a space is `%20` (3 bytes) for one and `+` (1 byte) for the other,
+ * while `!'()~` are literal for one and percent-encoded for the other. Space is
+ * by far the commonest of those in Markdown, so `encodeURIComponent` reports
+ * about 1.83 bytes/char where the real cost is about 1.14 — a systematic
+ * over-estimate, which makes each pass shed only part of the overshoot.
+ */
+const encodedCost = (id: string, value: string): number => new URLSearchParams([[id, value]]).toString().length;
+
+/**
+ * Drop a trailing unpaired high surrogate.
+ *
+ * ⚠️ This is the line that stops a crash. Slicing a UTF-16 string can cut
+ * between the two halves of a surrogate pair — every astral emoji is one, 🔍 and
+ * 📄 among them, though `⚠️` is *not*, which is why an emoji-bearing test
+ * fixture does not necessarily exercise it. A string ending in a lone surrogate
+ * makes `encodeURIComponent` **throw `URIError: URI malformed`**. These builders
+ * run in component bodies (`TroubleshootModal`, `create-issue-button`,
+ * `GenAIIDPTopNavigation`, `feedback-help-section`) and this UI has no error
+ * boundary, so a throw there blanks the whole app — far worse than the oversized
+ * URL the truncation exists to prevent. Agent findings are LLM-generated
+ * Markdown and do contain emoji. Applied to input as well as to our own cuts,
+ * since a value arriving already malformed would throw just the same.
+ */
+const stripLoneSurrogate = (value: string): string => (/[\uD800-\uDBFF]$/.test(value) ? value.slice(0, -1) : value);
+
+/**
+ * Cut to at most `keepUnits` UTF-16 units and close an unterminated fence.
+ *
+ * Deliberately code *units* rather than code points: `String.prototype.slice`
+ * is O(keepUnits) where `[...value]` is O(value.length), and these values can be
+ * megabytes of agent output while `keepUnits` is a few thousand. Spreading them
+ * on every pass of the shrink loop made this function slow enough to block a
+ * React render. Surrogate safety comes from the strip above instead.
  *
  * `buildTroubleshootSection` emits a fenced block for the job error and
- * arbitrary Markdown for the findings, so a cut can land inside a fence — after
- * which the truncation note renders as code and everything following it is
- * swallowed, which is the same class of problem `make check-markdown-links`
- * guards against in this repository's own documents.
+ * arbitrary Markdown for the findings, so a cut can also land inside a ```
+ * fence, after which the truncation note renders as code and everything
+ * following it is swallowed.
  */
-const shorten = (value: string, keepChars: number): string => {
-  const kept = value.slice(0, Math.max(0, keepChars));
+const shorten = (value: string, keepUnits: number): string => {
+  const kept = stripLoneSurrogate(value.slice(0, Math.max(0, keepUnits)));
   const fenceCount = kept.match(/```/g)?.length ?? 0;
   const closed = fenceCount % 2 === 1 ? `${kept}\n\`\`\`` : kept;
   return `${closed}${TRUNCATION_NOTE}`;
 };
+
+/**
+ * Ceiling applied to every field BEFORE the shrink loop runs.
+ *
+ * Far more than can fit in the byte budget, so it never changes the output — its
+ * job is to bound the work. Without it, a multi-megabyte `findings` string is
+ * re-encoded and re-assembled on every pass, which is tens of megabytes of
+ * string work inside a component render.
+ */
+const MAX_FIELD_UNITS = 20000;
 
 /**
  * Assemble a form URL within the byte budget.
@@ -189,22 +236,35 @@ const shorten = (value: string, keepChars: number): string => {
  * the form's own description and placeholder instead of looking like an answered
  * question.
  *
- * When the URL is over budget the LARGEST field is shrunk, repeatedly. At most
- * one field per URL can carry unbounded content (`troubleshoot` on the bug path,
- * `additional-context` on the feature path); `version`, `region` and `mode` all
- * derive from short settings values, so "shrink the largest" is unambiguous in
- * practice and keeps the small fields intact — which capping a single
- * concatenated body did not.
+ * When the URL is over budget the **costliest** field is shrunk, repeatedly —
+ * costliest in encoded bytes rather than in characters, since a short emoji-rich
+ * field can outweigh a longer ASCII one. At most one field per URL carries
+ * unbounded content (`troubleshoot` on the bug path, `additional-context` on the
+ * feature path); the rest derive from short settings values, so this keeps the
+ * small fields intact, which capping a single concatenated body did not.
+ *
+ * The loop is a guarantee, not an attempt: a pass that fails to make progress
+ * halves the field instead, and the result is checked before returning.
  */
 const buildUrl = (template: string, title: string, fields: Record<string, string | undefined>): string => {
   const entries: [string, string][] = Object.entries(fields)
     .map(([id, value]): [string, string] => [id, value?.trim() ?? ''])
-    .filter(([, value]) => value !== '');
+    .filter(([, value]) => value !== '')
+    .map(([id, value]): [string, string] => [
+      id,
+      value.length > MAX_FIELD_UNITS ? shorten(value, MAX_FIELD_UNITS) : stripLoneSurrogate(value),
+    ]);
+
+  // The title is clamped rather than shrunk. GitHub caps an issue title at 256
+  // characters anyway, and without this a long enough object key could use up
+  // the whole budget on its own: the loop below would then strip every field,
+  // find nothing left to shrink, and still return an over-budget URL.
+  const cappedTitle = stripLoneSurrogate(title.slice(0, 256));
 
   const assemble = (): string => {
     const usp = new URLSearchParams();
     usp.append('template', template);
-    usp.append('title', title);
+    usp.append('title', cappedTitle);
     entries.forEach(([id, value]) => usp.append(id, value));
     return `${GITHUB_NEW_ISSUE_URL}?${usp.toString()}`;
   };
@@ -212,24 +272,45 @@ const buildUrl = (template: string, title: string, fields: Record<string, string
   let url = assemble();
   for (let pass = 0; pass < MAX_SHRINK_PASSES && url.length > MAX_URL_BYTES; pass += 1) {
     let target = -1;
-    entries.forEach(([, value], index) => {
-      if (target < 0 || value.length > entries[target][1].length) target = index;
+    let targetCost = 0;
+    entries.forEach(([id, value], index) => {
+      const cost = encodedCost(id, value);
+      if (cost > targetCost) {
+        target = index;
+        targetCost = cost;
+      }
     });
+    // Only the title and the template remain, and neither is ours to truncate:
+    // the title is the one thing a maintainer needs to triage by.
     if (target < 0) break;
 
     const value = entries[target][1];
-    // How many characters to drop, converted through this field's own measured
-    // encoding ratio rather than an assumed one, plus headroom for the note and
-    // any fence this closes.
-    const encodedLength = encodeURIComponent(value).length;
-    const bytesPerChar = value.length > 0 ? encodedLength / value.length : 1;
     const over = url.length - MAX_URL_BYTES;
-    const keep = value.length - Math.ceil(over / bytesPerChar) - TRUNCATION_NOTE.length - 8;
-    if (keep <= 0) {
-      entries.splice(target, 1);
-    } else {
-      entries[target][1] = shorten(value, keep);
-    }
+    const bytesPerUnit = value.length > 0 ? targetCost / value.length : 1;
+    const estimated = value.length - Math.ceil(over / bytesPerUnit) - TRUNCATION_NOTE.length - 8;
+    // Never below the halfway mark, so a bad estimate costs a pass rather than
+    // the whole field, and never above it, so every pass makes real progress.
+    const keep = Math.min(Math.max(estimated, 0), Math.floor(value.length / 2));
+    entries[target][1] = shorten(value, keep);
+    url = assemble();
+
+    // A field reduced to just the note cannot shrink further; drop it so the
+    // next pass can work on another one.
+    if (entries[target][1] === TRUNCATION_NOTE) entries.splice(target, 1);
+  }
+
+  // Terminating fallback, so the budget is a guarantee rather than a best
+  // effort. Dropping the costliest field outright converges in at most one step
+  // per field, and with the title clamped above, template + title alone is a
+  // few hundred bytes — so this cannot fail to fit. It should never run: it
+  // exists because an estimate-driven loop that merely *usually* converges is
+  // how the character cap this replaced came to return URLs GitHub refuses.
+  while (url.length > MAX_URL_BYTES && entries.length > 0) {
+    let target = 0;
+    entries.forEach(([id, value], index) => {
+      if (encodedCost(id, value) > encodedCost(entries[target][0], entries[target][1])) target = index;
+    });
+    entries.splice(target, 1);
     url = assemble();
   }
   return url;

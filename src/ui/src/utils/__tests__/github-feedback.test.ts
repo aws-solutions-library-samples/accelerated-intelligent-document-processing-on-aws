@@ -90,31 +90,54 @@ describe('the field ids the forms actually declare', () => {
     );
   });
 
-  it('the forms on the DEFAULT branch declare them too, which is the copy GitHub renders', () => {
+  /**
+   * A ref holding the repository's default branch, or null.
+   *
+   * ⚠️ `actions/checkout` does `git init` + `git fetch` rather than `git clone`,
+   * and a remote's HEAD ref is written by clone — so neither CI has it, and a
+   * check that silently returns when it is missing passes everywhere while
+   * verifying nothing. Candidates are tried in order and the result is reported,
+   * so an unread condition is visibly distinct from a satisfied one.
+   */
+  const defaultBranchRef = (): string | null => {
+    const show = (args: string[]): string | null => {
+      try {
+        return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch {
+        return null;
+      }
+    };
+    for (const remote of ['github', 'origin']) {
+      const symbolic = show(['symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`]);
+      if (symbolic) return symbolic;
+    }
+    for (const candidate of ['refs/remotes/github/main', 'refs/remotes/origin/main', 'refs/heads/main']) {
+      if (show(['rev-parse', '--verify', '--quiet', candidate])) return candidate;
+    }
+    return null;
+  };
+
+  it('the forms on the DEFAULT branch declare them too, which is the copy GitHub renders', (testCtx) => {
     // The check above reads the working checkout, which in CI is the PR branch.
     // GitHub renders the form from the repository's default branch, so an id
     // renamed on develop and not yet merged would pass there and break in
-    // production. Skips rather than fails where the ref is unavailable (a
-    // shallow clone), because a missing ref is not a finding about the code.
-    let head: string;
-    try {
-      head = execFileSync('git', ['symbolic-ref', '--short', 'refs/remotes/github/HEAD'], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      return; // default-branch ref not fetched in this checkout
+    // production.
+    const ref = defaultBranchRef();
+    if (!ref) {
+      // Reported as a skip, not a pass: this runs in neither CI today, and the
+      // working-tree check above is what actually gates there.
+      testCtx.skip();
+      return;
     }
     for (const template of [BUG_REPORT_TEMPLATE, FEATURE_REQUEST_TEMPLATE]) {
-      const yaml = execFileSync('git', ['show', `${head}:.github/ISSUE_TEMPLATE/${template}`], {
+      const yaml = execFileSync('git', ['show', `${ref}:.github/ISSUE_TEMPLATE/${template}`], {
         cwd: REPO_ROOT,
         encoding: 'utf8',
         maxBuffer: 1024 * 1024,
       });
       const declared = [...yaml.matchAll(/^\s+id:\s*(\S+)\s*$/gm)].map((m) => m[1]);
       for (const id of FORM_FIELDS[template as keyof typeof FORM_FIELDS]) {
-        expect(declared, `${id} missing from ${template} on ${head}`).toContain(id);
+        expect(declared, `${id} missing from ${template} on ${ref}`).toContain(id);
       }
     }
   });
@@ -223,30 +246,87 @@ describe('the URL stays inside GitHub’s request-line limit', () => {
   // version of this test certified a URL that returns 414.
   const LIMIT = 8192;
 
-  // Shaped like real agent findings: headings, bullets, a fenced block, emoji.
+  // Shaped like real agent findings: headings, bullets, a fenced block, and an
+  // ASTRAL emoji. The astral part is load-bearing — 🔍 is a surrogate pair where
+  // `⚠️` (U+26A0 + U+FE0F) is two BMP characters, so only the former can be cut
+  // in half, and a lone surrogate makes encodeURIComponent throw.
   const markdownFindings = (lines: number): string =>
     Array.from(
       { length: lines },
       (_, i) =>
-        `### ⚠️ Finding ${i + 1}: extraction timed out\n` +
+        `### 🔍 Finding ${i + 1}: extraction timed out ⚠️\n` +
         `- **Step:** \`ExtractionStep\` (shard ${i})\n` +
         '- **Detail:** the agent loop went quiet for 227s, past the socket read timeout\n',
     ).join('\n');
 
-  it.each([
+  const FIXTURES: [string, string][] = [
     ['plain ascii', 'x'.repeat(40000)],
-    ['markdown with emoji', markdownFindings(400)],
+    ['markdown with astral emoji', markdownFindings(400)],
     ['one enormous fenced block', `\`\`\`\n${'é'.repeat(20000)}\n\`\`\``],
-  ])('a bug report with %s fits', (_label, findings) => {
-    const url = buildBugReportUrl(ctx, { objectKey: 'input/very/long/key/lending_package-long.pdf', jobError: 'boom', findings });
+    // Spaces encode as `+` (1 byte) through URLSearchParams but `%20` (3 bytes)
+    // through encodeURIComponent, so a space-dense input is what exposes a
+    // budget measured with the wrong serializer. Note it must not be spaces
+    // ALONE: `buildUrl` trims each value, so `' '.repeat(n)` is dropped as empty
+    // and tests nothing — measured at 548 bytes against the previous commit.
+    ['space-dense', `x${' '.repeat(40)}`.repeat(20000)],
+    ['nothing but astral emoji', '🔍'.repeat(20000)],
+    ['a lone surrogate in the input', `${'a'.repeat(9000)}\uD83D`],
+    ['megabytes of indented output', '  indented detail line\n'.repeat(200000)],
+  ];
+
+  it.each(FIXTURES)('a bug report with %s fits', (_label, findings) => {
+    const url = buildBugReportUrl(ctx, { objectKey: 'input/very/long/key/lending_package-long.pdf', jobError: '```\nboom', findings });
     // URLSearchParams emits ASCII, so .length is the byte length.
     expect(url.length).toBeLessThanOrEqual(LIMIT);
     expect(url).toMatch(/^https:\/\/github\.com\//);
   });
 
-  it('a feature request with a huge chat answer fits', () => {
-    const url = buildFeatureRequestUrl(ctx, markdownFindings(400));
-    expect(url.length).toBeLessThanOrEqual(LIMIT);
+  it.each(FIXTURES)('a feature request with %s fits', (_label, context) => {
+    expect(buildFeatureRequestUrl(ctx, context).length).toBeLessThanOrEqual(LIMIT);
+  });
+
+  it('never throws, whatever lands in the findings', () => {
+    // These builders are called in component bodies and this UI has no error
+    // boundary, so a throw here blanks the whole app. A URIError from a cut
+    // surrogate pair is the way that happened.
+    for (const [, findings] of FIXTURES) {
+      for (const key of ['k.pdf', 'z'.repeat(9000), '🔍'.repeat(4000), '\uDC4D']) {
+        expect(() => buildBugReportUrl(ctx, { objectKey: key, findings })).not.toThrow();
+      }
+    }
+  });
+
+  it('stays inside the limit at every input size, not just the fixture sizes', () => {
+    // The estimate that drives the shrink loop is an estimate; what has to hold
+    // is the budget. Stepping the size is how a residual that only appears in a
+    // narrow band gets caught — the surrogate crash appeared at 41 of 800 sizes
+    // and at none of the three sizes the fixtures used.
+    for (const unit of ['x', ' ', '🔍', '### 🔍 F\n- **a:** `b`\n  detail\n']) {
+      for (let n = 1; n <= 9000; n += 97) {
+        const findings = unit.repeat(Math.ceil(n / unit.length));
+        const url = buildBugReportUrl(ctx, { objectKey: 'k.pdf', jobError: '```\nboom', findings });
+        expect(url.length, `n=${n} unit=${JSON.stringify(unit)}`).toBeLessThanOrEqual(LIMIT);
+      }
+    }
+  });
+
+  it('a title longer than GitHub accepts cannot consume the whole budget', () => {
+    // Without a title clamp a long enough object key starves every field: the
+    // loop strips them all, finds nothing left to shrink, and still returns an
+    // over-budget URL.
+    const url = new URL(buildBugReportUrl(ctx, { objectKey: 'z'.repeat(9000), findings: 'real findings' }));
+    expect((url.searchParams.get('title') ?? '').length).toBeLessThanOrEqual(256);
+    expect(url.searchParams.get('version')).toContain('0.6.0.dev25');
+  });
+
+  it('keeps every field present for a realistically large report', () => {
+    // The last-resort path drops a field outright with no notice. It must not be
+    // reachable by ordinary agent output — only the content inside a field is
+    // allowed to be lost, and that loss is marked.
+    const url = new URL(buildBugReportUrl(ctx, { objectKey: 'a.pdf', jobError: 'boom', findings: markdownFindings(2000) }, 'chat answer'));
+    for (const id of ['version', 'region', 'troubleshoot', 'additional-context']) {
+      expect(url.searchParams.get(id), `${id} was dropped`).toBeTruthy();
+    }
   });
 
   it('truncation costs the big field and leaves the small ones intact', () => {

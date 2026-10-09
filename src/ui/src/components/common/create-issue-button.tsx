@@ -8,11 +8,16 @@ import { buildBugReportUrl, buildFeatureRequestUrl } from '../../utils/github-fe
 
 interface CreateIssueButtonProps {
   /**
-   * Optional findings/context text to attach to a bug report (e.g. an agent
-   * message). Included in the pre-filled bug form's troubleshoot field.
+   * Optional context text to attach (e.g. the latest agent message). Goes to
+   * **Additional context** on both forms — not to the bug form's
+   * Troubleshoot-agent field, whose heading would claim this was produced by
+   * that agent about a document failure, which it need not be.
    */
   findings?: string;
-  /** Optional title suffix, e.g. a document key. */
+  /**
+   * Optional title suffix, e.g. a document key. Also surfaces as the document
+   * name in Additional context. Neither current render site passes it.
+   */
   titleHint?: string;
   variant?: 'normal' | 'icon' | 'inline-icon';
 }
