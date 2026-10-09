@@ -106,8 +106,8 @@ longest-running completeness defect in this audit trail.</strong></p>
 <li><strong>The integrated-confidence row-loss hazard is fixed — verified with repeated
 measures.</strong> <code dir="auto">tt-simple-int</code> (simple extraction + integrated confidence) returned
 <strong>complete lists in 9 of 9 runs</strong> (recall 1.000, stdev 0.000). The
-<a href="./v0.6.0.md">v0.6.0 report</a> §4 found this cell truncating a 100-row list to 10 rows,
-and the <a href="./v0.6.5.md">v0.6.5 report</a> §3.1 proved it was <strong>bimodal on v0.6.5 — 2 of 4
+<a href="../../../benchmarking/releases/v0.6.0/">v0.6.0 report</a> §4 found this cell truncating a 100-row list to 10 rows,
+and the <a href="../../../benchmarking/releases/v0.6.5/">v0.6.5 report</a> §3.1 proved it was <strong>bimodal on v0.6.5 — 2 of 4
 repeats truncated</strong>. It no longer truncates, at <strong>−55% cost</strong> and <strong>a third of the wall
 time</strong> (170s → 59s). See <a href="#31-the-integrated-confidence-hazard-is-closed">§3.1</a>.</li>
 <li><strong>That cell’s accuracy also rose 0.667 → 1.000</strong>, matching the v0.6.6 fix for group
@@ -141,7 +141,7 @@ the audit trail has used since v0.6.0.</li>
 identical on both sides rather than re-derived by a migration. <code dir="auto">git diff v0.6.5..v0.6.6 -- config_library/</code> is empty, so the generated cells are byte-identical between the tags.</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="️-deviation-from-the-standard-procedure--read-this-before-citing-a-delta">⚠️ Deviation from the standard procedure — read this before citing a delta</h3><a class="sl-anchor-link" href="#️-deviation-from-the-standard-procedure--read-this-before-citing-a-delta"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “⚠️ Deviation from the standard procedure — read this before citing a delta”</span></a></div>
-<p>The <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/index.md">run-benchmarks procedure</a> deploys the previous published release, runs it,
+<p>The <a href="../../../benchmarking/index/">run-benchmarks procedure</a> deploys the previous published release, runs it,
 then upgrades <strong>the same stack</strong> in place. This entry <strong>reuses the committed v0.6.5
 <code dir="auto">corefast</code> set</strong> (stack <code dir="auto">IDPBench065</code>, scored 2026-08-25) as the baseline instead of
 re-running it, and runs only the v0.6.6 side, on a <strong>different, freshly created stack</strong>.</p>
@@ -491,7 +491,7 @@ unaffected. The history:</p>
 
 
 <table><thead><tr><th>doc</th><th align="right">rows extracted / truth</th><th align="right">recall</th><th align="right">cost</th></tr></thead><tbody><tr><td>tiny_form × 3</td><td align="right">5/5, 5/5, 5/5</td><td align="right">1.000</td><td align="right">$0.043, $0.048, $0.043</td></tr><tr><td>small_narrow × 3</td><td align="right">100/100, 100/100, 100/100</td><td align="right">1.000</td><td align="right">$0.216, $0.216, $0.216</td></tr><tr><td>longdesc_100 × 3</td><td align="right">100/100, 100/100, 100/100</td><td align="right">1.000</td><td align="right">$0.261, $0.236, $0.261</td></tr></tbody></table>
-<p>Compare the v0.6.5 repeated-measures run in <a href="./v0.6.5.md#31-the-integrated-confidence-improvement-is-noise--the-hazard-is-still-open">v0.6.5 §3.1</a>:
+<p>Compare the v0.6.5 repeated-measures run in <a href="../../../benchmarking/releases/v0.6.5/#31-the-integrated-confidence-improvement-is-noise--the-hazard-is-still-open">v0.6.5 §3.1</a>:
 two of four repeats returned 10/100 at $0.139, the other two 100/100 at $0.53. On v0.6.6 the
 low-cost outcome is gone and the complete outcome costs <strong>$0.24–0.26, less than half</strong> what a
 complete extraction cost on v0.6.5. Both halves of that — always complete, and cheaper when
@@ -593,7 +593,7 @@ easy-to-spot pattern.</li>
 <code dir="auto">COMPLETED</code>. Extraction did its job perfectly on corrupted input. This is the same
 “looks clean, is wrong” failure class the v0.6.6 release notes address for absent and
 short lists — but a corrupted <em>value</em> has no equivalent signal.</li>
-<li><strong>It refutes an earlier entry.</strong> <a href="./v0.6.5.md">v0.6.5 §3</a> recorded
+<li><strong>It refutes an earlier entry.</strong> <a href="../../../benchmarking/releases/v0.6.5/">v0.6.5 §3</a> recorded
 <code dir="auto">llm-simple-sep|tiny_form</code> recall 0.20 → 1.00 as an improvement, explicitly labelled
 “not independently re-measured; treat as unconfirmed”. Re-measured here at n=3: it was
 OCR nondeterminism in the flattering direction. The v0.6.5 report’s caution was correct.</li>

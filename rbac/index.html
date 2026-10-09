@@ -944,7 +944,13 @@ enforcement itself is Layer 2.</p>
 the invoke: the exception’s <strong>class name</strong> and its message. It picks a status from
 those — <code dir="auto">PermissionError</code>/<code dir="auto">AuthorizationError</code>, or a message beginning
 <code dir="auto">Unauthorized</code>/<code dir="auto">Forbidden</code>, becomes <strong>403 <code dir="auto">Unauthorized</code></strong>; <code dir="auto">ValueError</code>/<code dir="auto">KeyError</code>
-becomes <strong>400 <code dir="auto">BadRequest</code></strong>; anything else becomes <strong>500 <code dir="auto">InternalError</code></strong>.</p>
+becomes <strong>400 <code dir="auto">BadRequest</code></strong>; <code dir="auto">ResourceNotFound</code> becomes <strong>404 <code dir="auto">ResourceNotFound</code></strong>;
+anything else becomes <strong>500 <code dir="auto">InternalError</code></strong>.</p>
+<p>The 404’s errorType is deliberately <code dir="auto">ResourceNotFound</code> and not the <code dir="auto">NotFound</code> the
+dispatcher already returns for an operation this deployment does not route: the live
+RBAC harness reads a bare <code dir="auto">NotFound</code> from a feature probe as “this feature is
+disabled, skip this operation”, so collapsing the two would turn authorization
+assertions into silent skips rather than passes.</p>
 <p>That makes the status sensitive to how a resolver re-raises. A resolver that catches
 its own exceptions and re-raises them wrapped loses both signals at once — the class
 name becomes <code dir="auto">Exception</code>, and prefixing the message moves the <code dir="auto">Unauthorized</code> token
@@ -956,8 +962,11 @@ monitored 5xx rate starts counting deliberate policy denials, so a genuine spike
 server faults is masked by them, and a caller probing for reachable resources
 inflates the fault signal instead of the authorization-denial signal. Refusals and
 faults have to be separable to be alarmable.</p>
-<p>So, for any refusal you add: raise <code dir="auto">PermissionError</code> for an authorization refusal
-and <code dir="auto">ValueError</code> for a bad argument, and do not let a catch-all re-wrap either.
+<p>So, for any refusal you add: raise <code dir="auto">PermissionError</code> for an authorization refusal,
+<code dir="auto">ValueError</code> for a bad argument, and <code dir="auto">ResourceNotFound</code> for an object that does not
+exist — a not-found raised as a <code dir="auto">ValueError</code> answers 400, which is the inverse of
+the convention and is not caught by the reintroduction guard (it matches only a bare
+<code dir="auto">Exception</code>). Do not let a catch-all re-wrap any of the three.
 Log a denial at <strong>WARNING</strong> with a “Denied”/“Forbidden”/“Rejecting” verb and no
 stack trace, and reserve <code dir="auto">logger.error(..., exc_info=True)</code> for a real fault — a
 denial logged as <code dir="auto">Unexpected error</code> with a traceback is indistinguishable from a

@@ -723,6 +723,21 @@ created and you can upload your own documents to build a test set. See the
 <li><code dir="auto">--refresh-interval</code>: Seconds between status checks (default: 5)</li>
 <li><code dir="auto">--region</code>: AWS region (optional)</li>
 </ul>
+<p><strong>A document shows as Queued before it has a tracking row.</strong></p>
+<p>A document’s tracking row is not written by the upload. The upload puts the
+object in the input bucket, and EventBridge then invokes the queue sender, which
+writes the row — asynchronously, so for the first seconds of a batch the status
+lookup has no record of a document that is about to process normally.</p>
+<p>Monitoring reports such a document as <strong>Queued</strong> for up to 60 seconds after the
+batch was submitted. Past that it is reported as failed, with
+<code dir="auto">Document not found in tracking table</code>, which at that point means the document
+really did not reach the pipeline — check the input bucket’s EventBridge
+notifications and the queue sender’s logs. Set <code dir="auto">IDP_NOT_FOUND_GRACE_SECONDS</code> to
+widen or narrow the window.</p>
+<p>⚠️ <strong>This does not apply to <a href="#status"><code dir="auto">status</code></a> for a single document</strong>, which
+answers immediately: a document id that is not in the table is reported missing
+straight away rather than after a minute, so a typo or a document whose data
+retention has elapsed does not look like a slow query.</p>
 <p><strong>Test Set Integration:</strong>
 For test runs to appear properly in the Test Studio UI, use either:</p>
 <ul>
@@ -1549,7 +1564,7 @@ not at one of them.</p>
 <li><code dir="auto">--output</code>, <code dir="auto">-o</code>: Output file path (default: stdout)</li>
 <li><code dir="auto">--format</code>: Output format - <code dir="auto">full</code> (default) or <code dir="auto">minimal</code> (only differences from defaults)</li>
 <li><code dir="auto">--config-profile</code> (alias: <code dir="auto">--config-version</code>): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile</li>
-<li><code dir="auto">--config-revision</code>: Download an exact <strong>revision</strong> of that profile instead of its current configuration (e.g. <code dir="auto">7</code>). Requires <code dir="auto">--config-profile</code>. Fails if the revision is no longer retained rather than silently returning the current configuration</li>
+<li><code dir="auto">--config-revision</code>: Download an exact <strong>revision</strong> of that profile instead of its current configuration (e.g. <code dir="auto">7</code>). Requires <code dir="auto">--config-profile</code>. Fails if the revision is no longer retained, or if its body has expired under <code dir="auto">DataRetentionInDays</code>, unless it is the profile’s current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile (<a href="../configuration-profiles/#retention">Retention</a>), rather than silently returning the current configuration</li>
 <li><code dir="auto">--region</code>: AWS region (optional)</li>
 </ul>
 <p><strong>Examples:</strong></p>
@@ -1619,6 +1634,11 @@ blank for a profile with no history.</p>
 <p>Every save of a profile cuts an immutable revision. This shows the ones still
 retained: the last 20, plus anything labeled, pinned by a test run, or currently
 in use. See <a href="../configuration-profiles/#revision-history">configuration-profiles.md</a>.</p>
+<p>A listed revision is not necessarily one you can still download. A label or a
+test-run pin keeps a revision listed, but every revision’s body expires
+<code dir="auto">DataRetentionInDays</code> after it was cut, and after that only the profile’s current
+published revision can still be downloaded, and only while the profile provably
+still holds that configuration (<a href="../configuration-profiles/#retention">Retention</a>).</p>
 <p><strong>Usage:</strong></p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-revisions</span><span style="--0:#D6DEEB;--1:#403F53"> [OPTIONS]</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="idp-cli config-revisions [OPTIONS]"><div></div></button></div></figure></div>
 <p><strong>Options:</strong></p>

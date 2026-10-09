@@ -368,19 +368,42 @@ Analyzer agent’s <code dir="auto">fetch_pipeline_configuration</code> tool. Re
 current model to fix it.</p>
 <p>Two failure shapes to distinguish:</p>
 <ul>
-<li><strong>End of life</strong> — the model is gone for everyone, in every region, and no
+<li>
+<p><strong>End of life</strong> — the model is gone for everyone, in every region, and no
 account can invoke it. It is removed from the picklists.
 <code dir="auto">us.amazon.nova-premier-v1:0</code> (end of life 2026-09-14) and
 <code dir="auto">us.anthropic.claude-3-5-haiku-20241022-v1:0</code> are examples. You can confirm the
 state yourself: <code dir="auto">aws bedrock get-foundation-model --model-identifier amazon.nova-premier-v1:0</code> answers <code dir="auto">ResourceNotFoundException</code> with the
-end-of-life message, while a live model returns its details.</li>
-<li><strong>Provider-legacy, account-scoped</strong> — the model still exists and existing users
+end-of-life message, while a live model returns its details.</p>
+</li>
+<li>
+<p><strong>Provider-legacy, account-scoped</strong> — the model still exists and existing users
 can still invoke it, but access is withdrawn per account after inactivity:
 <code dir="auto">ResourceNotFoundException: Access denied. This Model is marked by provider as Legacy and you have not been actively using the model in the last 30 days.</code>
-<code dir="auto">us.anthropic.claude-sonnet-4-20250514-v1:0</code> is in this state. Such models stay
-selectable, because they work for accounts that have used them recently — if
-you hit this error, either pick a current model or request access again in the
-Bedrock console.</li>
+Such models stay selectable, because they work for accounts that have used
+them recently — if you hit this error, either pick a current model or request
+access again in the Bedrock console.</p>
+<p><code dir="auto">us.anthropic.claude-sonnet-4-5-20250929-v1:0</code> is the selectable model closest
+to this state: an AWS Health notice puts it in legacy from 2026-10-08 with end
+of life on 2027-04-08, which <code dir="auto">list-foundation-models</code> had not yet reflected
+when this page was written. <code dir="auto">us.anthropic.claude-opus-4-1-20250805-v1:0</code> is
+the model the API does report as <code dir="auto">LEGACY</code> (end of life 2027-01-08), and it is
+no longer in any picklist here, so you will meet it only in a configuration
+stored before it was removed. Read the state yourself rather than from this
+page:</p>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">bedrock</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">list-foundation-models</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--by-provider</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">anthropic</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--query</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">modelSummaries[].{id:modelId,lifecycle:modelLifecycle}</span><span style="--0:#D9F5DD;--1:#111111">'</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="aws bedrock list-foundation-models --by-provider anthropic \  --query &#x27;modelSummaries[].{id:modelId,lifecycle:modelLifecycle}&#x27;"><div></div></button></div></figure></div>
+<p>A legacy model also receives no further Service Quota increases, so it is a
+poor choice for new work even while it answers. No default in the commercial
+partition names one. <strong>GovCloud is the exception.</strong> That partition offers
+three models — <code dir="auto">us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0</code>,
+<code dir="auto">amazon.nova-pro-v1:0</code> and <code dir="auto">amazon.nova-lite-v1:0</code> — and the
+<code dir="auto">lending-package-sample-govcloud</code> preset names the Sonnet for extraction,
+summarization, LLM evaluation and confidence escalation, so a GovCloud
+deployment runs the legacy Sonnet for those stages until that partition offers
+a successor. (The <code dir="auto">--govcloud</code> template transform defaults the knowledge-base
+model to <code dir="auto">amazon.nova-pro-v1:0</code>; it reaches the Sonnet only by selecting that
+preset.)</p>
+</li>
 </ul>
 <p>A model removed from the picklists keeps its <code dir="auto">pricing.yaml</code> entry, so cost
 reports covering documents processed while it was selectable still resolve the
@@ -868,7 +891,7 @@ numbers so the exposure cannot drift unnoticed.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="available-strategies">Available Strategies</h3><a class="sl-anchor-link" href="#available-strategies"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Available Strategies”</span></a></div>
 <ul>
 <li>
-<p><strong><code dir="auto">disabled</code></strong>: Treats the entire document as a single section with the first detected class. Simplest approach for single-document processing.</p>
+<p><strong><code dir="auto">disabled</code></strong>: Treats the entire document as a single section. With page-level classification the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); with holistic classification it takes the first segment’s class. Simplest approach for single-document processing.</p>
 </li>
 <li>
 <p><strong><code dir="auto">page</code></strong>: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).</p>
@@ -958,10 +981,14 @@ request. The minimum is model-dependent and <strong>newer is not safer</strong>:
 
 
 
-<table><thead><tr><th>Model</th><th align="right">Minimum cacheable prefix</th></tr></thead><tbody><tr><td>Claude Opus 5, Opus 5.5, Fable 5</td><td align="right">512 tokens</td></tr><tr><td>Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet</td><td align="right">1,024 tokens</td></tr><tr><td>Claude Opus 4.7</td><td align="right">2,048 tokens</td></tr><tr><td>Claude Opus 4.6, Opus 4.5, <strong>Haiku 4.5</strong></td><td align="right"><strong>4,096 tokens</strong></td></tr><tr><td>Amazon Nova</td><td align="right">≤ 355 tokens (below any shipped class)</td></tr></tbody></table>
+<table><thead><tr><th>Model</th><th align="right">Minimum cacheable prefix</th></tr></thead><tbody><tr><td>Claude Opus 5, Opus 5.5, Fable 5, <strong>Haiku 5.5</strong></td><td align="right">512 tokens</td></tr><tr><td>Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet</td><td align="right">1,024 tokens</td></tr><tr><td>Claude Opus 4.7</td><td align="right">2,048 tokens</td></tr><tr><td>Claude Opus 4.6, Opus 4.5, <strong>Haiku 4.5</strong></td><td align="right"><strong>4,096 tokens</strong></td></tr><tr><td>Amazon Nova</td><td align="right">≤ 355 tokens (below any shipped class)</td></tr></tbody></table>
 <p>Measured across the shipped presets, 25% of classes never cache on the 1,024-token
-tier and <strong>none</strong> do on Haiku 4.5 — someone choosing Haiku to save money on extraction
-gets no caching at all and, until now, no indication of it.</p>
+tier and <strong>none</strong> do on Haiku 4.5 — choosing Haiku 4.5 to save money on extraction
+gets you no caching at all, with no indication of it in the response.</p>
+<p>Note the two Haikus sit at opposite ends of this table, so “Haiku” is not a tier.
+Haiku 5.5’s minimum is 512 tokens — the lowest here, 8x below Haiku 4.5’s — which
+makes it the one cheap model where caching is worth configuring rather than written
+off: a class that never cached on Haiku 4.5 may well cache on it.</p>
 <p><code dir="auto">idp-cli config-validate</code> (and the SDK validate operation) now <strong>warns per class</strong>
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up
 to the marker, with the class schema substituted — is under the configured extraction

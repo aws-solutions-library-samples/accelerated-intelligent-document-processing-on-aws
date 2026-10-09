@@ -667,30 +667,41 @@ Esc no longer dismisses it, so a running analysis isn’t interrupted), and a
 continues in the background.</li>
 <li><strong>Create GitHub issue (Agent Companion Chat).</strong> The <a href="../agent-companion-chat/">Agent Companion Chat</a>
 — which can also run the Error Analyzer — shows a <strong>Create GitHub issue</strong> button
-under the latest agent answer, offering <em>Report a bug</em> (with the answer attached as
-findings) or <em>Request a feature</em>.</li>
+under the latest agent answer, offering <em>Report a bug</em> or <em>Request a feature</em>, each
+with the answer attached as additional context.</li>
 <li><strong>Resources &#x26; help panel.</strong> The side navigation <strong>Resources</strong> section includes a
 <strong>Report an issue</strong> link, and the right-side info (Help) panel on the Document List
 includes a <strong>Feedback &#x26; support</strong> section with the same links.</li>
 </ul>
-<p><strong>What gets pre-filled.</strong> Every link opens the GitHub new-issue page with the
-<strong>issue body</strong> pre-populated — an environment summary (<strong>Version</strong>, <strong>Build</strong>,
-<strong>Stack name</strong>, <strong>Region</strong>, <strong>Processing Mode</strong>) sourced from the deployment’s
-settings, plus context: the Troubleshoot path adds the document context and agent
-findings, and the Agent Companion Chat path adds the agent’s answer. The report/copy
+<p><strong>What gets pre-filled.</strong> Every link opens the repository’s <strong>Bug report</strong> or
+<strong>Feature request</strong> issue form with its fields pre-populated, so a report filed from
+the accelerator has the same structure — and the same labels and required fields — as
+one filed from GitHub’s own <strong>New issue</strong> chooser. <em>Accelerator Version / Build</em>
+carries an environment summary (<strong>Version</strong>, <strong>Build</strong>, <strong>Stack name</strong>, and the stack
+pattern) sourced from the deployment’s settings, and the bug form’s <em>AWS Region</em> and
+<em>Accelerator Processing Mode</em> fields are filled from the same place. Context goes to
+the field that describes it: the Troubleshoot path fills <em>Output of the ‘Troubleshoot’
+agent</em> with the document context and the agent’s findings, and the Agent Companion
+Chat path fills <em>Additional context</em> with the agent’s answer. The report/copy
 affordances appear once the agent job completes.</p>
+<p><em>Accelerator Processing Mode</em> is left for you to fill in on a unified-pattern stack,
+which is every current deployment: the unified pattern can run either the BDA or the
+Pipeline branch and which one a document takes is decided per configuration, so the
+UI cannot answer the question. The stack’s pattern is reported in the version field
+instead.</p>
 <blockquote>
 <p><strong>Privacy note:</strong> issues on the public repository are visible to everyone. Nothing
 is submitted automatically — GitHub always shows you the pre-filled form to review
 first. <strong>Please review every field and redact any sensitive document data</strong>
 (names, account numbers, PII) before submitting.</p>
 </blockquote>
-<p>The in-app links pre-fill the issue <strong>body</strong> directly (via <code dir="auto">?title=&#x26;body=&#x26;labels=</code>),
-so the content is embedded immediately. This intentionally bypasses the <code dir="auto">.yml</code> issue
-<em>forms</em> in <code dir="auto">.github/ISSUE_TEMPLATE/</code> — GitHub ignores a pre-filled <code dir="auto">body</code> when a form
-template is selected — so those forms apply only when a user clicks <strong>New issue</strong>
-directly on GitHub. Very long findings are length-capped in the URL; use <strong>Copy full
-details</strong> in the Troubleshoot modal to grab the complete text.</p>
+<p>The in-app links select an issue form with <code dir="auto">?template=</code> and fill its individual
+fields by name. A pre-filled <code dir="auto">body</code> cannot be combined with that — GitHub ignores
+<code dir="auto">body</code> once a form template is selected — so the fields are the mechanism, and the
+labels each form declares are applied automatically. The forms are read from the
+repository’s default branch rather than from the release a deployment was built from.
+Very long findings are length-capped so the URL stays inside GitHub’s limit; use
+<strong>Copy full details</strong> in the Troubleshoot modal to grab the complete text.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="authentication-features">Authentication Features</h2><a class="sl-anchor-link" href="#authentication-features"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Authentication Features”</span></a></div>
 <p>The web UI uses Amazon Cognito for secure user authentication and authorization:</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="user-management">User Management</h3><a class="sl-anchor-link" href="#user-management"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “User Management”</span></a></div>

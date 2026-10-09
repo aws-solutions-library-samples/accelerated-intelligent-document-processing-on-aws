@@ -236,7 +236,7 @@ that must handle arbitrarily large documents should therefore check for
 <code dir="auto">document.compressed</code> before assuming inflated data.</p>
 </blockquote>
 <blockquote>
-<p><strong>Superseded originals are skipped</strong>: when the <a href="extensions/pii-anonymizer.md">PII Anonymization
+<p><strong>Superseded originals are skipped</strong>: when the <a href="../extensions/pii-anonymizer/">PII Anonymization
 extension</a> (or any <code dir="auto">preprocessing</code> hook) halts a
 document after spawning a redacted copy, that execution still ends as
 <code dir="auto">SUCCEEDED</code>. Your hook is <strong>not</strong> invoked for it — the document’s status is

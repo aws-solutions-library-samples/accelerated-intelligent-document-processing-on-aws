@@ -280,7 +280,7 @@ not a CloudFormation parameter — the <code dir="auto">EnableHITL</code> parame
 <p>Pattern 2 now supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR backend alongside the traditional Amazon Textract service. This feature enables multimodal document processing where large language models can extract text from document images using their vision capabilities.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="configuration-1">Configuration</h3><a class="sl-anchor-link" href="#configuration-1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Configuration”</span></a></div>
 <p>Bedrock OCR is configured through the pattern’s configuration files. The OCR backend can be selected using the <code dir="auto">backend</code> parameter:</p>
-<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">ocr</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">backend</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">bedrock</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">  </span><span style="--0:#919F9F;--1:#5F636F"># Options: "textract", "bedrock", "none"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">model_id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">us.anthropic.claude-sonnet-4-5-20250929-v1:0</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">system_prompt</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">task_prompt</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="ocr:  backend: &#x22;bedrock&#x22;  # Options: &#x22;textract&#x22;, &#x22;bedrock&#x22;, &#x22;none&#x22;  model_id: &#x22;us.anthropic.claude-sonnet-4-5-20250929-v1:0&#x22;  system_prompt: &#x22;You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible.&#x22;  task_prompt: &#x22;Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting.&#x22;"><div></div></button></div></figure></div>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="yaml"><code><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#111111">ocr</span><span style="--0:#D6DEEB;--1:#403F53">:</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">backend</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">bedrock</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">  </span><span style="--0:#919F9F;--1:#5F636F"># Options: "textract", "bedrock", "none"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">model_id</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">us.anthropic.claude-sonnet-4-6</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">system_prompt</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#111111">task_prompt</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="ocr:  backend: &#x22;bedrock&#x22;  # Options: &#x22;textract&#x22;, &#x22;bedrock&#x22;, &#x22;none&#x22;  model_id: &#x22;us.anthropic.claude-sonnet-4-6&#x22;  system_prompt: &#x22;You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible.&#x22;  task_prompt: &#x22;Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting.&#x22;"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="enabling-bedrock-ocr">Enabling Bedrock OCR</h3><a class="sl-anchor-link" href="#enabling-bedrock-ocr"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Enabling Bedrock OCR”</span></a></div>
 <p>To use Bedrock OCR:</p>
 <ol>
@@ -288,72 +288,14 @@ not a CloudFormation parameter — the <code dir="auto">EnableHITL</code> parame
 <p><strong>Set the backend</strong>: Configure <code dir="auto">backend: "bedrock"</code> in your OCR configuration</p>
 </li>
 <li>
-<p><strong>Choose a model</strong>: Select from supported vision-capable models:</p>
-<ul>
-<li><code dir="auto">us.amazon.nova-lite-v1:0</code></li>
-<li><code dir="auto">us.amazon.nova-pro-v1:0</code></li>
-<li><code dir="auto">us.amazon.nova-2-lite-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-haiku-4-5-20251001-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-haiku-4-5-20251001-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-sonnet-4-20250514-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-sonnet-4-6</code></li>
-<li><code dir="auto">us.anthropic.claude-sonnet-4-6:1m</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-5-20251101-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-1-20250805-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-5-20251101-v1:0</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-6-v1</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-6-v1:1m</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-7</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-7:1m</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-8</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-4-8:1m</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-5</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-5:1m</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-5-5</code></li>
-<li><code dir="auto">us.anthropic.claude-opus-5-5:1m</code></li>
-<li><code dir="auto">eu.amazon.nova-lite-v1:0</code></li>
-<li><code dir="auto">eu.amazon.nova-pro-v1:0</code></li>
-<li><code dir="auto">eu.amazon.nova-2-lite-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-haiku-4-5-20251001-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-haiku-4-5-20251001-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-sonnet-4-20250514-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-sonnet-4-6</code></li>
-<li><code dir="auto">eu.anthropic.claude-sonnet-4-6:1m</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-5-20251101-v1:0</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-6-v1</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-6-v1:1m</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-7</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-7:1m</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-8</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-4-8:1m</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-5</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-5:1m</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-5-5</code></li>
-<li><code dir="auto">eu.anthropic.claude-opus-5-5:1m</code></li>
-<li><code dir="auto">qwen.qwen3-vl-235b-a22b</code></li>
-<li><code dir="auto">global.amazon.nova-2-lite-v1:0</code></li>
-<li><code dir="auto">global.anthropic.claude-haiku-4-5-20251001-v1:0</code></li>
-<li><code dir="auto">global.anthropic.claude-sonnet-4-5-20250929-v1:0</code></li>
-<li><code dir="auto">global.anthropic.claude-sonnet-4-6</code></li>
-<li><code dir="auto">global.anthropic.claude-sonnet-4-6:1m</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-5-20251101-v1:0</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-6-v1</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-6-v1:1m</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-7</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-7:1m</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-8</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-4-8:1m</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-5</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-5:1m</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-5-5</code></li>
-<li><code dir="auto">global.anthropic.claude-opus-5-5:1m</code></li>
-</ul>
+<p><strong>Choose a model</strong>: Pick from the <strong>Model</strong> dropdown under OCR in the
+configuration editor. It is generated from the <code dir="auto">ocr.model_id</code> enum in
+<code dir="auto">patterns/unified/template.yaml</code>, and spans the <code dir="auto">us.</code>, <code dir="auto">eu.</code> and <code dir="auto">global.</code>
+Claude and Nova families, <code dir="auto">qwen.qwen3-vl-235b-a22b</code>, Grok and the OpenAI
+models. Commonly used: <code dir="auto">us.amazon.nova-lite-v1:0</code> for clean
+text-heavy scans, <code dir="auto">us.amazon.nova-pro-v1:0</code> for mixed layouts,
+<code dir="auto">us.anthropic.claude-sonnet-4-6</code> for handwriting and dense tables. Select
+<code dir="auto">LambdaHook</code> to route OCR to your own Lambda function instead.</p>
 </li>
 <li>
 <p><strong>Configure prompts</strong>: Customize system and task prompts for your specific use case</p>

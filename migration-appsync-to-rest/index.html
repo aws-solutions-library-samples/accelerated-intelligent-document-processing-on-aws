@@ -313,7 +313,10 @@ AppSync schema required, and raises <code dir="auto">PermissionError</code> if t
 member — defense-in-depth that mirrors the directive.</li>
 <li><strong>The dispatcher maps errors to HTTP status the way AppSync did.</strong> A resolver
 <code dir="auto">PermissionError</code> becomes <strong>403</strong> with <code dir="auto">errorType: "Unauthorized"</code> (which the
-UI keys on); <code dir="auto">ValueError</code>/<code dir="auto">KeyError</code> become <strong>400 BadRequest</strong>. Unauthenticated
+UI keys on); <code dir="auto">ValueError</code>/<code dir="auto">KeyError</code> become <strong>400 BadRequest</strong>; <code dir="auto">ResourceNotFound</code>
+becomes <strong>404</strong> with <code dir="auto">errorType: "ResourceNotFound"</code>, kept distinct from the
+<code dir="auto">"NotFound"</code> the dispatcher returns for an operation this deployment does not
+route. Unauthenticated
 requests are rejected with <strong>401</strong> by the authorizer before reaching any code.
 Anything the dispatcher does not recognise becomes <strong>500 <code dir="auto">InternalError</code></strong>, and
 that fallback is load-bearing in a way worth knowing: a resolver runs in a
@@ -323,8 +326,9 @@ both signals — the class name becomes <code dir="auto">Exception</code>, and a
 the <code dir="auto">Unauthorized</code> token off the front where the anchored prefix match cannot
 see it — and the refusal arrives as a 500. Beyond confusing whoever is debugging
 it, that puts deliberate policy denials into the monitored 5xx rate, where they
-mask real faults. Raise <code dir="auto">PermissionError</code> for an authorization refusal and
-<code dir="auto">ValueError</code> for a bad argument, and do not re-wrap either. See the refusal-status
+mask real faults. Raise <code dir="auto">PermissionError</code> for an authorization refusal,
+<code dir="auto">ValueError</code> for a bad argument, and <code dir="auto">ResourceNotFound</code> for an object that does
+not exist, and do not re-wrap any of them. See the refusal-status
 section of <a href="../rbac/">rbac.md</a>.</li>
 <li><strong>IAM-only operations stay backend-only.</strong> Fields that were IAM-authorized in
 AppSync (backend writers such as <code dir="auto">updateAgentJobStatus</code>,

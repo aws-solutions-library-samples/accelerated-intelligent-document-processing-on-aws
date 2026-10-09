@@ -546,6 +546,7 @@ the retry correct it) is available in
 <li>Excludes unclassifiable/blank pages from voting to prevent them from affecting the result</li>
 <li>If there’s a tie, uses the first page’s classification for determinism</li>
 <li>Ignores any page-level classification boundaries</li>
+<li>With a <strong>single-class configuration</strong>, sends no page to the model: every page is given that class with confidence <code dir="auto">1.0</code>. Under <code dir="auto">llm_determined</code>, a multi-page file in such a configuration still goes to the model for its section boundaries: page by page with page-level classification, and in one call for the whole file with holistic classification</li>
 </ul>
 <p><strong>Use Cases:</strong></p>
 <ul>
@@ -676,7 +677,7 @@ This strategy directly addresses <a href="https://github.com/aws-solutions-libra
 <p>The <code dir="auto">sectionSplitting</code> setting works with both classification methods:</p>
 <p><strong>With <code dir="auto">multimodalPageLevelClassification</code>:</strong></p>
 <ul>
-<li><code dir="auto">disabled</code>: First page’s class applies to all pages in one section</li>
+<li><code dir="auto">disabled</code>: All pages in one section, with the class most pages were given (see Voting Behavior above)</li>
 <li><code dir="auto">page</code>: Each page’s individual classification preserved in separate sections</li>
 <li><code dir="auto">llm_determined</code>: Pages grouped by class + boundary metadata</li>
 </ul>

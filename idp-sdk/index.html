@@ -280,6 +280,26 @@ document type are not part of a listing; use <code dir="auto">document.get_statu
 <li><code dir="auto">stack_name</code> (str, optional): Stack name override</li>
 </ul>
 <p><strong>Returns:</strong> <code dir="auto">BatchStatus</code> with <code dir="auto">batch_id</code>, <code dir="auto">documents</code> (list of DocumentStatus), <code dir="auto">total</code>, <code dir="auto">completed</code>, <code dir="auto">failed</code>, <code dir="auto">in_progress</code>, <code dir="auto">queued</code>, <code dir="auto">success_rate</code>, and <code dir="auto">all_complete</code></p>
+<p>⚠️ <strong><code dir="auto">all_complete</code> is the only correct thing to poll on.</strong> It is
+<code dir="auto">completed + failed == total</code>, and it is what accounts for a document that has
+been accepted but has no tracking row yet — the row is written asynchronously by
+the queue sender, so for the first 60 seconds of a batch such a document is
+reported under <code dir="auto">queued</code> rather than <code dir="auto">failed</code>. Re-deriving completeness from the
+counters (for example, stopping as soon as <code dir="auto">completed > 0 or failed > 0</code>) stops
+early on a batch that has not started, which is the defect
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1338">#1338</a>
+fixed. Past that window a document with no row is reported as failed with
+<code dir="auto">Document not found in tracking table</code>; <code dir="auto">IDP_NOT_FOUND_GRACE_SECONDS</code> sets the
+window.</p>
+<p>⚠️ <strong>Read a document’s progress bucket from <code dir="auto">doc.bucket</code>, not from
+<code dir="auto">doc.status</code>.</strong> <code dir="auto">NOT_FOUND</code> is the one status whose bucket is not a function of
+the status: inside the window it means “queued”, past it “failed”, and the
+status string is the same either way, so code that derives a bucket from the
+status counts an in-flight document as a failure. <code dir="auto">bucket</code> is one of <code dir="auto">queued</code>,
+<code dir="auto">running</code>, <code dir="auto">completed</code> or <code dir="auto">failed</code>, and <code dir="auto">get_status</code> sets it on every document
+it returns. It is <code dir="auto">Optional</code>, because <code dir="auto">DocumentStatus</code> has other producers that
+record no bucket; fall back to <code dir="auto">idp_sdk.classify_document_state(doc.status)</code>
+when it is <code dir="auto">None</code>.</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="python"><code><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">status </span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53"> client.batch.</span><span style="--0:#B2CCD6;--1:#096E72">get_status</span><span style="--1:#403F53"><span style="--0:#D6DEEB">(</span><span style="--0:#D7DBE0">batch_id</span></span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">batch-20250123-123456</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">print</span><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#C792EA;--1:#8844AE">f</span><span style="--0:#ECC48D;--1:#984E4D">"Total: </span><span style="--0:#82AAFF;--1:#3B61B0">{status.total}</span><span style="--0:#ECC48D;--1:#984E4D">"</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">print</span><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#C792EA;--1:#8844AE">f</span><span style="--0:#ECC48D;--1:#984E4D">"Completed: </span><span style="--0:#82AAFF;--1:#3B61B0">{status.completed}</span><span style="--0:#ECC48D;--1:#984E4D">"</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">print</span><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#C792EA;--1:#8844AE">f</span><span style="--0:#ECC48D;--1:#984E4D">"Failed: </span><span style="--0:#82AAFF;--1:#3B61B0">{status.failed}</span><span style="--0:#ECC48D;--1:#984E4D">"</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">print</span><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#C792EA;--1:#8844AE">f</span><span style="--0:#ECC48D;--1:#984E4D">"Success Rate: </span><span style="--0:#82AAFF;--1:#3B61B0">{status.success_rate</span><span style="--0:#C792EA;--1:#8844AE">:.1%</span><span style="--0:#82AAFF;--1:#3B61B0">}</span><span style="--0:#ECC48D;--1:#984E4D">"</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">for</span><span style="--0:#D6DEEB;--1:#403F53"> doc </span><span style="--0:#C792EA;--1:#8844AE">in</span><span style="--0:#D6DEEB;--1:#403F53"> status.documents:</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#C5E478;--1:#3B61B0">print</span><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#C792EA;--1:#8844AE">f</span><span style="--0:#ECC48D;--1:#984E4D">"  </span><span style="--0:#82AAFF;--1:#3B61B0">{doc.document_id}</span><span style="--0:#ECC48D;--1:#984E4D">: </span><span style="--0:#82AAFF;--1:#3B61B0">{doc.status.value}</span><span style="--0:#ECC48D;--1:#984E4D">"</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="status = client.batch.get_status(batch_id=&#x22;batch-20250123-123456&#x22;)print(f&#x22;Total: {status.total}&#x22;)print(f&#x22;Completed: {status.completed}&#x22;)print(f&#x22;Failed: {status.failed}&#x22;)print(f&#x22;Success Rate: {status.success_rate:.1%}&#x22;)for doc in status.documents:    print(f&#x22;  {doc.document_id}: {doc.status.value}&#x22;)"><div></div></button></div></figure></div>
@@ -888,8 +908,11 @@ the right value to pin.</p>
 <li><code dir="auto">config_revision</code> (int, optional): Download an exact <strong>revision</strong> of that profile instead of its current configuration</li>
 </ul>
 <p><strong>Returns:</strong> <code dir="auto">ConfigDownloadResult</code> with <code dir="auto">config</code>, <code dir="auto">yaml_content</code>, <code dir="auto">output_path</code>, and <code dir="auto">revision</code></p>
-<p><strong>Raises:</strong> <code dir="auto">IDPResourceNotFoundError</code> if the named profile does not exist, or if the
-requested revision is no longer retained. Neither falls back to anything: handing back
+<p><strong>Raises:</strong> <code dir="auto">IDPResourceNotFoundError</code> if the named profile does not exist, if the
+requested revision is no longer retained, or if its body has expired under
+<code dir="auto">DataRetentionInDays</code>, unless it is the profile’s current published revision and the
+profile still provably holds that configuration, in which case it is rebuilt from the
+profile (<a href="../configuration-profiles/#retention">Retention</a>). None of these falls back to anything: handing back
 a <em>different</em> configuration under the name you asked for would look like a success, and
 for a missing profile the answer on offer was the <strong>YAML null document</strong> — <code dir="auto">config</code> came
 back <code dir="auto">{}</code> and <code dir="auto">yaml_content</code> was <code dir="auto">"null\n...\n"</code>, so <code dir="auto">output</code> was written with <code dir="auto">null</code>
@@ -918,6 +941,12 @@ flight. Both are <code dir="auto">None</code> for a profile with no history.</p>
 <p>Every save of a profile cuts an immutable revision. This returns the ones still
 retained — the last 20, plus anything labeled, pinned by a test run, or currently
 in use. See <a href="../configuration-profiles/#revision-history">configuration-profiles.md</a>.</p>
+<p>A returned revision is not necessarily one <code dir="auto">download(config_revision=...)</code> can still
+fetch. A label or a test-run pin keeps a revision in this list, but every revision’s
+body expires <code dir="auto">DataRetentionInDays</code> after it was cut, and after that only the
+profile’s current published revision can still be downloaded, and only while the
+profile provably still holds that configuration
+(<a href="../configuration-profiles/#retention">Retention</a>).</p>
 <p><strong>Parameters:</strong></p>
 <ul>
 <li><code dir="auto">config_profile</code> (alias: <code dir="auto">config_version</code>) (str, required): Profile whose history to list</li>
