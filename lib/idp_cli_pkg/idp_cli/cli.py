@@ -3881,15 +3881,26 @@ def _batch_status_to_display_dicts(batch_status):
             "num_sections": doc.num_sections,
             "error": doc.error or "",
         }
-        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
-        # over `DocumentState` -- the same authority the SDK's own progress monitor
-        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
-        # about whether a state is terminal. The chain this replaced named eleven
+        # The producer's own verdict wins when it recorded one, and
+        # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
+        # -- answers when it did not. The chain this replaced named eleven
         # members and sent the other twelve to `queued` by falling off the end,
         # which put `PREPROCESSING` (set for every document whenever a
         # preprocessing hook is registered) under "Queued" and left the terminal
         # `ABORTED` reporting "IN PROGRESS" forever.
-        bucket = classify_document_state(doc.status)
+        #
+        # Deriving the bucket from `status` is right for every state except
+        # `NOT_FOUND`, which is the one state whose bucket is not a function of
+        # the status alone: inside `NOT_FOUND_GRACE_SECONDS` of the batch's
+        # submission the SDK reports it as queued, because the QueueSender row
+        # may still be in flight, and only the SDK holds the submission time
+        # that decides it. Re-deriving here sent such a document to `failed`,
+        # so the display read "Failed 1, 100% complete" -- with no error
+        # message, since a provisional NOT_FOUND carries none -- for as long as
+        # the window lasted, while `all_complete` came from the SDK and
+        # correctly kept the loop polling. Two authorities, one of them blind to
+        # the grace window, disagreeing about the same document.
+        bucket = doc.bucket or classify_document_state(doc.status)
         if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:

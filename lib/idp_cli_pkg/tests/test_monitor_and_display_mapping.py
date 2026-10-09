@@ -113,7 +113,14 @@ def doc(
     num_pages: Optional[int] = None,
     num_sections: Optional[int] = None,
     error: Optional[str] = None,
+    bucket: Optional[DocumentBucket] = None,
 ) -> DocumentStatus:
+    """One `DocumentStatus` as `batch.get_status` would return it.
+
+    `bucket` defaults to `None`, which is the producer saying nothing and leaves
+    the mapper to derive the bucket from `status` — the path every state but
+    `NOT_FOUND` takes, and the one the derivation tests below need.
+    """
     return DocumentStatus(
         document_id=document_id,
         status=status,  # type: ignore[arg-type]
@@ -123,6 +130,7 @@ def doc(
         num_pages=num_pages,
         num_sections=num_sections,
         error=error,
+        bucket=bucket,
     )
 
 
@@ -346,6 +354,76 @@ class TestDisplayDictMapping:
         assert stats[expected.value] == 1
         # Exactly one bucket, so nothing is counted twice or dropped.
         assert sum(stats[b.value] for b in DocumentBucket) == 1
+
+    def test_a_not_found_document_the_sdk_called_queued_is_displayed_as_queued(self):
+        """The grace window has to survive the display layer too.
+
+        `NOT_FOUND` is the one state whose bucket is not a function of the
+        status: within `NOT_FOUND_GRACE_SECONDS` of the batch's submission the
+        SDK reports it as queued, because the tracking row QueueSender writes
+        may still be in flight, and past the window it is a failure. The status
+        string is `NOT_FOUND` either way, so a mapper that re-derives the bucket
+        reports both as failures — which put a just-submitted batch on screen as
+        `Failed 1 / 100.0%`, with no error message because a provisional
+        `NOT_FOUND` carries none, while `all_complete` came from the SDK and
+        correctly kept the loop polling. The mapper takes the producer's verdict
+        instead.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [doc("batch-1/racing.pdf", "NOT_FOUND", bucket=DocumentBucket.QUEUED)],
+                all_complete=False,
+            )
+        )
+
+        assert [d["document_id"] for d in status_data["queued"]] == [
+            "batch-1/racing.pdf"
+        ]
+        assert status_data["failed"] == []
+        assert stats["queued"] == 1
+        assert stats["failed"] == 0
+        # The number a human reads first. A document that has not started is 0%
+        # done, and this read 100% for the length of the window.
+        assert stats["completion_percentage"] == 0.0
+
+    def test_a_not_found_document_the_sdk_called_failed_is_displayed_as_failed(self):
+        """Past the window the identical status is the failure it always was.
+
+        Same `status`, opposite bucket, which is why the bucket travels on the
+        document instead of being derived from the status at each consumer.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc(
+                        "batch-1/lost.pdf",
+                        "NOT_FOUND",
+                        bucket=DocumentBucket.FAILED,
+                        error="Document not found in tracking table",
+                    )
+                ],
+                all_complete=True,
+            )
+        )
+
+        assert [d["document_id"] for d in status_data["failed"]] == ["batch-1/lost.pdf"]
+        assert status_data["queued"] == []
+        assert stats["failed"] == 1
+        assert stats["completion_percentage"] == 100.0
+
+    def test_a_document_carrying_no_bucket_is_still_bucketed_from_its_status(self):
+        """`bucket` is optional, so every other producer keeps working.
+
+        `DocumentStatus` is a public model and `batch.get_status` is not its only
+        producer. One that records no bucket must get the derivation it got
+        before the field existed, rather than falling into a default bucket.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/d.pdf", "OCR", bucket=None)], all_complete=False)
+        )
+
+        assert [d["document_id"] for d in status_data["running"]] == ["batch-1/d.pdf"]
+        assert stats["running"] == 1
 
     def test_a_document_being_preprocessed_is_running_not_queued(self):
         """`PREPROCESSING` is set for *every* document when a hook is registered.
@@ -859,6 +937,68 @@ class TestMonitorProgress:
 
         assert len(asked) == 3
         assert clock.slept == [5, 5]
+
+    def test_a_not_found_document_in_its_grace_window_is_never_shown_as_failed(
+        self, monkeypatch
+    ):
+        """End to end through the loop, for the sequence the issue reported.
+
+        First poll: the upload has returned, no tracking row exists yet, the SDK
+        says queued and not complete. Later polls: the row lands, the document
+        processes, the batch finishes. What this asserts is every *frame* the
+        loop rendered, because the counts on screen are the half that was wrong
+        after the monitor was fixed — the loop kept polling, correctly, while
+        the first frame told the user `Failed 1` at `100.0%`. Someone reading
+        that has every reason to stop the run.
+
+        The per-poll tuple is `(completed, running, queued, failed, percentage)`.
+        """
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        rendered = []
+        real = display_module.create_live_display
+
+        def recording(*, batch_id, status_data, stats, elapsed_time):
+            rendered.append(
+                (
+                    stats["completed"],
+                    stats["running"],
+                    stats["queued"],
+                    stats["failed"],
+                    stats["completion_percentage"],
+                )
+            )
+            return real(
+                batch_id=batch_id,
+                status_data=status_data,
+                stats=stats,
+                elapsed_time=elapsed_time,
+            )
+
+        monkeypatch.setattr(display_module, "create_live_display", recording)
+        client, asked = monitored_client(
+            [
+                batch([doc("a.pdf", "NOT_FOUND", bucket=DocumentBucket.QUEUED)]),
+                batch([doc("a.pdf", "OCR")]),
+                batch(
+                    [doc("a.pdf", "COMPLETED", duration_seconds=2.0)],
+                    all_complete=True,
+                ),
+            ]
+        )
+
+        exit_code = cli_module._monitor_progress(
+            client=client, batch_id="batch-1", refresh_interval=5
+        )
+
+        assert rendered == [
+            (0, 0, 1, 0, 0.0),
+            (0, 1, 0, 0, 0.0),
+            (1, 0, 0, 0, 100.0),
+        ]
+        assert len(asked) == 3
+        assert clock.slept == [5, 5]
+        assert exit_code == 0
 
     def test_the_loop_does_not_re_derive_completeness_from_the_counts(
         self, monkeypatch

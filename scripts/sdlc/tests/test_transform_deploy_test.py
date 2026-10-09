@@ -266,11 +266,34 @@ def test_skip_doc_test_does_not_run_inference(wired):
 
 
 def test_doc_test_failure_fails_the_variant(wired):
+    """A stub returning a bare `False` carries no reason, and must still fail.
+
+    `inference_failure_reason` tolerates that rather than raising, so the
+    variant reports the failure with a placeholder where the reason would go.
+    """
     wired["resources"] = dict(CORE)
     wired["inference_ok"] = False
     result = _run("headless", wired)
     assert not result["success"]
     assert "did not process" in result["error"]
+    assert "reason not recorded" in result["error"]
+
+
+def test_a_doc_test_failure_reports_why_it_failed(wired):
+    """The reason, not just the verdict.
+
+    `_run_sample_document_test` is the variant's only document assertion, so
+    this `error` field is where a reader learns whether the document failed to
+    process, produced no output, or produced the wrong output. It used to say
+    only "did not process successfully" for all three.
+    """
+    wired["resources"] = dict(CORE)
+    wired["inference_ok"] = cbd.InferenceTestOutcome(
+        False, "no result file at pages/1/result.json after download-results"
+    )
+    result = _run("headless", wired)
+    assert not result["success"]
+    assert "no result file at pages/1/result.json" in result["error"]
 
 
 def test_existing_stack_mode_neither_deploys_nor_tears_down(wired):
