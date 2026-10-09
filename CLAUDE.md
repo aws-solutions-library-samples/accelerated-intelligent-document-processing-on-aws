@@ -841,7 +841,7 @@ The extraction service supports an optional **agentic extraction mode** with int
 **Configuration**:
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:

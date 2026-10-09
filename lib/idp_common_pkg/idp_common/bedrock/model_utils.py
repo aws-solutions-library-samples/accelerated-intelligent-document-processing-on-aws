@@ -371,7 +371,7 @@ def get_model_max_output_tokens(model_id: str) -> int:
         - OpenAI GPT-5.x: 128,000 tokens
 
     Args:
-        model_id: Bedrock model identifier (e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        model_id: Bedrock model identifier (e.g., "us.anthropic.claude-sonnet-5")
 
     Returns:
         Maximum output tokens supported by the model
@@ -382,12 +382,12 @@ def get_model_max_output_tokens(model_id: str) -> int:
         RuntimeError: If no pattern matches the model_id (should never happen with ".*" catch-all)
 
     Examples:
-        >>> get_model_max_output_tokens("us.anthropic.claude-sonnet-4-20250514-v1:0")
+        >>> get_model_max_output_tokens("us.anthropic.claude-sonnet-5")
+        128000
+        >>> get_model_max_output_tokens("us.anthropic.claude-haiku-4-5-20251001-v1:0")
         64000
         >>> get_model_max_output_tokens("us.amazon.nova-lite-v1:0")
         10000
-        >>> get_model_max_output_tokens("us.anthropic.claude-3-haiku-20240307-v1:0")
-        8192
     """
     model_id_lower = model_id.lower()
 

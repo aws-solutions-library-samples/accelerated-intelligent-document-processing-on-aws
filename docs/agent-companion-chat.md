@@ -646,9 +646,9 @@ Agent: "You can add validation by including criteria in your config..."
 ## Configuration
 
 **Supported Models**:
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` 
-- `us.anthropic.claude-sonnet-4-20250514-v1:0` (Default - Best for complex reasoning)
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` 
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Default - fast and inexpensive for conversational use)
+- `us.anthropic.claude-sonnet-4-6` (Best for complex reasoning)
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (legacy from 2026-10-08, end of life 2027-04-08)
 - `us.amazon.nova-pro-v1:0` (AWS native option)
 - `us.amazon.nova-lite-v1:0` (Lightweight option)
 

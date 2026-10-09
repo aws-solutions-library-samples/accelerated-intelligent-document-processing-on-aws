@@ -297,12 +297,12 @@ agents:
       model_id:
         type: string
         enum: [
-          "anthropic.claude-3-sonnet-20240229-v1:0",
+          "us.amazon.nova-pro-v1:0",
+          "us.anthropic.claude-haiku-4-5-20251001-v1:0",
           "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-          "us.anthropic.claude-sonnet-4-20250514-v1:0"
+          "us.anthropic.claude-sonnet-4-6"
         ]
-        default: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        default: "us.anthropic.claude-sonnet-4-6"
       system_prompt:
         type: string
         format: textarea
@@ -323,15 +323,17 @@ agents:
 
 **Purpose**: Selects the Bedrock model for error analysis
 
-**Recommended**: `us.anthropic.claude-sonnet-4-20250514-v1:0`
+**Recommended**: `us.anthropic.claude-sonnet-4-6`
 - Superior reasoning for complex error diagnosis
 - Better structured output formatting
 - More accurate root cause identification
 
 **Alternative Options**:
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`: Good balance of cost and capability
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`: Cost-effective for simple errors
-- `anthropic.claude-3-sonnet-20240229-v1:0`: Legacy option
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`: Cost-effective for simple errors
+- `us.amazon.nova-pro-v1:0`: AWS-native option
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`: Good balance of cost and
+  capability, but AWS has moved it to legacy (end of life 2027-04-08) and it
+  takes no further Service Quota increases
 
 #### system_prompt
 
@@ -395,7 +397,7 @@ For operational issues: Provide immediate troubleshooting steps
 ```yaml
 agents:
   error_analyzer:
-    model_id: us.anthropic.claude-sonnet-4-20250514-v1:0
+    model_id: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are an intelligent error analysis agent for the GenAI IDP system.
       
@@ -802,13 +804,13 @@ Choose model based on error complexity:
 
 ```yaml
 # Simple validation errors, frequent analysis
-model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 # Complex multi-component failures, critical analysis
-model_id: us.anthropic.claude-sonnet-4-20250514-v1:0  # Recommended
+model_id: us.anthropic.claude-sonnet-4-6  # Recommended and the default
 
-# Legacy support only
-model_id: anthropic.claude-3-sonnet-20240229-v1:0
+# Still selectable, but AWS has moved it to legacy (end of life 2027-04-08)
+model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
 #### Adjusting max_log_events
@@ -903,7 +905,7 @@ parameters:
    "ALWAYS format your response with exactly these three sections"
    
 2. Check model_id is using recommended Claude Sonnet 4:
-   us.anthropic.claude-sonnet-4-20250514-v1:0
+   us.anthropic.claude-sonnet-4-6
    
 3. If token limit reached, reduce max_log_events or time range
 ```

@@ -215,6 +215,10 @@ RUN_ROOTS = [
     # `crhelper` is a Lambda-layer dependency and is stubbed by the suite.
     "src/lambda/start_codebuild",
     "src/lambda/test_file_copier",
+    # The US<->EU model swap table. Its reverse direction decides which model a
+    # stack redeployed across regions ends up on, and it silently answered with
+    # two end-of-life models until this suite existed.
+    "src/lambda/update_configuration",
     "src/lambda/user_management",
     "src/lambda/version_check_resolver",
     "src/lambda/workflow_tracker",

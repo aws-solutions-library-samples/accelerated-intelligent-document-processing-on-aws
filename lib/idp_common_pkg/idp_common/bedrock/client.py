@@ -1050,7 +1050,7 @@ class BedrockClient:
         This allows instances to be used as drop-in replacements for the function.
 
         Args:
-            model_id: The Bedrock model ID (e.g., 'anthropic.claude-3-sonnet-20240229-v1:0')
+            model_id: The Bedrock model ID (e.g., 'us.anthropic.claude-sonnet-4-6')
             system_prompt: The system prompt as string or list of content objects
             content: The content for the user message (can include text and images)
             temperature: The temperature parameter for model inference (float or string)
@@ -1358,7 +1358,7 @@ class BedrockClient:
         payload and must return a Converse API-compatible response.
 
         Args:
-            model_id: The Bedrock model ID (e.g., 'anthropic.claude-3-sonnet-20240229-v1:0')
+            model_id: The Bedrock model ID (e.g., 'us.anthropic.claude-sonnet-4-6')
                       Use 'LambdaHook' to invoke a custom Lambda function instead.
             system_prompt: The system prompt as string or list of content objects
             content: The content for the user message (can include text and images)
@@ -3260,7 +3260,7 @@ invoke_model.__doc__ = """
 Invoke a Bedrock model with retry logic.
 
 Args:
-    model_id: The Bedrock model ID (e.g., 'anthropic.claude-3-sonnet-20240229-v1:0')
+    model_id: The Bedrock model ID (e.g., 'us.anthropic.claude-sonnet-4-6')
     system_prompt: The system prompt as string or list of content objects
     content: The content for the user message (can include text and images)
     temperature: The temperature parameter for model inference (float or string)

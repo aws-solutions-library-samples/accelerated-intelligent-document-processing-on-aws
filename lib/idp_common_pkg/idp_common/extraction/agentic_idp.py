@@ -2142,7 +2142,7 @@ async def structured_output_async(
       descriptions into the agent's understanding.
 
     Args:
-        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-5")
         data_format: Pydantic model class defining the expected structure
         prompt: Input content (text, image, or content blocks)
         enable_image_tools: Whether to enable image enhancement tools (default: True)
@@ -2183,7 +2183,7 @@ async def structured_output_async(
 
         # Recommended usage with custom instructions for extraction guidance
         result, response = await structured_output_async(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=InvoiceModel,
             prompt=image_content,
             custom_instruction="Focus on line items in the main table. Ignore header/footer text."
@@ -2194,7 +2194,7 @@ async def structured_output_async(
 
         # Discouraged - only use if default system prompt is completely unsuitable
         result, response = await structured_output_async(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=CustomModel,
             prompt=content,
             system_prompt="Your completely custom system prompt here..."
@@ -2567,7 +2567,7 @@ def structured_output(
       while allowing for domain-specific customizations.
 
     Args:
-        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        model_id: Model identifier (e.g., "us.anthropic.claude-sonnet-5")
         data_format: Pydantic model class defining the expected structure
         prompt: Input content (text, image, or content blocks)
         existing_data: Optional existing data to update via patches
@@ -2588,7 +2588,7 @@ def structured_output(
 
         # Recommended usage with custom instructions for extraction guidance
         result, response = structured_output(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=InvoiceModel,
             prompt=image_content,
             custom_instruction="Focus on line items in the main table. Ignore header/footer text."
@@ -2599,7 +2599,7 @@ def structured_output(
 
         # Discouraged - only use if default system prompt is completely unsuitable
         result, response = structured_output(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=CustomModel,
             prompt=content,
             system_prompt="Your completely custom system prompt here..."
@@ -2714,7 +2714,7 @@ if __name__ == "__main__":
 
     async def async_main():
         result, _ = await structured_output_async(
-            model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            model_id="us.anthropic.claude-sonnet-5",
             data_format=DocumentFormat,
             prompt=Message(
                 role="user",

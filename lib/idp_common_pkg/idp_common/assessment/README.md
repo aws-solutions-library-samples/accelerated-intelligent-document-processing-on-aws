@@ -319,7 +319,7 @@ mode complete correctly on the first try:
    extraction:
      confidence:
        escalation_enabled: true          # ON by default
-       escalation_model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+       escalation_model: "us.anthropic.claude-sonnet-5:1m"
        max_escalation_rounds: 2
    ```
 
