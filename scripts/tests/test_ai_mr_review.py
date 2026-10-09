@@ -29,6 +29,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -151,7 +152,7 @@ def test_the_gitlab_token_is_required_and_has_no_fallback(
     ``GITLAB_REVIEW_TOKEN`` absent, rather than by matching the source text for
     ``os.environ.get("GITLAB_REVIEW_TOKEN"``. That string match was the previous
     form and it broke on a refactor that kept the behaviour exactly — the lookup
-    is now ``os.environ.get(platform.token_env)`` — which is the wrong direction
+    is now ``os.environ.get(platform.credential_env)`` — which is the wrong direction
     for a test to be sensitive in. Executing it also covers the case the string
     could not: a fallback added *after* the first lookup.
     """
@@ -184,17 +185,17 @@ def test_the_gitlab_token_is_required_and_has_no_fallback(
 def test_each_platform_reads_its_own_token_variable(mod) -> None:
     """The token name is per platform, and neither may silently repoint.
 
-    ``Platform.token_env`` is an indirection, and the failure it enables is
+    ``Platform.credential_env`` is an indirection, and the failure it enables is
     quiet: pointed at the wrong variable, the run finds no token on the platform
     it is actually on and reports a loud skip naming a variable nobody set — or,
     worse, finds one and posts with a credential meant for the other forge.
     """
-    assert mod.GITLAB.token_env == "GITLAB_REVIEW_TOKEN"
-    assert mod.GITHUB.token_env == "GITHUB_TOKEN"
+    assert mod.GITLAB.credential_env == "GITLAB_REVIEW_TOKEN"
+    assert mod.GITHUB.credential_env == "GITHUB_TOKEN"
     # Both must also be stripped from the child, whichever one is in use.
     for platform in (mod.GITLAB, mod.GITHUB):
-        assert platform.token_env in mod.SECRET_ENV_KEYS, (
-            f"{platform.token_env} posts the review, so it must not reach the "
+        assert platform.credential_env in mod.SECRET_ENV_KEYS, (
+            f"{platform.credential_env} posts the review, so it must not reach the "
             f"model's environment"
         )
 
@@ -873,6 +874,97 @@ def gh_job(gh_workflow: dict) -> dict:
         "be decided against the required-check set before it is added."
     )
     return jobs["ai_pr_review"]
+
+
+@pytest.mark.unit
+def test_the_head_is_fetched_from_the_chosen_remote(mod, monkeypatch) -> None:
+    """``--remote`` must reach the fetch, and the web URL must use the same one.
+
+    ``origin`` and "the forge running this job" are the same thing only in CI,
+    where a checkout has one remote. A developer checkout of this repository has
+    two and ``origin`` is the GitLab one, so a hardcoded ``origin`` makes
+    ``--forge github`` ask GitLab for a ``refs/pull/`` ref that cannot exist
+    there. It fails at the fetch, before anything is reviewed — which is how this
+    was found: the first local GitHub run could not start.
+
+    The web URL is asserted against the same remote because getting that half
+    wrong is silent rather than loud: the review still runs and its metadata
+    simply points the reader at the wrong forge.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(command, cwd=None, env=None, timeout=300):
+        calls.append(command)
+        joined = " ".join(command)
+        if "rev-parse" in joined:
+            out = "f" * 40
+        elif "remote" in joined and "get-url" in joined:
+            out = "https://github.com/owner/name.git"
+        elif "log" in joined:
+            out = "a subject\x00An Author"
+        else:
+            out = ""
+        return subprocess.CompletedProcess(command, 0, out, "")
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+
+    request = mod.merge_request_from_git(7, "develop", mod.GITHUB, "github")
+
+    fetches = [c for c in calls if "fetch" in c]
+    assert fetches, "no fetch was attempted"
+    for fetch in fetches:
+        assert "github" in fetch, (
+            f"the fetch did not use the remote it was given: {fetch}. A hardcoded "
+            f"`origin` points at GitLab in a developer checkout of this repo."
+        )
+        assert "origin" not in fetch
+
+    assert ["git", "remote", "get-url", "github"] in calls, (
+        "the web URL was derived from a different remote than the head was "
+        "fetched from, so the review's metadata links to the wrong forge"
+    )
+    assert request.web_url == "https://github.com/owner/name/pull/7"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("remote_url", "expected"),
+    [
+        ("https://github.com/owner/name.git", "https://github.com/owner/name"),
+        ("https://github.com/owner/name", "https://github.com/owner/name"),
+        ("git@github.com:owner/name.git", "https://github.com/owner/name"),
+        (
+            "git@ssh.gitlab.example.com:group/proj.git",
+            "https://gitlab.example.com/group/proj",
+        ),
+        (
+            "ssh://git@ssh.gitlab.example.com/group/proj.git",
+            "https://gitlab.example.com/group/proj",
+        ),
+        ("not a url", ""),
+    ],
+    ids=[
+        "https-dotgit",
+        "https-plain",
+        "scp",
+        "scp-ssh-prefix",
+        "ssh-scheme",
+        "garbage",
+    ],
+)
+def test_the_web_url_is_built_from_either_remote_spelling(
+    mod, remote_url: str, expected: str
+) -> None:
+    """Which URL form a remote uses is not a property of the platform.
+
+    This repository's GitLab remote is scp-like and its GitHub remote is HTTPS,
+    and the HTTPS form used to yield an empty string because the host pattern
+    required an ``@``. An empty web URL is not an error anywhere — the review
+    runs and its metadata simply carries no link — so nothing would have reported
+    it. Garbage is asserted to come out empty rather than to raise, because the
+    caller's fallback for "unreadable" is the empty string.
+    """
+    assert mod.remote_web_base(remote_url) == expected
 
 
 @pytest.mark.unit
