@@ -265,21 +265,49 @@ def test_skip_doc_test_does_not_run_inference(wired):
     assert not any("sample document processed" in c for c in result["checks"])
 
 
-def test_doc_test_failure_fails_the_variant(wired):
+def _structurally_sound(variant_key, wired):
+    """Put `wired` in the state that gets `variant_key` past its own checks.
+
+    The document test runs only when the structural assertions found nothing, so
+    a test about the document test has to satisfy them first — and each variant
+    wants something different: `--headless` requires Cognito to be *gone*, while
+    `--govcloud` requires it to be *kept* and hosted on API Gateway. Reaching the
+    doc test from a parametrised test means asking the variant rather than
+    hardcoding one variant's answer.
+    """
+    if variant_key == "govcloud":
+        wired["resources"] = {**CORE, "UserPool": "AWS::Cognito::UserPool"}
+        wired["parameters"] = {"WebUIHosting": "APIGateway"}
+    else:
+        wired["resources"] = dict(CORE)
+
+
+#: Every variant whose validator runs the sample-document test. Parametrised
+#: over rather than written for `headless` alone: the two validators carry
+#: byte-identical doc-test blocks, so a property asserted on one of them is
+#: asserted on half the sites that implement it, and the half left uncovered is
+#: free to drift. Deleting the reason-forwarding from the `govcloud` block left
+#: this whole suite green when only `headless` was exercised.
+DOC_TEST_VARIANTS = ["headless", "govcloud"]
+
+
+@pytest.mark.parametrize("variant_key", DOC_TEST_VARIANTS)
+def test_doc_test_failure_fails_the_variant(wired, variant_key):
     """A stub returning a bare `False` carries no reason, and must still fail.
 
     `inference_failure_reason` tolerates that rather than raising, so the
     variant reports the failure with a placeholder where the reason would go.
     """
-    wired["resources"] = dict(CORE)
+    _structurally_sound(variant_key, wired)
     wired["inference_ok"] = False
-    result = _run("headless", wired)
+    result = _run(variant_key, wired)
     assert not result["success"]
     assert "did not process" in result["error"]
     assert "reason not recorded" in result["error"]
 
 
-def test_a_doc_test_failure_reports_why_it_failed(wired):
+@pytest.mark.parametrize("variant_key", DOC_TEST_VARIANTS)
+def test_a_doc_test_failure_reports_why_it_failed(wired, variant_key):
     """The reason, not just the verdict.
 
     `_run_sample_document_test` is the variant's only document assertion, so
@@ -287,13 +315,29 @@ def test_a_doc_test_failure_reports_why_it_failed(wired):
     process, produced no output, or produced the wrong output. It used to say
     only "did not process successfully" for all three.
     """
-    wired["resources"] = dict(CORE)
+    _structurally_sound(variant_key, wired)
     wired["inference_ok"] = cbd.InferenceTestOutcome(
         False, "no result file at pages/1/result.json after download-results"
     )
-    result = _run("headless", wired)
+    result = _run(variant_key, wired)
     assert not result["success"]
     assert "no result file at pages/1/result.json" in result["error"]
+
+
+@pytest.mark.parametrize("variant_key", DOC_TEST_VARIANTS)
+def test_the_doc_test_actually_ran_for_this_variant(wired, variant_key):
+    """Guards the two tests above from asserting about a test that never ran.
+
+    Both reach the doc test only if the variant's structural checks passed, and
+    a `_structurally_sound` that stopped being sound for one variant would make
+    them fail on the *structural* error instead — still red, so still honest,
+    but for the wrong reason. This fails on the setup rather than on the
+    property, and names the variant.
+    """
+    _structurally_sound(variant_key, wired)
+    result = _run(variant_key, wired)
+    assert result["success"], result.get("error")
+    assert wired["inference"], f"{variant_key} never ran the sample-document test"
 
 
 def test_existing_stack_mode_neither_deploys_nor_tears_down(wired):

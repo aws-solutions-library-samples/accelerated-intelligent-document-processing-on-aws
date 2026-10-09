@@ -3286,7 +3286,7 @@ def run_inference_test(
     sample_dir="samples",
     additional_checks=None,
     region=None,
-):
+) -> InferenceTestOutcome:
     """Run inference test and verify results
 
     ``region`` is forwarded to the shelled-out ``idp-cli`` calls. Without it the
@@ -3312,6 +3312,14 @@ def run_inference_test(
         An `InferenceTestOutcome`: falsy when the test failed, and carrying the
         reason so the caller's step result can say what went wrong rather than
         only that something did.
+
+        The return type is **annotated** rather than left implicit, and that is
+        the only guard on a *new* failure path. The five existing ones each have
+        a test asserting their reason; a sixth added later has none by
+        construction, and a bare `return False` there is falsy, so every caller
+        still fails correctly and the reason silently degrades to
+        "reason not recorded" with nothing red. With the annotation it is one
+        `make typecheck` error, on both CIs.
     """
     try:
         # Run inference
