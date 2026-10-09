@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The first-party `PYTHONPATH` probes run on macOS instead of failing.** The six tests in `scripts/tests/test_first_party_pythonpath.py` expand a Makefile variable by injecting a probe target, and they did it with `make --eval` — an option that arrived in **GNU Make 3.82**, while macOS ships **3.81**, the last GPLv2 release. So on a stock Apple toolchain all six failed with `unrecognized option` and a usage dump, which reads as a repository fault rather than a missing tool; they passed in CI, which is Linux with make 4.x. The probe target is now appended as a second makefile (`make -f Makefile -f <probe>`), which 3.81 accepts and which measures the same expansion — so the six run everywhere, on the same `make` the recipes themselves use, with nothing to install and no `PATH` change. **Action:** none ([#1348](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1348)).
+
 ## [0.6.11]
 
 ### Added
