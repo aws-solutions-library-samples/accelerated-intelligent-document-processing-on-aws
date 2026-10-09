@@ -26,6 +26,42 @@ phases:
       - export FUNCTION_rule_validation="patterns/unified/src/rule-validation-function"
       - export FUNCTION_rule_validation_orchestration="patterns/unified/src/rule-validation-orchestration-function"
       - |
+        # errexit, because this whole block is ONE CodeBuild command and its exit
+        # status is the last loop iteration's. Without it a failed build leaves the
+        # phase -- and so the build -- reporting success with an image missing from
+        # ECR. Retry first, so a transient registry error does not fail a deploy.
+        # See the fuller note in buildspec.yml (#1310).
+        set -e
+
+        # Retries are bounded by a DEADLINE as well as by an attempt count, and
+        # the deadline is the half that matters. DockerBuildRun is a
+        # Custom::CodeBuildRun, so CloudFormation's 60-minute custom-resource
+        # ServiceTimeout is the real budget -- and a build that eventually
+        # succeeds after burning through it produces exactly the message #1310
+        # is about ("CloudFormation did not receive a response from your Custom
+        # Resource"), now in the recovering case. 2400s leaves time for the
+        # images still queued behind the current one. $SECONDS counts from the
+        # start of this shell, which CodeBuild starts at the top of the phase.
+        RETRY_DEADLINE_SECONDS="${RETRY_DEADLINE_SECONDS:-2400}"
+
+        build_with_retry() {
+          local label="$1"; shift
+          local attempt=1 max_attempts=3
+          until docker buildx build "$@"; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "ERROR: failed to build/push ${label} after ${max_attempts} attempts"
+              return 1
+            fi
+            if [ "$SECONDS" -ge "$RETRY_DEADLINE_SECONDS" ]; then
+              echo "ERROR: failed to build/push ${label}; ${SECONDS}s elapsed is past the ${RETRY_DEADLINE_SECONDS}s retry deadline, so failing now rather than letting the stack operation time out"
+              return 1
+            fi
+            echo "WARNING: build of ${label} failed (attempt ${attempt}/${max_attempts}); retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
+        }
+
         for func_var in FUNCTION_ocr FUNCTION_classification FUNCTION_extraction FUNCTION_assessment FUNCTION_processresults FUNCTION_summarization FUNCTION_evaluation FUNCTION_rule_validation FUNCTION_rule_validation_orchestration; do
           func_path="${!func_var}"
           func_name=$(basename "$func_path" | sed 's/_/-/g')
@@ -38,7 +74,7 @@ phases:
           if [ "$LAMBDA_ARCHITECTURE" = "x86_64" ]; then
             DOCKER_PLATFORM="linux/amd64"
           fi
-          docker buildx build \
+          build_with_retry "${func_name}" \
             --platform "$DOCKER_PLATFORM" \
             -f Dockerfile.optimized \
             --build-arg FUNCTION_PATH="${func_path}" \
@@ -51,5 +87,12 @@ phases:
         done
   post_build:
     commands:
-      - echo "Pipeline Docker images built and pushed successfully"
-      - echo "Images tagged with version ${IMAGE_VERSION}"
+      # post_build runs after a FAILED build phase too, so this is guarded rather
+      # than unconditional. See the note in buildspec.yml (#1310).
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-1}" = "1" ]; then
+          echo "Pipeline Docker images built and pushed successfully"
+          echo "Images tagged with version ${IMAGE_VERSION}"
+        else
+          echo "BUILD FAILED — one or more images were not pushed. The actionable error is above, in this log."
+        fi

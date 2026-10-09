@@ -335,9 +335,34 @@ check-retired-services: ## Fail if documentation presents a retired service (App
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
 
-validate-buildspec: ## Validate AWS CodeBuild buildspec files
+# Discovered from `git ls-files` rather than listed. The previous
+# `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
+# and of the three it skipped, two (`buildspec-bda.yml`, `buildspec-pipeline.yml`)
+# carried the #1310 defect while `feature-platform/idp-data-generator/buildspec.yml`
+# has no loop at all. Note the glob DID read the file #1310 was filed against, so
+# widening discovery is not the diagnosis for #1310 -- the absence of a rule was.
+# What it buys is that the next buildspec is covered without being listed.
+#
+# ⚠️ Discovery is by FILENAME, where `check-arn-partitions` and `cfn-lint` share a
+# CONTENT-based discovery (anything declaring `AWSTemplateFormatVersion`). A
+# buildspec does have an equivalent marker -- a top-level `version: 0.1|0.2` plus
+# `phases:`, the pair `validate_buildspec.py` itself requires -- so this is a
+# weaker rule than those two by choice of expedience, not for want of a marker. A
+# `ui-buildspec.yml`, or a `BuildSpec` property pointed at some other filename,
+# would not be read. `test_every_tracked_buildspec_is_handed_to_the_gate` derives
+# the universe by content and fails if the two definitions ever disagree, so the
+# gap is measured rather than assumed. What IS shared with those two gates is the
+# empty-set contract below: a discovery that stops working is a red gate rather
+# than a green one.
+BUILDSPEC_FILES = $(shell git ls-files | grep -E '(^|/)buildspec[^/]*\.ya?ml$$')
+
+validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, discovered)
 	@echo "Validating buildspec files..."
-	@$(PYTHON) scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml || \
+	@if [ -z "$(BUILDSPEC_FILES)" ]; then \
+		echo -e "$(RED)ERROR: buildspec discovery found no files — the gate would pass vacuously$(NC)"; \
+		exit 1; \
+	fi
+	@$(PYTHON) scripts/sdlc/validate_buildspec.py $(BUILDSPEC_FILES) || \
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
