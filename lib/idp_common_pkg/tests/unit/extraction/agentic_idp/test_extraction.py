@@ -112,8 +112,19 @@ class License(BaseModel):
 @pytest.mark.parametrize("execution_number", range(5))
 @pytest.mark.skipif(not STRANDS_AVAILABLE, reason="strands package not available")
 def test_structured_output_call_license(execution_number):
+    # ⚠️ The model comes from the shipped default rather than a pin here. The pin
+    # was `claude-sonnet-4-20250514-v1:0`, which Bedrock now refuses with
+    # `ResourceNotFoundException: ... marked by provider as Legacy and you have
+    # not been actively using the model in the last 30 days` -- so this test is a
+    # time bomb that re-arms after 30 days of disuse, five times over via the
+    # parametrize. Same reasoning as the payslip test below; fixed here too
+    # because the pin is the defect, not the one instance of it.
+    model_id = (
+        merge_config_with_defaults({}, "pattern-2").get("extraction", {}).get("model")
+    )
+    assert model_id, "no extraction model resolved from the system defaults"
     result, _ = structured_output(
-        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+        model_id=model_id,
         data_format=License,
         prompt=Image.open(Path(__file__).parent / "old_cal_license.png"),
     )
@@ -172,10 +183,10 @@ def test_payslip(execution_number, s3_bucket):
     #
     # That is also why the page image never arrived: `{DOCUMENT_IMAGE}` is what
     # attaches it, and the placeholder lives in the prompt. `samples/
-    # lending_package.pdf` is a scan with a zero-character text layer, and this
-    # test writes an empty `ocr_text.txt` because it has no Textract, so the
-    # image is the ONLY content there is. With an empty prompt the model
-    # answered, correctly, that the document text appeared to be missing.
+    # lending_package.pdf` is a scan with a zero-character text layer, so
+    # without a real OCR call the image is the only content there is. With an
+    # empty prompt the model answered, correctly, that the document text
+    # appeared to be missing.
     #
     # The defaults are resolved through `merge_config_with_defaults`, the same
     # function `update_configuration` and the SDK's stack deployer call, rather
@@ -209,15 +220,30 @@ def test_payslip(execution_number, s3_bucket):
     # reaches them. `max_tokens` is dropped for the same reason: `IDPConfig`
     # logs it as a removed field and ignores it, so leaving it in the dict read
     # as pinning an output budget that nothing pins.
-    # ⚠️ `agentic.enabled` is the ONLY override, including the model. Pinning one
-    # here used to pin `claude-sonnet-4-20250514-v1:0`, which Bedrock has since
-    # marked Legacy: it answers `ResourceNotFoundException: ... marked by provider
-    # as Legacy and you have not been actively using the model in the last 30
-    # days`, so the test went red for a reason that has nothing to do with
-    # extraction and everything to do with a hardcoded model ageing out. Taking
-    # the resolved default cannot age out, because the release that retires a
-    # model also moves that default.
+    # ⚠️ `mode` MUST be set alongside `agentic.enabled`, and setting only the
+    # latter is worse than useless. `ExtractionConfig.reconcile_mode_and_agentic`
+    # treats `mode` as authoritative -- `agentic.enabled = (mode == "advanced")`
+    # -- and the merged defaults carry `mode: simple`. So an override of
+    # `agentic.enabled` alone is silently discarded and the run takes the
+    # traditional single-LLM-pass path, in a test named for the agentic one.
+    # Measured: `mode=simple` gives `agentic.enabled=False` and
+    # `extraction_method: "traditional"` in the result, with every assertion
+    # still passing. `config/migrations/v05_to_v06.py` calls this exact pairing a
+    # footgun and exists to prevent it in user configs.
+    #
+    # The model is deliberately NOT overridden. A pin here used to name
+    # `claude-sonnet-4-20250514-v1:0`, which Bedrock now refuses --
+    # `ResourceNotFoundException: ... marked by provider as Legacy and you have
+    # not been actively using the model in the last 30 days` -- so the test went
+    # red for a reason that has nothing to do with extraction. Taking the
+    # resolved default cannot age out, because the release that retires a model
+    # moves that default too. ⚠️ The trade is reproducibility: Sonnet 5 rejects
+    # `temperature`/`top_k`/`top_p` and the client strips them, so this test
+    # samples where a pinned Sonnet 4 decoded greedily. A value assertion below
+    # can therefore move without any code changing, which is why the failure
+    # messages name the model.
     extraction_config = dict(merged_extraction)
+    extraction_config["mode"] = "advanced"
     extraction_config["agentic"] = {
         **(merged_extraction.get("agentic") or {}),
         "enabled": True,
@@ -225,9 +251,26 @@ def test_payslip(execution_number, s3_bucket):
 
     CONFIG = {
         "extraction": extraction_config,
-        "classes": config_data.get("classes", []),
+        # From `merged`, not the raw preset: identical for this preset today, and
+        # the paragraph above argues against exactly that shortcut.
+        "classes": merged.get("classes") or [],
         "ocr": merged.get("ocr") or {},
     }
+
+    # The configuration the service actually ends up with, asserted before any
+    # live call. This is the only place the reconciliation above is observable
+    # from, and nothing else in the tree notices if it regresses.
+    resolved = ExtractionService(config=CONFIG).config.extraction
+    assert resolved.agentic.enabled is True, (
+        f"agentic extraction is off (mode={resolved.mode!r}); this test would run "
+        "the traditional single-pass path and still pass"
+    )
+    assert resolved.agentic.table_parsing.enabled is True, (
+        "the deterministic table tools are not registered; `parse_table` and "
+        "`map_table_to_schema` are gated on this flag"
+    )
+    extraction_model = resolved.model
+    assert extraction_model, "no extraction model resolved"
 
     os.environ.setdefault("AWS_REGION", "us-east-1")
     os.environ.setdefault("METRIC_NAMESPACE", "IDP-Test")
@@ -270,25 +313,38 @@ def test_payslip(execution_number, s3_bucket):
     # runs by hand and exists to exercise the real path.
     ocr_service = OcrService(region=os.environ["AWS_REGION"], config=CONFIG)
     document = ocr_service.process_document(document)
-    assert not document.errors, f"OCR failed: {document.errors}"
-    assert "1" in document.pages, "OCR produced no page 1"
+    assert "1" in document.pages, f"OCR produced no page 1: {document.errors}"
+    # ⚠️ Scoped to page 1, because `process_document` OCRs all six pages of the
+    # sample and appends a per-page failure to `document.errors` while carrying
+    # on. A transient Textract throttle on page 4 would otherwise fail a payslip
+    # test over a page it never reads.
+    page_one_errors = [e for e in document.errors if "page 1" in str(e).lower()]
+    assert not page_one_errors, f"OCR failed for page 1: {page_one_errors}"
+    assert document.pages["1"].parsed_text_uri, "page 1 has no parsed text"
 
     ocr_text = s3.get_text_content(document.pages["1"].parsed_text_uri)
     assert ocr_text.strip(), (
         "OCR produced no text for the payslip page; the agent would be left "
         "reading the image alone, which the pipeline never does"
     )
-    # Table markup is what the deterministic table tools parse, and
-    # `extraction.agentic.table_parsing` is enabled above, so its absence here
-    # would mean the tools are registered with nothing to work on. ⚠️ A failure
-    # is more likely to be the linearizer than the configuration:
+    # ⚠️ What this pins is that `ocr.features` resolved to include TABLES/LAYOUT
+    # and that the textractor MARKDOWN linearizer ran -- not that the
+    # deterministic table parser gets used. It does not: the run's own
+    # `ocr_analysis` reports `tables_detected == 0` for this page even with pipes
+    # present, and `_preflight_table_parse` needs an estimated 50+ rows before it
+    # recommends the tool, which a one-page payslip is nowhere near. Covering the
+    # deterministic path needs a large-table document such as the
+    # `bank-statement-sample` preset.
+    #
+    # A failure here is more likely to be the linearizer than the configuration:
     # `_parse_textract_response` falls back to plain `parsed_response.text` when
     # `to_markdown()` raises, and its own comments name a signature block as the
-    # anticipated cause -- so check the OCR logs before suspecting `ocr.features`.
+    # anticipated cause -- so read the OCR log before suspecting `ocr.features`.
     assert "|" in ocr_text, (
-        "the OCR text carries no table markup, so the deterministic table parser "
-        "has nothing to parse. Check the OCR log for a textractor failure first; "
-        f"features resolved to {(CONFIG.get('ocr') or {}).get('features')!r}"
+        "the OCR text carries no table markup, so either the textractor markdown "
+        "linearizer fell back to plain text (check the OCR log first) or "
+        f"ocr.features no longer includes TABLES/LAYOUT (resolved to "
+        f"{(CONFIG.get('ocr') or {}).get('features')!r})"
     )
 
     section = Section(
@@ -323,6 +379,15 @@ def test_payslip(execution_number, s3_bucket):
 
     inference_result = result_data["inference_result"]
     metadata = result_data["metadata"]
+
+    # ⚠️ The path the run ACTUALLY took, read back from what it wrote. Every
+    # assertion below holds on the traditional single-pass path too, so without
+    # this the test can pass green while exercising the opposite of the thing it
+    # is named for -- which is exactly what `mode: simple` made it do.
+    assert metadata.get("extraction_method") == "agentic", (
+        f"this test ran the {metadata.get('extraction_method')!r} path, not the "
+        f"agentic one (model {extraction_model})"
+    )
 
     # Verify key financial fields are extracted
     assert "CurrentGrossPay" in inference_result, "Should extract CurrentGrossPay"
@@ -413,9 +478,13 @@ def test_payslip(execution_number, s3_bucket):
     )
     assert metadata["extraction_time_seconds"] > 0, "Extraction time should be positive"
 
-    # Verify reasonable extraction time (should be under 2 minutes for a single page)
-    assert metadata["extraction_time_seconds"] < 120, (
-        f"Extraction took too long: {metadata['extraction_time_seconds']}s"
+    # A hang bound, not a performance assertion. ⚠️ Calibrate it against the
+    # AGENTIC path: a multi-round tool loop is a different order of magnitude
+    # from the traditional single pass, and 120s was set when this test was
+    # taking seconds because the agent bailed out on an empty prompt.
+    assert metadata["extraction_time_seconds"] < 600, (
+        f"Extraction took too long: {metadata['extraction_time_seconds']}s "
+        f"(model {extraction_model})"
     )
 
     # Print complete results as formatted JSON
