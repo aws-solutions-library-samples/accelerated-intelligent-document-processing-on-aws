@@ -335,7 +335,9 @@ class TestTheForwardDirectionStaysInScope:
         monkeypatch.setattr(
             index,
             "reprocess_document",
-            lambda key, version=None, revision=None: calls.append((key, version)),
+            lambda key, version=None, revision=None, **_kwargs: calls.append(
+                (key, version)
+            ),
         )
         return calls
 
@@ -420,3 +422,125 @@ class TestTheLookupIsTheSharedOne:
 
         with pytest.raises(config_scope.ScopeLookupError):
             index._get_user_allowed_config_versions("author@example.com")
+
+
+@pytest.mark.unit
+class TestConfigPrefixMappingsOnReprocess:
+    """Moving a mapping and reprocessing is how a backlog is re-run under a new
+    profile — but the mapping must never override the scope pin.
+
+    That ordering is the easy thing to get backwards: the pin exists for exactly the
+    case "no explicit profile was requested", which is also the case a mapping wants
+    to fill. Consulting the mapping first would let a reprocess move a scoped
+    caller's own document out of their scope, reintroducing the bug this module's
+    header documents through a feature that looks unrelated to it.
+    """
+
+    def _queued(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            index,
+            "reprocess_document",
+            lambda key, version=None, revision=None, **kwargs: calls.append(
+                (key, version, kwargs.get("config_source"))
+            ),
+        )
+        return calls
+
+    def _mappings(self, monkeypatch, *entries):
+        monkeypatch.setattr(index, "_prefix_mappings", lambda: list(entries))
+
+    def test_an_unscoped_caller_picks_up_the_mapping(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "mapped-profile"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", "mapped-profile", "prefix-mapping")]
+
+    def test_the_scope_pin_beats_the_mapping(
+        self, users_table, document_version, monkeypatch
+    ):
+        """The control this feature must not weaken."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "somewhere-else"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", "tenant-a", "document-pin")]
+
+    def test_an_explicit_request_beats_the_mapping(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "mapped-profile"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == [("acme/statement.pdf", "chosen", "explicit-request")]
+
+    def test_a_mapping_outside_a_callers_scope_is_not_applied(
+        self, users_table, document_version, monkeypatch
+    ):
+        """Belt and braces: the pin above already covers a scoped caller, but the
+        resolved profile is scope-checked too so the rule holds if that ever stops
+        producing a pin."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        monkeypatch.setattr(index, "_document_config_version", lambda _key: None)
+        monkeypatch.setattr(
+            index,
+            "_enforce_document_scope",
+            lambda allowed, keys: {},
+        )
+        self._mappings(
+            monkeypatch, {"prefix": "acme/", "configProfile": "finance-prod"}
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", None, None)]
+
+    def test_no_mapping_leaves_the_reprocess_unpinned_as_before(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(monkeypatch)
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", None, None)]
+
+    def test_an_unreadable_mapping_table_does_not_refuse_the_reprocess(
+        self, monkeypatch
+    ):
+        """Fails open, like queue_sender: reprocessing under the active profile is a
+        far better outcome than refusing because a ROUTING table was unreadable."""
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "some-table")
+
+        class Boom:
+            def Table(self, _name):
+                raise RuntimeError("throttled")
+
+        monkeypatch.setattr(index, "_dynamodb", Boom())
+        assert index._prefix_mappings() == []
+
+    def test_no_configuration_table_wired_is_not_an_error(self, monkeypatch):
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
+        assert index._prefix_mappings() == []

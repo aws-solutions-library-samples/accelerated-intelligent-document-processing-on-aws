@@ -230,6 +230,24 @@ export type ConfidenceThresholdAlertInput = {
   confidenceThreshold?: InputMaybe<Scalars['Float']['input']>;
 };
 
+export type ConfigAssignmentPreview = {
+  configProfile?: Maybe<Scalars['String']['output']>;
+  configRevision?: Maybe<Scalars['Int']['output']>;
+  conflict?: Maybe<Scalars['Boolean']['output']>;
+  mappingPrefix?: Maybe<Scalars['String']['output']>;
+  objectKey: Scalars['String']['output'];
+  outOfScope?: Maybe<Scalars['Boolean']['output']>;
+  reason?: Maybe<Scalars['String']['output']>;
+  rejected?: Maybe<Scalars['Boolean']['output']>;
+  source?: Maybe<Scalars['String']['output']>;
+};
+
+export type ConfigAssignmentPreviewResponse = {
+  assignment?: Maybe<ConfigAssignmentPreview>;
+  error?: Maybe<ConfigurationError>;
+  success: Scalars['Boolean']['output'];
+};
+
 export type ConfigBootstrapJob = {
   configVersion?: Maybe<Scalars['String']['output']>;
   errorMessage?: Maybe<Scalars['String']['output']>;
@@ -237,6 +255,33 @@ export type ConfigBootstrapJob = {
   status: Scalars['String']['output'];
   statusMessage?: Maybe<Scalars['String']['output']>;
   testSetId?: Maybe<Scalars['String']['output']>;
+};
+
+export type ConfigPrefixMapping = {
+  configProfile: Scalars['String']['output'];
+  configRevision?: Maybe<Scalars['Int']['output']>;
+  createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  enabled?: Maybe<Scalars['Boolean']['output']>;
+  matchKind?: Maybe<Scalars['String']['output']>;
+  metadataPrecedence?: Maybe<Scalars['String']['output']>;
+  prefix: Scalars['String']['output'];
+  updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+};
+
+export type ConfigPrefixMappingMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  mapping?: Maybe<ConfigPrefixMapping>;
+  message?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+};
+
+export type ConfigPrefixMappingsResponse = {
+  error?: Maybe<ConfigurationError>;
+  mappings?: Maybe<Array<Maybe<ConfigPrefixMapping>>>;
+  success: Scalars['Boolean']['output'];
 };
 
 export type ConfigProfileRevision = {
@@ -422,7 +467,10 @@ export type DiscoveryJobListItem = {
 export type Document = DynamoDbBase & {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
   ConfidenceAlertCount?: Maybe<Scalars['Int']['output']>;
+  ConfigAssignmentError?: Maybe<Scalars['String']['output']>;
+  ConfigMappingPrefix?: Maybe<Scalars['String']['output']>;
   ConfigRevision?: Maybe<Scalars['Int']['output']>;
+  ConfigSource?: Maybe<Scalars['String']['output']>;
   ConfigVersion?: Maybe<Scalars['String']['output']>;
   EvaluationReportUri?: Maybe<Scalars['String']['output']>;
   EvaluationStatus?: Maybe<Scalars['String']['output']>;
@@ -799,6 +847,7 @@ export type Mutation = {
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
+  deleteConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
   deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   deleteConfigVersion?: Maybe<UpdateConfigurationResponse>;
   deleteDiscoveryJob: Scalars['Boolean']['output'];
@@ -817,6 +866,7 @@ export type Mutation = {
   processChanges: ProcessChangesResponse;
   publishCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   publishTestSetVersion?: Maybe<TestSetVersion>;
+  putConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
   reextractTestSetDocument?: Maybe<DraftLabelJob>;
   /** Called by a feature stack's RegisterFeature custom resource once the stack has deployed. */
   registerFeature: InstalledFeature;
@@ -1013,6 +1063,11 @@ export type MutationDeleteChatSessionArgs = {
 };
 
 
+export type MutationDeleteConfigPrefixMappingArgs = {
+  prefix: Scalars['String']['input'];
+};
+
+
 export type MutationDeleteConfigProfileRevisionArgs = {
   profileName: Scalars['String']['input'];
   revision: Scalars['Int']['input'];
@@ -1107,6 +1162,16 @@ export type MutationPublishCircuitBreakerStatusArgs = {
 
 export type MutationPublishTestSetVersionArgs = {
   input: PublishTestSetVersionInput;
+};
+
+
+export type MutationPutConfigPrefixMappingArgs = {
+  configProfile: Scalars['String']['input'];
+  configRevision?: InputMaybe<Scalars['Int']['input']>;
+  description?: InputMaybe<Scalars['String']['input']>;
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+  metadataPrecedence?: InputMaybe<Scalars['String']['input']>;
+  prefix: Scalars['String']['input'];
 };
 
 
@@ -1535,6 +1600,7 @@ export type Query = {
    */
   listCatalogFeatures?: Maybe<Array<CatalogFeature>>;
   listChatSessions?: Maybe<ChatSessionConnection>;
+  listConfigPrefixMappings?: Maybe<ConfigPrefixMappingsResponse>;
   listConfigProfileRevisions?: Maybe<ConfigProfileRevisionsResponse>;
   listConfigurationLibrary?: Maybe<ConfigurationLibraryResponse>;
   listDiscoveryJobs?: Maybe<DiscoveryJobList>;
@@ -1554,6 +1620,7 @@ export type Query = {
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
   listUsers?: Maybe<UserList>;
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
+  resolveConfigPrefixMapping?: Maybe<ConfigAssignmentPreviewResponse>;
   submitAgentQuery?: Maybe<AgentJob>;
   validateTestFileName?: Maybe<TestSetValidationResponse>;
   validateTestSetForFinetuning?: Maybe<TestSetValidationResult>;
@@ -1790,6 +1857,13 @@ export type QueryListFinetuningJobsArgs = {
 export type QueryQueryKnowledgeBaseArgs = {
   input: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryResolveConfigPrefixMappingArgs = {
+  metadataProfile?: InputMaybe<Scalars['String']['input']>;
+  metadataRevision?: InputMaybe<Scalars['Int']['input']>;
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -2483,6 +2557,13 @@ export type DeleteChatSessionMutationVariables = Exact<{
 
 export type DeleteChatSessionMutation = { deleteChatSession?: boolean | null };
 
+export type DeleteConfigPrefixMappingMutationVariables = Exact<{
+  prefix: Scalars['String']['input'];
+}>;
+
+
+export type DeleteConfigPrefixMappingMutation = { deleteConfigPrefixMapping?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
 export type DeleteConfigProfileRevisionMutationVariables = Exact<{
   profileName: Scalars['String']['input'];
   revision: Scalars['Int']['input'];
@@ -2601,6 +2682,18 @@ export type PublishTestSetVersionMutationVariables = Exact<{
 
 
 export type PublishTestSetVersionMutation = { publishTestSetVersion?: { testSetId: string, version: number, label?: string | null, notes?: string | null, fileCount?: number | null, activeReference?: number | null, createdAt?: string | null, createdBy?: string | null } | null };
+
+export type PutConfigPrefixMappingMutationVariables = Exact<{
+  prefix: Scalars['String']['input'];
+  configProfile: Scalars['String']['input'];
+  configRevision?: InputMaybe<Scalars['Int']['input']>;
+  metadataPrecedence?: InputMaybe<Scalars['String']['input']>;
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+  description?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type PutConfigPrefixMappingMutation = { putConfigPrefixMapping?: { success: boolean, message?: string | null, mapping?: { prefix: string, matchKind?: string | null, configProfile: string, configRevision?: number | null, metadataPrecedence?: string | null, enabled?: boolean | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ReextractTestSetDocumentMutationVariables = Exact<{
   input: ReextractTestSetDocumentInput;
@@ -3100,6 +3193,11 @@ export type ListChatSessionsQueryVariables = Exact<{
 
 export type ListChatSessionsQuery = { listChatSessions?: { nextToken?: string | null, items?: Array<{ sessionId: string, title: string, createdAt: string, updatedAt: string, messageCount: number, lastMessage?: string | null } | null> | null } | null };
 
+export type ListConfigPrefixMappingsQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type ListConfigPrefixMappingsQuery = { listConfigPrefixMappings?: { success: boolean, mappings?: Array<{ prefix: string, matchKind?: string | null, configProfile: string, configRevision?: number | null, metadataPrecedence?: string | null, enabled?: boolean | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
 export type ListConfigProfileRevisionsQueryVariables = Exact<{
   profileName: Scalars['String']['input'];
 }>;
@@ -3188,6 +3286,15 @@ export type QueryKnowledgeBaseQueryVariables = Exact<{
 
 
 export type QueryKnowledgeBaseQuery = { queryKnowledgeBase?: string | null };
+
+export type ResolveConfigPrefixMappingQueryVariables = Exact<{
+  objectKey: Scalars['String']['input'];
+  metadataProfile?: InputMaybe<Scalars['String']['input']>;
+  metadataRevision?: InputMaybe<Scalars['Int']['input']>;
+}>;
+
+
+export type ResolveConfigPrefixMappingQuery = { resolveConfigPrefixMapping?: { success: boolean, assignment?: { objectKey: string, outOfScope?: boolean | null, configProfile?: string | null, configRevision?: number | null, source?: string | null, mappingPrefix?: string | null, conflict?: boolean | null, rejected?: boolean | null, reason?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type SubmitAgentQueryQueryVariables = Exact<{
   query: Scalars['String']['input'];

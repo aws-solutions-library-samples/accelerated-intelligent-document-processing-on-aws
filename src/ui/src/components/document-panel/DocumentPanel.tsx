@@ -60,6 +60,12 @@ interface MappedDocument {
   completionTime?: string;
   duration?: string;
   configVersion?: string;
+  /** Where configVersion came from — see CONFIG_SOURCE_LABELS. */
+  configSource?: string;
+  /** The config prefix mapping that decided it, when one did. */
+  configMappingPrefix?: string;
+  /** Why the document was refused at ingest, for a `reject` prefix mapping. */
+  configAssignmentError?: string;
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -149,6 +155,21 @@ interface TroubleshootJobData {
   timestamp: number;
   documentKey: string | undefined;
 }
+
+/**
+ * How each `ConfigSource` value reads to an operator. The raw values are the
+ * wire/DB spelling (idp_common.config.prefix_mappings SOURCE_*); these are the
+ * sentence fragments that answer "why this profile?".
+ */
+const CONFIG_SOURCE_LABELS: Record<string, string> = {
+  'prefix-mapping': 'Assigned by prefix mapping',
+  metadata: 'Specified at upload',
+  'active-profile': 'Active profile',
+  'document-pin': 'Kept from the previous run',
+  'explicit-request': 'Chosen when reprocessing',
+  'internal-producer': 'Pinned by the submitting feature',
+  rejected: 'Refused at ingest',
+};
 
 const client = generateClient();
 const logger = new ConsoleLogger('DocumentPanel');
@@ -547,6 +568,23 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
               <strong>Config Profile</strong>
             </Box>
             <div>{formatConfigVersionLink(item.configVersion, versions)}</div>
+            {/*
+              WHERE that profile came from. There are several possible sources and
+              the name alone does not say which applied, so a profile that
+              surprises someone is otherwise unexplainable without correlating
+              logs across two Lambdas.
+            */}
+            {item.configSource && (
+              <Box fontSize="body-s" color="text-body-secondary">
+                {CONFIG_SOURCE_LABELS[item.configSource] ?? item.configSource}
+                {item.configMappingPrefix ? ` (${item.configMappingPrefix})` : ''}
+              </Box>
+            )}
+            {item.configAssignmentError && (
+              <Box fontSize="body-s" color="text-status-error">
+                {item.configAssignmentError}
+              </Box>
+            )}
           </div>
         </SpaceBetween>
 

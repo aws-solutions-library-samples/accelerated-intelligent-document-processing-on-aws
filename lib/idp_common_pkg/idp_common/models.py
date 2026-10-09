@@ -683,6 +683,24 @@ class Document:
     # against allowedConfigVersions in the RBAC scope checks — a composite value
     # there would either bypass or break scope.
     config_revision: Optional[int] = None
+    # WHERE config_version came from — one of idp_common.config.prefix_mappings'
+    # SOURCE_* values. There were already three sources before prefix mappings
+    # existed (upload metadata, the active-profile pointer, an explicit reprocess
+    # request) and the document recorded none of them, so "why did this process
+    # under lending r7?" could only be answered by correlating logs across two
+    # Lambdas. A fourth source without provenance would make that worse.
+    config_source: Optional[str] = None
+    # The mapping prefix that decided it, when one did. Recorded even when the
+    # mapping LOST a precedence contest: "a mapping was consulted and deferred" is a
+    # different fact from "no mapping matched", and only the first explains a
+    # surprising profile.
+    config_mapping_prefix: Optional[str] = None
+    # Why a document was refused at ingest, for a mapping in `reject` conflict mode.
+    # Its own attribute because `errors` is deliberately not persisted (see
+    # idp_common.document_failure) and a reject happens before any section exists,
+    # so the ProcessingIssue channel is unavailable. Without this the person whose
+    # upload was refused sees a FAILED document and no reason anywhere.
+    config_assignment_error: Optional[str] = None
     submission_source: Optional[str] = None
     test_set_id: Optional[str] = None
     # Class every page must be treated as, instead of classifying. Set when a
@@ -759,6 +777,9 @@ class Document:
             "trace_id": self.trace_id,
             "config_version": self.config_version,
             "config_revision": self.config_revision,
+            "config_source": self.config_source,
+            "config_mapping_prefix": self.config_mapping_prefix,
+            "config_assignment_error": self.config_assignment_error,
             "submission_source": self.submission_source,
             "test_set_id": self.test_set_id,
             # Carried across step boundaries: set before OCR, read at
@@ -915,6 +936,9 @@ class Document:
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
             config_revision=coerce_revision(data.get("config_revision")),
+            config_source=data.get("config_source"),
+            config_mapping_prefix=data.get("config_mapping_prefix"),
+            config_assignment_error=data.get("config_assignment_error"),
             submission_source=data.get("submission_source"),
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
@@ -1290,6 +1314,11 @@ class Document:
                 # still honor the version the document was processed under.
                 "config_version": self.config_version,
                 "config_revision": self.config_revision,
+                # Provenance rides along for the same reason: a consumer reading the
+                # wrapper to decide what configuration to load should be able to say
+                # where that configuration came from without decompressing.
+                "config_source": self.config_source,
+                "config_mapping_prefix": self.config_mapping_prefix,
                 "compressed": True,
             }
 

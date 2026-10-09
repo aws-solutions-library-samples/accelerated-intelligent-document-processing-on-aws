@@ -8,9 +8,21 @@ import logging
 import os
 
 import boto3
-import s3_targets
 from botocore.config import Config
 from log_sanitizer import sanitize_event_for_logging
+
+from idp_common import s3_targets
+from idp_common.config.prefix_mappings import (
+    PrefixMappingStore,
+    canonical_key,
+    resolve_config_assignment,
+)
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -85,6 +97,121 @@ def _caller_in_groups(event, allowed):
         groups = [groups]
     return bool(set(allowed).intersection(groups))
 
+_dynamodb = boto3.resource("dynamodb")
+
+# Per-container scope cache. The UI calls uploadDocument once per file, so a
+# multi-file upload would otherwise cost one UsersTable query per file. Only
+# successful lookups are cached; a failure is never remembered as an answer.
+_user_scope_cache: dict = {}
+
+
+def _prefix_mappings():
+    """The deployment's config prefix mappings, or ``[]``.
+
+    Fails open on a read error, deliberately, and the asymmetry with the scope check
+    below is the point. A mapping that cannot be read means a destination is
+    *unmapped* as far as this request is concerned, which is the state the
+    deployment was in before the feature existed; a *scope* that cannot be read
+    means the caller cannot be placed, and that denies (see
+    ``_allowed_config_versions``). Refusing every upload because a routing table is
+    unreadable would make a transient DynamoDB error an outage of the UI's primary
+    action.
+    """
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        return []
+    try:
+        return PrefixMappingStore(_dynamodb.Table(table_name)).list()
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "Could not read the configuration prefix mappings (%s); treating this "
+            "destination as unmapped",
+            e,
+        )
+        return []
+
+
+def _allowed_config_versions(event):
+    """The caller's configuration scope, or a refusal.
+
+    Fail-closed: a scope that cannot be evaluated is not a caller without
+    restrictions. ``resolve_allowed_config_versions`` raises ``ScopeLookupError`` for
+    that case and this turns it into a ``PermissionError``, which the dispatcher maps
+    to HTTP 403.
+    """
+    claims = (event.get("identity") or {}).get("claims", {}) or {}
+    try:
+        return resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=_dynamodb,
+            caller_sub=caller_sub_from_claims(claims),
+            cache=_user_scope_cache,
+        )
+    except ScopeLookupError:
+        logger.warning(
+            "Denying an upload: the caller's configuration scope could not be "
+            "evaluated"
+        )
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be determined."
+        )
+
+
+def resolve_destination(event, object_key, version=None, revision=None):
+    """What configuration an upload to ``object_key`` would process under.
+
+    This is the control that closes a gap predating prefix mappings:
+    ``uploadDocument`` checked the caller's Cognito *group* and the target *bucket*,
+    but never their ``allowedConfigVersions``. The ``version`` argument was stamped
+    into the presigned POST verbatim, so a scoped Author could already put a document
+    into any Configuration Profile in the deployment — which is the
+    document-visibility partition for every scoped user — simply by naming it.
+
+    Prefix mappings add a second route to that same gap: with a mapping in place, the
+    *destination prefix* chooses the profile, with no metadata involved at all. So
+    the check has to be on the **resolved** profile rather than on the requested one.
+    Checking the request would leave the prefix route wide open; checking the
+    resolution covers both with one rule, and keeps covering any future route that
+    goes through ``resolve_config_assignment``.
+
+    Returns the ``ConfigAssignment``. Raises ``PermissionError`` (HTTP 403) when the
+    resolved profile is outside the caller's scope, and ``ValueError`` (HTTP 400)
+    when a prefix mapping in ``reject`` conflict mode would refuse the upload at
+    ingest — refusing here is strictly better than minting a URL for an upload that
+    is going to fail.
+    """
+    allowed = _allowed_config_versions(event)
+    assignment = resolve_config_assignment(
+        object_key,
+        metadata_profile=version,
+        metadata_revision=revision,
+        mappings=_prefix_mappings(),
+        # `allowed` is empty for an unscoped caller, which `scope_allows` reads as
+        # unrestricted — so this adds no restriction to the common case.
+        allowed_profiles=list(allowed) if allowed else None,
+    )
+    if assignment.scope_denied:
+        logger.warning(
+            "Denying an upload to %r: the resolved Configuration Profile is outside "
+            "the caller's scope %s",
+            object_key,
+            sorted(allowed),
+        )
+        # The message names neither the profile nor the scope. A 403 that reports
+        # which profile it refused is a profile-name enumeration oracle, and profile
+        # names are themselves access-controlled (getConfigVersions is
+        # scope-filtered for exactly this reason). The detail goes to the log for
+        # whoever triages it.
+        raise PermissionError(
+            "Unauthorized: that destination is governed by a Configuration Profile "
+            "outside your allowed configuration scope."
+        )
+    if assignment.rejected:
+        raise ValueError(assignment.reason)
+    return assignment
+
+
 def handler(event, context=None):
     """Dispatch upload-related resolver operations by GraphQL field name.
 
@@ -137,8 +264,14 @@ def _handle_upload_document(event):
         
         # Sanitize file name to avoid URL encoding issues
         sanitized_file_name = file_name.replace(' ', '_')
-        
-        # Build the object key - only use prefix if provided
+
+        # Build the object key - only use prefix if provided. The prefix is
+        # canonicalized first: S3 accepts `finance/x.pdf`, `/finance/x.pdf` and
+        # `finance//x.pdf` as three DISTINCT keys, and a prefix mapping on
+        # `finance/` matches only the first. Without this, adding one character to
+        # the prefix would bypass a mapping — including one in `reject` conflict
+        # mode. uploadSampleDocument has always stripped slashes; this one had not.
+        prefix = canonical_key(prefix or "").rstrip("/")
         if prefix:
             object_key = f"{prefix}/{sanitized_file_name}"
         else:
@@ -152,6 +285,23 @@ def _handle_upload_document(event):
         s3_targets.assert_write_target_allowed(
             bucket_name, object_key, ALLOWED_BUCKETS, logger=logger
         )
+
+        # Which CONFIGURATION this destination implies, and whether this caller may
+        # put a document into it. Covers the `version` argument and the destination
+        # prefix with one check -- see resolve_destination. Only for the Input
+        # bucket: the other four write targets (ground-truth baselines, page images,
+        # exports) are not documents and no mapping governs them.
+        if bucket_name == os.environ.get("INPUT_BUCKET"):
+            resolve_destination(event, object_key, version, revision)
+            # Note what this deliberately does NOT do: it does not rewrite `version`
+            # to the resolved profile. The metadata keeps recording what was
+            # REQUESTED, and queue_sender records what happened and why
+            # (ConfigSource, ConfigMappingPrefix) on the tracking row. Rewriting it
+            # here would make the two agree at ingest, so a mapping that overrode a
+            # user's selection would stop being a conflict -- costing the
+            # PrefixMappingConflict metric and the UI's conflict badge on exactly
+            # the case an operator wants to see. The UI already warns before upload,
+            # so nothing is a surprise to the person uploading.
 
         # Generate a presigned POST URL for uploading
         logger.info(f"Generating presigned POST data for: {object_key} with content type: {content_type}")
@@ -302,10 +452,14 @@ def _handle_upload_sample_document(event):
             base_name = os.path.basename(source_key)
             target_key = f"{prefix}/{base_name}" if prefix else base_name
             # `prefix` is caller-supplied here too, so the copy destination is bounded
-            # the same way as the presigned upload above.
+            # the same way as the presigned upload above -- including the
+            # configuration-scope check on whatever profile the destination resolves
+            # to. This path always writes to the Input bucket, so there is no
+            # bucket condition to apply as there is on uploadDocument.
             s3_targets.assert_write_target_allowed(
                 input_bucket, target_key, ALLOWED_BUCKETS, logger=logger
             )
+            resolve_destination(event, target_key, version, revision)
             s3_client.copy_object(
                 CopySource={"Bucket": config_bucket, "Key": source_key},
                 Bucket=input_bucket,

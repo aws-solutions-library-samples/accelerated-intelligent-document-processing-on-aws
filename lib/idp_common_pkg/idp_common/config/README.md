@@ -330,6 +330,81 @@ from the value the same configuration hashes to now. The curve keys are unaffect
 anything that compares *stored* index fingerprints must treat a mismatch on a
 pre-normalization revision as "unknown" rather than "changed".
 
+## Config prefix mappings — `prefix_mappings.py`
+
+An S3 prefix in the Input bucket to a Configuration Profile, so the *destination*
+decides the configuration rather than every producer having to stamp
+`x-amz-meta-config-version`. User-facing guide:
+[docs/configuration-profiles.md](../../../../docs/configuration-profiles.md).
+
+Two halves, deliberately separate, and the split is what makes the rule testable:
+
+| Half | What it is |
+|---|---|
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
+
+Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
+in four separate deploy artifacts (`queue_sender`, the reprocess resolver, the upload
+resolver, the configuration resolver's dry run), and a resolution rule that drifts
+between call sites is the defect that module's docstring was written about.
+
+### Four properties to preserve
+
+**One `GetItem`, strongly consistent, no cache.** The mapping set is read for *every
+document queued*. A filtered `Scan` on that path is how issue #599 silently processed
+documents under the wrong configuration — see the comment in
+`src/lambda/queue_sender/index.py`. `ConsistentRead=True` is what makes "an admin
+change takes effect immediately" true rather than aspirational; a TTL cache saves
+almost nothing against one small item and buys the worst admin experience available
+(a mapping that looks saved and does not apply, for an interval nothing explains).
+
+**`MAX_MAPPINGS` is enforced at write time.** `revisions.py` needs no such guard
+because `DEFAULT_REVISION_CAP` bounds its list. Nothing bounds this one, and the
+aggregate item is on the ingest path, so overflowing DynamoDB's 400 KB item limit
+would be an ingest outage rather than a failed admin write.
+
+⚠️ **`_read_item` re-raises a `ClientError`, and must keep doing so.** This is the one
+place the store must *not* copy `ConfigRevisionStore._read_index_item`, which logs and
+returns `{}`. That is harmless there because every mutation it feeds returns `None`
+when its target revision is absent, so nothing is written. Here a `put` appends
+unconditionally — so swallowing a throttle would turn one admin's write into "the
+mapping list is now exactly this one entry", silently deleting every other mapping,
+and report success. Read failures are handled by the **caller**, which knows whether
+it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+⚠️ **A revision carried across a profile change reads a configuration nobody asked
+for.** Revision numbers are per profile, so when the resolved profile differs from the
+one the metadata named, the revision must come from the mapping or be cleared — never
+inherited. `queue_processor` will not correct it either, because its backfill only
+fires when the revision is absent.
+
+### Where it fails open, and why that is a deliberate departure
+
+If the mapping index cannot be read, resolution falls through to previous behaviour and
+the caller emits `PrefixMappingLookupFailed`. `config_scope` argues that "cannot
+evaluate" must never read as "allow" on a visibility boundary, and that argument does
+apply — failing open means a transient DynamoDB error bypasses every `reject` mapping
+in the deployment. It is still the right call, because the alternative is halting
+document ingest for the whole deployment when a *routing* table is unreadable, and
+every one of those objects processed under the active profile before this feature
+existed. The metric is alarmed so the window is visible rather than silent.
+
+Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
+read fails closed. They answer different questions — an unreadable mapping means a
+destination is unmapped, an unresolvable scope means the caller cannot be placed.
+
+### Scope
+
+`resolve_config_assignment` takes `allowed_profiles` and reports `scope_denied`; it
+does not refuse, because what a refusal should look like differs between a presigned
+POST and a reprocess. Pass `None` from `queue_sender`, which handles an S3 event and
+has no caller to scope.
+
+The check is on the **resolved** profile, and that is the only form that works: there
+are two routes to choosing a profile — naming one in upload metadata, and choosing a
+prefix a mapping governs — and checking the request covers one of them.
+
 ## Rollback-safe DynamoDB serialization
 
 A CloudFormation stack rollback reverts the config custom-resource Lambda to the

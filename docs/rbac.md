@@ -460,7 +460,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 90 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 94 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 18 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -650,6 +650,8 @@ enforcement itself is Layer 2.
 | `deleteConfigVersion` | Admin |
 | `deleteConfigProfileRevision` | Admin |
 | `restoreConfigProfileRevision`, `labelConfigProfileRevision` | Admin, Author |
+| `listConfigPrefixMappings`, `putConfigPrefixMapping`, `deleteConfigPrefixMapping` | Admin. A prefix mapping *assigns* a Configuration Profile to everything arriving under an S3 prefix, so writing one decides which scoped users can see those documents — the same side of the line as minting a profile, not the same side as editing one's content |
+| `resolveConfigPrefixMapping` | Admin, Author, Viewer. A read-only dry run ("what would this key process under?"), **scope-filtered**: a caller outside the resolved profile's scope is told the destination is out of scope and is not told the profile's name |
 | `createUser`, `updateUser`, `deleteUser` | Admin |
 | `updatePricing`, `restoreDefaultPricing` | Admin |
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
@@ -857,4 +859,5 @@ To add a new role:
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.
 - **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before config-version stamping; reprocessing them under a profile in that user's scope restores visibility.
 - **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via the "Create Config Version" modal), the config-version scope IS enforced — the Author can only target versions within their scope.
+- **A principal with `s3:PutObject` on the Input bucket chooses its own Configuration Profile.** `uploadDocument` and `uploadSampleDocument` now scope-check the **resolved** profile — covering both the `version` argument and the destination prefix once [prefix mappings](configuration-profiles.md) are in use — but that check lives in the API layer, and a write that does not go through the API never reaches it. An S3 replication rule, a partner role, an appliance, or the SDK running with its own credentials picks its own prefix and its own `x-amz-meta-config-version`, and nothing in this product sees the request. Bound this with the IAM policy on whatever writes to that bucket; the admin UI's mapping table is a routing policy, not an ingest boundary.
 - These limitations are tracked for Phase 3 implementation.

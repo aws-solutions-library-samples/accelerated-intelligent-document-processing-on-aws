@@ -664,11 +664,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor \
 	    src/lambda/workflow_tracker
-	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
-	@# Both suites import their own ``index`` module; run each in its
-	@# own directory to prevent the sys.path collision that fails a
-	@# combined pytest invocation.
-	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) test_index.py -q -p no:cacheprovider
+	@echo "Running queue_sender Lambda tests (folder-skip, #719 re-upload cleanup, config prefix mappings)..."
+	@# Each Lambda suite imports its own ``index`` module; run each in its own
+	@# directory to prevent the sys.path collision that fails a combined pytest
+	@# invocation across directories. Within one directory that collision does not
+	@# arise, so this names the DIRECTORY rather than ``test_index.py``: a named
+	@# file covers only itself, so a second test module added beside it would reach
+	@# neither CI, and test_src_lambda_tests_in_ci.py cannot see that gap because it
+	@# records a file target as its parent directory.
+	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) . -q -p no:cacheprovider
 	@# reprocess_document_resolver's suite is run below with the other five
 	@# config-version-scope resolvers, as a whole directory rather than one named
 	@# file — a named file covers only itself, which is how a second test module

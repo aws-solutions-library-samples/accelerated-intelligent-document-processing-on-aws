@@ -1,0 +1,28 @@
+query ResolveConfigPrefixMapping(
+  $objectKey: String!
+  $metadataProfile: String
+  $metadataRevision: Int
+) {
+  resolveConfigPrefixMapping(
+    objectKey: $objectKey
+    metadataProfile: $metadataProfile
+    metadataRevision: $metadataRevision
+  ) {
+    success
+    assignment {
+      objectKey
+      outOfScope
+      configProfile
+      configRevision
+      source
+      mappingPrefix
+      conflict
+      rejected
+      reason
+    }
+    error {
+      type
+      message
+    }
+  }
+}

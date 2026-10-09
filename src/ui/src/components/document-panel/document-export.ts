@@ -97,6 +97,8 @@ export interface ExportableDocument {
   completionTime?: string;
   duration?: string;
   configVersion?: string;
+  configSource?: string;
+  configMappingPrefix?: string;
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -273,6 +275,10 @@ const buildPlan = (doc: ExportableDocument, settings: ExportSettings | undefined
     completionTime: doc.completionTime ?? null,
     duration: doc.duration ?? null,
     configVersion: doc.configVersion ?? null,
+    // Provenance travels with the export: a shared export is read without the
+    // UI around it, where the profile name alone does not say why.
+    configSource: doc.configSource ?? null,
+    configMappingPrefix: doc.configMappingPrefix ?? null,
     pageCount: doc.pageCount ?? null,
     evaluationStatus: doc.evaluationStatus ?? null,
     hitlStatus: doc.hitlStatus ?? null,
@@ -571,6 +577,8 @@ export const exportDocuments = async (
         objectKey: entry.key,
         objectStatus: entry.doc.objectStatus ?? null,
         configVersion: entry.doc.configVersion ?? null,
+        configSource: entry.doc.configSource ?? null,
+        configMappingPrefix: entry.doc.configMappingPrefix ?? null,
         pageCount: entry.doc.pageCount ?? null,
         evaluationStatus: entry.doc.evaluationStatus ?? null,
       },

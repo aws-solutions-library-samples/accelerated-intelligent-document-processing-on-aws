@@ -110,6 +110,21 @@ type Document implements DynamoDbBase @aws_cognito_user_pools @aws_iam {
   ConfigVersion: String
   # Revision of that profile the document was processed under.
   ConfigRevision: Int
+  # WHERE that profile came from: "metadata" (the upload said so),
+  # "prefix-mapping", "active-profile", "document-pin", "explicit-request",
+  # "internal-producer" or "rejected". There are several sources and the profile
+  # name alone does not say which one applied, which makes a surprising profile
+  # unexplainable without correlating logs across two Lambdas.
+  ConfigSource: String
+  # The config prefix mapping that decided it, when one did. Recorded even when the
+  # mapping LOST a precedence contest, because "a mapping was consulted and
+  # deferred" is a different fact from "no mapping matched".
+  ConfigMappingPrefix: String
+  # Why the document was refused at ingest, for a prefix mapping in "reject"
+  # conflict mode. Its own field because `errors` is not persisted and a reject
+  # happens before any section exists, so there is nowhere else for it to live —
+  # and without it the person refused sees a FAILED document and no reason.
+  ConfigAssignmentError: String
   TraceId: String
   # Number of retained processing runs (versions) for this document. Maintained
   # as a counter on the doc item; intentionally NOT part of the TypeDateIndex
@@ -330,6 +345,85 @@ type ConfigProfileRevisionMutationResponse @aws_cognito_user_pools @aws_iam {
   message: String
   # The new revision number, when the operation created one (restore).
   revision: Int
+  error: ConfigurationError
+}
+
+# A config prefix mapping: everything landing under an S3 prefix in the Input
+# bucket processes under one Configuration Profile. Longest match wins, and an
+# `exact` entry outranks every `prefix` entry.
+#
+# Mapping CRUD is Admin-only. A document's profile is the document-visibility
+# partition for every scoped user, so writing one of these decides who can see the
+# documents landing under that prefix — the same side of the line as minting a
+# profile, not the same side as editing a profile's content.
+type ConfigPrefixMapping @aws_cognito_user_pools @aws_iam {
+  # The identity of the mapping. A trailing '/' makes it a prefix match; without
+  # one it matches that single exact key. Nothing normalizes the slash in either
+  # direction, because it IS the mode selector.
+  prefix: String!
+  # Derived from `prefix`: "prefix" or "exact".
+  matchKind: String
+  configProfile: String!
+  # Null means the profile's published revision, so the mapping follows promotions
+  # the same way the active profile does.
+  configRevision: Int
+  # What happens when the object also carries conflicting upload metadata:
+  # "mapping" (the default — the mapping wins), "metadata" (the upload wins), or
+  # "reject" (the document is refused at ingest rather than guessed at).
+  #
+  # Named for metadata rather than tags: the value adjudicated is S3 USER METADATA,
+  # read via head_object()["Metadata"]. This product never calls GetObjectTagging.
+  metadataPrecedence: String
+  # A disabled mapping never matches but is retained, so one can be turned off
+  # without a delete/recreate gap in the audit trail.
+  enabled: Boolean
+  description: String
+  createdAt: AWSDateTime
+  createdBy: String
+  updatedAt: AWSDateTime
+  updatedBy: String
+}
+
+type ConfigPrefixMappingsResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  # Ordered most-specific-first — the order resolution evaluates them in.
+  mappings: [ConfigPrefixMapping]
+  error: ConfigurationError
+}
+
+type ConfigPrefixMappingMutationResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  message: String
+  mapping: ConfigPrefixMapping
+  error: ConfigurationError
+}
+
+# What an object at a given key would process under. A dry run: nothing is
+# uploaded and no state changes.
+type ConfigAssignmentPreview @aws_cognito_user_pools @aws_iam {
+  objectKey: String!
+  # True when the resolved profile is outside the caller's allowedConfigVersions.
+  # Every naming field is then null: returning the profile's name would make this
+  # a profile-name enumeration oracle for a scoped caller, and profile names are
+  # themselves access-controlled.
+  outOfScope: Boolean
+  configProfile: String
+  configRevision: Int
+  # Where it came from: "metadata", "prefix-mapping", "active-profile",
+  # "internal-producer", or "rejected".
+  source: String
+  mappingPrefix: String
+  # A mapping and the declared upload metadata disagreed.
+  conflict: Boolean
+  # A `reject` mapping would refuse this upload at ingest.
+  rejected: Boolean
+  # One sentence explaining the outcome, written for a person.
+  reason: String
+}
+
+type ConfigAssignmentPreviewResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  assignment: ConfigAssignmentPreview
   error: ConfigurationError
 }
 
@@ -1523,6 +1617,21 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   deleteConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionMutationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Config prefix mappings. Admin-only, because a mapping ASSIGNS a Configuration
+  # Profile — the document-visibility partition — to everything arriving under a
+  # prefix. An Author-writable mapping would let a scoped Author route documents
+  # into, or out of, another user's scope.
+  putConfigPrefixMapping(
+    prefix: String!
+    configProfile: String!
+    configRevision: Int
+    metadataPrecedence: String
+    enabled: Boolean
+    description: String
+  ): ConfigPrefixMappingMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  deleteConfigPrefixMapping(prefix: String!): ConfigPrefixMappingMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   generateRuleJson(ruleDescription: String!): GenerateRuleJsonResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   syncBdaIdp(direction: String, versionName: String, bdaProjectArn: String, saveArn: Boolean, syncMode: String): SyncBdaIdpResponse
@@ -2013,6 +2122,25 @@ type Query @aws_cognito_user_pools @aws_iam {
   listConfigProfileRevisions(profileName: String!): ConfigProfileRevisionsResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   getConfigProfileRevision(profileName: String!, revision: Int!): ConfigProfileRevisionResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+
+  # Config prefix mappings. The LIST is Admin-only: it is a statement of the
+  # deployment's routing policy, and a partially-filtered view of a longest-prefix
+  # rule is actively misleading — you cannot tell which mapping wins when some are
+  # hidden from you.
+  listConfigPrefixMappings: ConfigPrefixMappingsResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # The DRY RUN is readable by anyone who can upload or review, because "what will
+  # happen to this key?" is the question that makes a longest-prefix rule checkable
+  # before it goes live. Scope-filtered rather than Admin-only: a caller outside the
+  # resolved profile's scope is told the destination is out of scope and is not told
+  # the profile's name. `metadataProfile`/`metadataRevision` declare what the caller
+  # intends to send, since there is no object yet to read metadata from.
+  resolveConfigPrefixMapping(
+    objectKey: String!
+    metadataProfile: String
+    metadataRevision: Int
+  ): ConfigAssignmentPreviewResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
 
   getPricing: PricingResponse

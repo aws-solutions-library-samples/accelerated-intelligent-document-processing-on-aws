@@ -17,6 +17,8 @@ from moto import mock_aws
 
 CONFIG_BUCKET = "config-bucket"
 INPUT_BUCKET = "input-bucket"
+USERS_TABLE = "users-table"
+CONFIG_TABLE = "configuration-table"
 
 MANIFEST = {
     "schemaVersion": "1.0",
@@ -43,11 +45,15 @@ MANIFEST = {
 }
 
 
-def _event(field, arguments=None, groups=("Admin",)):
+def _event(field, arguments=None, groups=("Admin",), email="user@example.com"):
     return {
         "info": {"fieldName": field},
         "arguments": arguments or {},
-        "identity": {"claims": {"cognito:groups": list(groups)}},
+        # `email` is the configuration-scope lookup key. The dispatcher's Cognito
+        # authorizer always supplies it; an identity carrying neither it nor a `sub`
+        # cannot be placed and so is DENIED, which is what
+        # test_an_identity_that_cannot_be_scoped_is_refused covers.
+        "identity": {"claims": {"cognito:groups": list(groups), "email": email}},
     }
 
 
@@ -55,7 +61,42 @@ def _event(field, arguments=None, groups=("Admin",)):
 def resolver(monkeypatch):
     monkeypatch.setenv("CONFIGURATION_BUCKET", CONFIG_BUCKET)
     monkeypatch.setenv("INPUT_BUCKET", INPUT_BUCKET)
+    # The configuration-scope check on the resolved profile runs against REAL
+    # tables under moto rather than a stub. It is a security control, and a stubbed
+    # scope lookup proves only that the stub was called.
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("USERS_TABLE_NAME", USERS_TABLE)
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", CONFIG_TABLE)
     with mock_aws():
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName=USERS_TABLE,
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+                {"AttributeName": "email", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "EmailIndex",
+                    "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        ddb.create_table(
+            TableName=CONFIG_TABLE,
+            KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "Configuration", "AttributeType": "S"}
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
         s3 = boto3.client("s3", region_name="us-east-1")
         s3.create_bucket(Bucket=CONFIG_BUCKET)
         s3.create_bucket(Bucket=INPUT_BUCKET)
@@ -324,3 +365,250 @@ class TestTheAllowListFailsClosed:
                 index.handler(
                     _event("uploadDocument", {"fileName": "x.pdf", "bucket": "b"})
                 )
+
+
+@pytest.mark.unit
+class TestTheDestinationsConfigurationScopeIsEnforced:
+    """A scoped caller may not put a document into a profile outside their scope.
+
+    This closes a gap that predates prefix mappings. `uploadDocument` checked the
+    caller's Cognito GROUP and the target BUCKET, but never their
+    `allowedConfigVersions` -- so a scoped Author could already name any profile in
+    the deployment via the `version` argument, and a document's profile is the
+    document-visibility partition for every scoped user.
+
+    Prefix mappings add a second route to the same gap, where the DESTINATION
+    chooses the profile with no metadata involved. Both are covered here, because
+    the check is on the RESOLVED profile rather than on the requested one -- which
+    is the only form that can cover both.
+    """
+
+    @staticmethod
+    def _scope(index, *versions, email="user@example.com"):
+        boto3.resource("dynamodb", region_name="us-east-1").Table(USERS_TABLE).put_item(
+            Item={
+                "PK": "USER#u1",
+                "SK": "USER#u1",
+                "email": email,
+                "allowedConfigVersions": list(versions),
+            }
+        )
+        # The lookup caches successful answers per container; a test that seeds a
+        # row after a previous lookup would otherwise read the stale one.
+        index._user_scope_cache.clear()
+
+    @staticmethod
+    def _mapping(index, prefix, profile, **kwargs):
+        from idp_common.config.prefix_mappings import PrefixMappingStore
+
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        PrefixMappingStore(table).put(prefix, profile, **kwargs)
+
+    def test_the_metadata_route_is_refused_out_of_scope(self, resolver):
+        index, _ = resolver
+        self._scope(index, "teamA")
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(
+                _event(
+                    "uploadDocument",
+                    {"fileName": "x.pdf", "version": "finance-prod"},
+                )
+            )
+
+        assert str(excinfo.value).startswith("Unauthorized")
+
+    def test_the_prefix_route_is_refused_out_of_scope(self, resolver):
+        """The route a mapping adds: no `version` argument at all."""
+        index, _ = resolver
+        self._scope(index, "teamA")
+        self._mapping(index, "finance/", "finance-prod")
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(
+                _event("uploadDocument", {"fileName": "x.pdf", "prefix": "finance"})
+            )
+
+        assert str(excinfo.value).startswith("Unauthorized")
+
+    def test_a_refusal_does_not_name_the_profile_it_refused(self, resolver):
+        """A 403 that reports which profile it refused is an enumeration oracle, and
+        profile names are themselves access-controlled."""
+        index, _ = resolver
+        self._scope(index, "teamA")
+        self._mapping(index, "finance/", "finance-prod")
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(
+                _event("uploadDocument", {"fileName": "x.pdf", "prefix": "finance"})
+            )
+
+        assert "finance-prod" not in str(excinfo.value)
+        assert "teamA" not in str(excinfo.value)
+
+    def test_an_in_scope_destination_is_allowed(self, resolver):
+        index, _ = resolver
+        self._scope(index, "teamA-*")
+        self._mapping(index, "teamA/", "teamA-prod")
+
+        result = index.handler(
+            _event("uploadDocument", {"fileName": "x.pdf", "prefix": "teamA"})
+        )
+
+        assert result["objectKey"] == "teamA/x.pdf"
+
+    def test_an_unscoped_caller_is_unrestricted(self, resolver):
+        """Scoping is opt-in per user; no row means no restriction, and this must
+        stay true or the feature locks every ordinary user out of uploading."""
+        index, _ = resolver
+        self._mapping(index, "finance/", "finance-prod")
+
+        result = index.handler(
+            _event("uploadDocument", {"fileName": "x.pdf", "prefix": "finance"})
+        )
+
+        assert result["objectKey"] == "finance/x.pdf"
+
+    def test_a_sample_copy_is_refused_out_of_scope_too(self, resolver):
+        """uploadSampleDocument is the second caller-chosen-prefix writer into the
+        Input bucket, so it needs the identical check."""
+        index, _ = resolver
+        self._scope(index, "teamA")
+        self._mapping(index, "finance/", "finance-prod")
+
+        with pytest.raises(PermissionError):
+            index.handler(
+                _event(
+                    "uploadSampleDocument",
+                    {"sampleId": "bank-statement-multipage", "prefix": "finance"},
+                )
+            )
+
+    def test_an_identity_that_cannot_be_scoped_is_refused(self, resolver):
+        """Fail closed: "cannot evaluate" is not "unrestricted"."""
+        index, _ = resolver
+        event = _event("uploadDocument", {"fileName": "x.pdf"})
+        event["identity"]["claims"].pop("email")
+
+        with pytest.raises(PermissionError):
+            index.handler(event)
+
+    def test_a_reject_mapping_refuses_before_minting_a_url(self, resolver):
+        """The upload would fail at ingest, so refusing here is strictly better than
+        handing out a URL for an upload that cannot succeed."""
+        index, _ = resolver
+        self._mapping(
+            index, "regulated/", "regulated-profile", metadata_precedence="reject"
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            index.handler(
+                _event(
+                    "uploadDocument",
+                    {
+                        "fileName": "x.pdf",
+                        "prefix": "regulated",
+                        "version": "something-else",
+                    },
+                )
+            )
+
+        assert "Refused" in str(excinfo.value)
+
+    def test_a_reject_mapping_allows_an_agreeing_upload(self, resolver):
+        index, _ = resolver
+        self._mapping(
+            index, "regulated/", "regulated-profile", metadata_precedence="reject"
+        )
+
+        result = index.handler(
+            _event(
+                "uploadDocument",
+                {
+                    "fileName": "x.pdf",
+                    "prefix": "regulated",
+                    "version": "regulated-profile",
+                },
+            )
+        )
+
+        assert result["objectKey"] == "regulated/x.pdf"
+
+    def test_the_requested_version_is_still_what_gets_stamped(self, resolver):
+        """Deliberate: the metadata records what was REQUESTED and the tracking row
+        records what happened and why. Rewriting it here would make the two agree at
+        ingest, so a mapping that overrode a user's selection would stop counting as
+        a conflict -- losing the metric and the UI badge on exactly the case an
+        operator wants to see."""
+        index, _ = resolver
+        self._mapping(index, "acme/", "mapped-profile")
+
+        result = index.handler(
+            _event(
+                "uploadDocument",
+                {"fileName": "x.pdf", "prefix": "acme", "version": "chosen"},
+            )
+        )
+
+        presigned = json.loads(result["presignedUrl"])
+        assert presigned["fields"]["x-amz-meta-config-version"] == "chosen"
+
+    def test_a_leading_slash_cannot_bypass_a_reject_mapping(self, resolver):
+        """S3 accepts '/regulated/x.pdf' as a key DISTINCT from 'regulated/x.pdf',
+        and only the latter matches a mapping on 'regulated/'. Without
+        canonicalization that is a one-character bypass."""
+        index, _ = resolver
+        self._mapping(
+            index, "regulated/", "regulated-profile", metadata_precedence="reject"
+        )
+
+        with pytest.raises(ValueError):
+            index.handler(
+                _event(
+                    "uploadDocument",
+                    {
+                        "fileName": "x.pdf",
+                        "prefix": "/regulated",
+                        "version": "something-else",
+                    },
+                )
+            )
+
+    def test_a_non_input_bucket_write_is_not_scope_checked(self, resolver):
+        """Ground-truth baselines, page images and exports are not documents and no
+        mapping governs them, so the check would be meaningless there -- and would
+        break the Test Studio ground-truth editor for every scoped user."""
+        index, _ = resolver
+        self._scope(index, "teamA")
+
+        result = index.handler(
+            _event(
+                "uploadDocument",
+                {
+                    "fileName": "result.json",
+                    "prefix": "ts/labels",
+                    "bucket": CONFIG_BUCKET,
+                    "version": "finance-prod",
+                },
+            )
+        )
+
+        assert result["objectKey"] == "ts/labels/result.json"
+
+    def test_an_unreadable_mapping_table_does_not_block_uploads(self, resolver):
+        """Fails open on the ROUTING read while the SCOPE read fails closed. A
+        mapping that cannot be read means "unmapped", which is the state the
+        deployment was in before the feature; a scope that cannot be read means the
+        caller cannot be placed."""
+        index, _ = resolver
+
+        class Boom:
+            def Table(self, _name):
+                raise RuntimeError("throttled")
+
+        original = index._dynamodb
+        try:
+            index._prefix_mappings.__globals__["_dynamodb"] = Boom()
+            assert index._prefix_mappings() == []
+        finally:
+            index._prefix_mappings.__globals__["_dynamodb"] = original

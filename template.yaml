@@ -8126,6 +8126,68 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # A config prefix mapping assigns a Configuration Profile to everything landing
+  # under an S3 prefix. That decision is made at ingest and is then invisible in
+  # the document's own result -- the document succeeds, reports success, and
+  # carries extraction from whatever configuration was actually applied -- so the
+  # two ways it can go wrong need metrics and alarms rather than log lines. Same
+  # shape as StaleOutputPurgeFailedAlarm above.
+  #
+  # Both alarm on the FIRST occurrence: each one means documents are running under
+  # something other than what an administrator configured, and neither has a
+  # self-healing path.
+  PrefixMappingLookupFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not read its configuration prefix mappings while queueing a document. Resolution deliberately FAILS OPEN -- the document is processed under the profile its upload named, or under the active profile -- because halting ingest for the whole deployment when a routing table is unreadable is worse than processing under the active profile, which is what these documents did before mappings existed. The cost is that during this window every 'Refuse the conflict' mapping is bypassed and every mapped prefix is treated as unmapped, so documents may be processed under the wrong configuration and will not say so. Most common cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable to the QueueSender role; check that before assuming a transient DynamoDB error. QueueSender logs: 'Could not read the configuration prefix mappings'."
+      MetricName: PrefixMappingLookupFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on failure, so "no data" means every lookup succeeded.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  PrefixMappingUnresolvableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} configuration prefix mapping names a Configuration Profile or revision that no longer exists. The document still processes -- under the profile its upload named, or the active one -- so nothing fails, but every document arriving at that prefix is now processed under a configuration nobody chose for it. putConfigPrefixMapping refuses a mapping naming something absent, so this is always a LATER deletion of the profile or expiry of a pinned revision, never a typo at creation. Fix the mapping at Configuration > Prefix Mappings in the web UI, or delete it. QueueSender logs: 'Stale prefix mapping for'."
+      MetricName: PrefixMappingUnresolvable
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Not a fault signal: a refusing mapping doing its job publishes this. Alarm on
+  # it to notice a producer persistently submitting to a prefix it is not
+  # configured for -- a wiring problem at the producer rather than here. Every
+  # refused document appears in the UI as Failed with the reason on it, so no
+  # investigation has to start from this metric alone. Hence a threshold above
+  # zero and two periods: one refusal is the feature working.
+  PrefixMappingRejectedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} is repeatedly refusing documents at ingest because of a configuration prefix mapping in 'Refuse the conflict' mode. One refusal is the mapping working as configured; a sustained stream of them means a producer is submitting to a prefix whose mapping it does not satisfy, and those documents are not being processed at all. Each refused document is visible in the UI as Failed with the reason on it. Check Configuration > Prefix Mappings for the prefix involved, and the producer's config-version metadata."
+      MetricName: PrefixMappingRejected
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   # Issue #996. The Assessment Lambda degrades a section to "no confidence" when
   # the confidence pass fails deterministically, rather than failing the document
   # and discarding an extraction that already succeeded and was already paid for
@@ -8885,6 +8947,65 @@ Resources:
                   "region": "${AWS::Region}",
                   "title": "Stale Output Purge Failures — affected keys (ingest path; for the Reprocess path see the ReprocessDocumentResolver log group)",
                   "view": "table"
+                }
+              },
+              {
+                "type": "metric",
+                "x": 0,
+                "y": 41,
+                "width": 12,
+                "height": 5,
+                "properties": {
+                  "metrics": [
+                    [
+                      "${AWS::StackName}",
+                      "PrefixMappingApplied",
+                      {
+                        "stat": "Sum",
+                        "label": "Assigned by a prefix mapping"
+                      }
+                    ],
+                    [
+                      ".",
+                      "PrefixMappingConflict",
+                      {
+                        "stat": "Sum",
+                        "label": "Mapping disagreed with the upload"
+                      }
+                    ],
+                    [
+                      ".",
+                      "PrefixMappingRejected",
+                      {
+                        "stat": "Sum",
+                        "label": "Refused at ingest",
+                        "color": "#d13212"
+                      }
+                    ],
+                    [
+                      ".",
+                      "PrefixMappingUnresolvable",
+                      {
+                        "stat": "Sum",
+                        "label": "Mapping names a missing profile/revision",
+                        "color": "#ff7f0e"
+                      }
+                    ],
+                    [
+                      ".",
+                      "PrefixMappingLookupFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Mapping set unreadable — fell open",
+                        "color": "#d13212"
+                      }
+                    ]
+                  ],
+                  "region": "${AWS::Region}",
+                  "title": "Configuration Prefix Mappings (the bottom two are faults: documents ran under something other than what was configured and nothing else says so. 'Refused' is the feature working unless it is sustained)",
+                  "view": "timeSeries",
+                  "period": 300,
+                  "stat": "Sum"
                 }
               },
               {

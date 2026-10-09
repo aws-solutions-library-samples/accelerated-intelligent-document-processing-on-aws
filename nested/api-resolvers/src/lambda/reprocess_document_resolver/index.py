@@ -15,6 +15,12 @@ from idp_common.config_scope import (
     resolve_allowed_config_versions,
     scope_allows,
 )
+from idp_common.config.prefix_mappings import (
+    SOURCE_DOCUMENT_PIN,
+    SOURCE_EXPLICIT_REQUEST,
+    PrefixMappingStore,
+    resolve_config_assignment,
+)
 from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
@@ -184,26 +190,82 @@ def _enforce_document_scope(allowed_versions, object_keys):
     return current
 
 
-def _version_for_document(requested_version, object_key, current_versions):
-    """The profile to reprocess one document under.
+def _prefix_mappings():
+    """The deployment's config prefix mappings, or ``[]`` if unavailable.
 
-    An explicit ``version`` argument wins — it has already been scope-checked. When
-    none is given, a **scoped** caller's reprocess is pinned to the profile the
-    document already carries, which `_enforce_document_scope` has just verified is in
-    their scope.
+    Fails open, matching ``queue_sender``: reprocessing a document under the profile
+    it already has, or under the active one, is a far better outcome than refusing
+    the reprocess because a *routing* table could not be read.
+    """
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        return []
+    try:
+        return PrefixMappingStore(_dynamodb.Table(table_name)).list()
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "Could not read the configuration prefix mappings (%s); reprocessing "
+            "without them",
+            e,
+        )
+        return []
 
-    That pin is the forward half of the same control. Left unpinned, the document
-    reaches `queue_processor` with no `config_version`, which resolves the
-    **globally active** profile — a value nothing scope-checks, and one that may sit
-    outside the caller's scope. Reprocessing would then move the caller's own
-    document *out* of their scope, and stamp the tracking row accordingly.
 
-    Unscoped callers and Admins get an empty ``current_versions`` and so keep the
-    previous behaviour exactly: no pin, and the active profile is used.
+def _version_for_document(
+    requested_version, object_key, current_versions, allowed_versions=None
+):
+    """The profile to reprocess one document under, and where it came from.
+
+    Returns ``(version, source, mapping_prefix)``.
+
+    The order is a precedence chain and each step is there for a different reason:
+
+    1. **An explicit ``version`` argument wins.** It has already been scope-checked,
+       and it is a deliberate choice by an authenticated caller.
+    2. **A scoped caller's reprocess stays pinned to the document's own profile.**
+       ``_enforce_document_scope`` has just verified that profile is in their scope.
+       ⚠️ This step must come *before* the prefix mapping, and the reason is easy to
+       get backwards: the pin exists for exactly the case "no explicit profile was
+       requested", which is also the case a mapping would like to fill. Consulting
+       the mapping first would let a reprocess move a scoped caller's own document
+       out of their scope — reintroducing the bug this module's header documents,
+       through a feature that looks unrelated to it.
+    3. **Then a prefix mapping**, so that moving a mapping and reprocessing is how an
+       operator re-runs a backlog under a new profile. Only reachable for an
+       unscoped caller or an Admin, and the resolved profile is scope-checked anyway
+       so the rule holds even if (2) ever stops producing a pin.
+    4. **Otherwise unpinned**, and ``queue_processor`` resolves the active profile —
+       previous behaviour, unchanged.
     """
     if requested_version:
-        return requested_version
-    return current_versions.get(object_key) or None
+        return requested_version, SOURCE_EXPLICIT_REQUEST, None
+
+    pinned = current_versions.get(object_key) or None
+    if pinned:
+        return pinned, SOURCE_DOCUMENT_PIN, None
+
+    mappings = _prefix_mappings()
+    if not mappings:
+        return None, None, None
+
+    assignment = resolve_config_assignment(
+        object_key,
+        mappings=mappings,
+        # Scope is evaluated on the RESOLVED profile. For an unscoped caller
+        # `allowed_versions` is empty, which `scope_allows` reads as unrestricted.
+        allowed_profiles=list(allowed_versions) if allowed_versions else None,
+    )
+    if assignment.scope_denied or not assignment.mapping_prefix:
+        if assignment.scope_denied:
+            logger.warning(
+                "Not applying a prefix mapping to %s on reprocess: the mapped "
+                "profile is outside the caller's configuration scope",
+                object_key,
+            )
+        return None, None, None
+
+    logger.info("Reprocess of %s: %s", object_key, assignment.reason)
+    return assignment.profile, assignment.source, assignment.mapping_prefix
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -352,10 +414,17 @@ def handler(event, context):
         success_count = 0
         for object_key in object_keys:
             try:
+                resolved_version, config_source, mapping_prefix = (
+                    _version_for_document(
+                        version, object_key, current_versions, allowed_versions
+                    )
+                )
                 reprocess_document(
                     object_key,
-                    _version_for_document(version, object_key, current_versions),
+                    resolved_version,
                     revision,
+                    config_source=config_source,
+                    config_mapping_prefix=mapping_prefix,
                 )
                 success_count += 1
             except Exception as e:
@@ -374,7 +443,13 @@ def handler(event, context):
         raise e
 
 
-def reprocess_document(object_key, version=None, revision=None):
+def reprocess_document(
+    object_key,
+    version=None,
+    revision=None,
+    config_source=None,
+    config_mapping_prefix=None,
+):
     """
     Reprocess a document by creating a fresh Document object and queueing it.
     This exactly mirrors the queue_sender pattern for consistency and avoids
@@ -385,6 +460,11 @@ def reprocess_document(object_key, version=None, revision=None):
         version: Optional Configuration Profile to use for reprocessing
         revision: Optional revision of that profile. Omit to reprocess under the
             profile's current configuration.
+        config_source: Where ``version`` came from — see
+            ``_version_for_document``. Recorded on the document so a reprocess
+            that picked up a prefix mapping is distinguishable from one the
+            caller pinned, which is otherwise invisible after the fact.
+        config_mapping_prefix: The mapping prefix that decided it, when one did.
     """
     logger.info(
         f"Reprocessing document: {object_key}"
@@ -419,6 +499,8 @@ def reprocess_document(object_key, version=None, revision=None):
         sections=[],
         config_version=version,  # Set the configuration version if provided
         config_revision=revision,
+        config_source=config_source,
+        config_mapping_prefix=config_mapping_prefix,
     )
 
     logger.info(f"Created fresh document object for reprocessing: {object_key}")

@@ -221,6 +221,53 @@ S3 error.
 byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
 scratch.
 
+### Configuration Prefix Mappings
+
+A [config prefix mapping](configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
+assigns a Configuration Profile to everything arriving under an S3 prefix. Because
+that decision happens at ingest and is then invisible in the document's own result,
+it is instrumented: five metrics in the stack's own namespace (`<StackName>`),
+published by the queue sender.
+
+| Metric | Published when | Dimensions |
+|---|---|---|
+| `PrefixMappingApplied` | A mapping determined a document's configuration | `Prefix` |
+| `PrefixMappingConflict` | A mapping and the upload's own metadata disagreed | `Winner` (`prefix-mapping` or `metadata`) |
+| `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document at ingest | none |
+| `PrefixMappingLookupFailed` | The mapping set could not be read | none |
+| `PrefixMappingUnresolvable` | A mapping named a profile or revision that no longer exists | none |
+
+All five publish only on the event, so no data means it has not happened.
+
+**The two that need an alarm are the last two**, and they are alarmed. Both mean
+documents are being processed under something *other* than what an admin configured,
+and neither is visible anywhere else: the documents succeed, report success, and carry
+extraction from the wrong configuration. This is the same shape as the stale-output
+purge above — a quiet failure whose only signal has to be a metric, because the
+document's own status is green.
+
+`PrefixMappingLookupFailed` is quiet by construction, because resolution deliberately
+**fails open**. Halting document ingest for a whole deployment when a *routing* table
+cannot be read is worse than processing under the active profile, which is what every
+one of those documents did before mappings existed. The cost of that choice is that
+during such a window every "Refuse the conflict" mapping is bypassed, which is exactly
+why the metric is alarmed rather than only logged. The most common cause is a KMS or
+table-policy change denying `dynamodb:GetItem` on the `ConfigurationTable` to the queue
+sender's role — check that before assuming a transient DynamoDB error.
+
+`PrefixMappingUnresolvable` means a mapping has gone stale: its profile was deleted, or
+a revision it pinned is no longer retained. The document still processes — under the
+profile its upload named, or the active one — and the log line names which mapping is
+stale. `putConfigPrefixMapping` refuses a mapping naming something that does not exist,
+so this is always a *later* deletion rather than a typo at creation.
+
+`PrefixMappingRejected` is alarmed too, but it is not a fault signal: a refusing
+mapping doing its job publishes it. Alarm on it to notice that a producer is
+persistently submitting to a prefix it is not configured for, which is a wiring problem
+at the producer rather than in this deployment. Each refused document appears in the
+UI as **Failed** with the reason on it, so no investigation starts from the metric
+alone.
+
 ### Confidence Assessment Degraded
 
 Confidence assessment is an *enrichment* pass: extraction has already run,
