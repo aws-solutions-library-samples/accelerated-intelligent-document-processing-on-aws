@@ -44,18 +44,9 @@ SPDX-License-Identifier: MIT-0
 
 - **Security: newly published advisories in six web UI and documentation-site build dependencies are resolved.** The web UI's GraphQL code-generation tooling takes `@graphql-tools/utils` 12.0.1 through an npm override, since no `@graphql-codegen` release accepts the 12.x line that carries its fix yet, along with `@graphql-tools/executor-legacy-ws` 1.1.35 and `shell-quote` 1.11.0. `vue`, which reaches the UI only as a peer of the unused `vuera` package, moves to 3.5.42, `source-map-js` moves to 1.2.2 in both build trees, and the documentation site takes `sharp` 0.35.5, which bundles a patched librsvg. None of them is in the web UI's production bundle. **Action:** none.
 
-## [0.6.11]
-
-### Fixed
-
 - ⚠️ **A retried Advanced-mode extraction no longer sends the prompt a second time, which had been failing whole sections.** The agent's retry ladder handed the prompt back to a conversation that already held it, and because the prompt ends in a cache point the retried request grew past Bedrock's limit of four `cache_control` blocks — so two transient errors in one section ended it with a `ValidationException` that kept no rows and wrote no result, and one error short of that the document text and every attached page image were re-sent and charged for again. A retry now resumes the conversation the failed attempt started, carrying its completed tool rounds forward. ⚠️ **Action, for 0.6.10 only and only in Advanced mode with `extraction.agentic.table_parsing.enabled: true`: re-check the row counts of any large table whose document logged a transient extraction error.** The second copy of the prompt restated "extract every row" on top of tool results the agent had already produced, and `map_table_to_schema` accumulates rows across calls, so those rows could have been emitted twice — and nothing detects that, because the completeness check only fires on a shortfall. We have not observed it and cannot rule it out. The defect predates 0.6.10 but became reachable in it, when the shard time budget stopped letting botocore absorb a stalled request one layer lower ([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296), [#1014](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1014)).
 
 - **Sustained Bedrock throttling no longer makes that ladder hammer the service it is backing off from.** Once its backoff allowance was spent the ladder clamped every remaining sleep to zero and kept going — 43-45 of 50 requests went out back to back, roughly eight times what was needed, multiplied by every document in flight — while buying almost no extra time, because a refused call returns in well under a second. It now stops when the allowance is spent (5-7 attempts) and hands the retry to the state machine, which has minutes to hours of backoff where one invocation has 90 seconds, releasing the Lambda concurrency slot instead of holding it to spin. **Action:** none.
-
-## Templates
-   - us-west-2: `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.11.yaml`
-   - us-east-1: `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main_0.6.11.yaml`
-   - eu-central-1: `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main_0.6.11.yaml`
 
 ## [0.6.10]
 
