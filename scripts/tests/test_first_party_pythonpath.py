@@ -85,6 +85,16 @@ def _probe_makefile(body: str):
 
     The path must be absolute because `-C` changes directory first, and a
     relative `-f` would then resolve against the wrong place.
+
+    ⚠️ **One thing differs from `--eval`: the probe appears in
+    `MAKEFILE_LIST`.** Every consumer of that variable in these makefiles is
+    immediate (`FIRST_PARTY_CHECKOUT :=` in `make/hermetic_aws.mk`, and the
+    library Makefile's `include $(dir $(lastword $(MAKEFILE_LIST)))…`), so all
+    of them are evaluated before the probe is read and the measured values are
+    unaffected -- checked against `--eval` for every variable probed here, in
+    both call-site directories, including the command-line override, and all
+    identical. A *lazily* expanded consumer would see the probe and diverge, so
+    do not extend this helper to one without re-measuring.
     """
     with tempfile.NamedTemporaryFile(
         "w", suffix=".mk", prefix="idp-probe-", delete=False, encoding="utf-8"
@@ -114,16 +124,20 @@ def _make_variable(name: str, *, directory: Path) -> str:
             [
                 "make",
                 # `make -C` narrates on stdout, ahead of the value, and that
-                # would be read as part of it. Load-bearing in CI specifically:
-                # every pytest run here is a child of a make recipe, so
-                # `MAKELEVEL` is inherited and make treats itself as a sub-make.
+                # would be read as part of it.
                 #
-                # ⚠️ Removing this does not fail on a stock macOS run. 3.81
-                # narrates only for a genuinely recursive invocation, while 4.x
-                # — which is what both CIs have — honours the inherited
-                # `MAKELEVEL` and prints `Entering directory`. So the mutation
-                # that proves this flag is needed has to be run under 4.x with
-                # `MAKELEVEL=1`; measured there, dropping it fails five tests.
+                # ⚠️ Removing this does not fail on a stock macOS run, and the
+                # reason is the make *version*: `-C` implies
+                # `--print-directory` in GNU Make 4.x but not in 3.81. So the
+                # mutation that proves this flag is needed has to be run under a
+                # 4.x `make` — measured there, dropping it fails five tests.
+                # `MAKELEVEL`, which is inherited because every pytest run here
+                # is a child of a make recipe, only changes the banner from
+                # `make:` to `make[1]:`; it is not what makes the flag
+                # necessary, and 3.81 does not narrate even with it set.
+                #
+                # Load-bearing wherever `make` is 4.x: both CIs, a Linux dev
+                # box, and any Mac whose PATH puts Homebrew's make first.
                 "--no-print-directory",
                 "-C",
                 str(directory),
@@ -321,6 +335,42 @@ def test_suppressing_the_pin_leaves_pythonpath_unset_rather_than_empty() -> None
     assert "PYTHONPATH=" not in wrapper.stdout, wrapper.stdout
 
 
+def test_the_escape_works_from_the_environment_too_not_only_the_command_line() -> None:
+    """The same escape, set as an environment variable rather than a make word.
+
+    ⚠️ **These two forms are not equivalent, and only one of them depends on the
+    `?=`.** A command-line assignment overrides a makefile variable however it
+    was defined, so the test above passes whether `hermetic_aws.mk` says `?=` or
+    `:=`. An *environment* assignment is overridden by `:=` and honoured by
+    `?=`. So switching that one operator silently breaks the documented escape
+    for anyone who exports the variable, and the command-line form cannot see
+    it: measured, `?=` → `:=` leaves all other tests in this module green.
+
+    Neither CLAUDE.md nor `hermetic_aws.mk` restricts the escape to one form, so
+    both are covered here.
+    """
+    with _probe_makefile("__probe__:\n\t@printf '%s' '$(PYTEST_HERMETIC)'") as probe:
+        wrapper = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                "make",
+                "--no-print-directory",
+                "-C",
+                str(REPO_ROOT),
+                "-f",
+                "Makefile",
+                "-f",
+                str(probe),
+                "__probe__",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=dict(os.environ, FIRST_PARTY_PYTHONPATH=""),
+        )
+    assert wrapper.returncode == 0, wrapper.stderr
+    assert "PYTHONPATH=" not in wrapper.stdout, wrapper.stdout
+
+
 # --------------------------------------------------------------------------- #
 # the auto-discovering runner, which spawns its own pytest per root
 # --------------------------------------------------------------------------- #
@@ -398,3 +448,34 @@ def test_the_runner_passes_the_pinned_environment_to_every_child() -> None:
             f"the subprocess.run at line {call.lineno} passes an env= that does not "
             f"come from pinned_environment (expected one of {sorted(pinned_names)})"
         )
+
+
+def test_makefile_is_the_file_a_recipe_would_actually_read() -> None:
+    """`-f Makefile` is only faithful while `Makefile` wins make's own search.
+
+    The probes name the real makefile explicitly, because once any `-f` is given
+    make stops reading the default one. That is faithful only so long as
+    `Makefile` *is* what a bare `make` in these directories would read -- and
+    **`GNUmakefile` outranks it**, as does a lowercase `makefile` on a
+    case-sensitive filesystem. Verified on both 3.81 and 4.4.1: with a
+    `GNUmakefile` present, bare `make` reads it and `-f Makefile` does not.
+
+    So adding one would silently point every probe here at a different file than
+    production reads, which is the exact class of divergence this module exists
+    to detect. None exists today; this keeps that a measured fact.
+    """
+    # Read the directory rather than probing paths: `Path.exists()` is
+    # case-insensitive on macOS and `resolve()` does not canonicalise the case
+    # either, so `directory / "makefile"` reports True for the real `Makefile`.
+    # A listing gives the names as the filesystem actually holds them.
+    outranking = [
+        directory / name
+        for directory in (REPO_ROOT, LIBRARY_MAKEFILE_DIR)
+        for name in sorted(os.listdir(directory))
+        if name in ("GNUmakefile", "makefile")
+    ]
+    assert not outranking, (
+        f"these outrank Makefile in make's search order, so `-f Makefile` in this "
+        f"module would probe a different file than a bare `make` recipe reads: "
+        f"{[str(p) for p in outranking]}"
+    )
