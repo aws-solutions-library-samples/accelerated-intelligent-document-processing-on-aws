@@ -352,10 +352,35 @@ Two failure shapes to distinguish:
   can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
-  selectable, because they work for accounts that have used them recently — if
-  you hit this error, either pick a current model or request access again in the
-  Bedrock console.
+  Such models stay selectable, because they work for accounts that have used
+  them recently — if you hit this error, either pick a current model or request
+  access again in the Bedrock console.
+
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0` is the selectable model closest
+  to this state: an AWS Health notice puts it in legacy from 2026-10-08 with end
+  of life on 2027-04-08, which `list-foundation-models` had not yet reflected
+  when this page was written. `us.anthropic.claude-opus-4-1-20250805-v1:0` is
+  the model the API does report as `LEGACY` (end of life 2027-01-08), and it is
+  no longer in any picklist here, so you will meet it only in a configuration
+  stored before it was removed. Read the state yourself rather than from this
+  page:
+
+  ```bash
+  aws bedrock list-foundation-models --by-provider anthropic \
+    --query 'modelSummaries[].{id:modelId,lifecycle:modelLifecycle}'
+  ```
+
+  A legacy model also receives no further Service Quota increases, so it is a
+  poor choice for new work even while it answers. No default in the commercial
+  partition names one. **GovCloud is the exception.** That partition offers
+  three models — `us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+  `amazon.nova-pro-v1:0` and `amazon.nova-lite-v1:0` — and the
+  `lending-package-sample-govcloud` preset names the Sonnet for extraction,
+  summarization, LLM evaluation and confidence escalation, so a GovCloud
+  deployment runs the legacy Sonnet for those stages until that partition offers
+  a successor. (The `--govcloud` template transform defaults the knowledge-base
+  model to `amazon.nova-pro-v1:0`; it reaches the Sonnet only by selecting that
+  preset.)
 
 A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the

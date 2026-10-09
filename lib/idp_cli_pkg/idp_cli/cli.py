@@ -3881,15 +3881,26 @@ def _batch_status_to_display_dicts(batch_status):
             "num_sections": doc.num_sections,
             "error": doc.error or "",
         }
-        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
-        # over `DocumentState` -- the same authority the SDK's own progress monitor
-        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
-        # about whether a state is terminal. The chain this replaced named eleven
+        # The producer's own verdict wins when it recorded one, and
+        # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
+        # -- answers when it did not. The chain this replaced named eleven
         # members and sent the other twelve to `queued` by falling off the end,
         # which put `PREPROCESSING` (set for every document whenever a
         # preprocessing hook is registered) under "Queued" and left the terminal
         # `ABORTED` reporting "IN PROGRESS" forever.
-        bucket = classify_document_state(doc.status)
+        #
+        # Deriving the bucket from `status` is right for every state except
+        # `NOT_FOUND`, which is the one state whose bucket is not a function of
+        # the status alone: inside `NOT_FOUND_GRACE_SECONDS` of the batch's
+        # submission the SDK reports it as queued, because the QueueSender row
+        # may still be in flight, and only the SDK holds the submission time
+        # that decides it. Re-deriving here sent such a document to `failed`,
+        # so the display read "Failed 1, 100% complete" -- with no error
+        # message, since a provisional NOT_FOUND carries none -- for as long as
+        # the window lasted, while `all_complete` came from the SDK and
+        # correctly kept the loop polling. Two authorities, one of them blind to
+        # the grace window, disagreeing about the same document.
+        bucket = doc.bucket or classify_document_state(doc.status)
         if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:
@@ -3993,10 +4004,6 @@ def _monitor_progress(
     status_data = {}
     stats = {}
 
-    # Minimum wait time before considering batch complete (seconds)
-    # This gives time for documents to be picked up by the queue and tracked in DynamoDB
-    MIN_WAIT_BEFORE_COMPLETE = 60
-
     try:
         with Live(console=console, refresh_per_second=1) as live:
             while True:
@@ -4014,23 +4021,26 @@ def _monitor_progress(
                 )
                 live.update(layout)
 
-                # Check if all complete
-                # Add grace period: don't exit early if no documents have completed/failed yet
-                # This handles the case where documents are still being picked up by the queue
+                # Every document is in a state that will not change again.
+                #
+                # There is deliberately no second grace period here. One used to
+                # sit at this spot -- `MIN_WAIT_BEFORE_COMPLETE = 60`, commented
+                # "gives time for documents to be picked up by the queue and
+                # tracked in DynamoDB" -- and it could never fire: it was reached
+                # only via `has_terminal_docs or waited_long_enough`, and
+                # `all_complete` is `completed + failed == total`, so for any
+                # non-empty batch `all_complete` already implies
+                # `has_terminal_docs` and the first operand always won. The wait
+                # it described never happened once.
+                #
+                # Waiting for the queue is now the monitor's job, where the
+                # information needed to do it correctly lives: a document with no
+                # tracking row is reported as queued until the batch is older
+                # than `NOT_FOUND_GRACE_SECONDS`, so it does not count towards
+                # `all_complete` and this loop keeps polling without having to
+                # second-guess the counts it is handed.
                 if stats["all_complete"]:
-                    # If we have actual completions or failures, we can exit
-                    has_terminal_docs = stats["completed"] > 0 or stats["failed"] > 0
-                    # Or if we've waited long enough (documents should have started by now)
-                    waited_long_enough = elapsed_time >= MIN_WAIT_BEFORE_COMPLETE
-
-                    if has_terminal_docs or waited_long_enough:
-                        break
-                    else:
-                        # Documents haven't started yet, keep waiting
-                        logger.debug(
-                            f"all_complete=True but no terminal docs yet, waiting... "
-                            f"(elapsed={elapsed_time:.1f}s, min_wait={MIN_WAIT_BEFORE_COMPLETE}s)"
-                        )
+                    break
 
                 # Wait before next check
                 time.sleep(refresh_interval)

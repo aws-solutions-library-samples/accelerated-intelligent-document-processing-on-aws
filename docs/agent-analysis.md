@@ -259,23 +259,27 @@ The solution includes sample W2 tax documents for testing the analytics feature:
 
 ## Configuration
 
-The Agent Analysis feature is configured through CloudFormation parameters:
+The Agent Analysis feature is configured through the configuration editor, not
+through CloudFormation parameters.
 
 ### Model Selection
 
+The model is `agents.chat_companion.model_id`, editable under Agents in the
+configuration editor without a stack update:
+
 ```yaml
-ChatCompanionModelId:
-  Type: String
-  Default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-  Description: Model to use for Document Analysis Agent (analytics queries)
+agents:
+  chat_companion:
+    model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
 **Supported Models:**
 
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (Default - Recommended)
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Default)
+- `us.anthropic.claude-sonnet-4-6` (recommended for complex reasoning)
+- `us.anthropic.claude-sonnet-5`
 - `us.anthropic.claude-haiku-5-5`
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (legacy; end of life 2027-04-08)
 - `us.amazon.nova-pro-v1:0`
 - `us.amazon.nova-lite-v1:0`
 

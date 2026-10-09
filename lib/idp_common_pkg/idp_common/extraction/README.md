@@ -1477,7 +1477,7 @@ Configure agentic extraction in your configuration file:
 
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-6"  # Anthropic Claude recommended for agentic
+  model: "us.anthropic.claude-sonnet-5"  # Anthropic Claude recommended for agentic
   agentic:
     enabled: true
     max_concurrent_batches: 1  # Parallel processing (2-10 for very large docs)
@@ -2114,7 +2114,7 @@ When OCR confidence data is unavailable, the tool relies on `parse_success_rate`
 ```yaml
 # config.yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:
