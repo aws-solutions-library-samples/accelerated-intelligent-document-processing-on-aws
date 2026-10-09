@@ -63,23 +63,35 @@ class BuildspecValidator:
     # `set -e` in any option word of the command, so `set -o pipefail -e` counts,
     # as do `set -e`, `set -eu`, `set -euo pipefail` and `set -o errexit`. A bare
     # `-o pipefail` changes how a pipeline's status is computed and does NOT make
-    # the shell exit, so it must not satisfy this.
+    # the shell exit, so it must not satisfy this. `[^#\n]*?` rather than
+    # `[^\n]*?`, so a `-e` that only appears in a trailing comment --
+    # `set -x  # remember -e someday` -- does not count as enabling it.
     _ERREXIT = re.compile(
-        r"^[ \t]*set\s+(?:[^\n]*?(?:(?<![-\w])-[a-zA-Z]*e[a-zA-Z]*(?![\w])|-o\s+errexit\b))",
+        r"^[ \t]*set\s+(?:[^#\n]*?(?:(?<![-\w])-[a-zA-Z]*e[a-zA-Z]*(?![\w])|-o\s+errexit\b))",
         re.MULTILINE,
     )
     # `set +e` turns errexit back off. A check that only asked whether a `set -e`
     # precedes the loop would pass a block that re-disabled it in between, which is
     # the realistic way this protection gets removed later.
     _NO_ERREXIT = re.compile(
-        r"^[ \t]*set\s+(?:[^\n]*?(?:(?<![-\w])\+[a-zA-Z]*e[a-zA-Z]*(?![\w])|\+o\s+errexit\b))",
+        r"^[ \t]*set\s+(?:[^#\n]*?(?:(?<![-\w])\+[a-zA-Z]*e[a-zA-Z]*(?![\w])|\+o\s+errexit\b))",
         re.MULTILINE,
     )
     # A heredoc body is another language's source as often as it is shell -- an
     # embedded Python `for i in range(3):` is not a shell loop and `set -e` is not
     # a remedy for it -- so bodies are blanked before scanning. The delimiter may
     # be quoted (`<<'EOF'`) and may be indented (`<<-`).
-    _HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+    #
+    # ⚠️ `(?!<)` and the trailing `(?=[\s;)&|]|$)` are both load-bearing, and the
+    # reason is that a FALSE heredoc match blanks every line after it, which turns
+    # this whole check off for the rest of the command. `$(( a << b ))` must not
+    # read as a heredoc -- arithmetic shift is the realistic case here, since
+    # `sleep $((1 << attempt))` is the natural next edit to the retry ladder in
+    # `buildspec.yml`, and landing it above the image loop would silence the gate
+    # that protects that loop. `<<<` is a herestring and has no body at all.
+    _HEREDOC_START = re.compile(
+        r"<<-?(?!<)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1(?=[\s;)&|]|$)"
+    )
 
     def __init__(self, filepath: str):
         self.filepath = Path(filepath)
@@ -180,11 +192,21 @@ class BuildspecValidator:
         Everything between `<<DELIM` and a line holding only `DELIM` is data, not
         shell, so neither a loop nor a `set -e` inside it means what it looks
         like. Lines are replaced rather than removed so a reported command index
-        and any future line reference still line up.
+        and any line number still line up.
+
+        ⚠️ An UNTERMINATED heredoc is restored rather than blanked to the end of
+        the command. Blanking it would switch this check off for every remaining
+        line, so a pattern that matched a heredoc opener by mistake would silence
+        the gate instead of merely mis-reading one line — which is the most
+        expensive direction for a false positive here. Erring the other way costs
+        at worst a false error on a genuinely unterminated heredoc, which is
+        itself a broken buildspec.
         """
         out: List[str] = []
+        lines = cmd.split("\n")
         delimiter: str = ""
-        for line in cmd.split("\n"):
+        opened_at = -1
+        for index, line in enumerate(lines):
             if delimiter:
                 out.append("")
                 if line.strip() == delimiter:
@@ -194,6 +216,10 @@ class BuildspecValidator:
             match = cls._HEREDOC_START.search(line)
             if match:
                 delimiter = match.group(2)
+                opened_at = index
+        if delimiter:
+            # Never closed: put the lines back exactly as they were.
+            out[opened_at + 1 :] = lines[opened_at + 1 :]
         return "\n".join(out)
 
     def _validate_loops_fail_fast(self, phase_name: str, phase_content: Dict):
@@ -234,36 +260,43 @@ class BuildspecValidator:
                 self._check_one_command(where, idx, self._strip_heredocs(cmd))
 
     def _check_one_command(self, where: str, idx: int, cmd: str):
-        loop = self._LOOP.search(cmd)
-        if not loop:
-            return
+        """Judge EVERY loop in the command, not just the first.
 
-        # The LAST `set` before the loop is the one in force, so take the latest
-        # enabling and the latest disabling and compare them. Checking only the
-        # first `set -e` would pass `set -e` ... `set +e` ... loop, where errexit
-        # is demonstrably off for the loop.
-        def last_before(pattern: "re.Pattern[str]") -> int:
-            return max(
-                (m.start() for m in pattern.finditer(cmd) if m.start() < loop.start()),
-                default=-1,
+        ⚠️ `finditer`, not `search`, and the difference is not academic: the
+        #1310 fix added a `build_with_retry` helper whose `until` loop sits
+        *above* the image `for` loop in all three buildspecs. A check that
+        stopped at the first match therefore stopped reading before the loop
+        this gate exists to protect, and a `set +e` inserted in between passed
+        green. Measured on the shipped file before this changed.
+        """
+        for loop in self._LOOP.finditer(cmd):
+            # The LAST `set` before THIS loop is the one in force, so take the
+            # latest enabling and the latest disabling and compare them. Checking
+            # only the first `set -e` would pass `set -e` ... `set +e` ... loop,
+            # where errexit is demonstrably off for the loop.
+            def last_before(pattern: "re.Pattern[str]", limit: int = loop.start()) -> int:
+                return max(
+                    (m.start() for m in pattern.finditer(cmd) if m.start() < limit),
+                    default=-1,
+                )
+
+            enabled_at = last_before(self._ERREXIT)
+            disabled_at = last_before(self._NO_ERREXIT)
+            if enabled_at > disabled_at:
+                continue
+
+            why = (
+                "re-disables errexit with 'set +e' before"
+                if disabled_at > enabled_at >= 0
+                else "does not enable errexit before"
             )
-
-        enabled_at = last_before(self._ERREXIT)
-        disabled_at = last_before(self._NO_ERREXIT)
-        if enabled_at > disabled_at:
-            return
-
-        why = (
-            "re-disables errexit with 'set +e' before"
-            if disabled_at > enabled_at >= 0
-            else "does not enable errexit before"
-        )
-        self.errors.append(
-            f"Phase '{where}', command #{idx}: a multi-line command {why} a "
-            f"'{loop.group(1)}' loop, so the command's exit status is only the last "
-            "iteration's and a failure in any earlier one is silently skipped "
-            "(issue #1310). Add 'set -e' before the loop."
-        )
+            line = cmd.count("\n", 0, loop.start()) + 1
+            self.errors.append(
+                f"Phase '{where}', command #{idx} (line {line}): a multi-line command "
+                f"{why} a '{loop.group(1)}' loop, so the command's exit status is only "
+                "the last iteration's and a failure in any earlier one is silently "
+                "skipped (issue #1310). Add 'set -e' before the loop."
+            )
 
     def _validate_env(self):
         """Validate env section if present"""

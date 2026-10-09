@@ -27,12 +27,27 @@ phases:
         # See the fuller note in buildspec.yml (#1310).
         set -e
 
+        # Retries are bounded by a DEADLINE as well as by an attempt count, and
+        # the deadline is the half that matters. DockerBuildRun is a
+        # Custom::CodeBuildRun, so CloudFormation's 60-minute custom-resource
+        # ServiceTimeout is the real budget -- and a build that eventually
+        # succeeds after burning through it produces exactly the message #1310
+        # is about ("CloudFormation did not receive a response from your Custom
+        # Resource"), now in the recovering case. 2400s leaves time for the
+        # images still queued behind the current one. $SECONDS counts from the
+        # start of this shell, which CodeBuild starts at the top of the phase.
+        RETRY_DEADLINE_SECONDS="${RETRY_DEADLINE_SECONDS:-2400}"
+
         build_with_retry() {
           local label="$1"; shift
           local attempt=1 max_attempts=3
           until docker buildx build "$@"; do
             if [ "$attempt" -ge "$max_attempts" ]; then
               echo "ERROR: failed to build/push ${label} after ${max_attempts} attempts"
+              return 1
+            fi
+            if [ "$SECONDS" -ge "$RETRY_DEADLINE_SECONDS" ]; then
+              echo "ERROR: failed to build/push ${label}; ${SECONDS}s elapsed is past the ${RETRY_DEADLINE_SECONDS}s retry deadline, so failing now rather than letting the stack operation time out"
               return 1
             fi
             echo "WARNING: build of ${label} failed (attempt ${attempt}/${max_attempts}); retrying in $((attempt * 15))s"

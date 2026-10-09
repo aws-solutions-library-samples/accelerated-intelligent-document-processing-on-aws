@@ -30,6 +30,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+# Shared rather than a fourth hand-rolled one: `test_log_group_encryption`
+# counts the copies of this in the tree, and a SafeLoader subclass is the point
+# (`test_cfn_loader_safety` enforces that no loader here can execute a tag).
+from test_config_schema_order import _CfnSafeLoader
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VALIDATOR = REPO_ROOT / "scripts" / "sdlc" / "validate_buildspec.py"
 
@@ -145,6 +150,41 @@ RULE_CASES = [
     ("indented heredoc", "cat <<-EOF\n\tfor x in y; do\n\tdone\n\tEOF\n", False),
     ("comment is not a statement", "# for each function\necho hi\necho there\n", False),
     ("elif is not a loop", "if x; then\n  :\nelif y; then\n  :\nfi\n", False),
+    # ⚠️ A FALSE heredoc match blanks every line after it, which switches the
+    # check off for the rest of the command -- the most expensive direction for a
+    # false positive here. Arithmetic shift is the realistic case: `sleep
+    # $((1 << attempt))` is the natural next edit to buildspec.yml's retry ladder,
+    # and it sits above the image loop.
+    (
+        "arithmetic shift is not a heredoc",
+        "n=$((1 << N))\nfor f in a; do\n b\ndone\n",
+        True,
+    ),
+    ("a herestring has no body", "cat <<<WORD\nfor f in a; do\n b\ndone\n", True),
+    (
+        "an unterminated heredoc restores its lines",
+        "cat <<EOF\nhello\nfor f in a; do\n b\ndone\n",
+        True,
+    ),
+    # A `-e` that only appears in a trailing comment never executed.
+    (
+        "errexit in a trailing comment",
+        "set -x  # remember -e someday\nfor f in a; do\n b\ndone\n",
+        True,
+    ),
+    # The regression this PR's own fix created: the retry helper's `until` loop
+    # sits ABOVE the image loop, so a check that stopped at the first match
+    # stopped reading before the loop it exists to protect.
+    (
+        "a second loop is judged too",
+        "set -e\nuntil q; do\n r\ndone\nset +e\nfor f in a; do\n b\ndone\n",
+        True,
+    ),
+    (
+        "two guarded loops are both fine",
+        "set -e\nuntil q; do\n r\ndone\nfor f in a; do\n b\ndone\n",
+        False,
+    ),
 ]
 
 
@@ -400,6 +440,86 @@ def test_post_build_does_not_claim_success_when_the_build_failed(buildspec: str)
             assert "CODEBUILD_BUILD_SUCCEEDING" in command, (
                 f"{buildspec}: an unguarded success line survives: {command!r}"
             )
+
+
+@pytest.mark.parametrize("buildspec", BUILDSPECS_WITH_LOOPS)
+def test_the_image_loop_itself_is_still_inside_the_gates_reach(buildspec: str):
+    """The gate must read the IMAGE loop, not merely the first loop it meets.
+
+    This is the regression the #1310 fix created and the sharpest assertion in
+    this file: `build_with_retry`'s `until` loop sits above the `for func_var`
+    loop, so a checker using `search` stopped reading before the loop it exists
+    to protect. Sabotaging the real file is the only way to show the gate is
+    actually looking at that loop rather than being satisfied by the one in
+    front of it.
+    """
+    source = (REPO_ROOT / buildspec).read_text()
+    sabotaged = re.sub(
+        r"^(\s*)(for func_var in )",
+        r"\1set +e\n\1\2",
+        source,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert sabotaged != source, "could not find the image loop to sabotage"
+
+    block = [
+        c
+        for c in yaml.safe_load(sabotaged)["phases"]["build"]["commands"]
+        if isinstance(c, str) and "buildx build" in c
+    ][0]
+    cls = _load_validator()
+    validator = cls(buildspec)
+    validator._check_one_command("build", 1, cls._strip_heredocs(block))
+    assert validator.errors, (
+        "a 'set +e' immediately before the image loop was not reported; the gate "
+        "is not reading that loop"
+    )
+    assert "set +e" in validator.errors[0]
+
+    # And both loops are seen, which is what makes the above a loop-coverage
+    # result rather than an accident of where the sabotage landed.
+    clean_block = [
+        c
+        for c in yaml.safe_load(source)["phases"]["build"]["commands"]
+        if isinstance(c, str) and "buildx build" in c
+    ][0]
+    found = [m.group(1) for m in cls._LOOP.finditer(cls._strip_heredocs(clean_block))]
+    assert found == ["until", "for"], found
+
+
+@pytest.mark.parametrize("buildspec", BUILDSPECS_WITH_LOOPS)
+def test_the_retry_is_bounded_by_a_deadline_not_only_an_attempt_count(buildspec: str):
+    """An attempt count alone does not bound wall clock against the consumer.
+
+    `DockerBuildRun` is a `Custom::CodeBuildRun`, so CloudFormation's 60-minute
+    custom-resource timeout is the real budget. A build that eventually succeeds
+    after burning through it produces the message #1310 is about, now in the
+    recovering case — so the retry has to look at elapsed time, and the
+    CodeBuild project's own timeout has to fall inside that budget rather than
+    beyond it.
+    """
+    block = _build_block(buildspec)
+    assert "RETRY_DEADLINE_SECONDS" in block
+    assert '[ "$SECONDS" -ge "$RETRY_DEADLINE_SECONDS" ]' in block
+
+    with (REPO_ROOT / "patterns/unified/template.yaml").open() as handle:
+        template = yaml.load(handle, Loader=_CfnSafeLoader)  # noqa: S506
+    timeout = template["Resources"]["DockerBuildProject"]["Properties"][
+        "TimeoutInMinutes"
+    ]
+    assert timeout < 60, (
+        f"DockerBuildProject TimeoutInMinutes is {timeout}, outside CloudFormation's "
+        "60-minute custom-resource budget, so a slow build surfaces as the opaque "
+        "'did not receive a response' message instead of CodeBuild's own timeout"
+    )
+
+    deadline = int(re.search(r"RETRY_DEADLINE_SECONDS:-(\d+)", block).group(1))
+    assert deadline < timeout * 60, (
+        f"the retry deadline ({deadline}s) is not inside the CodeBuild timeout "
+        f"({timeout * 60}s), so the ladder can be cut off mid-sleep instead of "
+        "reporting why it stopped"
+    )
 
 
 def _discovered_buildspecs() -> list[str]:
