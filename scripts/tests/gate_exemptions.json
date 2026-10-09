@@ -145,12 +145,12 @@
     },
     "Makefile::ARN_PARTITION_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one template",
+      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one named template per entry",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
+      "reason": "Two entries, one reason each, both bounded to a single file and a single line pattern. credential-vendor.yml:gitlab-runners-prod \u2014 cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised; not machine-checkable, because whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree. github-oidc-review-role.yml:sts.amazon \u2014 the two lines carry an OpenID Connect audience claim that happens to be spelled like a hostname; GitHub mints the token with it as an opaque value and configure-aws-credentials requests it verbatim in every partition, so ${AWS::URLSuffix} would render an audience GitHub never issues. Not machine-checkable either: distinguishing a claim value from an endpoint needs the meaning of the surrounding IAM key, not a grep.",
       "crossReferences": [
         "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
         "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"
@@ -611,9 +611,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -1180,12 +1180,12 @@
     },
     "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path \u2014 test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction \u2014 it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
       "memberKind": "check id + path scope",
       "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
       "crossReferences": [
@@ -1341,7 +1341,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1456,13 +1456,13 @@
     },
     "scripts/tests/test_check_branch_protection.py::MUST_STAY_ADVISORY": {
       "kind": "exemption",
-      "turnsOff": "the required-status-check eligibility assertion for three CI contexts",
+      "turnsOff": "the required-status-check eligibility assertion for four CI contexts, and for the AI-review workflow also the conditional-shape assertion in test_no_workflow_in_this_repo_has_a_conditional_shape_we_would_miss",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "none",
-      "reason": "Two workflows are path-filtered and one check is created behind a conditional, so requiring any would leave it pending forever. Readable from the workflow YAML.",
-      "ratchetGap": "No check that a named workflow is still path-filtered, so a workflow that loses its paths: filter keeps an exemption it no longer needs.",
+      "reason": "One reason per member, because they are advisory for three different reasons and an aggregate reading hides that. build-docs.yml and generate-dep-manifest.yml: path-filtered, so a PR touching no matching path never reports and a required check would stay pending forever. Test Results: created by an action behind a conditional step, so likewise. AI PR Review (advisory): it reports on every non-draft same-repository PR to develop, so unlike the other three it is not a pending-forever risk -- it is the OPPOSITE failure. A job-level `if:` excludes drafts and fork PRs, and GitHub reports a conditionally skipped job as SUCCEEDING, so requiring it would let the gate pass on those PRs with no review having run. It is also advisory by intent: a model's opinion must not decide whether code merges. All four are readable from the workflow YAML; none is machine-decidable as a policy.",
+      "ratchetGap": "No check that a named workflow is still path-filtered, so a workflow that loses its paths: filter keeps an exemption it no longer needs. For the AI-review member the residual is different and narrower: nothing asserts that its job-level `if:` is still the reason it is ineligible, so if the condition were removed the entry would keep shielding a context that had become requireable. The eligibility derivation itself is tested.",
       "crossReferences": [
         "scripts/sdlc/check_branch_protection.py::allowed"
       ],
@@ -1509,7 +1509,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1524,7 +1524,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
