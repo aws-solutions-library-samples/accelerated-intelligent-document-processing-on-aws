@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { SelectProps } from '@cloudscape-design/components';
 import {
   Container,
@@ -59,6 +60,14 @@ interface TestSetItem {
   error?: string | null;
   documentClassType?: string | null;
 }
+
+/**
+ * Newest first, by instant rather than by the ISO string: `isoformat()` drops the
+ * fractional seconds on a whole second, so a lexicographic order puts such a set
+ * after one created later in the same second. Module-level so its identity is
+ * stable across renders, which is how Cloudscape matches the sorted header.
+ */
+const compareByCreatedAt = (a: TestSetItem, b: TestSetItem): number => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
 
 const TestSets = (): React.JSX.Element => {
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
@@ -473,10 +482,18 @@ const TestSets = (): React.JSX.Element => {
       createdAt: new Date().toISOString(),
     }));
 
-  const filteredTestSets = [...generatingRows, ...testSets]
-    .filter((item) => item != null)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  console.log('Filtered testSets for Table:', filteredTestSets);
+  const filteredTestSets = [...generatingRows, ...testSets].filter((item) => item != null);
+
+  /**
+   * Sorting state for the table. The newest-first order the list has always
+   * opened in is now the collection's default sorting state rather than a sort
+   * applied to the rows, so that clicking a column header replaces it instead of
+   * being overridden by it — the headers carried chevrons but no handler, so
+   * every click was a no-op.
+   */
+  const { items: sortedTestSets, collectionProps } = useCollection(filteredTestSets, {
+    sorting: { defaultState: { sortingColumn: { sortingComparator: compareByCreatedAt }, isDescending: true } },
+  });
 
   const columnDefinitions = [
     {
@@ -624,7 +641,7 @@ const TestSets = (): React.JSX.Element => {
       id: 'createdAt',
       header: 'Created',
       cell: (item: TestSetItem) => new Date(item.createdAt).toLocaleDateString(),
-      sortingField: 'createdAt',
+      sortingComparator: compareByCreatedAt,
     },
   ];
 
@@ -711,7 +728,10 @@ const TestSets = (): React.JSX.Element => {
         resizableColumns
         wrapLines
         columnDefinitions={columnDefinitions}
-        items={filteredTestSets}
+        items={sortedTestSets}
+        sortingColumn={collectionProps.sortingColumn}
+        sortingDescending={collectionProps.sortingDescending}
+        onSortingChange={collectionProps.onSortingChange}
         selectedItems={selectedItems}
         onSelectionChange={({ detail }) => setSelectedItems(detail.selectedItems)}
         selectionType="multi"
