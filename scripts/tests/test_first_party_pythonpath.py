@@ -29,11 +29,12 @@ inert, which is the failure mode this repository keeps rediscovering.
 from __future__ import annotations
 
 import ast
-import functools
+import contextlib
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -63,78 +64,79 @@ pytestmark = pytest.mark.unit
 _PROBE_TIMEOUT = 120
 
 
-@functools.lru_cache(maxsize=1)
-def _make_supporting_eval() -> str | None:
-    """A `make` that accepts `--eval`, or None if this machine has none.
+@contextlib.contextmanager
+def _probe_makefile(body: str):
+    """A throwaway makefile holding `body`, yielded as an absolute path.
 
-    ⚠️ **`make` on macOS is GNU Make 3.81 (2006), which has no `--eval`** --
-    the option arrived in 3.82, and Apple ships the last GPLv2 release. Every
-    probe in this module injects its target with `--eval`, so on a stock macOS
-    toolchain all of them failed with `unrecognized option`, and the six
-    failures read as a repository fault rather than a missing tool. Homebrew's
-    `make` formula installs 4.x as **`gmake`** and deliberately does not shadow
-    `/usr/bin/make`, so preferring `gmake` is what makes these run rather than
-    skip on a developer machine; CI is Linux, where plain `make` is already 4.x.
+    ⚠️ **A second `-f` rather than `--eval`, and the reason is portability.**
+    `--eval` arrived in GNU Make **3.82**, and macOS ships **3.81** — the last
+    GPLv2 release — so every probe in this module used to fail there with
+    `unrecognized option` and a usage dump. Six tests red on every Mac with a
+    stock toolchain, green in CI on Linux, for a reason nothing to do with this
+    repository.
 
-    `--version` is not consulted. The question is whether the option works, so
-    the probe is the option itself against a trivial target -- which also covers
-    a non-GNU `make` whose version string this would have to guess at.
+    `make -f Makefile -f <probe>` is accepted by 3.81 and does the same job:
+    once any `-f` is given make stops reading the default makefile, so the real
+    one is named explicitly and the probe target is appended to it. The
+    expansion measured is therefore still the one a *recipe* gets, which is the
+    whole point of this helper, and it is measured through the same `make` the
+    recipes themselves run under rather than through a newer one installed
+    alongside it.
+
+    The path must be absolute because `-C` changes directory first, and a
+    relative `-f` would then resolve against the wrong place.
     """
-    for candidate in ("make", "gmake"):
-        try:
-            done = subprocess.run(  # noqa: S603 - fixed argv, no shell
-                [candidate, "--eval", "__probe__:\n\t@printf ok", "__probe__"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=REPO_ROOT,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if done.returncode == 0 and done.stdout.strip() == "ok":
-            return candidate
-    return None
-
-
-#: Skips every probe in this module when no `make` here understands `--eval`,
-#: rather than reporting six failures about the toolchain. A skip is weaker than
-#: a pass and says so: install a modern make to get the coverage back.
-requires_make_eval = pytest.mark.skipif(
-    _make_supporting_eval() is None,
-    reason=(
-        "no `make` on this machine accepts `--eval` (GNU Make < 3.82; macOS "
-        "ships 3.81). `brew install make` provides 4.x as `gmake`, which these "
-        "probes prefer automatically -- no PATH change needed."
-    ),
-)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".mk", prefix="idp-probe-", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(body)
+        path = Path(handle.name)
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _make_variable(name: str, *, directory: Path) -> str:
     """One variable's value, expanded by ``make`` reading the REAL Makefile.
 
-    ``--eval`` adds a target to the makefile ``make`` would have read anyway, so this
-    measures the same expansion a recipe gets — including the two different relative
-    include paths the root and library Makefiles use, which is the part a text parse
-    cannot check.
+    The probe target is appended as a second makefile, so this measures the same
+    expansion a recipe gets — including the two different relative include paths
+    the root and library Makefiles use, which is the part a text parse cannot
+    check. See `_probe_makefile` for why not ``--eval``.
     """
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [
-            _make_supporting_eval() or "make",
-            "--no-print-directory",  # `make -C` narrates on stdout, ahead of the value
-            "-C",
-            str(directory),
-            "--eval",
-            # Single-quoted deliberately: the value ends in a shell parameter
-            # expansion that keeps the caller's own pin, and a double-quoted printf
-            # would have make's own shell resolve it here — against this process's
-            # environment, which is not the one a recipe runs in.
-            f"__probe__:\n\t@printf '%s' '$({name})'",
-            "__probe__",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # Single-quoted deliberately: the value ends in a shell parameter expansion
+    # that keeps the caller's own pin, and a double-quoted printf would have
+    # make's own shell resolve it here — against this process's environment,
+    # which is not the one a recipe runs in.
+    with _probe_makefile(f"__probe__:\n\t@printf '%s' '$({name})'") as probe:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                "make",
+                # `make -C` narrates on stdout, ahead of the value, and that
+                # would be read as part of it. Load-bearing in CI specifically:
+                # every pytest run here is a child of a make recipe, so
+                # `MAKELEVEL` is inherited and make treats itself as a sub-make.
+                #
+                # ⚠️ Removing this does not fail on a stock macOS run. 3.81
+                # narrates only for a genuinely recursive invocation, while 4.x
+                # — which is what both CIs have — honours the inherited
+                # `MAKELEVEL` and prints `Entering directory`. So the mutation
+                # that proves this flag is needed has to be run under 4.x with
+                # `MAKELEVEL=1`; measured there, dropping it fails five tests.
+                "--no-print-directory",
+                "-C",
+                str(directory),
+                "-f",
+                "Makefile",
+                "-f",
+                str(probe),
+                "__probe__",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     assert result.returncode == 0, (
         f"could not read $({name}) from the makefile in {directory}: {result.stderr}"
     )
@@ -204,7 +206,6 @@ def test_the_rule_finds_the_packages_this_checkout_has() -> None:
     assert all(root.is_dir() for root in roots)
 
 
-@requires_make_eval
 def test_make_python_and_the_provenance_guard_agree() -> None:
     from_make = _make_variable("FIRST_PARTY_PYTHONPATH", directory=REPO_ROOT)
     from_python = checkout_pythonpath(REPO_ROOT)
@@ -227,7 +228,6 @@ def test_the_pin_matches_what_first_party_editables_installs() -> None:
     assert first_party_roots(REPO_ROOT) == _editable_paths()
 
 
-@requires_make_eval
 def test_the_pin_is_absolute() -> None:
     """A relative entry is dropped by any subprocess started in another directory."""
     value = _make_variable("FIRST_PARTY_PYTHONPATH", directory=REPO_ROOT)
@@ -235,7 +235,6 @@ def test_the_pin_is_absolute() -> None:
     assert all(Path(entry).is_absolute() for entry in value.split(os.pathsep))
 
 
-@requires_make_eval
 def test_both_makefiles_pin_the_same_checkout() -> None:
     """CI runs the library's own targets with ``make -C``, from a different directory.
 
@@ -250,7 +249,6 @@ def test_both_makefiles_pin_the_same_checkout() -> None:
 # --------------------------------------------------------------------------- #
 # measured: what the wrapper actually does to an interpreter
 # --------------------------------------------------------------------------- #
-@requires_make_eval
 def test_every_first_party_package_resolves_in_this_checkout_under_the_wrapper() -> (
     None
 ):
@@ -280,7 +278,6 @@ def test_every_first_party_package_resolves_in_this_checkout_under_the_wrapper()
         )
 
 
-@requires_make_eval
 def test_the_wrapper_keeps_a_pin_the_caller_set_as_well() -> None:
     """Ours first, theirs after: the checkout under test wins without clobbering."""
     # Any absolute path will do: it is carried through the environment and compared,
@@ -296,28 +293,30 @@ def test_the_wrapper_keeps_a_pin_the_caller_set_as_well() -> None:
     ]
 
 
-@requires_make_eval
 def test_suppressing_the_pin_leaves_pythonpath_unset_rather_than_empty() -> None:
     """``FIRST_PARTY_PYTHONPATH=`` is the deliberate-installed-copy escape.
 
     It has to leave the variable absent, not empty: an empty ``PYTHONPATH`` entry is
     the working directory, so the escape would quietly add a path of its own.
     """
-    wrapper = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [
-            _make_supporting_eval() or "make",
-            "--no-print-directory",
-            "-C",
-            str(REPO_ROOT),
-            "FIRST_PARTY_PYTHONPATH=",
-            "--eval",
-            "__probe__:\n\t@printf '%s' '$(PYTEST_HERMETIC)'",
-            "__probe__",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with _probe_makefile("__probe__:\n\t@printf '%s' '$(PYTEST_HERMETIC)'") as probe:
+        wrapper = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                "make",
+                "--no-print-directory",
+                "-C",
+                str(REPO_ROOT),
+                "FIRST_PARTY_PYTHONPATH=",
+                "-f",
+                "Makefile",
+                "-f",
+                str(probe),
+                "__probe__",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     assert wrapper.returncode == 0, wrapper.stderr
     assert "PYTHONPATH=" not in wrapper.stdout, wrapper.stdout
 
