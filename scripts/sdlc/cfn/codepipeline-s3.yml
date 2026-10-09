@@ -1015,12 +1015,35 @@ Resources:
             Resource:
               - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
               - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
-          # DeleteObject is confined to the two prefixes the harness owns and
-          # prunes itself: retention markers (deleted when their stack is
-          # reaped, so a dead marker cannot hold a retention slot) and expired
-          # diagnostics bundles. Deliberately NOT granted on the bucket as a
-          # whole — the same bucket holds the published templates and the source
-          # archive the pipeline builds from.
+          # ⚠️ ListAllMyBuckets requires Resource '*' — it is an account-level
+          # operation with no resource to scope to, so the bucket-scoped grants
+          # above (and even an `s3:*` on a bucket ARN) cannot cover it. Without
+          # it `cleanup_stale_idp_buckets` fails on its first call every run and
+          # silently reaps nothing: the reaper logged one AccessDenied line and
+          # carried on, so the only visible symptom was `idp-` buckets
+          # accumulating for months. The reaper has to list the account to work
+          # at all — the buckets it exists to find are exactly those whose stack
+          # is already gone, so there is nothing else to enumerate them from.
+          #
+          # Listing bucket NAMES is all this grants; reading or deleting their
+          # contents still needs the bucket-scoped grants, which name only the
+          # source and artifact buckets. The reaper's own delete path operates
+          # on `idp-*` test buckets and is granted elsewhere.
+          - Effect: Allow
+            Action:
+              - 's3:ListAllMyBuckets'
+            Resource: '*'
+          # The two prefixes the harness owns and prunes itself: retention
+          # markers (deleted when their stack is reaped, so a dead marker cannot
+          # hold a retention slot) and expired diagnostics bundles.
+          #
+          # ⚠️ This is a statement of intent, not the effective permission. The
+          # `S3Access` policy on this same role already grants `s3:*` on the
+          # whole source bucket, so delete is permitted there regardless of what
+          # this says — do not read these two prefixes as a confinement. It is
+          # kept because it is the only place that records WHICH objects the
+          # harness deletes, and it is what the delete path would still rely on
+          # if `S3Access` were ever narrowed from `s3:*`.
           - Effect: Allow
             Action:
               - 's3:DeleteObject'

@@ -422,12 +422,81 @@ def _source_for(body: dict, template_path: Path) -> Path | None:
     return None
 
 
+def _vcs_ignored(paths: list[Path], root: Path = REPO_ROOT) -> set[Path]:
+    """Return the subset of `paths` that `root`'s ignore rules cover.
+
+    A **tracked** file that happens to match an ignore pattern is NOT reported,
+    because `git check-ignore` consults the index unless given `--no-index`.
+    That is the behaviour this wants: committed vendored code really is deployed
+    from the repository, and only build output and environments should drop out.
+
+    One batched `git check-ignore` rather than a pattern list, because the thing
+    being excluded is "whatever is not source", and the repository already
+    states that in `.gitignore`. A hand-maintained list here would have to
+    rediscover it and would drift.
+
+    Returns an empty set when the answer cannot be obtained -- git absent, not a
+    work tree, anything unexpected. That direction keeps the walk reading too
+    much rather than too little, so a genuinely instrumented function cannot be
+    hidden by a broken probe; the cost is the false positive this function
+    exists to remove coming back, loudly.
+    """
+    if not paths:
+        return set()
+    try:
+        done = subprocess.run(  # noqa: S603
+            ["git", "check-ignore", "--stdin", "-z"],
+            cwd=root,
+            input="\0".join(str(p) for p in paths),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    # Exit 0 = some paths ignored, 1 = none ignored, 128 = not a work tree.
+    if done.returncode not in (0, 1):
+        return set()
+    return {Path(line) for line in done.stdout.split("\0") if line}
+
+
 def _runtime_sources(directory: Path) -> list[Path]:
-    return [
+    """The Python files that are this function's own deployed code.
+
+    ⚠️ **Files the repository ignores are excluded, and that is load-bearing
+    rather than tidiness.** The walk is an `rglob` over the `CodeUri`, so
+    anything staged inside it at build time is read as though it were source.
+    One `CodeUri` in this tree has a whole virtualenv staged in it on a machine
+    that has packaged that feature, and the walk read 6,495 files including its
+    `site-packages` -- where `aws_lambda_powertools` and `moto`'s X-Ray *mock*
+    both mention the SDK. Rule 3 then reported a function as instrumented whose
+    own handler does not import X-Ray at all, failing locally and passing in CI,
+    where the staged copy does not exist. A gate whose verdict depends on
+    whether someone has built a feature locally is worse than no gate.
+
+    This is the same asymmetry `pyrightconfig.json` handles for the type gate
+    (`STAGED_BUILD_OUTPUT_EXEMPT`); `__pycache__` used to be excluded here by
+    name, which was this rule reaching for the same idea one directory at a
+    time.
+
+    Vendored code that is *tracked* still counts, because it really is deployed
+    from the repository -- only build output and environments are dropped.
+    """
+    candidates = [
         path
         for path in sorted(directory.rglob("*.py"))
+        # Kept alongside the ignore check rather than replaced by it: it is the
+        # one exclusion that must hold even when `_vcs_ignored` can answer
+        # nothing, and it costs a tuple membership test.
         if not NON_RUNTIME_FILE.search(path.name) and "__pycache__" not in path.parts
     ]
+    # Asked from inside the directory being walked, so git resolves the work
+    # tree that actually owns these files. Passing a fixed repository root would
+    # answer about the wrong tree for any `CodeUri` outside it -- which is every
+    # synthetic one in this file's own tests, where the probe would then report
+    # nothing ignored and the exclusion would go untested.
+    ignored = _vcs_ignored(candidates, root=directory)
+    return [path for path in candidates if path not in ignored]
 
 
 def _uses_xray(body: dict, template_path: Path) -> bool:
@@ -1078,3 +1147,112 @@ Resources:
             "      Role: arn:aws:iam::123456789012:role/SomeImportedRole\n"
         )
         assert _traced_without_a_grant(_load_text(text)) == {}
+
+
+@pytest.mark.unit
+class TestIgnoredFilesAreNotReadAsSource:
+    """Rule 3 reads the `CodeUri` with `rglob`, so staged build output lands in it.
+
+    ⚠️ **This is the difference between a gate and a coin flip.** One `CodeUri`
+    in this tree has `lib/idp_common_pkg` staged into it at publish time, and on
+    a machine that has packaged that feature the staged copy brings a whole
+    virtualenv with it: the walk read 6,495 Python files including
+    `site-packages`, where `aws_lambda_powertools` and `moto`'s X-Ray *mock*
+    both mention the SDK by name. Rule 3 reported `BootstrapProcessorFunction`
+    as instrumented-without-tracing although its handler does not import X-Ray
+    at all -- failing for anyone who had built that feature and passing in CI,
+    where nothing is staged.
+
+    `__pycache__` was already excluded here by name, which was the same idea
+    applied one directory at a time.
+    """
+
+    def _repo(self, root: Path) -> None:
+        """A throwaway git work tree, so the real ignore rules can be exercised."""
+        subprocess.run(  # noqa: S603
+            ["git", "init", "-q"], cwd=root, check=True, capture_output=True
+        )
+
+    def test_a_file_an_ignore_rule_covers_is_not_read(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        (tmp_path / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+        source = tmp_path / "handler_dir"
+        (source / ".venv" / "lib").mkdir(parents=True)
+        (source / "index.py").write_text("print('no tracing')\n", encoding="utf-8")
+        (source / ".venv" / "lib" / "tracer.py").write_text(
+            "from aws_xray_sdk.core import xray_recorder\n", encoding="utf-8"
+        )
+
+        read = _runtime_sources(source)
+
+        assert [p.name for p in read] == ["index.py"]
+
+    def test_a_tracked_file_matching_an_ignore_rule_is_still_read(
+        self, tmp_path: Path
+    ) -> None:
+        """`git check-ignore` consults the index, and that is the behaviour wanted.
+
+        Committed vendored code is genuinely deployed from the repository -- the
+        `pii-anonymizer` tree is the live example -- so only build output and
+        environments may drop out. A `--no-index` probe would silently stop
+        reading a tracked vendor directory that happened to match a pattern.
+        """
+        self._repo(tmp_path)
+        (tmp_path / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+        source = tmp_path / "handler_dir"
+        (source / "vendor").mkdir(parents=True)
+        (source / "index.py").write_text("print('no tracing')\n", encoding="utf-8")
+        tracked = source / "vendor" / "instrumented.py"
+        tracked.write_text("import aws_xray_sdk\n", encoding="utf-8")
+        subprocess.run(  # noqa: S603
+            ["git", "add", "-f", str(tracked)],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        read = {p.name for p in _runtime_sources(source)}
+
+        assert read == {"index.py", "instrumented.py"}
+
+    def test_outside_a_work_tree_nothing_is_excluded(self, tmp_path: Path) -> None:
+        """The probe fails open, so a broken answer cannot hide a real finding.
+
+        It also keeps every other test in this file working: they build
+        templates under `tmp_path`, which is outside the repository, where
+        `git check-ignore` exits 128.
+        """
+        source = tmp_path / "handler_dir"
+        source.mkdir()
+        (source / "index.py").write_text("import aws_xray_sdk\n", encoding="utf-8")
+
+        assert _vcs_ignored([source / "index.py"], root=tmp_path) == set()
+        assert [p.name for p in _runtime_sources(source)] == ["index.py"]
+
+    def test_an_empty_path_list_asks_git_nothing(self) -> None:
+        assert _vcs_ignored([]) == set()
+
+    def test_rule_3_does_not_fire_on_a_marker_only_in_ignored_output(
+        self, tmp_path: Path
+    ) -> None:
+        """The end-to-end shape of the false positive this removes."""
+        self._repo(tmp_path)
+        (tmp_path / ".gitignore").write_text("staged_pkg/\n", encoding="utf-8")
+        source = tmp_path / "handler_dir"
+        (source / "staged_pkg").mkdir(parents=True)
+        (source / "index.py").write_text("def handler(e, c): pass\n", encoding="utf-8")
+        (source / "staged_pkg" / "powertools.py").write_text(
+            "# mentions aws_xray_sdk in a dependency staged at build time\n",
+            encoding="utf-8",
+        )
+        template_path = tmp_path / "template.yaml"
+        text = (
+            TestGateCatchesReintroduction.BASE
+            + "  Staged:\n"
+            + "    Type: AWS::Serverless::Function\n"
+            + "    Properties:\n"
+            + "      CodeUri: handler_dir/\n"
+        )
+        template_path.write_text(text, encoding="utf-8")
+
+        assert _instrumented_without_tracing(_load_text(text), template_path) == []
