@@ -1,7 +1,8 @@
 import json
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -131,8 +132,16 @@ def test_structured_output_call_license(execution_number):
 
     print(result)
 
-    assert result.issue_date == "08/04/1965", result.issue_date
-    assert result.expiration_date == "08/20/1970", result.expiration_date
+    # The DATES are the assertion, not their rendering. This test samples -- it
+    # passes no `config`, and the resolved model strips temperature/top_p/top_k --
+    # five times over through the parametrize, so pinning a format string here
+    # would fail on a conformant value, as the payslip test's `PayDate` did.
+    assert datetime.strptime(result.issue_date, "%m/%d/%Y").date() == date(
+        1965, 8, 4
+    ), result.issue_date
+    assert datetime.strptime(result.expiration_date, "%m/%d/%Y").date() == date(
+        1970, 8, 20
+    ), result.expiration_date
 
 
 @pytest.mark.integration  # LIVE Bedrock — see the note above.
@@ -220,16 +229,21 @@ def test_payslip(execution_number, s3_bucket):
     # reaches them. `max_tokens` is dropped for the same reason: `IDPConfig`
     # logs it as a removed field and ignores it, so leaving it in the dict read
     # as pinning an output budget that nothing pins.
-    # ⚠️ `mode` MUST be set alongside `agentic.enabled`, and setting only the
-    # latter is worse than useless. `ExtractionConfig.reconcile_mode_and_agentic`
-    # treats `mode` as authoritative -- `agentic.enabled = (mode == "advanced")`
-    # -- and the merged defaults carry `mode: simple`. So an override of
-    # `agentic.enabled` alone is silently discarded and the run takes the
-    # traditional single-LLM-pass path, in a test named for the agentic one.
-    # Measured: `mode=simple` gives `agentic.enabled=False` and
-    # `extraction_method: "traditional"` in the result, with every assertion
-    # still passing. `config/migrations/v05_to_v06.py` calls this exact pairing a
-    # footgun and exists to prevent it in user configs.
+    # ⚠️ `mode` is the switch. `ExtractionConfig.reconcile_mode_and_agentic`
+    # overwrites `agentic.enabled` from `mode` whenever `mode` is set --
+    # `agentic.enabled = (mode == "advanced")` -- so setting `agentic.enabled`
+    # alone is silently discarded, and the merged defaults carry `mode: simple`.
+    # Measured: `mode=simple` resolves to `agentic.enabled=False` whatever the
+    # flag says, and the run then takes the traditional single-LLM-pass path with
+    # every assertion still passing, in a test named for the agentic one.
+    # `config/migrations/v05_to_v06.py` calls this exact pairing a footgun and
+    # exists to prevent it in user configs.
+    #
+    # The `agentic` override below is therefore redundant *for `enabled`* and is
+    # kept only to be explicit about intent. What is genuinely load-bearing is
+    # `dict(merged_extraction)`: a hand-written `agentic` block would replace the
+    # whole thing and reset `table_parsing.enabled` to its Pydantic default of
+    # False, which is the defect this started as.
     #
     # The model is deliberately NOT overridden. A pin here used to name
     # `claude-sonnet-4-20250514-v1:0`, which Bedrock now refuses --
@@ -260,11 +274,15 @@ def test_payslip(execution_number, s3_bucket):
     # The configuration the service actually ends up with, asserted before any
     # live call. This is the only place the reconciliation above is observable
     # from, and nothing else in the tree notices if it regresses.
-    resolved = ExtractionService(config=CONFIG).config.extraction
+    extraction_service = ExtractionService(config=CONFIG)
+    resolved = extraction_service.config.extraction
     assert resolved.agentic.enabled is True, (
         f"agentic extraction is off (mode={resolved.mode!r}); this test would run "
         "the traditional single-pass path and still pass"
     )
+    # Guards the `dict(merged_extraction)` half rather than the `mode` half: this
+    # one resolves True under `mode: simple` too, so it does not discriminate on
+    # the path taken. `agentic.enabled` above and `extraction_method` below do.
     assert resolved.agentic.table_parsing.enabled is True, (
         "the deterministic table tools are not registered; `parse_table` and "
         "`map_table_to_schema` are gated on this flag"
@@ -318,7 +336,15 @@ def test_payslip(execution_number, s3_bucket):
     # sample and appends a per-page failure to `document.errors` while carrying
     # on. A transient Textract throttle on page 4 would otherwise fail a payslip
     # test over a page it never reads.
-    page_one_errors = [e for e in document.errors if "page 1" in str(e).lower()]
+    # ⚠️ Anchored with `\b`, not `"page 1" in ...`: a substring match also claims
+    # "page 10" through "page 19", which would re-arm the very misattribution
+    # this scoping removes the moment anyone swaps in a longer document -- as the
+    # table-parsing note below suggests doing.
+    page_one_errors = [
+        e
+        for e in document.errors
+        if re.match(r"error processing page 1\b", str(e).lower())
+    ]
     assert not page_one_errors, f"OCR failed for page 1: {page_one_errors}"
     assert document.pages["1"].parsed_text_uri, "page 1 has no parsed text"
 
@@ -329,12 +355,18 @@ def test_payslip(execution_number, s3_bucket):
     )
     # ⚠️ What this pins is that `ocr.features` resolved to include TABLES/LAYOUT
     # and that the textractor MARKDOWN linearizer ran -- not that the
-    # deterministic table parser gets used. It does not: the run's own
-    # `ocr_analysis` reports `tables_detected == 0` for this page even with pipes
-    # present, and `_preflight_table_parse` needs an estimated 50+ rows before it
-    # recommends the tool, which a one-page payslip is nowhere near. Covering the
-    # deterministic path needs a large-table document such as the
-    # `bank-statement-sample` preset.
+    # deterministic table parser gets USED. It is registered and then declines:
+    # `_preflight_table_parse` recommends the tool only at an estimated 50+ rows,
+    # and this section measures 30, so the result records
+    # `tool_usage_decision: {expected: false, actual: false, tool_enabled: true}`.
+    # That is a near miss rather than a wide one -- 30 is one row short of the
+    # separate `tool_usage_recommended` threshold -- so covering the deterministic
+    # path needs a genuinely large table, such as the `bank-statement-sample`
+    # preset, rather than a slightly busier payslip.
+    #
+    # (`tables_detected` is NOT the reason and cannot be: `_analyze_ocr_for_tables`
+    # derives it by counting pipe-bearing lines, so it is >= 1 for any text that
+    # satisfies the assertion below. It measures 3 here.)
     #
     # A failure here is more likely to be the linearizer than the configuration:
     # `_parse_textract_response` falls back to plain `parsed_response.text` when
@@ -355,8 +387,8 @@ def test_payslip(execution_number, s3_bucket):
     )
     document.sections = [section]
 
-    extraction_service = ExtractionService(config=CONFIG)
-
+    # The instance whose resolved config was asserted above, so the run and the
+    # assertion cannot diverge.
     result_document = extraction_service.process_document_section(
         document=document, section_id=section.section_id
     )
@@ -478,11 +510,17 @@ def test_payslip(execution_number, s3_bucket):
     )
     assert metadata["extraction_time_seconds"] > 0, "Extraction time should be positive"
 
-    # A hang bound, not a performance assertion. ⚠️ Calibrate it against the
-    # AGENTIC path: a multi-round tool loop is a different order of magnitude
-    # from the traditional single pass, and 120s was set when this test was
-    # taking seconds because the agent bailed out on an empty prompt.
-    assert metadata["extraction_time_seconds"] < 600, (
+    # ⚠️ A performance check, NOT a hang bound -- it is evaluated after
+    # `process_document_section` returns, so a genuine hang never reaches it. No
+    # wall-clock limit exists: `pytest-timeout` is not installed and
+    # `pytest.ini` sets no timeout, and the library's ceilings are per-request
+    # (a 600s agent read timeout plus a 90s cumulative retry budget) with no
+    # agent-loop iteration cap. Making this a real bound needs `pytest-timeout`.
+    #
+    # 180s against a measured ~17s on the agentic path. It was 120s when the
+    # agent was bailing out in seconds on an empty prompt, so that figure
+    # described nothing.
+    assert metadata["extraction_time_seconds"] < 180, (
         f"Extraction took too long: {metadata['extraction_time_seconds']}s "
         f"(model {extraction_model})"
     )
