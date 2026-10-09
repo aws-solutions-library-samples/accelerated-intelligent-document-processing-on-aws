@@ -307,17 +307,171 @@ def handler(event, context):
 _METRICS_ELIGIBLE_STATUSES = ("COMPLETE", "PARTIAL_COMPLETE")
 
 
+# A document's ``EvaluationStatus``, partitioned into the three answers the run
+# status needs. Every value ANY writer can put in that attribute must appear in
+# exactly one of these, because a value in none of them is counted as in-flight
+# (see the branch that logs it) and a run holding one such document never
+# reaches a terminal status. That is the whole of #1330 — ``DISABLED`` was not
+# written at all, and ``TIMED_OUT`` was written but named nowhere here, so
+# either one pinned a run at EVALUATING with every document showing Completed.
+#
+# ⚠️ The attribute has THREE writers, not one, and the two beyond the pipeline
+# are easy to miss because they describe a different activity: promoting a
+# document to an evaluation baseline writes ``BASELINE_COPYING`` /
+# ``BASELINE_AVAILABLE`` / ``BASELINE_ERROR`` over whatever evaluation left
+# there (``copy_to_baseline_resolver``, and ``idp_sdk``'s evaluation processor
+# for the programmatic route). A test-run document promoted from the document
+# list therefore reaches this loop carrying one of those, which is why they are
+# classified here rather than left to the catch-all.
+# ``test_results_resolver.py::test_every_evaluation_status_any_writer_can_set_is_classified``
+# derives the universe from the three writers known today and fails on a value
+# missing here; what it does not detect is a fourth writer, which is written out
+# as a residual where that universe is built.
+#
+# Terminal and not a failure: the document is as finished as it will ever be.
+# ``NO_BASELINE`` and ``DISABLED`` produce no metrics by construction (no ground
+# truth to score against; no evaluation asked for), which is a legitimate
+# outcome rather than an error.
+#
+# ⚠️ **All three ``BASELINE_*`` values are settled, and the honest reason is that
+# the run can no longer be told anything by them — not that they are good news.**
+# A promotion *overwrites* this attribute, so whatever evaluation recorded is
+# gone, and two things follow that are worth knowing before reading a run's
+# figures. **A promoted document whose evaluation had FAILED stops counting as a
+# failed file**, so a run can move from PARTIAL_COMPLETE to COMPLETE with
+# ``failedFiles`` 0 while its cached metrics still cover only the documents that
+# were scored; the information needed to prevent that was destroyed by the
+# overwrite, and separating the two would take a second attribute. And
+# ``BASELINE_COPYING`` is settled **despite naming work in progress**, because
+# the copy is invoked as an async Lambda whose terminal write is best-effort —
+# an invocation that never lands, or fails that write, leaves the attribute
+# there with nothing to reconcile it. Waiting on it is therefore unbounded, and
+# it would be a wait for an action taken on the document *after* the run
+# finished, which tells the run nothing. Holding a completed run at EVALUATING
+# for that is the #1330 symptom on a new route.
+#
+# A third consequence, older than any of this and listed because it is in the
+# same family: the aggregation selects documents by ``EvaluationStatus ==
+# "COMPLETED"``, so a promoted document drops out of a run's metrics on any
+# *re*-aggregation even when its evaluation had succeeded — and a release that
+# adds a metrics key re-aggregates every historical run once. The cause is the
+# overwrite rather than anything here.
+_EVAL_STATUS_SETTLED = frozenset(
+    {
+        "COMPLETED",
+        "NO_BASELINE",
+        "DISABLED",
+        "BASELINE_AVAILABLE",
+        "BASELINE_ERROR",
+        "BASELINE_COPYING",
+    }
+)
+# Terminal and a failure. ``TIMED_OUT`` is the status the single-attempt timeout
+# policy stamps (#917); it means the same thing to a run as ``FAILED``.
+_EVAL_STATUS_UNSUCCESSFUL = frozenset({"FAILED", "TIMED_OUT"})
+# Genuinely still working, and able to leave that state on its own.
+_EVAL_STATUS_IN_FLIGHT = frozenset({"RUNNING"})
+
+
+def _normalized_eval_status(doc_item):
+    """A document's ``EvaluationStatus``, upper-cased, or None if not recorded.
+
+    Casing is normalized because writers have historically been inconsistent
+    about it (the same reason the two document probes in this file upper-case the
+    field), and here an unexpected spelling is not a cosmetic problem: it lands
+    in the unrecognised branch and holds the run short of a terminal status. A
+    blank string is treated as "not recorded", which is what it means.
+    """
+    raw = doc_item.get("EvaluationStatus")
+    if raw is None:
+        return None
+    normalized = str(raw).strip().upper()
+    return normalized or None
+
+
+def _ran_with_evaluation_disabled(item):
+    """Did this run process its documents with evaluation switched off?
+
+    Answered from the configuration the run captured, because that is the input
+    that decided it. Documents processed since #1330 also say so themselves
+    (``EvaluationStatus=DISABLED``), and that is the preferred signal where it
+    exists — this covers the two cases where it does not: a run that predates
+    the stamp, and one whose stamp could not be written (the evaluation function
+    records it best-effort, since nothing has actually failed in this case).
+
+    Decompresses the captured config, so call it only when the cheap signals are
+    exhausted — and deliberately **not** from ``_awaiting_metrics``, whose
+    answer has to be the same for three callers and so must come off the run
+    record; see the warning there.
+
+    The reading must agree with the pipeline's, and the pipeline's goes through
+    pydantic's ``EvaluationConfig.enabled: bool``, which accepts the string
+    spellings below as well as real booleans — a stored ``"false"`` genuinely
+    disables evaluation. Anything else, including a value pydantic would reject,
+    reads as enabled: this function only answers True when evaluation demonstrably
+    did not run, since the cost of a wrong True is a run reported complete while
+    results are still coming.
+    """
+    config = _captured_config_of(item)
+    if not isinstance(config, dict):
+        return False
+    evaluation = config.get("evaluation")
+    if not isinstance(evaluation, dict) or "enabled" not in evaluation:
+        # The default is enabled, so an absent section is not a disabled run.
+        return False
+    enabled = evaluation["enabled"]
+    if isinstance(enabled, bool):
+        return not enabled
+    if isinstance(enabled, str):
+        # Not stripped, deliberately: pydantic does not strip either, so `" false"`
+        # is a configuration it REJECTS — every pipeline step fails to load it —
+        # and reading that as "evaluation was disabled" would be this function
+        # claiming a run finished on the strength of a configuration that never
+        # ran. Matching pydantic's exact token set is what keeps the two readings
+        # the same one.
+        return enabled.lower() in {"0", "off", "f", "false", "n", "no"}
+    if isinstance(enabled, (int, float, Decimal)):
+        # ``float`` is unreachable through either storage shape today — the
+        # compressed path parses with ``parse_float=Decimal`` and DynamoDB hands
+        # back ``Decimal`` on the inline one — and is listed because pydantic
+        # reads 0.0 as false, so omitting it would be a disagreement waiting for
+        # a third storage shape.
+        return enabled == 0
+    return False
+
+
 def _awaiting_metrics(item, status):
     """Is this run finished but still missing its cached aggregate metrics?
 
-    The single definition of the condition behind the ``EVALUATING`` badge. Three
+    The single definition of the condition behind the ``EVALUATING`` badge. Two
     resolvers surface that badge — ``_build_test_run_list`` (the Executions
-    list), ``get_test_run_status`` (the per-row poll) and ``get_test_results``
-    (the results page) — and they previously each spelled the rule out inline.
+    list) and ``get_test_run_status`` (the per-row poll), which are also this
+    rule's only callers. ``get_test_results`` reports the stored status and
+    decides its own enqueue from the cache's own shape. All three previously
+    spelled a version of this out inline.
     Issue #619 was diagnosed through the resulting confusion: the badge said
     EVALUATING while the file counts said every document was processed and none
     was evaluating, because "terminal but no metrics" and "actually evaluating"
     render identically. Keep the rule here so the three sites cannot drift.
+
+    ⚠️ **Everything this answer depends on must be readable from the run record
+    alone**, because the callers do not see the same things: only
+    ``get_test_run_status`` reads the run's documents. An exclusion one of them
+    can evaluate and the others cannot splits the badge in two — a run reporting
+    COMPLETE on the per-row poll and EVALUATING in the Executions list at the
+    same time — and because the two disagree about whether an aggregation is
+    outstanding, neither enqueues one, so the split never resolves. That was
+    measured on a run with no published ground truth, and it is the shape of
+    #619 reintroduced. The draft-labeling exclusion is safe for precisely this
+    reason: ``Purpose`` is on the record.
+
+    A run that will never have metrics is therefore NOT excluded here. It does
+    not need to be: the aggregation is enqueued, ``handle_cache_update_request``
+    writes every key of ``metrics_to_cache`` whatever the aggregation found, and
+    the badge clears on that one pass (see the convergence note in
+    ``get_test_results``) — with the run's cost, which is in the cached result
+    and nowhere else. One EVALUATING interval while that happens is what every
+    other terminal run shows.
     """
     if _is_draft_labeling_run(item):
         return False
@@ -1096,9 +1250,24 @@ def _format_datetime(dt_str):
 
 def _count_completed_documents(table, test_run_id, files):
     """
-    Count how many documents completed evaluation successfully.
+    Count how many documents reached a settled, non-failed evaluation state.
 
     Uses batch_get_item for efficiency instead of sequential get_item calls.
+
+    Counts the same ``_EVAL_STATUS_SETTLED`` set ``get_test_run_status`` counts
+    as completed, so the "N of M completed" an aborted run reports agrees with
+    the figure every other run reports. Matching only ``COMPLETED`` made this
+    answer 0 for a run with no ground truth or with evaluation switched off,
+    both of which that function counts as completed.
+
+    Not an exact mirror of that function: it also requires ``ObjectStatus`` to be
+    COMPLETED, and this reads the evaluation attribute alone (it always has). A
+    document stamped ABORTED over an earlier settled evaluation status is
+    therefore counted here and not there — which is the pre-existing behaviour,
+    confined to the "N of M" figure an aborted run reports. It also has no
+    captured-configuration fallback for a document carrying no status at all, so
+    an aborted run that predates the ``DISABLED`` stamp and ran with evaluation
+    off still reports 0 of N here, where the status loop reports N.
 
     Args:
         table: DynamoDB table resource
@@ -1106,7 +1275,7 @@ def _count_completed_documents(table, test_run_id, files):
         files: List of file names in the test run
 
     Returns:
-        int: Number of documents with EvaluationStatus='COMPLETED'
+        int: Number of documents whose evaluation settled without failing
     """
     if not files:
         return 0
@@ -1132,7 +1301,7 @@ def _count_completed_documents(table, test_run_id, files):
             # Count completed evaluations
             for item in response.get("Responses", {}).get(table_name, []):
                 eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
-                if eval_status == "COMPLETED":
+                if eval_status in _EVAL_STATUS_SETTLED:
                     completed_count += 1
 
             # Handle unprocessed keys (throttling, etc.)
@@ -1293,6 +1462,7 @@ def get_test_results(test_run_id):
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
             "isDraftLabeling": _is_draft_labeling_run(metadata),
+            "evaluationDisabled": _ran_with_evaluation_disabled(metadata),
             "configVersion": metadata.get("ConfigVersion"),
             "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
@@ -1339,6 +1509,7 @@ def get_test_results(test_run_id):
             "completedAt": _format_datetime(metadata.get("CompletedAt")),
             "context": metadata.get("Context"),
             "isDraftLabeling": _is_draft_labeling_run(metadata),
+            "evaluationDisabled": _ran_with_evaluation_disabled(metadata),
             "configVersion": metadata.get("ConfigVersion"),
             "configRevision": _as_int(metadata.get("ConfigRevision")),
             "testSetVersion": metadata.get("TestSetVersion"),
@@ -1666,6 +1837,11 @@ def get_test_run_status(test_run_id):
         processing_failed_files = 0  # Only count processing failures found during scan
         evaluating_files = 0
         queued_files = 0
+        # Resolved at most once per invocation, and only if some document turns
+        # out to carry no evaluation status at all — it decompresses the run's
+        # captured configuration, which is not worth doing on a poll where
+        # every document already says what happened to it.
+        evaluation_off = None
 
         for file_key in files:
             logger.info(f"Checking file: {file_key} for test run: {test_run_id}")
@@ -1674,42 +1850,61 @@ def get_test_run_status(test_run_id):
             )
             if "Item" in doc_response:
                 doc_status = doc_response["Item"].get("ObjectStatus", "QUEUED")
-                eval_status = doc_response["Item"].get("EvaluationStatus")
+                eval_status = _normalized_eval_status(doc_response["Item"])
                 logger.info(
                     f"File {file_key}: ObjectStatus={doc_status}, EvaluationStatus={eval_status}"
                 )
 
                 if doc_status == "COMPLETED":
                     # Check if evaluation is also complete
-                    if eval_status == "COMPLETED":
+                    if eval_status in _EVAL_STATUS_SETTLED:
                         completed_files += 1
-                        logger.info(f"File {file_key}: counted as completed")
-                    elif eval_status == "RUNNING":
-                        evaluating_files += 1
-                        logger.info(f"File {file_key}: counted as evaluating")
-                    elif eval_status is None:
-                        # Document completed but evaluation not started yet
-                        evaluating_files += 1
                         logger.info(
-                            f"File {file_key}: counted as evaluating (eval not started)"
+                            f"File {file_key}: counted as completed ({eval_status})"
                         )
-                    elif eval_status in ("FAILED", "TIMED_OUT"):
-                        # Evaluation failed - count as failed
+                    elif eval_status in _EVAL_STATUS_UNSUCCESSFUL:
                         processing_failed_files += 1
                         logger.info(
                             f"File {file_key}: counted as failed (eval {eval_status})"
                         )
-                    elif eval_status == "NO_BASELINE":
-                        # No baseline data available - count as completed
-                        completed_files += 1
-                        logger.info(
-                            f"File {file_key}: counted as completed (no baseline data)"
-                        )
-                    else:
-                        # Unknown evaluation status - count as evaluating
+                    elif eval_status in _EVAL_STATUS_IN_FLIGHT:
                         evaluating_files += 1
-                        logger.info(
-                            f"File {file_key}: counted as evaluating (unknown eval status: {eval_status})"
+                        logger.info(f"File {file_key}: counted as evaluating")
+                    elif eval_status is None:
+                        # Nothing recorded. Either evaluation has not reached
+                        # this document yet, or it never will because the run's
+                        # configuration switched evaluation off — and before
+                        # #1330 those were read as the first case
+                        # unconditionally, which is why such a run sat at
+                        # EVALUATING forever. Documents processed since carry
+                        # DISABLED and are settled above; this consults the
+                        # captured configuration, which is what answers for a
+                        # run that predates the stamp or whose stamp could not
+                        # be written.
+                        if evaluation_off is None:
+                            evaluation_off = _ran_with_evaluation_disabled(item)
+                        if evaluation_off:
+                            completed_files += 1
+                            logger.info(
+                                f"File {file_key}: counted as completed "
+                                "(evaluation disabled for this run)"
+                            )
+                        else:
+                            evaluating_files += 1
+                            logger.info(
+                                f"File {file_key}: counted as evaluating (eval not started)"
+                            )
+                    else:
+                        # A status none of the three sets above names. Counting
+                        # it as evaluating keeps the run short of a terminal
+                        # status for as long as it is there, so this is a
+                        # "someone added an EvaluationStatus and did not come
+                        # here" alarm, not a routine branch — hence WARNING.
+                        evaluating_files += 1
+                        logger.warning(
+                            f"File {file_key}: unrecognised EvaluationStatus "
+                            f"{eval_status!r}; counting as evaluating, which will "
+                            f"hold test run {test_run_id} short of a terminal status"
                         )
                 elif doc_status == "FAILED":
                     processing_failed_files += 1

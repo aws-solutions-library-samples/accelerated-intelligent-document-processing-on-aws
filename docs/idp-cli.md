@@ -912,6 +912,25 @@ idp-cli run-inference [OPTIONS]
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
 
+**A document shows as Queued before it has a tracking row.**
+
+A document's tracking row is not written by the upload. The upload puts the
+object in the input bucket, and EventBridge then invokes the queue sender, which
+writes the row — asynchronously, so for the first seconds of a batch the status
+lookup has no record of a document that is about to process normally.
+
+Monitoring reports such a document as **Queued** for up to 60 seconds after the
+batch was submitted. Past that it is reported as failed, with
+`Document not found in tracking table`, which at that point means the document
+really did not reach the pipeline — check the input bucket's EventBridge
+notifications and the queue sender's logs. Set `IDP_NOT_FOUND_GRACE_SECONDS` to
+widen or narrow the window.
+
+⚠️ **This does not apply to [`status`](#status) for a single document**, which
+answers immediately: a document id that is not in the table is reported missing
+straight away rather than after a minute, so a typo or a document whose data
+retention has elapsed does not look like a slow query.
+
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:
 - `--test-set`: Process test set directly by ID (recommended for test sets)

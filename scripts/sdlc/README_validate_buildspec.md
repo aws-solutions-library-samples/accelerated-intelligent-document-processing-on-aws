@@ -8,7 +8,8 @@ A Python script to validate AWS CodeBuild `buildspec.yml` files for syntax error
 - **Structure Validation**: Checks for required fields (`version`, `phases`)
 - **Type Checking**: Validates that commands are strings, not accidentally parsed as objects
 - **Best Practices**: Warns about unknown phases or deprecated features
-- **Multi-file Support**: Can validate multiple buildspec files at once using glob patterns
+- **Fail-fast loops**: Errors on a multi-line command whose `for`/`while`/`until` loop does not enable `errexit`. Such a command's exit status is only its last iteration's, so a failure in any earlier one is silently skipped and the phase succeeds — see [#1310](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1310)
+- **Multi-file Support**: Can validate multiple buildspec files at once
 
 ## Installation
 
@@ -34,11 +35,18 @@ pip install pyyaml
 python3 scripts/sdlc/validate_buildspec.py patterns/unified/buildspec.yml
 ```
 
-### Validate multiple files with glob patterns
+### Validate every buildspec in the tree
+
+Pass the files explicitly, or let `git` find them. Do **not** use a
+`patterns/*/buildspec.yml` glob: it matches one of the four buildspec files here,
+and the ones it misses are the ones nobody is looking at.
 
 ```bash
-python3 scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml
+python3 scripts/sdlc/validate_buildspec.py $(git ls-files | grep -E '(^|/)buildspec[^/]*\.ya?ml$')
 ```
+
+`make validate-buildspec` does exactly this, and fails outright if the discovery
+returns nothing.
 
 ### Using the Makefile target
 
@@ -130,7 +138,7 @@ This makes it suitable for use in CI/CD pipelines:
 
 ```yaml
 - name: Validate Buildspec
-  run: python3 scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml
+  run: make validate-buildspec
 ```
 
 ## Limitations
@@ -161,7 +169,7 @@ Add to `.git/hooks/pre-commit`:
 
 ```bash
 #!/bin/bash
-python3 scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml || exit 1
+make validate-buildspec || exit 1
 ```
 
 ## Troubleshooting
