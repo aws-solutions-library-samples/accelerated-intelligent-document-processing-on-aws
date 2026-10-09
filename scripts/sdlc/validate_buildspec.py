@@ -7,13 +7,14 @@ This script validates AWS CodeBuild buildspec files for:
 - Required fields (version, phases)
 - Correct structure and data types
 - Common mistakes and best practices
+- A loop in a multi-line command that cannot report its own failure (issue #1310)
 
 Dependencies:
     PyYAML (install with: pip install pyyaml)
 
 Usage:
     python3 scripts/sdlc/validate_buildspec.py <path-to-buildspec.yml>
-    python3 scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml
+    make validate-buildspec          # every buildspec in the tree
 
 Exit codes:
     0 - All buildspec files are valid
@@ -21,6 +22,7 @@ Exit codes:
 """
 
 import glob
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -45,6 +47,54 @@ class BuildspecValidator:
         "post_build",
     ]
     PHASE_FIELDS = ["commands", "runtime-versions", "finally"]
+
+    # A loop opening a statement. The prefix set is the point to get right: a
+    # `while` fed by a PIPE (`cat list | while read f; do ...; done`) carries the
+    # same defect and is the most natural way to write this loop, so `|` has to be
+    # here, as do the subshell and group openers.
+    #
+    # ⚠️ What this does NOT exclude: a `for`/`while`/`until` inside a COMMENT is
+    # matched whenever one of `( ; | { &` or a `then`/`do` precedes it on the line,
+    # because those alternatives are not anchored to statement start. So
+    # `# copy the shared library (for every function)` is reported, with a remedy
+    # naming a loop that does not exist. Only the `^` branch is displaced by `#`.
+    # The same goes for a line opening with `for` inside a quoted string. Both are
+    # loud rather than silent, which is the safe direction for a blocking gate,
+    # and separating them from real statements needs a shell parser.
+    _LOOP = re.compile(
+        r"(?:^|[;&|({]|\bthen\b|\bdo\b)[ \t]*(for|while|until)\s", re.MULTILINE
+    )
+    # An option word that turns errexit on or off. `set -e`, `set -eu`,
+    # `set -euo pipefail`, `set -o pipefail -e` and `set -o errexit` all enable it;
+    # `set +e` and `set +o errexit` disable it. A bare `-o pipefail` changes how a
+    # pipeline's STATUS is computed and does not make the shell exit, so it must
+    # not count.
+    _SET_E_WORD = re.compile(r"^-[a-zA-Z]*e[a-zA-Z]*$")
+    _SET_PLUS_E_WORD = re.compile(r"^\+[a-zA-Z]*e[a-zA-Z]*$")
+    # A heredoc body is another language's source as often as it is shell -- an
+    # embedded Python `for i in range(3):` is not a shell loop and `set -e` is not
+    # a remedy for it -- so bodies are blanked before scanning. The delimiter may
+    # be quoted (`<<'EOF'`) and may be indented (`<<-`).
+    #
+    # ⚠️ What actually protects `$(( a << b ))` and `read x <<<hello` is the
+    # unterminated-heredoc RESTORE in `_strip_heredocs`, not the lookarounds here.
+    # Do not delete that restore as redundant. Measured: this pattern still
+    # matches `sleep $((1 << attempt))` with delimiter `attempt`, because the
+    # space satisfies `[ \t]*` and the trailing lookahead; and `(?!<)` fails only
+    # at the FIRST `<` of `<<<`, after which the engine re-anchors at the second
+    # and matches. Those cases come out right because the phantom delimiter never
+    # appears on a line of its own, so the restore puts the lines back.
+    #
+    # The lookarounds still earn their place by narrowing the window in which a
+    # phantom delimiter can be mistaken for a real one, and the restore is what
+    # makes the residual loud instead of silent: a FALSE heredoc match would
+    # otherwise blank every following line, turning the check off for the rest of
+    # the command. That matters here because `sleep $((1 << attempt))` is the
+    # natural next edit to `buildspec.yml`'s retry ladder, and it sits above the
+    # image loop this gate exists to protect.
+    _HEREDOC_START = re.compile(
+        r"<<-?(?!<)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1(?=[\s;)&|]|$)"
+    )
 
     def __init__(self, filepath: str):
         self.filepath = Path(filepath)
@@ -128,11 +178,166 @@ class BuildspecValidator:
                             f"Phase '{phase_name}', command #{idx} must be a string, got {type(cmd).__name__}"
                         )
 
+        # Check that any loop runs under errexit
+        self._validate_loops_fail_fast(phase_name, phase_content)
+
         # Check for unknown fields
         unknown_fields = set(phase_content.keys()) - set(self.PHASE_FIELDS)
         if unknown_fields:
             self.warnings.append(
                 f"Phase '{phase_name}' has unknown fields: {', '.join(unknown_fields)}"
+            )
+
+    @classmethod
+    def _errexit_switches(cls, cmd: str) -> List[tuple]:
+        """Every `set` that turns errexit on or off, as `(offset, enabled)`.
+
+        ⚠️ Read as WORDS of a `set` command rather than as a regex over the line,
+        because a regex that skips arbitrary text to reach a `-e`-shaped token
+        misreads in both directions, and one of them is silent. Measured on the
+        previous form: `set -x; echo "-e"` and `set -x && grep -e foo bar` both
+        registered errexit as *enabled*, so an unguarded loop after either passed
+        the gate clean; and `cd /tmp && set -e` was invisible, so the gate
+        demanded a `set -e` that was already there.
+
+        Each `;`/`&&`/`||`-separated segment is examined, so a `set` that is not
+        the first word on its line is still found, and only option words count.
+        """
+        switches: List[tuple] = []
+        for line_start, line in cls._iter_lines_with_offsets(cmd):
+            code = line.split("#", 1)[0]
+            offset = 0
+            for segment in re.split(r"(;|&&|\|\||&)", code):
+                if segment in (";", "&&", "||", "&"):
+                    offset += len(segment)
+                    continue
+                words = segment.split()
+                if words and words[0] == "set":
+                    enabled = None
+                    for index, word in enumerate(words[1:], start=1):
+                        if cls._SET_E_WORD.match(word):
+                            enabled = True
+                        elif cls._SET_PLUS_E_WORD.match(word):
+                            enabled = False
+                        elif word in ("-o", "+o") and index + 1 < len(words):
+                            if words[index + 1] == "errexit":
+                                enabled = word == "-o"
+                    if enabled is not None:
+                        switches.append((line_start + offset, enabled))
+                offset += len(segment)
+        return switches
+
+    @staticmethod
+    def _iter_lines_with_offsets(cmd: str):
+        offset = 0
+        for line in cmd.split("\n"):
+            yield offset, line
+            offset += len(line) + 1
+
+    @classmethod
+    def _strip_heredocs(cls, cmd: str) -> str:
+        """Blank out heredoc bodies, keeping line numbering intact.
+
+        Everything between `<<DELIM` and a line holding only `DELIM` is data, not
+        shell, so neither a loop nor a `set -e` inside it means what it looks
+        like. Lines are replaced rather than removed so a reported command index
+        and any line number still line up.
+
+        ⚠️ An UNTERMINATED heredoc is restored rather than blanked to the end of
+        the command. Blanking it would switch this check off for every remaining
+        line, so a pattern that matched a heredoc opener by mistake would silence
+        the gate instead of merely mis-reading one line — which is the most
+        expensive direction for a false positive here. Erring the other way costs
+        at worst a false error on a genuinely unterminated heredoc, which is
+        itself a broken buildspec.
+        """
+        out: List[str] = []
+        lines = cmd.split("\n")
+        delimiter: str = ""
+        opened_at = -1
+        for index, line in enumerate(lines):
+            if delimiter:
+                out.append("")
+                if line.strip() == delimiter:
+                    delimiter = ""
+                continue
+            out.append(line)
+            match = cls._HEREDOC_START.search(line)
+            if match:
+                delimiter = match.group(2)
+                opened_at = index
+        if delimiter:
+            # Never closed: put the lines back exactly as they were.
+            out[opened_at + 1 :] = lines[opened_at + 1 :]
+        return "\n".join(out)
+
+    def _validate_loops_fail_fast(self, phase_name: str, phase_content: Dict):
+        """A command containing a loop must enable errexit.
+
+        CodeBuild aborts a phase when a command exits non-zero, but a multi-line
+        command is ONE command and its exit status is that of the last statement
+        it runs -- the last loop iteration. So a loop that builds and pushes N
+        images reports only the Nth result, and a failure in any of the other N-1
+        is skipped over silently: the phase succeeds, the build reports SUCCEEDED,
+        and a consumer that expects all N artifacts to exist waits for one that was
+        never produced. That is issue #1310, where the consumer is the
+        ``DockerBuildRun`` custom resource and the wait is its 1-hour timeout.
+
+        The rule is deliberately coarse -- a loop whose every statement is already
+        ``||``-guarded does not need errexit and is flagged anyway -- because the
+        remedy is one line and the failure mode it prevents is a silent one.
+
+        Three bounds, stated so a green run is not over-read. It reads ``commands``
+        and ``finally`` of each phase, which is every command list CodeBuild
+        executes from a buildspec FILE; a buildspec held inline in a
+        CloudFormation ``BuildSpec`` property is never opened by this validator.
+        It is a regex rather than a shell parser, so a line opening with ``for``
+        inside a quoted string is a false positive. And it checks that errexit is
+        on *at the loop*, not that it stays on inside it: a ``set +e`` within the
+        loop body is not detected.
+        """
+        for field in ("commands", "finally"):
+            commands = phase_content.get(field)
+            if not isinstance(commands, list):
+                continue
+            where = phase_name if field == "commands" else f"{phase_name}.finally"
+            for idx, cmd in enumerate(commands, 1):
+                if not isinstance(cmd, str) or "\n" not in cmd:
+                    # A single-line command is judged by CodeBuild on its own exit
+                    # status, so the phase already aborts on it.
+                    continue
+                self._check_one_command(where, idx, self._strip_heredocs(cmd))
+
+    def _check_one_command(self, where: str, idx: int, cmd: str):
+        """Judge EVERY loop in the command, not just the first.
+
+        ⚠️ `finditer`, not `search`, and the difference is not academic: the
+        #1310 fix added a `build_with_retry` helper whose `until` loop sits
+        *above* the image `for` loop in all three buildspecs. A check that
+        stopped at the first match therefore stopped reading before the loop
+        this gate exists to protect, and a `set +e` inserted in between passed
+        green. Measured on the shipped file before this changed.
+        """
+        switches = self._errexit_switches(cmd)
+        for loop in self._LOOP.finditer(cmd):
+            # The LAST `set` before THIS loop is the one in force. Checking only
+            # the first `set -e` would pass `set -e` ... `set +e` ... loop, where
+            # errexit is demonstrably off for the loop.
+            in_force = [enabled for offset, enabled in switches if offset < loop.start()]
+            if in_force and in_force[-1]:
+                continue
+
+            why = (
+                "re-disables errexit with 'set +e' before"
+                if in_force
+                else "does not enable errexit before"
+            )
+            line = cmd.count("\n", 0, loop.start()) + 1
+            self.errors.append(
+                f"Phase '{where}', command #{idx} (line {line}): a multi-line command "
+                f"{why} a '{loop.group(1)}' loop, so the command's exit status is only "
+                "the last iteration's and a failure in any earlier one is silently "
+                "skipped (issue #1310). Add 'set -e' before the loop."
             )
 
     def _validate_env(self):
@@ -208,7 +413,7 @@ class BuildspecValidator:
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 validate_buildspec.py <buildspec-file>")
-        print("       python3 validate_buildspec.py patterns/*/buildspec.yml")
+        print("       make validate-buildspec   (every buildspec in the tree)")
         sys.exit(1)
 
     # Expand glob patterns
