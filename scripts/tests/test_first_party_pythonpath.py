@@ -29,6 +29,7 @@ inert, which is the failure mode this repository keeps rediscovering.
 from __future__ import annotations
 
 import ast
+import functools
 import os
 import re
 import subprocess
@@ -62,6 +63,52 @@ pytestmark = pytest.mark.unit
 _PROBE_TIMEOUT = 120
 
 
+@functools.lru_cache(maxsize=1)
+def _make_supporting_eval() -> str | None:
+    """A `make` that accepts `--eval`, or None if this machine has none.
+
+    ⚠️ **`make` on macOS is GNU Make 3.81 (2006), which has no `--eval`** --
+    the option arrived in 3.82, and Apple ships the last GPLv2 release. Every
+    probe in this module injects its target with `--eval`, so on a stock macOS
+    toolchain all of them failed with `unrecognized option`, and the six
+    failures read as a repository fault rather than a missing tool. Homebrew's
+    `make` formula installs 4.x as **`gmake`** and deliberately does not shadow
+    `/usr/bin/make`, so preferring `gmake` is what makes these run rather than
+    skip on a developer machine; CI is Linux, where plain `make` is already 4.x.
+
+    `--version` is not consulted. The question is whether the option works, so
+    the probe is the option itself against a trivial target -- which also covers
+    a non-GNU `make` whose version string this would have to guess at.
+    """
+    for candidate in ("make", "gmake"):
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                [candidate, "--eval", "__probe__:\n\t@printf ok", "__probe__"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=REPO_ROOT,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0 and done.stdout.strip() == "ok":
+            return candidate
+    return None
+
+
+#: Skips every probe in this module when no `make` here understands `--eval`,
+#: rather than reporting six failures about the toolchain. A skip is weaker than
+#: a pass and says so: install a modern make to get the coverage back.
+requires_make_eval = pytest.mark.skipif(
+    _make_supporting_eval() is None,
+    reason=(
+        "no `make` on this machine accepts `--eval` (GNU Make < 3.82; macOS "
+        "ships 3.81). `brew install make` provides 4.x as `gmake`, which these "
+        "probes prefer automatically -- no PATH change needed."
+    ),
+)
+
+
 def _make_variable(name: str, *, directory: Path) -> str:
     """One variable's value, expanded by ``make`` reading the REAL Makefile.
 
@@ -72,7 +119,7 @@ def _make_variable(name: str, *, directory: Path) -> str:
     """
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [
-            "make",
+            _make_supporting_eval() or "make",
             "--no-print-directory",  # `make -C` narrates on stdout, ahead of the value
             "-C",
             str(directory),
@@ -157,6 +204,7 @@ def test_the_rule_finds_the_packages_this_checkout_has() -> None:
     assert all(root.is_dir() for root in roots)
 
 
+@requires_make_eval
 def test_make_python_and_the_provenance_guard_agree() -> None:
     from_make = _make_variable("FIRST_PARTY_PYTHONPATH", directory=REPO_ROOT)
     from_python = checkout_pythonpath(REPO_ROOT)
@@ -179,6 +227,7 @@ def test_the_pin_matches_what_first_party_editables_installs() -> None:
     assert first_party_roots(REPO_ROOT) == _editable_paths()
 
 
+@requires_make_eval
 def test_the_pin_is_absolute() -> None:
     """A relative entry is dropped by any subprocess started in another directory."""
     value = _make_variable("FIRST_PARTY_PYTHONPATH", directory=REPO_ROOT)
@@ -186,6 +235,7 @@ def test_the_pin_is_absolute() -> None:
     assert all(Path(entry).is_absolute() for entry in value.split(os.pathsep))
 
 
+@requires_make_eval
 def test_both_makefiles_pin_the_same_checkout() -> None:
     """CI runs the library's own targets with ``make -C``, from a different directory.
 
@@ -200,6 +250,7 @@ def test_both_makefiles_pin_the_same_checkout() -> None:
 # --------------------------------------------------------------------------- #
 # measured: what the wrapper actually does to an interpreter
 # --------------------------------------------------------------------------- #
+@requires_make_eval
 def test_every_first_party_package_resolves_in_this_checkout_under_the_wrapper() -> (
     None
 ):
@@ -229,6 +280,7 @@ def test_every_first_party_package_resolves_in_this_checkout_under_the_wrapper()
         )
 
 
+@requires_make_eval
 def test_the_wrapper_keeps_a_pin_the_caller_set_as_well() -> None:
     """Ours first, theirs after: the checkout under test wins without clobbering."""
     # Any absolute path will do: it is carried through the environment and compared,
@@ -244,6 +296,7 @@ def test_the_wrapper_keeps_a_pin_the_caller_set_as_well() -> None:
     ]
 
 
+@requires_make_eval
 def test_suppressing_the_pin_leaves_pythonpath_unset_rather_than_empty() -> None:
     """``FIRST_PARTY_PYTHONPATH=`` is the deliberate-installed-copy escape.
 
@@ -252,7 +305,7 @@ def test_suppressing_the_pin_leaves_pythonpath_unset_rather_than_empty() -> None
     """
     wrapper = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [
-            "make",
+            _make_supporting_eval() or "make",
             "--no-print-directory",
             "-C",
             str(REPO_ROOT),
