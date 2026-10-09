@@ -38,15 +38,23 @@ logging.basicConfig(
 def s3_bucket():
     """Create a mocked S3 bucket for testing.
 
-    Mocks S3 only, allowing Bedrock URLs to pass through to real AWS.
-    Uses URL-based passthrough to allow Bedrock API calls while mocking S3.
+    Mocks S3 only, letting Bedrock *and Textract* through to real AWS. Textract
+    is in the passthrough because `samples/lending_package.pdf` is a scan with a
+    zero-character text layer, so without a real OCR call there is no document
+    text at all and the agent is left reading the page image alone — which is a
+    configuration the pipeline never runs, and which misread a cents value when
+    this test was asserting against it.
     """
-    # Configure mock_aws to mock S3 but passthrough all bedrock URLs to real AWS
     with mock_aws(
         config={
             "core": {
                 "mock_credentials": False,
-                "passthrough": {"urls": [r".*bedrock.*\.amazonaws\.com.*"]},
+                "passthrough": {
+                    "urls": [
+                        r".*bedrock.*\.amazonaws\.com.*",
+                        r".*textract.*\.amazonaws\.com.*",
+                    ]
+                },
             }
         }
     ):
@@ -153,6 +161,44 @@ def test_payslip(execution_number, s3_bucket):
     with open(config_path, "r") as f:
         config_data = yaml.safe_load(f)
 
+    # ⚠️ The preset defines no `extraction.task_prompt`, so `.get(..., "")` sent
+    # an EMPTY prompt. `ExtractionService` does not merge the system defaults --
+    # a deployed stack does that before the service ever sees a config -- so
+    # nothing filled the gap, and the agent was asked to extract from nothing.
+    #
+    # That is also why the page image never arrived: `{DOCUMENT_IMAGE}` is what
+    # attaches it, and the placeholder lives in the prompt. `samples/
+    # lending_package.pdf` is a scan with a zero-character text layer, and this
+    # test writes an empty `ocr_text.txt` because it has no Textract, so the
+    # image is the ONLY content there is. With an empty prompt the model
+    # answered, correctly, that the document text appeared to be missing.
+    #
+    # The default is read from the shipped `base-extraction.yaml`, which is what
+    # a real deployment resolves to, and asserted non-empty so this cannot rot
+    # silently again -- the same way the `pattern-2` path above rotted.
+    system_defaults = (
+        Path(__file__).parent.parent.parent.parent.parent
+        / "idp_common"
+        / "config"
+        / "system_defaults"
+        / "base-extraction.yaml"
+    )
+    with open(system_defaults, "r") as f:
+        default_extraction = yaml.safe_load(f).get("extraction") or {}
+
+    task_prompt = config_data.get("extraction", {}).get(
+        "task_prompt"
+    ) or default_extraction.get("task_prompt", "")
+    assert task_prompt, (
+        f"no extraction task_prompt in either {config_path.name} or "
+        f"{system_defaults.name}; the agent would be asked to extract from nothing"
+    )
+    assert "{DOCUMENT_IMAGE}" in task_prompt, (
+        "the task prompt has no {DOCUMENT_IMAGE} placeholder, so the page image "
+        "is not attached -- and this sample PDF has no text layer, so the image "
+        "is the only content the agent can read"
+    )
+
     CONFIG = {
         "extraction": {
             "agentic": {"enabled": True},
@@ -161,7 +207,7 @@ def test_payslip(execution_number, s3_bucket):
             "top_k": 5.0,
             "top_p": 0.1,
             "max_tokens": 4096,
-            "task_prompt": config_data.get("extraction", {}).get("task_prompt", ""),
+            "task_prompt": task_prompt,
         },
         "classes": config_data.get("classes", []),
     }
@@ -179,7 +225,30 @@ def test_payslip(execution_number, s3_bucket):
         pdf_doc = pdfium.PdfDocument(sample_pdf)
         first_page = pdf_doc[0]
         pil_img = first_page.render().to_pil()
-        ocr_text = ""
+
+        # Real OCR, because this sample has no text layer to read instead:
+        # `pdfium`'s text page returns zero characters for it. This used to be
+        # `ocr_text = ""`, which left the page image as the agent's only source
+        # and had it reading cents off a scan -- it returned $291.6 for a
+        # $291.90 field, and no OCR text existed to cross-check against. The
+        # pipeline always has Textract output here, so the test now has it too.
+        png_path = Path(temp_dir) / "ocr_input.png"
+        pil_img.save(str(png_path))
+        textract = boto3.client(
+            "textract", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        )
+        response = textract.detect_document_text(
+            Document={"Bytes": png_path.read_bytes()}
+        )
+        ocr_text = "\n".join(
+            block["Text"]
+            for block in response.get("Blocks", [])
+            if block.get("BlockType") == "LINE"
+        )
+        assert ocr_text.strip(), (
+            "Textract returned no LINE blocks for the payslip page; the agent "
+            "would be left reading the image alone, which the pipeline never does"
+        )
 
         ocr_text_path = Path(temp_dir) / "ocr_text.txt"
         with open(ocr_text_path, "w") as f:
@@ -280,8 +349,16 @@ def test_payslip(execution_number, s3_bucket):
         assert "PayDate" in inference_result, "Should extract PayDate"
         pay_date = inference_result.get("PayDate")
         assert pay_date is not None, "PayDate should not be null"
-        assert "07/25/2008" in pay_date or "7/25/2008" in pay_date, (
-            f"PayDate should be 07/25/2008, got {pay_date}"
+        # ⚠️ The DAY is the assertion; the rendering is not. `PayDate` carries
+        # `"format": "date"` in the shipped Payslip schema, and JSON Schema's
+        # `date` format is RFC 3339 full-date -- so `2008-07-25` is the correct
+        # answer and the US rendering is the tolerated one, not the other way
+        # round. This used to demand `07/25/2008` and failed the run on a
+        # schema-conformant value.
+        normalized = pay_date.replace("/", "-").strip()
+        assert normalized in ("2008-07-25", "07-25-2008", "7-25-2008"), (
+            f"PayDate should be 25 July 2008, ideally as the schema's "
+            f"RFC 3339 `2008-07-25`, got {pay_date}"
         )
 
         # Verify EmployeeName with exact values
