@@ -106,18 +106,22 @@ def _config_s3():
     return _config_s3_client
 
 
-def _catalog_marketplace_identity(
-    feature_id: str,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Read (productCode, marketplaceListingUrl) from catalog.json.
+def _catalog_entry(feature_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """``(entry, read_ok)`` for ``feature_id`` in catalog.json.
+
+    Two separate answers, because "the catalog does not list this feature" and
+    "the catalog could not be read" license different responses to the caller and
+    collapsing them into a single ``None`` is how an infrastructure failure would
+    get reported as a missing feature. ``read_ok`` is False when the bucket is
+    unconfigured, the object is unreadable or the JSON does not parse; it is True
+    when the catalog was read and simply has no such entry.
 
     The pre-install source of truth: unlike the InstalledFeatures row, the
     catalog exists before anything is installed — which is precisely when
-    Subscribe is used. Single GetObject, never lists. Returns (None, None) on any
-    failure so the caller degrades rather than erroring.
+    Subscribe is used. Single GetObject, never lists.
     """
     if not _CONFIGURATION_BUCKET:
-        return None, None
+        return None, False
     try:
         resp = _config_s3().get_object(Bucket=_CONFIGURATION_BUCKET, Key=_CATALOG_KEY)
         catalog = json.loads(resp["Body"].read().decode("utf-8"))
@@ -125,17 +129,32 @@ def _catalog_marketplace_identity(
         code = exc.response.get("Error", {}).get("Code", "")
         if code not in ("NoSuchKey", "404", "NotFound"):
             logger.warning("Failed to read catalog: %s", exc)
-        return None, None
+        return None, False
     except (BotoCoreError, ValueError) as exc:
         logger.warning("Bad catalog JSON: %s", exc)
-        return None, None
+        return None, False
     for entry in catalog.get("features") or []:
         if isinstance(entry, dict) and entry.get("featureId") == feature_id:
-            return (
-                entry.get("productCode") or None,
-                entry.get("marketplaceListingUrl") or None,
-            )
-    return None, None
+            return entry, True
+    return None, True
+
+
+def _catalog_marketplace_identity(
+    feature_id: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read (productCode, marketplaceListingUrl) from catalog.json.
+
+    Returns (None, None) on any failure so the caller degrades rather than
+    erroring. Use :func:`_catalog_entry` where absence has to be told apart from
+    an unreadable catalog.
+    """
+    entry, _read_ok = _catalog_entry(feature_id)
+    if not entry:
+        return None, None
+    return (
+        entry.get("productCode") or None,
+        entry.get("marketplaceListingUrl") or None,
+    )
 
 
 def _load_json_map(raw: str, name: str) -> Dict[str, str]:
@@ -154,6 +173,30 @@ _FEATURE_OFFER_ID_MAP = _load_json_map(
 )
 
 
+def _installed_row(feature_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """``(row, read_ok)`` for the feature's InstalledFeatures row.
+
+    Same two-answer shape as :func:`_catalog_entry`, for the same reason: a
+    DynamoDB failure must not be reported to the caller as "this feature is not
+    installed". ``read_ok`` is False when the table is unconfigured or the read
+    raised; it is True when the read succeeded, whether or not a row came back.
+    """
+    if not _INSTALLED_FEATURES_TABLE:
+        return None, False
+    try:
+        row = (
+            _dynamodb.Table(_INSTALLED_FEATURES_TABLE)
+            .get_item(Key={"featureId": feature_id})
+            .get("Item")
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed read is not an absent row
+        logger.warning(
+            "Could not read InstalledFeatures row for %s: %s", feature_id, exc
+        )
+        return None, False
+    return (row or None), True
+
+
 def _installed_marketplace_identity(
     feature_id: str,
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -161,21 +204,24 @@ def _installed_marketplace_identity(
     InstalledFeatures row — baked from the feature manifest at install time, so
     the host needs no per-feature configuration. Returns (None, None) when the
     feature isn't installed or carries no marketplace identity."""
-    if not _INSTALLED_FEATURES_TABLE:
-        return None, None
-    try:
-        row = (
-            _dynamodb.Table(_INSTALLED_FEATURES_TABLE)
-            .get_item(Key={"featureId": feature_id})
-            .get("Item")
-            or {}
-        )
-    except Exception as exc:  # noqa: BLE001 — treat lookup failure as "absent"
-        logger.warning(
-            "Could not read InstalledFeatures row for %s: %s", feature_id, exc
-        )
-        return None, None
+    row, _read_ok = _installed_row(feature_id)
+    row = row or {}
     return row.get("productCode"), row.get("marketplaceListingUrl")
+
+
+def _feature_is_absent(feature_id: str) -> bool:
+    """True only when both sources were read and neither knows this feature.
+
+    Deliberately not "not found": an unreadable catalog or an unreadable table
+    answers False here, so an infrastructure failure keeps its 500 instead of
+    being reported to an admin as a feature that does not exist. Those are
+    different problems with different remedies, and the second is the misleading
+    one — "no such feature" sends the admin to the catalog when the fault is the
+    bucket policy.
+    """
+    catalog_entry, catalog_ok = _catalog_entry(feature_id)
+    row, row_ok = _installed_row(feature_id)
+    return catalog_ok and row_ok and catalog_entry is None and row is None
 
 
 class AuthorizationError(Exception):
@@ -184,6 +230,22 @@ class AuthorizationError(Exception):
 
 class SubscribeError(Exception):
     """Raised when the Lambda cannot build a valid marketplace URL."""
+
+
+class ResourceNotFound(Exception):
+    """The feature the caller named exists in neither the catalog nor the install rows.
+
+    The API dispatcher maps this to HTTP 404 with ``errorType:
+    "ResourceNotFound"``. It matches by class NAME out of the invoke response's
+    ``errorType`` — the exception object does not cross the ``lambda:Invoke``
+    boundary — so this local declaration gets the same mapping as the canonical
+    ``idp_common.api_adapter.ResourceNotFound``, which this Lambda cannot import
+    because it does not depend on ``idp_common``. ``AuthorizationError`` above is
+    declared locally for exactly the same reason.
+
+    Keep the name in step with the dispatcher's; a rename here silently returns
+    this refusal to 500.
+    """
 
 
 def _assert_admin(event: Dict[str, Any]) -> None:
@@ -275,7 +337,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 feature_id,
                 product_code,
             )
+        elif _feature_is_absent(feature_id):
+            # Nothing anywhere knows this feature id, so there is no productCode
+            # to configure and the message below would send an admin to edit a
+            # catalog entry that does not exist. 404 rather than 500: the request
+            # named something that is not there, which is not a server fault.
+            raise ResourceNotFound(
+                f"No feature {feature_id!r} in the catalog or the installed "
+                f"features of this deployment."
+            )
         else:
+            # The feature IS known — its catalog entry or install row is just
+            # incomplete — so this stays a 500: the deployment is misconfigured
+            # and the remedy is the one named here.
             raise SubscribeError(
                 f"No productCode for feature {feature_id!r} in either its install "
                 f"row or the catalog. Set `productCode` on the feature's entry in "

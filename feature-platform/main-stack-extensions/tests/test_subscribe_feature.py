@@ -11,11 +11,13 @@ fixture and the catalog via `_put_catalog`.
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import boto3
 import pytest
 from _helpers import make_appsync_event
+from botocore.exceptions import ClientError
 
 
 def _seed_row(table_name, feature_id, *, product_code=None, listing_url=None):
@@ -411,11 +413,46 @@ def test_install_row_listing_url_wins_over_catalog(
     assert result["productCode"] == "from-row"
 
 
-def test_no_catalog_and_no_row_still_raises_a_clear_error(
+def test_a_feature_in_neither_the_catalog_nor_the_install_rows_is_not_found(
     monkeypatch, mock_stack, load_lambda
 ):
+    """Nothing knows this feature id -> ResourceNotFound, which maps to 404.
+
+    It used to share the SubscribeError below, which answered 500 and told the
+    admin to set `productCode` on a catalog entry that does not exist.
+    """
     bucket = mock_stack["bucket"]
     _put_catalog(bucket, [])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        simulator_endpoint="",
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    with pytest.raises(mod.ResourceNotFound, match="idp-auto-optimizer"):
+        mod.handler(
+            make_appsync_event(
+                "subscribeFeature",
+                {"featureId": "idp-auto-optimizer"},
+                groups=["Admin"],
+            ),
+            None,
+        )
+
+
+def test_a_known_feature_with_an_incomplete_entry_still_raises_subscribe_error(
+    monkeypatch, mock_stack, load_lambda
+):
+    """The catalog lists the feature but carries no productCode -> still 500.
+
+    The companion of the test above, and the reason the two are not one branch:
+    this deployment IS misconfigured and the remedy named in the message is the
+    right one, so it must not be softened to a 404.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [{"featureId": "idp-auto-optimizer", "source": "marketplace"}])
     mod = _preload(
         monkeypatch,
         load_lambda,
@@ -433,6 +470,47 @@ def test_no_catalog_and_no_row_still_raises_a_clear_error(
             ),
             None,
         )
+
+
+def test_an_unreadable_catalog_is_not_reported_as_a_missing_feature(
+    monkeypatch, mock_stack, load_lambda
+):
+    """An unreadable catalog keeps its 500 rather than becoming a 404.
+
+    "No such feature" for a bucket-policy or S3 fault sends the admin to the
+    catalog when the fault is the read, and a 404 is also invisible to the 5xx
+    error-rate alarm. _catalog_entry reports absence and unreadability
+    separately so this stays distinguishable.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        simulator_endpoint="",
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    # AccessDenied specifically: a bucket policy or KMS refusal is the realistic
+    # way this read fails, and it is the one _catalog_entry must not read as
+    # "the catalog does not list this feature". (A NoSuchKey/404 is handled by the
+    # same branch; an exception type the helper does not catch propagates and
+    # still reaches the caller as a 500, which is the safe direction.)
+    denied = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject"
+    )
+    with patch.object(mod, "_config_s3") as fake_s3:
+        fake_s3.return_value.get_object.side_effect = denied
+        with pytest.raises(mod.SubscribeError, match="extensions-marketplace.yaml"):
+            mod.handler(
+                make_appsync_event(
+                    "subscribeFeature",
+                    {"featureId": "idp-auto-optimizer"},
+                    groups=["Admin"],
+                ),
+                None,
+            )
 
 
 def test_simulator_endpoint_still_wins_over_catalog_listing(
