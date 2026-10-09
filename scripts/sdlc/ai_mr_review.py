@@ -11,7 +11,7 @@ as a comment.
 Two forges, one reviewer
 ------------------------
 ``--forge gitlab`` (the default) and ``--forge github`` select between
-:class:`Gitlab` and :class:`Github`. Those two classes and the four strings in
+:class:`Gitlab` and :class:`Github`. Those two classes and the a handful of strings in
 :class:`Platform` are the whole difference: the worktree, the merge-base diff,
 the tool allowlist, the secret stripping, the instruction pinning and the
 per-head-SHA marker are the same work either side.
@@ -69,6 +69,22 @@ Three properties it is built around
    in that job builds or installs from the checkout. Adding one — a
    ``pip install -r`` over the PR's tree, a ``make`` target — would hand a fork
    the credential directly, which is why the workflow says so at that step.
+
+   ⚠️ **``Read`` is not confined to the worktree, measured rather than assumed,
+   and the two halves of that measurement point in opposite directions.** Under
+   the exact argv :func:`run_claude` builds — ``--permission-mode manual`` with
+   ``Read``/``Grep``/``Glob`` allowed — a probe was *refused* ``/proc/self/environ``
+   but *served* ``/etc/hostname`` and ``../../etc/passwd``. So the specific route
+   from a prompt-injected diff to this job's AWS credentials, which live in the
+   process environment, is closed; and the general claim that the model reads only
+   the tree under review is false. Those are different statements and only the
+   first is a protection.
+
+   What is therefore NOT established is that every route to the credentials is
+   closed — only that the obvious one is. Treat the scheduled sweep as the place
+   where that matters, because it is the only path on which an author without
+   push access reaches a credentialed model, and prefer narrowing ``Read`` to the
+   worktree over extending the list of routes known to be refused.
 2. **It is idempotent per head SHA.** Every posted comment carries a
    ``<!-- ai-review: ... -->`` marker naming the SHA and prompt revision it
    reviewed. A re-run over the same head is a no-op. Note the converse: a new
@@ -168,7 +184,7 @@ class Platform:
     Everything expensive and everything security-relevant in this module is
     platform-agnostic: the throwaway worktree, the merge-base diff, the tool
     allowlist, the secret stripping, the instruction pinning and the per-head-SHA
-    marker are the same work either side. What differs is four strings and the
+    marker are the same work either side. What differs is a handful of strings and the
     four API calls in :class:`Gitlab` / :class:`Github`.
 
     ``head_ref`` is the load-bearing one. Both forges publish a pull/merge
@@ -323,6 +339,10 @@ class MergeRequest:
     head_sha: str
     draft: bool
     changed_files: int = 0
+    #: ``owner/name`` of the repository the head branch lives in, when the forge
+    #: reports it. GitHub does; GitLab's payload does not, so it stays empty
+    #: there and the sweep's fork test below is a GitHub-only concern.
+    head_repo: str = ""
 
     @classmethod
     def from_api(cls, payload: dict) -> MergeRequest:
@@ -364,6 +384,7 @@ class MergeRequest:
             # GitHub has a real boolean for this; there is no title convention to
             # fall back on, and `work_in_progress` does not exist here.
             draft=bool(payload.get("draft")),
+            head_repo=((head.get("repo") or {}).get("full_name") or ""),
         )
 
 
@@ -632,6 +653,19 @@ class Github:
         review comment posted on somebody's work in progress, which is the
         visible-to-everyone kind of mistake. There is no ``draft=no`` query
         parameter to ask for, so here the local check is the only one.
+
+        ⚠️ **Same-repository pull requests are skipped, and that is a cost control
+        rather than tidiness.** Those are already reviewed by the ``pull_request``
+        trigger, and the idempotency marker is only written when a review
+        *finishes* — about nine minutes. A scheduled tick landing inside that
+        window sees no marker, so without this filter both runs review the same
+        head, both pay, and both post a comment. The sweep exists for the one case
+        ``pull_request`` cannot serve: a fork, whose own run gets no credentials.
+
+        ``head_repo`` is empty when the head repository has been deleted, which
+        GitHub reports for a fork removed after opening the pull request. That is
+        treated as a fork — it cannot be this repository — so such a PR is still
+        swept rather than silently dropped.
         """
         query = urllib.parse.urlencode(
             {
@@ -645,6 +679,8 @@ class Github:
         for item in self._paginate(self._url(f"/pulls?{query}")):
             merge_request = MergeRequest.from_github_api(item)
             if merge_request.draft:
+                continue
+            if merge_request.head_repo == self.repo:
                 continue
             found.append(merge_request)
         return found

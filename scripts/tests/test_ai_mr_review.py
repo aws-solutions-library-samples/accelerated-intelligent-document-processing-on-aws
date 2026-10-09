@@ -150,11 +150,11 @@ def test_the_gitlab_token_is_required_and_has_no_fallback(
 
     Asserted by RUNNING it with ``CI_JOB_TOKEN`` present and
     ``GITLAB_REVIEW_TOKEN`` absent, rather than by matching the source text for
-    ``os.environ.get("GITLAB_REVIEW_TOKEN"``. That string match was the previous
-    form and it broke on a refactor that kept the behaviour exactly — the lookup
-    is now ``os.environ.get(platform.credential_env)`` — which is the wrong direction
-    for a test to be sensitive in. Executing it also covers the case the string
-    could not: a fallback added *after* the first lookup.
+    ``os.environ.get("GITLAB_REVIEW_TOKEN"``. A string match there is sensitive to
+    how the lookup is spelled rather than to what it does — it is
+    ``os.environ.get(platform.credential_env)`` — and that is the wrong direction
+    for a test to be sensitive in. Executing it also covers the case a string
+    match cannot: a fallback added *after* the first lookup.
     """
     monkeypatch.delenv("GITLAB_REVIEW_TOKEN", raising=False)
     monkeypatch.setenv("CI_JOB_TOKEN", "job-token-that-cannot-create-notes")
@@ -877,6 +877,85 @@ def gh_job(gh_workflow: dict) -> dict:
 
 
 @pytest.mark.unit
+def test_the_sweep_skips_same_repository_pull_requests(mod) -> None:
+    """A same-repo PR is the ``pull_request`` trigger's job, and paying twice is easy.
+
+    The idempotency marker is only written when a review *finishes*, about nine
+    minutes. A scheduled tick landing inside that window sees no marker, so
+    without this filter both runs review the same head, both pay, and both post a
+    comment. The two runs are in different concurrency groups on purpose, so
+    nothing else prevents the overlap.
+
+    A deleted head repository reports empty, and that must still be swept: it
+    cannot be this repository, and dropping it silently would lose the one case
+    the sweep exists for.
+    """
+    payloads = [
+        {
+            "number": 1,
+            "title": "same repo",
+            "head": {"sha": "a" * 40, "ref": "x", "repo": {"full_name": "owner/name"}},
+        },
+        {
+            "number": 2,
+            "title": "fork",
+            "head": {"sha": "b" * 40, "ref": "y", "repo": {"full_name": "someone/fk"}},
+        },
+        {
+            "number": 3,
+            "title": "deleted fork",
+            "head": {"sha": "c" * 40, "ref": "z", "repo": None},
+        },
+    ]
+    github = mod.Github("owner/name", "token")
+    github._request = lambda method, url, body=None: (payloads, {})  # type: ignore[method-assign]
+
+    swept = [m.iid for m in github.open_merge_requests("develop")]
+    assert swept == [2, 3], (
+        f"the sweep returned {swept}. #1 is a same-repository pull request and is "
+        f"already covered by the pull_request trigger, so sweeping it risks a "
+        f"second paid review and a second comment on the same head. #3's head "
+        f"repository was deleted and must still be swept."
+    )
+
+
+@pytest.mark.unit
+def test_the_fork_pull_request_arm_is_skipped_not_failed(gh_job: dict) -> None:
+    """A fork's own run must not reach the credential step.
+
+    Repository ``vars`` — unlike ``secrets`` — ARE readable by a fork's run, so
+    the role-configured check passes and ``configure-aws-credentials`` then fails
+    for want of an OIDC token. Without the head-repository test that is a red
+    mark on every fork pull request, for a path that is designed not to work.
+    """
+    condition = str(gh_job.get("if", ""))
+    assert "head.repo.full_name == github.repository" in condition, (
+        "the job's `if:` no longer excludes fork pull requests. Their runs get no "
+        "OIDC token, so they would fail at the credential step and show red; the "
+        "schedule is the path forks are meant to take."
+    )
+
+
+@pytest.mark.unit
+def test_the_harness_pin_fails_closed(gh_job: dict) -> None:
+    """A pin that cannot be made must stop the job, not proceed unpinned.
+
+    ``git checkout FETCH_HEAD -- $HARNESS`` is all-or-nothing, so renaming any one
+    of the paths on the target branch pins nothing. Continuing then runs the pull
+    request's own copy of the reviewer, which is the single thing this step exists
+    to prevent — and it would do so with only a log line to say so.
+    """
+    pin = next(
+        (s for s in gh_job["steps"] if "FETCH_HEAD" in str(s.get("run", ""))), None
+    )
+    assert pin, "no harness-pinning step found"
+    assert "exit 1" in str(pin["run"]), (
+        "the pinning step no longer fails closed: if the path list goes stale it "
+        "proceeds on the checkout's own harness"
+    )
+
+
+@pytest.mark.unit
 def test_the_head_is_fetched_from_the_chosen_remote(mod, monkeypatch) -> None:
     """``--remote`` must reach the fetch, and the web URL must use the same one.
 
@@ -984,9 +1063,9 @@ def test_the_github_sweep_follows_every_page(mod, header_name: str) -> None:
     because what matters is the behaviour of the sweep: a future refactor that
     reads the header some other way still has to pass this.
 
-    The live probe written while building this could not catch either one — the
-    repository had a single page of open pull requests, so the second request was
-    never made.
+    ⚠️ A live call against this repository cannot stand in for this test. It has
+    one page of open pull requests, so the second request is never made and both
+    failures stay invisible.
     """
     pages = [
         (
@@ -1203,8 +1282,8 @@ def test_the_github_workflow_states_the_forge_on_the_command_line(
     """
     runs = [str(s.get("run", "")) for s in gh_job["steps"] if "run" in s]
     # Matched on the INVOCATION, not on the filename: the harness-pinning step
-    # names the same path as one of the files it pins, and counting mentions
-    # scored that step as an unflagged invocation.
+    # names the same path among the files it pins, so counting mentions of the
+    # path scores that step as an invocation that forgot the flag.
     invocations = [
         block
         for run in runs

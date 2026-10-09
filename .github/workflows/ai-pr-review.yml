@@ -74,7 +74,7 @@ permissions:
 # GitLab's `interruptible: true`. Keyed on the PR number for a pull_request run
 # and on the ref otherwise, so a scheduled sweep does not cancel a PR's review.
 concurrency:
-  group: ai-pr-review-${{ github.event.pull_request.number || github.ref }}
+  group: ai-pr-review-${{ github.event.pull_request.number || inputs.pr || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -100,9 +100,17 @@ jobs:
     # well as a courtesy. `github.event.pull_request.draft` is absent on a
     # schedule or dispatch run, hence the event-name guard first; the sweep does
     # its own draft filtering from the API.
+    # Two conditions, and the second is NOT redundant with the fork design above.
+    # Repository `vars` -- unlike `secrets` -- ARE readable by a fork's run, so the
+    # role check would pass and `configure-aws-credentials` would then fail for
+    # want of an OIDC token, putting a red mark on every fork pull request. The
+    # head-repository test makes "forks go through the schedule" explicit rather
+    # than emergent, and turns that red mark into a skipped job.
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.draft == false
+      github.event_name != 'pull_request' || (
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
 
     permissions:
       contents: read
@@ -175,9 +183,12 @@ jobs:
           if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
             echo "Harness pinned to origin/$TARGET_BRANCH: $HARNESS"
           else
-            echo "⚠️  Could not pin the harness to origin/$TARGET_BRANCH — it does not"
-            echo "    carry all of: $HARNESS"
-            echo "    Running this checkout's own copy. Expected only on the PR that adds this."
+            echo "❌ Could not pin the harness to origin/$TARGET_BRANCH — it does not"
+            echo "   carry all of: $HARNESS"
+            echo "   REFUSING to run this checkout's own copy. On a pull request that"
+            echo "   would make the reviewer the PR's own copy of the reviewer, which"
+            echo "   is the one thing this step exists to prevent. Fix the path list."
+            exit 1
           fi
 
       # The role ARN is NOT a secret — it is safe in a workflow file — but it

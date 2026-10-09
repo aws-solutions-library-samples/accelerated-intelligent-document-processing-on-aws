@@ -106,6 +106,15 @@ MUST_BE_REQUIRED = {
 # The mirror image: contexts this repo does produce, but not on every pull
 # request, so requiring one would leave it pending forever and block every merge.
 # Deliberately NOT asserted as required-eligible.
+# The one workflow whose trigger and job SHAPE has been decided deliberately: it
+# narrows `branches:`, narrows `types:` and carries a job-level `if:` on a named
+# job, and its context is pinned advisory in MUST_STAY_ADVISORY below with the
+# reason. Named as a single file rather than derived from that set, because the
+# set answers a different question -- "may this context be required?" -- and
+# using it here silently widened two assertions to workflows nobody had decided
+# about.
+SHAPE_DECIDED_WORKFLOW = "ai-pr-review.yml"
+
 MUST_STAY_ADVISORY = {
     "build": "build-docs.yml is paths-filtered",
     "Generate Dependency Manifests": "generate-dep-manifest.yml is paths-filtered",
@@ -441,7 +450,7 @@ def test_block_sequence_branch_filter_is_read_the_same_as_flow_style() -> None:
     """
     for branch in ("develop", "main", "release/1.2"):
         for ctx in mod.discover_check_contexts(mod.WORKFLOWS_DIR, branch):
-            if ctx.context in MUST_STAY_ADVISORY:
+            if ctx.workflow == SHAPE_DECIDED_WORKFLOW:
                 continue
             assert "branches" not in ctx.reason, (
                 f"{ctx.context!r} was held back from the required list for "
@@ -513,12 +522,12 @@ def test_no_workflow_in_this_repo_has_a_conditional_shape_we_would_miss() -> Non
     """
     for path in sorted(mod.WORKFLOWS_DIR.glob("*.y*ml")):
         data = mod.yaml.safe_load(path.read_text(encoding="utf-8"))
-        contexts = [
-            ctx.context
-            for ctx in mod.discover_check_contexts(mod.WORKFLOWS_DIR, "develop")
-            if ctx.workflow == path.name
-        ]
-        if contexts and all(name in MUST_STAY_ADVISORY for name in contexts):
+        # Narrowed to the ONE workflow the decision was made for. Keying the skip
+        # on "every context is in MUST_STAY_ADVISORY" also exempted build-docs.yml
+        # and generate-dep-manifest.yml, which this test used to assert on -- so a
+        # change adding `types:` to either would have stopped being reported, and
+        # the broadening would have been invisible because the test still passed.
+        if path.name == SHAPE_DECIDED_WORKFLOW:
             continue
 
         triggers = mod._normalize_triggers(data.get(True, data.get("on")))

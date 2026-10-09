@@ -1440,16 +1440,31 @@ ai-mr-review-local: ## Dry-run one MR with NO token, from git over SSH (MR=<iid>
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py --mr $(MR) --no-api $(EXTRA_ARGS)
 
 # The GitHub side. `--forge github` is stated rather than detected, so these two
-# targets are the local equivalents of .github/workflows/ai-pr-review.yml. The
-# token is whatever `gh auth token` yields; a fork PR's head is fetchable from
-# this repository, so a fork PR can be reviewed from here as well as by the
-# workflow's scheduled run.
+# targets are the local equivalents of .github/workflows/ai-pr-review.yml. A fork
+# PR's head is fetchable from this repository, so a fork PR can be reviewed from
+# here as well as by the workflow's scheduled run.
+#
+# Three things the workflow gets from its environment and a laptop does not, each
+# of which turns into a skip or a failure rather than a review if it is left out:
+#   GITHUB_TOKEN       the workflow maps it from secrets; here it comes from
+#                      `gh auth token`, and the script reads only this variable.
+#   GITHUB_REPOSITORY  set by Actions; passed as --repo here.
+#   --remote github    ⚠️ `origin` is the GITLAB remote in this checkout, and the
+#                      head ref is fetched from whatever remote is named. Without
+#                      this, --forge github asks GitLab for a refs/pull/ ref that
+#                      cannot exist there and fails at the fetch.
+# Override any of them through EXTRA_ARGS or the environment.
+GH_REVIEW_REPO ?= aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
+GH_REVIEW_REMOTE ?= github
+
 ai-pr-review: ## Review every open non-draft GitHub PR -> develop and post them (PR=<n> for one)
-	@$(PYTHON) scripts/sdlc/ai_mr_review.py --forge github \
+	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
+		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
 		$(if $(PR),--mr $(PR),--all-open) $(EXTRA_ARGS)
 
 ai-pr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting them
-	@$(PYTHON) scripts/sdlc/ai_mr_review.py --forge github \
+	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
+		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
 		$(if $(PR),--mr $(PR),--all-open) --dry-run $(EXTRA_ARGS)
 
 ##@ Deploy

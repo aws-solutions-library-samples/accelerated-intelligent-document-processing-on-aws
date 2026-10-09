@@ -199,16 +199,22 @@ mark can have.
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
 without being covered. `make check-arn-partitions` uses the **same** discovery
 (`scripts/discover_templates.sh cfn`) and both targets fail outright
-if it returns nothing, so the two gates see the same set — 30 templates today. The
+if it returns nothing, so the two gates see the same set. Run
+`scripts/discover_templates.sh cfn | wc -l` for the count rather than trusting a
+figure here: discovery is by content, so adding a template moves it, and the
+number quoted here went stale the first time one was added. The
 hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
 and `iam-roles/` is gone; that directory list survives only as the historical note in
-the Makefile comments. **Both gates now scan all 30 templates: no template is skipped
+the Makefile comments. **Both gates scan every discovered template: no template is skipped
 at path scope by either.** The ARN gate's one carve-out, `ARN_PARTITION_EXEMPT`, is
 per **line**: entries are `<path>:<line-pattern>` (the shape
-`scripts/sdlc/retired_services.json` uses), and the single entry today hides the two
-statements in `scripts/sdlc/cfn/credential-vendor.yml` that trust a named role in the
-commercial CI account — cross-partition IAM trust does not exist, so those two cannot
-be parameterised. Everything else in those templates now is. `cfn-lint`
+`scripts/sdlc/retired_services.json` uses). Two entries exist, each bounded to one
+file: the statements in `scripts/sdlc/cfn/credential-vendor.yml` that trust a named
+role in the commercial CI account — cross-partition IAM trust does not exist, so
+those cannot be parameterised — and the OIDC **audience claim** in
+`scripts/sdlc/cfn/github-oidc-review-role.yml`, which is spelled like a hostname but
+is an opaque value GitHub mints verbatim in every partition, so `${AWS::URLSuffix}`
+would render an audience that is never issued. Everything else in those templates now is. `cfn-lint`
 exempts nothing at **path** scope: no template is skipped. It does exempt specific
 *rules*, which is a different axis — it runs with `--ignore-checks
 $(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
@@ -429,8 +435,8 @@ own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
 maintained definition of that path list, but it now gates nothing and is
 documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
-One GitLab-only job remains and it is not a gate, so the parity assertion is
-unaffected by it: `deployment_validation` (the pre-deploy IAM check, which
+Of the jobs that run only on GitLab, one is left to describe here and it is not a
+gate, so the parity assertion is unaffected by it: `deployment_validation` (the pre-deploy IAM check, which
 belongs to the deploy path above, and which is nightly-only for the same reason —
 note the *check itself* still runs on every MR as the last step of `static_checks`,
 where it needs no credentials).
