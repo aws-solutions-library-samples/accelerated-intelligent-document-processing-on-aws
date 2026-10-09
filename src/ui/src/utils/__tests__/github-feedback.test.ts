@@ -340,6 +340,13 @@ describe('the URL stays inside GitHub’s request-line limit', () => {
     // 4,211-byte URL against a 7,800 budget, because a halving cap was applied
     // to a correct estimate. A truncation that throws away half the findings is
     // not a passing result, so the floor is asserted too.
+    //
+    // ⚠️ The fixtures here are ASCII-dominant on purpose, and a floor this high
+    // is only correct for that. Emoji-dense content legitimately converges lower
+    // — around 5,700-6,500 bytes — because the bytes-per-unit estimate is the
+    // field's average and a cut overshoots when the tail costs more than the
+    // head. Adding an emoji-heavy fixture to this loop would fail the floor for
+    // a non-defect; measure that shape separately if it needs covering.
     for (const findings of ['F'.repeat(30000), markdownFindings(400), '- **Step:** `S` timed out\n'.repeat(400)]) {
       const url = buildBugReportUrl(ctx, { objectKey: 'a.pdf', findings });
       expect(url.length).toBeLessThanOrEqual(LIMIT);
