@@ -140,7 +140,7 @@ def handler(event, context):
             raise Exception("Unauthorized: Admin role required")
         reason = ((event.get("arguments") or {}).get("reason") or "").strip()
         if not reason:
-            raise Exception("A reason is required")
+            raise ValueError("A reason is required")
         action_map = {
             "pauseCircuitBreaker": "manual_open",
             "resumeCircuitBreaker": "manual_close",

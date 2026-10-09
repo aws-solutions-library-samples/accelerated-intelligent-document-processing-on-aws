@@ -43,7 +43,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from validation import validate_arguments
 
-from idp_common.api_adapter import _http_response, normalize_event
+from idp_common.api_adapter import ResourceNotFound, _http_response, normalize_event
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -330,6 +330,14 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
             ("Unauthorized", "Forbidden")
         ):
             raise PermissionError(msg)
+        # A named resource that does not exist -> 404. Matched by class NAME: the
+        # exception object does not cross the invoke boundary, only
+        # data["errorType"], so a resolver with no idp_common dependency can
+        # declare its own class of this name. See
+        # idp_common.api_adapter.ResourceNotFound for why its errorType is not
+        # "NotFound" (that one means "operation not routable here").
+        if err_type == "ResourceNotFound":
+            raise ResourceNotFound(msg)
         # Client input errors -> 400.
         if err_type in ("ValueError", "KeyError"):
             raise ValueError(msg)
@@ -441,6 +449,24 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
                     }
                 ]
             },
+        )
+    except ResourceNotFound as e:
+        # 404 with errorType "ResourceNotFound" — NOT the "NotFound" the
+        # unroutable-operation branch above returns. The two 404s mean different
+        # things ("this object does not exist" vs "this deployment does not have
+        # this operation") and the live RBAC harness keys its feature-disabled
+        # probe on the difference.
+        #
+        # Logged at warning, not error: this is an ordinary outcome. Without this
+        # arm a resolver that refused because the named object does not exist
+        # answered 500, which counted against the API's 5xx signals. Not *every*
+        # deliberate not-found did: the unroutable-operation branch above already
+        # answered 404, and the IAM-gated direct path in `api_adapter.py`
+        # propagates the exception rather than mapping it to a status at all.
+        logger.warning("Not found for %s: %s", field, e)
+        return _http_response(
+            404,
+            {"errors": [{"message": str(e), "errorType": "ResourceNotFound"}]},
         )
     except (ValueError, KeyError) as e:
         logger.warning("Bad request for %s: %s", field, e)

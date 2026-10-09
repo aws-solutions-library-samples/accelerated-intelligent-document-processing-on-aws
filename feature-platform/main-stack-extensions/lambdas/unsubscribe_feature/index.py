@@ -27,7 +27,7 @@ import os
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import boto3
 from botocore.config import Config
@@ -100,24 +100,32 @@ def _resolve_customer_by_account(product_code: str, account_id: str) -> Optional
     return None
 
 
-def _installed_product_code(feature_id: str) -> Optional[str]:
-    """Read productCode from the feature's InstalledFeatures row (baked from the
-    manifest at install). Returns None when absent."""
+def _installed_row(feature_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """``(row, read_ok)`` for the feature's InstalledFeatures row.
+
+    Two separate answers rather than one ``None``, because "this feature is not
+    installed" and "the table could not be read" license different responses to
+    the caller: the first is the caller naming something that is not there, the
+    second is an infrastructure fault. Reporting the second as the first sends an
+    admin looking for a feature when the problem is the table.
+
+    ``read_ok`` is False when the table is unconfigured or the read raised; True
+    when the read succeeded, whether or not a row came back.
+    """
     if not _INSTALLED_FEATURES_TABLE:
-        return None
+        return None, False
     try:
         row = (
             _dynamodb.Table(_INSTALLED_FEATURES_TABLE)
             .get_item(Key={"featureId": feature_id})
             .get("Item")
-            or {}
         )
-    except Exception as exc:  # noqa: BLE001 — treat lookup failure as "absent"
+    except Exception as exc:  # noqa: BLE001 — a failed read is not an absent row
         logger.warning(
             "Could not read InstalledFeatures row for %s: %s", feature_id, exc
         )
-        return None
-    return row.get("productCode")
+        return None, False
+    return (row or None), True
 
 
 class AuthorizationError(Exception):
@@ -126,6 +134,22 @@ class AuthorizationError(Exception):
 
 class UnsubscribeError(Exception):
     """Raised when the simulator's admin API returns an error."""
+
+
+class ResourceNotFound(Exception):
+    """The feature the caller named is not installed in this deployment.
+
+    The API dispatcher maps this to HTTP 404 with ``errorType:
+    "ResourceNotFound"``. It matches by class NAME out of the invoke response's
+    ``errorType`` — the exception object does not cross the ``lambda:Invoke``
+    boundary — so this local declaration gets the same mapping as the canonical
+    ``idp_common.api_adapter.ResourceNotFound``, which this Lambda cannot import
+    because it does not depend on ``idp_common``. ``AuthorizationError`` above is
+    declared locally for exactly the same reason.
+
+    Keep the name in step with the dispatcher's; a rename here silently returns
+    this refusal to 500.
+    """
 
 
 def _assert_admin(event: Dict[str, Any]) -> None:
@@ -220,7 +244,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # the manifest at install). In simulator mode, synthesize the same code as
     # subscribe_feature / check_feature_entitlement so the simulator's
     # expire-entitlement call targets the row we created.
-    product_code = _installed_product_code(feature_id)
+    row, row_read_ok = _installed_row(feature_id)
+    product_code = (row or {}).get("productCode")
     if not product_code:
         if _SOURCE_TAG == "simulator":
             product_code = f"prod-{feature_id}-sim"
@@ -230,7 +255,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 feature_id,
                 product_code,
             )
+        elif row_read_ok and row is None:
+            # There is no install row at all, so there is nothing to unsubscribe
+            # from and no manifest to republish. 404 rather than 500: the request
+            # named something that is not there. An unreadable table takes the
+            # branch below instead, keeping its 500 — see _installed_row.
+            raise ResourceNotFound(f"Feature {feature_id!r} is not installed.")
         else:
+            # The row exists but carries no productCode (or the table could not be
+            # read): the deployment is misconfigured, and the remedy is this one.
             raise UnsubscribeError(
                 f"No productCode for feature {feature_id!r}. Publish the feature "
                 f"with marketplace.productCode set in feature.yaml and reinstall."
