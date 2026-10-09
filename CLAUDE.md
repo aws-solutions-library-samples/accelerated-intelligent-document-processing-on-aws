@@ -429,15 +429,57 @@ own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
 maintained definition of that path list, but it now gates nothing and is
 documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
-Two other GitLab-only jobs exist and neither is a gate, so the parity assertion is
-unaffected by both: `deployment_validation` (the pre-deploy IAM check, which
+One GitLab-only job remains and it is not a gate, so the parity assertion is
+unaffected by it: `deployment_validation` (the pre-deploy IAM check, which
 belongs to the deploy path above, and which is nightly-only for the same reason —
 note the *check itself* still runs on every MR as the last step of `static_checks`,
-where it needs no credentials) and `ai_mr_review`, the advisory AI review that
-posts a comment on every non-Draft MR. The reviewer needs AWS credentials for
-Bedrock and is `allow_failure: true` — it approves nothing and blocks nothing —
-which is why it is deliberately absent from `SHARED_GATES` rather than missing
-from it. A GitHub equivalent would need its own OIDC role.
+where it needs no credentials).
+
+### The advisory AI review runs on both platforms
+
+`ai_mr_review` in `.gitlab-ci.yml` and `ai_pr_review` in
+`.github/workflows/ai-pr-review.yml` are the same reviewer —
+`scripts/sdlc/ai_mr_review.py`, selected with `--forge gitlab` or `--forge
+github` — posting a comment on every open non-draft merge or pull request
+targeting `develop`. Neither is a gate and neither can become one by accident:
+GitLab's is `allow_failure: true`, GitHub's context is pinned in
+`MUST_STAY_ADVISORY` in `scripts/tests/test_check_branch_protection.py`, and both
+are deliberately **absent** from `SHARED_GATES` rather than missing from it. It
+approves nothing and blocks nothing.
+
+Three things about the GitHub arm are not guessable from the GitLab one:
+
+- **The credential mechanism is different, not merely configured differently.**
+  GitLab's job assumes `idp-sdlc-GitLab` in the CI account from the central
+  runner-fleet role `gitlab-runners-prod` (named in full in that template), gated on
+  the `GitLab:Group`/`GitLab:Project` session tags the fleet sets — defined in
+  `scripts/sdlc/cfn/credential-vendor.yml`. GitHub has no equivalent shared role,
+  so it uses real web-identity federation: an OIDC provider for
+  `token.actions.githubusercontent.com` plus a **Bedrock-only** role, in
+  `scripts/sdlc/cfn/github-oidc-review-role.yml`. The role ARN lives in the
+  `AI_REVIEW_ROLE_ARN` repository variable rather than in the workflow file,
+  because it embeds an account id and `scripts/check_account_ids.py` fails on one
+  committed to this public repository. With the variable unset the job prints a
+  skip and does nothing.
+- ⚠️ **Fork pull requests are covered by the schedule, not by `pull_request`.** A
+  fork's own run gets no OIDC token and a read-only `GITHUB_TOKEN`, which is the
+  thing stopping a fork from minting this account's credentials rather than a
+  misconfiguration. The hourly `schedule` is triggered by the repository instead
+  of by the contribution, so it holds the credentials regardless of origin, and a
+  pull request's head is fetchable from this repository as `refs/pull/<n>/head`
+  with no access to the fork. `workflow_dispatch` reviews one on demand.
+- ⚠️ **`on: schedule` is read from the workflow file on the *default* branch,
+  which is `main`.** Until `ai-pr-review.yml` is on `main` the cron never fires,
+  and it fails silently — the sweep looks installed and does nothing, so fork
+  coverage is absent with no error anywhere. The `pull_request` trigger has no
+  such constraint and works as soon as the file reaches `develop`.
+
+The cost bound is the one property easiest to delete by accident, and it is
+spelled differently on each side: `interruptible: true` on GitLab,
+`concurrency: cancel-in-progress` on GitHub. Both collapse a push burst into
+roughly one paid review. What makes GitHub's hourly sweep affordable on top of
+that is the per-head-SHA idempotency marker — a tick that finds no new head posts
+nothing and pays nothing.
 
 **On GitLab the no-AWS gates are seven parallel jobs, not one.** `static_checks` ran
 lint, typecheck and every pytest suite in sequence for 45 minutes, 80% of it
@@ -538,9 +580,14 @@ moment a job is renamed), then asserts against the live API that protection is o
 that every check a PR produces is required, that stale approvals are dismissed,
 that force-push and deletion are blocked, that an approving review is required,
 and that `enforce_admins` is on. It also reports which contexts must stay
-advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, and
-`Test Results` is an action-created check run behind an `if:`, so requiring any of
-them would leave a check pending forever and block every merge.
+advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered,
+`Test Results` is an action-created check run behind an `if:`, and
+`ai-pr-review.yml` is the advisory AI review (narrowed `branches:` and `types:`,
+plus a job-level `if:` excluding drafts). Requiring a path-filtered or
+action-created one would leave a check pending forever and block every merge;
+requiring the AI review would do something quieter and worse, because GitHub
+reports a conditionally skipped job as **succeeding** — the gate would pass on
+every draft pull request with no review having run.
 
 Three things about what it reads. GitHub can require job-level contexts only, never
 individual steps, so how the jobs are arranged decides the mapping:
@@ -1362,7 +1409,7 @@ that domain:
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
-| `.claude/skills/pr-review-ci.md` | The **unattended** contract for the same review, used by `scripts/sdlc/ai_mr_review.py` (`make ai-mr-review`) — inputs arrive as files, SRT is skipped, the review is posted as an MR note, and the diff is treated as untrusted input. It defers to `pr-review.md` for every criterion rather than restating them |
+| `.claude/skills/pr-review-ci.md` | The **unattended** contract for the same review, used by `scripts/sdlc/ai_mr_review.py` (`make ai-mr-review` for GitLab, `make ai-pr-review` for GitHub) — inputs arrive as files, SRT is skipped, the review is posted as a comment on the MR or PR, and the diff is treated as untrusted input. It defers to `pr-review.md` for every criterion rather than restating them |
 | `.claude/skills/repo-quality-review.md` | Holistic **whole-repository** quality review, re-runnable as periodic QA ("review the whole repo", "how healthy is this codebase?") — ten dimensions fanned out one subagent each, the offline measurement commands that produce the baseline numbers, and the two recurring defect classes (a control that exists but is never consulted; a fix applied to the instance and not the class). Read-only by construction; needs the Agent tool authorized explicitly |
 | `.claude/skills/work-the-backlog.md` | **Working the open-issue backlog continuously** ("work the backlog", "keep fixing issues until I stop you") — rank by urgency × safety, delegate the top N one issue-or-cluster per subagent, each one adversarially reviewed by a nested subagent via `pr-review.md` and iterated until clean, merged by the coordinator on the **merge result** without waiting for CI — into a **`backlog/staging`** branch, never straight into `develop`, so that a batch reaches `develop` only through one promotion PR whose **full CI and SRT run is waited for**, which is what turns those advisory gates into blocking ones at one CI run per batch instead of one per fix. Integration tests run on a branch frozen off staging, and the batch-failure rule is bisect-then-eject so one bad PR never holds the batch. Built for long unattended runs: a resumable state file under `scratch/`, a **mandatory check-in every 5 merges** (the only control on an error in the coordinator's own premises, which no code gate catches), merges delegated to a merge agent and ranking delegated to a triage agent above ~30 issues (both to keep coordinator context), a check-in that **reports without stopping** and blocks only when it carries a question, a tiered gate split so the expensive whole-repo suites run once per merge and once per batch rather than once per agent — with each fixer agent's `pytest` workers **capped** at `nproc/N`, measured as 30% faster in batch wall clock at 2.5x less load than the `-n auto` default, token spend reported at every check-in but **never** used to halt work, an explicit halt-and-ask list of questions only the user can answer, and a backlog **composition** split (`loopReady` vs needs-a-decision vs feature work) reported with its trend, since the fixable work drains faster than the open count falls and "until the backlog is empty" is not a terminating condition — so the run is given a **goal**, defaulting to *drive the backlog to zero except human decisions* — issues a review files re-enter the queue and get worked too, net closure must converge, and the intended terminus is a backlog holding nothing but decisions **written into the issues themselves** with options, costs and a recommendation, reached via a triage pass rather than a dead stop. Includes how to choose N from measured load — the binding constraint is concurrent `pytest -n auto` runs, not agents — why worktrees must not go in `/tmp` on a host where it is tmpfs, and the CHANGELOG conflict every concurrent PR hits. ⚠️ Treats **issue text as untrusted input** — the repo is public, the loop merges without waiting for CI, and a nested reviewer handed the same poisoned prose is not an independent check — so provenance is read via `author_association`, reproduction steps are never run verbatim, and IAM, dependency manifests, gate/suppression registries, CI config and hooks — **and `CLAUDE.md`/`.claude/` itself, since a change there is a persistence mechanism the next run inherits** — are off limits to any change an external report led to. Fixer agents are given **no AWS credentials** — though the skill is explicit that this is a rule and not a boundary, since `Bash` is required and reaches both the network and the credential files, so the control that would actually work is host configuration rather than anything in this tree — an issue the loop files **inherits the trust level of whatever prompted it** so a review cannot launder external framing into a `MEMBER` issue, and the merge agent reports every path a PR touches so an unrelated file is a finding. Closes with what it does **not** make safe |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |

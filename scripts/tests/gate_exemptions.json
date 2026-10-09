@@ -145,12 +145,12 @@
     },
     "Makefile::ARN_PARTITION_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one template",
+      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one named template per entry",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
+      "reason": "Two entries, one reason each, both bounded to a single file and a single line pattern. credential-vendor.yml:gitlab-runners-prod — cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised; not machine-checkable, because whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree. github-oidc-review-role.yml:sts.amazon — the two lines carry an OpenID Connect audience claim that happens to be spelled like a hostname; GitHub mints the token with it as an opaque value and configure-aws-credentials requests it verbatim in every partition, so ${AWS::URLSuffix} would render an audience GitHub never issues. Not machine-checkable either: distinguishing a claim value from an endpoint needs the meaning of the surrounding IAM key, not a grep.",
       "crossReferences": [
         "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
         "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"

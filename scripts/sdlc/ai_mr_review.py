@@ -1,20 +1,34 @@
 #!/usr/bin/env python3
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""Automated MR review — run Claude Code over every open non-Draft GitLab MR.
+"""Automated review — run Claude Code over every open non-draft MR or PR.
 
-This is the unattended form of ``.claude/skills/pr-review.md``. For each MR it
-fetches metadata, builds a real git diff in a throwaway worktree, runs
+This is the unattended form of ``.claude/skills/pr-review.md``. For each request
+it fetches metadata, builds a real git diff in a throwaway worktree, runs
 ``claude -p`` against Amazon Bedrock with the review skill, and posts the result
-as an MR note.
+as a comment.
+
+Two forges, one reviewer
+------------------------
+``--forge gitlab`` (the default) and ``--forge github`` select between
+:class:`Gitlab` and :class:`Github`. Those two classes and the four strings in
+:class:`Platform` are the whole difference: the worktree, the merge-base diff,
+the tool allowlist, the secret stripping, the instruction pinning and the
+per-head-SHA marker are the same work either side.
+
+The platform is **named on the command line, never detected** — see
+:data:`DEFAULT_PLATFORM`. The CI jobs are ``ai_mr_review`` in ``.gitlab-ci.yml``
+and ``ai_pr_review`` in ``.github/workflows/ai-pr-review.yml``.
 
 What this is NOT
 ----------------
 **It is not a gate.** It produces an advisory review for a human to act on, and
-the CI job that runs it is ``allow_failure: true``. A model's opinion must not
-decide whether code merges; the gates in ``make lint-cicd`` / ``make test`` do
-that. Exit 1 here means the *tooling* failed (no token, Bedrock unreachable,
-``claude`` absent), never that a review found something.
+the CI jobs that run it are advisory on both platforms: ``allow_failure: true``
+on GitLab, and on GitHub a status-check context deliberately kept out of the
+required set. A model's opinion must not decide whether code merges; the gates
+in ``make lint-cicd`` / ``make test`` do that. Exit 1 here means the *tooling*
+failed (no token, Bedrock unreachable, ``claude`` absent), never that a review
+found something.
 
 Three properties it is built around
 -----------------------------------
@@ -40,15 +54,30 @@ Three properties it is built around
 
    The residual after all of that is the job's own AWS credential, reachable only
    by something already executing in the job rather than by the model — see
-   ``--help``. And the bound that makes the rest tolerable is that masked CI
-   variables are absent from fork pipelines, so these channels need push access to
-   the project. They are not open to a drive-by contributor.
-2. **It is idempotent per head SHA.** Every posted note carries a
+   ``--help``. And the bound that makes the rest tolerable is that neither
+   platform gives a fork's own pipeline the credentials: masked CI variables are
+   absent from a GitLab fork pipeline, and a GitHub ``pull_request`` run from a
+   fork gets no OIDC token and a read-only ``GITHUB_TOKEN``. So these channels
+   need push access to the project; they are not open to a drive-by contributor.
+
+   ⚠️ On GitHub that bound is what the **scheduled** sweep spends, and it is
+   worth being exact about what is and is not given up. A scheduled run holds the
+   credentials and reviews fork pull requests, so a fork's *diff* reaches the
+   model there. What it does not reach is anything executable: the harness is the
+   target branch's copy, :func:`instruction_files` and
+   :data:`NEUTRALISED_IN_WORKTREE` are pinned and removed as below, and no step
+   in that job builds or installs from the checkout. Adding one — a
+   ``pip install -r`` over the PR's tree, a ``make`` target — would hand a fork
+   the credential directly, which is why the workflow says so at that step.
+2. **It is idempotent per head SHA.** Every posted comment carries a
    ``<!-- ai-review: ... -->`` marker naming the SHA and prompt revision it
    reviewed. A re-run over the same head is a no-op. Note the converse: a new
    head means a new PAID review, and the CI job triggers automatically, so what
-   bounds the cost of a push burst is `interruptible: true` on that job rather
-   than anything here. Measured on a 5,400-line MR: $3.42 in CI, $6.12 locally.
+   bounds the cost of a push burst is ``interruptible: true`` on the GitLab job
+   and ``concurrency: cancel-in-progress`` on the GitHub one, rather than
+   anything here. The marker is what additionally makes GitHub's hourly sweep
+   affordable: a tick with no new head pays nothing.
+   Measured on a 5,400-line MR: $3.42 in CI, $6.12 locally.
 3. **A skip is loud.** With no token, no ``claude`` binary or no Bedrock access
    it prints ``SKIPPED:`` and why, rather than exiting 0 with a clean-looking
    log. ``--fail-on-skip`` turns that into an error, which is how to run it once
@@ -57,8 +86,8 @@ Three properties it is built around
 
 Usage
 -----
-    # every open non-Draft MR targeting develop (no CI schedule uses this; it is
-    # a local sweep, and the cost note in .gitlab-ci.yml explains why)
+    # every open non-draft MR targeting develop (no GitLab schedule uses this; it
+    # is a local sweep, and the cost note in .gitlab-ci.yml explains why)
     python3 scripts/sdlc/ai_mr_review.py --all-open
 
     # one MR, print the review instead of posting it
@@ -67,14 +96,25 @@ Usage
     # in an MR pipeline, review the MR that triggered it
     python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
 
+    # the GitHub side: one PR, and the sweep the scheduled workflow runs
+    python3 scripts/sdlc/ai_mr_review.py --forge github --mr 1346
+    python3 scripts/sdlc/ai_mr_review.py --forge github --all-open --max-mrs 3
+
 Environment
 -----------
 ``GITLAB_REVIEW_TOKEN``
-    Project or group access token with ``api`` scope. Required: ``CI_JOB_TOKEN``
-    cannot create notes. Store it masked in the project's CI variables; its
-    identity is the one the review is posted as.
+    GitLab only. Project or group access token with ``api`` scope. Required:
+    ``CI_JOB_TOKEN`` cannot create notes. Store it masked in the project's CI
+    variables; its identity is the one the review is posted as.
 ``CI_API_V4_URL``, ``CI_PROJECT_ID``
     Supplied by GitLab CI. Outside CI, pass ``--api-url`` / ``--project``.
+``GITHUB_TOKEN``
+    GitHub only. The workflow's built-in token, which can create a comment given
+    ``permissions: pull-requests: write`` — so unlike the GitLab side there is
+    nothing to provision. A fork pull request's own token is read-only whatever
+    that block says, which is why fork PRs are covered by the scheduled run.
+``GITHUB_REPOSITORY``, ``GITHUB_API_URL``
+    Supplied by GitHub Actions. Outside CI, pass ``--repo`` / ``--api-url``.
 ``ANTHROPIC_MODEL``
     Bedrock model id / inference-profile id. Default below.
 ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
@@ -119,6 +159,63 @@ MARKER_RE = re.compile(
 
 DEFAULT_MODEL = "us.anthropic.claude-opus-5"
 DEFAULT_TARGET_BRANCH = "develop"
+
+
+@dataclass(frozen=True)
+class Platform:
+    """The handful of constants that differ between GitLab and GitHub.
+
+    Everything expensive and everything security-relevant in this module is
+    platform-agnostic: the throwaway worktree, the merge-base diff, the tool
+    allowlist, the secret stripping, the instruction pinning and the per-head-SHA
+    marker are the same work either side. What differs is four strings and the
+    four API calls in :class:`Gitlab` / :class:`Github`.
+
+    ``head_ref`` is the load-bearing one. Both forges publish a pull/merge
+    request's head as a ref in the **target** repository, which is the only ref
+    that is fetchable when the contribution comes from a fork — no access to the
+    fork is needed on either platform.
+    """
+
+    key: str
+    #: What a review is called in output, so a log line reads naturally.
+    unit: str
+    #: Remote ref holding the head commit, formatted with ``iid``.
+    head_ref: str
+    #: Environment variable holding the token that posts the review.
+    token_env: str
+    #: Path fragment between the project URL and the number, for --no-api.
+    web_path: str
+
+
+GITLAB = Platform(
+    key="gitlab",
+    unit="MR",
+    head_ref="refs/merge-requests/{iid}/head",
+    token_env="GITLAB_REVIEW_TOKEN",
+    web_path="/-/merge_requests/",
+)
+
+GITHUB = Platform(
+    key="github",
+    unit="PR",
+    head_ref="refs/pull/{iid}/head",
+    # The built-in Actions token, which (unlike GitLab's CI_JOB_TOKEN) CAN create
+    # a comment given `permissions: pull-requests: write`. So there is no personal
+    # access token to provision on this side.
+    token_env="GITHUB_TOKEN",
+    web_path="/pull/",
+)
+
+PLATFORMS = {platform.key: platform for platform in (GITLAB, GITHUB)}
+
+#: ⚠️ NOT auto-detected from the environment, deliberately. Reading
+#: ``$GITHUB_ACTIONS`` to choose would make this module's behaviour depend on
+#: which CI happens to be running it — including when its own test suite runs,
+#: which happens on BOTH platforms now, so a skip message naming the wrong token
+#: variable would be a failure visible on one platform only. An unattended job
+#: names its platform on the command line.
+DEFAULT_PLATFORM = GITLAB.key
 
 #: The permission mode named on the command line, which is what makes the two
 #: lists below mean anything — see the comment at the ``--permission-mode`` flag.
@@ -232,6 +329,32 @@ class MergeRequest:
             # authoritative pair when present.
             head_sha=refs.get("head_sha") or payload.get("sha") or "",
             draft=bool(payload.get("draft") or payload.get("work_in_progress")),
+        )
+
+    @classmethod
+    def from_github_api(cls, payload: dict) -> MergeRequest:
+        """Build from a GitHub ``pulls`` payload.
+
+        Kept separate from :meth:`from_api` rather than made to sniff the shape.
+        The two payloads overlap on enough key names (``title``, ``draft``) that a
+        sniffing parser would silently produce a half-populated object from the
+        wrong one — and the field it would get wrong is ``head_sha``, which keys
+        the idempotency marker, so the failure would be a re-review of every open
+        pull request on every run rather than an exception.
+        """
+        head = payload.get("head") or {}
+        base = payload.get("base") or {}
+        return cls(
+            iid=int(payload["number"]),
+            title=payload.get("title", ""),
+            author=(payload.get("user") or {}).get("login", "unknown"),
+            source_branch=head.get("ref", ""),
+            target_branch=base.get("ref", ""),
+            web_url=payload.get("html_url", ""),
+            head_sha=head.get("sha") or "",
+            # GitHub has a real boolean for this; there is no title convention to
+            # fall back on, and `work_in_progress` does not exist here.
+            draft=bool(payload.get("draft")),
         )
 
 
@@ -371,6 +494,178 @@ class Gitlab:
         self._request("POST", f"/merge_requests/{iid}/notes", {"body": body})
 
 
+#: ``rel="next"`` out of a GitHub ``Link`` header. GitHub does not send GitLab's
+#: ``X-Next-Page``, and the page number is not reliably derivable: the cursor form
+#: used by some endpoints carries an opaque ``after=`` rather than ``page=``, so
+#: following the supplied URL is the only form that works for both.
+_LINK_NEXT_RE = re.compile(r'<(?P<url>[^>]+)>\s*;\s*rel="next"')
+
+
+def _header(headers: dict[str, str], name: str) -> str:
+    """One header, found without regard to case.
+
+    ⚠️ Needed because :meth:`Github._request` returns ``dict(response.headers)``,
+    and that conversion throws away the case-insensitivity the original
+    ``email.message.Message`` had. HTTP field names are case-insensitive by
+    specification, so a server is free to send ``link:`` — and the consequence
+    here is specifically bad: :meth:`Github._paginate` would find no next page,
+    stop after the first one, and the sweep would review the first 100 open pull
+    requests and silently ignore the rest. No error, no missing-review message,
+    just a shorter list than the one asked for.
+    """
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return ""
+
+
+@dataclass
+class Github:
+    """The same four operations as :class:`Gitlab`, against GitHub's REST API.
+
+    Two differences from the GitLab side are worth knowing because they remove
+    work rather than add it. The token is the workflow's built-in
+    ``GITHUB_TOKEN`` — it can create an issue comment given
+    ``permissions: pull-requests: write``, so unlike ``CI_JOB_TOKEN`` there is no
+    personal access token to provision and nothing to store as a secret. And
+    ``draft`` is a real field on the payload, so the three-way draft check the
+    GitLab sweep needs collapses to one boolean.
+
+    A pull request's general comments live on the **issues** endpoint, not the
+    ``pulls`` one; ``pulls/{n}/comments`` is the inline review-comment thread,
+    which is a different surface and not where this posts.
+    """
+
+    repo: str  # "owner/name"
+    token: str
+    api_url: str = "https://api.github.com"
+
+    def _url(self, path: str) -> str:
+        return f"{self.api_url}/repos/{self.repo}{path}"
+
+    def _request(
+        self, method: str, url: str, body: dict | None = None
+    ) -> tuple[object, dict[str, str]]:
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("Authorization", f"Bearer {self.token}")
+        request.add_header("Accept", "application/vnd.github+json")
+        # Pinned for the same reason CLAUDE_CODE_VERSION and CFN_LINT_VERSION are:
+        # without it GitHub serves whatever version is current, so a breaking API
+        # change arrives with no commit here.
+        request.add_header("X-GitHub-Api-Version", "2022-11-28")
+        if data is not None:
+            request.add_header("Content-Type", "application/json")
+        try:
+            with _NO_REDIRECT_OPENER.open(request, timeout=60) as response:
+                raw = response.read()
+                content_type = response.headers.get("Content-Type", "")
+                if "json" not in content_type.lower():
+                    raise Skip(
+                        f"{method} {url} answered {response.status} with "
+                        f"{content_type!r}, not JSON, so this is not GitHub's API "
+                        f"replying. Body starts: "
+                        f"{raw[:200].decode(errors='replace')!r}"
+                    )
+                return json.loads(raw or b"null"), dict(response.headers)
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")[:400]
+            if error.code in range(300, 400):
+                location = error.headers.get("Location", "")
+                raise Skip(
+                    f"{method} {url} was redirected to {location[:120]!r}. For "
+                    f"GitHub this usually means the repository was renamed or "
+                    f"transferred, so {self.repo!r} is no longer its path."
+                ) from error
+            if error.code in (401, 403):
+                raise Skip(
+                    f"GitHub returned {error.code} for {method} {url}. The token "
+                    f"needs `pull-requests: write` on this repository (in a "
+                    f"workflow: the job's `permissions:` block). A fork pull "
+                    f"request's token is read-only no matter what that block "
+                    f"says, which is why fork PRs are reviewed by the scheduled "
+                    f"run instead. Response: {detail}"
+                ) from error
+            if error.code == 404:
+                raise Skip(
+                    f"GitHub returned 404 for {method} {url}. Either {self.repo!r} "
+                    f"is wrong or the token cannot see it — a 404 rather than a "
+                    f"403 is how GitHub answers for a private resource the "
+                    f"credential is not scoped to. Response: {detail}"
+                ) from error
+            raise Failure(
+                f"GitHub returned {error.code} for {method} {url}: {detail}"
+            ) from error
+        except urllib.error.URLError as error:
+            raise Skip(f"cannot reach {self.api_url}: {error.reason}") from error
+        except json.JSONDecodeError as error:
+            raise Skip(
+                f"{method} {url} claimed to return JSON but did not: {error}"
+            ) from error
+
+    def _paginate(self, url: str) -> list[dict]:
+        """Every page of a list endpoint, following ``Link: rel="next"``."""
+        items: list[dict] = []
+        while url:
+            payload, headers = self._request("GET", url)
+            assert isinstance(payload, list)
+            items.extend(payload)
+            match = _LINK_NEXT_RE.search(_header(headers, "Link"))
+            url = match.group("url") if match else ""
+        return items
+
+    def open_merge_requests(self, target_branch: str) -> list[MergeRequest]:
+        """Open, non-draft pull requests against ``target_branch``.
+
+        ``base=`` filters server-side and ``draft`` is re-checked locally, for the
+        same reason the GitLab sweep re-checks: a draft that slips through gets a
+        review comment posted on somebody's work in progress, which is the
+        visible-to-everyone kind of mistake. There is no ``draft=no`` query
+        parameter to ask for, so here the local check is the only one.
+        """
+        query = urllib.parse.urlencode(
+            {
+                "state": "open",
+                "base": target_branch,
+                "per_page": "100",
+                "sort": "updated",
+            }
+        )
+        found: list[MergeRequest] = []
+        for item in self._paginate(self._url(f"/pulls?{query}")):
+            merge_request = MergeRequest.from_github_api(item)
+            if merge_request.draft:
+                continue
+            found.append(merge_request)
+        return found
+
+    def merge_request(self, iid: int) -> MergeRequest:
+        payload, _ = self._request("GET", self._url(f"/pulls/{iid}"))
+        assert isinstance(payload, dict)
+        return MergeRequest.from_github_api(payload)
+
+    def reviewed_shas(self, iid: int) -> set[tuple[str, int]]:
+        """(sha, prompt revision) pairs this tool has already reviewed."""
+        seen: set[tuple[str, int]] = set()
+        for comment in self._paginate(
+            self._url(f"/issues/{iid}/comments?per_page=100")
+        ):
+            for match in MARKER_RE.finditer(comment.get("body") or ""):
+                seen.add((match.group("sha"), int(match.group("rev"))))
+        return seen
+
+    def post_note(self, iid: int, body: str) -> None:
+        self._request("POST", self._url(f"/issues/{iid}/comments"), {"body": body})
+
+
+#: Either forge client. They share no base class on purpose: the four methods are
+#: the whole contract, and an abstract base would invite putting shared request
+#: handling in it, which is the one part that genuinely differs (header names,
+#: pagination, and which status codes mean "cannot" rather than "broken").
+Forge = Gitlab | Github
+
+
 def _run(
     command: list[str],
     cwd: Path | None = None,
@@ -395,15 +690,21 @@ def _run(
     )
 
 
-def fetch_head(iid: int, target_branch: str) -> str:
-    """Fetch the MR head and its target, and return the head SHA.
+def fetch_head(iid: int, target_branch: str, platform: Platform) -> str:
+    """Fetch the review head and its target, and return the head SHA.
 
-    ``refs/merge-requests/<iid>/head`` exists in the *target* project even when
-    the MR comes from a fork, so this is the one fetch that works for both and
-    needs no access to the fork.
+    ``refs/merge-requests/<iid>/head`` (GitLab) and ``refs/pull/<n>/head``
+    (GitHub) both exist in the *target* repository even when the contribution
+    comes from a fork, so this is the one fetch that works for both and needs no
+    access to the fork. Measured on this repository: PR #1312 came from the
+    ``sromoam`` fork and its head fetches from ``origin`` with no fork credential.
+
+    The local refs it writes (``refs/ai-review/*``) are the same shape either way,
+    so every later git step — the merge base, the diff, the base-tree export — is
+    platform-independent.
     """
     for refspec in (
-        f"+refs/merge-requests/{iid}/head:refs/ai-review/{iid}",
+        f"+{platform.head_ref.format(iid=iid)}:refs/ai-review/{iid}",
         f"+refs/heads/{target_branch}:refs/ai-review/target-{target_branch}",
     ):
         result = _run(["git", "fetch", "--quiet", "origin", refspec], cwd=REPO_ROOT)
@@ -939,13 +1240,13 @@ def compose_note(
 
 
 def review_one(
-    gitlab: Gitlab | None,
+    forge: Forge | None,
     merge_request: MergeRequest,
     args: argparse.Namespace,
     artifact_dir: Path,
 ) -> Outcome:
-    if gitlab is not None and not args.force:
-        already = gitlab.reviewed_shas(merge_request.iid)
+    if forge is not None and not args.force:
+        already = forge.reviewed_shas(merge_request.iid)
         if (merge_request.head_sha, PROMPT_REVISION) in already:
             return Outcome(
                 merge_request.iid,
@@ -954,7 +1255,7 @@ def review_one(
                 f"{PROMPT_REVISION}",
             )
 
-    head_sha = fetch_head(merge_request.iid, merge_request.target_branch)
+    head_sha = fetch_head(merge_request.iid, merge_request.target_branch, args.platform)
     if head_sha != merge_request.head_sha:
         # The MR moved between the list call and the fetch. Review what we
         # fetched and key the marker to it, so the new head is reviewed too.
@@ -1073,7 +1374,7 @@ def review_one(
     artifact = artifact_dir / f"mr-{merge_request.iid}.md"
     artifact.write_text(note)
 
-    if args.dry_run or gitlab is None:
+    if args.dry_run or forge is None:
         return Outcome(
             merge_request.iid,
             "reviewed",
@@ -1082,7 +1383,7 @@ def review_one(
             artifact,
         )
 
-    gitlab.post_note(merge_request.iid, note)
+    forge.post_note(merge_request.iid, note)
     return Outcome(
         merge_request.iid,
         "reviewed",
@@ -1100,9 +1401,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 SCOPING THE AWS CREDENTIAL
   The review needs bedrock:InvokeModel and nothing else. Its Bash allowlist has
   no `aws`, so the job's deploy credential is not reachable through a tool — but
-  it is still in the process environment. If you want that residual gone, give
-  this job its own CI variables for a role whose only permission is
-  bedrock:InvokeModel on the model below.
+  it is still in the process environment.
+
+  The two platforms sit on opposite sides of that residual today, and the
+  difference is not a quality of the code here but of which role each job
+  assumes:
+
+  GitLab  shares the integration-test role (idp-sdlc-GitLab), which also holds
+          S3, CodePipeline, CodeBuild and CloudWatch Logs grants because the same
+          credential drives the deploy. Giving this job its own CI variables for
+          a Bedrock-only role is what removes the residual, and is not done.
+  GitHub  already has a Bedrock-only role, created by
+          scripts/sdlc/cfn/github-oidc-review-role.yml, whose entire policy is
+          bedrock:InvokeModel on the Opus family. A model change needs that
+          template widened; failing closed on an unlisted model is intended.
 """,
     )
     selection = parser.add_mutually_exclusive_group(required=True)
@@ -1118,16 +1430,30 @@ SCOPING THE AWS CREDENTIAL
         help=f"target branch to sweep (default: {DEFAULT_TARGET_BRANCH})",
     )
     parser.add_argument(
+        "--forge",
+        choices=sorted(PLATFORMS),
+        default=DEFAULT_PLATFORM,
+        help=f"which platform hosts the request (default: {DEFAULT_PLATFORM}). "
+        "Stated rather than detected from the environment — see DEFAULT_PLATFORM",
+    )
+    parser.add_argument(
         "--project",
         default=os.environ.get("CI_PROJECT_ID")
         or os.environ.get("CI_PROJECT_PATH")
         or "",
-        help="numeric project id or full path (default: $CI_PROJECT_ID)",
+        help="GitLab: numeric project id or full path (default: $CI_PROJECT_ID)",
+    )
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY", ""),
+        help="GitHub: owner/name (default: $GITHUB_REPOSITORY)",
     )
     parser.add_argument(
         "--api-url",
-        default=os.environ.get("CI_API_V4_URL", "https://gitlab.aws.dev/api/v4"),
-        help="GitLab API v4 base URL (default: $CI_API_V4_URL)",
+        default="",
+        help="API base URL. Defaults per --forge: $CI_API_V4_URL or "
+        "https://gitlab.aws.dev/api/v4 for gitlab, $GITHUB_API_URL or "
+        "https://api.github.com for github",
     )
     parser.add_argument(
         "--model",
@@ -1179,20 +1505,33 @@ SCOPING THE AWS CREDENTIAL
         help="take everything from git over SSH; no token, implies --dry-run "
         "(for a local dry run against an instance behind federated sign-in)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # Resolved once here so every consumer reads one attribute rather than
+    # re-deriving the platform from a string, and so an unknown value cannot
+    # reach the code that formats a ref out of it.
+    args.platform = PLATFORMS[args.forge]
+    if not args.api_url:
+        args.api_url = (
+            os.environ.get("GITHUB_API_URL") or "https://api.github.com"
+            if args.platform is GITHUB
+            else os.environ.get("CI_API_V4_URL") or "https://gitlab.aws.dev/api/v4"
+        )
+    return args
 
 
-def merge_request_from_git(iid: int, target_branch: str) -> MergeRequest:
-    """Build the MR description from git refs alone, with no API call.
+def merge_request_from_git(
+    iid: int, target_branch: str, platform: Platform
+) -> MergeRequest:
+    """Build the review's description from git refs alone, with no API call.
 
-    ``refs/merge-requests/<iid>/head`` is fetchable over SSH, which is how a
-    laptop reaches an instance whose REST API sits behind federated sign-in. What
-    git cannot supply is the MR's own metadata: the title and author here are the
-    **head commit's**, not the MR's, and the description, comments and CI status
-    are simply absent. That is a weaker input than the API path and it is stated
-    in the review's own metadata rather than papered over.
+    The head ref is fetchable over SSH, which is how a laptop reaches an instance
+    whose REST API sits behind federated sign-in. What git cannot supply is the
+    request's own metadata: the title and author here are the **head commit's**,
+    not the request's, and the description, comments and CI status are simply
+    absent. That is a weaker input than the API path and it is stated in the
+    review's own metadata rather than papered over.
     """
-    head_sha = fetch_head(iid, target_branch)
+    head_sha = fetch_head(iid, target_branch, platform)
     described = _run(
         ["git", "log", "-1", "--format=%s%x00%an", head_sha], cwd=REPO_ROOT
     )
@@ -1202,7 +1541,7 @@ def merge_request_from_git(iid: int, target_branch: str) -> MergeRequest:
     match = re.search(r"[:/]([\w./-]+?)(?:\.git)?$", remote)
     host = re.search(r"@(?:ssh\.)?([\w.-]+)", remote)
     web_url = (
-        f"https://{host.group(1)}/{match.group(1)}/-/merge_requests/{iid}"
+        f"https://{host.group(1)}/{match.group(1)}{platform.web_path}{iid}"
         if match and host
         else ""
     )
@@ -1210,10 +1549,14 @@ def merge_request_from_git(iid: int, target_branch: str) -> MergeRequest:
         iid=iid,
         title=subject or f"!{iid}",
         author=author or "unknown",
-        source_branch=f"(unknown: refs/merge-requests/{iid}/head)",
+        source_branch=f"(unknown: {platform.head_ref.format(iid=iid)})",
         target_branch=target_branch,
         web_url=web_url,
         head_sha=head_sha,
+        # GitLab's only no-API signal for a draft is the title prefix. GitHub has
+        # no title convention, so on that side this is always False and a draft
+        # reaches the review — acceptable because --no-api forces --dry-run, so
+        # nothing is posted anywhere.
         draft=subject.startswith("Draft:"),
     )
 
@@ -1222,56 +1565,87 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    token = os.environ.get("GITLAB_REVIEW_TOKEN", "")
-    gitlab: Gitlab | None = None
+    platform: Platform = args.platform
+    unit = platform.unit
+    token = os.environ.get(platform.token_env, "")
+    forge: Forge | None = None
     try:
         if args.no_api:
-            # No API means no notes endpoint, so it cannot post and cannot read
+            # No API means no comment endpoint, so it cannot post and cannot read
             # back what it already reviewed. Forcing --dry-run is the honest
             # consequence rather than a surprise at the end of a paid run.
             args.dry_run = True
             args.force = True
             if args.mr is None:
-                raise Skip("--no-api reviews one MR at a time: pass --mr <iid>")
-            targets = [merge_request_from_git(args.mr, args.target_branch)]
+                raise Skip(f"--no-api reviews one {unit} at a time: pass --mr <iid>")
+            targets = [merge_request_from_git(args.mr, args.target_branch, platform)]
             print(
-                f"--no-api: !{args.mr} at {targets[0].head_sha[:8]} from git only "
-                f"(no MR description, comments or CI status). Dry run."
+                f"--no-api: {unit} {args.mr} at {targets[0].head_sha[:8]} from git "
+                f"only (no description, comments or CI status). Dry run."
             )
-            outcomes = _review_all(gitlab, targets, args)
+            outcomes = _review_all(forge, targets, args)
             return _report(outcomes, args)
 
         if not token:
-            raise Skip(
-                "GITLAB_REVIEW_TOKEN is not set, so no MR can be read or "
-                "commented on. Add a project access token with `api` scope as a "
-                "masked CI variable of that name. (CI_JOB_TOKEN cannot create "
-                "notes, which is why it is not a fallback.)"
-            )
-        if not args.project:
-            raise Skip("no project: pass --project or run inside GitLab CI")
+            raise Skip(_no_token_message(platform))
+        if platform is GITHUB:
+            if not args.repo:
+                raise Skip(
+                    "no repository: pass --repo owner/name or run inside GitHub "
+                    "Actions, which sets $GITHUB_REPOSITORY"
+                )
+            forge = Github(args.repo, token, args.api_url)
+        else:
+            if not args.project:
+                raise Skip("no project: pass --project or run inside GitLab CI")
+            forge = Gitlab(args.api_url, args.project, token)
 
-        gitlab = Gitlab(args.api_url, args.project, token)
         if args.mr is not None:
-            targets = [gitlab.merge_request(args.mr)]
+            targets = [forge.merge_request(args.mr)]
             if targets[0].draft:
-                print(f"SKIPPED: !{args.mr} is a Draft; drafts are not reviewed.")
+                print(f"SKIPPED: {unit} {args.mr} is a draft; drafts are not reviewed.")
                 return 0
         else:
-            targets = gitlab.open_merge_requests(args.target_branch)
+            targets = forge.open_merge_requests(args.target_branch)
             print(
-                f"{len(targets)} open non-Draft MR(s) targeting {args.target_branch}."
+                f"{len(targets)} open non-draft {unit}(s) targeting "
+                f"{args.target_branch}."
             )
     except Skip as skip:
         print(f"SKIPPED: {skip}")
         return 1 if args.fail_on_skip else 0
 
-    outcomes = _review_all(gitlab, targets, args)
+    outcomes = _review_all(forge, targets, args)
     return _report(outcomes, args)
 
 
+def _no_token_message(platform: Platform) -> str:
+    """Why nothing can run, naming the variable for THIS platform.
+
+    Split out because the remedy differs and a generic "no token" line sends the
+    reader to the wrong place: on GitLab a project access token has to be created
+    and stored; on GitHub the token already exists and what is usually missing is
+    one line of workflow permissions.
+    """
+    if platform is GITHUB:
+        return (
+            "GITHUB_TOKEN is not set, so no pull request can be read or commented "
+            "on. In a workflow, map it into the step's env from "
+            "${{ secrets.GITHUB_TOKEN }} and give the job "
+            "`permissions: pull-requests: write`. Nothing needs to be provisioned: "
+            "unlike GitLab's CI_JOB_TOKEN, the built-in Actions token can create a "
+            "comment."
+        )
+    return (
+        "GITLAB_REVIEW_TOKEN is not set, so no MR can be read or "
+        "commented on. Add a project access token with `api` scope as a "
+        "masked CI variable of that name. (CI_JOB_TOKEN cannot create "
+        "notes, which is why it is not a fallback.)"
+    )
+
+
 def _review_all(
-    gitlab: Gitlab | None, targets: list[MergeRequest], args: argparse.Namespace
+    forge: Forge | None, targets: list[MergeRequest], args: argparse.Namespace
 ) -> list[Outcome]:
     outcomes: list[Outcome] = []
     reviewed = 0
@@ -1285,9 +1659,12 @@ def _review_all(
                 )
             )
             continue
-        print(f"\n=== !{merge_request.iid} {merge_request.title}", flush=True)
+        print(
+            f"\n=== {args.platform.unit} {merge_request.iid} {merge_request.title}",
+            flush=True,
+        )
         try:
-            outcome = review_one(gitlab, merge_request, args, args.artifact_dir)
+            outcome = review_one(forge, merge_request, args, args.artifact_dir)
         except Skip as skip:
             # A missing precondition is global, not per-MR: stop rather than
             # printing the same skip once per open MR.

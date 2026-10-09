@@ -110,6 +110,14 @@ MUST_STAY_ADVISORY = {
     "build": "build-docs.yml is paths-filtered",
     "Generate Dependency Manifests": "generate-dep-manifest.yml is paths-filtered",
     "Test Results": "action-created via check_name:, behind a conditional step",
+    "AI PR Review (advisory)": (
+        "ai-pr-review.yml is an advisory model review, not a gate: a job-level "
+        "`if:` excludes drafts, its `branches:` filter selects only develop, and "
+        "its `types:` are narrowed. Any one of those three makes requiring the "
+        "context wrong, and the `if:` makes it actively misleading — GitHub "
+        "reports a conditionally skipped job as SUCCEEDING, so the gate would "
+        "pass on every draft PR without a review having run."
+    ),
 }
 
 
@@ -423,9 +431,18 @@ def test_block_sequence_branch_filter_is_read_the_same_as_flow_style() -> None:
     and `missing_required_checks` could no longer fire. Checking the reason string
     keeps this test from also firing when a context becomes advisory for an
     unrelated reason, such as a job-level `if:`.
+
+    Scoped to the contexts that are *meant* to be requireable, i.e. everything not
+    pinned in :data:`MUST_STAY_ADVISORY`. A workflow may legitimately narrow
+    `branches:` — ai-pr-review.yml filters to `develop` — and for such a workflow a
+    `branches` reason is the correct answer rather than a misread. Asserting it of
+    every context would make this test fail for the one shape it is not about, and
+    the fix would be to loosen the assertion, which is how a guard stops guarding.
     """
     for branch in ("develop", "main", "release/1.2"):
         for ctx in mod.discover_check_contexts(mod.WORKFLOWS_DIR, branch):
+            if ctx.context in MUST_STAY_ADVISORY:
+                continue
             assert "branches" not in ctx.reason, (
                 f"{ctx.context!r} was held back from the required list for "
                 f"{branch!r} with reason {ctx.reason!r}, but every requireable "
@@ -485,9 +502,25 @@ def test_no_workflow_in_this_repo_has_a_conditional_shape_we_would_miss() -> Non
 
     Recorded so that adding one of these to a real workflow is a deliberate act
     with a test to update, rather than a silent change in what gets required.
+
+    "Deliberate" is spelled as an entry in :data:`MUST_STAY_ADVISORY`: a workflow
+    every one of whose contexts is pinned there has already had the decision made
+    and written down, so the shapes below cannot change what gets required — the
+    answer is "nothing" either way. ai-pr-review.yml is such a workflow, and it
+    carries all three shapes at once (narrowed `types:`, narrowed `branches:`, a
+    job-level `if:` on a named job). Anything NOT pinned there is still asserted,
+    which is what keeps this from becoming a blanket.
     """
     for path in sorted(mod.WORKFLOWS_DIR.glob("*.y*ml")):
         data = mod.yaml.safe_load(path.read_text(encoding="utf-8"))
+        contexts = [
+            ctx.context
+            for ctx in mod.discover_check_contexts(mod.WORKFLOWS_DIR, "develop")
+            if ctx.workflow == path.name
+        ]
+        if contexts and all(name in MUST_STAY_ADVISORY for name in contexts):
+            continue
+
         triggers = mod._normalize_triggers(data.get(True, data.get("on")))
         pr = triggers.get("pull_request")
         if isinstance(pr, dict):
