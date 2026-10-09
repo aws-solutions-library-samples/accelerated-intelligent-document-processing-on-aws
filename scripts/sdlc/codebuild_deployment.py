@@ -817,7 +817,7 @@ def test_step3_default_config(stack_name):
         ),
     ]
 
-    if not run_inference_test(
+    outcome = run_inference_test(
         stack_name,
         sample_file,
         batch_id,
@@ -827,8 +827,12 @@ def test_step3_default_config(stack_name):
         None,
         "samples",
         additional_checks,
-    ):
-        return {"success": False, "error": "Default config test failed"}
+    )
+    if not outcome:
+        return {
+            "success": False,
+            "error": f"Default config test failed: {inference_failure_reason(outcome)}",
+        }
 
     return {"success": True}
 
@@ -890,7 +894,7 @@ def test_step4_bda_mode(stack_name):
             ),
         ]
 
-        if not run_inference_test(
+        outcome = run_inference_test(
             stack_name,
             sample_file,
             batch_id,
@@ -900,8 +904,12 @@ def test_step4_bda_mode(stack_name):
             config_version,
             "samples",
             bda_additional_checks,
-        ):
-            return {"success": False, "error": "BDA config test failed"}
+        )
+        if not outcome:
+            return {
+                "success": False,
+                "error": f"BDA config test failed: {inference_failure_reason(outcome)}",
+            }
 
         return {"success": True}
     finally:
@@ -955,7 +963,7 @@ def test_step5_rule_validation(stack_name):
         ),
     ]
 
-    if not run_inference_test(
+    outcome = run_inference_test(
         stack_name,
         sample_file,
         batch_id,
@@ -965,8 +973,13 @@ def test_step5_rule_validation(stack_name):
         config_version,
         sample_dir,
         rule_additional_checks,
-    ):
-        return {"success": False, "error": "Rule validation test failed"}
+    )
+    if not outcome:
+        return {
+            "success": False,
+            "error": f"Rule validation test failed: "
+            f"{inference_failure_reason(outcome)}",
+        }
 
     return {"success": True}
 
@@ -3214,6 +3227,54 @@ def deploy_and_test_stack(stack_name, admin_email, template_url, progress_cb=Non
         }
 
 
+class InferenceTestOutcome:
+    """Whether an inference test passed, and if not, why.
+
+    `run_inference_test` printed its reason and returned a bare `False`, so every
+    caller could say only that the step "failed" and the step result that reached
+    the failure report carried a fixed string like "BDA config test failed". The
+    reason was in the build log, hundreds of lines above, and the report named
+    the wrong thing to go looking at: a monitor race that declared a batch failed
+    before it started reads as "no output was produced", which sends a reader to
+    Step Functions, where there is no failed execution to find because nothing
+    ever ran.
+
+    Falsy when the test failed, so the existing `if not run_inference_test(...)`
+    call sites keep their meaning, with the reason available alongside.
+    """
+
+    __slots__ = ("passed", "reason")
+
+    def __init__(self, passed, reason=""):
+        self.passed = bool(passed)
+        self.reason = reason
+
+    def __bool__(self):
+        return self.passed
+
+    def __repr__(self):
+        return f"InferenceTestOutcome(passed={self.passed!r}, reason={self.reason!r})"
+
+
+def inference_failure_reason(outcome, fallback="reason not recorded"):
+    """The reason an inference test failed, for a step's `error` field.
+
+    Tolerates an `outcome` that is a plain bool. Tests monkeypatch
+    `run_inference_test` with stubs that return one, and so may a caller written
+    before `InferenceTestOutcome` existed; a step report that loses the reason is
+    worse than one that never had it, but an `AttributeError` here would replace
+    the whole failure report with a traceback about the reporting code.
+
+    Args:
+        outcome: What `run_inference_test` returned.
+        fallback: Used when the outcome carries no reason.
+
+    Returns:
+        The failure reason, or `fallback`.
+    """
+    return getattr(outcome, "reason", "") or fallback
+
+
 def run_inference_test(
     stack_name,
     sample_file,
@@ -3225,7 +3286,7 @@ def run_inference_test(
     sample_dir="samples",
     additional_checks=None,
     region=None,
-):
+) -> InferenceTestOutcome:
     """Run inference test and verify results
 
     ``region`` is forwarded to the shelled-out ``idp-cli`` calls. Without it the
@@ -3246,6 +3307,19 @@ def run_inference_test(
         sample_dir: Directory containing sample files
         additional_checks: Optional list of (check_name, file_path, verify_func) tuples
                           where verify_func takes JSON and returns (success: bool, message: str)
+
+    Returns:
+        An `InferenceTestOutcome`: falsy when the test failed, and carrying the
+        reason so the caller's step result can say what went wrong rather than
+        only that something did.
+
+        The return type is **annotated** rather than left implicit, and that is
+        the only guard on a *new* failure path. The five existing ones each have
+        a test asserting their reason; a sixth added later has none by
+        construction, and a bare `return False` there is falsy, so every caller
+        still fails correctly and the reason silently degrades to
+        "reason not recorded" with nothing red. With the annotation it is one
+        `make typecheck` error, on both CIs.
     """
     try:
         # Run inference
@@ -3277,7 +3351,9 @@ def run_inference_test(
             print("Found result.json files:")
             print(debug_result.stdout)
             print(f"❌ No result file found at {result_location}")
-            return False
+            return InferenceTestOutcome(
+                False, f"no result file at {result_location} after download-results"
+            )
 
         # Verify content
         with open(result_file, "r") as f:
@@ -3295,7 +3371,11 @@ def run_inference_test(
                 f"❌ Text content does not contain expected string: '{verify_string}'"
             )
             print(f"Actual text starts with: '{str(text_content)[:100]}...'")
-            return False
+            return InferenceTestOutcome(
+                False,
+                f"{result_location} at {content_path} does not contain "
+                f"{verify_string!r}; starts with {str(text_content)[:100]!r}",
+            )
 
         print(f"✅ Found expected verification string: '{verify_string}'")
 
@@ -3323,18 +3403,27 @@ def run_inference_test(
                     success, message = verify_func(check_json)
                     if not success:
                         print(f"❌ {check_name} failed: {message}")
-                        return False
+                        return InferenceTestOutcome(
+                            False, f"{check_name} failed: {message}"
+                        )
 
                     print(f"✅ {check_name} passed: {message}")
                 except Exception as e:
                     print(f"❌ {check_name} error: {e}")
-                    return False
+                    return InferenceTestOutcome(
+                        False, f"{check_name} raised {type(e).__name__}: {e}"
+                    )
 
-        return True
+        return InferenceTestOutcome(True)
 
     except Exception as e:
         print(f"❌ Inference test failed: {e}")
-        return False
+        # Covers the idp-cli invocations themselves: a non-zero
+        # `run-inference --monitor` or `download-results` raises out of
+        # `run_command`, and the exception text is the only account of it.
+        return InferenceTestOutcome(
+            False, f"inference test raised {type(e).__name__}: {e}"
+        )
 
 
 def get_codebuild_logs():

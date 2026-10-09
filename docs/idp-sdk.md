@@ -440,6 +440,16 @@ fixed. Past that window a document with no row is reported as failed with
 `Document not found in tracking table`; `IDP_NOT_FOUND_GRACE_SECONDS` sets the
 window.
 
+⚠️ **Read a document's progress bucket from `doc.bucket`, not from
+`doc.status`.** `NOT_FOUND` is the one status whose bucket is not a function of
+the status: inside the window it means "queued", past it "failed", and the
+status string is the same either way, so code that derives a bucket from the
+status counts an in-flight document as a failure. `bucket` is one of `queued`,
+`running`, `completed` or `failed`, and `get_status` sets it on every document
+it returns. It is `Optional`, because `DocumentStatus` has other producers that
+record no bucket; fall back to `idp_sdk.classify_document_state(doc.status)`
+when it is `None`.
+
 ```python
 status = client.batch.get_status(batch_id="batch-20250123-123456")
 
