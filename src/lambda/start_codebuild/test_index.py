@@ -10,17 +10,28 @@ have to stay apart:
   behaviour issue #1310 arrived through; it is pinned here so the bound added for
   #1336 cannot quietly change it.
 * **Scan ordering** -- with ``EnableECRImageScanning=true`` the repository has
-  ScanOnPush, and the wait holds while ECR reports a scan ``IN_PROGRESS``. That
-  wait used to be unbounded, so a slow scan polled until CloudFormation's
+  ScanOnPush, and the wait holds while ECR reports a scan as queued or running.
+  That wait used to be unbounded, so a slow scan polled until CloudFormation's
   one-hour custom-resource limit and the stack failed with "CloudFormation did
   not receive a response from your Custom Resource" -- a message naming the
   cfn-response path and not image scanning. It is now bounded by a budget derived
   from the build's own start time, and exhausting it deploys the image with a
   warning that says "ECR IMAGE SCANNING".
 
+**Both scanning modes are covered, because they report different statuses.**
+Basic scan-on-push goes ``IN_PROGRESS -> COMPLETE``; enhanced (Inspector)
+scanning, a registry-level setting that overrides the repository's ScanOnPush,
+goes ``PENDING -> ACTIVE``. A wait that knows only ``IN_PROGRESS`` orders nothing
+in an enhanced-scanning account, so every waiting test is parametrised over both.
+
 The wait reads ``imageScanStatus`` only. Nothing here calls
 ``describe_image_scan_findings``, so no severity gates the deploy; the tests
 assert the log messages say so rather than implying a gate that does not exist.
+
+One shape recurs in the terminal-error tests: crhelper truncates an over-long
+failure Reason by keeping the **tail**, so the identifying phrase has to be at the
+end of the message. ``_crhelper_truncate`` replicates that rule and
+``_REALISTIC_ACCESS_DENIED`` is long enough to trigger it.
 """
 
 from __future__ import annotations
@@ -29,6 +40,7 @@ import importlib.util
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -124,10 +136,44 @@ def _describe_images_returning(scan_status, found=True):
     return _describe_images
 
 
-def _client_error(code):
+def _client_error(code, message=None):
     return ClientError(
-        {"Error": {"Code": code, "Message": f"simulated {code}"}}, "DescribeImages"
+        {"Error": {"Code": code, "Message": message or f"simulated {code}"}},
+        "DescribeImages",
     )
+
+
+# The message AWS actually returns for a denied ECR call, with the ARNs that make
+# it long. `str(ClientError)` wraps this in "An error occurred (Code) when calling
+# the DescribeImages operation: ..." so the whole reason runs well past crhelper's
+# 256-character limit, which is the point.
+_REALISTIC_ACCESS_DENIED = (
+    "User: arn:aws:sts::123456789012:assumed-role/"
+    "idp-stack-CodeBuildExecutionRole-ABCDEFGHIJKL/idp-stack-CodeBuildTrigger-"
+    "MNOPQRSTUVWX is not authorized to perform: ecr:DescribeImages on resource: "
+    "arn:aws:ecr:us-east-1:123456789012:repository/idp-stack-ecrrepository-"
+    "abcdefghijkl because no identity-based policy allows the "
+    "ecr:DescribeImages action"
+)
+
+
+def _crhelper_truncate(reason: str) -> str:
+    """crhelper's own truncation rule, from ``CfnResource._send``.
+
+    ``resource_helper.py``::
+
+        if len(str(str(self.Reason))) > 256:
+            self.Reason = "ERROR: (truncated) " + str(self.Reason)[len(str(self.Reason)) - 240:]
+
+    It keeps the **tail**, so an identifier at the front of a long reason is
+    exactly what CloudFormation never sees. Replicated here rather than imported
+    because ``crhelper`` is a Lambda-layer dependency and is stubbed in this
+    suite; ``test_the_truncation_rule_matches_crhelper`` pins the shape against
+    the quoted source above.
+    """
+    if len(reason) > 256:
+        return "ERROR: (truncated) " + reason[len(reason) - 240 :]
+    return reason
 
 
 def _verify(index, scan_status, started_secs_ago, found=True):
@@ -145,6 +191,10 @@ def _verify(index, scan_status, started_secs_ago, found=True):
 
 def _warnings(caplog):
     return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def _errors(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 # --------------------------------------------------------------------------- #
@@ -176,9 +226,12 @@ def test_a_build_that_ran_to_the_codebuild_timeout_leaves_no_scan_wait(index):
 
     ``DockerBuildProject`` carries ``TimeoutInMinutes: 55``, and the budget works
     out at the same 3300s, so a build that ran to its own CodeBuild limit leaves
-    exactly none of the hour for scan waiting -- which is the right answer, not a
-    coincidence to lean on: the two numbers are independent and the assertion is
-    here so that moving either one is visible.
+    exactly none of the hour for scan waiting -- which is the right answer rather
+    than a coincidence to lean on.
+
+    This assertion pins only the inequality, `budget <= 3300`. The budget itself
+    is pinned exactly by the two tests above it, taken together: the reserve's
+    composition plus `budget + reserve == 3600`.
     """
     codebuild_timeout_secs = 55 * 60
     assert index.SCAN_WAIT_BUDGET_SECONDS <= codebuild_timeout_secs
@@ -188,12 +241,40 @@ def test_a_build_that_ran_to_the_codebuild_timeout_leaves_no_scan_wait(index):
     assert remaining is not None and remaining <= 0
 
 
-def test_a_naive_build_start_time_is_read_as_utc(index):
-    """botocore returns aware datetimes; a naive one must not raise."""
+@pytest.fixture
+def non_utc_timezone(monkeypatch):
+    """Put the process in a non-UTC zone for the duration of a test.
+
+    Without this, nothing can distinguish ``replace(tzinfo=utc)`` from
+    ``astimezone(utc)`` on a naive datetime: both are identities when the local
+    zone *is* UTC, which is what this host and the CI runners use, so a test
+    written here passes against either and pins neither.
+    """
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_a_naive_build_start_time_is_read_as_utc(index, non_utc_timezone):
+    """botocore returns aware datetimes; a naive one must be read as UTC, not local.
+
+    ``startTime`` is always aware in practice, so the coercion exists for a
+    defensive case -- but reading it as *local* time would silently shift the
+    deadline by the UTC offset, which under ``America/New_York`` hands the wait
+    four or five extra hours it does not have.
+    """
     naive_utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
     remaining = index._scan_wait_remaining_seconds(naive_utc_now)
     assert remaining is not None
     assert remaining == pytest.approx(index.SCAN_WAIT_BUDGET_SECONDS, abs=30)
+
+
+def test_the_non_utc_fixture_actually_changes_the_local_zone(non_utc_timezone):
+    """Guard the guard: if TZ is not applied, the test above pins nothing again."""
+    offset = datetime.now().astimezone().utcoffset()
+    assert offset is not None and offset != timedelta(0)
 
 
 def test_an_unknown_build_start_time_has_no_clock(index):
@@ -205,37 +286,57 @@ def test_an_unknown_build_start_time_has_no_clock(index):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_running_scan_keeps_polling_while_the_budget_remains(index):
-    assert _verify(index, "IN_PROGRESS", started_secs_ago=60) is False
+def test_both_scanning_modes_queued_statuses_are_recognised(index):
+    """Basic scanning reports IN_PROGRESS; enhanced (Inspector) reports PENDING.
+
+    Enhanced scanning is a registry-level setting that overrides the repository's
+    own ``ScanOnPush`` -- which is all ``EnableECRImageScanning`` sets -- and its
+    sequence is PENDING -> ACTIVE, so ``IN_PROGRESS`` never appears. A wait that
+    knows only ``IN_PROGRESS`` orders nothing in an enhanced-scanning account
+    while the docstring claims it does.
+    """
+    assert set(index.SCAN_RUNNING_STATUSES) == {"IN_PROGRESS", "PENDING"}
+    assert set(index.SCAN_FINISHED_STATUSES) == {"COMPLETE", "ACTIVE"}
+    assert not set(index.SCAN_RUNNING_STATUSES) & set(index.SCAN_FINISHED_STATUSES)
 
 
-def test_the_running_scan_wait_is_bounded(index):
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "PENDING"])
+def test_a_running_scan_keeps_polling_while_the_budget_remains(index, status):
+    assert _verify(index, status, started_secs_ago=60) is False
+
+
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "PENDING"])
+def test_the_running_scan_wait_is_bounded(index, status):
     """Once the budget is spent the image deploys rather than polling the hour out."""
     spent = index.SCAN_WAIT_BUDGET_SECONDS + 60
-    assert _verify(index, "IN_PROGRESS", started_secs_ago=spent) is True
+    assert _verify(index, status, started_secs_ago=spent) is True
 
 
-def test_the_exhausted_wait_names_image_scanning(index, caplog):
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "PENDING"])
+def test_the_exhausted_wait_names_image_scanning(index, status, caplog):
     """The whole cost of #1336 was a terminal message pointing somewhere else."""
     caplog.set_level(logging.DEBUG)
-    _verify(index, "IN_PROGRESS", started_secs_ago=index.SCAN_WAIT_BUDGET_SECONDS + 60)
+    _verify(index, status, started_secs_ago=index.SCAN_WAIT_BUDGET_SECONDS + 60)
 
     warned = _warnings(caplog)
     assert warned, "exhausting the wait must warn, not pass silently"
     assert any("ECR IMAGE SCANNING" in m and "exhausted" in m for m in warned)
+    assert any(status in m for m in warned), "the holding status must be named"
     assert any("findings are not read" in m.lower() for m in warned)
 
 
-def test_an_unknown_build_start_time_does_not_wait_unbounded(index, caplog):
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "PENDING"])
+def test_an_unknown_build_start_time_does_not_wait_unbounded(index, status, caplog):
     """With no origin for the budget the wait cannot be bounded, so it is not taken."""
     caplog.set_level(logging.DEBUG)
-    assert _verify(index, "IN_PROGRESS", started_secs_ago=None) is True
+    assert _verify(index, status, started_secs_ago=None) is True
     assert any("ECR IMAGE SCANNING" in m for m in _warnings(caplog))
 
 
-def test_the_remaining_budget_is_reported_while_waiting(index, caplog):
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "PENDING"])
+def test_the_remaining_budget_is_reported_while_waiting(index, status, caplog):
     caplog.set_level(logging.DEBUG)
-    _verify(index, "IN_PROGRESS", started_secs_ago=60)
+    _verify(index, status, started_secs_ago=60)
     messages = [r.getMessage() for r in caplog.records]
     assert any("ECR IMAGE SCANNING" in m and "still in progress" in m for m in messages)
 
@@ -260,7 +361,9 @@ def test_a_finished_scan_is_not_described_as_a_clean_result(index, caplog):
     assert "findings are not read" in messages
 
 
-@pytest.mark.parametrize("status", ["FAILED", "UNSUPPORTED_IMAGE", "PENDING"])
+@pytest.mark.parametrize(
+    "status", ["FAILED", "UNSUPPORTED_IMAGE", "SCAN_ELIGIBILITY_EXPIRED"]
+)
 def test_a_scan_that_did_not_finish_still_deploys_but_warns(index, status, caplog):
     """Unchanged behaviour, honestly logged: these statuses were silent before."""
     caplog.set_level(logging.DEBUG)
@@ -269,6 +372,7 @@ def test_a_scan_that_did_not_finish_still_deploys_but_warns(index, status, caplo
     warned = _warnings(caplog)
     assert any(status in m for m in warned)
     assert any("does not gate" in m for m in warned)
+    assert any("ECR IMAGE SCANNING" in m for m in warned)
 
 
 def test_no_scan_status_is_not_warned_about(index, caplog):
@@ -276,6 +380,30 @@ def test_no_scan_status_is_not_warned_about(index, caplog):
     caplog.set_level(logging.DEBUG)
     assert _verify(index, None, started_secs_ago=60) is True
     assert not _warnings(caplog)
+
+
+def test_an_absent_scan_status_is_not_claimed_to_mean_scanning_is_off(index, caplog):
+    """F6: with ScanOnPush ON, a tag read just after the push can have no record.
+
+    So the absence does not establish that scanning is disabled, and a line
+    asserting it does states the opposite of the truth in exactly the window the
+    wait exists for. The behaviour is deliberately unchanged -- waiting on an
+    absent record would spend the whole budget on every deploy in the default
+    configuration, where no record ever arrives -- but the wording has to say
+    which it is.
+    """
+    caplog.set_level(logging.DEBUG)
+    _verify(index, None, started_secs_ago=60)
+
+    messages = [r.getMessage() for r in caplog.records]
+    absent = [m for m in messages if "no scan status" in m]
+    assert absent, f"no line reported the absent scan status: {messages}"
+
+    line = absent[0]
+    assert "ECR IMAGE SCANNING" in line
+    assert "yet" in line, "the absence must be reported as provisional"
+    assert "(image scanning is not enabled for this repository)" not in line
+    assert "indistinguishable" in line
 
 
 # --------------------------------------------------------------------------- #
@@ -327,7 +455,80 @@ def test_a_fatal_ecr_error_fails_with_a_reason_naming_image_verification(index):
     assert f"ocr-function-{_VERSION}" in reason
 
 
-def test_an_unexpected_error_also_names_image_verification(index):
+def test_the_truncation_rule_matches_crhelper(index):
+    """Pin the shape of the rule this file's helper replicates.
+
+    From ``crhelper.resource_helper.CfnResource._send``: over 256 characters, the
+    Reason becomes ``"ERROR: (truncated) " + reason[len(reason) - 240:]``. Keeping
+    the **tail** is the whole reason the identifier goes last.
+    """
+    short = "x" * 256
+    assert _crhelper_truncate(short) == short
+
+    long_reason = "HEAD" + "y" * 300 + "TAIL"
+    truncated = _crhelper_truncate(long_reason)
+    assert truncated.startswith("ERROR: (truncated) ")
+    assert truncated.endswith("TAIL")
+    assert "HEAD" not in truncated
+    assert len(truncated) == len("ERROR: (truncated) ") + 240
+
+
+def test_the_identifier_survives_crhelper_truncating_a_realistic_reason(index):
+    """F1: a denied ECR call is long enough that a leading identifier is cut off.
+
+    This is the case the docstring names first (permissions), and losing the
+    identifier here reproduces exactly the defect this change exists to fix: a
+    terminal message that does not say what failed.
+    """
+    index.ECR_CLIENT.describe_images.side_effect = _client_error(
+        "AccessDeniedException", _REALISTIC_ACCESS_DENIED
+    )
+
+    with pytest.raises(index.EcrImageVerificationError) as excinfo:
+        index._verify_ecr_images_available(
+            _ECR_URI, _VERSION, _IMAGES, datetime.now(timezone.utc)
+        )
+
+    reason = str(excinfo.value)
+    assert len(reason) > 256, (
+        "this case must actually exceed crhelper's limit, or the test is vacuous "
+        f"-- measured {len(reason)} characters"
+    )
+
+    shown = _crhelper_truncate(reason)
+    assert "ECR image verification" in shown, (
+        f"the identifier was truncated away; CloudFormation would show only {shown!r}"
+    )
+    assert f"ocr-function-{_VERSION}" in shown
+
+
+def test_a_named_error_is_logged_once_and_not_relabelled_unexpected(index, caplog):
+    """F3: the EcrImageVerificationError passthrough in the broad handler.
+
+    Without it the error falls to the catch-all, which logs it a second time as
+    "unexpected fatal error" -- a wrong description of an error named correctly a
+    moment earlier -- and re-wraps the message, pushing the identifier further
+    from the tail crhelper keeps.
+    """
+    caplog.set_level(logging.DEBUG)
+    index.ECR_CLIENT.describe_images.side_effect = _client_error(
+        "AccessDeniedException", _REALISTIC_ACCESS_DENIED
+    )
+
+    with pytest.raises(index.EcrImageVerificationError) as excinfo:
+        index._verify_ecr_images_available(
+            _ECR_URI, _VERSION, _IMAGES, datetime.now(timezone.utc)
+        )
+
+    errors = _errors(caplog)
+    assert len(errors) == 1, f"the error was logged {len(errors)} times: {errors}"
+    assert "ECR IMAGE VERIFICATION" in errors[0]
+    assert "unexpected" not in errors[0]
+    assert "unexpected" not in str(excinfo.value)
+
+
+def test_an_unexpected_error_also_names_image_verification(index, caplog):
+    caplog.set_level(logging.DEBUG)
     index.ECR_CLIENT.describe_images.side_effect = RuntimeError("socket closed")
 
     with pytest.raises(index.EcrImageVerificationError) as excinfo:
@@ -336,6 +537,40 @@ def test_an_unexpected_error_also_names_image_verification(index):
         )
 
     assert "ECR image verification" in str(excinfo.value)
+
+    errors = _errors(caplog)
+    assert len(errors) == 1
+    assert "ECR IMAGE VERIFICATION" in errors[0]
+
+
+def test_no_expected_images_fails_instead_of_waiting_forever(index):
+    """F7: there is no default image set, because a wrong one is a permanent poll.
+
+    The list that used to be here named three ``hitl-*`` images no buildspec in
+    this repository builds, and omitted every ``bda-*``, ``rule-validation-*`` and
+    ``mlflow-logger-*`` image that one does.
+    """
+    index.ECR_CLIENT.describe_images.side_effect = AssertionError(
+        "ECR must not be called with no image set to verify"
+    )
+
+    for empty in (None, []):
+        with pytest.raises(index.EcrImageVerificationError) as excinfo:
+            index._verify_ecr_images_available(
+                _ECR_URI, _VERSION, empty, datetime.now(timezone.utc)
+            )
+        reason = str(excinfo.value)
+        assert "ExpectedImages" in reason
+        assert "ECR image verification" in reason
+        assert _crhelper_truncate(reason) == reason, "short enough not to truncate"
+
+
+def test_no_default_image_set_survives_in_the_module(index):
+    """The deleted fallback list must not come back: no `hitl` tags anywhere."""
+    source = _INDEX_PATH.read_text(encoding="utf-8")
+    assert "hitl-wait-function" not in source
+    assert "hitl-status-update-function" not in source
+    assert "hitl-process-function" not in source
 
 
 # --------------------------------------------------------------------------- #

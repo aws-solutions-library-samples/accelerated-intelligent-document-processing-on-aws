@@ -46,8 +46,13 @@ except Exception as init_exception:  # pylint: disable=broad-except
 CUSTOM_RESOURCE_BUDGET_SECONDS = 3600
 
 # crhelper polls by scheduling itself on a CloudWatch Events rule; HELPER above
-# does not override polling_interval, so the rule is rate(2 minutes). Both
-# CloudFormation functions that deploy this code run with Timeout: 60.
+# does not override polling_interval, so the rule is rate(2 minutes).
+#
+# The Lambda timeout is CodeBuildTrigger's (patterns/unified/template.yaml), which
+# is the only function that reaches this wait. The root template also deploys this
+# code, as StartUICodeBuild, but its CodeBuildRun supplies no ECR_URI, so the
+# poller takes the "could not extract ECR_URI" branch and never gets here. Both
+# are Timeout: 60 today; only the first one is load-bearing here.
 POLL_INTERVAL_SECONDS = 120
 LAMBDA_TIMEOUT_SECONDS = 60
 
@@ -67,18 +72,43 @@ SCAN_WAIT_RESERVE_SECONDS = 2 * POLL_INTERVAL_SECONDS + LAMBDA_TIMEOUT_SECONDS
 # 55-minute TimeoutInMinutes leaves none, which is the correct answer.
 SCAN_WAIT_BUDGET_SECONDS = CUSTOM_RESOURCE_BUDGET_SECONDS - SCAN_WAIT_RESERVE_SECONDS
 
-# ECR reports COMPLETE for basic scanning and ACTIVE for enhanced (continuous)
-# scanning once an image has been scanned. Neither says anything about what the
-# scan found; nothing here reads findings.
+# ECR has two scanning modes and they report different statuses, so a wait that
+# knows only one of them orders nothing in the other.
+#
+#   basic (the repository's own ImageScanningConfiguration.ScanOnPush, which is
+#   all EnableECRImageScanning sets):   IN_PROGRESS -> COMPLETE
+#   enhanced (an Inspector setting at registry scope, which overrides the
+#   repository's ScanOnPush):            PENDING     -> ACTIVE
+#
+# So both pairs are named. IN_PROGRESS and PENDING are the two ways ECR says
+# "queued or running, not scanned yet"; COMPLETE and ACTIVE are the two ways it
+# says "scanned". Neither of the latter says anything about what the scan found;
+# nothing here reads findings.
+SCAN_RUNNING_STATUSES = ("IN_PROGRESS", "PENDING")
 SCAN_FINISHED_STATUSES = ("COMPLETE", "ACTIVE")
+
+# Prefixes on every log line that reports a scan-status decision, and on every
+# line where this path gives up. The whole cost of issue #1336 was a terminal
+# error that named the cfn-response path instead of image scanning, so the
+# subsystem is named in the log and in the failure reason, every time.
+SCAN_LOG_PREFIX = "ECR IMAGE SCANNING"
+VERIFY_LOG_PREFIX = "ECR IMAGE VERIFICATION"
+
+# The phrase that has to reach CloudFormation. crhelper's `_send` truncates an
+# over-long Reason by keeping the TAIL -- `"ERROR: (truncated) " +
+# str(self.Reason)[len - 240:]`, resource_helper.py -- and `self.Reason` is
+# `str(exception)`. So the identifier goes at the END of every message raised from
+# here: a realistic AccessDeniedException is well over 256 characters on its own,
+# and a message that leads with the identifier loses exactly the identifier.
+VERIFY_FAILURE_SUFFIX = "ECR image verification failed"
 
 
 class EcrImageVerificationError(RuntimeError):
     """ECR image verification could not complete.
 
-    Carried to CloudFormation as the custom resource's failure reason, so the
-    message names ECR image verification rather than leaving a bare botocore
-    error that points nowhere near this code.
+    Carried to CloudFormation as the custom resource's failure reason. Every
+    message ends with VERIFY_FAILURE_SUFFIX and the image tag rather than leading
+    with them, because crhelper truncates a long reason from the front.
     """
 
 
@@ -131,7 +161,7 @@ def create_or_update(event, _):
 def _verify_ecr_images_available(
     ecr_uri: str,
     image_version: str,
-    expected_images: List[str] = None,
+    expected_images: Optional[List[str]] = None,
     build_start_time: Optional[datetime] = None,
 ) -> bool:
     """Verify all required Lambda images exist in ECR before Lambdas reference them.
@@ -142,15 +172,16 @@ def _verify_ecr_images_available(
     absent returns False so the caller polls again, because the build has only
     just reported success and the push may not have settled.
 
-    **Scan ordering, and only ordering.** When the repository has ScanOnPush
-    enabled (EnableECRImageScanning), this waits while ECR reports a tag's scan
-    as IN_PROGRESS, so that an image is scanned before the Lambda functions that
-    pull it are created. That is the whole of it. Nothing here calls
-    describe_image_scan_findings or reads findingSeverityCounts, so the scan's
-    *result* is not consulted and no severity gates the deploy: an image whose
-    scan reports critical findings is deployed exactly as one with a clean scan
-    is. Any status other than IN_PROGRESS -- including FAILED and
-    UNSUPPORTED_IMAGE -- is logged and deployed.
+    **Scan ordering, and only ordering.** When scanning is on, this waits while
+    ECR reports a tag's scan as queued or running -- ``IN_PROGRESS`` under basic
+    scan-on-push, ``PENDING`` under enhanced (Inspector) scanning, see
+    SCAN_RUNNING_STATUSES -- so that an image is scanned before the Lambda
+    functions that pull it are created. That is the whole of it. Nothing here
+    calls describe_image_scan_findings or reads findingSeverityCounts, so the
+    scan's *result* is not consulted and no severity gates the deploy: an image
+    whose scan reports critical findings is deployed exactly as one with a clean
+    scan is. Every other status -- including FAILED and UNSUPPORTED_IMAGE -- is
+    logged and deployed.
 
     The wait is bounded by SCAN_WAIT_BUDGET_SECONDS measured from
     ``build_start_time``. Once that is spent the image is treated as available and
@@ -161,7 +192,9 @@ def _verify_ecr_images_available(
     Args:
         ecr_uri: ECR repository URI (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/repo-name)
         image_version: Image version tag (e.g., "latest" or "0.3.19")
-        expected_images: List of base image names (without version suffix). If not provided, defaults to Pattern-2 images.
+        expected_images: Base image names, without the version suffix. Required:
+            there is no default image set, because a wrong one is a permanent
+            poll. See the raise below.
         build_start_time: When the CodeBuild run started, used as the origin for
             the scan-wait budget. None disables waiting on scan status, since
             without it the wait cannot be bounded.
@@ -171,28 +204,31 @@ def _verify_ecr_images_available(
         False if the caller should poll again.
 
     Raises:
-        EcrImageVerificationError: verification cannot complete -- a permissions,
-            validation or missing-repository error from ECR. Fails the custom
-            resource immediately rather than polling out the hour.
+        EcrImageVerificationError: verification cannot complete -- no
+            ``ExpectedImages``, or a permissions, validation or
+            missing-repository error from ECR. Fails the custom resource
+            immediately rather than polling out the hour.
     """
     try:
         repository_name = ecr_uri.split("/")[-1]
-        
-        # If expected_images not provided, fall back to Pattern-2 images for backward compatibility
-        if expected_images is None:
-            expected_images = [
-                "ocr-function",
-                "classification-function",
-                "extraction-function",
-                "assessment-function",
-                "processresults-function",
-                "summarization-function",
-                "evaluation-function",
-                "hitl-wait-function",
-                "hitl-status-update-function",
-                "hitl-process-function",
-            ]
-        
+
+        # No default image set. There used to be one, naming three `hitl-*` images
+        # no buildspec in this repository builds and omitting every `bda-*`,
+        # `rule-validation-*` and `mlflow-logger-*` image that it does -- so had
+        # anything ever reached it, the result was a wait for tags that would never
+        # appear: a permanent poll ending in the same misleading custom-resource
+        # timeout this function was changed to prevent. Nothing reaches it today
+        # (DockerBuildRun always passes ExpectedImages, and the root template's
+        # CodeBuildRun has no ECR_URI so it never gets here), so failing loudly
+        # names the missing property instead of silently verifying the wrong set.
+        if not expected_images:
+            raise EcrImageVerificationError(
+                "no ExpectedImages were supplied for repository "
+                f"{repository_name}, so there is no image set to verify and "
+                "waiting would never end -- "
+                f"{VERIFY_FAILURE_SUFFIX}"
+            )
+
         # Append version to each base image name
         required_images = [f"{img}-{image_version}" for img in expected_images]
         
@@ -226,29 +262,44 @@ def _verify_ecr_images_available(
                 image = images[0]
                 scan_status = image.get("imageScanStatus", {}).get("status")
 
-                if scan_status == "IN_PROGRESS":
-                    if not _proceed_despite_running_scan(image_tag, build_start_time):
+                if scan_status in SCAN_RUNNING_STATUSES:
+                    if not _proceed_despite_running_scan(
+                        image_tag, scan_status, build_start_time
+                    ):
                         return False
                 elif scan_status is None:
+                    # Deliberately not waited on, and the reason is that an absent
+                    # scan record cannot be told apart from scanning being switched
+                    # off: EnableECRImageScanning defaults to false at the root, and
+                    # with ScanOnPush off no scan record ever appears, so waiting
+                    # here would spend the whole budget on every deploy. It does
+                    # also occur transiently with scanning ON, in the window
+                    # between the push and ECR attaching a scan record, and in that
+                    # window the ordering is skipped.
                     LOGGER.info(
-                        "image %s is present; ECR reports no scan status for it "
-                        "(image scanning is not enabled for this repository)",
+                        "%s: image %s is present and ECR reports no scan status "
+                        "for it yet. Not waiting -- an absent scan record is "
+                        "indistinguishable from scanning being switched off for "
+                        "this repository, where no record would ever arrive.",
+                        SCAN_LOG_PREFIX,
                         image_tag,
                     )
                 elif scan_status in SCAN_FINISHED_STATUSES:
                     LOGGER.info(
-                        "ECR IMAGE SCANNING: image %s is present and its scan has "
-                        "finished (status: %s). Scan findings are not read here, "
-                        "so a finished scan is not a clean bill of health.",
+                        "%s: image %s is present and its scan has finished "
+                        "(status: %s). Scan findings are not read here, so a "
+                        "finished scan is not a clean bill of health.",
+                        SCAN_LOG_PREFIX,
                         image_tag,
                         scan_status,
                     )
                 else:
                     LOGGER.warning(
-                        "ECR IMAGE SCANNING: image %s is present but its scan did "
-                        "not finish (status: %s). Deploying it anyway -- this wait "
-                        "orders scanning before the image goes live and does not "
-                        "gate on the scan's status or its findings.",
+                        "%s: image %s is present but its scan did not finish "
+                        "(status: %s). Deploying it anyway -- this wait orders "
+                        "scanning before the image goes live and does not gate on "
+                        "the scan's status or its findings.",
+                        SCAN_LOG_PREFIX,
                         image_tag,
                         scan_status,
                     )
@@ -264,62 +315,79 @@ def _verify_ecr_images_available(
                 # Fatal errors - permissions, validation, repository not found, etc.
                 # Fail immediately instead of polling forever
                 LOGGER.error(
-                    "ECR IMAGE VERIFICATION: fatal error checking image %s "
-                    "(error code: %s): %s",
+                    "%s: fatal error checking image %s (error code: %s): %s",
+                    VERIFY_LOG_PREFIX,
                     image_tag,
                     error_code,
                     error
                 )
+                # Identifier last: see VERIFY_FAILURE_SUFFIX. A realistic
+                # AccessDeniedException is longer than crhelper's 256-character
+                # Reason limit on its own, and crhelper keeps the tail.
                 raise EcrImageVerificationError(
-                    f"ECR image verification failed while describing image "
-                    f"{image_tag} in repository {repository_name}: "
-                    f"{error_code}: {error}"
+                    f"{error_code}: {error} -- {VERIFY_FAILURE_SUFFIX} "
+                    f"for image {image_tag} in repository {repository_name}"
                 ) from error
 
         LOGGER.info("all %d required images are available in ECR", len(required_images))
         return True
 
     except EcrImageVerificationError:
-        raise  # Already named and logged above
+        # Already named, already logged. Without this the broad handler below
+        # describes an error it has just correctly named as "unexpected" -- a
+        # second, wrong ERROR line -- and re-wraps the message, pushing the
+        # identifier further from the tail crhelper keeps.
+        raise
     except Exception as exception:  # pylint: disable=broad-except
         # Any non-ClientError exception is unexpected and fatal
-        LOGGER.error("ECR IMAGE VERIFICATION: unexpected fatal error: %s", exception)
+        LOGGER.error("%s: unexpected fatal error: %s", VERIFY_LOG_PREFIX, exception)
+        # Identifier last: see VERIFY_FAILURE_SUFFIX. Nothing from the try block
+        # is referenced here -- `repository_name` may be unbound if the failure
+        # was in computing it, and a NameError raised inside this handler would
+        # lose the original error entirely.
         raise EcrImageVerificationError(
-            f"ECR image verification failed unexpectedly: {exception}"
+            f"{exception} -- {VERIFY_FAILURE_SUFFIX} unexpectedly"
         ) from exception
 
 
 def _proceed_despite_running_scan(
     image_tag: str,
+    scan_status: str,
     build_start_time: Optional[datetime],
 ) -> bool:
-    """Decide whether a still-running image scan should stop blocking the deploy.
+    """Decide whether a queued or running image scan should stop blocking the deploy.
 
-    Returns True to stop waiting (the image is deployed with its scan still
-    running), False to keep waiting for this poll cycle.
+    ``scan_status`` is the status that is holding the wait up -- one of
+    SCAN_RUNNING_STATUSES, so ``IN_PROGRESS`` under basic scanning or ``PENDING``
+    under enhanced. Returns True to stop waiting (the image is deployed with its
+    scan unfinished), False to keep waiting for this poll cycle.
     """
     remaining = _scan_wait_remaining_seconds(build_start_time)
 
     if remaining is None:
         LOGGER.warning(
-            "ECR IMAGE SCANNING: image %s scan is still IN_PROGRESS and the wait "
-            "cannot be bounded -- the CodeBuild run's start time is unknown, so "
-            "there is no origin to measure the custom resource's remaining hour "
-            "from. Proceeding with the scan still running rather than polling "
-            "until CloudFormation times this custom resource out.",
+            "%s: image %s scan has not finished (status: %s) and the wait cannot "
+            "be bounded -- the CodeBuild run's start time is unknown, so there is "
+            "no origin to measure the custom resource's remaining hour from. "
+            "Proceeding with the scan unfinished rather than polling until "
+            "CloudFormation times this custom resource out.",
+            SCAN_LOG_PREFIX,
             image_tag,
+            scan_status,
         )
         return True
 
     if remaining <= 0:
         LOGGER.warning(
-            "ECR IMAGE SCANNING: wait exhausted for image %s. Its scan is still "
-            "IN_PROGRESS and the %ds this custom resource can spend waiting -- "
+            "%s: wait exhausted for image %s. Its scan has not finished (status: "
+            "%s) and the %ds this custom resource can spend waiting -- "
             "CloudFormation's %ds custom-resource limit less %ds reserved to "
             "answer it -- has been spent since the build started. Proceeding: the "
-            "image is deployed with its scan still running. This is latency, not "
-            "a scan result; findings are not read here in any case.",
+            "image is deployed with its scan unfinished. This is latency, not a "
+            "scan result; findings are not read here in any case.",
+            SCAN_LOG_PREFIX,
             image_tag,
+            scan_status,
             SCAN_WAIT_BUDGET_SECONDS,
             CUSTOM_RESOURCE_BUDGET_SECONDS,
             SCAN_WAIT_RESERVE_SECONDS,
@@ -327,9 +395,11 @@ def _proceed_despite_running_scan(
         return True
 
     LOGGER.info(
-        "ECR IMAGE SCANNING: image %s scan still in progress; %ds of the %ds wait "
+        "%s: image %s scan still in progress (status: %s); %ds of the %ds wait "
         "budget remain before the image is deployed unscanned",
+        SCAN_LOG_PREFIX,
         image_tag,
+        scan_status,
         int(remaining),
         SCAN_WAIT_BUDGET_SECONDS,
     )
