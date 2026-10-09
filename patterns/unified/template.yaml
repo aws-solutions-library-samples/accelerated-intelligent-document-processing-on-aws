@@ -3960,7 +3960,15 @@ Resources:
             Value: !Ref AWS::Region
           - Name: LAMBDA_ARCHITECTURE
             Value: !Ref LambdaArchitecture
-      TimeoutInMinutes: 90
+      # Inside CloudFormation's 60-minute custom-resource ServiceTimeout, not
+      # beyond it. At 90 a slow build outlived the DockerBuildRun resource that
+      # waits for it, so the stack failed with "CloudFormation did not receive a
+      # response from your Custom Resource" -- which names the custom resource
+      # and says nothing about the build -- instead of CodeBuild's own legible
+      # timeout. Half of issue #1310 was that misdirection. The build takes ~10
+      # minutes today, and the in-buildspec retry deadline is 2400s, so this
+      # leaves ample headroom while still failing first.
+      TimeoutInMinutes: 55
 
   CodeBuildExecutionRole:
     Type: AWS::IAM::Role

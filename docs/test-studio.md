@@ -1443,7 +1443,7 @@ For full details on configuration profiles and their revisions, see [configurati
 - **QUEUED**: File copying jobs queued in SQS
 - **RUNNING**: Files being copied and processed
 - **EVALUATING**: Documents processed, evaluation in progress
-- **COMPLETED**: Test finished successfully with all documents evaluated
+- **COMPLETED**: Test finished successfully, with every document processed and none recorded as failed. Documents are scored too unless the run had nothing to score them against — a test set with no published ground truth, or a configuration profile with `evaluation.enabled` false — in which case the run still completes and reports its cost and timing, and the results page says which of the two applies in place of the accuracy figures. ⚠️ One case reports COMPLETED while a document did fail: promoting a document to an evaluation baseline overwrites the evaluation outcome the run is counted from, so a promoted document whose evaluation had failed is no longer counted as failed
 - **PARTIAL_COMPLETE**: Test finished with some documents failed. A document whose evaluation failed or timed out (`EvaluationStatus` `FAILED` or `TIMED_OUT`) counts as failed, and the run's metrics cover the documents that were scored
 - **FAILED**: Errors during processing
 - **ABORTED**: Test run manually stopped before completion
