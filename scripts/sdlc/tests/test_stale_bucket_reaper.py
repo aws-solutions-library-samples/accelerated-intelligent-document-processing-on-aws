@@ -9,10 +9,14 @@ the age gate, always empty versions before deleting, and only touch idp- names.
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.unit
+
+#: The SDLC pipeline template carrying the CodeBuild role's grants.
+PIPELINE_TEMPLATE = Path(__file__).resolve().parents[1] / "cfn" / "codepipeline-s3.yml"
 
 
 class _FakeStackPaginator:
@@ -215,41 +219,97 @@ def test_never_raises_on_api_error(cbd, monkeypatch):
 # `s3:ListAllMyBuckets` is an account-level operation with no resource to scope
 # to, so it needs `Resource: '*'`. The role's other S3 grants are bucket-scoped
 # — including an `s3:*` — and a bucket-scoped wildcard cannot cover it. Pinning
-# the grant here is the only offline check that the reaper is able to run.
+# the grant is the only offline check that the reaper is able to run.
 # ---------------------------------------------------------------------------
 
-import re  # noqa: E402
-from pathlib import Path  # noqa: E402
+#: The role the CodeBuild project runs as, and so the only one whose grants
+#: decide whether the reaper can make its call.
+REAPER_ROLE = "CodeBuildRole"
+REAPER_ACTION = "s3:ListAllMyBuckets"
 
-PIPELINE_TEMPLATE = Path(__file__).resolve().parents[1] / "cfn" / "codepipeline-s3.yml"
+
+def _as_list(value):
+    """CloudFormation accepts a scalar wherever it accepts a list of them."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
-def test_the_codebuild_role_can_list_the_account_s_buckets():
-    """The reaper's first call must be permitted, with a wildcard resource.
+def _statements_for_role(template: dict, role: str) -> list[dict]:
+    """Every IAM statement attached to `role`, by either of the two shapes.
 
-    Asserted on the template text rather than a parsed policy document because
-    the claim is narrow and positional: somewhere in this role's policies,
-    `s3:ListAllMyBuckets` appears and the statement granting it uses
-    `Resource: '*'`. A parsed check would have to resolve two policy shapes and
-    the CFN short-form tags to say the same thing.
+    A grant can reach a role inline (`AWS::IAM::Role.Properties.Policies`) or by
+    a separate `AWS::IAM::Policy` naming it in `Roles`, and this template uses
+    both for the same role. Collecting the two together is the whole point: the
+    question is what the role can do, not where somebody wrote it down.
     """
-    text = PIPELINE_TEMPLATE.read_text(encoding="utf-8")
+    resources = template.get("Resources") or {}
+    statements: list[dict] = []
 
-    assert "s3:ListAllMyBuckets" in text, (
-        "scripts/sdlc/cfn/codepipeline-s3.yml no longer grants "
-        "s3:ListAllMyBuckets. cleanup_stale_idp_buckets calls list_buckets as "
-        "its first action and swallows the AccessDenied, so removing this makes "
-        "the bucket reaper a no-op that still reports success."
+    role_body = resources.get(role) or {}
+    for policy in _as_list((role_body.get("Properties") or {}).get("Policies")):
+        statements.extend(
+            _as_list((policy.get("PolicyDocument") or {}).get("Statement"))
+        )
+
+    for body in resources.values():
+        if body.get("Type") != "AWS::IAM::Policy":
+            continue
+        props = body.get("Properties") or {}
+        # `Roles: [!Ref CodeBuildRole]` parses to [{'Ref': 'CodeBuildRole'}].
+        attached = {
+            entry.get("Ref")
+            for entry in _as_list(props.get("Roles"))
+            if isinstance(entry, dict)
+        }
+        if role in attached:
+            statements.extend(
+                _as_list((props.get("PolicyDocument") or {}).get("Statement"))
+            )
+
+    return statements
+
+
+def test_the_codebuild_role_can_list_the_accounts_buckets():
+    """The reaper's first call must be permitted *to its own role*, on `Resource: '*'`.
+
+    Parsed rather than matched against the template text, and both halves of
+    that matter. A text match cannot tell which role carries a statement, so it
+    reports success with the grant sitting on a different role while the reaper's
+    role has lost it -- which would make the only protection for this fix a gate
+    with exactly the defect the fix exists to remove. And a text match pins YAML
+    *formatting*: reordering `Action` and `Resource`, or adding a second action
+    to the statement, changes no permission and must not fail.
+
+    `load_template` comes from the sibling module in this directory, which
+    `conftest.py` puts on `sys.path` for this purpose; it converts the CFN
+    short-form tags, so `!Ref`/`!Sub` arrive as plain dicts.
+    """
+    from test_iam_trust_policy_partitions import load_template
+
+    template = load_template(PIPELINE_TEMPLATE)
+    statements = _statements_for_role(template, REAPER_ROLE)
+    assert statements, (
+        f"no IAM statements found for {REAPER_ROLE} in {PIPELINE_TEMPLATE.name} — "
+        f"the role was renamed or the template restructured, and every assertion "
+        f"below would pass vacuously"
     )
 
-    # The statement carrying it must use a wildcard resource: the action does
-    # not support resource-level permissions, so a bucket ARN silently denies.
-    block = re.search(
-        r"- Effect: Allow\s*\n\s*Action:\s*\n\s*- 's3:ListAllMyBuckets'\s*\n\s*Resource: '\*'",
-        text,
+    granting = [
+        statement
+        for statement in statements
+        if statement.get("Effect") == "Allow"
+        and REAPER_ACTION in _as_list(statement.get("Action"))
+    ]
+    assert granting, (
+        f"{REAPER_ROLE} is no longer granted {REAPER_ACTION} in "
+        f"{PIPELINE_TEMPLATE.name}. cleanup_stale_idp_buckets calls list_buckets "
+        f"as its first action and swallows the AccessDenied, so removing this "
+        f"makes the bucket reaper a no-op that still reports success."
     )
-    assert block, (
-        "s3:ListAllMyBuckets is present but not on `Resource: '*'`. It is an "
-        "account-level operation with no resource to scope to, so any ARN — "
-        "even an s3:* on a bucket — evaluates to implicitDeny."
+
+    assert any("*" in _as_list(statement.get("Resource")) for statement in granting), (
+        f"{REAPER_ACTION} is granted to {REAPER_ROLE} but not on `Resource: '*'`. "
+        f"It is an account-level operation with no resource to scope to, so any "
+        f"ARN — even an `s3:*` on a bucket — evaluates to implicitDeny."
     )

@@ -994,6 +994,11 @@ Resources:
 
   CodeBuildRoleS3Policy:
     Type: 'AWS::IAM::Policy'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: "s3:ListAllMyBuckets is an account-level operation with no resource to scope to; the stale-bucket reaper cannot enumerate the account without it"
     Properties:
       PolicyName: CodeBuildS3Access
       Roles: 
@@ -1037,13 +1042,16 @@ Resources:
           # markers (deleted when their stack is reaped, so a dead marker cannot
           # hold a retention slot) and expired diagnostics bundles.
           #
-          # ⚠️ This is a statement of intent, not the effective permission. The
-          # `S3Access` policy on this same role already grants `s3:*` on the
-          # whole source bucket, so delete is permitted there regardless of what
-          # this says — do not read these two prefixes as a confinement. It is
-          # kept because it is the only place that records WHICH objects the
-          # harness deletes, and it is what the delete path would still rely on
-          # if `S3Access` were ever narrowed from `s3:*`.
+          # ⚠️ Whether this is the effective permission depends on a parameter.
+          # The `S3Access` policy on this same role grants `s3:*` on the
+          # hardcoded `genaiic-sdlc-sourcecode-<account>-<region>`, which AT THE
+          # DEFAULT `BucketNamePrefix` is this same bucket — so on a default
+          # deployment delete is permitted there regardless of what this says,
+          # and these two prefixes are not a confinement. Override
+          # `BucketNamePrefix` and they become the only delete grant, i.e. a
+          # real one. Either way this is the only place recording WHICH objects
+          # the harness deletes, and it is what the delete path would rely on if
+          # `S3Access` were ever narrowed from `s3:*`.
           - Effect: Allow
             Action:
               - 's3:DeleteObject'

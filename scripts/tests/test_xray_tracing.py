@@ -72,6 +72,7 @@ gate looks at nothing".
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 from pathlib import Path
@@ -422,8 +423,13 @@ def _source_for(body: dict, template_path: Path) -> Path | None:
     return None
 
 
-def _vcs_ignored(paths: list[Path], root: Path = REPO_ROOT) -> set[Path]:
+def _vcs_ignored(paths: list[Path], root: Path) -> set[Path]:
     """Return the subset of `paths` that `root`'s ignore rules cover.
+
+    `root` is required rather than defaulted to the repository root: the only
+    caller asks from inside the directory being walked, and a default would be
+    silently wrong for any `CodeUri` outside this checkout -- including every
+    synthetic one in this file's own tests.
 
     A **tracked** file that happens to match an ignore pattern is NOT reported,
     because `git check-ignore` consults the index unless given `--no-index`.
@@ -452,7 +458,14 @@ def _vcs_ignored(paths: list[Path], root: Path = REPO_ROOT) -> set[Path]:
             text=True,
             timeout=60,
         )
-    except (OSError, subprocess.SubprocessError):
+    # `UnicodeError` belongs here with the process failures: `text=True` encodes
+    # stdin and decodes stdout with the locale encoding, which is ASCII when
+    # `LANG`/`LC_ALL` are unset or `C` -- a common CI container default. A single
+    # non-ASCII filename in the batch would then raise `UnicodeEncodeError`,
+    # which is neither `OSError` nor `SubprocessError`, and would error the gate
+    # instead of failing open. No tracked path in this repo is non-ASCII, but
+    # the whole point of this batch is that it holds files nobody curated.
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return set()
     # Exit 0 = some paths ignored, 1 = none ignored, 128 = not a work tree.
     if done.returncode not in (0, 1):
@@ -460,8 +473,29 @@ def _vcs_ignored(paths: list[Path], root: Path = REPO_ROOT) -> set[Path]:
     return {Path(line) for line in done.stdout.split("\0") if line}
 
 
-def _runtime_sources(directory: Path) -> list[Path]:
-    """The Python files that are this function's own deployed code.
+@functools.lru_cache(maxsize=None)
+def _runtime_sources(directory: Path) -> tuple[Path, ...]:
+    """The first-party Python sources committed under this function's `CodeUri`.
+
+    Cached, and that is about cost rather than tidiness: the rules below re-walk
+    the same directory for every function they examine, and the module makes
+    more than one pass, so this was called 290 times over 134 distinct
+    directories -- 290 `git check-ignore` spawns, measured at 3.4s. Returning a
+    tuple keeps the cached value immutable, so a caller cannot corrupt the entry
+    for every later one.
+
+    ⚠️ **The ignore check costs more than it saves on a clean checkout, and that
+    is accepted.** Measured on a worktree with nothing staged, this module takes
+    11.3s with the check and 7.6s without; on a machine with the staged copy it
+    is a large win, because the walk it replaces reads 6,495 files. The point is
+    correctness rather than speed -- without it the gate's verdict depends on
+    whether somebody has built a feature locally -- so do not read the exclusion
+    as an optimisation.
+
+    Replacing the per-directory spawns with one whole-repository
+    `git ls-files -o -i --exclude-standard` was measured and rejected: it lists
+    371,617 paths and 37MB in 10.3s here, which is worse than every spawn it
+    would remove.
 
     ⚠️ **Files the repository ignores are excluded, and that is load-bearing
     rather than tidiness.** The walk is an `rglob` over the `CodeUri`, so
@@ -496,7 +530,7 @@ def _runtime_sources(directory: Path) -> list[Path]:
     # synthetic one in this file's own tests, where the probe would then report
     # nothing ignored and the exclusion would go untested.
     ignored = _vcs_ignored(candidates, root=directory)
-    return [path for path in candidates if path not in ignored]
+    return tuple(path for path in candidates if path not in ignored)
 
 
 def _uses_xray(body: dict, template_path: Path) -> bool:
@@ -1229,8 +1263,23 @@ class TestIgnoredFilesAreNotReadAsSource:
         assert _vcs_ignored([source / "index.py"], root=tmp_path) == set()
         assert [p.name for p in _runtime_sources(source)] == ["index.py"]
 
-    def test_an_empty_path_list_asks_git_nothing(self) -> None:
-        assert _vcs_ignored([]) == set()
+    def test_an_empty_path_list_asks_git_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Asserted by refusing the subprocess, not by the return value.
+
+        The return value cannot see this: with the guard deleted,
+        `git check-ignore --stdin` on empty input exits 1 with no output, so the
+        function still returns an empty set and the test still passes. It would
+        then be named for a behaviour it does not examine.
+        """
+
+        def _refuse(*args: object, **kwargs: object) -> None:
+            raise AssertionError("git was invoked for an empty path list")
+
+        monkeypatch.setattr(subprocess, "run", _refuse)
+
+        assert _vcs_ignored([], root=tmp_path) == set()
 
     def test_rule_3_does_not_fire_on_a_marker_only_in_ignored_output(
         self, tmp_path: Path
