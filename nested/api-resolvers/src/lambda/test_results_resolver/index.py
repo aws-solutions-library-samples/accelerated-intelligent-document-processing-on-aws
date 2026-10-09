@@ -324,15 +324,31 @@ _METRICS_ELIGIBLE_STATUSES = ("COMPLETE", "PARTIAL_COMPLETE")
 # list therefore reaches this loop carrying one of those, which is why they are
 # classified here rather than left to the catch-all.
 # ``test_results_resolver.py::test_every_evaluation_status_any_writer_can_set_is_classified``
-# derives the universe from all three writers and fails on a value missing here.
+# derives the universe from the three writers known today and fails on a value
+# missing here; what it does not detect is a fourth writer, which is written out
+# as a residual where that universe is built.
 #
 # Terminal and not a failure: the document is as finished as it will ever be.
 # ``NO_BASELINE`` and ``DISABLED`` produce no metrics by construction (no ground
 # truth to score against; no evaluation asked for), which is a legitimate
-# outcome rather than an error. The two settled ``BASELINE_*`` values say
-# nothing about the document's own processing, which completed either way — the
-# copy is a separate action on an already-finished document, so neither counts
-# as a failed file in the run that produced it.
+# outcome rather than an error.
+#
+# ⚠️ **All three ``BASELINE_*`` values are settled, and the honest reason is that
+# the run can no longer be told anything by them — not that they are good news.**
+# A promotion *overwrites* this attribute, so whatever evaluation recorded is
+# gone, and two things follow that are worth knowing before reading a run's
+# figures. **A promoted document whose evaluation had FAILED stops counting as a
+# failed file**, so a run can move from PARTIAL_COMPLETE to COMPLETE with
+# ``failedFiles`` 0 while its cached metrics still cover only the documents that
+# were scored; the information needed to prevent that was destroyed by the
+# overwrite, and separating the two would take a second attribute. And
+# ``BASELINE_COPYING`` is settled **despite naming work in progress**, because
+# the copy is invoked as an async Lambda whose terminal write is best-effort —
+# an invocation that never lands, or fails that write, leaves the attribute
+# there with nothing to reconcile it. Waiting on it is therefore unbounded, and
+# it would be a wait for an action taken on the document *after* the run
+# finished, which tells the run nothing. Holding a completed run at EVALUATING
+# for that is the #1330 symptom on a new route.
 _EVAL_STATUS_SETTLED = frozenset(
     {
         "COMPLETED",
@@ -340,14 +356,14 @@ _EVAL_STATUS_SETTLED = frozenset(
         "DISABLED",
         "BASELINE_AVAILABLE",
         "BASELINE_ERROR",
+        "BASELINE_COPYING",
     }
 )
 # Terminal and a failure. ``TIMED_OUT`` is the status the single-attempt timeout
 # policy stamps (#917); it means the same thing to a run as ``FAILED``.
 _EVAL_STATUS_UNSUCCESSFUL = frozenset({"FAILED", "TIMED_OUT"})
-# Genuinely still working. ``BASELINE_COPYING`` resolves in seconds, so waiting
-# on it is correct and bounded.
-_EVAL_STATUS_IN_FLIGHT = frozenset({"RUNNING", "BASELINE_COPYING"})
+# Genuinely still working, and able to leave that state on its own.
+_EVAL_STATUS_IN_FLIGHT = frozenset({"RUNNING"})
 
 
 def _normalized_eval_status(doc_item):
@@ -400,7 +416,13 @@ def _ran_with_evaluation_disabled(item):
     if isinstance(enabled, bool):
         return not enabled
     if isinstance(enabled, str):
-        return enabled.strip().lower() in {"0", "off", "f", "false", "n", "no"}
+        # Not stripped, deliberately: pydantic does not strip either, so `" false"`
+        # is a configuration it REJECTS — every pipeline step fails to load it —
+        # and reading that as "evaluation was disabled" would be this function
+        # claiming a run finished on the strength of a configuration that never
+        # ran. Matching pydantic's exact token set is what keeps the two readings
+        # the same one.
+        return enabled.lower() in {"0", "off", "f", "false", "n", "no"}
     if isinstance(enabled, (int, float, Decimal)):
         # ``float`` is unreachable through either storage shape today — the
         # compressed path parses with ``parse_float=Decimal`` and DynamoDB hands
@@ -414,17 +436,18 @@ def _ran_with_evaluation_disabled(item):
 def _awaiting_metrics(item, status):
     """Is this run finished but still missing its cached aggregate metrics?
 
-    The single definition of the condition behind the ``EVALUATING`` badge. Three
+    The single definition of the condition behind the ``EVALUATING`` badge. Two
     resolvers surface that badge — ``_build_test_run_list`` (the Executions
-    list), ``get_test_run_status`` (the per-row poll) and ``get_test_results``
-    (the results page) — and they previously each spelled the rule out inline.
+    list) and ``get_test_run_status`` (the per-row poll); ``get_test_results``
+    reports the stored status and uses this rule only to decide whether to
+    enqueue the missing aggregation. All three previously spelled it out inline.
     Issue #619 was diagnosed through the resulting confusion: the badge said
     EVALUATING while the file counts said every document was processed and none
     was evaluating, because "terminal but no metrics" and "actually evaluating"
     render identically. Keep the rule here so the three sites cannot drift.
 
     ⚠️ **Everything this answer depends on must be readable from the run record
-    alone**, because the three callers do not see the same things: only
+    alone**, because the callers do not see the same things: only
     ``get_test_run_status`` reads the run's documents. An exclusion one of them
     can evaluate and the others cannot splits the badge in two — a run reporting
     COMPLETE on the per-row poll and EVALUATING in the Executions list at the
@@ -480,7 +503,6 @@ def _display_status(item, status):
     ``get_test_run_status`` and ``get_test_results`` pair this with
     ``_queue_cache_update``; ``_build_test_run_list`` deliberately does not (see
     its own comment), since it renders many runs at once.
-
     """
     return "EVALUATING" if _awaiting_metrics(item, status) else status
 
@@ -1234,7 +1256,10 @@ def _count_completed_documents(table, test_run_id, files):
     COMPLETED, and this reads the evaluation attribute alone (it always has). A
     document stamped ABORTED over an earlier settled evaluation status is
     therefore counted here and not there — which is the pre-existing behaviour,
-    confined to the "N of M" figure an aborted run reports.
+    confined to the "N of M" figure an aborted run reports. It also has no
+    captured-configuration fallback for a document carrying no status at all, so
+    an aborted run that predates the ``DISABLED`` stamp and ran with evaluation
+    off still reports 0 of N here, where the status loop reports N.
 
     Args:
         table: DynamoDB table resource

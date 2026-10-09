@@ -2120,6 +2120,20 @@ _EVALUATION_FUNCTION = os.path.join(
 # promoted from the document list arrives in the run-status loop carrying one —
 # a value the pipeline's enum does not contain and which the loop therefore has
 # to classify anyway. Read from source for the same reason as the enum.
+#
+# ⚠️ What is NOT checked: that these are still the only writers. The three are
+# the writers as of #1330, established by grepping the tree for somewhere a
+# status *originates* rather than is copied along —
+#
+#     git ls-files '*.py' | xargs grep -n 'evaluation_status *=[^=]'
+#
+# which today finds these three plus six sites that propagate an existing value
+# as a keyword argument. A fourth writer added later fails nothing here, and no
+# cheap derivation separates a status literal from the environment-variable
+# names that share the prefix (EVALUATION_BASELINE_BUCKET and friends appear in
+# twenty tracked files). So this is a declared residual, not a closure: the
+# closure below is over the values these three writers can set, and the two
+# sanity assertions in the test are what stop a writer going quietly inert.
 _BASELINE_STATUS_WRITERS = (
     os.path.join(
         os.path.dirname(__file__),
@@ -2199,8 +2213,9 @@ def test_every_evaluation_status_any_writer_can_set_is_classified():
     of the three. Adding a status to any of those writers without coming here
     fails this test.
 
-    The universe is every writer, not the pipeline's enum alone, because the
-    enum is only one of three and the other two were the easiest thing to miss:
+    The universe is every known writer, not the pipeline's enum alone, because
+    the enum is only one of three and the other two were the easiest thing to
+    miss:
     they describe a different activity (promoting a document to a baseline) and
     write over whatever evaluation left in the attribute. A closure asserted
     over one writer would have read as cover for all of them.
@@ -2588,13 +2603,15 @@ def test_the_badge_rule_gives_every_reader_the_same_answer(eval_status, config):
 
 @pytest.mark.unit
 def test_the_badge_rule_reads_nothing_but_the_run_record():
-    """The property behind the test above, asserted directly.
+    """One mechanism of divergence, closed directly.
 
-    ``_captured_config_of`` is the only thing in this file that reaches past the
-    run record for an answer about a run, so a call to it from here is the
-    mechanism by which the two readers could diverge again. It is used for the
-    API's ``evaluationDisabled`` field and for a document carrying no status at
-    all — never for the badge.
+    Narrower than it may look, and the test above is what carries the property:
+    the divergence actually shipped was an extra *argument*, which this
+    assertion cannot see — measured, by reconstructing it. What this closes is
+    the other route, a reach past the run record from inside the rule.
+    ``_captured_config_of`` is the only such reach in this file; it is used for
+    the API's ``evaluationDisabled`` field and for a document carrying no status
+    at all, and must never be used for the badge.
     """
     with patch.object(index, "_captured_config_of") as captured:
         assert index._awaiting_metrics({"Status": "RUNNING"}, "RUNNING") is False
@@ -2729,3 +2746,55 @@ def test_both_readers_of_an_evaluation_status_agree():
     # And neither of them calls the one in-flight status terminal.
     assert not (index._EVAL_STATUS_IN_FLIGHT & terminal_here)
     assert not (index._EVAL_STATUS_IN_FLIGHT & abort_index.TERMINAL_EVALUATION_STATUSES)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "promoted_status", ["BASELINE_COPYING", "BASELINE_AVAILABLE", "BASELINE_ERROR"]
+)
+def test_promoting_a_document_to_a_baseline_does_not_hold_its_run(promoted_status):
+    """A run must not be held by an action taken on it after it finished.
+
+    Promoting a document to an evaluation baseline overwrites the same attribute
+    the run's status is derived from, so a run containing a promoted document hit
+    the unrecognised-status branch and sat at EVALUATING. ``BASELINE_COPYING`` is
+    the one worth being explicit about: it names work in progress, but the copy
+    is an async Lambda whose terminal write is best-effort, so an invocation that
+    never lands leaves the attribute there with nothing to reconcile it — an
+    unbounded wait for something that tells the run nothing either way.
+    """
+    files = ["a.pdf", "b.pdf"]
+    table = _run_table(
+        "promoted-run", files, ["COMPLETED", promoted_status], stored_status="RUNNING"
+    )
+    result = _status_of("promoted-run", table)
+
+    assert table.metadata["Status"] == "COMPLETE"
+    assert result["evaluatingFiles"] == 0
+
+
+@pytest.mark.unit
+def test_a_promoted_document_stops_counting_as_a_failed_file():
+    """Pinned because it is a real misreport, not because it is right.
+
+    A promotion overwrites the evaluation outcome, so a document whose
+    evaluation FAILED and which is then promoted can no longer be told apart
+    from one that succeeded: the run moves from PARTIAL_COMPLETE to COMPLETE
+    with no failed files, while its cached metrics still cover only the
+    documents that were scored. Separating the two needs a second attribute, so
+    the alternative on offer is not better accounting but an unbounded wait —
+    which is what the run did before #1330. Asserted so the trade-off is visible
+    here rather than discovered in a run's figures.
+    """
+    files = ["a.pdf", "b.pdf", "c.pdf"]
+    failed = _run_table("still-failed", files, ["COMPLETED", "FAILED", "COMPLETED"])
+    assert _status_of("still-failed", failed)["failedFiles"] == 1
+    assert failed.metadata["Status"] == "PARTIAL_COMPLETE"
+
+    promoted = _run_table(
+        "promoted-away", files, ["COMPLETED", "BASELINE_AVAILABLE", "COMPLETED"]
+    )
+    result = _status_of("promoted-away", promoted)
+
+    assert result["failedFiles"] == 0
+    assert promoted.metadata["Status"] == "COMPLETE"

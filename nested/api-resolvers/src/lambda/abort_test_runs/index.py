@@ -41,9 +41,10 @@ ABORTABLE_STATUSES = {'QUEUED', 'RUNNING'}
 # pipeline's own statuses it includes the outcomes of promoting a document to an
 # evaluation baseline, which overwrite the attribute (copy_to_baseline_resolver,
 # and idp_sdk's evaluation processor): BASELINE_AVAILABLE and BASELINE_ERROR are
-# settled, while BASELINE_COPYING is deliberately absent because that one really
-# is still in progress. A set with a name is what lets the run-status resolver's
-# own classification be compared against this one, by
+# settled, and so is BASELINE_COPYING — see the run-status resolver's note on why
+# none of the three can tell a run anything, and why waiting on the last of them
+# is unbounded rather than brief. A set with a name is what lets the run-status
+# resolver's own classification be compared against this one, by
 # test_results_resolver.py::test_both_readers_of_an_evaluation_status_agree,
 # rather than the two drifting apart again in a literal here.
 TERMINAL_EVALUATION_STATUSES = {
@@ -54,6 +55,7 @@ TERMINAL_EVALUATION_STATUSES = {
     'DISABLED',
     'BASELINE_AVAILABLE',
     'BASELINE_ERROR',
+    'BASELINE_COPYING',
 }
 
 
@@ -402,7 +404,11 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
                     continue
 
                 doc_status = item.get('ObjectStatus', '').upper()
-                eval_status = item.get('EvaluationStatus', '').upper()
+                # .strip() as well as .upper(), matching the run-status
+                # reader: a padded value must not be terminal for one of them
+                # and in progress for the other, and the test that compares the
+                # two sets cannot see a difference in how they are read.
+                eval_status = item.get('EvaluationStatus', '').strip().upper()
 
                 # Check if document reached terminal state
                 # Terminal = processing done AND (evaluation done OR no evaluation needed)
