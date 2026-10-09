@@ -29,6 +29,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,6 +39,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "sdlc" / "ai_mr_review.py"
 GITLAB_CI = REPO_ROOT / ".gitlab-ci.yml"
+GITHUB_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ai-pr-review.yml"
 MAKEFILE = REPO_ROOT / "Makefile"
 SKILL_CI = REPO_ROOT / ".claude" / "skills" / "pr-review-ci.md"
 SKILL_INTERACTIVE = REPO_ROOT / ".claude" / "skills" / "pr-review.md"
@@ -138,22 +140,116 @@ def test_no_token_reaches_the_child_environment(mod, monkeypatch) -> None:
 
 
 @pytest.mark.unit
-def test_the_gitlab_token_is_required_and_has_no_fallback(mod) -> None:
+def test_the_gitlab_token_is_required_and_has_no_fallback(
+    mod, capsys, monkeypatch, tmp_path
+) -> None:
     """``CI_JOB_TOKEN`` cannot create notes, so it must not be a fallback.
 
     A fallback here would look like it worked — enumeration might even succeed —
     and then fail at the post, after paying for every review.
+
+    Asserted by RUNNING it with ``CI_JOB_TOKEN`` present and
+    ``GITLAB_REVIEW_TOKEN`` absent, rather than by matching the source text for
+    ``os.environ.get("GITLAB_REVIEW_TOKEN"``. A string match there is sensitive to
+    how the lookup is spelled rather than to what it does — it is
+    ``os.environ.get(platform.credential_env)`` — and that is the wrong direction
+    for a test to be sensitive in. Executing it also covers the case a string
+    match cannot: a fallback added *after* the first lookup.
     """
-    source = SCRIPT.read_text()
-    assert 'os.environ.get("GITLAB_REVIEW_TOKEN"' in source
+    monkeypatch.delenv("GITLAB_REVIEW_TOKEN", raising=False)
+    monkeypatch.setenv("CI_JOB_TOKEN", "job-token-that-cannot-create-notes")
+    monkeypatch.setenv("CI_PROJECT_ID", "1234")
+
+    exit_code = mod.main(
+        ["--all-open", "--forge", "gitlab", "--artifact-dir", str(tmp_path / "out")]
+    )
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert output.startswith("SKIPPED:"), (
+        "with no GITLAB_REVIEW_TOKEN the run must skip, not fall back to "
+        f"CI_JOB_TOKEN; printed: {output[:200]!r}"
+    )
+    assert "GITLAB_REVIEW_TOKEN" in output
+
     assert "CI_JOB_TOKEN" in mod.SECRET_ENV_KEYS, (
         "CI_JOB_TOKEN must be stripped from the child environment"
     )
     # It may be named in prose explaining why it is not used, but never read.
-    assert 'environ.get("CI_JOB_TOKEN' not in source, (
+    assert 'environ.get("CI_JOB_TOKEN' not in SCRIPT.read_text(), (
         "CI_JOB_TOKEN is being read as a credential. It cannot create notes, so "
         "using it produces a run that reviews everything and posts nothing."
     )
+
+
+@pytest.mark.unit
+def test_each_platform_reads_its_own_token_variable(mod) -> None:
+    """The token name is per platform, and neither may silently repoint.
+
+    ``Platform.credential_env`` is an indirection, and the failure it enables is
+    quiet: pointed at the wrong variable, the run finds no token on the platform
+    it is actually on and reports a loud skip naming a variable nobody set — or,
+    worse, finds one and posts with a credential meant for the other forge.
+    """
+    assert mod.GITLAB.credential_env == "GITLAB_REVIEW_TOKEN"
+    assert mod.GITHUB.credential_env == "GITHUB_TOKEN"
+    # Both must also be stripped from the child, whichever one is in use.
+    for platform in (mod.GITLAB, mod.GITHUB):
+        assert platform.credential_env in mod.SECRET_ENV_KEYS, (
+            f"{platform.credential_env} posts the review, so it must not reach the "
+            f"model's environment"
+        )
+
+
+@pytest.mark.unit
+def test_the_github_skip_names_the_github_remedy(
+    mod, capsys, monkeypatch, tmp_path
+) -> None:
+    """A skip must send the reader to the right fix, which differs per platform.
+
+    On GitLab the remedy is "create and store a project access token"; on GitHub
+    the token already exists and what is missing is a line of workflow
+    permissions. One generic "no token" message sends half of its readers to the
+    wrong place, and a skip is the only output a no-token run produces.
+    """
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/name")
+
+    exit_code = mod.main(
+        ["--all-open", "--forge", "github", "--artifact-dir", str(tmp_path / "out")]
+    )
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert output.startswith("SKIPPED:")
+    assert "GITHUB_TOKEN" in output
+    assert "pull-requests: write" in output, (
+        "the GitHub skip must name the permission that is usually what is missing"
+    )
+    assert "GITLAB_REVIEW_TOKEN" not in output, (
+        "a GitHub run must not report a GitLab remedy"
+    )
+
+
+@pytest.mark.unit
+def test_the_platform_is_never_inferred_from_the_environment(mod) -> None:
+    """``$GITHUB_ACTIONS`` must not choose the forge.
+
+    This suite runs in BOTH CIs. If the platform were detected from the
+    environment, every assertion above about which token variable is read would
+    hold on one platform and fail on the other — a red mark that appears only on
+    GitHub and cannot be reproduced locally, which is the most expensive shape a
+    failure has here.
+    """
+    source = SCRIPT.read_text()
+    for variable in ("GITHUB_ACTIONS", "GITLAB_CI", "CI_PIPELINE_SOURCE"):
+        # Named in prose is fine — the comment on DEFAULT_PLATFORM explains why
+        # this is not done. READ is the thing being forbidden, so the assertion
+        # is on the access forms, the same shape as the CI_JOB_TOKEN check above.
+        read = re.search(rf"""environ(?:\.get\(|\[)["']{variable}["']""", source)
+        assert read is None, (
+            f"{variable} is being read: the forge must be named on the command "
+            f"line, not inferred from the environment"
+        )
+    assert mod.DEFAULT_PLATFORM == mod.GITLAB.key
 
 
 @pytest.mark.unit
@@ -753,15 +849,507 @@ def test_the_job_never_reviews_a_draft(ci_config: dict) -> None:
     assert rules.index(draft_rule) < len(rules) - 1
 
 
+# --- 5. The GitHub arm -------------------------------------------------------
+#
+# The same reviewer, triggered by GitHub Actions. These mirror the GitLab
+# assertions above rather than restating the reasoning: what is asserted is that
+# each property the GitLab job depends on has a counterpart here, because the
+# counterpart is spelled completely differently in every case —
+# `interruptible: true` becomes a `concurrency` block, a `rules:` chain becomes a
+# job-level `if:`, and a `curl | bash` Node install becomes a first-party action.
+# A property silently absent on one platform is the defect this file exists for.
+
+
+@pytest.fixture(scope="module")
+def gh_workflow() -> dict:
+    return yaml.safe_load(GITHUB_WORKFLOW.read_text())
+
+
+@pytest.fixture(scope="module")
+def gh_job(gh_workflow: dict) -> dict:
+    jobs = gh_workflow["jobs"]
+    assert list(jobs) == ["ai_pr_review"], (
+        f"expected exactly one job in {GITHUB_WORKFLOW.name}; found {list(jobs)}. "
+        "A second job would produce a second status-check context, which has to "
+        "be decided against the required-check set before it is added."
+    )
+    return jobs["ai_pr_review"]
+
+
+@pytest.mark.unit
+def test_the_sweep_skips_same_repository_pull_requests(mod) -> None:
+    """A same-repo PR is the ``pull_request`` trigger's job, and paying twice is easy.
+
+    The idempotency marker is only written when a review *finishes*, about nine
+    minutes. A scheduled tick landing inside that window sees no marker, so
+    without this filter both runs review the same head, both pay, and both post a
+    comment. The two runs are in different concurrency groups on purpose, so
+    nothing else prevents the overlap.
+
+    A deleted head repository reports empty, and that must still be swept: it
+    cannot be this repository, and dropping it silently would lose the one case
+    the sweep exists for.
+    """
+    payloads = [
+        {
+            "number": 1,
+            "title": "same repo",
+            "head": {"sha": "a" * 40, "ref": "x", "repo": {"full_name": "owner/name"}},
+        },
+        {
+            "number": 2,
+            "title": "fork",
+            "head": {"sha": "b" * 40, "ref": "y", "repo": {"full_name": "someone/fk"}},
+        },
+        {
+            "number": 3,
+            "title": "deleted fork",
+            "head": {"sha": "c" * 40, "ref": "z", "repo": None},
+        },
+    ]
+    github = mod.Github("owner/name", "token")
+    github._request = lambda method, url, body=None: (payloads, {})  # type: ignore[method-assign]
+
+    swept = [m.iid for m in github.open_merge_requests("develop")]
+    assert swept == [2, 3], (
+        f"the sweep returned {swept}. #1 is a same-repository pull request and is "
+        f"already covered by the pull_request trigger, so sweeping it risks a "
+        f"second paid review and a second comment on the same head. #3's head "
+        f"repository was deleted and must still be swept."
+    )
+
+
+@pytest.mark.unit
+def test_the_fork_pull_request_arm_is_skipped_not_failed(gh_job: dict) -> None:
+    """A fork's own run must not reach the credential step.
+
+    Repository ``vars`` — unlike ``secrets`` — ARE readable by a fork's run, so
+    the role-configured check passes and ``configure-aws-credentials`` then fails
+    for want of an OIDC token. Without the head-repository test that is a red
+    mark on every fork pull request, for a path that is designed not to work.
+    """
+    condition = str(gh_job.get("if", ""))
+    assert "head.repo.full_name == github.repository" in condition, (
+        "the job's `if:` no longer excludes fork pull requests. Their runs get no "
+        "OIDC token, so they would fail at the credential step and show red; the "
+        "schedule is the path forks are meant to take."
+    )
+
+
+@pytest.mark.unit
+def test_the_harness_pin_fails_closed(gh_job: dict) -> None:
+    """A pin that cannot be made must stop the job, not proceed unpinned.
+
+    ``git checkout FETCH_HEAD -- $HARNESS`` is all-or-nothing, so renaming any one
+    of the paths on the target branch pins nothing. Continuing then runs the pull
+    request's own copy of the reviewer, which is the single thing this step exists
+    to prevent — and it would do so with only a log line to say so.
+    """
+    pin = next(
+        (s for s in gh_job["steps"] if "FETCH_HEAD" in str(s.get("run", ""))), None
+    )
+    assert pin, "no harness-pinning step found"
+    assert "exit 1" in str(pin["run"]), (
+        "the pinning step no longer fails closed: if the path list goes stale it "
+        "proceeds on the checkout's own harness"
+    )
+
+
+@pytest.mark.unit
+def test_the_head_is_fetched_from_the_chosen_remote(mod, monkeypatch) -> None:
+    """``--remote`` must reach the fetch, and the web URL must use the same one.
+
+    ``origin`` and "the forge running this job" are the same thing only in CI,
+    where a checkout has one remote. A developer checkout of this repository has
+    two and ``origin`` is the GitLab one, so a hardcoded ``origin`` makes
+    ``--forge github`` ask GitLab for a ``refs/pull/`` ref that cannot exist
+    there. It fails at the fetch, before anything is reviewed — which is how this
+    was found: the first local GitHub run could not start.
+
+    The web URL is asserted against the same remote because getting that half
+    wrong is silent rather than loud: the review still runs and its metadata
+    simply points the reader at the wrong forge.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(command, cwd=None, env=None, timeout=300):
+        calls.append(command)
+        joined = " ".join(command)
+        if "rev-parse" in joined:
+            out = "f" * 40
+        elif "remote" in joined and "get-url" in joined:
+            out = "https://github.com/owner/name.git"
+        elif "log" in joined:
+            out = "a subject\x00An Author"
+        else:
+            out = ""
+        return subprocess.CompletedProcess(command, 0, out, "")
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+
+    request = mod.merge_request_from_git(7, "develop", mod.GITHUB, "github")
+
+    fetches = [c for c in calls if "fetch" in c]
+    assert fetches, "no fetch was attempted"
+    for fetch in fetches:
+        assert "github" in fetch, (
+            f"the fetch did not use the remote it was given: {fetch}. A hardcoded "
+            f"`origin` points at GitLab in a developer checkout of this repo."
+        )
+        assert "origin" not in fetch
+
+    assert ["git", "remote", "get-url", "github"] in calls, (
+        "the web URL was derived from a different remote than the head was "
+        "fetched from, so the review's metadata links to the wrong forge"
+    )
+    assert request.web_url == "https://github.com/owner/name/pull/7"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("remote_url", "expected"),
+    [
+        ("https://github.com/owner/name.git", "https://github.com/owner/name"),
+        ("https://github.com/owner/name", "https://github.com/owner/name"),
+        ("git@github.com:owner/name.git", "https://github.com/owner/name"),
+        (
+            "git@ssh.gitlab.example.com:group/proj.git",
+            "https://gitlab.example.com/group/proj",
+        ),
+        (
+            "ssh://git@ssh.gitlab.example.com/group/proj.git",
+            "https://gitlab.example.com/group/proj",
+        ),
+        ("not a url", ""),
+    ],
+    ids=[
+        "https-dotgit",
+        "https-plain",
+        "scp",
+        "scp-ssh-prefix",
+        "ssh-scheme",
+        "garbage",
+    ],
+)
+def test_the_web_url_is_built_from_either_remote_spelling(
+    mod, remote_url: str, expected: str
+) -> None:
+    """Which URL form a remote uses is not a property of the platform.
+
+    This repository's GitLab remote is scp-like and its GitHub remote is HTTPS,
+    and the HTTPS form used to yield an empty string because the host pattern
+    required an ``@``. An empty web URL is not an error anywhere — the review
+    runs and its metadata simply carries no link — so nothing would have reported
+    it. Garbage is asserted to come out empty rather than to raise, because the
+    caller's fallback for "unreadable" is the empty string.
+    """
+    assert mod.remote_web_base(remote_url) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("header_name", ["Link", "link", "LINK"])
+def test_the_github_sweep_follows_every_page(mod, header_name: str) -> None:
+    """Pagination must not stop after the first page, whatever the header's case.
+
+    Two failures are covered and both are silent. GitHub paginates with a ``Link``
+    header rather than GitLab's ``X-Next-Page``, so a sweep that ignores it
+    reviews the first 100 open pull requests and quietly ignores the rest. And
+    ``_request`` returns ``dict(response.headers)``, which discards the
+    case-insensitivity ``email.message.Message`` provides — HTTP field names are
+    case-insensitive by specification, so a lookup keyed on the exact string
+    ``"Link"`` is one server-side spelling away from the same truncation.
+
+    Parametrised over the casings rather than asserting on ``_header`` directly,
+    because what matters is the behaviour of the sweep: a future refactor that
+    reads the header some other way still has to pass this.
+
+    ⚠️ A live call against this repository cannot stand in for this test. It has
+    one page of open pull requests, so the second request is never made and both
+    failures stay invisible.
+    """
+    pages = [
+        (
+            [{"number": 1, "title": "a", "head": {"sha": "a" * 40, "ref": "x"}}],
+            {header_name: '<https://api.github.com/page2>; rel="next"'},
+        ),
+        (
+            [{"number": 2, "title": "b", "head": {"sha": "b" * 40, "ref": "y"}}],
+            {},
+        ),
+    ]
+    requested: list[str] = []
+
+    github = mod.Github("owner/name", "token")
+
+    def fake_request(method: str, url: str, body=None):
+        requested.append(url)
+        return pages[len(requested) - 1]
+
+    github._request = fake_request  # type: ignore[method-assign]
+
+    found = github.open_merge_requests("develop")
+    assert [m.iid for m in found] == [1, 2], (
+        f"the sweep stopped after {len(found)} page(s) of results; it must follow "
+        f'`Link: rel="next"` until there is none. Requested: {requested}'
+    )
+    assert requested[1] == "https://api.github.com/page2", (
+        "the second request did not use the URL the Link header supplied. The page "
+        "number is not always derivable — some endpoints paginate with an opaque "
+        f"cursor — so the supplied URL is the only safe form. Got: {requested[1]!r}"
+    )
+
+
+@pytest.mark.unit
+def test_the_github_workflow_pins_the_harness_before_running_it(gh_job: dict) -> None:
+    """Same outer channel as the GitLab job, closed the same way.
+
+    On a ``pull_request`` run the checkout contains the PR's changes, so without
+    this the reviewer is the PR's own copy of itself. Nothing inside the script
+    can fix that: by the time Python starts, the code running is already the
+    PR's.
+    """
+    script = "\n".join(
+        str(step.get("run", "")) for step in gh_job["steps"] if "run" in step
+    )
+    assert "git checkout FETCH_HEAD --" in script, (
+        "the workflow no longer pins the harness from the target branch, so the "
+        "reviewer on a pull request is the PR's own copy of the reviewer"
+    )
+    for pinned in (
+        "scripts/sdlc/ai_mr_review.py",
+        ".claude/skills/pr-review.md",
+        ".claude/skills/pr-review-ci.md",
+        "CLAUDE.md",
+    ):
+        assert pinned in script, f"{pinned} is not pinned by the workflow"
+
+
+@pytest.mark.unit
+def test_the_github_checkout_does_not_persist_the_token(gh_job: dict) -> None:
+    """``persist-credentials: false`` is load-bearing and has no other trace.
+
+    By default ``actions/checkout`` writes the job's token into ``.git/config`` as
+    an ``http.extraheader``. This job hands a model a checkout and also holds a
+    credential that can post publicly, so a persisted token is an exfiltration
+    channel: the model has no Bash and no network tool and so could not *use* it,
+    but it can read files and the review body is published.
+
+    There is no GitLab counterpart — that runner does not write a credential into
+    the checkout — which is exactly why it needs its own assertion here rather
+    than being assumed covered by the GitLab tests.
+    """
+    checkout = next(
+        (s for s in gh_job["steps"] if "actions/checkout" in str(s.get("uses", ""))),
+        None,
+    )
+    assert checkout, "no checkout step found"
+    assert checkout.get("with", {}).get("persist-credentials") is False, (
+        "actions/checkout is persisting the job's token into .git/config"
+    )
+    assert checkout.get("with", {}).get("fetch-depth") == 0, (
+        "the review diffs against the merge base, which a shallow clone lacks"
+    )
+
+
+@pytest.mark.unit
+def test_the_github_trigger_keeps_its_cost_bounds(
+    gh_workflow: dict, gh_job: dict
+) -> None:
+    """Three bounds again, two of them spelled differently from GitLab's.
+
+    ``concurrency: cancel-in-progress`` is this platform's ``interruptible:
+    true``: without it every push in a burst pays for its own full review. The
+    draft exclusion is a job-level ``if:`` rather than a title regex.
+
+    The third differs in substance, not just spelling. GitLab has no scheduled
+    sweep and its test asserts there is none; here a schedule is the only way a
+    fork PR can be reviewed at all, so what is pinned instead is the bound on how
+    many reviews one tick may pay for. A tick that finds no new head costs
+    nothing because of the per-head-SHA marker, which is what makes an hourly
+    cron affordable — so that marker is load-bearing for cost here in a way it is
+    not on GitLab.
+    """
+    concurrency = gh_workflow.get("concurrency") or {}
+    assert concurrency.get("cancel-in-progress") is True, (
+        "cancel-in-progress is off, so a burst of pushes pays for one full "
+        "review each instead of the newer run cancelling the older one"
+    )
+    assert "pull_request.number" in str(concurrency.get("group", "")), (
+        "the concurrency group must be per pull request, or a scheduled sweep "
+        "and a PR's own review cancel each other"
+    )
+
+    condition = str(gh_job.get("if", ""))
+    assert "draft == false" in condition, (
+        "the job no longer excludes drafts, so the WIP phase — the part of a "
+        "PR's life with the most pushes — now pays for a review each time"
+    )
+
+    run = "\n".join(str(s.get("run", "")) for s in gh_job["steps"] if "run" in s)
+    assert "--max-mrs 3" in run, (
+        "the sweep's bound is gone. At --timeout 1200 a batch of ten has a "
+        "200-minute worst case against this job's 45m limit, so the job would "
+        "be cut off mid-review rather than the sweep bounding itself."
+    )
+
+
+@pytest.mark.unit
+def test_the_github_job_cannot_block_a_merge() -> None:
+    """It must be advisory on this platform too, by the same two routes.
+
+    GitLab says this with ``allow_failure: true``. GitHub has no such key: a
+    failing job fails its check, and whether that blocks a merge is a repository
+    setting. So the two things that keep it advisory are asserted instead — its
+    context is pinned in the branch-protection suite's must-stay-advisory set,
+    and it is absent from the CI-parity suite's shared-gate list.
+    """
+    from test_check_branch_protection import (  # type: ignore[import-not-found]
+        MUST_STAY_ADVISORY,
+    )
+    from test_ci_gate_parity import SHARED_GATES  # type: ignore[import-not-found]
+
+    assert "AI PR Review (advisory)" in MUST_STAY_ADVISORY, (
+        "the AI review's status-check context is not pinned as advisory. "
+        "Requiring it would be worse than it looks: GitHub reports a "
+        "conditionally skipped job as SUCCEEDING, so the gate would pass on "
+        "every draft PR with no review having run."
+    )
+    for gate in SHARED_GATES:
+        assert "ai_mr_review" not in gate and "ai-pr-review" not in gate, (
+            f"the reviewer appears in SHARED_GATES as {gate!r}, which asserts it "
+            f"runs as a gate in both CIs. It is advisory on both."
+        )
+
+
+@pytest.mark.unit
+def test_the_github_job_requests_only_the_permissions_it_needs(gh_job: dict) -> None:
+    """Three scopes, each with a specific job, and `contents` stays read.
+
+    ``pull-requests: write`` posts the comment and ``id-token: write`` mints the
+    OIDC token for the Bedrock role. ``contents: write`` would let a review that
+    went wrong push to the repository, and nothing here needs it.
+    """
+    permissions = gh_job.get("permissions") or {}
+    assert permissions.get("contents") == "read"
+    assert permissions.get("pull-requests") == "write"
+    assert permissions.get("id-token") == "write"
+    assert set(permissions) == {"contents", "pull-requests", "id-token"}, (
+        f"the job's permissions grew beyond the three it needs: {permissions}"
+    )
+
+
+@pytest.mark.unit
+def test_the_github_job_pins_every_action_and_the_cli(gh_job: dict) -> None:
+    """Actions by commit SHA, and the Claude CLI to the same version as GitLab.
+
+    An unpinned tool on an automatic job changes behaviour with no commit here,
+    and a floating action tag is also the supply-chain shape this repository pins
+    everywhere else. The CLI version is additionally compared ACROSS the two CI
+    configurations: two platforms running the same reviewer at different versions
+    is a difference that would only ever show up as one of them producing an
+    oddly different review.
+    """
+    for step in gh_job["steps"]:
+        uses = str(step.get("uses", ""))
+        if not uses:
+            continue
+        action, _, ref = uses.partition("@")
+        assert re.fullmatch(r"[0-9a-f]{40}", ref), (
+            f"{action} is pinned to {ref!r}, not a 40-character commit SHA"
+        )
+
+    workflow_text = GITHUB_WORKFLOW.read_text()
+    gitlab_text = GITLAB_CI.read_text()
+    version = re.search(r'CLAUDE_CODE_VERSION:\s*"([^"]+)"', workflow_text)
+    assert version, "the workflow does not pin CLAUDE_CODE_VERSION"
+    assert f'CLAUDE_CODE_VERSION: "{version.group(1)}"' in gitlab_text, (
+        f"the GitHub workflow pins Claude Code {version.group(1)} but "
+        f".gitlab-ci.yml pins a different version. The two CIs would run the "
+        f"same reviewer on different CLI versions."
+    )
+
+
+@pytest.mark.unit
+def test_the_github_workflow_states_the_forge_on_the_command_line(
+    gh_job: dict,
+) -> None:
+    """Every invocation must pass ``--forge github``.
+
+    The script defaults to GitLab and does not sniff the environment, so an
+    invocation that omits this does not fail — it reads ``$GITLAB_REVIEW_TOKEN``,
+    finds nothing, and reports a loud skip about a variable nobody set, on a job
+    that is allowed to be advisory and so goes unnoticed.
+    """
+    runs = [str(s.get("run", "")) for s in gh_job["steps"] if "run" in s]
+    # Matched on the INVOCATION, not on the filename: the harness-pinning step
+    # names the same path among the files it pins, so counting mentions of the
+    # path scores that step as an invocation that forgot the flag.
+    invocations = [
+        block
+        for run in runs
+        for block in re.findall(
+            r"python3\s+scripts/sdlc/ai_mr_review\.py(?:[^\n]*\\\n)*[^\n]*", run
+        )
+    ]
+    assert invocations, "the workflow never invokes the reviewer"
+    for invocation in invocations:
+        assert "--forge github" in invocation, (
+            "an invocation of the reviewer does not pass `--forge github`, so it "
+            f"would run against GitLab's API: {invocation!r}"
+        )
+
+
+@pytest.mark.unit
+def test_the_fork_path_is_the_schedule_and_it_is_documented(
+    gh_workflow: dict,
+) -> None:
+    """The schedule exists for forks, and only fires from the default branch.
+
+    Both halves are asserted because both are invisible. A fork's
+    ``pull_request`` run gets no OIDC token, so the schedule is the only path a
+    fork PR has — and GitHub reads ``on: schedule`` from the DEFAULT branch's copy
+    of the workflow, which is ``main`` here and not the ``develop`` branch this
+    merges to. Until it reaches ``main`` the cron fires never, and it does so
+    silently: the sweep looks installed and does nothing.
+    """
+    # `on:` is the YAML 1.1 boolean True once parsed, which is why the key is
+    # read both ways here and in check_branch_protection.py.
+    triggers = gh_workflow.get(True, gh_workflow.get("on"))
+    assert isinstance(triggers, dict), (
+        f"the workflow's `on:` is not a mapping: {triggers!r}"
+    )
+    assert "schedule" in triggers, (
+        "the schedule is gone, so fork pull requests can no longer be reviewed "
+        "at all — their own runs get no OIDC token and so cannot reach Bedrock"
+    )
+    assert "workflow_dispatch" in triggers, (
+        "workflow_dispatch is gone, so a fork PR cannot be reviewed on demand "
+        "and must wait for the next scheduled tick"
+    )
+    text = GITHUB_WORKFLOW.read_text()
+    assert "DEFAULT BRANCH" in text, (
+        "the workflow no longer records that `on: schedule` is read from the "
+        "default branch. That constraint is the difference between a sweep that "
+        "runs and one that silently never fires, and nothing else states it."
+    )
+
+
+# --- 6. Not a gate, on either platform ---------------------------------------
+
+
 @pytest.mark.unit
 def test_the_makefile_targets_are_outside_every_gate_section() -> None:
     """The reviewer must not enter ``test_ci_gate_parity.py``'s gate universe.
 
     That module derives its universe from ``##@`` sections and check-shaped
     names, and everything in it must run in **both** CIs or be registered as
-    deliberately out of scope. This tool is GitLab-only and advisory, so it
+    deliberately out of scope. This tool is advisory on both platforms, so it
     belongs in neither category — the right answer is for it not to look like a
     gate, which is a property of the name and the section it is declared in.
+
+    Both prefixes are checked. ``ai-pr-review`` was added later than
+    ``ai-mr-review`` and a test that named only the original would have passed
+    while the new targets sat in a gate section.
     """
     from test_ci_gate_parity import (  # type: ignore[import-not-found]
         GATE_SECTION_PREFIXES,
@@ -770,8 +1358,12 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
     )
 
     sections = _makefile_sections()
-    targets = [t for t in sections if t.startswith("ai-mr-review")]
+    targets = [t for t in sections if t.startswith(("ai-mr-review", "ai-pr-review"))]
     assert targets, "the ai-mr-review Makefile targets have been renamed or removed"
+    assert any(t.startswith("ai-pr-review") for t in targets), (
+        "no ai-pr-review target found: the GitHub arm's Makefile entry points "
+        "have been renamed or removed"
+    )
     for target in targets:
         section = sections[target]
         assert not section.startswith(GATE_SECTION_PREFIXES), (

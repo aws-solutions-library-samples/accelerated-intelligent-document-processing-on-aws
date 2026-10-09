@@ -386,13 +386,26 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, disc
 #   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
 #     trust a named role in the commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
-#     would render an ARN naming a GovCloud account that is not the one meant. This
-#     is the only line in these templates that cannot be parameterised.
+#     would render an ARN naming a GovCloud account that is not the one meant.
+#
+#   scripts/sdlc/cfn/github-oidc-review-role.yml:sts.amazon — two lines carry the
+#     literal `sts.amazonaws.com`: the OIDC provider's ClientIdList and the `aud`
+#     condition on the role's trust policy, which must agree. That string is an
+#     OpenID Connect AUDIENCE CLAIM, not an endpoint — nothing resolves it as a
+#     hostname, GitHub mints the token with it as an opaque value, and
+#     `aws-actions/configure-aws-credentials` requests it verbatim in every
+#     partition. `${AWS::URLSuffix}` would render an audience GitHub never issues,
+#     so the gate's suggested fix is the one thing that breaks it.
+#     ⚠️ The pattern is spelled `sts.amazon` rather than `sts.amazonaws.com`
+#     because test_no_exemption_hides_more_lines_than_a_reason_can_cover rejects a
+#     line pattern that CONTAINS the gate's own `.amazonaws.com` needle — such a
+#     pattern would hide every finding in the file, which is the thing that ratchet
+#     exists to stop. `sts.amazon` matches the two intended lines and no needle.
 #
 # scripts/tests/test_discover_templates.py checks the shape, requires a reason, and
 # fails if an entry hides nothing — a dead exemption is a standing licence for
 # whatever next occupies the path.
-ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod scripts/sdlc/cfn/github-oidc-review-role.yml:sts.amazon
 
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
@@ -1398,14 +1411,17 @@ dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no rege
 	@$(PYTHON) scripts/security/dep_audit.py --no-generate
 
 ##@ Automated review (advisory — reviews an MR, gates nothing)
-# Runs Claude Code over open GitLab MRs with .claude/skills/pr-review.md and
-# posts the review as an MR note. Deliberately NOT a gate and deliberately NOT
-# check-shaped in name or section: a model's opinion must not decide whether
-# code merges, and scripts/tests/test_ci_gate_parity.py derives its universe of
-# gates from the Makefile's sections and target names. The CI job that runs this
-# is allow_failure: true for the same reason. Needs GITLAB_REVIEW_TOKEN (api
-# scope) plus AWS credentials with bedrock:InvokeModel.
+# Runs Claude Code over open GitLab MRs or GitHub PRs with
+# .claude/skills/pr-review.md and posts the review as a comment. Deliberately
+# NOT a gate and deliberately NOT check-shaped in name or section: a model's
+# opinion must not decide whether code merges, and
+# scripts/tests/test_ci_gate_parity.py derives its universe of gates from the
+# Makefile's sections and target names. Both CI jobs that run this are advisory
+# for the same reason — `allow_failure: true` on GitLab, and a context pinned as
+# must-stay-advisory on GitHub. Needs AWS credentials with bedrock:InvokeModel,
+# plus GITLAB_REVIEW_TOKEN (api scope) or GITHUB_TOKEN (pull-requests: write).
 .PHONY: ai-mr-review ai-mr-review-dry ai-mr-review-local
+.PHONY: ai-pr-review ai-pr-review-dry
 
 ai-mr-review: ## Review every open non-Draft MR -> develop and post the reviews (MR=<iid> for one)
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
@@ -1422,6 +1438,34 @@ ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 ai-mr-review-local: ## Dry-run one MR with NO token, from git over SSH (MR=<iid> required)
 	@$(if $(MR),,$(error set MR=<iid>, e.g. make ai-mr-review-local MR=786))
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py --mr $(MR) --no-api $(EXTRA_ARGS)
+
+# The GitHub side. `--forge github` is stated rather than detected, so these two
+# targets are the local equivalents of .github/workflows/ai-pr-review.yml. A fork
+# PR's head is fetchable from this repository, so a fork PR can be reviewed from
+# here as well as by the workflow's scheduled run.
+#
+# Three things the workflow gets from its environment and a laptop does not, each
+# of which turns into a skip or a failure rather than a review if it is left out:
+#   GITHUB_TOKEN       the workflow maps it from secrets; here it comes from
+#                      `gh auth token`, and the script reads only this variable.
+#   GITHUB_REPOSITORY  set by Actions; passed as --repo here.
+#   --remote github    ⚠️ `origin` is the GITLAB remote in this checkout, and the
+#                      head ref is fetched from whatever remote is named. Without
+#                      this, --forge github asks GitLab for a refs/pull/ ref that
+#                      cannot exist there and fails at the fetch.
+# Override any of them through EXTRA_ARGS or the environment.
+GH_REVIEW_REPO ?= aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
+GH_REVIEW_REMOTE ?= github
+
+ai-pr-review: ## Review every open non-draft GitHub PR -> develop and post them (PR=<n> for one)
+	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
+		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
+		$(if $(PR),--mr $(PR),--all-open) $(EXTRA_ARGS)
+
+ai-pr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting them
+	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
+		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
+		$(if $(PR),--mr $(PR),--all-open) --dry-run $(EXTRA_ARGS)
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
