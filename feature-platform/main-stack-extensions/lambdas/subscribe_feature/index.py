@@ -139,24 +139,6 @@ def _catalog_entry(feature_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
     return None, True
 
 
-def _catalog_marketplace_identity(
-    feature_id: str,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Read (productCode, marketplaceListingUrl) from catalog.json.
-
-    Returns (None, None) on any failure so the caller degrades rather than
-    erroring. Use :func:`_catalog_entry` where absence has to be told apart from
-    an unreadable catalog.
-    """
-    entry, _read_ok = _catalog_entry(feature_id)
-    if not entry:
-        return None, None
-    return (
-        entry.get("productCode") or None,
-        entry.get("marketplaceListingUrl") or None,
-    )
-
-
 def _load_json_map(raw: str, name: str) -> Dict[str, str]:
     try:
         parsed = json.loads(raw)
@@ -197,19 +179,10 @@ def _installed_row(feature_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
     return (row or None), True
 
 
-def _installed_marketplace_identity(
-    feature_id: str,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Read (productCode, marketplaceListingUrl) from the feature's
-    InstalledFeatures row — baked from the feature manifest at install time, so
-    the host needs no per-feature configuration. Returns (None, None) when the
-    feature isn't installed or carries no marketplace identity."""
-    row, _read_ok = _installed_row(feature_id)
-    row = row or {}
-    return row.get("productCode"), row.get("marketplaceListingUrl")
-
-
-def _feature_is_absent(feature_id: str) -> bool:
+def _feature_is_absent(
+    catalog: Tuple[Optional[Dict[str, Any]], bool],
+    installed: Tuple[Optional[Dict[str, Any]], bool],
+) -> bool:
     """True only when both sources were read and neither knows this feature.
 
     Deliberately not "not found": an unreadable catalog or an unreadable table
@@ -218,9 +191,15 @@ def _feature_is_absent(feature_id: str) -> bool:
     different problems with different remedies, and the second is the misleading
     one — "no such feature" sends the admin to the catalog when the fault is the
     bucket policy.
+
+    Takes the ``(entry, read_ok)`` pairs the caller has already fetched rather
+    than re-reading both sources. Re-reading cost a second GetObject and a second
+    GetItem on the error path, and — worse than the cost — let the two reads
+    disagree: a feature installed concurrently between them would be absent to
+    one and present to the other, so which answer won depended on timing.
     """
-    catalog_entry, catalog_ok = _catalog_entry(feature_id)
-    row, row_ok = _installed_row(feature_id)
+    catalog_entry, catalog_ok = catalog
+    row, row_ok = installed
     return catalog_ok and row_ok and catalog_entry is None and row is None
 
 
@@ -323,11 +302,25 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # the manifest at install time), then from the CATALOG. The catalog fallback
     # is the one that matters here: Subscribe runs before install, so the install
     # row does not exist yet on this path.
-    product_code, installed_listing_url = _installed_marketplace_identity(feature_id)
+    #
+    # Each source is read ONCE here and the `(entry, read_ok)` pairs are passed to
+    # _feature_is_absent below, rather than letting it re-read them. The catalog
+    # pair starts as "not read" so that if the install row alone settles the
+    # identity — in which case the catalog is never fetched and _feature_is_absent
+    # is never reached — a future reordering that did reach it would see
+    # `read_ok=False` and keep the 500, which is the safe direction.
+    installed_row, installed_ok = _installed_row(feature_id)
+    _row = installed_row or {}
+    product_code = _row.get("productCode")
+    installed_listing_url = _row.get("marketplaceListingUrl")
+    catalog_entry, catalog_ok = None, False
     if not (product_code and installed_listing_url):
-        catalog_code, catalog_listing_url = _catalog_marketplace_identity(feature_id)
-        product_code = product_code or catalog_code
-        installed_listing_url = installed_listing_url or catalog_listing_url
+        catalog_entry, catalog_ok = _catalog_entry(feature_id)
+        _entry = catalog_entry or {}
+        product_code = product_code or (_entry.get("productCode") or None)
+        installed_listing_url = installed_listing_url or (
+            _entry.get("marketplaceListingUrl") or None
+        )
     if not product_code:
         if _SOURCE_TAG == "simulator":
             product_code = f"prod-{feature_id}-sim"
@@ -337,7 +330,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 feature_id,
                 product_code,
             )
-        elif _feature_is_absent(feature_id):
+        elif _feature_is_absent(
+            (catalog_entry, catalog_ok), (installed_row, installed_ok)
+        ):
             # Nothing anywhere knows this feature id, so there is no productCode
             # to configure and the message below would send an admin to edit a
             # catalog entry that does not exist. 404 rather than 500: the request

@@ -8,8 +8,10 @@ resolver raised, so a refusal that raises a bare ``Exception`` can only reach th
 caller as 500 ``InternalError``. Two consequences, and the second is the one that
 made this worth a gate:
 
-* A deliberate not-found inflates the monitored 5xx rate, so the error-rate alarm
-  measures ordinary use.
+* A deliberate not-found is counted as a server fault by the API's 5xx signals
+  (API Gateway's ``5XXError``), so ordinary use is indistinguishable from a fault
+  in CloudWatch. No alarm in this repository watches that metric today, so this is
+  about a signal staying readable rather than an alarm that stops firing.
 * The live RBAC harness treats a 5xx as INCONCLUSIVE — correctly, since a 500 says
   nothing about whether the resolver refused this caller before or after doing the
   work. 25 of its positive authorization assertions were unproven for this reason,
@@ -70,9 +72,22 @@ def _lambda_sources():
     Discovered from ``git ls-files`` rather than a hardcoded list, so a new
     resolver is covered by existing, and build trees (``.aws-sam``) cannot
     contribute a stale copy of one.
+
+    Two roots, because "reached through the dispatcher" is not a single
+    directory. ``FIELD_FUNCTION_MAP`` (``nested/api-resolvers/template.yaml``)
+    routes ``getFeatureLaunchUrl``, ``subscribeFeature`` and
+    ``unsubscribeFeature`` to Lambdas that live under ``feature-platform/``, so
+    a glob over ``nested/`` alone would leave the feature-platform resolvers —
+    the ones #1304 fixed three of — outside the guard that exists to stop their
+    regression.
     """
     out = subprocess.run(
-        ["git", "ls-files", "nested/api-resolvers/src/lambda/*/index.py"],
+        [
+            "git",
+            "ls-files",
+            "nested/api-resolvers/src/lambda/*/index.py",
+            "feature-platform/main-stack-extensions/lambdas/*/index.py",
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -134,6 +149,40 @@ def test_no_resolver_reports_a_missing_resource_as_a_bare_exception():
         "idp_common dependency may declare its own class of that name; the "
         "dispatcher matches the name, not the class. See issue #1304.\n  "
         + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.unit
+def test_discovery_covers_the_feature_platform_resolvers():
+    """The scan must reach every root the dispatcher routes into, not just one.
+
+    This is the guard for the guard. ``_lambda_sources`` globbed
+    ``nested/api-resolvers/src/lambda/`` alone, while ``FIELD_FUNCTION_MAP`` also
+    routes three fields to Lambdas under ``feature-platform/`` — so the scan
+    silently skipped the three resolvers #1304 fixed, and would have reported a
+    clean tree however they were written. A root dropped from the glob fails here
+    instead of quietly narrowing the gate.
+    """
+    discovered = {p.relative_to(REPO_ROOT).as_posix() for p in _lambda_sources()}
+    routed_elsewhere = {
+        f"feature-platform/main-stack-extensions/lambdas/{name}/index.py"
+        for name in (
+            "get_feature_launch_url",
+            "subscribe_feature",
+            "unsubscribe_feature",
+        )
+    }
+    missing = routed_elsewhere - discovered
+    assert not missing, (
+        "These resolvers are reached through the dispatcher (FIELD_FUNCTION_MAP in "
+        "nested/api-resolvers/template.yaml) but are outside the discovery glob, so "
+        "the not-found gate above does not read them:\n  "
+        + "\n  ".join(sorted(missing))
+    )
+    # And the original root is still covered — a glob rewritten to fix the above
+    # must not trade one blind spot for another.
+    assert any(p.startswith("nested/api-resolvers/src/lambda/") for p in discovered), (
+        "discovery lost the nested/api-resolvers root"
     )
 
 

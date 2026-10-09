@@ -442,6 +442,58 @@ def test_a_feature_in_neither_the_catalog_nor_the_install_rows_is_not_found(
         )
 
 
+def test_the_not_found_path_reads_each_source_once(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Each source is read once and the result reused, not re-read to decide 404.
+
+    `_feature_is_absent` used to re-read both sources, costing a second
+    GetObject and a second GetItem on the error path — and, more than the cost,
+    allowing the two reads to disagree: a feature installed between them is
+    absent to one and present to the other, so the status depended on timing.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [])
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=mock_stack["table_name"],
+        simulator_endpoint="",
+        source_tag="marketplace-live",
+        configuration_bucket=bucket,
+    )
+    catalog_reads, installed_reads = [], []
+    real_catalog, real_installed = mod._catalog_entry, mod._installed_row
+
+    def counting_catalog(feature_id):
+        catalog_reads.append(feature_id)
+        return real_catalog(feature_id)
+
+    def counting_installed(feature_id):
+        installed_reads.append(feature_id)
+        return real_installed(feature_id)
+
+    monkeypatch.setattr(mod, "_catalog_entry", counting_catalog)
+    monkeypatch.setattr(mod, "_installed_row", counting_installed)
+
+    with pytest.raises(mod.ResourceNotFound):
+        mod.handler(
+            make_appsync_event(
+                "subscribeFeature",
+                {"featureId": "idp-auto-optimizer"},
+                groups=["Admin"],
+            ),
+            None,
+        )
+
+    assert catalog_reads == ["idp-auto-optimizer"], (
+        f"catalog read {len(catalog_reads)} times on the not-found path"
+    )
+    assert installed_reads == ["idp-auto-optimizer"], (
+        f"install row read {len(installed_reads)} times on the not-found path"
+    )
+
+
 def test_a_known_feature_with_an_incomplete_entry_still_raises_subscribe_error(
     monkeypatch, mock_stack, load_lambda
 ):
