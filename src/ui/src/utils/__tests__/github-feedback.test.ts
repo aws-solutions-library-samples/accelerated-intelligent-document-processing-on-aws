@@ -142,16 +142,31 @@ describe('the field ids the forms actually declare', () => {
     }
   });
 
-  it('every id the builders actually write is listed in FORM_FIELDS', () => {
-    // Closure in the other direction. FORM_FIELDS is what the YAML check reads,
-    // so an id the builders write but FORM_FIELDS omits is validated by nothing
-    // — which is the silent-drop failure the constant exists to prevent.
-    const bugParams = [...new URL(buildBugReportUrl(ctx, { objectKey: 'a.pdf', findings: 'f' }, 'c')).searchParams.keys()];
-    const featureParams = [...new URL(buildFeatureRequestUrl(ctx, 'c')).searchParams.keys()];
-    const written = (keys: string[]) => keys.filter((k) => k !== 'template' && k !== 'title').sort();
+  // ⚠️ `Pattern2 - …` is a legacy value no deployed stack reports — every
+  // current stack sets IDPPattern to exactly `Unified`, under which `mode` is
+  // deliberately omitted. So the realistic shape is a SUBSET of FORM_FIELDS, and
+  // a strict-equality assertion driven only by the legacy fixture would pass
+  // because the fixture is unrealistic. Both are checked: every written id must
+  // be listed, and the legacy pattern must reach all of them so the listing is
+  // exercised in full rather than only in part.
+  it.each([
+    ['a unified stack, which is every current deployment', 'Unified'],
+    ['a legacy pattern value', 'Pattern2 - Packet processing'],
+  ])('every id the builders write for %s is listed in FORM_FIELDS', (_label, pattern) => {
+    const withPattern = { ...ctx, pattern };
+    const written = (url: string) => [...new URL(url).searchParams.keys()].filter((k) => k !== 'template' && k !== 'title').sort();
 
-    expect(written(bugParams)).toEqual([...FORM_FIELDS[BUG_REPORT_TEMPLATE]].sort());
-    expect(written(featureParams)).toEqual([...FORM_FIELDS[FEATURE_REQUEST_TEMPLATE]].sort());
+    const bug = written(buildBugReportUrl(withPattern, { objectKey: 'a.pdf', findings: 'f' }, 'c'));
+    const feature = written(buildFeatureRequestUrl(withPattern, 'c'));
+
+    expect([...FORM_FIELDS[BUG_REPORT_TEMPLATE]].sort()).toEqual(expect.arrayContaining(bug));
+    expect([...FORM_FIELDS[FEATURE_REQUEST_TEMPLATE]].sort()).toEqual(expect.arrayContaining(feature));
+    if (pattern === 'Pattern2 - Packet processing') {
+      // Non-vacuity for the containment above: with mode present, the written
+      // set is exactly the listing, so no listed id is unreachable.
+      expect(bug).toEqual([...FORM_FIELDS[BUG_REPORT_TEMPLATE]].sort());
+      expect(feature).toEqual([...FORM_FIELDS[FEATURE_REQUEST_TEMPLATE]].sort());
+    }
   });
 });
 
@@ -317,6 +332,33 @@ describe('the URL stays inside GitHub’s request-line limit', () => {
     const url = new URL(buildBugReportUrl(ctx, { objectKey: 'z'.repeat(9000), findings: 'real findings' }));
     expect((url.searchParams.get('title') ?? '').length).toBeLessThanOrEqual(256);
     expect(url.searchParams.get('version')).toContain('0.6.0.dev25');
+  });
+
+  it('fills the budget rather than merely staying under it', () => {
+    // ⚠️ "Under the limit" is only half the property, and asserting only that
+    // half hid a regression that carried 3,783 characters where 7,364 fit — a
+    // 4,211-byte URL against a 7,800 budget, because a halving cap was applied
+    // to a correct estimate. A truncation that throws away half the findings is
+    // not a passing result, so the floor is asserted too.
+    for (const findings of ['F'.repeat(30000), markdownFindings(400), '- **Step:** `S` timed out\n'.repeat(400)]) {
+      const url = buildBugReportUrl(ctx, { objectKey: 'a.pdf', findings });
+      expect(url.length).toBeLessThanOrEqual(LIMIT);
+      expect(url.length, `only ${url.length} bytes used of a 7800-byte budget`).toBeGreaterThan(7000);
+    }
+  });
+
+  it('shrinks both fields rather than deleting one, when both are large', () => {
+    // The overshoot belongs to the whole URL but is charged to the field being
+    // shrunk, so a second large field used to drive the first one's budget below
+    // zero — and it was then removed outright, with no truncation note and no
+    // other trace. No call site passes two large fields today; the third
+    // parameter exists so one can.
+    for (const n of [6000, 8000, 12000, 20000]) {
+      const url = new URL(buildBugReportUrl(ctx, { objectKey: 'a.pdf', findings: 'F'.repeat(n) }, 'E'.repeat(n)));
+      expect(url.toString().length).toBeLessThanOrEqual(LIMIT);
+      expect(url.searchParams.get('troubleshoot'), `troubleshoot deleted at n=${n}`).not.toBeNull();
+      expect(url.searchParams.get('additional-context'), `additional-context deleted at n=${n}`).not.toBeNull();
+    }
   });
 
   it('keeps every field present for a realistically large report', () => {

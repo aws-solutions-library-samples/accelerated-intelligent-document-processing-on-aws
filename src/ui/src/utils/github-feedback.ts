@@ -182,19 +182,25 @@ const MAX_SHRINK_PASSES = 24;
 const encodedCost = (id: string, value: string): number => new URLSearchParams([[id, value]]).toString().length;
 
 /**
- * Drop a trailing unpaired high surrogate.
+ * Drop a trailing unpaired high surrogate, so a cut emoji does not leave `�`.
  *
- * ⚠️ This is the line that stops a crash. Slicing a UTF-16 string can cut
- * between the two halves of a surrogate pair — every astral emoji is one, 🔍 and
- * 📄 among them, though `⚠️` is *not*, which is why an emoji-bearing test
- * fixture does not necessarily exercise it. A string ending in a lone surrogate
- * makes `encodeURIComponent` **throw `URIError: URI malformed`**. These builders
- * run in component bodies (`TroubleshootModal`, `create-issue-button`,
- * `GenAIIDPTopNavigation`, `feedback-help-section`) and this UI has no error
- * boundary, so a throw there blanks the whole app — far worse than the oversized
- * URL the truncation exists to prevent. Agent findings are LLM-generated
- * Markdown and do contain emoji. Applied to input as well as to our own cuts,
- * since a value arriving already malformed would throw just the same.
+ * Slicing a UTF-16 string can cut between the halves of a surrogate pair — every
+ * astral emoji is one, 🔍 and 📄 among them, though `⚠️` is *not*, so an
+ * emoji-bearing fixture does not necessarily exercise this.
+ *
+ * `URLSearchParams` is specified to substitute U+FFFD for an unpaired surrogate,
+ * and does: `new URLSearchParams([['k', 'abc\uD83D']]).toString()` is
+ * `k=abc%EF%BF%BD`. So this is cosmetic — it keeps a replacement character out
+ * of the text a reporter reads — and the bound is worth stating because the
+ * cosmetic job is only half done: an interior lone high surrogate, a lone *low*
+ * surrogate anywhere, and the second of two consecutive high surrogates all
+ * still render as `�`.
+ *
+ * ⚠️ It is **not** load-bearing for safety, and nothing here is. `encodeURIComponent`
+ * *would* throw `URIError` on a lone surrogate, and these builders run in
+ * component bodies with no error boundary anywhere in this UI, so that would
+ * blank the app — which is why this module assembles every URL through
+ * `URLSearchParams` and calls `encodeURIComponent` nowhere. Keep it that way.
  */
 const stripLoneSurrogate = (value: string): string => (/[\uD800-\uDBFF]$/.test(value) ? value.slice(0, -1) : value);
 
@@ -243,8 +249,15 @@ const MAX_FIELD_UNITS = 20000;
  * feature path); the rest derive from short settings values, so this keeps the
  * small fields intact, which capping a single concatenated body did not.
  *
- * The loop is a guarantee, not an attempt: a pass that fails to make progress
- * halves the field instead, and the result is checked before returning.
+ * The budget is a guarantee rather than an attempt, and it does not rest on the
+ * estimate: a pass whose estimate is unusable halves the field instead, and a
+ * terminating fallback below drops fields until the URL fits.
+ *
+ * ⚠️ Not every pass strictly shrinks its field. `TRUNCATION_NOTE` is appended
+ * unconditionally, so for a value under about 149 units halving and re-noting
+ * makes it *longer*, converging to a fixed point rather than descending. That is
+ * why `MAX_SHRINK_PASSES` and the fallback exist — the floor is around 149 units
+ * per field, and five such fields cannot approach the budget.
  */
 const buildUrl = (template: string, title: string, fields: Record<string, string | undefined>): string => {
   const entries: [string, string][] = Object.entries(fields)
@@ -288,9 +301,24 @@ const buildUrl = (template: string, title: string, fields: Record<string, string
     const over = url.length - MAX_URL_BYTES;
     const bytesPerUnit = value.length > 0 ? targetCost / value.length : 1;
     const estimated = value.length - Math.ceil(over / bytesPerUnit) - TRUNCATION_NOTE.length - 8;
-    // Never below the halfway mark, so a bad estimate costs a pass rather than
-    // the whole field, and never above it, so every pass makes real progress.
-    const keep = Math.min(Math.max(estimated, 0), Math.floor(value.length / 2));
+
+    // ⚠️ The halving is the FALLBACK, not a ceiling on the estimate. Capping the
+    // estimate at half was measured discarding about half the findings that fit:
+    // the estimate subtracts a deliberate safety margin, so the first pass
+    // characteristically lands a few dozen bytes over and the second pass then
+    // halves a field that was already the right size — 3,783 characters carried
+    // where 7,364 fit, in a 4,211-byte URL against a 7,800 budget. Halving when
+    // the estimate is unusable is what guarantees progress; halving when it is
+    // usable just wastes the budget this loop exists to fill.
+    //
+    // The same line covers the case where `over` exceeds the field's own length,
+    // which happens when a SECOND field is also large (the overshoot is the
+    // whole URL's but is charged to one field). Halving instead of cutting to
+    // zero means the field is reduced rather than deleted, and the next pass
+    // picks whichever field is now costliest — so the shrinking spreads across
+    // both instead of destroying one outright with no notice.
+    const usable = estimated > 0 && estimated < value.length - TRUNCATION_NOTE.length;
+    const keep = usable ? estimated : Math.floor(value.length / 2);
     entries[target][1] = shorten(value, keep);
     url = assemble();
 
