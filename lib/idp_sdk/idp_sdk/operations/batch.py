@@ -22,6 +22,7 @@ from idp_sdk.models import (
     BatchProcessResult,
     BatchReprocessResult,
     BatchStatus,
+    DocumentBucket,
     DocumentDeletionResult,
     DocumentsAbortedResult,
     DocumentStatus,
@@ -586,6 +587,15 @@ class BatchOperation:
                         num_pages=doc.get("num_pages"),
                         num_sections=doc.get("num_sections"),
                         error=doc.get("error"),
+                        # The bucket the monitor chose, carried on the document
+                        # rather than left implicit in the aggregate counts. For
+                        # a NOT_FOUND document inside the grace window it is the
+                        # only record that the monitor read it as queued: its
+                        # `status` still says NOT_FOUND, which any consumer
+                        # re-deriving a bucket reads as a failure, so the counts
+                        # here and the counts a consumer computes would disagree
+                        # about the same document.
+                        bucket=DocumentBucket(category),
                     )
                 )
 

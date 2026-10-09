@@ -208,6 +208,12 @@ RUN_ROOTS = [
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
     "src/lambda/save_reporting_data",
+    # DockerBuildRun's ECR image verification: the bounded image-scan wait and the
+    # presence poll. An unbounded wait here fails the stack at CloudFormation's
+    # one-hour custom-resource limit with an error that names the cfn-response
+    # path instead of image scanning (#1336, same terminal state as #1310).
+    # `crhelper` is a Lambda-layer dependency and is stubbed by the suite.
+    "src/lambda/start_codebuild",
     "src/lambda/test_file_copier",
     # The US<->EU model swap table. Its reverse direction decides which model a
     # stack redeployed across regions ends up on, and it silently answered with

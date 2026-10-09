@@ -88,8 +88,19 @@ SUCCESS_DOCUMENT_STATES = frozenset(
     }
 )
 
-#: Terminal and not successful. `NOT_FOUND` is here because a document id with no
-#: row in the tracking table will never acquire one by waiting.
+#: Terminal and not successful.
+#:
+#: `NOT_FOUND` -- no row in the tracking table -- is here because that is what it
+#: means once a document has had time to be picked up: the row is written by
+#: QueueSender, so a document that never got one will never process. It is the
+#: only member whose bucket is not a function of the status alone. For the first
+#: seconds after an upload the row is merely still in flight (S3 reaches
+#: QueueSender through EventBridge asynchronously), and a caller that knows when
+#: the batch was submitted must report the document as queued until then or it
+#: declares a healthy document failed seconds after accepting it. That window is
+#: `idp_sdk._core.progress_monitor.NOT_FOUND_GRACE_SECONDS`, applied there rather
+#: than here because this module has no access to a submission time; a caller
+#: with no submission time to apply it to gets the classification below as-is.
 FAILED_DOCUMENT_STATES = frozenset(
     {
         DocumentState.FAILED,

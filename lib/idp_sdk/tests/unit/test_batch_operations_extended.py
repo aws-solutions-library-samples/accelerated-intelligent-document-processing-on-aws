@@ -67,6 +67,7 @@ from idp_sdk.models import (
     BatchInfo,
     BatchListResult,
     BatchProcessResult,
+    DocumentBucket,
     RerunStep,
 )
 from idp_sdk.operations.batch import _batch_started_at
@@ -1081,6 +1082,76 @@ class TestGetStatus:
     def test_an_unknown_batch_is_a_resource_not_found_error(self, client):
         with pytest.raises(IDPResourceNotFoundError, match="Batch not found"):
             client.batch.get_status("b")
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_each_document_carries_the_bucket_the_monitor_put_it_in(
+        self, monitor_cls, client, s3
+    ):
+        """The monitor's verdict travels on the document, not just in the counts.
+
+        ``DocumentStatus.status`` cannot express the one decision the monitor
+        makes that a consumer cannot reproduce: a ``NOT_FOUND`` document inside
+        the grace window is queued, and the same status past the window is
+        failed. Both arrive with ``status == "NOT_FOUND"``, so a consumer
+        re-deriving the bucket from the status gets "failed" for both, which is
+        the shape that showed a just-submitted batch as 100% complete with one
+        failure. The bucket the monitor chose is recorded here so there is one
+        authority rather than two.
+        """
+        _store_batch(s3, "b", ["b/racing.pdf", "b/done.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [{"document_id": "b/done.pdf", "status": "COMPLETED"}],
+            "running": [],
+            # Inside the grace window, so the monitor reported the missing
+            # tracking row as queued rather than as a failure.
+            "queued": [{"document_id": "b/racing.pdf", "status": "NOT_FOUND"}],
+            "failed": [],
+            "all_complete": False,
+            "total": 2,
+        }
+        monitor.calculate_statistics.return_value = {"total": 2}
+        monitor_cls.return_value = monitor
+
+        status = client.batch.get_status("b")
+
+        buckets = {doc.document_id: doc.bucket for doc in status.documents}
+        assert buckets == {
+            "b/racing.pdf": DocumentBucket.QUEUED,
+            "b/done.pdf": DocumentBucket.COMPLETED,
+        }
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_settled_not_found_carries_the_failed_bucket(
+        self, monitor_cls, client, s3
+    ):
+        """The other direction: past the window the same status is a failure.
+
+        Identical ``status`` to the test above, opposite bucket — which is the
+        whole reason the bucket is carried rather than derived.
+        """
+        _store_batch(s3, "b", ["b/lost.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [],
+            "running": [],
+            "queued": [],
+            "failed": [
+                {
+                    "document_id": "b/lost.pdf",
+                    "status": "NOT_FOUND",
+                    "error": "Document not found in tracking table",
+                }
+            ],
+            "all_complete": True,
+            "total": 1,
+        }
+        monitor.calculate_statistics.return_value = {"total": 1}
+        monitor_cls.return_value = monitor
+
+        status = client.batch.get_status("b")
+
+        assert status.documents[0].bucket is DocumentBucket.FAILED
 
 
 @pytest.mark.unit
