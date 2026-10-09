@@ -3,7 +3,7 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
-## [Unreleased]
+## [0.6.11]
 
 ### Added
 
@@ -54,6 +54,11 @@ SPDX-License-Identifier: MIT-0
 - **Security: advisories affecting shipped code paths are resolved.** The PII Anonymizer extension's hook and the DocSplit test-set deployer now require pypdf 6.19.0 or later, so neither can be built against a release open to its denial-of-service advisories on malformed PDFs — which matters most for the PII hook, since it parses customer documents. The web UI takes DOMPurify 3.4.16, three patch releases of sanitizer hardening (an allow-list bypass, clobbering hardening for XML content, and `IN_PLACE` node-removal fixes) in the library that sanitizes rendered content in the browser. **Action:** none.
 
 - **Security: newly published advisories in sixteen development and build dependencies are resolved.** `lib/idp_common_pkg` now requires datamodel-code-generator 0.81.0 or later, closing a path-traversal advisory in a test-and-codegen dependency that is not part of any Lambda runtime, and the development lock pins urllib3 2.8.0, PyJWT 2.15.0, Tornado 6.5.10, JupyterLab 4.6.4 and Jupyter Notebook 7.6.3. The web UI and documentation-site build trees take patched axios, brace-expansion, undici, devalue, `@fastify/busboy`, `@graphql-tools/utils` (through an npm override, since no `@graphql-codegen` release accepts the fixed line yet), `@graphql-tools/executor-legacy-ws`, `shell-quote`, `vue`, `source-map-js` and `sharp` releases. None of them is in the web UI's production bundle. **Action:** none.
+
+## Templates
+   - us-west-2: `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.11.yaml`
+   - us-east-1: `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main_0.6.11.yaml`
+   - eu-central-1: `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main_0.6.11.yaml`
 
 ## [0.6.10]
 
