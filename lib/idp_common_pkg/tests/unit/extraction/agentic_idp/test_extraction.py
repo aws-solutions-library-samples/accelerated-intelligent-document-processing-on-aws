@@ -15,7 +15,9 @@ from moto import mock_aws
 from PIL import Image
 from pydantic import BaseModel, Field, field_validator
 
+from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.models import Document, Page, Section
+from idp_common.ocr.service import DEFAULT_DPI, OcrService
 
 # Check if strands is actually available (not mocked)
 try:
@@ -173,30 +175,25 @@ def test_payslip(execution_number, s3_bucket):
     # image is the ONLY content there is. With an empty prompt the model
     # answered, correctly, that the document text appeared to be missing.
     #
-    # The default is read from the shipped `base-extraction.yaml`, which is what
-    # a real deployment resolves to, and asserted non-empty so this cannot rot
-    # silently again -- the same way the `pattern-2` path above rotted.
-    system_defaults = (
-        Path(__file__).parent.parent.parent.parent.parent
-        / "idp_common"
-        / "config"
-        / "system_defaults"
-        / "base-extraction.yaml"
-    )
-    with open(system_defaults, "r") as f:
-        default_extraction = yaml.safe_load(f).get("extraction") or {}
+    # The defaults are resolved through `merge_config_with_defaults`, the same
+    # function `update_configuration` and the SDK's stack deployer call, rather
+    # than by reading `base-extraction.yaml` directly. Reading the one file would
+    # get the same answer today and would be its own rot vector: it bypasses the
+    # inheritance resolution, so an override added to `pattern-2.yaml` or
+    # `base.yaml` would change what a deployment resolves while this test kept
+    # reading the base module and passing.
+    merged = merge_config_with_defaults(config_data, "pattern-2")
+    merged_extraction = merged.get("extraction") or {}
 
-    task_prompt = config_data.get("extraction", {}).get(
-        "task_prompt"
-    ) or default_extraction.get("task_prompt", "")
+    task_prompt = merged_extraction.get("task_prompt") or ""
     assert task_prompt, (
-        f"no extraction task_prompt in either {config_path.name} or "
-        f"{system_defaults.name}; the agent would be asked to extract from nothing"
+        "no extraction task_prompt after merging the system defaults; the agent "
+        "would be asked to extract from nothing"
     )
     assert "{DOCUMENT_IMAGE}" in task_prompt, (
         "the task prompt has no {DOCUMENT_IMAGE} placeholder, so the page image "
         "is not attached -- and this sample PDF has no text layer, so the image "
-        "is the only content the agent can read"
+        "would be the only content the agent could read"
     )
 
     CONFIG = {
@@ -224,30 +221,51 @@ def test_payslip(execution_number, s3_bucket):
 
         pdf_doc = pdfium.PdfDocument(sample_pdf)
         first_page = pdf_doc[0]
-        pil_img = first_page.render().to_pil()
+        # ⚠️ Rendered at the pipeline's DPI, not pdfium's default scale of 1,
+        # which is 72 dpi. `ocr/service.py` says of its own DEFAULT_DPI that
+        # Textract's detection of small or faint glyphs "degrades sharply below
+        # ~200 dpi: at 150 dpi it silently drops them from its response
+        # entirely, with no signal to the caller" (issue #729) -- and this test
+        # asserts exact cents. Measured on this page: 300 dpi recovers a footer
+        # line that 72 dpi drops entirely, and 72 dpi invents a block 300 dpi
+        # does not. Rendered ONCE and reused for both the OCR input and the
+        # agent's image, so the two cannot drift apart.
+        pil_img = first_page.render(scale=DEFAULT_DPI / 72).to_pil()
+        pdf_doc.close()
+
+        img_path = Path(temp_dir) / "page_1.png"
+        pil_img.save(str(img_path))
 
         # Real OCR, because this sample has no text layer to read instead:
         # `pdfium`'s text page returns zero characters for it. This used to be
         # `ocr_text = ""`, which left the page image as the agent's only source
         # and had it reading cents off a scan -- it returned $291.6 for a
-        # $291.90 field, and no OCR text existed to cross-check against. The
-        # pipeline always has Textract output here, so the test now has it too.
-        png_path = Path(temp_dir) / "ocr_input.png"
-        pil_img.save(str(png_path))
-        textract = boto3.client(
-            "textract", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        # $291.90 field, with no OCR text to cross-check against.
+        #
+        # ⚠️ The API and the linearizer are the pipeline's, not a convenient
+        # approximation of them. `detect_document_text` plus a join of LINE
+        # blocks is what `_parse_textract_response` falls back to only when
+        # textractor FAILS; the shipped default is `features: [TABLES, LAYOUT,
+        # SIGNATURES]` through `analyze_document` and `to_markdown()`. The
+        # difference is not cosmetic here: this payslip is two-column, so a LINE
+        # join interleaves the columns, and it contains no `|` at all -- which
+        # means `extraction.agentic.table_parsing` (on by default whenever
+        # agentic is) would have nothing to parse and the deterministic table
+        # path would go unexercised by the one test that reaches it.
+        ocr_service = OcrService(
+            region=os.environ["AWS_REGION"],
+            config={"ocr": merged.get("ocr") or {}},
         )
-        response = textract.detect_document_text(
-            Document={"Bytes": png_path.read_bytes()}
-        )
-        ocr_text = "\n".join(
-            block["Text"]
-            for block in response.get("Blocks", [])
-            if block.get("BlockType") == "LINE"
-        )
+        textract_response = ocr_service._analyze_document(img_path.read_bytes(), 1)
+        ocr_text = ocr_service._parse_textract_response(textract_response, 1)["text"]
         assert ocr_text.strip(), (
-            "Textract returned no LINE blocks for the payslip page; the agent "
-            "would be left reading the image alone, which the pipeline never does"
+            "Textract returned no text for the payslip page; the agent would be "
+            "left reading the image alone, which the pipeline never does"
+        )
+        assert "|" in ocr_text, (
+            "the OCR text has no table markup, so the deterministic table parser "
+            "cannot run -- check that ocr.features still resolves to include "
+            f"TABLES and LAYOUT (got {(merged.get('ocr') or {}).get('features')!r})"
         )
 
         ocr_text_path = Path(temp_dir) / "ocr_text.txt"
@@ -255,11 +273,6 @@ def test_payslip(execution_number, s3_bucket):
             f.write(ocr_text)
 
         s3_client.upload_file(str(ocr_text_path), bucket_name, "ocr_text.txt")
-
-        pil_img = first_page.render().to_pil()
-        img_path = Path(temp_dir) / "page_1.png"
-        pil_img.save(str(img_path))
-        pdf_doc.close()
 
         s3_client.upload_file(str(temp_pdf), bucket_name, "lending_package.pdf")
         s3_client.upload_file(str(img_path), bucket_name, "page_1.png")
@@ -427,9 +440,12 @@ def test_payslip(execution_number, s3_bucket):
         print("\n" + "-" * 80)
         print("Verified Values:")
         print("-" * 80)
-        print(f"  CurrentGrossPay: ${current_gross:.2f} (expected ~$492.43)")
-        print(f"  CurrentNetPay: ${current_net:.2f} (expected ~$291.80)")
-        print(f"  YTDGrossPay: ${ytd_gross:,.2f} (expected ~$25,508.90)")
+        # The expected figures here must match the assertions above. All three
+        # disagreed with them ($492.43 / $291.80 / $25,508.90), and this block is
+        # the first thing anyone debugging a failure reads.
+        print(f"  CurrentGrossPay: ${current_gross:.2f} (expected $452.43)")
+        print(f"  CurrentNetPay: ${current_net:.2f} (expected $291.90)")
+        print(f"  YTDGrossPay: ${ytd_gross:,.2f} (expected $23,526.80)")
         print(
             f"  EmployeeName: {employee_name.get('FirstName')} {employee_name.get('LastName')}"
         )
