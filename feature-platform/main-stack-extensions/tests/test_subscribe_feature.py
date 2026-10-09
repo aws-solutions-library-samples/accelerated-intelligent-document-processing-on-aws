@@ -445,12 +445,13 @@ def test_a_feature_in_neither_the_catalog_nor_the_install_rows_is_not_found(
 def test_the_not_found_path_reads_each_source_once(
     monkeypatch, mock_stack, load_lambda
 ):
-    """Each source is read once and the result reused, not re-read to decide 404.
+    """Deciding 404 costs no extra read: one GetObject and one GetItem, total.
 
-    `_feature_is_absent` used to re-read both sources, costing a second
-    GetObject and a second GetItem on the error path — and, more than the cost,
-    allowing the two reads to disagree: a feature installed between them is
-    absent to one and present to the other, so the status depended on timing.
+    The invariant is that `_feature_is_absent` consumes what the handler already
+    read rather than reading again. A second pair of reads would be wasted work
+    on an error path, and would let the two disagree — a feature installed
+    between them is present to one and absent to the other, which would make the
+    status depend on timing.
     """
     bucket = mock_stack["bucket"]
     _put_catalog(bucket, [])

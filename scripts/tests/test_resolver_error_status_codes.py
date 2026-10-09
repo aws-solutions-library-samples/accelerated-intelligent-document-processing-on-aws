@@ -74,12 +74,11 @@ def _lambda_sources():
     contribute a stale copy of one.
 
     Two roots, because "reached through the dispatcher" is not a single
-    directory. ``FIELD_FUNCTION_MAP`` (``nested/api-resolvers/template.yaml``)
+    directory: ``FIELD_FUNCTION_MAP`` (``nested/api-resolvers/template.yaml``)
     routes ``getFeatureLaunchUrl``, ``subscribeFeature`` and
-    ``unsubscribeFeature`` to Lambdas that live under ``feature-platform/``, so
-    a glob over ``nested/`` alone would leave the feature-platform resolvers —
-    the ones #1304 fixed three of — outside the guard that exists to stop their
-    regression.
+    ``unsubscribeFeature`` to Lambdas under ``feature-platform/``. A glob over
+    ``nested/`` alone would therefore read 38 of the 41 handlers while reporting
+    on all of them, and the three it missed are three of the four #1304 fixes.
     """
     out = subprocess.run(
         [
@@ -154,14 +153,17 @@ def test_no_resolver_reports_a_missing_resource_as_a_bare_exception():
 
 @pytest.mark.unit
 def test_discovery_covers_the_feature_platform_resolvers():
-    """The scan must reach every root the dispatcher routes into, not just one.
+    """Discovery reaches every root the dispatcher routes into, not just one.
 
-    This is the guard for the guard. ``_lambda_sources`` globbed
-    ``nested/api-resolvers/src/lambda/`` alone, while ``FIELD_FUNCTION_MAP`` also
-    routes three fields to Lambdas under ``feature-platform/`` — so the scan
-    silently skipped the three resolvers #1304 fixed, and would have reported a
-    clean tree however they were written. A root dropped from the glob fails here
-    instead of quietly narrowing the gate.
+    This is the guard for the guard, and it exists because the failure it
+    prevents is silent in the worst way: a glob that misses a root still returns
+    a non-empty list, the scan above still passes, and the gate reports a clean
+    tree for files it never opened. Nothing about a narrowed glob looks wrong.
+
+    So the roots are asserted by name. ``feature-platform/`` is the one that is
+    easy to drop, since the other 38 handlers live together under
+    ``nested/api-resolvers/`` and these three are reached only through
+    ``FIELD_FUNCTION_MAP``.
     """
     discovered = {p.relative_to(REPO_ROOT).as_posix() for p in _lambda_sources()}
     routed_elsewhere = {
@@ -263,6 +265,31 @@ def test_the_dispatcher_maps_a_resolver_reported_not_found_to_404():
     )
     _assert_not_found_arm_precedes_catch_all(DISPATCHER)
     assert f'"errorType": "{RESOURCE_NOT_FOUND_ERROR_TYPE}"' in source
+
+
+@pytest.mark.unit
+def test_every_resolver_that_catches_not_found_catches_it_before_its_catch_all():
+    """A resolver's own ``except`` order decides whether its 404 survives.
+
+    The two checks above pin the dispatcher and the in-process adapter by name.
+    Any resolver may also catch ``ResourceNotFound`` — to log it at warning rather
+    than let a catch-all log it as an error — and gets the ordering requirement
+    with it: an arm placed after ``except Exception`` never runs, so the catch-all
+    re-raises and the status is right while the log line says ERROR, or, if the
+    catch-all does not re-raise, the caller gets a 500 after all.
+
+    Applied to whatever the discovery finds, so a resolver that grows such an arm
+    is covered without being named here. Selection is by AST and not by substring:
+    most resolvers mention ``ResourceNotFound`` only to *raise* it, and
+    ``get_feature_launch_url`` is one of them.
+    """
+    for path in _lambda_sources():
+        catches = any(
+            isinstance(node, ast.Try) and "ResourceNotFound" in _handler_names(node)
+            for node in ast.walk(ast.parse(path.read_text()))
+        )
+        if catches:
+            _assert_not_found_arm_precedes_catch_all(path)
 
 
 @pytest.mark.unit

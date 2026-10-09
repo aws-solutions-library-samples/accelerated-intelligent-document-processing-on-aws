@@ -627,15 +627,19 @@ def inconclusive(status, et=None, body=None):
     return None
 
 
-# A 5xx is inconclusive, and today it is also COMMON: roughly 50 resolver-level
-# validation refusals raise a bare `Exception`, which the dispatcher can only map to
-# 500 `InternalError`, and the deliberately-bogus arguments this harness sends to
-# prove "auth ran before the argument was used" land on many of them. Those cells
-# are registered against this gap so they surface as WARN — visible, counted
-# separately, never a pass — rather than red-lining the gate for a backlog this
-# change does not fix. Everything else inconclusive (a timeout, a dead connection,
-# an unreadable body) is a HARD failure, because none of those is a known condition
-# of this deployment.
+# A 5xx is inconclusive, and a resolver-level refusal can still produce one: a
+# refusal raised as a bare `Exception` is all the dispatcher can map to 500
+# `InternalError`, and the deliberately-bogus arguments this harness sends to prove
+# "auth ran before the argument was used" land on such sites. The not-found refusals
+# that used to produce most of them now answer 404 (`errorType:
+# "ResourceNotFound"`); what remains at 500 is enumerated in
+# `GAP-SEC-INCONCLUSIVE-5XX` in scripts/api_rbac_expectations.yaml, which is the one
+# place that stays current — a count quoted here would not, and four copies of one
+# did not. Those cells are registered against this gap so they surface as WARN —
+# visible, counted separately, never a pass — rather than red-lining the gate for a
+# backlog this change does not fix. Everything else inconclusive (a timeout, a dead
+# connection, an unreadable body) is a HARD failure, because none of those is a
+# known condition of this deployment.
 GAP_INCONCLUSIVE_5XX = "GAP-SEC-INCONCLUSIVE-5XX"
 
 

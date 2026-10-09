@@ -1343,9 +1343,24 @@ known_gaps:
       the condition it describes is a standing one, not a count — a bare
       `Exception` anywhere in a resolver still reaches the caller as a 5xx, and
       `scripts/tests/test_resolver_error_status_codes.py` is the offline guard
-      that keeps new ones from being added. Residual sites deliberately left at 500 are internal
-      failures rather than caller-input refusals (a downstream invoke that
-      failed, an unroutable field, a misconfigured env var).
+      that keeps new ones from being added. Most residual sites left at 500 are
+      internal failures rather than caller-input refusals (a downstream invoke
+      that failed, an unroutable field, a misconfigured env var) — but SIX are
+      not, and the exception is named here rather than left as a set-wide claim
+      that is false for specific members:
+        - agent_request_handler/index.py:78,83,88 — missing query, query over
+          100,000 characters, no agent ids
+        - agent_chat_resolver/index.py:128,133,139 — missing prompt, missing
+          sessionId, prompt over 100,000 characters
+      Both files are dispatcher-routed (`submitAgentQuery` and
+      `sendAgentChatMessage` in FIELD_FUNCTION_MAP), each site is
+      `raise Exception(error_msg)`, and each is a malformed *argument*, so the
+      right answer is 400 `ValueError` and NOT the 404 `ResourceNotFound` that
+      issue #1304 is about. They are deliberately out of scope for it: a 400 is a
+      different convention from a 404, converting them changes the status six
+      caller-visible operations return, and that belongs in its own change with
+      its own CHANGELOG entry. The offline guard does not catch them either — it
+      matches not-found wording, and none of these is a not-found.
       While it stands, such cells are WARN: visible, counted separately, and
       never counted as passes. Everything else inconclusive — a timeout, a dead
       connection, an unreadable body — is a HARD failure, because none of those

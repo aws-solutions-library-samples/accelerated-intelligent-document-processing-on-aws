@@ -457,9 +457,12 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         # this operation") and the live RBAC harness keys its feature-disabled
         # probe on the difference.
         #
-        # Logged at warning, not error: this is an ordinary outcome, and it was
-        # the 500 arm below that made every deliberate not-found a 5xx in the
-        # CloudWatch error-rate alarm.
+        # Logged at warning, not error: this is an ordinary outcome. Without this
+        # arm a resolver that refused because the named object does not exist
+        # answered 500, which counted against the API's 5xx signals. Not *every*
+        # deliberate not-found did: the unroutable-operation branch above already
+        # answered 404, and the IAM-gated direct path in `api_adapter.py`
+        # propagates the exception rather than mapping it to a status at all.
         logger.warning("Not found for %s: %s", field, e)
         return _http_response(
             404,

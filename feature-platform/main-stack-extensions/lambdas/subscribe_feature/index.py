@@ -192,11 +192,11 @@ def _feature_is_absent(
     one — "no such feature" sends the admin to the catalog when the fault is the
     bucket policy.
 
-    Takes the ``(entry, read_ok)`` pairs the caller has already fetched rather
-    than re-reading both sources. Re-reading cost a second GetObject and a second
-    GetItem on the error path, and — worse than the cost — let the two reads
-    disagree: a feature installed concurrently between them would be absent to
-    one and present to the other, so which answer won depended on timing.
+    Takes the ``(entry, read_ok)`` pairs the caller has already fetched, so the
+    not-found path makes no second GetObject and no second GetItem. Reading the
+    sources here instead would also admit a disagreement the caller cannot see: a
+    feature installed between the handler's read and this one is present to one
+    and absent to the other, which would make the status depend on timing.
     """
     catalog_entry, catalog_ok = catalog
     row, row_ok = installed
@@ -303,12 +303,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # is the one that matters here: Subscribe runs before install, so the install
     # row does not exist yet on this path.
     #
-    # Each source is read ONCE here and the `(entry, read_ok)` pairs are passed to
-    # _feature_is_absent below, rather than letting it re-read them. The catalog
-    # pair starts as "not read" so that if the install row alone settles the
-    # identity — in which case the catalog is never fetched and _feature_is_absent
-    # is never reached — a future reordering that did reach it would see
-    # `read_ok=False` and keep the 500, which is the safe direction.
+    # Each source is read ONCE here and the `(entry, read_ok)` pairs are handed to
+    # _feature_is_absent below, which decides 404-vs-500 from them rather than
+    # reading anything itself. The catalog pair starts as "not read" so that if the
+    # install row alone settles the identity — in which case the catalog is never
+    # fetched and _feature_is_absent is never reached — a future reordering that
+    # did reach it sees `read_ok=False` and keeps the 500, which is the safe
+    # direction: an unread source must never license "no such feature".
     installed_row, installed_ok = _installed_row(feature_id)
     _row = installed_row or {}
     product_code = _row.get("productCode")

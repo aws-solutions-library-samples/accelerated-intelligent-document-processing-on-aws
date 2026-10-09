@@ -281,6 +281,14 @@ def handler(event, context):
             "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
 
+    except ResourceNotFound as e:
+        # WARNING, not ERROR: a caller naming a test set, run or profile that does
+        # not exist is an ordinary outcome, and the same choice `api_adapter` makes
+        # for this class. Letting it fall into the catch-all below would put every
+        # 404 into the error channel — the noise-in-the-wrong-channel problem one
+        # level down from the 500-for-a-not-found this convention exists to fix.
+        logger.warning(f"Not found in test runner: {str(e)}")
+        raise
     except Exception as e:
         logger.error(f"Error in test runner: {str(e)}")
         raise
