@@ -53,42 +53,45 @@ class BuildspecValidator:
     # same defect and is the most natural way to write this loop, so `|` has to be
     # here, as do the subshell and group openers.
     #
-    # A `for` in a comment does not match, because `#` displaces the `^` anchor.
-    # A `for` opening a line INSIDE a double-quoted string does match, and that is
-    # a deliberate false positive rather than a claim about strings: telling a
-    # quoted continuation line from a statement needs a shell parser.
+    # ⚠️ What this does NOT exclude: a `for`/`while`/`until` inside a COMMENT is
+    # matched whenever one of `( ; | { &` or a `then`/`do` precedes it on the line,
+    # because those alternatives are not anchored to statement start. So
+    # `# copy the shared library (for every function)` is reported, with a remedy
+    # naming a loop that does not exist. Only the `^` branch is displaced by `#`.
+    # The same goes for a line opening with `for` inside a quoted string. Both are
+    # loud rather than silent, which is the safe direction for a blocking gate,
+    # and separating them from real statements needs a shell parser.
     _LOOP = re.compile(
         r"(?:^|[;&|({]|\bthen\b|\bdo\b)[ \t]*(for|while|until)\s", re.MULTILINE
     )
-    # `set -e` in any option word of the command, so `set -o pipefail -e` counts,
-    # as do `set -e`, `set -eu`, `set -euo pipefail` and `set -o errexit`. A bare
-    # `-o pipefail` changes how a pipeline's status is computed and does NOT make
-    # the shell exit, so it must not satisfy this. `[^#\n]*?` rather than
-    # `[^\n]*?`, so a `-e` that only appears in a trailing comment --
-    # `set -x  # remember -e someday` -- does not count as enabling it.
-    _ERREXIT = re.compile(
-        r"^[ \t]*set\s+(?:[^#\n]*?(?:(?<![-\w])-[a-zA-Z]*e[a-zA-Z]*(?![\w])|-o\s+errexit\b))",
-        re.MULTILINE,
-    )
-    # `set +e` turns errexit back off. A check that only asked whether a `set -e`
-    # precedes the loop would pass a block that re-disabled it in between, which is
-    # the realistic way this protection gets removed later.
-    _NO_ERREXIT = re.compile(
-        r"^[ \t]*set\s+(?:[^#\n]*?(?:(?<![-\w])\+[a-zA-Z]*e[a-zA-Z]*(?![\w])|\+o\s+errexit\b))",
-        re.MULTILINE,
-    )
+    # An option word that turns errexit on or off. `set -e`, `set -eu`,
+    # `set -euo pipefail`, `set -o pipefail -e` and `set -o errexit` all enable it;
+    # `set +e` and `set +o errexit` disable it. A bare `-o pipefail` changes how a
+    # pipeline's STATUS is computed and does not make the shell exit, so it must
+    # not count.
+    _SET_E_WORD = re.compile(r"^-[a-zA-Z]*e[a-zA-Z]*$")
+    _SET_PLUS_E_WORD = re.compile(r"^\+[a-zA-Z]*e[a-zA-Z]*$")
     # A heredoc body is another language's source as often as it is shell -- an
     # embedded Python `for i in range(3):` is not a shell loop and `set -e` is not
     # a remedy for it -- so bodies are blanked before scanning. The delimiter may
     # be quoted (`<<'EOF'`) and may be indented (`<<-`).
     #
-    # ⚠️ `(?!<)` and the trailing `(?=[\s;)&|]|$)` are both load-bearing, and the
-    # reason is that a FALSE heredoc match blanks every line after it, which turns
-    # this whole check off for the rest of the command. `$(( a << b ))` must not
-    # read as a heredoc -- arithmetic shift is the realistic case here, since
-    # `sleep $((1 << attempt))` is the natural next edit to the retry ladder in
-    # `buildspec.yml`, and landing it above the image loop would silence the gate
-    # that protects that loop. `<<<` is a herestring and has no body at all.
+    # ⚠️ What actually protects `$(( a << b ))` and `read x <<<hello` is the
+    # unterminated-heredoc RESTORE in `_strip_heredocs`, not the lookarounds here.
+    # Do not delete that restore as redundant. Measured: this pattern still
+    # matches `sleep $((1 << attempt))` with delimiter `attempt`, because the
+    # space satisfies `[ \t]*` and the trailing lookahead; and `(?!<)` fails only
+    # at the FIRST `<` of `<<<`, after which the engine re-anchors at the second
+    # and matches. Those cases come out right because the phantom delimiter never
+    # appears on a line of its own, so the restore puts the lines back.
+    #
+    # The lookarounds still earn their place by narrowing the window in which a
+    # phantom delimiter can be mistaken for a real one, and the restore is what
+    # makes the residual loud instead of silent: a FALSE heredoc match would
+    # otherwise blank every following line, turning the check off for the rest of
+    # the command. That matters here because `sleep $((1 << attempt))` is the
+    # natural next edit to `buildspec.yml`'s retry ladder, and it sits above the
+    # image loop this gate exists to protect.
     _HEREDOC_START = re.compile(
         r"<<-?(?!<)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1(?=[\s;)&|]|$)"
     )
@@ -186,6 +189,52 @@ class BuildspecValidator:
             )
 
     @classmethod
+    def _errexit_switches(cls, cmd: str) -> List[tuple]:
+        """Every `set` that turns errexit on or off, as `(offset, enabled)`.
+
+        ⚠️ Read as WORDS of a `set` command rather than as a regex over the line,
+        because a regex that skips arbitrary text to reach a `-e`-shaped token
+        misreads in both directions, and one of them is silent. Measured on the
+        previous form: `set -x; echo "-e"` and `set -x && grep -e foo bar` both
+        registered errexit as *enabled*, so an unguarded loop after either passed
+        the gate clean; and `cd /tmp && set -e` was invisible, so the gate
+        demanded a `set -e` that was already there.
+
+        Each `;`/`&&`/`||`-separated segment is examined, so a `set` that is not
+        the first word on its line is still found, and only option words count.
+        """
+        switches: List[tuple] = []
+        for line_start, line in cls._iter_lines_with_offsets(cmd):
+            code = line.split("#", 1)[0]
+            offset = 0
+            for segment in re.split(r"(;|&&|\|\||&)", code):
+                if segment in (";", "&&", "||", "&"):
+                    offset += len(segment)
+                    continue
+                words = segment.split()
+                if words and words[0] == "set":
+                    enabled = None
+                    for index, word in enumerate(words[1:], start=1):
+                        if cls._SET_E_WORD.match(word):
+                            enabled = True
+                        elif cls._SET_PLUS_E_WORD.match(word):
+                            enabled = False
+                        elif word in ("-o", "+o") and index + 1 < len(words):
+                            if words[index + 1] == "errexit":
+                                enabled = word == "-o"
+                    if enabled is not None:
+                        switches.append((line_start + offset, enabled))
+                offset += len(segment)
+        return switches
+
+    @staticmethod
+    def _iter_lines_with_offsets(cmd: str):
+        offset = 0
+        for line in cmd.split("\n"):
+            yield offset, line
+            offset += len(line) + 1
+
+    @classmethod
     def _strip_heredocs(cls, cmd: str) -> str:
         """Blank out heredoc bodies, keeping line numbering intact.
 
@@ -269,25 +318,18 @@ class BuildspecValidator:
         this gate exists to protect, and a `set +e` inserted in between passed
         green. Measured on the shipped file before this changed.
         """
+        switches = self._errexit_switches(cmd)
         for loop in self._LOOP.finditer(cmd):
-            # The LAST `set` before THIS loop is the one in force, so take the
-            # latest enabling and the latest disabling and compare them. Checking
-            # only the first `set -e` would pass `set -e` ... `set +e` ... loop,
-            # where errexit is demonstrably off for the loop.
-            def last_before(pattern: "re.Pattern[str]", limit: int = loop.start()) -> int:
-                return max(
-                    (m.start() for m in pattern.finditer(cmd) if m.start() < limit),
-                    default=-1,
-                )
-
-            enabled_at = last_before(self._ERREXIT)
-            disabled_at = last_before(self._NO_ERREXIT)
-            if enabled_at > disabled_at:
+            # The LAST `set` before THIS loop is the one in force. Checking only
+            # the first `set -e` would pass `set -e` ... `set +e` ... loop, where
+            # errexit is demonstrably off for the loop.
+            in_force = [enabled for offset, enabled in switches if offset < loop.start()]
+            if in_force and in_force[-1]:
                 continue
 
             why = (
                 "re-disables errexit with 'set +e' before"
-                if disabled_at > enabled_at >= 0
+                if in_force
                 else "does not enable errexit before"
             )
             line = cmd.count("\n", 0, loop.start()) + 1

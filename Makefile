@@ -343,12 +343,17 @@ check-retired-services: ## Fail if documentation presents a retired service (App
 # widening discovery is not the diagnosis for #1310 -- the absence of a rule was.
 # What it buys is that the next buildspec is covered without being listed.
 #
-# Discovery is by FILENAME, not by content: `check-arn-partitions` and `cfn-lint`
-# share a content-based discovery (anything declaring `AWSTemplateFormatVersion`)
-# and there is no equivalent marker in a buildspec, so a CodeBuild `BuildSpec`
-# pointed at some other filename would not be read. What is shared with those two
-# is the empty-set contract below: a discovery that stops working is a red gate
-# rather than a green one.
+# ⚠️ Discovery is by FILENAME, where `check-arn-partitions` and `cfn-lint` share a
+# CONTENT-based discovery (anything declaring `AWSTemplateFormatVersion`). A
+# buildspec does have an equivalent marker -- a top-level `version: 0.1|0.2` plus
+# `phases:`, the pair `validate_buildspec.py` itself requires -- so this is a
+# weaker rule than those two by choice of expedience, not for want of a marker. A
+# `ui-buildspec.yml`, or a `BuildSpec` property pointed at some other filename,
+# would not be read. `test_every_tracked_buildspec_is_handed_to_the_gate` derives
+# the universe by content and fails if the two definitions ever disagree, so the
+# gap is measured rather than assumed. What IS shared with those two gates is the
+# empty-set contract below: a discovery that stops working is a red gate rather
+# than a green one.
 BUILDSPEC_FILES = $(shell git ls-files | grep -E '(^|/)buildspec[^/]*\.ya?ml$$')
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, discovered)

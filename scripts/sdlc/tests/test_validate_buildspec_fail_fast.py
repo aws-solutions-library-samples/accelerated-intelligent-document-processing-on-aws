@@ -38,9 +38,28 @@ from test_config_schema_order import _CfnSafeLoader
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VALIDATOR = REPO_ROOT / "scripts" / "sdlc" / "validate_buildspec.py"
 
-# The name shape the Makefile's discovery matches, kept here independently so a
-# change to one side has to be made on the other deliberately.
+# ⚠️ The universe is derived by CONTENT, not by the Makefile's filename regex.
+# Restating that regex here made `test_every_tracked_buildspec_is_handed_to_the_gate`
+# compare the rule against itself, so it stayed green on exactly the gap it
+# exists to catch -- a `ui-buildspec.yml` satisfies neither side and would be
+# reported by neither. A top-level `version: 0.1|0.2` plus `phases:` is the pair
+# `validate_buildspec.py` itself requires, so it is the honest definition of
+# "a buildspec", and it is what `cfn-lint`'s content discovery does for templates.
 BUILDSPEC_NAME = re.compile(r"(?:^|/)buildspec[^/]*\.ya?ml$")
+
+
+def _looks_like_a_buildspec(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not re.search(r"^version:\s*0\.[12]\s*$", text, re.MULTILINE):
+        return False
+    if not re.search(r"^phases:\s*$", text, re.MULTILINE):
+        return False
+    # A CloudFormation template can embed a buildspec as a string property; this
+    # validator is given files, so only a file that IS one counts.
+    return "AWSTemplateFormatVersion" not in text
 
 
 def _run(tmp_path: Path, buildspec: dict) -> subprocess.CompletedProcess:
@@ -164,6 +183,32 @@ RULE_CASES = [
     (
         "an unterminated heredoc restores its lines",
         "cat <<EOF\nhello\nfor f in a; do\n b\ndone\n",
+        True,
+    ),
+    # ⚠️ The SILENT direction, and the reason errexit is read as `set`'s option
+    # words rather than by a regex over the line: a pattern that skips arbitrary
+    # text to reach a `-e`-shaped token takes both of these for `set -e`, so an
+    # unguarded loop after either passed the gate clean.
+    (
+        "a quoted -e is not an option",
+        'set -x; echo "-e"\nfor f in a; do\n b\ndone\n',
+        True,
+    ),
+    (
+        "grep -e is not set -e",
+        "set -x && grep -e foo bar\nfor f in a; do\n b\ndone\n",
+        True,
+    ),
+    # The mirror-image LOUD direction: a `set -e` that is not the first word on
+    # its line was invisible, so the gate demanded one that was already there.
+    (
+        "set -e after a cd on one line",
+        "cd /tmp && set -e\nfor f in a; do\n b\ndone\n",
+        False,
+    ),
+    (
+        "a commented-out set -e does not count",
+        "# set -e\nfor f in a; do\n b\ndone\n",
         True,
     ),
     # A `-e` that only appears in a trailing comment never executed.
@@ -309,7 +354,18 @@ def _run_block(
         source,
         count=1,
     )
-    source = source.replace("sleep $((attempt * 15))", "sleep 0")
+    # ⚠️ Asserted, not assumed. This is a literal match on an expression the
+    # validator's own comment names as the likely next edit to the ladder
+    # (`sleep $((1 << attempt))`). A silent no-op here would leave the probes
+    # performing the real 15s + 30s sleeps -- a slow gate rather than a failing
+    # one, which is the harder symptom to diagnose.
+    zeroed = source.replace("sleep $((attempt * 15))", "sleep 0")
+    if "build_with_retry" in source:
+        # Only the ladder sleeps; PRE_FIX_BLOCK has no retry at all.
+        assert zeroed != source, (
+            "the backoff sleep expression changed; update this substitution"
+        )
+    source = zeroed
 
     env = {
         **os.environ,
@@ -489,20 +545,28 @@ def test_the_image_loop_itself_is_still_inside_the_gates_reach(buildspec: str):
 
 
 @pytest.mark.parametrize("buildspec", BUILDSPECS_WITH_LOOPS)
-def test_the_retry_is_bounded_by_a_deadline_not_only_an_attempt_count(buildspec: str):
-    """An attempt count alone does not bound wall clock against the consumer.
-
-    `DockerBuildRun` is a `Custom::CodeBuildRun`, so CloudFormation's 60-minute
-    custom-resource timeout is the real budget. A build that eventually succeeds
-    after burning through it produces the message #1310 is about, now in the
-    recovering case — so the retry has to look at elapsed time, and the
-    CodeBuild project's own timeout has to fall inside that budget rather than
-    beyond it.
-    """
+def test_every_retry_ladder_is_bounded_by_a_deadline(buildspec: str):
+    """Per buildspec: the ladder looks at elapsed time, not only attempt count."""
     block = _build_block(buildspec)
     assert "RETRY_DEADLINE_SECONDS" in block
     assert '[ "$SECONDS" -ge "$RETRY_DEADLINE_SECONDS" ]' in block
 
+
+def test_the_retry_deadline_fits_inside_the_stacks_own_budget():
+    """The deadline has to sit inside the timeouts above it.
+
+    `DockerBuildRun` is a `Custom::CodeBuildRun`, so CloudFormation's 60-minute
+    custom-resource timeout is the real budget. A build that eventually succeeds
+    after burning through it produces the message #1310 is about, now in the
+    recovering case — so the CodeBuild project's own timeout has to fall inside
+    that budget rather than beyond it, and the ladder's deadline inside that.
+
+    Deliberately NOT parametrised over the three buildspecs, unlike the test
+    above. `DockerBuildProject` runs `buildspec.yml`; the other two files say in
+    their own first lines that no stack references them, so tying their deadline
+    to this project's timeout would assert a relationship that does not exist.
+    """
+    block = _build_block("patterns/unified/buildspec.yml")
     with (REPO_ROOT / "patterns/unified/template.yaml").open() as handle:
         template = yaml.load(handle, Loader=_CfnSafeLoader)  # noqa: S506
     timeout = template["Resources"]["DockerBuildProject"]["Properties"][
@@ -522,7 +586,7 @@ def test_the_retry_is_bounded_by_a_deadline_not_only_an_attempt_count(buildspec:
     )
 
 
-def _discovered_buildspecs() -> list[str]:
+def _tracked_yaml() -> list[str]:
     out = subprocess.run(
         ["git", "ls-files"],
         cwd=REPO_ROOT,
@@ -530,12 +594,21 @@ def _discovered_buildspecs() -> list[str]:
         text=True,
         check=True,
     ).stdout.splitlines()
-    return sorted(p for p in out if BUILDSPEC_NAME.search(p))
+    return [p for p in out if p.endswith((".yml", ".yaml"))]
+
+
+def _discovered_buildspecs() -> list[str]:
+    """Every tracked file that IS a buildspec, by content."""
+    return sorted(p for p in _tracked_yaml() if _looks_like_a_buildspec(REPO_ROOT / p))
 
 
 def test_every_tracked_buildspec_is_handed_to_the_gate():
-    """Universe closure: the Makefile's discovery must reach every buildspec file
-    in the tree. `patterns/*/buildspec.yml` matched one of four."""
+    """Universe closure: the gate must reach every buildspec in the tree.
+
+    The universe is derived by content, so this is a real closure check rather
+    than the Makefile's filename regex compared with a copy of itself.
+    `patterns/*/buildspec.yml` matched one of four.
+    """
     discovered = _discovered_buildspecs()
     assert discovered, "no buildspec files found; the gate would pass vacuously"
 
@@ -556,6 +629,15 @@ def test_every_tracked_buildspec_is_handed_to_the_gate():
         assert path in result.stdout, (
             f"{path} is a tracked buildspec that `make validate-buildspec` did not read"
         )
+
+    # The two definitions agree today. If they ever diverge, the content one is
+    # the universe and the Makefile's regex is what has to widen -- so this fails
+    # naming the file rather than passing because both sides changed together.
+    by_name = sorted(p for p in _tracked_yaml() if BUILDSPEC_NAME.search(p))
+    assert by_name == discovered, (
+        "filename discovery and content discovery disagree; the Makefile's "
+        f"`buildspec*` regex sees {by_name} but the tree contains {discovered}"
+    )
 
 
 def test_every_tracked_buildspec_actually_passes_the_new_check():
