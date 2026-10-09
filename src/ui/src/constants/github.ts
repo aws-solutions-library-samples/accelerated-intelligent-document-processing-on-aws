@@ -19,12 +19,12 @@ export const GITHUB_REPO_URL = `https://github.com/${GITHUB_OWNER_REPO}`;
 export const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues`;
 
 /**
- * New-issue endpoint. App-generated links append `?title=&body=&labels=` to
- * pre-fill the issue body directly (see utils/github-feedback.ts). Note this
- * bypasses the `.yml` issue *forms* in .github/ISSUE_TEMPLATE/ — GitHub ignores
- * `body=` when a template is selected — which is intentional so content is
- * embedded regardless of whether those forms exist on the default branch yet.
- * The forms still apply when a user clicks "New issue" directly on GitHub.
+ * New-issue endpoint. App-generated links append `?template=<file>.yml` plus
+ * per-field values keyed by the form's element ids, so a report filed from the
+ * UI lands in the same issue form — and picks up the same labels and required
+ * fields — as one filed from GitHub's "New issue" chooser. See
+ * utils/github-feedback.ts for the field mapping and the `?body=` exclusivity
+ * rule that makes it necessary.
  */
 export const GITHUB_NEW_ISSUE_URL = `${GITHUB_ISSUES_URL}/new`;
 

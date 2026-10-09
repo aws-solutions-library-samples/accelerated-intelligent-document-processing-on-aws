@@ -184,6 +184,10 @@ def _run_sample_document_test(stack_name, sample_file, sample_dir):
     populated extraction fields, a real classification) are identical to what CI
     already asserts on the standard template — a transform that deploys but
     produces a stack that cannot process a document is still broken.
+
+    Returns:
+        Whatever `run_inference_test` returned: falsy on failure, and carrying
+        the reason. Read it with `cbd.inference_failure_reason`.
     """
     batch_id = f"transform-{stack_name[-12:]}"
 
@@ -260,8 +264,15 @@ def validate_headless_deploy(
     checks.append("processing core present")
 
     if not failures and not skip_doc_test:
-        if not _run_sample_document_test(stack_name, sample, sample_dir):
-            failures.append(f"sample document {sample} did not process successfully")
+        outcome = _run_sample_document_test(stack_name, sample, sample_dir)
+        if not outcome:
+            # The reason, not just the verdict: this is the only place a reader
+            # of the variant's result learns whether the document failed to
+            # process, produced no output, or produced the wrong output.
+            failures.append(
+                f"sample document {sample} did not process successfully: "
+                f"{cbd.inference_failure_reason(outcome)}"
+            )
         checks.append(f"sample document processed ({sample})")
 
     return {
@@ -312,8 +323,15 @@ def validate_govcloud_deploy(
     checks.append("processing core present")
 
     if not failures and not skip_doc_test:
-        if not _run_sample_document_test(stack_name, sample, sample_dir):
-            failures.append(f"sample document {sample} did not process successfully")
+        outcome = _run_sample_document_test(stack_name, sample, sample_dir)
+        if not outcome:
+            # The reason, not just the verdict: this is the only place a reader
+            # of the variant's result learns whether the document failed to
+            # process, produced no output, or produced the wrong output.
+            failures.append(
+                f"sample document {sample} did not process successfully: "
+                f"{cbd.inference_failure_reason(outcome)}"
+            )
         checks.append(f"sample document processed ({sample})")
 
     return {

@@ -906,6 +906,7 @@ export const getTestRun = /* GraphQL */ `
       completedAt
       context
       isDraftLabeling
+      evaluationDisabled
       configVersion
       configRevision
       testSetVersion

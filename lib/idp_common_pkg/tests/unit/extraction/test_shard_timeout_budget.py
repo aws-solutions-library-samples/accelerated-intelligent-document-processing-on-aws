@@ -1,23 +1,34 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The shard invocation's time budget has to add up, and nothing checked that.
+"""The shard invocation's time budget, and what actually keeps it inside 900s.
 
 Three numbers draw on the same 900 seconds: how long ONE Bedrock request may
 stall (``AGENT_READ_TIMEOUT_SECONDS``), how much total backoff the retry ladder
 may spend (``AGENT_MAX_TOTAL_BACKOFF_SECONDS``), and the shard function's Lambda
-``Timeout``. At a read timeout of 600 the first two summed to exactly 900 and
-left nothing for the work itself, so a single transient ``Read timed out`` ran the
-invocation into the wall clock. Step Functions then read the resulting
-``Sandbox.Timedout`` as deterministic — one attempt, by design (#917) — so the one
-failure a retry would have cleared was the one not retried, and
+``Timeout``. Nothing checked the relationship, and a single transient
+``Read timed out`` ran the invocation into the wall clock. Step Functions then read
+the resulting ``Sandbox.Timedout`` as deterministic — one attempt, by design
+(#917) — so the one failure a retry would have cleared was the one not retried, and
 ``ExtractionShardMap``, which tolerates no shard failures, discarded the sibling
 shards that had already succeeded (#1014).
 
-Each number was individually defensible and the relationship between them was
-stated only in a comment. These tests assert the relationship, and that the
-constants are actually the ones the extraction code and the deployed function
-use — a correct constant nobody reads is not a fix.
+⚠️ **The first fix for that required the constants to SUM to less than 900, and the
+way to satisfy it was to cut the agentic read timeout to 180s. That reopened the same
+loss through the other door** (#1310). A read timeout is not free to choose: it is
+the longest gap a streamed agent turn may leave between events, and the Nuveen
+agentic extraction reproducibly exceeds 180s at one point in its loop. Every attempt
+then timed out, the ladder resumed and stalled identically, five attempts filled the
+invocation, and the shard died on the wall clock with ``Sandbox.Timedout`` — exactly
+the outcome above. The document passed at 600s and failed every CI run after the cut.
+
+So the read timeout is sized for the work, and the bound is on the **ladder**:
+``_attempt_cannot_finish`` refuses to begin an attempt the size of the one that just
+failed when the remaining invocation cannot hold it, and raises instead. The tests
+below assert that property behaviourally, the weaker arithmetic that still has to
+hold (one agentic stall plus all the backoff leaves room to RETURN), and that the
+constants are the ones the extraction code and the deployed function actually use —
+a correct constant nobody reads is not a fix.
 """
 
 from __future__ import annotations
@@ -77,47 +88,66 @@ def _section_states() -> dict[str, Any]:
     return scope["States"]
 
 
-# The stalling a single shard invocation can absorb, worst case. BOTH Bedrock
-# clients can stall in the same invocation: the streamed agentic call, and — when
-# confidence runs in ``separate`` mode, where ``_build_assess_runner`` hands
-# ``extract_one_shard`` a closure over ``AssessmentService`` — the non-streamed
-# ``converse`` in ``bedrock/client.py``. The botocore attempt count multiplies both,
-# which is why it is a term and not a footnote: while it was 7 (i.e. EIGHT attempts,
-# since botocore's client ``max_attempts`` is a retry count) one stalled agentic
-# request could occupy 8 x 180 = 1,440 s of a 900 s invocation on its own.
-_WORST_CASE_STALLING_SECONDS = BOTOCORE_TOTAL_MAX_ATTEMPTS * (
-    AGENT_READ_TIMEOUT_SECONDS + CONFIDENCE_READ_TIMEOUT_SECONDS
-)
-
-# Room that must remain for the work itself after all of that stalling plus the
-# whole backoff allowance: enough for one complete call of the SLOWEST kind to run
-# to its own ceiling. Anything less and the invocation cannot finish the attempt it
-# just bought itself by giving up on the stalled one.
-_MIN_WORKING_MARGIN_SECONDS = CONFIDENCE_READ_TIMEOUT_SECONDS
+# Room that must remain, after one agentic stall and the whole backoff allowance,
+# for the invocation to RETURN — to unwind the ladder, persist the shard's failure
+# and raise, rather than be killed mid-flight. It is not room for another full call:
+# whether another attempt is affordable is decided at run time from what the last one
+# measured (``_attempt_cannot_finish``), which is the bound that replaced summing the
+# constants. It is sized as the deadline reserve plus the same again for the unwind.
+_MIN_MARGIN_TO_RETURN_SECONDS = 60.0
 
 
 @pytest.mark.unit
-def test_stalls_on_both_clients_plus_all_backoff_leave_room_to_work():
-    """The budget inequality itself. This is the assertion that was missing.
+def test_one_agentic_stall_plus_all_backoff_still_leaves_room_to_return():
+    """The arithmetic that still has to hold, and only that.
 
-    It is the COMPLETE inequality on purpose. A version naming only the agentic
-    read timeout and the backoff allowance is the same defect this file exists to
-    prevent — a number that is only meaningful relative to others, with nothing
-    checking the relationship — and it would pass while a shard running separate
-    confidence had 120 s left for its work.
+    The earlier version of this test required the sum of every timeout term to fit
+    inside the invocation, with room for one more complete call. That is a stronger
+    claim than the code needs and it is satisfiable only by shrinking a read timeout
+    below what real work takes, which is how #1310 happened. What genuinely must hold
+    is that a stalled agentic call plus the backoff allowance cannot reach the wall
+    clock, so the invocation ends on a raised error the caller retries rather than on
+    ``Sandbox.Timedout``, which it does not.
+
+    ``test_a_recurring_stall_raises_before_the_wall_clock_instead_of_being_killed``
+    below is the load-bearing half; this one only keeps the constants from drifting
+    into a combination where even the raise cannot happen in time.
     """
-    spent_worst_case = _WORST_CASE_STALLING_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS
-    remaining = LAMBDA_MAX_TIMEOUT_SECONDS - spent_worst_case
-    assert remaining >= _MIN_WORKING_MARGIN_SECONDS, (
-        f"worst-case stalling is {_WORST_CASE_STALLING_SECONDS}s "
-        f"({BOTOCORE_TOTAL_MAX_ATTEMPTS} botocore attempt(s) x "
-        f"[{AGENT_READ_TIMEOUT_SECONDS}s streamed agentic + "
-        f"{CONFIDENCE_READ_TIMEOUT_SECONDS}s non-streamed confidence]) plus "
-        f"{AGENT_MAX_TOTAL_BACKOFF_SECONDS}s of backoff, leaving {remaining}s of the "
-        f"{LAMBDA_MAX_TIMEOUT_SECONDS}s invocation for the work itself — under the "
-        f"{_MIN_WORKING_MARGIN_SECONDS}s floor, which is one complete call of the "
-        "slowest kind. The shard will die on the wall clock instead of returning, "
+    spent = AGENT_READ_TIMEOUT_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS
+    remaining = LAMBDA_MAX_TIMEOUT_SECONDS - spent
+    assert remaining >= _MIN_MARGIN_TO_RETURN_SECONDS, (
+        f"one stalled agentic request ({AGENT_READ_TIMEOUT_SECONDS}s) plus the whole "
+        f"{AGENT_MAX_TOTAL_BACKOFF_SECONDS}s backoff allowance is {spent}s of a "
+        f"{LAMBDA_MAX_TIMEOUT_SECONDS}s invocation, leaving {remaining}s — under the "
+        f"{_MIN_MARGIN_TO_RETURN_SECONDS}s the shard needs to unwind, persist its "
+        "failure and raise. Below this floor it is killed on the wall clock instead, "
         "and Step Functions treats a Lambda timeout as deterministic. See #1014."
+    )
+
+
+@pytest.mark.unit
+def test_the_confidence_client_can_still_overrun_and_that_is_recorded_not_hidden():
+    """The term the ladder's bound does NOT cover, stated as a quantity.
+
+    A shard running confidence in ``separate`` mode can stall on a second client:
+    the non-streamed ``converse`` in ``bedrock/client.py``, whose own ladder is not
+    deadline-aware (see the test at the end of this file). So the two read timeouts
+    CAN together exceed the invocation, and that is a known residual rather than
+    something the arithmetic above denies. Asserting it keeps the residual honest: if
+    the numbers ever do fit, the caveat in ``timeout_budget`` and
+    ``utils/README.md`` is stale and should be deleted rather than left to mislead.
+    """
+    both_clients = BOTOCORE_TOTAL_MAX_ATTEMPTS * (
+        AGENT_READ_TIMEOUT_SECONDS + CONFIDENCE_READ_TIMEOUT_SECONDS
+    )
+    assert (
+        both_clients + AGENT_MAX_TOTAL_BACKOFF_SECONDS > LAMBDA_MAX_TIMEOUT_SECONDS
+    ), (
+        f"a stall on both Bedrock clients plus all backoff now fits inside one "
+        f"invocation ({both_clients + AGENT_MAX_TOTAL_BACKOFF_SECONDS}s vs "
+        f"{LAMBDA_MAX_TIMEOUT_SECONDS}s). That is a stronger guarantee than the docs "
+        "claim, so fold it into the inequality and delete the residual rather than "
+        "leaving a caveat that understates what holds."
     )
 
 
@@ -406,27 +436,18 @@ def _load_shard_runtime_handler():
 
 
 @pytest.mark.unit
-def test_one_stalled_request_leaves_the_ladder_a_full_window_to_retry_in():
-    """The failure from #1014, replayed on a simulated clock.
+def test_a_brief_blip_is_still_retried_rather_than_raised():
+    """The recovery the ladder exists for, unaffected by the attempt gate.
 
-    A stalled Bedrock request occupies the whole read timeout and then surfaces as
-    ``ReadTimeoutError``. The retry ladder around the agent call is bounded by the
-    Lambda deadline, so what decides whether the shard recovers is arithmetic: after
-    the stall and the backoff that follows it, is there still a full read-timeout
-    window left inside the invocation? At 600 s there was not — the retry began with
-    roughly 295 s of a 900 s invocation left, less than half of what one more
-    attempt is allowed to take, so the shard ran into the wall clock instead. Step
-    Functions then read the resulting ``Sandbox.Timedout`` as deterministic and did
-    not retry the one failure a retry would have cleared.
+    The gate added for #1310 stops the ladder only when another attempt the size of
+    the last one cannot finish. A short failure — a throttle, a connection reset,
+    anything that returns quickly — leaves the whole invocation available, so it must
+    still be retried. A gate that fired on "the deadline is close" rather than on
+    "this attempt costs more than what remains" would surrender these, and they are
+    the majority.
 
     The clock is simulated rather than real: the point is the budget, and a test
-    that actually waited out a read timeout could not run in CI. What the simulation
-    models is the one thing that matters — that botocore spends the entire read
-    timeout before giving up.
-
-    This asserts the retry gets a full window, not that the retry succeeds. How long
-    a successful agent call takes is a property of the document and the model, and
-    no static test can know it.
+    that actually waited out a read timeout could not run in CI.
     """
     pytest.importorskip("strands", reason="agentic extras not installed")
     from idp_common.extraction.agentic_idp import invoke_agent_with_retry
@@ -434,7 +455,7 @@ def test_one_stalled_request_leaves_the_ladder_a_full_window_to_retry_in():
     clock = [1_000_000.0]
     attempt_starts: list[float] = []
 
-    class _StallsOnceAgent:
+    class _StallsBrieflyAgent:
         def __init__(self) -> None:
             self.calls = 0
 
@@ -442,15 +463,14 @@ def test_one_stalled_request_leaves_the_ladder_a_full_window_to_retry_in():
             self.calls += 1
             attempt_starts.append(clock[0])
             if self.calls == 1:
-                # botocore waits out the FULL read timeout before it gives up.
-                clock[0] += AGENT_READ_TIMEOUT_SECONDS
+                clock[0] += 2.0
                 raise _read_timeout()
             return "extracted"
 
     async def _fake_sleep(seconds: float) -> None:
         clock[0] += seconds
 
-    agent = _StallsOnceAgent()
+    agent = _StallsBrieflyAgent()
     deadline = clock[0] + LAMBDA_MAX_TIMEOUT_SECONDS
 
     # ``bedrock_utils`` reads the clock as ``time.time()`` and sleeps as
@@ -470,17 +490,87 @@ def test_one_stalled_request_leaves_the_ladder_a_full_window_to_retry_in():
     assert result == "extracted"
     assert agent.calls == 2, (
         f"the ladder made {agent.calls} attempt(s); a ReadTimeoutError is in the "
-        "retryable vocabulary and must be retried, not raised"
+        "retryable vocabulary and a two-second one leaves the entire invocation "
+        "available, so it must be retried, not raised"
     )
-
     remaining_at_retry = deadline - attempt_starts[1]
     assert remaining_at_retry >= AGENT_READ_TIMEOUT_SECONDS, (
-        f"after one stalled request and its backoff, the retry began with only "
-        f"{remaining_at_retry:.0f}s of the {LAMBDA_MAX_TIMEOUT_SECONDS:.0f}s "
-        f"invocation left — less than the {AGENT_READ_TIMEOUT_SECONDS:.0f}s a "
-        "single request is allowed to take, so the retry cannot even fail cleanly "
-        "before the Lambda is killed. The shard dies on the wall clock, Step "
-        "Functions calls that deterministic and does not retry it. See #1014."
+        f"the retry began with {remaining_at_retry:.0f}s left after a 2s failure; "
+        "the gate is meant to read what the ATTEMPT cost, not how much of the "
+        "invocation has elapsed"
+    )
+
+
+@pytest.mark.unit
+def test_a_recurring_stall_raises_before_the_wall_clock_instead_of_being_killed():
+    """#1310 itself, replayed on a simulated clock. The load-bearing assertion.
+
+    A stalled Bedrock request occupies the whole read timeout and then surfaces as
+    ``ReadTimeoutError``. When the stall is a property of the request rather than of
+    the network — which is what the Nuveen agentic extraction exhibits: five attempts,
+    each timing out after the same interval, on a conversation resumed unchanged —
+    retrying cannot converge, and the only thing that decides the outcome is whether
+    the ladder gives up before the Lambda is killed.
+
+    It must, because the two failures are not equivalent. Returning raises the
+    underlying error, which the shard handler wraps as ``TransientError`` and
+    ``ShardExtractionStep`` retries eight times with a state-machine budget of
+    21,600s. Being killed reports ``Sandbox.Timedout``, which is ``MaxAttempts: 1``
+    since #917 — so the shard is not retried and ``ExtractionShardMap`` discards
+    every sibling that had already succeeded.
+
+    Note what is NOT asserted: not a fixed attempt count, and not that the ladder
+    uses all the time available. Both are consequences of the constants, and pinning
+    them would fail on a legitimate change to either.
+    """
+    pytest.importorskip("strands", reason="agentic extras not installed")
+    from idp_common.extraction.agentic_idp import invoke_agent_with_retry
+
+    clock = [1_000_000.0]
+    attempts: list[float] = []
+
+    class _AlwaysStallsAgent:
+        async def invoke_async(self, _input):
+            attempts.append(clock[0])
+            # botocore waits out the FULL read timeout before it gives up.
+            clock[0] += AGENT_READ_TIMEOUT_SECONDS
+            raise _read_timeout()
+
+    async def _fake_sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    started = clock[0]
+    deadline = started + LAMBDA_MAX_TIMEOUT_SECONDS
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(time, "time", lambda: clock[0])
+        patched.setattr(asyncio, "sleep", _fake_sleep)
+
+        async def _run():
+            set_lambda_deadline_epoch(deadline)
+            return await invoke_agent_with_retry("prompt", _AlwaysStallsAgent())  # type: ignore[arg-type]
+
+        with pytest.raises(botocore.exceptions.ReadTimeoutError):
+            asyncio.run(_run())
+
+    assert clock[0] < deadline, (
+        f"the ladder ran {clock[0] - started:.0f}s of a "
+        f"{LAMBDA_MAX_TIMEOUT_SECONDS:.0f}s invocation before raising, i.e. past the "
+        "deadline — so in production the Lambda is killed first and the failure "
+        "reaches Step Functions as Sandbox.Timedout, which it does not retry. The "
+        "ladder must give up while it can still return. See #1310."
+    )
+    assert clock[0] + _MIN_MARGIN_TO_RETURN_SECONDS <= deadline, (
+        f"the ladder raised with only {deadline - clock[0]:.0f}s left, under the "
+        f"{_MIN_MARGIN_TO_RETURN_SECONDS:.0f}s the shard needs to unwind and persist "
+        "its failure"
+    )
+    assert len(attempts) >= 1
+    assert all(
+        deadline - start >= AGENT_READ_TIMEOUT_SECONDS for start in attempts[1:]
+    ), (
+        "an attempt was begun with less of the invocation left than one stalled "
+        "request is allowed to take. It can neither succeed nor fail cleanly, which "
+        "is the shape the gate exists to remove."
     )
 
 
@@ -570,13 +660,16 @@ def test_a_read_timeout_leaves_the_shard_as_a_transient_error_not_a_timeout():
 
 @pytest.mark.unit
 def test_the_retry_ladder_never_sleeps_past_the_invocation():
-    """A stall that keeps recurring must give up inside the invocation.
+    """A recurring short failure must exhaust its backoff allowance, not the clock.
 
     The ladder allows 50 attempts, so its real bound is time: the cumulative backoff
-    allowance and the Lambda deadline. Neither may be exceeded, and it must not
-    raise early either — ``clamp_sleep_to_budgets`` shortens a sleep rather than
-    converting it into a failure, because the remaining time is better spent on
-    another attempt than asleep.
+    allowance, the Lambda deadline, and — since #1310 — whether another attempt's
+    measured cost fits in what remains. The failure here returns in a second, so the
+    cost gate never fires and the allowance is what ends the ladder; that is the case
+    where the sleeps themselves are the risk, and it is the one this test is about.
+    ``test_retry_deadline_bounds.py`` covers the interaction of all three, and
+    ``test_a_recurring_stall_raises_before_the_wall_clock_instead_of_being_killed``
+    above covers a failure expensive enough for the cost gate.
     """
     pytest.importorskip("strands", reason="agentic extras not installed")
     from idp_common.extraction.agentic_idp import invoke_agent_with_retry
@@ -584,27 +677,31 @@ def test_the_retry_ladder_never_sleeps_past_the_invocation():
     clock = [2_000_000.0]
     slept: list[float] = []
 
-    class _AlwaysStallsAgent:
+    class _AlwaysFailsQuicklyAgent:
         async def invoke_async(self, _input):
-            clock[0] += AGENT_READ_TIMEOUT_SECONDS
+            clock[0] += 1.0
             raise _read_timeout()
 
     async def _fake_sleep(seconds: float) -> None:
         slept.append(seconds)
         clock[0] += seconds
 
-    deadline = clock[0] + LAMBDA_MAX_TIMEOUT_SECONDS
+    started = clock[0]
+    # A deadline deliberately tighter than the backoff allowance would need, so the
+    # wall-clock clamp is exercised as well as the allowance.
+    deadline = started + AGENT_MAX_TOTAL_BACKOFF_SECONDS / 2
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(time, "time", lambda: clock[0])
         patched.setattr(asyncio, "sleep", _fake_sleep)
 
         async def _run():
             set_lambda_deadline_epoch(deadline)
-            return await invoke_agent_with_retry("prompt", _AlwaysStallsAgent())  # type: ignore[arg-type]
+            return await invoke_agent_with_retry("prompt", _AlwaysFailsQuicklyAgent())  # type: ignore[arg-type]
 
         with pytest.raises(botocore.exceptions.ReadTimeoutError):
             asyncio.run(_run())
 
+    assert slept, "the ladder raised without retrying a failure that cost one second"
     assert sum(slept) <= AGENT_MAX_TOTAL_BACKOFF_SECONDS, (
         f"slept {sum(slept):.0f}s against a "
         f"{AGENT_MAX_TOTAL_BACKOFF_SECONDS:.0f}s cumulative allowance"
@@ -615,10 +712,10 @@ def test_the_retry_ladder_never_sleeps_past_the_invocation():
     )
     assert all(s >= 0 for s in slept), "a negative sleep would crash asyncio.sleep"
     assert 0.0 in slept, (
-        "no sleep was clamped to zero even though the simulated stalls ran past the "
-        "deadline. The ladder is therefore still sleeping its nominal backoff with "
-        "no time left to sleep it in, which is the behaviour clamp_sleep_to_budgets "
-        "exists to prevent. Note it CLAMPS rather than raising: the remaining time "
-        "goes to another attempt, and if it runs out the invocation ends on the "
-        "underlying error, which is the retryable failure mode."
+        "no sleep was clamped to zero even though the simulated failures ran past "
+        "the deadline. The ladder is therefore still sleeping its nominal backoff "
+        "with no time left to sleep it in, which is the behaviour "
+        "clamp_sleep_to_budgets exists to prevent. Note it CLAMPS rather than "
+        "raising: while the attempts themselves are cheap the remaining time goes to "
+        "another one, and only an attempt that provably cannot finish ends the ladder."
     )

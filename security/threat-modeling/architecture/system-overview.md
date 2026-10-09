@@ -240,8 +240,8 @@ flowchart TD
 | **TB3: Application Layer** | Core application infrastructure | IAM roles, least-privilege Lambda execution roles, **all group/scope authorization enforced in resolver Lambdas**, VPC-optional (`ApiGatewayVisibility=PRIVATE`) |
 | **TB4: Managed AI Services** | AWS-managed AI/ML services | Service-linked roles, encryption in transit/at rest; note GPT-5.x is a non-Anthropic model family on Bedrock |
 | **TB5: Analytics Layer** | Data analytics and search | Athena workgroup isolation, OpenSearch encryption |
-| **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. Hook failure containment is weaker than documented: `onError: fail` is terminal at the `preprocessing` hook point only (HOOK.T07, fix pending in **issue #919**) |
-| **TB7: Deployment / IaC** | The principal that creates the stack, and the optional CloudFormation service role shipped for it | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped role is **not** a containment boundary today — see §7.1 and SDK.T05 (narrowing pending in **issue #927**) |
+| **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes its catch to a terminal failure state (HOOK.T07, closed by in **issue #919**) |
+| **TB7: Deployment / IaC** | The principal that creates the stack, and the optional CloudFormation service role shipped for it | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped role now carries a **permissions boundary**, which bounds what it can reach; its own policy still grants `iam:*`, so it is not yet narrowed to the resources the stack needs — see §7.1 and SDK.T05 (**issue #927**, closed on the boundary) |
 
 > **Critical boundary note (new in v3.0).** TB6 now contains code that executes
 > *inside* TB1's browser context at the host's origin: an installed feature's
@@ -275,7 +275,7 @@ table.
 | WAFv2 (optional) | IP allow-list, default-block WebACL on the REST stage | No authn/authz. Not associated with the chat Function URL |
 | API Gateway resource policy | When `ApiGatewayVisibility=PRIVATE`, restricts to the VPC interface endpoint | No user authz |
 | Cognito authorizer (`COGNITO_USER_POOLS`) | **Authenticates** the ID token; 401 on missing/invalid/expired | **No group evaluation.** It cannot do per-operation authorization, because every operation shares one route |
-| Dispatcher (`http_api_dispatcher`) | Normalizes the event, validates argument shape (400), routes to a resolver Lambda or an in-process handler, maps denials to 403 | **No default deny.** A field it knows how to resolve is forwarded whether or not the target enforces anything (AUTH.T16). Its 403 mapping keys partly on error-message prefixes, so a reworded exception can change an HTTP status. Default-deny and removal of the prefix dependency are pending in **issue #928** |
+| Dispatcher (`http_api_dispatcher`) | Normalizes the event, validates argument shape (400), routes to a resolver Lambda or an in-process handler, maps denials to 403 | **Denies by default.** `authz.py` checks the caller's groups against the generated field-level manifest before routing, and a field with no entry is refused with 403 rather than forwarded (AUTH.T16, **issue #928** closed). Its 403 mapping now keys on the exception **type** first (`PermissionError`/`AuthorizationError`), with the conventional message prefix retained as a fallback — so a reworded exception raised as one of those types keeps its status, and one raised as a bare `Exception` still depends on its wording |
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
 
@@ -290,7 +290,7 @@ union is 119, which is exactly the number of entries in
 
 | Required groups | Ops |
 |---|---|
-| Admin + Author | 40 |
+| Admin + Author | 41 |
 | Admin only | 21 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 18 |
 | Admin + Author + Viewer | 15 |
@@ -321,7 +321,7 @@ their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. It records two accepted gaps. **GAP-02**: the `queryKnowledgeBase`
+`make api-test`. Its `known_gaps` block holds **three** entries, of which two are accepted *authorization* gaps and the third is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The two authorization gaps: **GAP-02**: the `queryKnowledgeBase`
 *resolver* performs no group check of its own, so the dispatcher's floor — which
 requires an assigned group — is the only group gate on it. **GAP-07**: the chat
 Function URL transport carries no `cognito:groups` claim, so neither chat route's
@@ -348,7 +348,7 @@ and do **not** inherit the resolver authorization model:
 
 | Entry point | Authentication | Authorization |
 |---|---|---|
-| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06 — fixes **pending in issue #920** |
+| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06. **issue #920** is closed: both routes now resolve identity through one helper in which a body-supplied `callerSub` is a fallback only and a value contradicting the transport is refused with 403. What that does not supply is a *verified per-user* subject on this transport, and no group claim reaches it at all (`GAP-07`) — so CHAT.T03 stays open |
 | **Jobs API** (optional, `EnableJobsApi=true`) | A separate `ApiUserPool` with OAuth **client-credentials** scopes (`idp-api/jobs.write`, `jobs.read`) | Scope-based, PRIVATE-endpoint only. A distinct realm from the Cognito group model — see JOB.T01–T03 |
 
 When `WebUIHosting=APIGateway`, two further methods (`GET /` and `GET /{proxy+}`)
@@ -437,7 +437,7 @@ every runtime control in this document depends on. The repository ships an
 without holding administrator rights. As written it does not achieve that
 separation — it holds permissions broad enough to alter the guardrails that
 would otherwise bound it, so the ability to pass it is effectively equivalent to
-account administrator. Narrowing it is **pending in issue #927**. Until that
+account administrator. **issue #927** is closed by attaching a **permissions boundary** to the role, which bounds what it can reach; the policy's own `iam:*` grant is unchanged, so the narrowing itself is still outstanding. Until that
 merges, treat `iam:PassRole` for that role as an administrative grant and scope
 who holds it accordingly. See SDK.T05.
 

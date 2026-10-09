@@ -703,7 +703,14 @@ The dispatcher runs each resolver in a separate Lambda, so only two things survi
 the invoke: the exception's **class name** and its message. It picks a status from
 those — `PermissionError`/`AuthorizationError`, or a message beginning
 `Unauthorized`/`Forbidden`, becomes **403 `Unauthorized`**; `ValueError`/`KeyError`
-becomes **400 `BadRequest`**; anything else becomes **500 `InternalError`**.
+becomes **400 `BadRequest`**; `ResourceNotFound` becomes **404 `ResourceNotFound`**;
+anything else becomes **500 `InternalError`**.
+
+The 404's errorType is deliberately `ResourceNotFound` and not the `NotFound` the
+dispatcher already returns for an operation this deployment does not route: the live
+RBAC harness reads a bare `NotFound` from a feature probe as "this feature is
+disabled, skip this operation", so collapsing the two would turn authorization
+assertions into silent skips rather than passes.
 
 That makes the status sensitive to how a resolver re-raises. A resolver that catches
 its own exceptions and re-raises them wrapped loses both signals at once — the class
@@ -718,8 +725,11 @@ server faults is masked by them, and a caller probing for reachable resources
 inflates the fault signal instead of the authorization-denial signal. Refusals and
 faults have to be separable to be alarmable.
 
-So, for any refusal you add: raise `PermissionError` for an authorization refusal
-and `ValueError` for a bad argument, and do not let a catch-all re-wrap either.
+So, for any refusal you add: raise `PermissionError` for an authorization refusal,
+`ValueError` for a bad argument, and `ResourceNotFound` for an object that does not
+exist — a not-found raised as a `ValueError` answers 400, which is the inverse of
+the convention and is not caught by the reintroduction guard (it matches only a bare
+`Exception`). Do not let a catch-all re-wrap any of the three.
 Log a denial at **WARNING** with a "Denied"/"Forbidden"/"Rejecting" verb and no
 stack trace, and reserve `logger.error(..., exc_info=True)` for a real fault — a
 denial logged as `Unexpected error` with a traceback is indistinguishable from a

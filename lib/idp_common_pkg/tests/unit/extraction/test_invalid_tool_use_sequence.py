@@ -128,6 +128,21 @@ class TestTheSuggestedModelsAreReal:
     """The remedy is only useful if the model ids in it exist. These are taken from
     ``docs/extraction-and-confidence.md`` and must resolve in ``pricing.yaml``."""
 
+    def test_the_suggestions_are_distinct(self):
+        """A repeated entry reads as a broken message and no other check sees it.
+
+        Both assertions over this tuple iterate it — "every member appears in the
+        message", "every member is priced" — and a duplicate satisfies both
+        trivially while the rendered remedy names one model twice and silently
+        drops whichever model the duplicate replaced. That is exactly what a
+        find-and-replace sweep over model ids did to the Sonnet 4.6 entry, whose
+        id shares the ``claude-sonnet-4`` prefix with the retired Sonnet 4.
+        """
+        models = _agentic._AGENTIC_CAPABLE_EXAMPLE_MODELS
+        assert len(set(models)) == len(models), (
+            f"duplicate entries in _AGENTIC_CAPABLE_EXAMPLE_MODELS: {models}"
+        )
+
     def test_every_suggested_model_is_priced_in_the_config_library(self):
         pricing = (
             Path(__file__).resolve().parents[5] / "config_library" / "pricing.yaml"

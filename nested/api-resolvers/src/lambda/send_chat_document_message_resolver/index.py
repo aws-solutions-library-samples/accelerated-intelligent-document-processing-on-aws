@@ -204,7 +204,7 @@ def handler(event, _context):  # noqa: ANN001
     args = event.get("arguments", {}) or {}
     session_id = str(args.get("sessionId") or "").strip()
     if not session_id:
-        raise Exception("sessionId is required")
+        raise ValueError("sessionId is required")
 
     method = str(args.get("method") or "chat").strip() or "chat"
 
@@ -226,13 +226,13 @@ def handler(event, _context):  # noqa: ANN001
     # --- User-initiated request (method="chat") --------------------------
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
-        raise Exception("prompt is required for method='chat'")
+        raise ValueError("prompt is required for method='chat'")
     if len(prompt) > 100_000:
-        raise Exception("prompt exceeds 100,000 character limit")
+        raise ValueError("prompt exceeds 100,000 character limit")
 
     s3_uri = str(args.get("s3Uri") or "").strip()
     if not s3_uri:
-        raise Exception("s3Uri is required for method='chat'")
+        raise ValueError("s3Uri is required for method='chat'")
 
     ui_model_id = str(args.get("modelId") or "").strip()
 

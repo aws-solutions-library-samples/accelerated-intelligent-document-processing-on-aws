@@ -32,6 +32,53 @@ phases:
       - export FUNCTION_mlflow_logger="patterns/unified/src/mlflow_logger_function"
       - export FUNCTION_rule_validation_policy_classification="patterns/unified/src/rule-validation-policy-classification-function"
       - |
+        # errexit, and it is load-bearing rather than hygiene. This whole block is
+        # ONE CodeBuild command, so the phase sees only the exit status of the LAST
+        # loop iteration: without `set -e` a `docker buildx build` that fails for
+        # any image but the last one is skipped over, the phase succeeds, CodeBuild
+        # reports SUCCEEDED, and the DockerBuildRun custom resource then waits out
+        # its full 1-hour timeout looking for a tag that was never pushed. Note
+        # `-u` is deliberately NOT set: $LAMBDA_ARCHITECTURE is read bare below and
+        # is legitimately unset in the default arm64 case. See issue #1310.
+        set -e
+
+        # Retry before failing, because the failure #1310 was reported against was
+        # a TLS handshake timeout pulling a base image from a private registry, and
+        # an unmodified re-run of the same project then succeeded. Failing the build
+        # on the first attempt would trade an hour-long hang for a failed deploy on
+        # a blip -- worse for exactly the private-registry and air-gapped users this
+        # is most likely to hit. Three attempts with 15s/30s linear backoff; the
+        # `exit 1` is what makes the enclosing `set -e` reachable for a genuine
+        # failure.
+        # Retries are bounded by a DEADLINE as well as by an attempt count, and
+        # the deadline is the half that matters. DockerBuildRun is a
+        # Custom::CodeBuildRun, so CloudFormation's 60-minute custom-resource
+        # ServiceTimeout is the real budget -- and a build that eventually
+        # succeeds after burning through it produces exactly the message #1310
+        # is about ("CloudFormation did not receive a response from your Custom
+        # Resource"), now in the recovering case. 2400s leaves time for the
+        # images still queued behind the current one. $SECONDS counts from the
+        # start of this shell, which CodeBuild starts at the top of the phase.
+        RETRY_DEADLINE_SECONDS="${RETRY_DEADLINE_SECONDS:-2400}"
+
+        build_with_retry() {
+          local label="$1"; shift
+          local attempt=1 max_attempts=3
+          until docker buildx build "$@"; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "ERROR: failed to build/push ${label} after ${max_attempts} attempts"
+              return 1
+            fi
+            if [ "$SECONDS" -ge "$RETRY_DEADLINE_SECONDS" ]; then
+              echo "ERROR: failed to build/push ${label}; ${SECONDS}s elapsed is past the ${RETRY_DEADLINE_SECONDS}s retry deadline, so failing now rather than letting the stack operation time out"
+              return 1
+            fi
+            echo "WARNING: build of ${label} failed (attempt ${attempt}/${max_attempts}); retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
+        }
+
         for func_var in FUNCTION_bda_invoke FUNCTION_bda_completion FUNCTION_bda_processresults FUNCTION_ocr FUNCTION_classification FUNCTION_extraction FUNCTION_assessment FUNCTION_processresults FUNCTION_summarization FUNCTION_evaluation FUNCTION_test_execution_aggregation FUNCTION_rule_validation FUNCTION_rule_validation_orchestration FUNCTION_mlflow_logger FUNCTION_rule_validation_policy_classification; do
           func_path="${!func_var}"
           func_name=$(basename "$func_path" | sed 's/_/-/g')
@@ -48,7 +95,7 @@ phases:
           if [ "$LAMBDA_ARCHITECTURE" = "x86_64" ]; then
             DOCKER_PLATFORM="linux/amd64"
           fi
-          docker buildx build \
+          build_with_retry "${func_name}" \
             --platform "$DOCKER_PLATFORM" \
             -f Dockerfile.optimized \
             --build-arg FUNCTION_PATH="${func_path}" \
@@ -61,5 +108,14 @@ phases:
         done
   post_build:
     commands:
-      - echo "All Docker images built and pushed successfully"
-      - echo "Images tagged with version ${IMAGE_VERSION}"
+      # CodeBuild runs post_build after a FAILED build phase, so an unconditional
+      # success line here is the log actively misleading a triager -- called out in
+      # #1310 alongside the swallowed failure itself. $CODEBUILD_BUILD_SUCCEEDING is
+      # 0 when the build is failing.
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-1}" = "1" ]; then
+          echo "All Docker images built and pushed successfully"
+          echo "Images tagged with version ${IMAGE_VERSION}"
+        else
+          echo "BUILD FAILED — one or more images were not pushed. The actionable error is above, in this log."
+        fi

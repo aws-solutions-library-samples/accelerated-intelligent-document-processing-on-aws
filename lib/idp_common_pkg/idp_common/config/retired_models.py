@@ -45,7 +45,12 @@ import re
 from typing import Any, Dict, Optional
 
 #: Region / geo prefixes used by Bedrock cross-region inference profiles.
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global|us-gov)\.")
+# Must name the same prefixes as bedrock.model_utils.REGION_PREFIXES, which cannot
+# be imported here (``config`` is imported BY ``bedrock``);
+# tests/unit/bedrock/test_region_prefix_parity.py asserts the two agree. ``au`` and
+# ``jp`` arrived with Claude Haiku 5.5, the first model offered here whose card
+# advertises those geo ids.
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|global|us-gov)\.")
 
 
 #: Model id -> facts about its retirement.
@@ -125,6 +130,23 @@ RETIRED_MODELS: Dict[str, Dict[str, Any]] = {
             "--model-identifier anthropic.claude-opus-4-20250514-v1:0"
         ),
         "note": "confirmation date, not the EOL date; EOL in all three regions checked",
+    },
+    # Never selectable here, so `check_retired_models.py` could not see it: that
+    # script derives its universe from the template enums. It was reachable
+    # anyway, as the hardcoded fallback model in three places in
+    # `evaluation/stickler_backend/comparators.py` — an LLM comparator run with no
+    # configured model invoked a dead one. Found by reading the docs that cite it.
+    "us.anthropic.claude-3-sonnet-20240229-v1:0": {
+        "was_offered": False,
+        "eol": "2026-10-09",
+        "verify": (
+            "aws bedrock get-foundation-model --region us-east-1 "
+            "--model-identifier anthropic.claude-3-sonnet-20240229-v1:0"
+        ),
+        "note": (
+            "confirmation date, not the EOL date. No pricing entry, so there is no "
+            "rate to retain and none may be invented"
+        ),
     },
     "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
         "was_offered": False,

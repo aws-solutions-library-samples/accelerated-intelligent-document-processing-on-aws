@@ -415,13 +415,57 @@ declared, and no test can read a sentence — the name is the reliable route.
 GitLab and GitHub now run the **same** non-integration gates. Integration tests
 (`integration_tests`) remain GitLab-only, as they need AWS credentials.
 
+⚠️ **`integration_tests` is nightly plus a manual button — it is not a merge gate
+at all any more**, on either platform. It was automatic on `develop` and on
+non-Draft MRs, and it put 62–113 minutes onto every pipeline *after* a 45-minute
+check stage (111 min for an MR, 160 for a `develop` push). The deploy path is now
+a scheduled run, with a play button on any MR targeting `develop`. **Click that
+button before merging a change on the deploy path** — `template.yaml`,
+`publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
+`feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it
+pre-merge, and a break surfaces a night later with other merges stacked on top, so
+triage means bisecting the day's merges rather than reading the failing pipeline's
+own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
+maintained definition of that path list, but it now gates nothing and is
+documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
+
 Two other GitLab-only jobs exist and neither is a gate, so the parity assertion is
 unaffected by both: `deployment_validation` (the pre-deploy IAM check, which
-belongs to the deploy path above) and `ai_mr_review`, the advisory AI review that
+belongs to the deploy path above, and which is nightly-only for the same reason —
+note the *check itself* still runs on every MR as the last step of `static_checks`,
+where it needs no credentials) and `ai_mr_review`, the advisory AI review that
 posts a comment on every non-Draft MR. The reviewer needs AWS credentials for
 Bedrock and is `allow_failure: true` — it approves nothing and blocks nothing —
 which is why it is deliberately absent from `SHARED_GATES` rather than missing
 from it. A GitHub equivalent would need its own OIDC role.
+
+**On GitLab the no-AWS gates are seven parallel jobs, not one.** `static_checks` ran
+lint, typecheck and every pytest suite in sequence for 45 minutes, 80% of it
+pytest, and `make test-packages-cicd` was 25 of those minutes because every one of
+its pytest invocations ran serial and single-process on a 16-vCPU runner. Both
+halves are fixed independently: the invocations measured above 20s in CI now pass
+`-n auto` (`PYTEST_XDIST` in the `Makefile` carries the selection rule, and says to
+re-derive it by **timing in CI rather than counting tests** — the count is a poor
+proxy, and to count the invocations at all you must count `$(PYTEST_HERMETIC)`
+lines, not the `@echo` headers, which understate them by more than half), and the
+job is split into `static_checks`, `unit_tests`, `package_tests` and `ui_tests` so
+the lint half stops waiting on the test half. A merge-request pipeline went from
+111 minutes to 14.
+
+The stage now costs its slowest member instead of the sum, at the price of building
+the Python environment four times — more runner minutes for less wall-clock. ⚠️
+**Trimming a toolchain out of one of these jobs is not the free saving it looks
+like**: `package_tests` was written without Node and went red, because
+`scripts/tests/test_pyright_config.py` runs basedpyright live. Read the *suites*, not
+the `script:` block.
+
+`unit_tests` is the critical path, and ⚠️ **more workers will not shorten it**: the
+slowest test in that 10,500-test suite is 2.2s and the top 20 are ~35s of a
+10-minute run, so the cost is per-test fixture setup spread flat, at 62% CPU.
+Sharding it across jobs is possible but measured as nearly worthless here — the
+jobs immediately behind it (the SRT scan, the advisory AI review) are close enough
+that the pipeline would barely move — and it would cost a splitter dependency plus
+a `coverage combine` before `make check-coverage-debt` can read a complete report.
 
 Historically several gates ran on GitLab only, so a change merged via a GitHub PR
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
@@ -455,9 +499,12 @@ appears in one CI and not the other, if `lint-cicd` becomes weaker than local
 config. Every parity gap listed above was found by hand, months late, because
 nothing checked.
 
-⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
-push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
-to `develop` runs nothing on GitHub.
+⚠️ **Two asymmetries remain by design.** GitLab runs its `fast_checks` stage on
+**every push** as well as MRs; GitHub's workflows are `pull_request`-only, so a
+direct push to `develop` runs nothing on GitHub. And GitHub keeps all of it in one
+`developer-tests.yml` job where GitLab splits it four ways — the parity test
+compares which *gates* each config invokes, not how the jobs are arranged, so the
+shapes may differ while the gate set may not.
 
 ⚠️ **Parity does not survive a CI-suppressing commit message.** `[skip ci]` and its
 four siblings are honoured natively by both platforms, so one of them in a head commit
@@ -495,11 +542,15 @@ advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, an
 `Test Results` is an action-created check run behind an `if:`, so requiring any of
 them would leave a check pending forever and block every merge.
 
-Three things about what it reads. Eight of the ten shared gates are *steps* in one
-job (`developer_tests`), so those eight are **one** requireable context sharing one
-red mark rather than one per gate; the SRT scan and the dependency audit are jobs of
-their own in `security-checks.yml`, so the ten shared gates produce three
-requireable contexts in total. It reads classic branch protection **and** rulesets,
+Three things about what it reads. GitHub can require job-level contexts only, never
+individual steps, so how the jobs are arranged decides the mapping:
+eight of the ten shared gates live in `developer-tests.yml` (four parallel jobs)
+and the other two in
+`security-checks.yml` (two), so the ten shared gates produce
+six requireable contexts in total. ⚠️ That means **requiring only the lint context is weaker
+than it looks** — the test suites are their own contexts now, so all six have to be
+required; `test_check_branch_protection.py`'s `MUST_BE_REQUIRED` names all six so that
+regression fails rather than passing quietly. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic
 endpoint needs repository admin and answers 404 without it, so `GET
@@ -790,7 +841,7 @@ The extraction service supports an optional **agentic extraction mode** with int
 **Configuration**:
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:

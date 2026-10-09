@@ -498,7 +498,18 @@ operations:
     groups: [Admin, Author]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
-    args: { documentKey: "__nope__", bucket: "__nope__" }
+    # EMPTY rather than "__nope__", and the difference decides which control the
+    # matrix measures. This op now calls s3_targets.assert_bucket_allowed, which
+    # refuses a bucket outside this deployment's allow-list for EVERY caller — so a
+    # nonexistent bucket name made all four role cells read "DENIED but allowed",
+    # reporting the allow-list working as a group-check failure. A real allow-listed
+    # bucket is no better: the key then has to exist, and reading it sends a whole
+    # PDF to Bedrock. An empty required argument is refused by the resolver's own
+    # `if not document_key or not bucket` BEFORE the allow-list assertion, so an
+    # allowed role gets a clean 400 and no work is done, while a disallowed role
+    # still gets the dispatcher's 403 — authz.enforce runs before argument
+    # validation, so the probe's shape cannot weaken the denial cells.
+    args: { documentKey: "", bucket: "" }
   startMultiDocDiscovery:
     groups: [Admin, Author]
     kind: mutation
@@ -701,7 +712,14 @@ operations:
     scope_checked: true
     scope_enforced_in: _enforce_selection_scope
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
-    args: { testSetId: "__nope__", objectKeys: ["__nope__.pdf"] }
+    # An EMPTY selection, for the same reason autoDetectSections takes empty
+    # arguments. `_enforce_selection_scope` refuses a key with no COMPLETED
+    # tracking row, which a nonexistent key never has, so every allowed cell read
+    # "DENIED but allowed" — the selection-scope check answering in place of the
+    # group floor. Satisfying that check needs a real completed document, and then
+    # the append is real work on a real test set. `_normalize_object_keys` rejects
+    # an empty list BEFORE the scope lookup, so an allowed role gets a clean 400.
+    args: { testSetId: "__nope__", objectKeys: [] }
   addDocumentsToTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation
@@ -847,7 +865,15 @@ operations:
     kind: read
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver/index.py
-    args: { sessionId: "__nope__" }
+    # EMPTY, not "__nope__". The ownership check below refuses a session the caller
+    # does not own, and nobody owns a nonexistent one, so all four allowed cells read
+    # "DENIED but allowed" — ownership answering in place of the group floor. (It read
+    # as a PASS until #1060 stopped the resolver reporting its own refusal as a 500
+    # and the harness stopped scoring a 5xx as "not denied": the cell was never
+    # measuring the floor, it was measuring a crash.) An empty sessionId is refused by
+    # the resolver's own `if not session_id` before ownership is consulted, so an
+    # allowed role gets a clean 400.
+    args: { sessionId: "" }
     note: >-
       ANY_GROUP, and of every operation tightened for #1033 this is the one with the
       least to argue about, because it is the only one whose existing control fails
@@ -1295,8 +1321,8 @@ known_gaps:
     # reference HERE instead, and fails if this file stops mentioning the id.
     assigned_by: scripts/test_api_rbac.py
     summary: >
-      a 5xx makes a matrix cell INCONCLUSIVE, and 5xx is common because ~50
-      resolver-level validation refusals raise a bare Exception
+      a 5xx makes a matrix cell INCONCLUSIVE, and a resolver refusal that raises
+      a bare Exception can only reach the caller as one
     detail: >
       An authorization check establishes that a caller was refused. A 5xx
       establishes nothing: whether the resolver refused this caller before or
@@ -1305,14 +1331,37 @@ known_gaps:
       snapshot contains 43 cells reading "500 OK" beneath a header claiming the
       gate passed, because the positive arms asserted only "not denied".
       It is registered here rather than left as a hard failure because the cause
-      is a known backlog and not a regression: the dispatcher chooses an HTTP
-      status from the resolver exception's class name, and roughly 50 validation
-      refusals across the resolvers (test_set_resolver alone has ~40) raise a
-      bare `Exception`, which can only map to 500 `InternalError`. This harness
+      is a property of the resolvers and not a regression: the dispatcher chooses
+      an HTTP status from the resolver exception's class name, so a refusal that
+      raises a bare `Exception` can only map to 500 `InternalError`. This harness
       deliberately sends bogus arguments to prove auth ran before the argument
-      was used, so it lands on many of them.
-      Closing it means giving those refusals a `ValueError` so they become 400
-      `BadRequest`. Until then these are WARN: visible, counted separately, and
+      was used, so it lands on any such site.
+      Most of the backlog this gap was opened for is closed (issue #1304):
+      test_set_resolver's not-found refusals now raise `ResourceNotFound` -> 404
+      and its argument refusals raise `ValueError` -> 400, which is what the 15
+      operations listed in that issue were 500ing on. The gap stays open because
+      the condition it describes is a standing one, not a count — a bare
+      `Exception` anywhere in a resolver still reaches the caller as a 5xx, and
+      `scripts/tests/test_resolver_error_status_codes.py` is the offline guard
+      that keeps new ones from being added. Most residual sites left at 500 are
+      internal failures rather than caller-input refusals (a downstream invoke
+      that failed, an unroutable field, a misconfigured env var) — but SIX are
+      not, and the exception is named here rather than left as a set-wide claim
+      that is false for specific members:
+        - agent_request_handler/index.py:78,83,88 — missing query, query over
+          100,000 characters, no agent ids
+        - agent_chat_resolver/index.py:128,133,139 — missing prompt, missing
+          sessionId, prompt over 100,000 characters
+      Both files are dispatcher-routed (`submitAgentQuery` and
+      `sendAgentChatMessage` in FIELD_FUNCTION_MAP), each site is
+      `raise Exception(error_msg)`, and each is a malformed *argument*, so the
+      right answer is 400 `ValueError` and NOT the 404 `ResourceNotFound` that
+      issue #1304 is about. They are deliberately out of scope for it: a 400 is a
+      different convention from a 404, converting them changes the status six
+      caller-visible operations return, and that belongs in its own change with
+      its own CHANGELOG entry. The offline guard does not catch them either — it
+      matches not-found wording, and none of these is a not-found.
+      While it stands, such cells are WARN: visible, counted separately, and
       never counted as passes. Everything else inconclusive — a timeout, a dead
       connection, an unreadable body — is a HARD failure, because none of those
       is a known condition of this deployment.

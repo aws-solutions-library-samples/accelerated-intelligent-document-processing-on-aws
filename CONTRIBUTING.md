@@ -417,7 +417,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 84 files
-holding 193 pre-existing findings, and `[format] exclude` names 178 files that
+holding 192 pre-existing findings, and `[format] exclude` names 175 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.
@@ -468,7 +468,7 @@ Two practical consequences:
   `--allow-new-debt "<reason>"`, which records the reason in the baseline;
   `--summary` prints the current per-tree counts.
 
-The formatting debt is deliberately unpaid. Running `ruff format` over those 178
+The formatting debt is deliberately unpaid. Running `ruff format` over those 175
 files is a large, mechanical, conflict-generating diff, so it belongs in its own
 change rather than riding along with the one that narrowed the exclusions
 ([issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975)).
@@ -702,7 +702,7 @@ the `cfn-lint` pin drifts between the `Makefile` and either config.
 | `generate-dep-manifest.yml` | `generate-manifests` | `make dep-manifest` — only when the PR touches a dependency manifest input |
 
 **GitLab CI** (`.gitlab-ci.yml`) runs the same set in its `fast_checks` stage —
-`code_checks`, `srt_security_review` and `dep_audit` — plus two jobs that need
+`static_checks`, `unit_tests`, `package_tests`, `ui_tests`, `srt_security_review` and `dep_audit` — plus two jobs that need
 real AWS credentials and therefore cannot run on GitHub: `deployment_validation`
 and `integration_tests`, the latter deploying a stack and driving fourteen
 end-to-end steps through it. **A change merged through a GitHub pull request has
@@ -715,7 +715,7 @@ skipped in the past:
 - ⚠️ **GitHub's quality and security workflows are `pull_request`-only.** A
   direct push to `develop` runs no lint, type check, test, SRT or dependency
   audit on GitHub. (The two path-filtered workflows above do have `push:`
-  triggers, but neither runs any of those gates.) GitLab runs `code_checks` on
+  triggers, but neither runs any of those gates.) GitLab runs its `fast_checks` stage on
   **every push** as well as on merge requests, so the same push is not
   unchecked everywhere — it is simply unchecked on the side most contributors
   are looking at. Work through a pull request.
@@ -848,7 +848,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
 an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
-still excludes a named list of 84 files from the linter and 178 from the
+still excludes a named list of 84 files from the linter and 175 from the
 formatter. Both caveats are explained under
 [the local gate set](#before-every-commit), along with how to pay one of those
 files off. Types are checked

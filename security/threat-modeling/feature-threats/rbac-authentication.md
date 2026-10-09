@@ -84,7 +84,10 @@ Authorization is enforced at multiple layers:
 > authentication**, which includes a caller in no group at all.
 > 16 additionally enforce config-version scope, 4 filter
 > list rows by it, and 9 enforce per-object ownership. `scripts/api_rbac_expectations.yaml`
-> is the manifest of record for all of this, and records two accepted open gaps:
+> is the manifest of record for all of this. Its `known_gaps` block holds three
+> entries: `GAP-SEC-INCONCLUSIVE-5XX` bounds what the live harness can conclude (a
+> 5xx scores a cell INCONCLUSIVE, not a pass), and two are accepted authorization
+> gaps:
 > **GAP-02**, the `queryKnowledgeBase` *resolver* carries no group check of its own
 > (the operation is `ANY_GROUP`, so the dispatcher's floor is now the only group
 > gate on it), and **GAP-07**, the chat Function URL transport carries no

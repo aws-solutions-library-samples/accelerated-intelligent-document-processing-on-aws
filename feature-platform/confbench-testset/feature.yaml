@@ -50,9 +50,11 @@ ui:
     - cwd: feature-ui
       argv: ["npm", "run", "build"]
 # Bundled config preset — the Invoice extraction schema ConfBench's ground
-# truth uses. Identical to the realkie-fcc-verified managed config (ConfBench
-# is a noise augmentation of that same source), so cross-set accuracy
-# comparisons are valid. Applied at install as a NON-ACTIVE config version;
+# truth uses. The schema is identical to the realkie-fcc-verified managed
+# config's (ConfBench is a noise augmentation of that same source). That config
+# also sets classification.sectionSplitting: disabled, which this preset leaves
+# to the host's default profile, so compare the two test sets on one config
+# version. Applied at install as a NON-ACTIVE config version;
 # the ui-deployer additionally publishes it under the `confbench` version name
 # so Test Studio's "test set id == config version name" auto-select works.
 configPreset:
