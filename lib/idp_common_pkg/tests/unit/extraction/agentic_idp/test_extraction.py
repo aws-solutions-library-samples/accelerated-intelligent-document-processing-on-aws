@@ -355,18 +355,23 @@ def test_payslip(execution_number, s3_bucket):
     )
     # ⚠️ What this pins is that `ocr.features` resolved to include TABLES/LAYOUT
     # and that the textractor MARKDOWN linearizer ran -- not that the
-    # deterministic table parser gets USED. It is registered and then declines:
-    # `_preflight_table_parse` recommends the tool only at an estimated 50+ rows,
-    # and this section measures 30, so the result records
-    # `tool_usage_decision: {expected: false, actual: false, tool_enabled: true}`.
-    # That is a near miss rather than a wide one -- 30 is one row short of the
-    # separate `tool_usage_recommended` threshold -- so covering the deterministic
-    # path needs a genuinely large table, such as the `bank-statement-sample`
-    # preset, rather than a slightly busier payslip.
+    # deterministic table parser gets USED. The tool is registered and never
+    # recommended: `_analyze_ocr_for_tables` sets `tool_usage_recommended` only
+    # above 30 estimated rows and this section measures exactly 30, so the result
+    # records `tool_usage_decision: {expected: false, actual: false,
+    # tool_enabled: true}` -- not offered-and-refused, which is a different and
+    # more interesting state the same machinery can report. One row short of
+    # being recommended, and 20 short of `_preflight_table_parse`, which at 50+
+    # rows runs the deterministic parse itself rather than recommending anything.
+    # Covering that path needs a genuinely large table, such as the
+    # `bank-statement-sample` preset, rather than a slightly busier payslip.
     #
-    # (`tables_detected` is NOT the reason and cannot be: `_analyze_ocr_for_tables`
-    # derives it by counting pipe-bearing lines, so it is >= 1 for any text that
-    # satisfies the assertion below. It measures 3 here.)
+    # (`tables_detected` is a different measure and is not the reason: it counts
+    # gap-separated GROUPS of pipe-bearing lines, not the lines themselves, which
+    # is why it reads 3 here against 30 rows. It is >= 1 for any text with a
+    # non-separator pipe row -- rows matching `^[\s|:-]+$` are skipped, so a text
+    # of nothing but `|---|---|` would satisfy the assertion below and still
+    # measure 0. Real Textract markdown does not produce that.)
     #
     # A failure here is more likely to be the linearizer than the configuration:
     # `_parse_textract_response` falls back to plain `parsed_response.text` when
