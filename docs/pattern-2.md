@@ -256,7 +256,7 @@ Bedrock OCR is configured through the pattern's configuration files. The OCR bac
 ```yaml
 ocr:
   backend: "bedrock"  # Options: "textract", "bedrock", "none"
-  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  model_id: "us.anthropic.claude-sonnet-4-6"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
 ```
@@ -266,49 +266,14 @@ ocr:
 To use Bedrock OCR:
 
 1. **Set the backend**: Configure `backend: "bedrock"` in your OCR configuration
-2. **Choose a model**: Select from supported vision-capable models:
-   - `us.amazon.nova-lite-v1:0`
-   - `us.amazon.nova-pro-v1:0`
-   - `us.amazon.nova-2-lite-v1:0`
-   - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `us.anthropic.claude-haiku-5-5`
-   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `us.anthropic.claude-sonnet-4-6`
-   - `us.anthropic.claude-sonnet-4-6:1m`
-   - `us.anthropic.claude-sonnet-5`
-   - `us.anthropic.claude-sonnet-5:1m`
-   - `us.anthropic.claude-opus-4-5-20251101-v1:0`
-   - `us.anthropic.claude-opus-4-6-v1`
-   - `us.anthropic.claude-opus-4-6-v1:1m`
-   - `us.anthropic.claude-opus-4-7`
-   - `us.anthropic.claude-opus-4-7:1m`
-   - `us.anthropic.claude-opus-4-8`
-   - `us.anthropic.claude-opus-4-8:1m`
-   - `us.anthropic.claude-opus-5`
-   - `us.anthropic.claude-opus-5:1m`
-   - `us.anthropic.claude-opus-5-5`
-   - `us.anthropic.claude-opus-5-5:1m`
-   - `eu.amazon.nova-lite-v1:0`
-   - `eu.amazon.nova-pro-v1:0`
-   - `eu.amazon.nova-2-lite-v1:0`
-   - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `eu.anthropic.claude-haiku-5-5`
-   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-   - `eu.anthropic.claude-sonnet-4-6`
-   - `eu.anthropic.claude-sonnet-4-6:1m`
-   - `eu.anthropic.claude-sonnet-5`
-   - `eu.anthropic.claude-sonnet-5:1m`
-   - `eu.anthropic.claude-opus-4-5-20251101-v1:0`
-   - `eu.anthropic.claude-opus-4-6-v1`
-   - `eu.anthropic.claude-opus-4-6-v1:1m`
-   - `eu.anthropic.claude-opus-4-7`
-   - `eu.anthropic.claude-opus-4-7:1m`
-   - `eu.anthropic.claude-opus-4-8`
-   - `eu.anthropic.claude-opus-4-8:1m`
-   - `eu.anthropic.claude-opus-5`
-   - `eu.anthropic.claude-opus-5:1m`
-   - `eu.anthropic.claude-opus-5-5`
-   - `eu.anthropic.claude-opus-5-5:1m`
+2. **Choose a model**: Pick from the **Model** dropdown under OCR in the
+   configuration editor. It is generated from the `ocr.model_id` enum in
+   `patterns/unified/template.yaml`, and spans the `us.`, `eu.` and `global.`
+   Claude and Nova families, `qwen.qwen3-vl-235b-a22b`, Grok and the OpenAI
+   models. Commonly used: `us.amazon.nova-lite-v1:0` for clean
+   text-heavy scans, `us.amazon.nova-pro-v1:0` for mixed layouts,
+   `us.anthropic.claude-sonnet-4-6` for handwriting and dense tables. Select
+   `LambdaHook` to route OCR to your own Lambda function instead.
 
 3. **Configure prompts**: Customize system and task prompts for your specific use case
 4. **Deploy**: The configuration can be updated through the Web UI without stack redeployment

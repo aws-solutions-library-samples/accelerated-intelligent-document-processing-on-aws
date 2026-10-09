@@ -1845,12 +1845,12 @@
     },
     "scripts/tests/test_model_surface_consistency.py::RETIRED_LITERAL_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the 'no retired model id is written as a literal in production Python' check, per LINE, for four specific lines",
+      "turnsOff": "the 'no retired model id is written as a literal in production Python' check, for four paths: two whole-file (the registry itself and a dev-tooling probe list) and two by line pattern",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "count-pinned",
-      "reason": "Each entry is a path plus a substring of the one line it covers, so a reason answers for one member. retired_models.py IS the registry, so its keys must be the dead ids. update_configuration/index.py holds the end-of-life->live rewrite map applied to a stored configuration at deploy time; its KEYS must be the dead ids or the rewrite cannot match the config it repairs. discover_model_limits.py and run_classification_bench.py are developer tooling, neither shipped nor customer-reachable: probing Bedrock about a retired model is a valid probe, and both fail loudly at the API for the caller who ran them. The check is a denylist and not a closure on purpose -- the legitimate model literals in this tree number 79 and grow normally, so being RETIRED is the property worth asserting.",
+      "reason": "Each entry is a path plus a substring of the one line it covers, so a reason answers for one member. retired_models.py IS the registry, so its keys must be the dead ids. update_configuration/index.py holds the end-of-life->live rewrite map applied to a stored configuration at deploy time; its KEYS must be the dead ids or the rewrite cannot match the config it repairs. discover_model_limits.py and run_classification_bench.py are developer tooling, neither shipped nor customer-reachable: probing Bedrock about a retired model is a valid probe, and both fail loudly at the API for the caller who ran them. The check is a denylist and not a closure on purpose -- the legitimate model literals in this tree are many and grow normally, so being RETIRED is the property worth asserting.",
       "memberKind": "path plus line pattern",
       "ratchetEvidence": "scripts/tests/test_model_surface_consistency.py",
       "crossReferences": [

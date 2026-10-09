@@ -3555,7 +3555,7 @@ Resources:
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
-                    default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                    default: "us.anthropic.claude-sonnet-4-6"
                     order: 0
                   temperature:
                     type: number
@@ -3672,7 +3672,7 @@ Resources:
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
-                    default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                    default: "us.anthropic.claude-sonnet-4-6"
                     order: 0
                   temperature:
                     type: number

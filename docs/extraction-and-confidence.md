@@ -156,8 +156,8 @@ Agentic extraction requires models with tool-use support:
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
   - `us.anthropic.claude-sonnet-5` — the shipped extraction default
   - `us.anthropic.claude-sonnet-4-6` — best balance of speed and cost
-  - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — still selectable, but AWS has
-    moved it to legacy (end of life 2027-04-08)
+  - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — still selectable, but an AWS
+    Health notice puts it in legacy with end of life on 2027-04-08
 - **Anthropic Claude Opus** models (for highest accuracy requirements), e.g.
   `us.anthropic.claude-opus-5`
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
