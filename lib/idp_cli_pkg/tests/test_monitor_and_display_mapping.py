@@ -159,12 +159,25 @@ def monitored_client(statuses: list[BatchStatus]) -> tuple[IDPClient, list[str]]
     Real so that `_monitor_progress`'s `isinstance` check takes the modern branch.
     The last entry repeats if the loop asks for more, so a test that miscounts polls
     fails on the poll count rather than on an `IndexError`.
+
+    The poll ceiling is what makes a mistake in the replay list diagnosable. The
+    loop runs on a fake clock and exits only on `all_complete`, so a final entry
+    that leaves it `False` spins forever at full speed rather than failing — the
+    test would hang until the suite timed out, naming nothing. Raising instead
+    says which list is wrong.
     """
     client = IDPClient(stack_name="my-stack", region="us-east-1")
     asked: list[str] = []
+    ceiling = max(50, len(statuses) * 2)
 
     def get_status(batch_id: str) -> BatchStatus:
         asked.append(batch_id)
+        if len(asked) > ceiling:
+            raise AssertionError(
+                f"_monitor_progress polled {len(asked)} times without finishing; "
+                f"the last of the {len(statuses)} replayed status(es) probably "
+                "leaves all_complete False, which never ends the loop"
+            )
         return statuses[min(len(asked) - 1, len(statuses) - 1)]
 
     client.batch.get_status = get_status  # type: ignore[method-assign]
@@ -804,32 +817,72 @@ class TestMonitorProgress:
             == 0
         )
 
-    def test_a_complete_batch_with_nothing_terminal_waits_out_the_grace_period(
+    def test_a_queued_document_keeps_the_loop_polling_until_it_settles(
         self, monkeypatch
     ):
-        """`all_complete` alone does not end the loop while everything is still queued.
+        """A document still waiting on the queue keeps the loop running.
 
-        The SDK reports `all_complete=True` for a batch whose documents have not
-        reached the tracking table yet — no document is in a non-terminal state
-        because there are no documents — and exiting there would declare a batch
-        finished seconds after submitting it. The loop therefore also requires either
-        one completed/failed document or 60 seconds elapsed. Here nothing ever
-        becomes terminal, so it is the 60-second floor that ends it: at a 5-second
-        interval that is 13 polls (the first at elapsed 0, then 12 sleeps to reach
-        exactly 60). A regression that dropped the grace period would stop at 1.
+        This is the case the loop has to get right when a batch has just been
+        submitted: the upload has returned but QueueSender has not written the
+        tracking row yet, so the document is not terminal and the batch is not
+        finished. `all_complete` carries that on its own — it is
+        `completed + failed == total`, so a single queued document makes it
+        `False` — and the loop's only job is to believe it.
+
+        There used to be a second grace period at this spot in the loop
+        (`MIN_WAIT_BEFORE_COMPLETE = 60`) that re-derived the same conclusion
+        from the counts, and it could not fire: it was guarded by
+        `has_terminal_docs or waited_long_enough`, and for any non-empty batch
+        `all_complete` already implies `has_terminal_docs`. The test that
+        covered it had to hand the loop a state the SDK cannot produce — a
+        `QUEUED` document together with `all_complete=True` — so it pinned the
+        branch rather than the behaviour. Waiting for the queue now happens in
+        the monitor, against the batch's submission time; see
+        `NOT_FOUND_GRACE_SECONDS`.
         """
         clock = Clock()
         monkeypatch.setattr(cli_module, "time", clock)
         client, asked = monitored_client(
-            [batch([doc("a.pdf", "QUEUED")], all_complete=True)]
+            [
+                batch([doc("a.pdf", "QUEUED")]),
+                batch([doc("a.pdf", "OCR")]),
+                batch(
+                    [doc("a.pdf", "COMPLETED", duration_seconds=2.0)],
+                    all_complete=True,
+                ),
+            ]
         )
 
         cli_module._monitor_progress(
             client=client, batch_id="batch-1", refresh_interval=5
         )
 
-        assert len(asked) == 13
-        assert sum(clock.slept) == 60
+        assert len(asked) == 3
+        assert clock.slept == [5, 5]
+
+    def test_the_loop_does_not_re_derive_completeness_from_the_counts(
+        self, monkeypatch
+    ):
+        """`all_complete` is the whole exit condition, even with nothing completed.
+
+        A batch whose every document failed reports `completed == 0`, and the
+        removed grace period would have been consulted for exactly that shape.
+        The loop must exit on the first poll: the documents are terminal, so
+        there is nothing left to wait for, and sleeping 60s before saying so was
+        never the intent.
+        """
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        client, asked = monitored_client(
+            [batch([doc("a.pdf", "FAILED", error="boom")], all_complete=True)]
+        )
+
+        cli_module._monitor_progress(
+            client=client, batch_id="batch-1", refresh_interval=5
+        )
+
+        assert len(asked) == 1
+        assert clock.slept == []
 
     def test_one_terminal_document_ends_the_loop_immediately(self, monkeypatch):
         """The other half of the grace period: a real completion needs no wait."""

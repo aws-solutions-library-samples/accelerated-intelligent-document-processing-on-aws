@@ -49,6 +49,7 @@ import base64
 import json
 import os
 import warnings
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import boto3
@@ -68,6 +69,7 @@ from idp_sdk.models import (
     BatchProcessResult,
     RerunStep,
 )
+from idp_sdk.operations.batch import _batch_started_at
 
 STACK_NAME = "test-idp-stack"
 BARE_STACK = "test-idp-stack-bare"
@@ -981,7 +983,73 @@ class TestGetStatus:
 
         client.batch.get_status("b")
 
-        monitor.get_batch_status.assert_called_once_with(["b/a.pdf"])
+        # The submission time is passed alongside the keys, parsed from the
+        # stored metadata's ``timestamp``. The monitor needs it to tell a
+        # document whose tracking row has not been written yet from one that
+        # will never have a row; without it every poll in the first seconds of a
+        # batch reports it complete-and-failed.
+        monitor.get_batch_status.assert_called_once_with(
+            ["b/a.pdf"],
+            batch_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            ("2026-01-01T00:00:00+00:00", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            # `Z` is valid ISO 8601 and `fromisoformat` rejected it before 3.11.
+            ("2026-01-01T00:00:00Z", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            ("2026-01-01T00:00:00", datetime(2026, 1, 1)),
+        ],
+    )
+    def test_the_stored_submission_time_is_parsed(self, stored, expected):
+        assert _batch_started_at({"timestamp": stored}) == expected
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            {},
+            {"timestamp": None},
+            {"timestamp": "not a timestamp"},
+            {"timestamp": 1767225600},
+        ],
+        ids=["absent", "null", "unparseable", "epoch-int"],
+    )
+    def test_an_unusable_submission_time_becomes_none_instead_of_raising(self, record):
+        """A bad timestamp must cost the grace window, not the status query.
+
+        `None` means "assume it has settled", which is the behaviour that
+        predates the grace window — so the worst case is the race coming back
+        for that one batch, rather than `get_status` raising and telling the
+        caller nothing at all. The integer case is the one worth naming: batch
+        metadata is JSON, so a hand-written or older record can hold an epoch
+        rather than a string, and `str.replace` on an `int` is an
+        `AttributeError` rather than the `ValueError` the parse guards.
+        """
+        assert _batch_started_at(record) is None
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_batch_with_an_unusable_timestamp_still_reports_status(
+        self, monitor_cls, client, s3
+    ):
+        """The degraded path end to end: no grace window, but an answer."""
+        _store_batch(s3, "b", ["b/a.pdf"], timestamp="whenever")
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [],
+            "running": [],
+            "queued": [],
+            "failed": [],
+            "all_complete": True,
+            "total": 1,
+        }
+        monitor.calculate_statistics.return_value = {"total": 1}
+        monitor_cls.return_value = monitor
+
+        assert client.batch.get_status("b").total == 1
+        monitor.get_batch_status.assert_called_once_with(
+            ["b/a.pdf"], batch_started_at=None
+        )
 
     @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
     def test_empty_timestamps_become_none_rather_than_empty_strings(
