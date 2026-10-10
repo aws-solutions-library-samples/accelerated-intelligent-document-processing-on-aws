@@ -94,14 +94,14 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 20 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 22 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. Nineteen of the twenty alarms publish to
-the `AlertsTopic` SNS topic; the twentieth, `BedrockServiceOutageAlarm`, publishes to
+through them — the nested stacks declare none. Twenty-one of the twenty-two alarms publish to
+the `AlertsTopic` SNS topic; the twenty-second, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`
 and is the only conditional one, so it exists only when you enable the circuit breaker.
-The other nineteen are unconditional, which is why a default deployment has exactly
-nineteen. They fall into seven groups:
+The other twenty-one are unconditional, which is why a default deployment has exactly
+twenty-one. They fall into eight groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -109,17 +109,18 @@ nineteen. They fall into seven groups:
 | `DocumentQueueDLQAlarm`, `WorkflowTrackerDLQAlarm`, `QueueSenderDLQAlarm`, `DataMartRollupDLQAlarm` | Any visible message on a dead-letter queue |
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
-| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
-| `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a profile or revision that no longer exists, or is persistently refusing documents. The first two belong with the rows above for the same reason: the documents succeed, so nothing else on this list moves, while the extraction reflects a configuration nobody chose. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. The third is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the first of several alarms here that watch a *successful* outcome — the row below and the agent-transcript row are the others — and the reason it has to exist: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
+| `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a Configuration Profile that no longer exists, or is persistently refusing documents. The first two watch a successful outcome, like the row above: the documents succeed, so nothing else on this list moves, while the extraction reflects a configuration nobody chose. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. ⚠️ A mapping's *pinned revision* going missing is **not** among the conditions detected: the ingest-time existence check is on the profile only, and such a document fails downstream when the configuration is loaded instead. The third alarm is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
 | `AgentTranscriptMessageDroppedAlarm`, `AgentTranscriptDrainIncompleteAlarm` | Ten or more agent conversation messages, in fifteen minutes, either dropped from the stored transcript or left behind by the bounded drain at an agent's close. Like the row above, both watch an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is at risk is an entry in the transcript the analytics UI replays. They are two alarms because they license different conclusions: a dropped message is gone (contention beyond what the bounded retry absorbs, or reads that keep failing), whereas an unfinished drain leaves a write that was never cancelled and often commits when the execution environment is next thawed |
+| `DataMartMigrationStateMachineFailureAlarm`, `DataMartRollupAbsenceAlarm` | A data-mart migration state-machine execution ended in `FAILED`/`TIMED_OUT`/`ABORTED` — the migration did not complete cleanly and the SSM marker will not have advanced to `state=completed`, so scheduled rollups defer until an operator investigates; and, separately, four consecutive one-hour windows with zero rollup Lambda invocations — the class of failure where a redeploy dropped the EventBridge schedule from the stack, which the DLQ alarm cannot see because that fires on failures, not absences |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
 ingestion, queue depth, the concurrency counter and workflow outcomes, and one in
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: twenty-two Lambda functions
-across the two main templates — seven in `template.yaml` and fifteen in
+Distributed tracing is instrumented, not merely recommended: 23 Lambda functions
+across the two main templates — 8 in `template.yaml` and 15 in
 `patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
 optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
 section (`seller-entitlement-service` is the exception). In the two main templates the
@@ -241,7 +242,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-122 operations. 112 of them require Cognito group membership and 2
+123 operations. 113 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 18 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -325,12 +326,12 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 125 IAM policy statements are written against `Resource: "*"` — 51 in
+extensions, 127 IAM policy statements are written against `Resource: "*"` — 53 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
 API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 28
-of the 125, and the X-Ray read actions, `textract:DetectDocumentText` and
+of the 127, and the X-Ray read actions, `textract:DetectDocumentText` and
 `textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
 audited statement by statement, so treat the number as a surface to review rather than as a
 count of findings. A permissions boundary is the practical lever for narrowing whatever you
@@ -434,7 +435,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 319 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 329 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

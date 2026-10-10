@@ -195,8 +195,20 @@ def validate_capacity_input(input_data: Dict[str, Any]) -> None:
     elif pattern not in ('pattern-2', 'unified'):
         errors.append(f'Only pattern-2 and unified patterns are supported, got: {pattern}')
 
-    # Validate maxAllowedLatency
-    max_latency = input_data.get('maxAllowedLatency') or input_data.get('max_allowed_latency')
+    # Validate maxAllowedLatency. The two spellings are alternatives, and which one
+    # supplied the value is decided on whether it is present rather than on whether
+    # it is truthy: `0` is a value an operator can type, and reading it as absent
+    # reported a field they did fill in as missing and put the "must be positive"
+    # check below out of reach of the one value that can reach it. An empty string
+    # counts as not supplied, as it does for the numeric document fields further
+    # down, so clearing the field still reads as a missing value rather than as a
+    # malformed number.
+    max_latency = None
+    for latency_key in ('maxAllowedLatency', 'max_allowed_latency'):
+        candidate = input_data.get(latency_key)
+        if candidate is not None and candidate != '':
+            max_latency = candidate
+            break
     if max_latency is None:
         errors.append('maxAllowedLatency or max_allowed_latency is required')
     else:

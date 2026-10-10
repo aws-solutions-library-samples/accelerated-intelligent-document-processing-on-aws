@@ -91,6 +91,41 @@ def test_canonical_key_collapses_the_forms_s3_treats_as_distinct(raw, expected):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "key",
+    [
+        "finance/x.pdf",
+        "/finance/x.pdf",
+        "finance//x.pdf",
+        "finance/./x.pdf",
+        "./finance/x.pdf",
+    ],
+)
+def test_no_one_character_spelling_evades_an_exact_key_mapping(key):
+    """S3 serves the same object for all of these and treats each key as distinct.
+
+    An exact-key mapping is the shape a `reject` rule uses to protect one object, so
+    a spelling that resolves to the object while matching no mapping is a bypass.
+    """
+    assert find_match(key, [_mapping("finance/x.pdf", "reg")]) is not None
+
+
+@pytest.mark.unit
+def test_a_parent_segment_is_matched_literally_rather_than_resolved():
+    """`..` is left alone, deliberately.
+
+    S3 keys are opaque strings with no parent directory, so `a/b/../c` is a real,
+    distinct object. Resolving it the way a filesystem would would make this claim a
+    key S3 serves from somewhere else, so such an object simply has no mapping
+    unless one names it literally -- which `prefix_rejection_reason` refuses, so in
+    practice it has none.
+    """
+    assert canonical_key("a/b/../c.pdf") == "a/b/../c.pdf"
+    assert find_match("a/b/../c.pdf", [_mapping("a/b/", "p")]) is not None
+    assert find_match("a/b/../c.pdf", [_mapping("a/c/", "p")]) is None
+
+
+@pytest.mark.unit
 def test_a_leading_slash_does_not_bypass_a_mapping():
     """The one-character bypass: S3 accepts '/finance/x.pdf' as a distinct key."""
     mappings = [_mapping("finance/", "lending")]

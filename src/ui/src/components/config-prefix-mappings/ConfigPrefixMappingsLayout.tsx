@@ -94,16 +94,43 @@ const EMPTY_FORM: FormState = {
   description: '',
 };
 
+/**
+ * Why the typed prefix can never work as a mapping, or null if it can.
+ *
+ * A client-side mirror of the server's `prefix_rejection_reason`
+ * (`lib/idp_common_pkg/idp_common/config/prefix_mappings.py`) — the server stays
+ * the authority, this only saves a round trip. It is returned as a **string**
+ * because it is rendered as the form field's `errorText`, not its
+ * `constraintText`: constraint text is advisory, so a screen reader never
+ * announces it as a problem and Save stays enabled. A prefix that can never
+ * match is not advice.
+ *
+ * The checks are in the server's order on purpose. They overlap — `'/'` fails
+ * three of them — so the order decides which sentence the admin reads, and the
+ * two sides disagreeing about that is a confusing way to be consistent.
+ */
+const prefixError = (prefix: string): string | null => {
+  if (!prefix) return null;
+  const ROOT_REFUSAL =
+    'A root mapping is not allowed: it would change the configuration of every unmapped upload in this deployment. The active Configuration Profile already serves that purpose.';
+  if (prefix === '/' || prefix === '//') return ROOT_REFUSAL;
+  if (prefix.startsWith('/')) {
+    return "A mapping prefix must not start with '/'. S3 keys do not, so the mapping would never match.";
+  }
+  if (prefix.includes('//')) {
+    return "A mapping prefix must not contain '//'. S3 treats 'acme//invoices/' as a different folder from 'acme/invoices/', so the mapping would never match.";
+  }
+  if (prefix.split('/').some((segment) => segment === '.' || segment === '..')) {
+    return "A mapping prefix must not contain '.' or '..' path segments.";
+  }
+  // Last, as on the server: anything left that canonicalizes to nothing at all.
+  if (prefix.split('/').every((segment) => !segment)) return ROOT_REFUSAL;
+  return null;
+};
+
 /** Which mode the typed prefix selects, shown live so it is never a surprise. */
 const describePrefix = (prefix: string): React.ReactNode => {
-  if (!prefix) return null;
-  if (prefix.startsWith('/') || prefix.includes('//')) {
-    return (
-      <Box color="text-status-error">
-        S3 keys do not start with &lsquo;/&rsquo; and never contain &lsquo;//&rsquo;, so this mapping would never match.
-      </Box>
-    );
-  }
+  if (!prefix || prefixError(prefix)) return null;
   if (prefix.endsWith('/')) {
     return (
       <Box color="text-body-secondary">
@@ -135,8 +162,14 @@ const shadowedBy = (mapping: ConfigPrefixMapping, all: ConfigPrefixMapping[]): s
     .map((other) => other.prefix);
 
 const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
-  const { isAdmin, loading: roleLoading } = useUserRole();
-  const { versions, fetchVersions } = useConfigurationVersions();
+  const { isAdmin, loading: roleLoading, sessionError, retrySession } = useUserRole();
+  // `fetchVersions` is deliberately NOT taken from this hook. It is a plain
+  // arrow function rather than a `useCallback`, so it has a new identity on
+  // every render; calling it from an effect that also depends on it set state,
+  // produced a new identity, and re-fired the effect — an unbounded request loop
+  // for as long as the page was open, with the table never leaving `loading`.
+  // The hook already fetches once on mount, which is what this page needs.
+  const { versions, loading: versionsLoading, error: versionsError } = useConfigurationVersions();
   const { mappings, loading, error, setError, loadMappings, saveMapping, removeMapping, previewAssignment } = useConfigPrefixMappings();
 
   const [showForm, setShowForm] = useState(false);
@@ -144,16 +177,15 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<ConfigPrefixMapping | null>(null);
+  const [deleteInFlight, setDeleteInFlight] = useState(false);
   const [testKey, setTestKey] = useState('');
   const [testResult, setTestResult] = useState<ConfigAssignmentPreview | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
-    if (isAdmin && !roleLoading) {
-      loadMappings();
-      fetchVersions();
-    }
-  }, [isAdmin, roleLoading, loadMappings, fetchVersions]);
+    if (isAdmin && !roleLoading) loadMappings();
+  }, [isAdmin, roleLoading, loadMappings]);
 
   const profileOptions: SelectProps.Option[] = useMemo(
     () => versions.map((v) => ({ value: v.versionName, label: v.versionName })),
@@ -184,6 +216,26 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
     [setError],
   );
 
+  /**
+   * Why the prefix in the form cannot be saved, or null if it can.
+   *
+   * Two reasons, and the second is the one that is not obvious.
+   * `putConfigPrefixMapping` is a **create-or-replace** on the prefix, so typing
+   * a prefix that already has a mapping overwrites its profile, pinned revision,
+   * conflict mode and description — under a modal headed "Create prefix
+   * mapping", with no indication that anything was replaced. The prefix field is
+   * disabled while editing, so this only has to hold for the create path.
+   */
+  const formPrefixError = useMemo(() => {
+    const typed = form.prefix.trim();
+    const invalid = prefixError(typed);
+    if (invalid) return invalid;
+    if (!editingPrefix && typed && mappings.some((m) => m.prefix === typed)) {
+      return `A mapping for '${typed}' already exists. Use Edit on that row to change it — saving here would replace its profile, pinned revision and conflict mode.`;
+    }
+    return null;
+  }, [form.prefix, editingPrefix, mappings]);
+
   const submit = useCallback(async () => {
     setSaving(true);
     const ok = await saveMapping({
@@ -201,16 +253,33 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
     }
   }, [form, saveMapping, loadMappings]);
 
+  // The in-flight guard is not cosmetic: the second of two clicks sends a second
+  // delete, which the server answers "No configuration prefix mapping for
+  // 'acme/'" — so a delete that worked reports as a failure, and the admin is
+  // left unsure whether it happened.
   const confirmDelete = useCallback(async () => {
-    if (!deleting) return;
+    if (!deleting || deleteInFlight) return;
+    setDeleteInFlight(true);
     const ok = await removeMapping(deleting.prefix);
+    setDeleteInFlight(false);
     setDeleting(null);
     if (ok) await loadMappings();
-  }, [deleting, removeMapping, loadMappings]);
+  }, [deleting, deleteInFlight, removeMapping, loadMappings]);
 
   const runTest = useCallback(async () => {
     setTesting(true);
-    setTestResult(await previewAssignment(testKey.trim()));
+    setTestError(null);
+    setTestResult(null);
+    const result = await previewAssignment(testKey.trim());
+    // `previewAssignment` swallows its own errors and returns null, on purpose:
+    // the same function runs on every keystroke behind the upload panel's
+    // debounce, where an error banner over a half-filled form is worse than
+    // silence. Here the key is non-empty (the button is disabled otherwise), so
+    // null can only mean the call failed — and without this branch the spinner
+    // just stopped and nothing appeared, which is indistinguishable from a
+    // resolution that returned nothing.
+    if (result) setTestResult(result);
+    else setTestError('Could not resolve that key — the request failed. Check that you are still signed in, then try again.');
     setTesting(false);
   }, [testKey, previewAssignment]);
 
@@ -220,6 +289,23 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
         <Box textAlign="center" padding="xxl">
           <StatusIndicator type="loading">Loading configuration prefix mappings...</StatusIndicator>
         </Box>
+      </Container>
+    );
+  }
+
+  // "I could not find out what your groups are" is a different statement from
+  // "you have none", and only one of them is the reader's problem to act on.
+  // Without this branch a failed session read fell through to the message below
+  // and told an entitled Admin to go and ask an administrator for access —
+  // sending them to someone with nothing to fix, over a condition that usually
+  // clears on a retry.
+  if (sessionError) {
+    return (
+      <Container>
+        <Alert type="error" header="Could not read your session" action={<Button onClick={retrySession}>Retry</Button>}>
+          Your group membership could not be read, so this page cannot tell whether you may manage configuration prefix mappings. This is
+          usually transient.
+        </Alert>
       </Container>
     );
   }
@@ -326,7 +412,8 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
             description="Assign a Configuration Profile to everything uploaded under an S3 prefix, so the destination decides the configuration instead of each uploader having to specify one."
             actions={
               <SpaceBetween direction="horizontal" size="xs">
-                <Button iconName="refresh" onClick={loadMappings} loading={loading} />
+                {/* Icon-only, so the label is the only thing a screen reader has to go on. */}
+                <Button iconName="refresh" ariaLabel="Refresh mappings" onClick={loadMappings} loading={loading} />
                 <Button variant="primary" onClick={openCreate}>
                   Create mapping
                 </Button>
@@ -388,6 +475,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
               <Button onClick={runTest} loading={testing} disabled={!testKey.trim()}>
                 Resolve
               </Button>
+              {testError && <Alert type="error">{testError}</Alert>}
               {testResult && (
                 <Alert type={testResult.rejected ? 'error' : testResult.conflict ? 'warning' : 'success'}>
                   <SpaceBetween size="xxs">
@@ -416,7 +504,12 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
               <Button variant="link" onClick={() => setShowForm(false)}>
                 Cancel
               </Button>
-              <Button variant="primary" onClick={submit} loading={saving} disabled={!form.prefix.trim() || !form.configProfile}>
+              <Button
+                variant="primary"
+                onClick={submit}
+                loading={saving}
+                disabled={!form.prefix.trim() || !form.configProfile || !!formPrefixError}
+              >
                 Save
               </Button>
             </SpaceBetween>
@@ -431,6 +524,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
               label="S3 prefix"
               description="Relative to the Input bucket root. End with '/' to match a folder; omit it to match one exact object key."
               constraintText={describePrefix(form.prefix)}
+              errorText={formPrefixError ?? undefined}
             >
               <Input
                 value={form.prefix}
@@ -440,24 +534,47 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
               />
             </FormField>
 
-            <FormField label="Configuration Profile" description="Documents landing here are processed under this profile.">
+            {/* The profile list comes from `useConfigurationVersions`, whose
+                `loading` and `error` were previously dropped on the floor: on a
+                failed fetch the dropdown was simply empty, with no status and no
+                reason, and Save could never enable because no profile could be
+                picked. */}
+            <FormField
+              label="Configuration Profile"
+              description="Documents landing here are processed under this profile."
+              errorText={versionsError ?? undefined}
+            >
               <Select
                 selectedOption={form.configProfile ? { value: form.configProfile, label: form.configProfile } : null}
                 options={profileOptions}
                 onChange={({ detail }) =>
                   setForm((f) => ({ ...f, configProfile: detail.selectedOption.value ?? '', configRevision: null }))
                 }
+                statusType={versionsLoading ? 'loading' : versionsError ? 'error' : 'finished'}
+                loadingText="Loading configuration profiles..."
+                errorText={versionsError ?? undefined}
+                empty="No configuration profiles"
                 placeholder="Choose a profile"
               />
             </FormField>
 
-            <ConfigRevisionSelector
-              profileName={form.configProfile || null}
-              value={form.configRevision}
-              onChange={(revision) => setForm((f) => ({ ...f, configRevision: revision }))}
-              label="Revision"
-              description="Leave as the published revision so the mapping follows promotions, the way the active profile does. Pinning a revision protects it from retention, and it will not change until you change the mapping."
-            />
+            {/* Mounted only while the form is open, which is what preserves a
+                stored revision. Cloudscape's Modal keeps hidden children
+                MOUNTED (it toggles a CSS class, it does not unmount), so a
+                selector rendered unconditionally here lives for the life of the
+                page and sees `openEdit` populating the form as a profile
+                *change* — and a profile change legitimately clears the
+                revision. Remounting per open means each open starts from that
+                mapping's own profile. */}
+            {showForm && (
+              <ConfigRevisionSelector
+                profileName={form.configProfile || null}
+                value={form.configRevision}
+                onChange={(revision) => setForm((f) => ({ ...f, configRevision: revision }))}
+                label="Revision"
+                description="Leave as the published revision so the mapping follows promotions, the way the active profile does. Pinning a revision protects it from retention, and it will not change until you change the mapping."
+              />
+            )}
 
             <FormField
               label="If the upload also specifies a profile"
@@ -503,15 +620,17 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
 
       <Modal
         visible={!!deleting}
-        onDismiss={() => setDeleting(null)}
+        onDismiss={() => {
+          if (!deleteInFlight) setDeleting(null);
+        }}
         header="Delete prefix mapping"
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
-              <Button variant="link" onClick={() => setDeleting(null)}>
+              <Button variant="link" onClick={() => setDeleting(null)} disabled={deleteInFlight}>
                 Cancel
               </Button>
-              <Button variant="primary" onClick={confirmDelete}>
+              <Button variant="primary" onClick={confirmDelete} loading={deleteInFlight}>
                 Delete
               </Button>
             </SpaceBetween>

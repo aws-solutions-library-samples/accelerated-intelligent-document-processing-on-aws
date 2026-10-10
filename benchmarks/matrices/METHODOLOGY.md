@@ -145,14 +145,52 @@ What the callers do with that:
   Not a set of nulls: `calibration_curve: null` already means "measured, and there was
   nothing to join". The row carries `sections_unreadable` and `sections_unread` and
   nothing else, so it falls out of every average instead of biasing one.
+- **`analyze.score_doc` also refuses to price a metering row it read and cannot fully
+  price.** `lib.price_metering` returns a `lib.Priced` whose `.total` is unavailable
+  unless every entry priced, so a metering key with no `pricing.yaml` entry, an entry
+  that is not a map of unit to count, and a count that is not a number are all named in
+  `cost_unpriced` instead of contributing nothing to a sum. The tokens stay, because
+  they were read rather than priced, and they are what says how much cost is missing.
+
+  ⚠️ **This is the one with no zero to give it away.** An unread metering row leaves
+  every cost figure null. A row carrying an unpriced *model* has its other phases priced
+  normally, so its total is non-zero and plausible while being strictly below truth, and
+  nothing in the artifact looks wrong. Adding a model arm is when it happens, which is
+  why a unit test requires every model id an axis in `config_matrix.yaml` can select to
+  have a `bedrock/<id>` pricing entry — before a grid is paid for rather than after.
+
+  A unit a matched pricing entry does **not** list is a real `$0.00`, not a missing
+  price: `pricing.yaml` omits units that do not apply, and every Bedrock call meters
+  `totalTokens` and `requests`, which Bedrock does not charge for. The product's own
+  cost reporting decided that rule first and the two are required to agree, so
+  reporting the unit axis here would mark every Bedrock entry in every row unpriceable
+  *and* put the two cost figures out of step.
 - **`aggregate.cell_stats` counts the exclusions** (`n_cost_unread`,
-  `n_sections_unread`), so a mean taken over a thinned sample says that it was thinned.
-  `compare_cells` prints the same under `MEASURED OVER FEWER RUNS THAN IT LOOKS`.
+  `n_cost_unpriced`, `n_sections_unread`), so a mean taken over a thinned sample says
+  that it was thinned. `compare_cells` prints the same under `MEASURED OVER FEWER RUNS
+  THAN IT LOOKS`, naming which of the two causes applies.
 - **`aggregate.calibration_study` has an `unreadable` bucket** next to `no_confidence`
   and `no_joinable_cell`, so an undecryptable grid is visibly different from an
   unassessed one.
 - **`aggregate.augment_summary` asks every row** rather than probing the first empty
   prefix, and leaves an unreadable row un-augmented.
+- **There is one metering decoder, `lib.metering_of_item`**, and everything that reads
+  a `Metering` attribute goes through it — `lib.read_metering` is that function plus a
+  `GetItem`. More generally `lib.ddb_to_py` is callable from `lib.py` only, with a
+  named reader per attribute (`metering_of_item`, `status_of_item`,
+  `sections_of_item`); reading a new attribute means adding one rather than decoding
+  locally, and a test holds that layering. Splitting them apart is the fix for a specific way this class comes back:
+  a caller working from a `Scan` rather than a key could not reuse a reader that did
+  its own fetch, so it wrote a local one, and a local one written to get a number out
+  answers `{}` for everything it cannot decode. Two had
+  ([#1205](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1205)).
+  The paired real-corpus A/Bs (`real_corpus_ab.py`, `detection_ab_teststudio.py`) now
+  **exclude** a document whose metering will not decode from the cost and token means
+  rather than contributing a zero to both, name it in the console output *and* in the
+  summary artifact (`excluded` / `n_excluded`, and `tokens_unread` per row), and print
+  the surviving denominator next to the token table. A zero in a paired mean is
+  indistinguishable from a measurement, and these means are what a cache or token
+  claim rests on.
 
 The failure that motivated all of this cost nothing only by luck. A release stack's KMS
 key entered pending deletion, so every object in its output bucket was present, listable
@@ -277,10 +315,11 @@ blind spot before it was closed.
   NEVER average accuracy over only the docs that completed without saying so.
 - Any cell that is capped/sampled/skipped for cost is logged in `meta.json`, not
   silently dropped.
-- A figure that could not be READ is null and carries a reason, never zero. Before
-  quoting a cost or an accuracy, check the row's `cost_unread` / `sections_unread` and
-  the cell's `n_cost_unread` / `n_sections_unread` — see "Read failures do not silently
-  become measurements either" above.
+- A figure that could not be READ, or could not be PRICED, is null and carries a
+  reason, never zero. Before quoting a cost or an accuracy, check the row's
+  `cost_unread` / `cost_unpriced` / `sections_unread` and the cell's `n_cost_unread` /
+  `n_cost_unpriced` / `n_sections_unread` — see "Read failures do not silently become
+  measurements either" above.
 - Costs are ESTIMATES from pricing.yaml (intro pricing may apply); state the rate date.
 
 ## 7. Cost/time budgeting

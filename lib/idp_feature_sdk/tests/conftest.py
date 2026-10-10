@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from textwrap import dedent
@@ -10,6 +11,31 @@ import boto3
 import pytest
 from moto import mock_aws
 
+#: Width to render Rich output at, for every test in this package.
+#:
+#: Rich decides its width from the output file's terminal size, falling back to 80 when
+#: there is no terminal. Click's `CliRunner` captures into a StringIO, so there never is
+#: one — and under `pytest -n` the worker has no controlling terminal either, while a
+#: direct run inherits the developer's. So the same assertion passed serially and failed
+#: under xdist: five tests asserting a long path, URL or account id found it wrapped
+#: mid-token (`de\nfaulted`, `d eploy.yaml`) or replaced by a `…` inside a table.
+#:
+#: That is worse than a plain failure, because it makes the result a property of how
+#: pytest was invoked rather than of the code. Pinning the width makes it deterministic
+#: in both, and 200 is wide enough that nothing these tests assert wraps.
+#:
+#: Note whitespace-collapsing the output is NOT an adequate substitute: a table cell
+#: truncated to `2026-08…` has lost characters that no amount of rejoining recovers.
+RICH_TEST_WIDTH = "200"
+
+
+# Set at conftest IMPORT time, not in a fixture. `idp_feature_sdk.cli` builds its
+# `Console` at module level, and Rich captures the environment mapping it will consult
+# when the Console is constructed — so a fixture that sets COLUMNS later has already
+# missed it. pytest imports conftest before the test modules that import the CLI, which
+# makes this the last point that is still early enough.
+os.environ["COLUMNS"] = RICH_TEST_WIDTH
+
 
 @pytest.fixture(autouse=True)
 def _skip_when_sam_absent(monkeypatch):
@@ -17,7 +43,7 @@ def _skip_when_sam_absent(monkeypatch):
 
     FeaturePublisher.publish shells out to the SAM CLI to rewrite local CodeUri
     paths; PackPublisher delegates to the same method. Those tests are
-    integration-level, but the suite runs in the offline `code_checks` fast gate
+    integration-level, but the suite runs in the offline `package_tests` fast gate
     (via `make test-packages-cicd`), which doesn't install SAM. Rather than
     hard-fail there, replace the sam step with a `pytest.skip` when the CLI is
     absent — so only tests that ACTUALLY invoke sam skip, while non-publishing

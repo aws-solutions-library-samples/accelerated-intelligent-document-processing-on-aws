@@ -175,13 +175,13 @@ migration preserves parity as follows:
   transport had otherwise lost: under AppSync a field the caller's groups did not
   satisfy was rejected at the API layer, and a field with no directive was not
   reachable by a lower-privilege caller by accident.
-  - ⚠️ **Restored for group-scoped operations only.** 8 of the 122 declared
+  - ⚠️ **Restored for group-scoped operations only.** 8 of the 123 declared
     operations are declared `ANY`, where the dispatcher checks authentication but
     not group membership, so for those a forgotten resolver check is still
     reachable by any authenticated caller. They are the caller's own profile and
     chat session list, the published release number, the two fine-tuning job reads
     and the three feature-platform reads;
-    112 operations require a group, 18 of them via `ANY_GROUP`
+    113 operations require a group, 18 of them via `ANY_GROUP`
     ("any group the stack creates", so a self-registered caller in no group is
     refused). See [RBAC](./rbac.md) for the full breakdown.
     The `idp_common.api_adapter` passthrough for events that already carry their
@@ -223,7 +223,10 @@ migration preserves parity as follows:
   member — defense-in-depth that mirrors the directive.
 - **The dispatcher maps errors to HTTP status the way AppSync did.** A resolver
   `PermissionError` becomes **403** with `errorType: "Unauthorized"` (which the
-  UI keys on); `ValueError`/`KeyError` become **400 BadRequest**. Unauthenticated
+  UI keys on); `ValueError`/`KeyError` become **400 BadRequest**; `ResourceNotFound`
+  becomes **404** with `errorType: "ResourceNotFound"`, kept distinct from the
+  `"NotFound"` the dispatcher returns for an operation this deployment does not
+  route. Unauthenticated
   requests are rejected with **401** by the authorizer before reaching any code.
   Anything the dispatcher does not recognise becomes **500 `InternalError`**, and
   that fallback is load-bearing in a way worth knowing: a resolver runs in a
@@ -233,8 +236,9 @@ migration preserves parity as follows:
   the `Unauthorized` token off the front where the anchored prefix match cannot
   see it — and the refusal arrives as a 500. Beyond confusing whoever is debugging
   it, that puts deliberate policy denials into the monitored 5xx rate, where they
-  mask real faults. Raise `PermissionError` for an authorization refusal and
-  `ValueError` for a bad argument, and do not re-wrap either. See the refusal-status
+  mask real faults. Raise `PermissionError` for an authorization refusal,
+  `ValueError` for a bad argument, and `ResourceNotFound` for an object that does
+  not exist, and do not re-wrap any of them. See the refusal-status
   section of [rbac.md](rbac.md).
 - **IAM-only operations stay backend-only.** Fields that were IAM-authorized in
   AppSync (backend writers such as `updateAgentJobStatus`,

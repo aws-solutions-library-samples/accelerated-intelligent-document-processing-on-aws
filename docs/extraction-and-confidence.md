@@ -62,7 +62,7 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 
 > **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips — for scalar-only classes; a list-bearing class is scored separately regardless (see the warning below). The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
 
-> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per document, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
+> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per document, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
 
 > **Large lists & truncation are handled on every path.** Whichever combination you pick, long list fields are assessed in sequential batches (`list_batch_size`), and if the confidence model truncates a batch at its output-token ceiling the batch is **recursively split until it fits** — so you get complete per-cell coverage without tuning. See [Large-list batching](#large-list-batching-list_batch_size). For documents that are large because of a *very large single section* (not just a long list), prefer **Advanced sharding** — see [Large-Document Guidance](#8-large-document-guidance).
 
@@ -107,14 +107,17 @@ extraction:
 > `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
+> (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
 > (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
-> Ignored by Nova, Sonnet 4.5, and Haiku 4.5.
+> Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
+> Haiku 5.5 is the first Haiku that accepts effort, and its own default is
+> `medium` rather than `high`.
 
 ### Advanced (agentic) extraction
 
@@ -143,7 +146,7 @@ per shard.
 extraction:
   agentic:
     enabled: true             # Advanced mode
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: us.anthropic.claude-sonnet-5
 ```
 
 #### Supported models for agentic extraction
@@ -151,9 +154,12 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
-- **Anthropic Claude Opus** models (for highest accuracy requirements)
+  - `us.anthropic.claude-sonnet-5` — the shipped extraction default
+  - `us.anthropic.claude-sonnet-4-6` — best balance of speed and cost
+  - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — still selectable, but an AWS
+    Health notice puts it in legacy with end of life on 2027-04-08
+- **Anthropic Claude Opus** models (for highest accuracy requirements), e.g.
+  `us.anthropic.claude-opus-5`
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
@@ -200,7 +206,7 @@ Agentic extraction requires models with tool-use support:
 > |---|---|---|
 > | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
 > | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
-> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
+> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5, Haiku 5.5) | none — `` `top_k` is deprecated for this model `` | — |
 > | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
 > | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
 >
@@ -546,7 +552,7 @@ classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     $id: complex-financial-form
     x-aws-idp-document-type: complex-financial-form
-    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-4-20250514-v1:0  # Override!
+    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-5  # Override!
     type: object
     properties:
       account_number:
@@ -1423,7 +1429,7 @@ extraction:
 >    extraction:
 >      confidence:
 >        escalation_enabled: true
->        escalation_model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+>        escalation_model: "us.anthropic.claude-sonnet-5:1m"
 >        max_escalation_rounds: 2
 >    ```
 >
@@ -1996,6 +2002,7 @@ extraction:
 **Supported models** include:
 
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
@@ -2248,20 +2255,55 @@ Nine fields of this shape ship in the config library — `account_summary`,
 `Medical-Insurance-Invoice.Charges`, `PA-Procedure-Log.codes_without_documentation`
 (a declared *subset* by definition), `PA-Medical-History.chronic_conditions` — and
 of the narrow arrays in presets with `TABLES` on, only `Transactions` genuinely
-models table rows. Four further shapes produce the same spurious failure and are
+models table rows. Three further shapes produce the same spurious failure and are
 tracked for narrowing: sibling lists whose property counts *differ* (the
 same-width grouping that stops Deposits and Withdrawals accusing each other keys
 on equality, so one extra property on one sibling disables it); a nested optional
 sub-list, which replaces its parent as the compared target so the parent's own
-completeness supplies the evidence that fails it; a list with `maxItems`, which
-`expected` does not consult; and any list nested under a plain object property,
-which is never compared at all.
+completeness supplies the evidence that fails it; and any list nested under a
+plain object property, which is never compared at all.
+
+##### `maxItems` bounds the evidence, and is the per-field remedy
+
+A declared `maxItems` on a list field is a ceiling on `expected`. If the schema
+says a list holds at most fifteen rows and extraction returned fifteen, the
+extraction is complete by the config author's own definition, so OCR evidence
+above the ceiling is not evidence of a shortfall: a `maxItems: 15` list beside a
+40-row table is compared against 15 rather than against the table's 41.
+`extraction.validation` already treats trimming a list to its `maxItems` as a
+*correction* rather than a loss; this is the same reading.
+
+Three properties of the bound are worth knowing before you rely on it:
+
+- **A width group is bounded only when every list in it declares a ceiling.**
+  Lists of the same item-property count share the OCR evidence and are judged as
+  one group, so a single undeclared sibling leaves the group's legitimate total
+  unbounded and the evidence is used as-is. When every member declares one, the
+  group's ceiling is their **sum**.
+- ⚠️ **A ceiling below 30 rows takes the field out of the check entirely,** because
+  the check only applies where the compared figure is at least 30 rows. Be clear
+  about what that costs: it is not only that a small list cannot lose 30 rows, it is
+  that a shortfall *relative to the ceiling* also goes unreported — 2 rows extracted
+  against a declared `maxItems: 15` is silent, and it was reported before. That is
+  the price of `maxItems` being able to take a field out of the check at all, which
+  is what makes it a usable per-field opt-out for a group-shaped array such as
+  `account_summary`, alongside the sibling protection above. Use it deliberately
+  rather than as a side effect of declaring a small bound.
+- ⚠️ **A ceiling lower than the rows a document really holds weakens the check in
+  proportion, at every size,** because the ceiling *is* the denominator — this is
+  not confined to the sub-30 case above. On an 800-row statement, 43 extracted rows
+  are a shortfall against the OCR evidence and are *not* a shortfall against a
+  declared `maxItems: 80`; with `maxItems: 100`, 50 rows of 500 are silent. So
+  declare a ceiling your longest expected document can actually reach, and treat
+  `maxItems` as a statement about the data rather than as a tuning knob for this
+  check.
 
 **So before setting `fail`:** confirm every array-of-object field in your classes
 models table rows rather than an entity group, and that no unrelated table in the
-same section shares a width with one of them. It is the right setting for a
-corpus of long transaction lists, which is the case it was built for. Narrowing
-the attribution — which is what would let `fail` be the default — is tracked in
+same section shares a width with one of them; where one does, declaring `maxItems`
+on the group-shaped field bounds it. `fail` is the right setting for a corpus of
+long transaction lists, which is the case it was built for. The remaining
+narrowing — which is what would let `fail` be the default — is tracked in
 [issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
 
 ##### `fail` does not cover a list that lost *every* row

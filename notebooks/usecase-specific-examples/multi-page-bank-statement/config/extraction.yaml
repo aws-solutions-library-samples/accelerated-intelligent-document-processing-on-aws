@@ -1,7 +1,6 @@
 # Extraction Service Configuration
 extraction:
   top_p: "0.0"
-  max_tokens: '10000'
   top_k: '5'
   temperature: "0.0"
   model: us.amazon.nova-pro-v1:0

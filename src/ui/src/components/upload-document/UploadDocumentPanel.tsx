@@ -49,6 +49,35 @@ type UploadSource = 'local' | 'sample';
 // always 'unified'; kept as a helper to mirror ConfigurationLayout's mapping.
 const SAMPLE_CONFIG_PATTERN_DIR = 'unified';
 
+/**
+ * The form of an S3 key that prefix-mapping resolution is defined against.
+ *
+ * A mirror of `canonical_key` in
+ * `lib/idp_common_pkg/idp_common/config/prefix_mappings.py`, and it has to be
+ * the whole mirror rather than a leading/trailing slash trim. S3 accepts
+ * `acme/invoices/x.pdf`, `/acme/invoices/x.pdf` and `acme//invoices/x.pdf` as
+ * three *distinct* keys, and a mapping on `acme/invoices/` matches only the
+ * first — but `upload_resolver` canonicalizes the prefix before building the
+ * key, so the upload lands on the first whatever was typed. A probe that only
+ * trimmed the outer slashes therefore asked about an unmapped key while the
+ * upload went to a mapped one: a typed `acme//invoices` gave no warning here and
+ * a 400 at ingest from a `reject` mapping.
+ *
+ * Trailing slashes are preserved, because the trailing slash is the
+ * prefix/exact mode selector. `.` segments go, like the server's.
+ */
+const canonicalKey = (key: string): string => {
+  const trailing = key.endsWith('/');
+  const canonical = key
+    .split('/')
+    .filter((segment) => segment && segment !== '.')
+    .join('/');
+  return trailing && canonical ? `${canonical}/` : canonical;
+};
+
+/** Mirrors `upload_resolver`'s only filename rewrite, so the probe key is the real one. */
+const sanitizeFileName = (name: string): string => name.replace(/ /g, '_');
+
 const UploadDocumentPanel = (): React.JSX.Element => {
   const { settings } = useSettingsContext();
   const { versions, getVersionOptions, saveAsNewVersion } = useConfigurationVersions();
@@ -95,21 +124,42 @@ const UploadDocumentPanel = (): React.JSX.Element => {
   }, [versions, selectedVersion, getVersionOptions]);
 
   /**
-   * Preview what a config prefix mapping would do to an upload at this prefix.
+   * The key the preview asks about — built exactly the way `upload_resolver`
+   * builds the real one.
    *
-   * Debounced because it fires on every keystroke in the prefix field. The probe
-   * key is a placeholder filename under the typed prefix: a prefix mapping
-   * matches on the prefix, so any filename resolves the same mapping, and an
-   * exact-key mapping (which names one object) correctly does not match a
-   * placeholder.
+   * When a file is chosen this is that file's **actual** destination key, which
+   * is what makes the `exact` half of the feature previewable at all: an exact
+   * mapping names one object key, and the literal `__probe__` placeholder can
+   * never equal one, so an exact mapping — including one in `reject` mode — gave
+   * no pre-flight warning whatsoever. The placeholder survives only as the
+   * fallback for "no file selected yet", where a prefix mapping still resolves
+   * the same way for any filename.
    *
-   * The declared profile is passed through, because whether this is a CONFLICT
+   * The first file stands for the batch. A second file under the same prefix
+   * resolves the same prefix mapping; only an exact mapping could differ between
+   * them, and one object's worth of warning is better than none.
+   */
+  const probePrefix = canonicalKey(prefix).replace(/\/+$/, '');
+  const probeFileName = sanitizeFileName(selectedFiles[0]?.name ?? '__probe__');
+  const probeKey = probePrefix ? `${probePrefix}/${probeFileName}` : probeFileName;
+
+  /**
+   * Preview what a config prefix mapping would do to this upload.
+   *
+   * Debounced because it fires on every keystroke in the prefix field. The
+   * declared profile is passed through, because whether this is a CONFLICT
    * depends on it — a mapping that agrees with the selection is not one.
    */
   useEffect(() => {
+    // Clear the old verdict NOW, not when the new one arrives. Holding the
+    // previous answer for the debounce window meant it was being shown about a
+    // key that is no longer the one being uploaded: correcting a prefix away
+    // from a `reject` mapping kept the error and the disabled button for up to a
+    // second, and typing *into* one left the button enabled, so a click in that
+    // window started an upload the server was always going to refuse.
+    setAssignment(null);
     let cancelled = false;
     const timer = setTimeout(async () => {
-      const probeKey = prefix ? `${prefix.replace(/^\/+|\/+$/g, '')}/__probe__` : '__probe__';
       const result = await previewAssignment(probeKey, selectedVersion?.value, selectedRevision);
       if (!cancelled) setAssignment(result);
     }, 400);
@@ -117,7 +167,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [prefix, selectedVersion?.value, selectedRevision, previewAssignment]);
+  }, [probeKey, selectedVersion?.value, selectedRevision, previewAssignment]);
 
   // Load the bundled sample manifest the first time the user switches to it.
   useEffect(() => {
@@ -363,8 +413,16 @@ const UploadDocumentPanel = (): React.JSX.Element => {
    * of new noise.
    */
   const prefixMappingNotice = (() => {
-    if (!assignment || !assignment.mappingPrefix) return null;
+    if (!assignment) return null;
 
+    // Checked BEFORE `mappingPrefix`, deliberately. An out-of-scope answer
+    // always carries `mappingPrefix: null` — the API does not name the mapping
+    // or the profile to a caller not entitled to see it, because doing so
+    // enumerated profile names — so that is the *normal* shape of this refusal
+    // rather than an edge case. `uploadWouldBeRefused` reads `outOfScope`
+    // regardless and disables the button, so gating the notice on
+    // `mappingPrefix` produced a dead-end form: no explanation, no way forward.
+    // The `reason` names nothing privileged.
     if (assignment.outOfScope) {
       return (
         <Alert type="error" header="You cannot upload to this folder">
@@ -372,6 +430,10 @@ const UploadDocumentPanel = (): React.JSX.Element => {
         </Alert>
       );
     }
+
+    // Everything below this point describes a mapping, so there has to be one.
+    if (!assignment.mappingPrefix) return null;
+
     if (assignment.rejected) {
       return (
         <Alert type="error" header="This upload would be refused">

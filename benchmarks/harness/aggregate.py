@@ -249,12 +249,14 @@ CSV_COLS = [
     "wall_s",
     "cost",
     # Why a figure above is missing, when it is missing because it could not be READ
-    # rather than because there was nothing there (GitHub #1079). All four are null
-    # on a healthy row. They are in the CSV as well as the JSON because a reader
-    # comparing two grids in a spreadsheet is exactly the reader who would otherwise
-    # take a blank cost cell for a cheap run: `DictWriter(extrasaction="ignore")`
-    # drops any row key absent from this list without a word.
+    # rather than because there was nothing there (GitHub #1079) — or because it was
+    # read and could not be PRICED (#1146). All five are null on a healthy row. They
+    # are in the CSV as well as the JSON because a reader comparing two grids in a
+    # spreadsheet is exactly the reader who would otherwise take a blank cost cell
+    # for a cheap run: `DictWriter(extrasaction="ignore")` drops any row key absent
+    # from this list without a word.
     "cost_unread",
+    "cost_unpriced",
     "sections_unreadable",
     "sections_unread",
     "eval_unread",
@@ -308,6 +310,11 @@ def cell_stats(rows):
             # Without this the shrinking denominator is the only trace, and `_stats`
             # reports it as `n` without saying why it is short.
             "n_cost_unread": sum(1 for r in succ if r.get("cost_unread")),
+            # Successful runs whose metering read fine and carried something
+            # `pricing.yaml` cannot price, so their cost is null for the same reason
+            # (#1146). Counted separately because the remedy is different: an unread
+            # row needs the stack back, an unpriced one needs a pricing entry.
+            "n_cost_unpriced": sum(1 for r in succ if r.get("cost_unpriced")),
             # Successful runs whose section objects could not all be read, so they
             # contribute to none of the quality statistics below.
             "n_sections_unread": sum(1 for r in succ if r.get("sections_unread")),
@@ -897,14 +904,20 @@ def compare_cells(summary_path, baseline_path):
         # but it is made over a smaller sample than `n_runs` suggests and the
         # exclusion is not visible in any figure it prints.
         for side, stats in (("baseline", b), ("current", c)):
-            for what, key in (
-                ("cost", "n_cost_unread"),
-                ("quality", "n_sections_unread"),
+            for what, key, cause in (
+                ("cost", "n_cost_unread", "the read failed, the run did not"),
+                ("quality", "n_sections_unread", "the read failed, the run did not"),
+                (
+                    "cost",
+                    "n_cost_unpriced",
+                    "the metering read fine and `pricing.yaml` cannot price "
+                    "something in it — see the row's `cost_unpriced`",
+                ),
             ):
                 n = stats.get(key) or 0
                 if n:
                     unread_runs.append(
-                        (cell, side, what, n, stats.get("n_success") or 0)
+                        (cell, side, what, n, stats.get("n_success") or 0, cause)
                     )
         cc, bc = c["cost"], b["cost"]
         if cc["mean"] is not None and bc["mean"] and bc["mean"] > 0:
@@ -1022,11 +1035,11 @@ def compare_cells(summary_path, baseline_path):
             )
     if unread_runs:
         print(f"\n=== MEASURED OVER FEWER RUNS THAN IT LOOKS ({len(unread_runs)}) ===")
-        for cell, side, what, n, n_success in sorted(unread_runs):
+        for cell, side, what, n, n_success, cause in sorted(unread_runs):
             print(
                 f"  {cell} [{side}]: {n} of {n_success} successful run(s) contribute "
-                f"no {what} figure — the read failed, the run did not. The {what} "
-                "comparison above is over the remainder."
+                f"no {what} figure — {cause}. The {what} comparison above is over "
+                "the remainder."
             )
     return reg, imp, weak
 

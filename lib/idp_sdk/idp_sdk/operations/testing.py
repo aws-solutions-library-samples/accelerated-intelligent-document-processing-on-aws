@@ -175,7 +175,10 @@ class TestingOperation:
             **kwargs: Additional parameters
 
         Returns:
-            TestComparisonResult with metrics for each test run
+            TestComparisonResult with metrics for each test run, and `configs`
+            holding the differences between the configurations the runs captured
+            (`[]` when they are identical, `None` when fewer than two of them
+            recorded one — the two are different answers)
 
         Raises:
             IDPProcessingError: If comparison fails
@@ -188,6 +191,7 @@ class TestingOperation:
             return TestComparisonResult(
                 metrics=result.get("metrics", {}),
                 comparison_summary=result.get("comparison_summary"),
+                configs=result.get("configs"),
             )
 
         except Exception as e:

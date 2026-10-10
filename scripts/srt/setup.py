@@ -84,6 +84,37 @@ def get_latest_release():
         return None, None
 
 
+def resolve_aws_region(fallback="us-east-1"):
+    """Pick the region to record for the SRT profile.
+
+    ``AWS_DEFAULT_REGION`` is not the only spelling that counts: the AWS CLI and
+    every SDK treat ``AWS_REGION`` as equally authoritative, so a developer who
+    exports only that one has still said which region they mean. Reading just the
+    former meant this setup fell through to ``fallback`` and then *wrote* it with
+    ``aws configure set``, moving the region of ``[default]`` — or of whatever
+    ``AWS_PROFILE`` names — in the developer's own ``~/.aws/config``. Note the
+    caller treats a non-tty stdin as CI, so that reached any piped or
+    tool-driven ``make srt-setup`` and not only a pipeline.
+    """
+    return os.getenv("AWS_DEFAULT_REGION") or os.getenv("AWS_REGION") or fallback
+
+
+def aws_cli_profile_has_region(profile):
+    """Whether the AWS CLI already resolves a region for ``profile``.
+
+    ``aws configure get`` exits non-zero and prints nothing when the value is
+    unset, so a truthy answer here means the developer (or a role definition)
+    already chose a region and this script has nothing to add.
+    """
+    result = subprocess.run(
+        ["aws", "configure", "get", "region", "--profile", profile],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def write_aws_profile(profile, region):
     """Ensure `~/.aws/config` names `profile`, without needing the AWS CLI.
 
@@ -292,7 +323,7 @@ def main():
         # Create config file programmatically for CI/CD
         print("\n✅ Running in CI/CD - creating non-interactive configuration")
 
-        aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        aws_region = resolve_aws_region()
         aws_profile = os.getenv("AWS_PROFILE", "default")
 
         # A profile must EXIST in ~/.aws before `srt config` runs. That command
@@ -309,7 +340,16 @@ def main():
         # It does on the GitLab runner and does not in python:3.13-bookworm, so the
         # GitHub job failed at `srt config` with all five scanners missing. Write
         # the file directly in that case rather than skipping.
-        if shutil.which("aws"):
+        #
+        # ⚠️ `aws configure set` **overwrites**, so unlike write_aws_profile below
+        # it can move a region the developer chose. Only the existence of the
+        # profile is needed here, so a profile that already resolves a region is
+        # left exactly as it is.
+        if shutil.which("aws") and aws_cli_profile_has_region(aws_profile):
+            print(
+                f"   ℹ️  profile '{aws_profile}' already has a region - leaving it alone"
+            )
+        elif shutil.which("aws"):
             print(f"   Configuring AWS CLI for profile '{aws_profile}'...")
             configure_ok = True
             for args in (

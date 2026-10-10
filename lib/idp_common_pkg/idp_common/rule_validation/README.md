@@ -306,7 +306,7 @@ rule_validation:
 
 ```yaml
 rule_validation_orchestrator:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model: us.anthropic.claude-sonnet-4-6
   temperature: "0.0"
   top_k: "20"
   top_p: "0.0"

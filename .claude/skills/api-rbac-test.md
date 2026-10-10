@@ -174,7 +174,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (122 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (123 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -252,9 +252,11 @@ Two things follow that are easy to get wrong when adding a suite:
 - **A `known_gap` decides whether to block, not whether the check ran.** A gapped
   ERROR is a WARN *and* still carries `inconclusive: true`, so it appears in the
   report's "Could not be run" section. `GAP-SEC-INCONCLUSIVE-5XX` registers the 5xx
-  case, because ~50 resolver validation refusals still raise a bare `Exception` (which
-  the dispatcher can only map to 500) and this harness deliberately sends bogus
-  arguments. A **timeout is not registered** and is a hard failure.
+  case, because a resolver refusal raised as a bare `Exception` is all the dispatcher
+  can map to 500, and this harness deliberately sends bogus arguments. Not-found
+  refusals now answer 404 (`errorType: "ResourceNotFound"`); the gap entry in
+  `scripts/api_rbac_expectations.yaml` is where what remains at 500 is listed. A
+  **timeout is not registered** and is a hard failure.
 - **A 5xx is inconclusive for a "was it refused?" assertion and conclusive for a
   "does this body contain X?" one.** The IDOR suite is the second kind — the body is
   in hand and the marker is not in it — so it passes `treat_5xx=False`. Everything
@@ -338,7 +340,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 122 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 123 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,

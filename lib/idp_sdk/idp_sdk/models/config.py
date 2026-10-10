@@ -21,15 +21,33 @@ class ConfigValidationResult(BaseModel):
     """Result of configuration validation."""
 
     valid: bool = Field(description="Whether configuration is valid")
+    validation_available: bool = Field(
+        default=True,
+        description=(
+            "False when this installation could not run the checks, so the "
+            "configuration was not examined and 'errors' names the missing "
+            "component instead of a finding. 'valid' is False as well, so a caller "
+            "that gates only on 'valid' keeps refusing; branch on this to tell a "
+            "wrong configuration from an installation that cannot check one."
+        ),
+    )
     errors: List[str] = Field(default_factory=list, description="Validation errors")
     warnings: List[str] = Field(default_factory=list, description="Validation warnings")
     deprecated_fields: List[str] = Field(
         default_factory=list,
-        description="Deprecated fields found in the configuration file",
+        description=(
+            "Dotted paths of deprecated fields found in the configuration file, at "
+            "any depth (e.g. 'extraction.max_tokens'). Keys the loader relocates "
+            "rather than drops are not listed here, since they are honoured."
+        ),
     )
     unknown_fields: List[str] = Field(
         default_factory=list,
-        description="Unknown fields found in the configuration file (not in IDPConfig schema)",
+        description=(
+            "Dotted paths of fields the configuration models will not read, at any "
+            "depth (e.g. 'extraction.validation.enabld'). A path a consumer other "
+            "than IDPConfig reads is not listed here."
+        ),
     )
     merged_config: Optional[Dict[str, Any]] = Field(
         default=None, description="Merged configuration (if show_merged=True)"
@@ -93,6 +111,16 @@ class ConfigActivateResult(BaseModel):
     bda_classes_failed: int = Field(
         default=0,
         description="Number of BDA classes that failed to sync",
+    )
+    bda_orphaned_blueprint_arns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Blueprints the sync removed from the BDA project but could not then "
+            "delete. They are invisible to every project-scoped read, still count "
+            "against the account's blueprint limit, and are removed only by the "
+            "orphaned-blueprint cleanup. Not a class failure: the classes may all "
+            "have synced."
+        ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
@@ -216,7 +244,10 @@ class ConfigSyncBdaResult(BaseModel):
 
     success: bool = Field(description="Whether sync succeeded")
     direction: str = Field(
-        description="Sync direction: 'bidirectional', 'bda_to_idp', or 'idp_to_bda'"
+        description=(
+            "Sync direction: 'bidirectional', 'bda_to_idp', 'idp_to_bda', or "
+            "'cleanup_orphaned'"
+        )
     )
     mode: str = Field(
         default="replace",
@@ -230,5 +261,36 @@ class ConfigSyncBdaResult(BaseModel):
     )
     processed_classes: List[str] = Field(
         default_factory=list, description="Names of processed classes"
+    )
+    orphaned_blueprint_arns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Blueprints the sync removed from the BDA project but could not then "
+            "delete. They are invisible to every project-scoped read, still count "
+            "against the account's blueprint limit, and are removed only by the "
+            "orphaned-blueprint cleanup. Not a class failure: the classes may all "
+            "have synced, so this is reported alongside `success` rather than "
+            "instead of it."
+        ),
+    )
+    cleanup_deleted_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Blueprints the orphaned-blueprint cleanup deleted. `None` for the three "
+            "sync directions, which delete blueprints only as part of aligning a "
+            "class list and report that through the class counts. Kept separate from "
+            "`classes_synced` because a blueprint belongs to no class once it is "
+            "orphaned, so counting one as a synced class would be a wrong answer "
+            "rather than an imprecise one."
+        ),
+    )
+    cleanup_failed_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Blueprints the orphaned-blueprint cleanup tried and failed to delete. "
+            "`None` for the three sync directions. A non-zero value means the "
+            "blueprints are still in the account and still counting against its "
+            "blueprint limit."
+        ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")

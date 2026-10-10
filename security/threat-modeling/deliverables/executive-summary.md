@@ -31,7 +31,7 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 | **Lambda Functions** | 115+ |
 | **DynamoDB Tables** | 12 |
 | **S3 Buckets** | 13 |
-| **UI API operations** | 118 (single `POST /op/{field}` route) |
+| **UI API operations** | 123 (single `POST /op/{field}` route) |
 | **Processing Modes** | 2 (Pipeline, BDA) |
 | **RBAC Roles** | 5 (Admin, Author, Reviewer, Annotator, Viewer) + separate M2M OAuth realm for the Jobs API |
 | **UI hosting modes** | 2 (CloudFront, API Gateway S3 proxy) |
@@ -65,36 +65,37 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 62 | 63% |
-| **Partially Mitigated** | 27 | 27% |
-| **Open** (real gap, needs work) | **6** | **6%** |
+| **Mitigated** | 63 | 63% |
+| **Partially Mitigated** | 28 | 28% |
+| **Open** (real gap, needs work) | **4** | **4%** |
 | **Accepted** | 4 | 4% |
 
-The six **Open** items are CHAT.T03 and CHAT.T06 (chat streaming Function URL
-enforces neither RBAC group nor session ownership, and the agent route trusts a
-client-supplied caller identity), UI.T06 (object reads are not scoped
-per document, so any authenticated user holding a group can read any document's
-bytes by key — and the document buckets are readable directly by every
-authenticated user irrespective of group),
-JOB.T02 (the Jobs API sits outside the automated authorization harness),
-HOOK.T07 (`onError: fail` halts the workflow at one of the seven hook points, not
-all seven) and SDK.T05 (the shipped CloudFormation deployment service role is
-broad enough to reach account administrator). UI.T07 (no CSP in
-API-Gateway/GovCloud hosting mode) was closed in v0.6.x. All six are code/config
-changes; see [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
+The four **Open** items are CHAT.T03 and CHAT.T06 (the chat streaming Function URL
+enforces neither RBAC group nor session ownership, and on the deployed transport the
+turn is still attributed to a client-supplied caller identity), UI.T06 (object reads
+are not scoped per document, so any authenticated user holding a group can read any
+document's bytes by key — and the document buckets are readable directly by every
+authenticated user irrespective of group), and JOB.T02 (the Jobs API sits outside the
+automated authorization harness). UI.T07 (no CSP in API-Gateway/GovCloud hosting
+mode) was closed in v0.6.x. All four are code/config changes; see
+[risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
 
-**Four of the six have a change in flight, and none of those changes has merged.**
-CHAT.T03 and CHAT.T06 are **partly** addressed by **issue #920** (PR #954) —
-partly, because that change makes a contradicting client-supplied identifier a
-403 but cannot establish a per-user identity on the streaming transport at all,
-so both threats stay Open after it merges; HOOK.T07 is addressed by **issue
-#919** and SDK.T05 by **issue #927**; two Partially Mitigated threats depend on
-**issue #928** (a default-deny gate at the API dispatcher, AUTH.T16) and **issue
-#921** (consistent log redaction, AUTH.T15). Read every one of those as
-*pending*, and read #920 as *partial even once merged* — see
-[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route)
-for the accounting. The
-status columns in this model deliberately do not credit an unmerged fix, because a
+**What changed since the 0.6.9 review.** Five issues this summary previously
+described as in flight have merged, and their effect differs per threat, so each is
+stated rather than grouped. **Closed and the threat with it:** #919, so `onError: fail`
+is terminal at all seven hook points (HOOK.T07, now Mitigated), and #928, so the API
+dispatcher denies by default (AUTH.T16 keeps its Partially Mitigated status on the
+remaining 403-mapping fallback). **Closed, threat downgraded not closed:** #927
+attaches a permissions boundary to the deployment service role and constrains the
+roles it may create, which is real containment, but the role's own `iam:*` grant is
+unchanged — SDK.T05 moves from Open to **Partially Mitigated** and is not fixed.
+**Closed, threat unchanged:** #920 makes a contradicting client-supplied identifier a
+403, but on this transport the SigV4 principal is a pool-wide constant, so
+`resolve_caller_sub` still falls back to the body value and that is what a turn is
+attributed to — CHAT.T03 and CHAT.T06 stay **Open**, which is the accounting in
+[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route).
+#921 (consistent log redaction, AUTH.T15) is likewise closed without changing that
+threat's status. The status columns in this model deliberately do not credit an unmerged fix, because a
 threat model that counts intentions as controls is worse than one that is merely
 out of date.
 
@@ -122,7 +123,7 @@ The system's high configurability (prompts, schemas, model selection, agent tool
 
 RBAC is enforced **entirely inside the resolver Lambdas** — the API Gateway Cognito authorizer only authenticates the JWT and performs no group evaluation. Any resolver missing its server-side check exposes a privileged operation to every authenticated user (AUTH.T03, AUTH.T08). The system is single-tenant per deployment.
 
-**Mitigations**: Per-operation resolver authorization for all 118 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
+**Mitigations**: Per-operation resolver authorization for all 123 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
 
 The harness is doing work the platform is not: the dispatcher itself does not
 default-deny — it resolves any field it can map, and the one dispatcher-level

@@ -17,6 +17,7 @@ from idp_common.stepfunctions_history import (
     TASK_LEVEL_FAILURE_EVENTS,
     failing_state,
     failing_state_is_resolvable,
+    failure_detail_key,
     to_chronological,
 )
 
@@ -328,6 +329,25 @@ def _build_response(
     return response
 
 
+#: Error text for a failure event that carries no ``error`` of its own. Anything not
+#: named here reports its own event type, which is more use than a generic string and
+#: cannot go stale as the shared vocabulary grows.
+_ERROR_WHEN_ABSENT = {
+    "ExecutionFailed": "Unknown execution error",
+    "TaskFailed": "Unknown task error",
+    "LambdaFunctionFailed": "Lambda function failed",
+}
+
+#: Likewise for ``cause``. The timeout wording is kept because it is what an operator has
+#: been reading for these events.
+_CAUSE_WHEN_ABSENT = {
+    "ExecutionTimedOut": "Execution exceeded timeout limit",
+    "TaskTimedOut": "Execution exceeded timeout limit",
+    "LambdaFunctionTimedOut": "Execution exceeded timeout limit",
+    "ActivityTimedOut": "Execution exceeded timeout limit",
+}
+
+
 def _extract_failure_details(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Failure parser: Extracts detailed error information from Step Function events.
@@ -348,36 +368,34 @@ def _extract_failure_details(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if event_type not in _FAILURE_EVENTS:
         return None
 
-    details = {}
+    # The detail member is DERIVED from the event type rather than matched by a chain of
+    # `if`s over the types this function's author had in mind. That chain named three types
+    # and caught the rest of the timeouts with `"TimedOut" in event_type`, reading only the
+    # execution and task timeout members — so it covered the five-type vocabulary it was
+    # written against, and would have covered **seven** of the fifteen this module now
+    # matches on, two of those seven reading the wrong detail member and reporting a
+    # hardcoded placeholder cause. The other eight would have returned `{}`, which is falsy,
+    # so the caller would drop them and report a failing state with no failure point beside
+    # it — two answers about one execution disagreeing, which is the defect class #1185 was
+    # filed for. Widening the shared vocabulary and deriving the key here are therefore one
+    # change: the chain could not have survived the widening.
+    detail = event.get(failure_detail_key(event_type), {})
+    if not isinstance(detail, dict):
+        detail = {}
 
-    # Extract error details based on event type
-    if event_type == "ExecutionFailed":
-        failure_detail = event.get("executionFailedEventDetails", {})
-        details = {
-            "error": failure_detail.get("error", "Unknown execution error"),
-            "cause": failure_detail.get("cause", "No cause provided"),
-        }
+    details: Dict[str, Any] = {
+        "error": detail.get("error") or _ERROR_WHEN_ABSENT.get(event_type, event_type),
+        "cause": detail.get("cause")
+        or _CAUSE_WHEN_ABSENT.get(event_type, "No cause provided"),
+    }
+
+    # The resource names the Lambda or service that failed, which is what selects the log
+    # group to look in next. Reported whenever the event carries one; `TaskFailed` keeps
+    # its placeholder because a caller reads that key unconditionally.
+    if detail.get("resource"):
+        details["resource"] = detail["resource"]
     elif event_type == "TaskFailed":
-        failure_detail = event.get("taskFailedEventDetails", {})
-        details = {
-            "error": failure_detail.get("error", "Unknown task error"),
-            "cause": failure_detail.get("cause", "No cause provided"),
-            "resource": failure_detail.get("resource", "Unknown resource"),
-        }
-    elif event_type == "LambdaFunctionFailed":
-        failure_detail = event.get("lambdaFunctionFailedEventDetails", {})
-        details = {
-            "error": failure_detail.get("error", "Lambda function failed"),
-            "cause": failure_detail.get("cause", "No cause provided"),
-        }
-    elif "TimedOut" in event_type:
-        timeout_detail = event.get("executionTimedOutEventDetails") or event.get(
-            "taskTimedOutEventDetails", {}
-        )
-        details = {
-            "error": f"{event_type.replace('EventDetails', '')}",
-            "cause": timeout_detail.get("cause", "Execution exceeded timeout limit"),
-        }
+        details["resource"] = "Unknown resource"
 
     return details
 

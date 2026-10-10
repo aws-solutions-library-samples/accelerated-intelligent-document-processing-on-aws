@@ -83,7 +83,8 @@ export const CREATE_SOURCES: CreateSourceMeta[] = [
   {
     value: 'empty',
     label: 'Start empty',
-    description: 'Create the set now and add documents later from its page: files in a bucket, a zip, or generated documents.',
+    description:
+      'Create the set now and add documents later from its page: processed documents, files in a bucket, a zip, or generated documents.',
     outcome: 'Empty',
   },
 ];

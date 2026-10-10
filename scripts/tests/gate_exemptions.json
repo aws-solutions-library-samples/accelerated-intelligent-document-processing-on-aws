@@ -100,6 +100,35 @@
     "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
+    "lib/idp_common_pkg/tests/unit/config/test_system_defaults_inheritance.py::PATTERN_1_EXTRACTION_SUBSECTIONS": {
+      "kind": "enforced-universe",
+      "memberKind": "the name of a sub-section under the `extraction` key of a resolved system-defaults document",
+      "turnsOff": "nothing. It is the complete set of `extraction` sub-sections the BDA pattern's resolved defaults may hold, and the test compares it for EQUALITY, so a member being in it is what makes that member required rather than what excuses it. A third sub-section appearing under that key fails the same assertion.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_system_defaults_inheritance.py",
+      "issues": [
+        1203
+      ],
+      "reason": "Discovered through the prose route, on a comment saying the LLM extraction settings are 'deliberately absent' from the BDA pattern -- which reads as an exclusion decision and is instead the fact being asserted. The v0.6 refactor moved per-field confidence and bounding-box geometry under `extraction`, so the BDA pattern has to compose those two modules while still omitting the extraction module itself; this constant names what that leaves under the key, and the assertion is equality in both directions, which is the closure. There is no member the set omits by choice and no per-member fact to compute, because the comparison is against what the real loader resolves rather than against an authored inventory: a module that added a third sub-section under `extraction`, or one of these two ceasing to be inherited, fails there without anyone editing this file. What a reviewer should check instead is that the equality is real -- add a sub-section to base-confidence.yaml and watch it fail. Registered rather than reworded, because rewording a comment to slip past discovery is the failure this registry exists to prevent, and 'not a carve-out at all' is a decision the registry is built to record."
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_record_root_unknown_keys.py::REACHED": {
+      "kind": "enforced-universe",
+      "memberKind": "a (record root, nested model) pair, with the field-name/shape route from the root to it",
+      "turnsOff": "nothing. It is the universe the parametrised tests in that file are driven over -- every configuration record root ConfigurationManager.save_configuration accepts, and every model reachable from each by annotation -- so a member being in it is what makes that member asserted about, not what excuses it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_record_root_unknown_keys.py",
+      "issues": [
+        1211
+      ],
+      "reason": "Discovered through the prose route, on a comment saying IDPConfig is 'deliberately not excluded' from this list -- which reads as an exclusion decision and is the opposite one: IDPConfig is kept in so the property is asserted for every record root rather than only the ones that lacked it. There is no member the list omits by choice, because membership is not authored at all: roots come from typing.get_type_hints on save_configuration's `config` parameter and nested models from walking the annotations, so a record type or a nested model added later joins the universe without anyone editing this file. That derivation is why no predicate applies -- there is no per-member fact to compute when nothing is carved out -- and it is what a reviewer should check instead, by adding a root and watching the parametrisation grow. Registered rather than reworded because rewording the comment to slip past discovery is the failure mode this registry exists to prevent, and 'not an exemption at all' is a decision the registry is built to record.",
+      "ratchetGap": "The universe is closed over the field shapes _target resolves, which are the shapes the production walk resolves: a field whose annotation names more than one model (an Optional union of two models) resolves to no model in both, so such a subtree joins neither the enforced nor any exempt set and a key dropped inside it is reported by nothing. No field of that shape exists in any of the four root trees today; the equivalent gap in the IDPConfig tree is guarded by test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter in test_unknown_nested_keys.py, and no such guard exists yet for the other three roots."
+    },
     ".ash/.ash.yaml::suppressions": {
       "kind": "exemption",
       "memberKind": "advisory id",
@@ -267,7 +296,8 @@
       "ratchet": "staleness",
       "reason": "Same shape as its sibling. Entry strength varies: some are one-line checks against CACHEPOINT_SUPPORTED_MODELS, one is an unrepeatable live measurement.",
       "crossReferences": [
-        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_COVERAGE_EXEMPT"
+        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_COVERAGE_EXEMPT",
+        "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS"
       ],
       "memberKind": "Bedrock model id",
       "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py"
@@ -581,9 +611,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -883,7 +913,10 @@
       "ratchet": "none",
       "reason": "A capability grant, not a gate exemption. Registered so the vocabulary match is accounted for rather than silently dropped.",
       "ratchetGap": "Out of scope for this registry by construction. If the registry ever widens to privilege grants this belongs there.",
-      "memberKind": "tool name"
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
+      ]
     },
     "scripts/sdlc/integration_test_deployment.py::excludes": {
       "kind": "enforced-universe",
@@ -1147,12 +1180,12 @@
     },
     "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path \u2014 test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction \u2014 it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
       "memberKind": "check id + path scope",
       "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
       "crossReferences": [
@@ -1308,7 +1341,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1476,7 +1509,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1491,7 +1524,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -1812,12 +1845,12 @@
     },
     "scripts/tests/test_model_surface_consistency.py::RETIRED_LITERAL_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the 'no retired model id is written as a literal in production Python' check, per LINE, for five specific lines",
+      "turnsOff": "the 'no retired model id is written as a literal in production Python' check, for four paths: two whole-file (the registry itself and a dev-tooling probe list) and two by line pattern",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "count-pinned",
-      "reason": "Each entry is a path plus a substring of the one line it covers, so a reason answers for one member. retired_models.py IS the registry, so its keys must be the dead ids. update_configuration/index.py holds the end-of-life->live rewrite map applied to a stored configuration at deploy time; its KEYS must be the dead ids or the rewrite cannot match the config it repairs. model_utils.py's is a doctest example of id parsing. discover_model_limits.py and run_classification_bench.py are developer tooling, neither shipped nor customer-reachable: probing Bedrock about a retired model is a valid probe, and both fail loudly at the API for the caller who ran them. The check is a denylist and not a closure on purpose -- the legitimate model literals in this tree number 79 and grow normally, so being RETIRED is the property worth asserting.",
+      "reason": "Each entry is a path plus a substring of the one line it covers, so a reason answers for one member. retired_models.py IS the registry, so its keys must be the dead ids. update_configuration/index.py holds the end-of-life->live rewrite map applied to a stored configuration at deploy time; its KEYS must be the dead ids or the rewrite cannot match the config it repairs. discover_model_limits.py and run_classification_bench.py are developer tooling, neither shipped nor customer-reachable: probing Bedrock about a retired model is a valid probe, and both fail loudly at the API for the caller who ran them. The check is a denylist and not a closure on purpose -- the legitimate model literals in this tree are many and grow normally, so being RETIRED is the property worth asserting.",
       "memberKind": "path plus line pattern",
       "ratchetEvidence": "scripts/tests/test_model_surface_consistency.py",
       "crossReferences": [
@@ -2351,7 +2384,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Not a carve-out: the opposite. This is the ENFORCED set -- every tracked idp_common module and the coverage it must not fall below. It is discovered by the registry scanner because its filename matches the *_debt.json pattern the lint-debt baseline established, and it is registered so that similarity is recorded rather than mistaken for an exclusion list. Generated by `python3 scripts/check_coverage_debt.py --write`; never hand-edited. test_coverage_debt.py::test_the_recorded_baseline_is_not_empty is the non-vacuity ratchet, and it exists because the first version of the generator silently recorded zero files and reported success.",
+      "reason": "Not a carve-out: the opposite. This is the ENFORCED set -- every tracked idp_common module and the coverage it must not fall below. It is discovered by the registry scanner because its filename matches the *_debt.json pattern the lint-debt baseline established, and it is registered so that similarity is recorded rather than mistaken for an exclusion list. Generated by `python3 scripts/check_coverage_debt.py --write`. Hand-editing is confined to ONE case, and only that one: adding a single entry for a new file at the percentage a clean run measured for it, which is what a change introducing a file has to do to keep the gate closed. Everything else comes from `--write`. The carve-out exists because `--write` rewrites EVERY recorded percentage from the current report, so on a tree where an unrelated file's real coverage has drifted down since its floor was recorded, running it inside an unrelated change lowers that floor too -- measured at three files on the tree where this was written (0.72, 0.41 and 0.03 points, each reproducible on an independent run, so real drift rather than noise, and each inside the gate's own 1.0-point tolerance so leaving the floor high blocks nobody). The script's own docstring gives the reason: re-recording on every improvement is how a file whose coverage had fallen gets re-recorded along with it. What is NOT permitted is editing an existing number by hand, in either direction. Nothing enforces that boundary -- no test can see a hand-edit -- so it is a reviewer's check, and an added line must state the measured value in the pull request that adds it. test_coverage_debt.py::test_the_recorded_baseline_is_not_empty is the non-vacuity ratchet, and it exists because the first version of the generator silently recorded zero files and reported success.",
       "ratchetEvidence": "scripts/tests/test_coverage_debt.py",
       "crossReferences": [
         "scripts/check_coverage_debt.py::NOT_MEASURED"
@@ -2583,19 +2616,112 @@
       "ratchetGap": "No check that the two mirrored lists stay in step, so this one could narrow while the other did not.",
       "memberKind": "top-level directory name inside a distribution"
     },
-    "scripts/check_coverage_debt.py::skipped": {
-      "kind": "fixture",
-      "memberKind": "tree",
-      "turnsOff": "nothing durably; it accumulates the trees a single run could not check",
+    "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox the advisory MR-review subprocess runs inside, granting Claude Code three reading tools",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ai_mr_review.py",
+      "reason": "A capability grant, not a gate exemption: it is what the reviewing subprocess is permitted to do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Same shape as scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS",
+        "scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS"
+      ]
+    },
+    "scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing; it is the deny half of the same sandbox, and every entry REMOVES a capability",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ai_mr_review.py",
+      "reason": "Discovered through its attached comment rather than its name, which the polarity guard correctly refuses to read as an allowlist. Every entry REMOVES a capability, so a missing entry is the risk and an extra entry is free -- the opposite direction from an exemption. The ratchet is a count rather than universe closure because a deny list has no universe to close over: what an audited count buys is that changing the list is a deliberate edit, which is the moment to ask whether it still denies every tool that can write, execute or reach the network.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
+      ]
+    },
+    "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS": {
+      "kind": "exemption",
+      "memberKind": "metering unit, scoped to the leading component of a pricing key (the service)",
+      "turnsOff": "the unpriced report for one (service, unit) pair. A pricing entry for that service may omit the unit and the metering row is written as $0.00 rather than as a NULL cost, in both cost implementations (idp_common/reporting/save_reporting_data.py::_get_unit_cost and benchmarks/harness/lib.py::price_metering). Every other absent unit with a non-zero count is reported.",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Not a carve-out list. It collects, per run, the trees whose coverage report does not exist yet -- a tree cannot be compared against its baseline without a report, and producing one means running that tree's suite. The scope decision lives in TREES, the enforced universe; this is a diagnostic. The failure mode it could have had -- a gate that passes while checking nothing -- is handled where it happens: the names are PRINTED on success ('not checked (no report from this run): ...') rather than swallowed, so a run that checked one tree cannot be mistaken for one that checked nine. No entry here can be ratcheted per member, because membership is a property of one invocation rather than of the tree.",
-      "ratchetEvidence": "scripts/tests/test_coverage_debt.py",
-      "predicateConsidered": {
-        "file_absent_or_untracked": "Answers a different question, and would answer it the same way every time. A coverage report is a BUILD ARTIFACT -- gitignored by design, written under test-reports/ -- so this predicate reports 'absent or untracked' for every report on every run, whether or not the run just produced one. The distinction that matters here is 'does this file exist on disk right now', which is per-invocation state rather than a property of the tree, and is exactly what git cannot see. The gate therefore tests the path itself (Path.is_file) and prints the trees it could not check; a predicate naming it would look like a computed premise while settling nothing."
-      }
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py",
+      "issues": [
+        1212,
+        1206
+      ],
+      "reason": "Six entries, each carrying its own sourcing rather than sharing one, because whether a unit is a billing dimension is a property of the unit and the service. Four cite AWS's public Bedrock price list by URL and say what it showed; the owning test re-asserts those four against a committed digest of that file, derived by bedrock_price_list_digest.py, and re-derives it live under CHECK_AWS_PRICE_LIST=1. That is a computed premise, but the computation is a reading of a published price list rather than a fact about this tree, so there is no gate_premises predicate for it and the entry says JUDGEMENT instead of naming one it does not call. Two entries are judgements outright and labelled so: 'requests' on a LambdaHook is a counter this project injects for shape parity with a Bedrock response, not a third party's billing dimension, so no price list settles it; and the two cache units on Bedrock record the behaviour that already shipped, whose per-model basis needs a live call and is issue 1206. Two ratchets, both in the named test: non-vacuity per member, which derives the metered-unit universe from the writers' own source and the unlisted set from the real pricing file, so an entry that shields nothing fails rather than pre-declaring whatever next carries that name; and a pinned entry count, so a seventh free unit is a deliberate edit with its sourcing reviewed beside it.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::METERING_WRITERS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_NO_CACHE_UNITS_EXPECTED"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS": {
+      "kind": "enforced-universe",
+      "memberKind": "source file that builds a metering map, and the set of usage member names it writes",
+      "turnsOff": "nothing. It is the ENFORCED set: the test compares each file's scanned member names for EQUALITY, so a member being listed is what makes it required rather than what excuses it, and a usage field added to any of these files fails there.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py",
+      "issues": [
+        1212
+      ],
+      "reason": "Discovered on the EXPECTED_ fragment, and it is a pin rather than a carve-out. It replaced a length bound (3 <= len <= 40) that was a real hole: both narrowings in the AST walk could be deleted wholesale, and a file could be dropped from METERING_WRITERS, with the suite green either way, because the remaining files covered every declared unit between them. Equality per file closes both. The set of files read is asserted equal to this dict's keys in the same test, so neither side can drift alone. Nothing here is computable from a predicate: what a usage block contains is read from the source by the owning test, which is the most authoritative reading available.",
+      "crossReferences": [
+        "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::METERING_WRITERS"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES": {
+      "kind": "enforced-universe",
+      "memberKind": "(service, metering unit) pair declared non-chargeable, and the number of shipped pricing entries it currently shields",
+      "turnsOff": "nothing. It is the count pinning for NON_CHARGEABLE_METERING_UNITS's non-vacuity ratchet: the test asserts the shielded count EQUALS the number here, in both directions.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py",
+      "issues": [
+        1212
+      ],
+      "reason": "Discovered on the EXPECTED_ fragment; a pin rather than a carve-out. Non-vacuity on its own only demands that a declaration shield at least ONE site, which left a declaration able to shrink from 94 shielded pricing entries to 1 while still reading as a live decision. Each number is measured from config_library/pricing.yaml by the owning test, so a new pricing entry arriving under an existing declaration's cover fails rather than being absorbed, and rates being added fails too -- which is the signal that a declaration is on its way out. One number per member, because how much each one shields is a property of that member.",
+      "crossReferences": [
+        "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::METERING_WRITERS"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::METERING_WRITERS": {
+      "kind": "enforced-universe",
+      "memberKind": "source file that builds a metering map",
+      "turnsOff": "nothing. It is the set of files a non-chargeable declaration may draw a unit from, and membership is what makes a file's usage members admissible -- the narrower this is, the stronger the non-vacuity assertion over it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py",
+      "issues": [
+        1212
+      ],
+      "reason": "Discovered through the prose route, on the comment explaining why two files are absent -- which reads as an exclusion decision and is the opposite: excluding them is what makes the assertion over the rest mean something. bedrock/openai_responses.py is out because it holds the raw OpenAI Responses field names beside the camelCase usage block it builds, and with those in the universe a declared entry could name input_tokens_details -- a field nothing here meters -- and non-vacuity stayed green; it remains read and pinned in EXPECTED_WRITER_UNITS, so its drift is still visible. utils/lambda_metering.py is out because the walk finds nothing in it at all (its dict keys are f-string metering keys), so listing it would be an inert member, which is exactly what this suite refuses to accept in the declaration itself. Closure is asserted by comparing the files read against EXPECTED_WRITER_UNITS's keys, so a file cannot leave either list quietly.",
+      "crossReferences": [
+        "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS"
+      ]
     }
   }
 }

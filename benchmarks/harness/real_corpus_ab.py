@@ -139,34 +139,67 @@ def _docs_of_run(tracking, run_id):
     return out
 
 
-def _metering(item):
-    m = lib.ddb_to_py(item.get("Metering")) if "Metering" in item else None
-    if isinstance(m, str):
-        try:
-            m = json.loads(m)
-        except ValueError:
-            m = None
-    return m if isinstance(m, dict) else {}
+def _metering(item) -> lib.Reading[dict]:
+    """The row's metering map, three-stated. See ``lib.metering_of_item``.
+
+    This used to be a local decoder answering ``{}`` for everything it could not
+    read, so a document whose ``Metering`` would not decode contributed a confident
+    $0.00 cost and a zero to every token class (GitHub #1205). It delegates now: a
+    second decoder is what let the two drift apart in the first place.
+    """
+    return lib.metering_of_item(item)
 
 
 def _token_classes(item):
-    """The four token classes, kept SEPARATE. See the module docstring."""
+    """``(the four token classes kept SEPARATE, unread_reason)``.
+
+    Every value in the returned map has to be a real count, because the caller
+    averages them across documents: a zero from a row that could not be read moves
+    a token mean exactly as a measured zero would, and there is nothing in the mean
+    that says which it was. So the whole map is withheld rather than partially
+    filled — including when the row read fine and a single count is not a number,
+    since a map short by one class is no more reportable than one short by four.
+
+    See the module docstring for why the four are not summed.
+    """
+    read = _metering(item)
+    if not read.is_present:
+        return None, f"metering {read.state}: {read.error}"
     tot = dict.fromkeys(UNITS, 0)
-    for units in _metering(item).values():
+    unreadable = []
+    for key, units in read.value.items():
         if not isinstance(units, dict):
-            continue
+            continue  # priced-and-reported by `_cost`; contributes no token count
         for u in UNITS:
-            if u in units:
-                try:
-                    tot[u] += int(float(units[u]))
-                except (TypeError, ValueError):
-                    pass
-    return tot
+            if u not in units:
+                continue
+            try:
+                tot[u] += int(float(units[u]))
+            except (TypeError, ValueError):
+                unreadable.append(f"{key!r} unit {u!r}={units[u]!r}")
+    if unreadable:
+        return None, "token count is not a number: " + "; ".join(unreadable)
+    return tot, None
 
 
 def _cost(item):
-    cost, _ = lib.price_metering(_metering(item))
-    return cost
+    """``(cost, reason)`` — where ``reason`` is null only if the cost is trustworthy.
+
+    Two facts reach this slot and both mean "no cost to contribute". A metering row
+    that would not decode is unknown, not free (GitHub #1205). A map carrying
+    something ``pricing.yaml`` cannot price is below truth by an unknown amount, and
+    both arms of a paired comparison would be shifted by different amounts, so the
+    delta moves in an unknown direction rather than merely by an unknown size
+    (GitHub #1146). Either way the pair is dropped and named, exactly as ``_score``
+    drops an unread report. The reason says which, because the remedies differ.
+    """
+    read = _metering(item)
+    if not read.is_present:
+        return None, f"metering {read.state}: {read.error}"
+    priced = lib.price_metering(read.value)
+    if not priced.complete:
+        return None, priced.why
+    return priced.total, None
 
 
 def _score(bucket, run_id, doc):
@@ -284,10 +317,24 @@ def cmd_analyse(a):
                     worse += 1
                 else:
                     same += 1
-            cost.append((_cost(arms["B"][1]), _cost(arms["A"][1])))
-            ta, tb = _token_classes(arms["A"][1]), _token_classes(arms["B"][1])
-            for u in UNITS:
-                toks[u].append((tb[u], ta[u]))
+            cb, pb = _cost(arms["B"][1])
+            ca, pa = _cost(arms["A"][1])
+            for arm_name, why in (("A", pa), ("B", pb)):
+                if why:
+                    unread_notes.append(f"{doc} [{arm_name}] cost: {why}")
+            if cb is not None and ca is not None:
+                cost.append((cb, ca))
+            # Tokens are a separate measurement from cost — a row can price fine and
+            # still carry an unreadable count — so they are excluded on their own
+            # reason rather than on the cost's (#1205).
+            ta, tka = _token_classes(arms["A"][1])
+            tb, tkb = _token_classes(arms["B"][1])
+            for arm_name, why in (("A", tka), ("B", tkb)):
+                if why:
+                    unread_notes.append(f"{doc} [{arm_name}] tokens: {why}")
+            if ta is not None and tb is not None:
+                for u in UNITS:
+                    toks[u].append((tb[u], ta[u]))
             for arm in ("A", "B"):
                 if not a.counter:
                     continue
@@ -306,8 +353,8 @@ def cmd_analyse(a):
         if unread_notes:
             print(
                 f"\n  ⚠ {len(unread_notes)} observation(s) EXCLUDED because a read "
-                "failed, not because there was nothing there — the figures below are "
-                "over the remainder:"
+                "failed or a cost could not be priced, not because there was nothing "
+                "there — the figures below are over the remainder:"
             )
             for note in unread_notes[:5]:
                 print(f"      {note}")
@@ -317,9 +364,10 @@ def cmd_analyse(a):
             print(f"    A mean {statistics.fmean(x[1] for x in acc):.4f}")
             print(f"    B mean {statistics.fmean(x[0] for x in acc):.4f}")
             st = _paired_stats(acc, "accuracy")
+            acc_t = lib.format_t(st and st["t"])
             print(
                 f"    mean paired delta (B-A) {st['mean_delta']:+.4f}  "
-                f"sd {st['sd']:.4f}  t {st['t']:+.2f}"
+                f"sd {st['sd']:.4f}  t {acc_t}"
                 if st
                 else "    (too few pairs)"
             )
@@ -334,14 +382,28 @@ def cmd_analyse(a):
             ma = statistics.fmean(x[1] for x in cost)
             mb = statistics.fmean(x[0] for x in cost)
             pct = 100 * st["mean_delta"] / ma if ma else float("nan")
+            cost_t = lib.format_t(st["t"])
+            verdict = "SEPARATES" if abs(st["t"] or 0) > 2 else "not resolvable"
+            short = (
+                f"  ⚠ over {st['n_pairs']} of {len(paired)} paired document(s)"
+                if st["n_pairs"] < len(paired)
+                else ""
+            )
             print(
                 f"\n  COST/doc: A ${ma:.4f}  B ${mb:.4f}  "
-                f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {st['t']:+.2f}  "
-                f"{'SEPARATES' if abs(st['t'] or 0) > 2 else 'not resolvable'}"
+                f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {cost_t}  "
+                f"{verdict}"
+                f"{short}"
             )
 
         print(
             "\n  TOKENS/doc (kept separate — a cache shift moves tokens BETWEEN these)"
+            f"\n  over {len(toks[UNITS[0]])} of {len(paired)} paired document(s)"
+            + (
+                "  ⚠ the rest carried a metering row that would not read"
+                if len(toks[UNITS[0]]) < len(paired)
+                else ""
+            )
         )
         print(f"    {'class':26} {'A':>12} {'B':>12} {'delta':>12} {'%':>8}")
         for u in UNITS:
@@ -365,6 +427,15 @@ def cmd_analyse(a):
             "accuracy": _paired_stats(acc, "accuracy"),
             "cost": _paired_stats(cost, "cost"),
             "tokens": {u: _paired_stats(toks[u], u) for u in UNITS},
+            # Observations excluded because something could not be read or priced,
+            # rather than because there was nothing there. Null on a clean run. The
+            # console said this already and the artifact did not, which leaves a
+            # reader of the committed summary unable to tell a thinned figure from a
+            # whole one — `n_pairs` below a paired count is the only other trace, and
+            # the defect these record used to contribute a zero instead, so there was
+            # no trace at all (#1205).
+            "excluded": unread_notes or None,
+            "n_excluded": len(unread_notes) or None,
             "sign_test_p": _sign_test(better, worse),
             "counters": {
                 k: {kk: list(vv) for kk, vv in v.items()} for k, v in counters.items()

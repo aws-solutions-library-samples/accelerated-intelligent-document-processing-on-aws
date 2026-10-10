@@ -38,10 +38,58 @@ _DEFAULTS = (
 )
 _DOC = _REPO / "docs" / "configuration.md"
 
+#: The two inventories that live in the directory itself. Same both-directions rule as
+#: the published page: a stale name here sends a reader to a deleted module, and a
+#: module missing from the list is one they will not find. Both carried
+#: ``base-assessment.yaml`` for a release after it was deleted, alongside the
+#: ``pattern-1.yaml`` ``_inherits`` entry that was the actual break (#1203) — the same
+#: omission in three places, which is what a check over one file would have caught.
+_IN_TREE_INVENTORIES = (
+    _DEFAULTS / "README.md",
+    _DEFAULTS / "__init__.py",
+)
+
+_FILENAME_RE = r"(?:base|pattern)-?[a-z0-9-]*\.yaml"
+
 
 def _named_in_doc() -> set[str]:
     """Every ``base-*.yaml`` / ``pattern-*.yaml`` named in backticks in the doc."""
-    return set(re.findall(r"`((?:base|pattern)-?[a-z0-9-]*\.yaml)`", _DOC.read_text()))
+    return set(re.findall(f"`({_FILENAME_RE})`", _DOC.read_text()))
+
+
+def _named_in(path: pathlib.Path) -> set[str]:
+    """Every defaults filename named anywhere in ``path``.
+
+    Unbracketed, because these two inventories are a fenced directory listing and a
+    module docstring rather than prose with inline code spans.
+    """
+    return set(re.findall(_FILENAME_RE, path.read_text()))
+
+
+def _the_listing_in(path: pathlib.Path) -> str:
+    """Just the one region of ``path`` that is meant to enumerate the directory.
+
+    ``README.md`` names most modules three or four times — the directory listing, the
+    two ``_inherits`` examples, and the Module Contents table — so *completeness* asked
+    over the whole file only answers "is this name mentioned anywhere". A listing going
+    stale while the examples stay current is the realistic shape, and close to what
+    happened in #1203, so the completeness direction reads the fenced block alone. The
+    staleness direction still reads the whole file, because a dead name is worth
+    reporting wherever it sits.
+
+    For ``__init__.py`` the whole docstring *is* the listing, so the region is the file.
+    """
+    text = path.read_text()
+    if path.suffix != ".md":
+        return text
+    blocks = re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL)
+    listing = [b for b in blocks if f"{_DEFAULTS.name}/" in b]
+    assert len(listing) == 1, (
+        f"expected exactly one fenced block in {path.name} listing "
+        f"`{_DEFAULTS.name}/`, found {len(listing)} — the region this check reads has "
+        "moved, so it would otherwise pass by reading nothing"
+    )
+    return listing[0]
 
 
 def test_every_defaults_file_is_named_in_the_configuration_doc():
@@ -62,6 +110,33 @@ def test_every_file_named_in_the_doc_exists():
     stale = sorted(n for n in _named_in_doc() if not (_DEFAULTS / n).exists())
     assert not stale, (
         f"docs/configuration.md names defaults files that do not exist: {stale}"
+    )
+
+
+@pytest.mark.parametrize("inventory", _IN_TREE_INVENTORIES, ids=lambda p: p.name)
+def test_every_defaults_file_is_named_in_the_in_tree_inventory(
+    inventory: pathlib.Path,
+):
+    """The directory's own two lists are read more often than the published page.
+
+    Asked of the enumerating region rather than the whole file — see
+    ``_the_listing_in`` for why that distinction is the whole value of this direction.
+    """
+    on_disk = {p.name for p in _DEFAULTS.glob("*.yaml")}
+    assert on_disk, f"no defaults files found under {_DEFAULTS}"
+    listed = set(re.findall(_FILENAME_RE, _the_listing_in(inventory)))
+    missing = sorted(on_disk - listed)
+    assert not missing, (
+        f"{inventory.name}'s inventory of this directory omits: {missing}"
+    )
+
+
+@pytest.mark.parametrize("inventory", _IN_TREE_INVENTORIES, ids=lambda p: p.name)
+def test_the_in_tree_inventory_names_no_file_that_is_gone(inventory: pathlib.Path):
+    """The direction that failed: a name kept after the module was deleted."""
+    stale = sorted(n for n in _named_in(inventory) if not (_DEFAULTS / n).exists())
+    assert not stale, (
+        f"{inventory.name} names defaults files that do not exist: {stale}"
     )
 
 

@@ -10,7 +10,7 @@ import logging
 import os
 from collections.abc import Hashable
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import boto3
 from strands import tool
@@ -49,7 +49,25 @@ def retrieve_document_context(document_id: str) -> Dict[str, Any]:
         document_id: Document ObjectKey to analyze (e.g., "report.pdf", "lending_package.pdf")
 
     Returns:
-        Dict containing document context, execution details, and timing information
+        Dict containing document context, execution details, and timing information.
+
+        Two pairs of keys name the failure, and they are **not** interchangeable:
+
+        - ``failed_functions`` / ``primary_failed_function`` are Lambda **function**
+          names. A function name is what a log group is named after, so these are the
+          values to use when choosing which log group to search for a request id.
+        - ``failed_states`` / ``primary_failed_state`` are Step Functions **state**
+          names, and they carry the failures whose history holds no function ARN
+          anywhere to name. An invoke-time permission denial is the common case: Step
+          Functions emits a schedule *failure* instead of the scheduling event, so the
+          function it would have invoked never appears in the history at all. A state
+          name identifies the pipeline step that could not invoke — which is usually
+          enough for an operator to find the function — but it is **not** a function
+          name and **not** a log group name. Map it to the step's function through the
+          workflow definition (``analyze_workflow_execution`` reports the same state
+          names) before searching logs, rather than searching for the state name.
+
+        A single failed attempt contributes to one pair or the other, never both.
     """
     try:
         lambda_client = boto3.client("lambda")
@@ -94,6 +112,8 @@ def retrieve_document_context(document_id: str) -> Dict[str, Any]:
         function_request_map = request_context.get("function_request_map", {})
         failed_functions = request_context.get("failed_functions", [])
         primary_failed_function = request_context.get("primary_failed_function")
+        failed_states = request_context.get("failed_states", [])
+        primary_failed_state = request_context.get("primary_failed_state")
 
         # Get timestamps for precise time windows
         timestamps = payload.get("timing", {}).get("timestamps", {})
@@ -121,6 +141,8 @@ def retrieve_document_context(document_id: str) -> Dict[str, Any]:
             "function_request_map": function_request_map,
             "failed_functions": failed_functions,
             "primary_failed_function": primary_failed_function,
+            "failed_states": failed_states,
+            "primary_failed_state": primary_failed_state,
             "timestamps": timestamps,
             "processing_start_time": start_time,
             "processing_end_time": end_time,
@@ -157,12 +179,17 @@ def get_lookup_function_name() -> str:
     raise ValueError("LOOKUP_FUNCTION_NAME environment variable not set")
 
 
-#: Event types whose detail carries a ``resource`` naming what was invoked, and the
-#: detail key each uses. Measured against the Step Functions API model in the
-#: installed botocore, not assumed: ``LambdaFunctionFailedEventDetails`` and
-#: ``LambdaFunctionTimedOutEventDetails`` hold only ``cause`` and ``error``, and
+#: Event types whose detail carries a ``resource`` naming the **Lambda function** that
+#: was to be invoked, and the detail key each uses. Measured against the Step Functions
+#: API model in the installed botocore, not assumed: ``LambdaFunctionFailedEventDetails``
+#: and ``LambdaFunctionTimedOutEventDetails`` hold only ``cause`` and ``error``, and
 #: ``StateEnteredEventDetails`` only ``input``, ``inputDetails`` and ``name``. The
 #: failing function's identity simply is not in the failure event.
+#:
+#: ``ActivityScheduled`` is deliberately absent even though it declares a required
+#: ``resource``: that resource is an activity ARN, which is never a function name. So
+#: the walk below passes through one rather than stopping at it, and an activity failure
+#: is answered with its state's name — the only identity such a history holds.
 _RESOURCE_BEARING_EVENTS = {
     "LambdaFunctionScheduled": "lambdaFunctionScheduledEventDetails",
     "TaskScheduled": "taskScheduledEventDetails",
@@ -179,7 +206,6 @@ _OUTCOME_DETAIL_KEYS = {
     # failure at invoke time produces -- precisely the errors the workflow's retry
     # ladders enumerate. Omitting these left `failed_functions` empty for that whole
     # class of failure, which is the one an operator is most likely to be looking at.
-    # Their scheduling predecessor exists, so the causal walk resolves them.
     "LambdaFunctionScheduleFailed": "lambdaFunctionScheduleFailedEventDetails",
     "LambdaFunctionStartFailed": "lambdaFunctionStartFailedEventDetails",
     "TaskSucceeded": "taskSucceededEventDetails",
@@ -187,30 +213,74 @@ _OUTCOME_DETAIL_KEYS = {
     "TaskTimedOut": "taskTimedOutEventDetails",
     "TaskStartFailed": "taskStartFailedEventDetails",
     "TaskSubmitFailed": "taskSubmitFailedEventDetails",
+    # The Activity family. This solution declares no Step Functions Activity -- every
+    # `Resource` in `patterns/unified/statemachine/workflow.asl.json` is either a Lambda
+    # function ARN or `states:::lambda:invoke[.waitForTaskToken]`, and the file contains
+    # no `states:::activity` at all -- so these are read for closure over the event
+    # vocabulary rather than for a case in this tree. They are the third way a task
+    # attempt can be reported as failed, the Activity family is the only other one the
+    # type enumeration holds a `*ScheduleFailed` for, and an activity's history carries
+    # no function ARN anywhere, so the state fallback below is the only identity one can
+    # ever be given -- for *every* activity failure, not only a schedule failure, since
+    # `ActivityScheduled` is transparent to the walk. `ActivitySucceeded` is deliberately
+    # not here: the closure being completed is over the ways an attempt can FAIL, and a
+    # success is read only to harvest a request id, which an activity does not have.
+    "ActivityFailed": "activityFailedEventDetails",
+    "ActivityScheduleFailed": "activityScheduleFailedEventDetails",
+    "ActivityTimedOut": "activityTimedOutEventDetails",
     "TaskStateEntered": "stateEnteredEventDetails",
     "TaskStateExited": "stateExitedEventDetails",
 }
 
-#: Events that carry a STATE's identity rather than an invocation's, and so must
-#: never be resolved causally. See the note at the resolution site: such an event
-#: precedes its own scheduling event, so a backwards walk can only find another
-#: task's.
-_STATE_TRANSITION_EVENTS = frozenset({"TaskStateEntered", "TaskStateExited"})
+#: Detail keys that carry a STATE's name rather than an invocation's.
+#:
+#: Matched on the **detail key**, never on a list of event-type spellings. The history
+#: API prefixes every transition with the state's own type -- ``TaskStateEntered``,
+#: ``ChoiceStateEntered``, ``MapStateExited`` and eleven more -- while the service model
+#: declares exactly one detail member per direction covering all of them, so asking
+#: which detail key an event carries answers "does this event name a state" for every
+#: spelling in the enumeration and for any the service adds later. A rule written as a
+#: set of spellings is one the next spelling walks straight past.
+_STATE_ENTERED_DETAIL_KEY = "stateEnteredEventDetails"
+_STATE_EXITED_DETAIL_KEY = "stateExitedEventDetails"
+_STATE_NAMING_DETAIL_KEYS = frozenset(
+    {_STATE_ENTERED_DETAIL_KEY, _STATE_EXITED_DETAIL_KEY}
+)
 
-#: Failure events that should contribute a failed function name. Both families are
-#: needed because this workflow uses **both** Lambda integration styles: 15 task
-#: states name a function ARN directly (giving ``LambdaFunction*`` events) and 9 go
-#: through ``arn:<partition>:states:::lambda:invoke`` (giving ``Task*`` events), so
-#: reading either family alone leaves a third of the pipeline unattributable.
-_FAILURE_EVENTS_WITH_A_FUNCTION = (
-    "LambdaFunctionFailed",
-    "LambdaFunctionTimedOut",
-    "LambdaFunctionScheduleFailed",
-    "LambdaFunctionStartFailed",
-    "TaskFailed",
-    "TaskTimedOut",
-    "TaskStartFailed",
-    "TaskSubmitFailed",
+#: Every way one **task attempt** can be reported as having failed.
+#:
+#: Derived from the ``HistoryEventType`` enumeration in the Step Functions service model
+#: rather than written from memory. The rule, which
+#: ``TestTheFailureVocabularyIsDerivedFromTheServiceModel`` recomputes and enforces: a
+#: type belongs here when its detail shape declares both ``error`` and ``cause`` *and*
+#: its family can be **scheduled** -- that is, some ``<Family>Scheduled`` type exists in
+#: the enumeration. That second clause is what excludes the four error-bearing types
+#: that are not one attempt at invoking something: ``ExecutionFailed``,
+#: ``ExecutionAborted`` and ``ExecutionTimedOut`` (by the time one of those arrives a
+#: caught failure has already entered its handler, so attributing them names the
+#: handler, which is #1139), ``MapRunFailed`` (an aggregate over a distributed Map run)
+#: and ``EvaluationFailed`` (an expression evaluation, whose detail carries its own
+#: required ``state`` member and so needs none of the machinery here).
+#:
+#: All three families are needed. This workflow uses **both** Lambda integration styles
+#: -- 15 task states name a function ARN directly (giving ``LambdaFunction*`` events)
+#: and 9 go through ``arn:<partition>:states:::lambda:invoke``, one of them
+#: ``.waitForTaskToken`` (giving ``Task*`` events, which is what makes
+#: ``TaskSubmitFailed`` reachable) -- and the Activity family completes the closure.
+_TASK_ATTEMPT_FAILURE_EVENTS = frozenset(
+    {
+        "LambdaFunctionFailed",
+        "LambdaFunctionTimedOut",
+        "LambdaFunctionScheduleFailed",
+        "LambdaFunctionStartFailed",
+        "TaskFailed",
+        "TaskTimedOut",
+        "TaskStartFailed",
+        "TaskSubmitFailed",
+        "ActivityFailed",
+        "ActivityScheduleFailed",
+        "ActivityTimedOut",
+    }
 )
 
 #: How far back along ``previousEventId`` to look for the scheduling event.
@@ -223,6 +293,13 @@ _FAILURE_EVENTS_WITH_A_FUNCTION = (
 #: history and attributing itself to some unrelated earlier invocation — a wrong
 #: function name is worse here than none, because it selects the log group the agent
 #: goes on to search.
+#:
+#: The same bound governs the walk to the enclosing state's entry, which for a schedule
+#: failure is one hop. A retried failure is further back -- each attempt adds a link and
+#: no new state transition, so this workflow's deepest ladder (``MaxAttempts`` 8) puts
+#: the last attempt outside the bound. That costs nothing: the *first* attempt is one
+#: hop from the state entry and resolves, and both ``failed_states`` and
+#: ``primary_failed_state`` are answered from it.
 _MAX_CAUSAL_HOPS = 6
 
 
@@ -266,6 +343,47 @@ def _function_name_from_task_parameters(parameters: Any) -> Optional[str]:
     return _function_name_from_arn(target) or (target if ":" not in target else None)
 
 
+class _Attribution(NamedTuple):
+    """What a history can be made to say about one failed attempt.
+
+    At most one of the two is ever set, and they are **different kinds of identity**
+    rather than a confident and a hedged spelling of the same one:
+
+    * ``function`` is a Lambda function name, read from the scheduling event the
+      attempt's causal chain leads back to. It names something that has a log group.
+    * ``state`` is a Step Functions state name, set only when that chain reaches no
+      scheduling event **that names a function** -- see :func:`_attribute_attempt` for
+      the two ways that happens. It names a step in the workflow definition, which is
+      neither a function name nor a log group name.
+
+    Keeping them apart in the return value is what lets ``failed_functions`` and
+    ``failed_states`` be separate fields, so a state name reached this way is never
+    reported as the function that failed.
+    """
+
+    function: Optional[str] = None
+    state: Optional[str] = None
+
+
+def _state_named_by(event: Dict[str, Any]) -> Optional[str]:
+    """The state name a state-**entered** event carries, or None.
+
+    ``name`` is a required member of ``StateEnteredEventDetails``, so a real page always
+    has one.
+
+    An *empty* name comes back as the empty string rather than as None, and the one
+    caller rejects it on truthiness. A guard here as well was measured redundant -- no
+    test result changed in either direction with it present or absent -- and this file's
+    own history is the reason not to keep it anyway: the removed visited-set was exactly
+    that shape, defensive code no test could tell apart from its own absence.
+    """
+    detail = event.get(_STATE_ENTERED_DETAIL_KEY)
+    if not isinstance(detail, dict):
+        return None
+    name = detail.get("name")
+    return name if isinstance(name, str) else None
+
+
 def _index_invoked_functions(
     execution_events: List[Dict[str, Any]],
 ) -> Dict[Any, str]:
@@ -286,22 +404,56 @@ def _index_invoked_functions(
     return invoked
 
 
-def _resolve_invoked_function(
+def _attribute_attempt(
     event: Dict[str, Any],
     events_by_id: Dict[Any, Dict[str, Any]],
     invoked_by_id: Dict[Any, str],
-) -> Optional[str]:
-    """Follow ``previousEventId`` back to this event's own scheduling event.
+) -> _Attribution:
+    """Follow ``previousEventId`` back to whatever identifies this attempt.
 
     Causal, not positional. Taking "the nearest preceding scheduling event" instead
     would misattribute inside a concurrent ``Map``: ``ProcessSections`` runs at
     ``MaxConcurrency`` 10 and the shard ``Map`` at 5, iterations share one history,
     so the event physically before a failure routinely belongs to a different
     iteration and a different function.
+
+    The walk stops at the **first** thing that identifies something, and which of the
+    four it reaches decides the answer:
+
+    * a scheduling event that named a function -- that function (#1171);
+    * a **function-naming** scheduling event (one whose type is in
+      :data:`_RESOURCE_BEARING_EVENTS`) that named nothing this module will read --
+      **nothing**. The history answered badly rather than not at all, and guessing past
+      it is how a layer name or an integration verb comes to be reported as the function
+      that failed (#1128). It is also what keeps the state fallback below from becoming a
+      general one: a service-integration task that is not a Lambda invoke stops here;
+    * the enclosing state's entry -- that state's name. Reaching it means the chain named
+      no function, in one of exactly two ways: the scheduling event was never emitted
+      (``LambdaFunctionScheduleFailed`` is emitted *instead of*
+      ``LambdaFunctionScheduled``, which is what a ``lambda:InvokeFunction`` denial
+      produces, so no function ARN appears anywhere in that history), or the family's
+      scheduling event never names a function in the first place and is therefore
+      transparent to this walk, which is the Activity family (#1183);
+    * a state **exit** -- nothing. The walk has left the state this attempt belonged to,
+      so every state name from there back belongs to an earlier one, and naming an
+      earlier state is the cross-attribution #1171 and #1139 were both about. It applies
+      to a chain that reaches an exit *before* any entry, which is what
+      ``test_a_state_that_has_already_exited_is_never_named`` builds; on an ordinary
+      mid-pipeline history the entry is examined first, so removing this branch changes
+      that answer not at all -- measured.
+
+    ⚠️ **The two state branches removed a wrong answer, not a missing one.** Before them,
+    a schedule failure anywhere but the first state walked entry -> exit -> succeeded ->
+    started -> scheduled -- five hops, inside the bound with one to spare -- and reported
+    the **previous, successful** function: measured, ``['OCRFunction']`` for a denial on
+    ``ClassificationStep``. Either branch alone suppresses that, since both terminate the
+    walk before it gets there; only the entry branch also says which step it was. See
+    ``test_a_denial_mid_pipeline_no_longer_names_the_previous_function``, which measures
+    all four combinations.
     """
     # No visited-set. The `for` bounds the walk by construction, so a cycle in
-    # `previousEventId` terminates at the bound and returns None — which is the same
-    # answer a visited-set gives, a few iterations later. A visited-set was here, and
+    # `previousEventId` terminates at the bound and identifies nothing — which is the
+    # same answer a visited-set gives, a few iterations later. A visited-set was here, and
     # removing it changed no test result in either direction: with the bound present
     # there is no input that distinguishes the two. Defensive code no test can tell
     # apart from its own absence is code nobody can maintain or safely change, so it
@@ -309,15 +461,21 @@ def _resolve_invoked_function(
     current: Optional[Dict[str, Any]] = event
     for _ in range(_MAX_CAUSAL_HOPS + 1):
         if current is None:
-            return None
+            return _Attribution()
         current_id = current.get("id")
         if current_id in invoked_by_id:
-            return invoked_by_id[current_id]
+            return _Attribution(function=invoked_by_id[current_id])
+        if current.get("type", "") in _RESOURCE_BEARING_EVENTS:
+            return _Attribution()
+        if _STATE_ENTERED_DETAIL_KEY in current:
+            return _Attribution(state=_state_named_by(current))
+        if _STATE_EXITED_DETAIL_KEY in current:
+            return _Attribution()
         previous_id = current.get("previousEventId")
         if previous_id in (None, 0):
-            return None
+            return _Attribution()
         current = events_by_id.get(previous_id)
-    return None
+    return _Attribution()
 
 
 def extract_lambda_request_ids(
@@ -331,15 +489,21 @@ def extract_lambda_request_ids(
         execution_events: List of Step Function execution events
 
     Returns:
-        Dict containing request IDs mapped to functions and failure information
+        Dict containing request IDs mapped to functions and failure information.
+        ``failed_functions``/``primary_failed_function`` name Lambda **functions**;
+        ``failed_states``/``primary_failed_state`` name Step Functions **states** and
+        carry the failures whose history holds no function ARN to name -- see
+        :func:`_attribute_attempt`. The two are disjoint: one failed attempt contributes
+        to one pair or the other, never both.
     """
     function_request_map = {}
     failed_functions = []
+    failed_states = []
     all_request_ids = []
 
     # Built once. The function's identity lives in the SCHEDULING event, and a
     # failure reaches it by following `previousEventId` -- see
-    # `_resolve_invoked_function`. Reading `resource` off the failure event itself,
+    # `_attribute_attempt`. Reading `resource` off the failure event itself,
     # which is what this did, could never work: no Lambda failure detail carries
     # that field, so `failed_functions` was always empty and
     # `primary_failed_function` always None in production (#1171).
@@ -360,6 +524,7 @@ def extract_lambda_request_ids(
 
         # Extract function name from various event types
         function_name = None
+        state_name = None
         request_id = None
 
         if event_type in _OUTCOME_DETAIL_KEYS:
@@ -370,10 +535,20 @@ def extract_lambda_request_ids(
             # final `.get` and arrived as None, so the event was discarded and its
             # failure lost. A `LambdaFunctionFailed` detail holds only `cause` and
             # `error`, either of which a service can omit.
-            event_detail = event.get(_OUTCOME_DETAIL_KEYS[event_type])
+            detail_key = _OUTCOME_DETAIL_KEYS[event_type]
+            event_detail = event.get(detail_key)
 
-            if event_detail is not None:
-                if event_type in _STATE_TRANSITION_EVENTS:
+            # `isinstance(..., dict)` rather than `is not None`, for the same reason
+            # `_index_invoked_functions` checks it: both the `.get("name")` and the
+            # `.items()` below raise on anything else, and a raise anywhere in this loop
+            # leaves `extract_lambda_request_ids` altogether -- reaching
+            # `retrieve_document_context`'s broad `except` as `document_found: False`,
+            # which discards every request id and failed identity already gathered rather
+            # than just the one malformed event. Measured while adding the
+            # `stateEnteredEventDetails` cases below: a detail of `"OCRStep"` instead of
+            # `{"name": "OCRStep"}` raised `AttributeError` here.
+            if isinstance(event_detail, dict):
+                if detail_key in _STATE_NAMING_DETAIL_KEYS:
                     # ⚠️ A state-transition event is NEVER resolved causally, and the
                     # reason is structural rather than a tuning choice: a
                     # `TaskStateEntered` event *precedes* its own scheduling event, so
@@ -390,13 +565,17 @@ def extract_lambda_request_ids(
                     # The state name is the only identity such an event carries, and
                     # it is the right key for a request id found in the state's input
                     # or output.
+                    #
+                    # The condition is on the *detail key* rather than on a list of
+                    # event types, so a `ChoiceStateEntered` or `MapStateExited` added
+                    # to the map above is covered without being named again here.
                     function_name = event_detail.get("name") or None
                 else:
                     # An outcome event follows its own scheduling event, so the walk
                     # runs in the direction where the answer exists.
-                    function_name = _resolve_invoked_function(
-                        event, events_by_id, invoked_by_id
-                    )
+                    attribution = _attribute_attempt(event, events_by_id, invoked_by_id)
+                    function_name = attribution.function
+                    state_name = attribution.state
 
                 # Extract request ID from multiple fields
                 for field_name, field_value in event_detail.items():
@@ -409,9 +588,15 @@ def extract_lambda_request_ids(
                         if request_id:
                             break
 
-                # Track failed functions
-                if event_type in _FAILURE_EVENTS_WITH_A_FUNCTION and function_name:
-                    failed_functions.append(function_name)
+                # Track the failure under whichever identity the history could give
+                # it. `elif`, not a second `if`: one attempt is one entry, and an
+                # attempt that named its function has no business also being reported
+                # as an unattributed state.
+                if event_type in _TASK_ATTEMPT_FAILURE_EVENTS:
+                    if function_name:
+                        failed_functions.append(function_name)
+                    elif state_name:
+                        failed_states.append(state_name)
 
                 # Map function to request ID
                 if function_name and request_id:
@@ -434,8 +619,14 @@ def extract_lambda_request_ids(
     result = {
         "function_request_map": function_request_map,
         "failed_functions": list(set(failed_functions)),
+        # `dict.fromkeys` rather than `set`, so the order is the history's. The line
+        # above keeps `set` deliberately: it is an existing output, and re-ordering it
+        # would change what an operator sees on every document that fails today, for no
+        # defect. A new field can simply be right from the start.
+        "failed_states": list(dict.fromkeys(failed_states)),
         "all_request_ids": list(set(all_request_ids)),
         "primary_failed_function": failed_functions[0] if failed_functions else None,
+        "primary_failed_state": failed_states[0] if failed_states else None,
     }
 
     if not all_request_ids:

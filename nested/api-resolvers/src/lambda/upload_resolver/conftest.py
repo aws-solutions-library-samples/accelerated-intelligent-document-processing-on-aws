@@ -15,6 +15,20 @@ each resolver suite with ``cd <dir> && pytest .``, which makes that directory th
 rootdir, and pytest does not load conftests above the rootdir.
 """
 
+# This resolver builds a DynamoDB resource at MODULE scope (it reads the config
+# prefix mappings and the caller's scope), and DynamoDB — unlike S3, the only
+# client this module built before — cannot resolve an endpoint without a region.
+# `make/hermetic_aws.mk` strips every region source a CI runner would not have, so
+# without this the suite passes on a developer machine (which supplies one from the
+# shared AWS config file) and fails on a runner. That is issue #988's defect class,
+# and pinning a region in the suite's own conftest is the remedy that file
+# prescribes. A per-test fixture is not enough: a test that calls
+# `importlib.reload(index)` re-executes module scope under whatever the fixture it
+# happens to use has set, and the pre-existing allow-list suite takes none.
+import os
+
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
 FIRST_PARTY_UNDER_TEST = ("idp_common",)
 
 

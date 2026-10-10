@@ -1,0 +1,30 @@
+{
+  "offer_version": "20260925065502",
+  "on_demand_inference_product_count": 3841,
+  "on_demand_inference_units": {
+    "1K tokens": 3727,
+    "Images Processed": 10,
+    "image": 100,
+    "video": 4
+  },
+  "product_count": 12587,
+  "publication_date": "2026-09-25T06:55:02Z",
+  "request_priced_features": {
+    "(no feature attribute) [API Calls]": 2,
+    "(no feature attribute) [Requests]": 12,
+    "Generate SQL - Structured Data Retrieval [Requests]": 16,
+    "Prompt Router [Per 1000 requests]": 9
+  },
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/index.json",
+  "token_types": [
+    "Cache Read Input Tokens",
+    "cache-read-tokens-long-ctx",
+    "cache-write-tokens-30m",
+    "cache-write-tokens-30m-long-ctx",
+    "input-tokens-long-ctx",
+    "input_tokens_mantle",
+    "output-tokens-long-ctx",
+    "output_tokens_mantle"
+  ],
+  "total_named_usagetypes": []
+}

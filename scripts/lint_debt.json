@@ -60,7 +60,7 @@
       "shields": {
         "files": 31,
         "lintFindings": 44,
-        "unformatted": 2
+        "unformatted": 3
       }
     }
   },
@@ -118,9 +118,6 @@
     "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py": {
       "I001": 1
     },
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": {
-      "I001": 1
-    },
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
       "F841": 1,
       "I001": 1
@@ -132,8 +129,7 @@
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
-      "E722": 1,
-      "F841": 1
+      "E722": 1
     },
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py": {
       "I001": 1
@@ -383,8 +379,6 @@
     "nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py",
-    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py",
-    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/test_index.py",
     "nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py",
     "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
@@ -397,9 +391,7 @@
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
-    "nested/api-resolvers/src/lambda/test_runner/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
-    "nested/api-resolvers/src/lambda/test_runner/test_revision_pinning.py",
     "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
     "nested/api-resolvers/src/lambda/upload_resolver/index.py",
     "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
@@ -443,7 +435,6 @@
     "scripts/sdlc/tests/test_resolver_layer_coverage.py",
     "scripts/sdlc/tests/test_retired_services_not_documented.py",
     "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
-    "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
     "scripts/sdlc/tests/test_stale_stack_reaper.py",
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
     "scripts/sdlc/validate_buildspec.py",
@@ -545,8 +536,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 84,
-    "lintFindings": 193,
-    "formatDebtFiles": 180
+    "lintDebtFiles": 83,
+    "lintFindings": 191,
+    "formatDebtFiles": 175
   }
 }

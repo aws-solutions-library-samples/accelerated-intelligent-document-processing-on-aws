@@ -11,18 +11,26 @@
 #
 # BDA handles OCR, classification, and extraction internally via Blueprints,
 # so these sections are NOT included in this pattern's defaults.
-# Only LLM-based features (assessment, summarization, agents, etc.) are configured.
+# Only LLM-based features (confidence, summarization, agents, etc.) are configured.
 # =============================================================================
 
 # Processing mode: bda = Bedrock Data Automation
 use_bda: true
 
 # Only inherit modules relevant to Pattern-1
-# Note: base-ocr, base-classification, base-extraction are NOT inherited
+# Note: base-ocr, base-classification, base-extraction are NOT inherited.
+# base-confidence.yaml + base-geometry.yaml are the v0.6 homes of what was formerly
+# one assessment module: per-field confidence moved to `extraction.confidence`,
+# bounding-box geometry to `extraction.geometry`, and the HITL knobs to top-level
+# `hitl`. Both are inherited here — as they are in base.yaml — so this pattern keeps
+# the confidence/geometry/HITL defaults it carried before that split. They
+# contribute only the `confidence` and `geometry` sub-sections of `extraction`,
+# never the LLM extraction settings BDA does not use.
 _inherits:
   - base-notes.yaml
   - base-classes.yaml
-  - base-assessment.yaml
+  - base-confidence.yaml
+  - base-geometry.yaml
   - base-summarization.yaml
   - base-evaluation.yaml
   - base-agents.yaml

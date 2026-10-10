@@ -303,15 +303,22 @@ schema with content is one shape that reliably produces it; and whether that is 
 ## Reproduce
 
 The routing probe and the micro-probe are standalone scripts against
-`bedrock-runtime`; neither needs a deployed stack, and both cost under a dollar. The
-pipeline A/B used the `topkab` suite at `--set extraction_model=nova_lite`:
+`bedrock-runtime`; neither needs a deployed stack, and both cost under a dollar. Those two
+are reproducible as written; the pipeline A/B is not, and this is the part to read before
+trying.
 
-```bash
-python3 benchmarks/harness/make_configs.py --suite topkab --class bank_statement \
-    --set extraction_model=nova_lite
-AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py \
-    --stack <STACK> --suite topkab --set extraction_model=nova_lite --max-inflight 6
-```
+The pipeline A/B ran a `topkab`/`topkab2` suite pair over an `agentic_top_k` axis that set
+`extraction.agentic.top_k`. **None of the three is in the tree now.** Because the measurement
+is what established that no knob should ship, `AgenticConfig` has no `top_k` field — so the
+axis named a path `make_configs.py` validates against `IDPConfig` and rejects. Left in the
+matrix it did not merely sit idle: the axis was also in `default_cell` and both arms were in
+`core_cells`, which made *every* suite fail to generate configs, `corefast` included. All
+three were therefore removed, and `core_cells` went back to the 19 cells the release A/B is
+measured on.
+
+Re-running the arms means re-adding the product field first, then the axis, then a suite that
+names it — in that order, since the middle step fails without the first. The scored data below
+stands on its own, and §2c's conclusion is what makes re-running unnecessary.
 
 Scored data: `benchmarks/results/v0.6.10/topkab__extraction-model-nova-lite/` (2
 documents × 4 repeats) and `benchmarks/results/v0.6.10/topkab2__extraction-model-nova-lite/`

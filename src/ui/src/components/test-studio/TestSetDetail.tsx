@@ -33,6 +33,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Table,
+  type TableProps,
   TextFilter,
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -371,6 +372,45 @@ export const formatSize = (size?: number | null): string => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+/**
+ * Comparators for the sortable document columns.
+ *
+ * Module-level on purpose: Cloudscape decides which header carries the sorted
+ * chevron by comparing the comparator (or the sorting field) it was handed back
+ * with the ones on the current column definitions. The definitions here are
+ * written inline in the table, so an inline comparator is a new function on
+ * every render — the rows would stay sorted while the chevron fell back to
+ * "sortable", i.e. the same complaint this fixes, one click later.
+ *
+ * Comparators rather than `sortingField` for the same identity reason in
+ * reverse: "Extraction labels" and "Review state" are two renderings of
+ * `labelSource`, so a shared `sortingField` marks both headers as sorted at
+ * once, and neither can order by what its own column shows.
+ */
+export const compareByObjectKey = (a: TestSetDocumentItem, b: TestSetDocumentItem): number => a.objectKey.localeCompare(b.objectKey);
+
+export const compareByLabelSource = (a: TestSetDocumentItem, b: TestSetDocumentItem): number =>
+  (a.labelSource ?? '').localeCompare(b.labelSource ?? '');
+
+/** Documents carrying no alert count sort below zero alerts, not alongside them. */
+export const compareByAlertCount = (a: TestSetDocumentItem, b: TestSetDocumentItem): number => (a.alertCount ?? -1) - (b.alertCount ?? -1);
+
+/**
+ * Review progress, so ascending puts the documents needing work first. Ordered
+ * by the states `renderReviewState` renders, not alphabetically by the raw
+ * `labelSource` — "Awaiting review" after "Ground truth" is noise in the one
+ * column a reviewer sorts to find their queue.
+ */
+const REVIEW_STATE_RANK: Record<string, number> = {
+  '': 0,
+  'draft-machine': 1,
+  'reviewed-human': 2,
+};
+const reviewStateRank = (labelSource?: string | null): number => REVIEW_STATE_RANK[labelSource ?? ''] ?? 3;
+
+export const compareByReviewState = (a: TestSetDocumentItem, b: TestSetDocumentItem): number =>
+  reviewStateRank(a.labelSource) - reviewStateRank(b.labelSource);
+
 const TestSetDetail = (): React.JSX.Element => {
   const { testSetId } = useParams<{ testSetId: string }>();
   const navigate = useNavigate();
@@ -423,6 +463,13 @@ const TestSetDetail = (): React.JSX.Element => {
   const [isClearingDrafts, setIsClearingDrafts] = useState(false);
   const [clearedMessage, setClearedMessage] = useState<string | null>(null);
   const [worstFirst, setWorstFirst] = useState(true);
+  /**
+   * The column the user sorted by, or `null` for the default order. Held here
+   * rather than taken from `useCollection` because the "worst-first" button is a
+   * second ordering of the same rows: the two have to be able to clear each
+   * other, and a collection's sorting state cannot be cleared once set.
+   */
+  const [sorting, setSorting] = useState<{ column: TableProps.SortingColumn<TestSetDocumentItem>; isDescending: boolean } | null>(null);
   const [selectedItems, setSelectedItems] = useState<TestSetDocumentItem[]>([]);
   const [showRemoveModal, setShowRemoveModal] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
@@ -828,15 +875,34 @@ const TestSetDetail = (): React.JSX.Element => {
 
   const hasConfidence = documents.some((d) => d.minConfidence !== null && d.minConfidence !== undefined);
   // Sorts the current page only: pagination is server-side and opaque, so a
-  // set-wide ranking is not available here.
-  const visibleDocs =
-    worstFirst && hasConfidence
-      ? [...filteredDocs].sort((a, b) => {
-          const av = a.minConfidence ?? Number.POSITIVE_INFINITY;
-          const bv = b.minConfidence ?? Number.POSITIVE_INFINITY;
-          return av - bv;
-        })
-      : filteredDocs;
+  // set-wide ranking is not available here. The header says so whenever the page
+  // is not the whole set, since a page-scoped order looks set-wide.
+  const visibleDocs = (() => {
+    if (sorting) {
+      const comparator = sorting.column.sortingComparator;
+      if (!comparator) return filteredDocs;
+      const direction = sorting.isDescending ? -1 : 1;
+      return [...filteredDocs].sort((a, b) => comparator(a, b) * direction);
+    }
+    if (worstFirst && hasConfidence) {
+      return [...filteredDocs].sort((a, b) => {
+        const av = a.minConfidence ?? Number.POSITIVE_INFINITY;
+        const bv = b.minConfidence ?? Number.POSITIVE_INFINITY;
+        return av - bv;
+      });
+    }
+    return filteredDocs;
+  })();
+
+  const tableDescription =
+    [
+      hasConfidence
+        ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
+        : null,
+      totalCount !== null && totalCount > filteredDocs.length ? 'Sorting and filtering order this page, not the whole set.' : null,
+    ]
+      .filter(Boolean)
+      .join(' ') || undefined;
 
   return (
     <AppLayout
@@ -952,18 +1018,25 @@ const TestSetDetail = (): React.JSX.Element => {
                         ? `(${filteredDocs.length} of ${totalCount})`
                         : `(${filteredDocs.length})`
                   }
-                  description={
-                    hasConfidence
-                      ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
-                      : undefined
-                  }
+                  description={tableDescription}
                   actions={
                     <SpaceBetween direction="horizontal" size="xs">
                       {hasConfidence && (
-                        <Button onClick={() => setWorstFirst((prev) => !prev)}>{worstFirst ? 'Sort by name' : 'Sort worst-first'}</Button>
+                        <Button
+                          onClick={() => {
+                            // A column sort overrides worst-first, so while one is
+                            // active this button re-applies worst-first rather than
+                            // toggling away an order that is not on screen.
+                            setWorstFirst((prev) => (sorting ? true : !prev));
+                            setSorting(null);
+                          }}
+                        >
+                          {worstFirst && !sorting ? 'Sort by name' : 'Sort worst-first'}
+                        </Button>
                       )}
                       <ButtonDropdown
                         items={[
+                          { id: 'add-processed', text: 'From processed documents' },
                           { id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                           { id: 'add-upload', text: 'From a zip upload' },
                           {
@@ -974,7 +1047,8 @@ const TestSetDetail = (): React.JSX.Element => {
                           },
                         ]}
                         onItemClick={({ detail }) => {
-                          if (detail.id === 'add-pattern') setAddDocsMode('pattern');
+                          if (detail.id === 'add-processed') setAddDocsMode('documents');
+                          else if (detail.id === 'add-pattern') setAddDocsMode('pattern');
                           else if (detail.id === 'add-upload') setAddDocsMode('upload');
                           else if (detail.id === 'add-generate') setShowGenerateModal(true);
                         }}
@@ -1050,7 +1124,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   cell: (item: TestSetDocumentItem) => (
                     <Link href={testSetDocumentHref(testSetId ?? '', item.objectKey)}>{item.objectKey}</Link>
                   ),
-                  sortingField: 'objectKey',
+                  sortingComparator: compareByObjectKey,
                 },
                 {
                   id: 'labelSource',
@@ -1058,14 +1132,14 @@ const TestSetDetail = (): React.JSX.Element => {
                   // split labels, which are separate things.
                   header: 'Extraction labels',
                   cell: (item: TestSetDocumentItem) => renderLabelSource(item.labelSource),
-                  sortingField: 'labelSource',
+                  sortingComparator: compareByLabelSource,
                 },
                 {
                   id: 'alertCount',
                   header: 'Confidence alerts',
                   cell: (item: TestSetDocumentItem) =>
                     renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold),
-                  sortingField: 'alertCount',
+                  sortingComparator: compareByAlertCount,
                 },
                 {
                   id: 'reviewState',
@@ -1074,7 +1148,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   // them.
                   header: 'Review state',
                   cell: (item: TestSetDocumentItem) => renderReviewState(item.labelSource),
-                  sortingField: 'labelSource',
+                  sortingComparator: compareByReviewState,
                 },
                 {
                   id: 'size',
@@ -1105,6 +1179,12 @@ const TestSetDetail = (): React.JSX.Element => {
                 },
               ]}
               items={visibleDocs}
+              // The chevrons are rendered by any column that declares a sorting
+              // basis, but the state is the caller's: without these three the
+              // headers invited a click that could do nothing.
+              sortingColumn={sorting?.column}
+              sortingDescending={sorting?.isDescending}
+              onSortingChange={({ detail }) => setSorting({ column: detail.sortingColumn, isDescending: Boolean(detail.isDescending) })}
               selectionType="multi"
               selectedItems={selectedItems}
               onSelectionChange={({ detail }) => setSelectedItems(detail.selectedItems)}
@@ -1137,7 +1217,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   <Box variant="p" color="inherit">
                     {filterText
                       ? 'This test set has no documents matching the filter.'
-                      : 'This test set has no documents. Use Add documents to bring some in: files in a bucket, a zip upload, or generated documents.'}
+                      : 'This test set has no documents. Use Add documents to bring some in: processed documents, files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>
               }

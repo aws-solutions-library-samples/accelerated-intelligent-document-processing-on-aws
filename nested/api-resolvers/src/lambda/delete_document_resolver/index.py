@@ -92,7 +92,12 @@ def handler(event, context):
         logger.info(
             f"Completed deletion: {deleted_count} successful, {failed_count} failed"
         )
-        return deleted_count > 0 or failed_count == 0
+        # `failed_count == 0`, not `deleted_count > 0 or ...`: the UI sends the whole
+        # multi-select here, and the old expression answered True whenever *any* document
+        # was removed — so a selection of ten where one document's tracking row could not
+        # be cleared reported a complete delete. The per-document errors are already in
+        # the log; this boolean is the only thing the caller sees (#1238).
+        return failed_count == 0
 
     except Exception as e:
         logger.error(f"Error in delete_document resolver: {str(e)}", exc_info=True)

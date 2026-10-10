@@ -303,6 +303,20 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 > `--config-profile`. `--config-revision` is unrelated: it selects a *revision
 > within* a profile. See [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
 
+> **Comma-separated options:** every option documented below as comma-separated
+> (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
+> `--features`, `--tags`) parses through one shared helper that **drops blank
+> segments**, so a trailing or doubled comma is
+> harmless — `--document-ids "a,b,"` names two documents, not three.
+>
+> For all of them **except `--tags`**, a value containing **no** non-blank segment is
+> **refused** with exit 1 rather than treated as one value that is the empty string.
+> That matters most for a list a script built from a variable that turned out to be
+> empty: `--document-ids ""` used to ask about a document whose S3 object key was `""`,
+> and `--document-ids ","` used to announce "Selected 2 document(s) for deletion".
+> `--tags ","` is **not** refused — it sets no tags and proceeds, which is exactly what
+> omitting `--tags` does, so there is no wrong action for a refusal to prevent.
+
 ### `deploy`
 
 Deploy or update an IDP CloudFormation stack.
@@ -328,13 +342,28 @@ idp-cli deploy [OPTIONS]
   v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
   Configuration**, or in the config YAML passed to `--custom-config`. The flag is
   still accepted as `false` so existing scripts keep working.
-- `--parameters`: Additional parameters as `key=value,key2=value2`
+- `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
+  new pair starts at a comma or whitespace followed by `key=` (so a space-separated
+  list, as `aws cloudformation deploy --parameter-overrides` takes, also works), and
+  everything up to the next pair is one value — so a value may itself contain commas
+  (`SubnetIds=subnet-a,subnet-b`) and `=` signs (a metadata URL with a query string,
+  a base64 value). Whitespace around the `=` is ignored. Two things it cannot read as
+  a pair are printed back to you rather than passing unremarked: text before the first
+  pair, which is named and not submitted, and a value that looks like it swallowed a
+  pair — a key holding a character CloudFormation does not allow, or pairs separated
+  with `;`, `|` or a stray backslash — which is named together with the parameter it
+  landed in, since a value may contain commas and so cannot be split back apart. The
+  reason for the noise is that a parameter which never reached CloudFormation is
+  indistinguishable afterwards from one deliberately left at its default. Pairs
+  separated with `&` or `?` are the one case read silently as a value, because that is
+  exactly what a query string looks like.
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
 - `--wait`: Wait for stack operation to complete
 - `--no-rollback`: Disable rollback on stack creation failure
 - `--region`: AWS region (optional, auto-detected)
 - `--role-arn`: CloudFormation service role ARN (optional)
 - `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, the UI REST API (the `APIRESOLVERSTACK` nested stack holding the API Gateway REST API, its dispatcher, and the UI-only resolver Lambdas), Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
+- `--govcloud`: Deploy the **GovCloud template variant** — keeps the full Web UI but removes every `AWS::CloudFront::*` resource (CloudFront does not exist in GovCloud) and forces API Gateway UI hosting. Mutually exclusive with `--headless`. If the GovCloud template cannot be produced, the deploy is **refused** rather than falling back to the commercial template: that template's CloudFront resources cannot exist in a GovCloud partition, so deploying it fails part-way through CREATE on a resource that looks unrelated to the flag. The error names the template that is missing (`.aws-sam/idp-govcloud.yaml`) and the `idp-cli publish --govcloud` command that produces it. See [GovCloud Deployment](./govcloud-deployment.md).
 - `--bucket-basename`: S3 bucket basename for build artifacts (used with `--from-code`; region is appended automatically)
 - `--prefix`: S3 key prefix for build artifacts (default: `idp-cli`, used with `--from-code`)
 - `--public`: Make published S3 artifacts publicly readable (used with `--from-code`)
@@ -518,6 +547,7 @@ idp-cli publish [OPTIONS]
 - `--bucket-basename`: S3 bucket basename for artifacts (region is appended automatically; auto-generated if not provided)
 - `--prefix`: S3 key prefix for artifacts (default: `idp-cli`)
 - `--headless`: Also generate a **headless (no-UI) template variant**. For commercial regions this produces `idp-main.yaml` **and** `idp-headless.yaml`; for GovCloud (`us-gov-*`) the headless template is additionally updated with GovCloud configuration defaults (ARN partition, GovCloud Bedrock models, `lending-package-sample-govcloud` preset).
+- `--govcloud`: Also generate the **GovCloud template variant** — the full Web UI with every `AWS::CloudFront::*` resource removed and API Gateway UI hosting forced. Writes `.aws-sam/idp-govcloud.yaml` beside `idp-main.yaml` and uploads it as `idp-govcloud.yaml`. The transform is linted against a GovCloud region, so an unsupported resource type that survived it fails the publish with the `cfn-lint` finding rather than at deploy time. Deploy the result with `idp-cli deploy --template-file .aws-sam/idp-govcloud.yaml`, or build and deploy in one step with `idp-cli deploy --from-code . --govcloud`.
 - `--public`: Make S3 artifacts publicly readable (for shared deployments)
 - `--max-workers`: Maximum concurrent build workers (default: auto-detect)
 - `--clean-build`: Force full rebuild by deleting all checksum files
@@ -622,6 +652,12 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
    - DynamoDB tables (disables PITR, then deletes)
    - CloudWatch Log Groups (matching stack name pattern)
    - S3 buckets (regular buckets first, LoggingBucket last)
+
+⚠️ **A CloudFormation deletion that failed exits 1 even under `--force-delete-all`.** The
+cleanup phase still runs — that is what the flag is for — and the non-zero exit comes
+after it, so you get both. Before this, `--force-delete-all` printed "Stack deletion
+failed!" and exited 0, so a CI teardown job could not tell a stack that failed to delete
+from one that deleted cleanly.
 
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
@@ -869,12 +905,31 @@ idp-cli run-inference [OPTIONS]
 - `--file-pattern`: File pattern for directory/S3 scanning (default: `*.pdf`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
-- `--config`: Path to configuration YAML file (optional)
+- `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)
+
+**A document shows as Queued before it has a tracking row.**
+
+A document's tracking row is not written by the upload. The upload puts the
+object in the input bucket, and EventBridge then invokes the queue sender, which
+writes the row — asynchronously, so for the first seconds of a batch the status
+lookup has no record of a document that is about to process normally.
+
+Monitoring reports such a document as **Queued** for up to 60 seconds after the
+batch was submitted. Past that it is reported as failed, with
+`Document not found in tracking table`, which at that point means the document
+really did not reach the pipeline — check the input bucket's EventBridge
+notifications and the queue sender's logs. Set `IDP_NOT_FOUND_GRACE_SECONDS` to
+widen or narrow the window.
+
+⚠️ **This does not apply to [`status`](#status) for a single document**, which
+answers immediately: a document id that is not in the table is reported missing
+straight away rather than after a minute, so a typo or a document whose data
+retention has elapsed does not look like a slow query.
 
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:
@@ -1165,7 +1220,27 @@ Processing Time (WorkflowStartTime → CompletionTime):
 The command returns exit codes for scripting:
 - `0` - Document(s) completed successfully
 - `1` - Document(s) failed
-- `2` - Document(s) still processing
+- `2` - Document(s) still processing, or the outcome could not be established
+
+⚠️ **`--wait` and the polled table form now derive their code from the same place.** A
+batch that finished with failures exits `1` whether you polled it or waited on it; it
+used to exit `0` when waited on. (`--format json` is a third implementation of the rule
+and still disagrees with both on two document states — see the `CHANGELOG` entry for
+#1230.) Before this change `--wait` exited `0` on
+that batch while the poll exited `1`, which meant `idp-cli status --wait && deploy`
+proceeded after a batch in which every document failed. If you have a script that
+relied on `--wait` always exiting `0`, it will now stop on a failed batch — that is
+the intended behaviour, but it is a change.
+
+`--wait` also exits `2` when the watch ended without a verdict: a monitoring error, or
+Ctrl-C. Nothing about the batch was measured on those paths, so `0` would assert a
+success and `1` would report failures that may not exist.
+
+`process --monitor` and `rerun --monitor` deliberately still exit `0` regardless of
+what the monitored batch did. Their work is the submission, which succeeded; exiting
+non-zero because 1 of 100 documents failed would stop `process --monitor &&
+download-results` from collecting the 99 that worked. Ask for the batch's verdict with
+`idp-cli status --batch-id <id>`, which answers exactly that.
 
 **JSON Output Format:**
 
@@ -1393,6 +1468,34 @@ idp-cli delete-documents [OPTIONS]
 - DynamoDB tracking records
 - List entries in tracking table
 
+**Exit codes:** `No documents found for batch …` with exit 0 means the selector matched
+nothing, and that is all it means. A failure while finding the documents — a throttled or
+rejected table scan, a table that is not there — prints the cause and exits 1 instead of
+reporting that there was nothing to delete.
+
+**A delete that could not finish says so.** Each document's cleanup has several steps —
+the input object, every output version, the tracking-list row, the run records, the
+tracking record — and a step that fails is reported per document rather than being
+reported as a completed delete. A transient throttle is retried first — four attempts, and no
+further attempt starts once five seconds of retrying is spent — so what is reported is a
+sustained failure rather than a momentary one.
+
+Two things to expect when a delete is reported as failed:
+
+- **The document's tracking record is kept on purpose** if its tracking-list row could
+  not be cleared, because that record is what a retry needs to find the row. The document
+  therefore still appears in the document list, while its input file and outputs may
+  already be gone — so the entry can open a document whose content is no longer there.
+  Run the same delete again: the retry picks up where the first attempt stopped.
+- **`--dry-run` is unaffected** and still issues no delete of any kind.
+
+A run in which **every** deletion failed also exits 1; it used to exit 0 after printing
+"Deleted 0/2 document(s)", so an automated cleanup step reported success having deleted
+nothing.
+
+⚠️ A **partial** failure still exits 0. Read the per-document "Failed deletions:" list
+rather than the exit code when some documents may have survived.
+
 **Examples:**
 
 ```bash
@@ -1485,11 +1588,13 @@ idp-cli generate-manifest [OPTIONS]
 - `--baseline-dir`: Baseline directory for automatic matching (only with --dir)
 - `--output`: Output manifest file path (CSV) - optional when using --test-set
 - `--file-pattern`: File pattern (default: `*.pdf`)
+- `--case-sensitive/--no-case-sensitive`: Match `--file-pattern` exactly as written (default: `--no-case-sensitive`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--region`: AWS region (optional)
 - **Test Set Creation:**
   - `--test-set`: Test set name - creates folder in test set bucket and uploads files
   - `--stack-name`: CloudFormation stack name (required with --test-set)
+  - `--force` / `-y`: Overwrite an existing test set without the confirmation prompt
 
 **Examples:**
 
@@ -1519,7 +1624,47 @@ idp-cli generate-manifest \
     --test-set "fcc example test" \
     --stack-name IDP \
     --output test-manifest.csv
+
+# Refresh an existing test set from a script or CI job (asks nothing)
+idp-cli generate-manifest \
+    --dir ./documents/ \
+    --baseline-dir ./baselines/ \
+    --test-set "fcc example test" \
+    --stack-name IDP \
+    --force
 ```
+
+**How `--file-pattern` selects documents:** the pattern is matched against each
+file's **base name**, on both the `--dir` and the `--s3-uri` path, and the match
+**ignores case**. So the default `*.pdf` selects `statement.PDF` and `Statement.Pdf`
+as well, which is the point — a corpus exported from a system that uppercases
+extensions used to produce a valid-looking manifest with no rows in it, at exit 0.
+Case folding covers the whole pattern rather than an extension picked out of it, so
+`Invoice*.pdf` also selects `INVOICE01.PDF`. Pass `--case-sensitive` for a pattern
+whose case is deliberate — distinguishing an `Invoice-*.pdf` family from an
+`invoice-*.pdf` one, say. A pattern containing a directory component
+(`--file-pattern "sub/*.pdf"`) is **refused**: point `--dir` or `--s3-uri` at the
+directory and use `--recursive` / `--no-recursive` to choose the depth.
+
+On the `--dir` path, hidden files follow the usual shell rule and are excluded unless
+the pattern itself starts with a dot. The `--s3-uri` path has **no** such rule — it
+filters keys by base name only — so `--file-pattern "*"` against a test-set prefix
+selects the `.uploading` marker object as though it were a document. Name the extension
+you want rather than relying on `*` when scanning a bucket.
+
+⚠️ `--file-pattern` on `process` and `run-inference` is a **different** scan, in
+`idp_sdk`, and it is still case-sensitive. Pass the extension's actual case there, or
+generate a manifest with this command and process that.
+
+**How `--baseline-dir` is matched:** a baseline sub-directory must be named after the
+document file it labels, **extension included** (`invoice.pdf/`, not `invoice/`). The
+match uses the same rule as `--file-pattern`, so it ignores case unless
+`--case-sensitive` is given, and `W2-A.PDF` is therefore labelled by `w2-a.pdf/`. Two
+baseline directories differing only in case are **refused** as ambiguous. A baseline
+directory matching no document is named and skipped rather than uploaded; if **no**
+document matched a baseline, `--test-set` refuses before anything is cleared or
+uploaded, and a manifest-only run warns and leaves `baseline_source` empty for you to
+fill in.
 
 **Test Set Creation:**
 When using `--test-set`, the command:
@@ -1528,6 +1673,33 @@ When using `--test-set`, the command:
 3. Uploads baseline files to `s3://test-set-bucket/{test-set-id}/baseline/`
 4. Creates proper test set structure for evaluation workflows
 5. Test set will be auto-detected by the Test Studio UI
+
+**If the upload fails partway through,** the `.uploading` marker object the command
+places under the test set's prefix is removed before it exits. That marker is what
+stops the Test Studio resolver registering a folder that is still being filled, so a
+marker left behind makes a folder invisible to the backend — and re-running the upload
+does not clear it, because the new run writes it again. The command exits non-zero and
+names what went wrong.
+
+Be precise about what that leaves behind, because it is not nothing: the objects
+uploaded before the failure **stay**, and with the marker gone the resolver may
+register them as a partial, unlabeled set (a set with documents and no baselines is a
+legitimate shape, so the backend cannot tell the two apart). That is deliberate —
+re-running clears the prefix first, so the state is recoverable, whereas a surviving
+marker made the folder invisible *permanently*. If you do not want the partial set
+visible, delete the prefix before retrying.
+
+In the one case where the marker itself cannot be deleted (an IAM policy with
+`s3:PutObject` but not `s3:DeleteObject` on the test set bucket) the command **fails**
+rather than reporting success, and the error names the S3 object to delete by hand.
+
+**Overwriting an existing test set:** if the test set name already exists, everything
+under its prefix — including the baselines a previous evaluation was scored against —
+is deleted before the new files are uploaded, so the command asks for confirmation
+first. Answer `y` to proceed, anything else to abort. Run non-interactively (a CI job,
+a `make` target, stdin from `/dev/null`) there is no answer to read, and the command
+**aborts with exit 1 and changes nothing**; pass `--force` to overwrite without the
+prompt. Baselines cleared this way are not recoverable from the CLI.
 
 Process the created test set:
 ```bash
@@ -1984,6 +2156,18 @@ s3://docs/statement.pdf,s3://baselines/statement/
 - Example: `invoice-2024.pdf` → `invoice-2024`
 - Subdirectories preserved: `W2s/john.pdf` → `W2s/john`
 
+**Baseline Source Type (Auto-detected):**
+- Local path → the directory is uploaded recursively
+- `s3://bucket/prefix/` → every object under the prefix is copied, keeping its
+  directory shape. This is the form `generate-manifest --test-set` writes
+
+⚠️ **A `baseline_source` naming a single S3 object copies nothing.** When
+`idp-cli process --manifest` consumes the manifest, an `s3://` value is treated as a
+**prefix** — a trailing `/` is appended if absent — so `s3://bucket/gt/invoice.json`
+becomes a prefix that matches no object and the document is processed with no baseline
+to score against. Point `baseline_source` at the directory holding the baseline files,
+not at one of them.
+
 **Important:**
 - ⚠️ Duplicate filenames not allowed
 - ✅ Use directory structure for organization (e.g., `clientA/invoice.pdf`, `clientB/invoice.pdf`)
@@ -2346,7 +2530,7 @@ idp-cli config-download [OPTIONS]
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
 - `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
-- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained rather than silently returning the current configuration
+- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2369,6 +2553,15 @@ idp-cli config-download --stack-name my-stack --config-profile lending \
     --config-revision 7 --output r7.yaml
 ```
 
+⚠️ **A profile that does not exist is refused.** A typo in
+`--config-profile` used to exit 0 having written the YAML null document — so
+`config-download --config-profile lendnig > config.yaml` left a file every downstream
+step reads as an *empty* configuration, under an exit code that said it worked. All
+three spellings (stdout, `--output`, `--format minimal`) now exit 1, name the profile
+they could not find, and write no file. A script that swallowed the exit code and
+carried on with the downloaded file will now be handed nothing instead of an empty
+configuration.
+
 ---
 
 ### `config-upload`
@@ -2386,7 +2579,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically.
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
 - `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
 - `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
@@ -2458,6 +2651,12 @@ List the revision history of a Configuration Profile.
 Every save of a profile cuts an immutable revision. This shows the ones still
 retained: the last 20, plus anything labeled, pinned by a test run, or currently
 in use. See [configuration-profiles.md](configuration-profiles.md#revision-history).
+
+A listed revision is not necessarily one you can still download. A label or a
+test-run pin keeps a revision listed, but every revision's body expires
+`DataRetentionInDays` after it was cut, and after that only the profile's current
+published revision can still be downloaded, and only while the profile provably
+still holds that configuration ([Retention](configuration-profiles.md#retention)).
 
 **Usage:**
 ```bash
@@ -2548,6 +2747,16 @@ idp-cli config-activate --stack-name my-stack --config-profile default
 4. All new document processing will use this configuration
 
 **Note:** If BDA sync fails (when `use_bda` is enabled), the activation will be aborted to prevent processing errors.
+
+**An aborted activation can still have left a blueprint behind.** The BDA sync this
+command runs is the same replace-mode sync as
+[`config-sync-bda`](#config-sync-bda), so the same thing can happen: a blueprint removed
+from the BDA project that could not then be deleted. The deletes happen whatever became
+of the document classes, which makes an aborted activation the outcome most likely to
+have left one. Those ARNs are printed whether the activation succeeded or failed, and
+they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup,
+[`config-sync-bda --direction cleanup-orphaned`](#--direction-cleanup-orphaned), not a
+re-run of this command. See the `config-sync-bda` section for the full explanation.
 
 **Notes:**
 - Sets the specified profile as active for all new document processing
@@ -2642,6 +2851,18 @@ idp-cli test-result \
   --test-run-id fake-w2-20260409-123456 \
   --wait --output-dir ./results
 ```
+
+**Exit codes:** `1` when the run's `status` is `FAILED`, or when any file failed
+whatever the status is (a `PARTIAL_COMPLETE` run with failures exits `1`). `0`
+otherwise, which includes the in-flight states — `EVALUATING`, `IN_PROGRESS`, `QUEUED` —
+and, for now, `ABORTED` with no failed files. Read the printed `Status:` line rather
+than the exit code if you need to distinguish "passed" from "has not finished". The
+results are printed before the exit either way, so you still get the accuracy figures
+for a failed run.
+
+⚠️ This command used to exit `0` for a run with `status="FAILED"` and every file
+failed, exactly like a clean pass, so `idp-cli test-result ... && deploy` proceeded on a
+failed evaluation. A CI job that relied on that will now stop, which is the point.
 
 **Output:**
 - Overall accuracy, precision, recall, F1 score
@@ -2827,11 +3048,44 @@ idp-cli discover -d ./invoice.pdf -g ./invoice.json \
 | `-o, --output` | Output path: file (single/JSON array) or directory (one file per schema) |
 | `--class-hint` | Hint for the document class name (e.g., "W2 Form"). The LLM will use this as `$id`. |
 | `--page-range` | Page range to discover (e.g., "1-3"). Repeatable for multi-section. Requires PDF. |
-| `--page-label` | Label for corresponding `--page-range` (e.g., "W2 Form"). Used as class name hint per range. |
-| `--auto-detect` | Auto-detect document section boundaries using AI, then discover each section. |
-| `--detect-only` | Only detect section boundaries (use with `--auto-detect`). Prints boundaries without running discovery. |
+| `--page-label` | Label for corresponding `--page-range` (e.g., "W2 Form"). Used as class name hint per range. Optional per range; a label with no range is refused. |
+| `--auto-detect` | Auto-detect document section boundaries using AI, then discover each section. Cannot be combined with `--page-range`, `--page-label`, `-g` or `--class-hint`. |
+| `--detect-only` | Only detect section boundaries. Requires `--auto-detect`. Prints boundaries without running discovery. |
 | `--model-id` | Override the Bedrock model ID used for discovery (e.g., `us.anthropic.claude-opus-4-6-v1`). When omitted, the discovery model from the stack config (stack mode) or system defaults (local mode) is used. Applies to with-ground-truth, without-ground-truth, `--auto-detect`, and `--page-range` modes. |
 | `--region` | AWS region |
+
+**Combinations that are refused.** Discovery is paid work and its output is
+written to disk and consumed as configuration, so a combination that cannot be
+honoured exits non-zero before any Bedrock call rather than proceeding with part
+of what was asked for:
+
+| Given | Why it is refused |
+|---|---|
+| `--auto-detect` with `-g` / `--class-hint` | This mode infers one class per detected section and applies neither, so the run would cost the same and disregard them. Drop `--auto-detect` to discover the whole document, where both apply. |
+| `--auto-detect` with `--page-range` | Both decide where the sections are, and there is no basis on which to prefer one. Give one. |
+| `--detect-only` without `--auto-detect` | Without it, a full schema inference ran instead of boundary detection — a more expensive operation than the one asked for. |
+| More `--page-label` than `--page-range` | Labels pair with ranges in order, so the extras had no range and their class-name hints were lost. Fewer labels than ranges is fine: a label is optional per range. Under `--auto-detect` the remedy is to drop the label, not to add a range — that mode names each section itself. |
+
+**Filenames in directory mode.** When `-o` names a directory, each schema is
+written as `<class id>.json`, where the class id is the schema's `$id` (falling
+back to `x-aws-idp-document-type`, then to `unknown`) reduced to the character
+set every consumer of a class id accepts — `[a-zA-Z0-9_-]`. Anything else becomes
+a hyphen, runs of hyphens collapse to one, and leading and trailing hyphens are
+trimmed, so a class id of `Bank Statement` is written as `Bank-Statement.json`
+and one with no usable character in it at all as `unknown.json`. That is the same
+rule the discovered class gets when it is saved to a configuration profile, so
+the two agree on the name.
+
+The class id is generated by the model from the content of the document, and a
+filename is not the right place to trust it: without that reduction a class id
+spelling a path would name a file somewhere else entirely. The directory each
+file is written into is therefore checked to be the one you named, and the
+command errors rather than writing outside it. A symlink *you* placed at a target
+filename inside that directory is followed as usual — what is checked is the
+directory, not the file.
+
+The command prints the path it wrote to, and prints a note when a class id had to
+be rewritten to produce it.
 
 ---
 
@@ -2908,9 +3162,10 @@ idp-cli config-sync-bda [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, or `idp-to-bda`
-- `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete)
+- `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, `idp-to-bda`, or `cleanup-orphaned` (not a sync — see [below](#--direction-cleanup-orphaned))
+- `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete). Not read by `cleanup-orphaned`
 - `--config-profile` (alias: `--config-version`): Configuration profile to sync (default: active profile)
+- `--force`: Skip the confirmation prompt. Only `cleanup-orphaned` prompts
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2952,6 +3207,57 @@ sync: a class can succeed with a whole line-items section missing from what it e
 To keep such a section, flatten the schema so the nested structure sits in a top-level
 `$defs` definition referenced by `$ref`.
 
+**A blueprint that could not be deleted is reported separately from the classes.** In
+`replace` mode the sync removes blueprints the profile no longer describes. The order is
+forced — BDA refuses to delete a blueprint a project still associates, so the project's
+blueprint list is rewritten first and the deletes follow — which means a delete that
+fails leaves a blueprint that is already out of the project. It is invisible to
+everything that reads the project, it still counts against the account's blueprint
+limit, and a name-prefix match can still pick it up. Those ARNs are printed beside the
+result, and they do **not** count as failed classes: the classes may all have synced,
+and the outstanding work is a cleanup rather than a re-sync. Remove them with
+`--direction cleanup-orphaned`, described next.
+
+#### `--direction cleanup-orphaned`
+
+Not a sync. It deletes every BDA blueprint carrying the stack's name prefix that the
+named configuration profile's classes do not account for. That is an **account-wide**
+scan rather than a project-scoped one, which is exactly why it is the only thing that
+can reach a blueprint a replace-mode sync disassociated but could not delete — such a
+blueprint is invisible to every read that goes through the project.
+
+```bash
+idp-cli config-sync-bda --stack-name my-stack \
+    --direction cleanup-orphaned --config-profile v2
+```
+
+⚠️ **The profile decides what survives, and the scope is the whole account.** Blueprints
+belonging to a *different* profile of the same stack are orphans as far as this command
+is concerned, so naming the wrong profile — or letting it fall back to the active one
+when you meant another — deletes live blueprints. There is no dry run.
+
+It prompts for confirmation and will not proceed on an empty answer; `--force` skips the
+prompt, which is what a script wants. `--mode` is not read. The command reports how many
+blueprints it deleted and exits non-zero if any deletion failed, naming the ARNs that
+are still orphaned afterwards.
+
+⚠️ **It refuses to run unless the profile exists.** A name that is not a profile — a
+typo in `--config-profile`, or a whitespace-only value — is refused with exit 1 and
+nothing is deleted, and so is having no profile at all (you named none and none is
+active). Either way the set of classes to keep would come out empty, which is
+indistinguishable from "keep nothing", so every prefixed blueprint in the account would
+be deleted — and the typo is the worse of the two, because those include the live
+blueprints of the profile you meant. Name the profile explicitly on a stack with no
+active configuration.
+
+A profile that exists and declares **no classes** is not refused: keeping nothing is a
+real instruction, and every prefixed blueprint is deleted. That is the one case where
+the account-wide sweep is the whole point.
+
+The same operation is available as `config.sync_bda(direction="cleanup_orphaned")` in
+the SDK and as the `syncBdaIdp` API operation with direction `cleanup_orphaned`. The Web
+UI has no control for it.
+
 ---
 
 ### `chat`
@@ -2959,6 +3265,8 @@ To keep such a section, flatten the schema so the nested structure sits in a top
 Interactive Agent Companion Chat from the terminal. Provides access to the full multi-agent orchestrator including Analytics, Error Analyzer, Code Intelligence, and any configured External MCP Agents.
 
 The chat command runs the same orchestrator as the Web UI's Agent Companion Chat, but locally in your terminal — with real-time streaming and multi-turn conversation support.
+
+Agents wrap their private reasoning in `<thinking>...</thinking>` and only the answer is printed. Because the response arrives as a stream of small pieces whose boundaries the service chooses, a reasoning block can be split across two of them; the terminal output is the same either way, and if a response ends mid-thought the incomplete reasoning is discarded rather than shown.
 
 **Usage:**
 ```bash

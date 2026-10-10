@@ -15,6 +15,7 @@ import click
 from rich.console import Console
 
 from .manifest import ManifestError, load_manifest
+from .parameters import parse_parameters
 from .publisher import FeaturePublisher
 from .scaffold import ScaffoldError, ScaffoldOptions, scaffold_feature
 from .seller_service import (
@@ -68,28 +69,6 @@ def _resolve_bucket(
     except RuntimeError as exc:
         console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)
-
-
-def _parse_parameters(parameters: Optional[str]) -> dict[str, str]:
-    """Parse a `--parameters key=value,key2=value2` string into a dict.
-
-    Mirrors `idp-cli deploy`'s parser: splits on commas that precede a
-    ``key=`` token, so values may themselves contain commas (e.g. subnet
-    lists). Returns an empty dict for ``None``/empty input.
-    """
-    if not parameters:
-        return {}
-    import re
-
-    parsed: dict[str, str] = {}
-    for match in re.finditer(
-        r"([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)",
-        parameters,
-    ):
-        key = match.group(1).strip()
-        value = match.group(2).strip().rstrip(",")
-        parsed[key] = value
-    return parsed
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -488,7 +467,14 @@ def deploy_pack_cmd(
         )
         sys.exit(1)
 
-    extras = _parse_parameters(extra_params)
+    # Anything the parser could not read is printed rather than dropped: a
+    # wrapper parameter that never reached CloudFormation is indistinguishable
+    # afterwards from one submitted at its publish-time default. See
+    # idp_feature_sdk/parameters.py for the grammar.
+    extras = parse_parameters(
+        extra_params,
+        on_warning=lambda message: console.print(f"[yellow]⚠ {message}[/yellow]"),
+    )
 
     # ----- --from-code branch: publish first, derive wrapper_url -----
     if from_code:

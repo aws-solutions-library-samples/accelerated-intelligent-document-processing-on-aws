@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * AddDocumentsModals — the two "Add documents" dialogs for an existing test set
- * (files matching a bucket pattern, or a zip upload) plus the matching-files
- * preview. Owns its own form state so the Test Sets table and a set's detail page
+ * AddDocumentsModals — the "Add documents" dialogs for an existing test set
+ * (files matching a bucket pattern, a zip upload, or processed documents picked
+ * from a list) plus the matching-files preview. Owns its own form state so the Test Sets table and a set's detail page
  * open the very same dialogs rather than two drifting copies.
  */
 
@@ -28,6 +28,7 @@ import { generateClient } from '../../api/client-shim';
 import { addDocumentsToTestSet, addDocumentsToTestSetFromUpload, listBucketFiles } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { BUCKET_OPTIONS, TIME_FILTER_OPTIONS } from './testSetOptions';
+import AddProcessedDocumentsModal from './AddProcessedDocumentsModal';
 
 const client = generateClient();
 
@@ -48,7 +49,7 @@ const REQUIRED_STRUCTURE = `documents.zip
                 └── 1/
                     └── result.json`;
 
-export type AddDocumentsMode = 'pattern' | 'upload';
+export type AddDocumentsMode = 'pattern' | 'upload' | 'documents';
 
 export interface AddDocumentsTarget {
   id: string;
@@ -413,6 +414,8 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           </FormField>
         </SpaceBetween>
       </Modal>
+
+      {mode === 'documents' ? <AddProcessedDocumentsModal visible testSet={testSet} onDismiss={close} onSubmitted={onSubmitted} /> : null}
 
       <Modal
         visible={showFilesModal}

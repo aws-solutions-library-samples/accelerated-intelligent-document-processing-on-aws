@@ -492,6 +492,7 @@ Resources:
                   - "global.amazon.nova-2-lite-v1:0:priority"
                   - "global.amazon.nova-2-lite-v1:0:flex"
                   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "us.anthropic.claude-haiku-5-5"
                   - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "us.anthropic.claude-sonnet-4-6"
                   - "us.anthropic.claude-sonnet-4-6:1m"
@@ -519,6 +520,7 @@ Resources:
                   - "eu.amazon.nova-2-lite-v1:0:priority"
                   - "eu.amazon.nova-2-lite-v1:0:flex"
                   - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "eu.anthropic.claude-haiku-5-5"
                   - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "eu.anthropic.claude-sonnet-4-6"
                   - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -544,6 +546,7 @@ Resources:
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
                   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "global.anthropic.claude-haiku-5-5"
                   - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "global.anthropic.claude-sonnet-4-6:1m"
                   - "global.anthropic.claude-sonnet-5"
@@ -575,7 +578,7 @@ Resources:
                 title: Reasoning effort
                 enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                 default: "medium"
-                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                 order: 4
                 dependsOn: { field: "model_id", reasoningCapable: true }
               features:
@@ -710,6 +713,7 @@ Resources:
                     - "us.amazon.nova-pro-v1:0"
                     - "us.amazon.nova-2-lite-v1:0"
                     - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    - "us.anthropic.claude-haiku-5-5"
                     - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     - "us.anthropic.claude-sonnet-4-6"
                     - "us.anthropic.claude-sonnet-4-6:1m"
@@ -737,6 +741,7 @@ Resources:
                     - "eu.amazon.nova-pro-v1:0"
                     - "eu.amazon.nova-2-lite-v1:0"
                     - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    - "eu.anthropic.claude-haiku-5-5"
                     - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     - "eu.anthropic.claude-sonnet-4-6"
                     - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -755,6 +760,7 @@ Resources:
                     - "eu.anthropic.claude-opus-5-5:1m"
                     - "global.amazon.nova-2-lite-v1:0"
                     - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    - "global.anthropic.claude-haiku-5-5"
                     - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     - "global.anthropic.claude-sonnet-4-6"
                     - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1033,6 +1039,7 @@ Resources:
                   - "global.amazon.nova-2-lite-v1:0:priority"
                   - "global.amazon.nova-2-lite-v1:0:flex"
                   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "us.anthropic.claude-haiku-5-5"
                   - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "us.anthropic.claude-sonnet-4-6"
                   - "us.anthropic.claude-sonnet-4-6:1m"
@@ -1060,6 +1067,7 @@ Resources:
                   - "eu.amazon.nova-2-lite-v1:0:priority"
                   - "eu.amazon.nova-2-lite-v1:0:flex"
                   - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "eu.anthropic.claude-haiku-5-5"
                   - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "eu.anthropic.claude-sonnet-4-6"
                   - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -1085,6 +1093,7 @@ Resources:
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
                   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "global.anthropic.claude-haiku-5-5"
                   - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "global.anthropic.claude-sonnet-4-6"
                   - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1151,7 +1160,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               classificationMethod:
@@ -1527,6 +1536,7 @@ Resources:
                       - "global.amazon.nova-2-lite-v1:0:priority"
                       - "global.amazon.nova-2-lite-v1:0:flex"
                       - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "us.anthropic.claude-haiku-5-5"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -1554,6 +1564,7 @@ Resources:
                       - "eu.amazon.nova-2-lite-v1:0:priority"
                       - "eu.amazon.nova-2-lite-v1:0:flex"
                       - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "eu.anthropic.claude-haiku-5-5"
                       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "eu.anthropic.claude-sonnet-4-6"
                       - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -1578,6 +1589,7 @@ Resources:
                       - "google.gemma-3-27b-it"
                       - "nvidia.nemotron-nano-12b-v2"
                       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "global.anthropic.claude-haiku-5-5"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
                       - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1668,6 +1680,7 @@ Resources:
                   - "global.amazon.nova-2-lite-v1:0:priority"
                   - "global.amazon.nova-2-lite-v1:0:flex"
                   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "us.anthropic.claude-haiku-5-5"
                   - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "us.anthropic.claude-sonnet-4-6"
                   - "us.anthropic.claude-sonnet-4-6:1m"
@@ -1695,6 +1708,7 @@ Resources:
                   - "eu.amazon.nova-2-lite-v1:0:priority"
                   - "eu.amazon.nova-2-lite-v1:0:flex"
                   - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "eu.anthropic.claude-haiku-5-5"
                   - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "eu.anthropic.claude-sonnet-4-6"
                   - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -1720,6 +1734,7 @@ Resources:
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
                   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "global.anthropic.claude-haiku-5-5"
                   - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "global.anthropic.claude-sonnet-4-6"
                   - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1763,7 +1778,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "low"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Defaults to low. Raise for reasoning-heavy documents. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Defaults to low. Raise for reasoning-heavy documents. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                     order: 1
                     dependsOn: { field: "model", reasoningCapable: true }
                   temperature:
@@ -1872,6 +1887,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -1897,6 +1913,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -1922,6 +1939,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -1987,7 +2005,7 @@ Resources:
                         title: Reasoning effort
                         enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         default: "medium"
-                        description: "Reasoning effort for reasoning-capable confidence models (OpenAI GPT-5.x; Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5; xAI Grok, which accepts none|low|medium|high|xhigh but not max; OpenAI GPT-6 Astra, which accepts none|low|medium|high|xhigh|max but not minimal). Ignored by the default Nova Lite confidence model and by Sonnet 4.5 / Haiku 4.5."
+                        description: "Reasoning effort for reasoning-capable confidence models (OpenAI GPT-5.x; Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5; xAI Grok, which accepts none|low|medium|high|xhigh but not max; OpenAI GPT-6 Astra, which accepts none|low|medium|high|xhigh|max but not minimal). Ignored by the default Nova Lite confidence model and by Sonnet 4.5 / Haiku 4.5 — Haiku 5.5 does accept it."
                         order: 4
                         dependsOn: { field: "model", reasoningCapable: true }
                   system_prompt:
@@ -2135,6 +2153,7 @@ Resources:
                     "us.amazon.nova-pro-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "us.anthropic.claude-sonnet-4-6",
                     "us.anthropic.claude-sonnet-4-6:1m",
@@ -2160,6 +2179,7 @@ Resources:
                     "eu.amazon.nova-pro-v1:0",
                     "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "eu.anthropic.claude-haiku-5-5",
                     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "eu.anthropic.claude-sonnet-4-6",
                     "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2185,6 +2205,7 @@ Resources:
                     "nvidia.nemotron-nano-12b-v2",
                     "global.amazon.nova-2-lite-v1:0",
                     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "global.anthropic.claude-haiku-5-5",
                     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "global.anthropic.claude-sonnet-4-6",
                     "global.anthropic.claude-sonnet-4-6:1m",
@@ -2253,7 +2274,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               system_prompt:
@@ -2356,6 +2377,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2381,6 +2403,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2406,6 +2429,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2465,7 +2489,7 @@ Resources:
                         title: Reasoning effort
                         enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         default: "medium"
-                        description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                        description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                         order: 5
                         dependsOn: { field: "model", reasoningCapable: true }
                   system_prompt:
@@ -2575,6 +2599,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2595,6 +2620,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2618,6 +2644,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2682,6 +2709,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2702,6 +2730,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2725,6 +2754,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2789,6 +2819,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2809,6 +2840,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2832,6 +2864,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2924,7 +2957,6 @@ Resources:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
-                      - "us.anthropic.claude-sonnet-4-20250514-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-5"
                       - "us.anthropic.claude-sonnet-5:1m"
@@ -3102,6 +3134,7 @@ Resources:
                       - "global.amazon.nova-2-lite-v1:0:priority"
                       - "global.amazon.nova-2-lite-v1:0:flex"
                       - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "us.anthropic.claude-haiku-5-5"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -3119,6 +3152,7 @@ Resources:
                       - "us.anthropic.claude-opus-5-5"
                       - "us.anthropic.claude-opus-5-5:1m"
                       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "global.anthropic.claude-haiku-5-5"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
                       - "global.anthropic.claude-sonnet-4-6:1m"
@@ -3143,6 +3177,7 @@ Resources:
                       - "eu.amazon.nova-2-lite-v1:0:priority"
                       - "eu.amazon.nova-2-lite-v1:0:flex"
                       - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "eu.anthropic.claude-haiku-5-5"
                       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "eu.anthropic.claude-sonnet-4-6"
                       - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -3272,6 +3307,7 @@ Resources:
                     "us.amazon.nova-pro-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "us.anthropic.claude-sonnet-4-6",
                     "us.anthropic.claude-sonnet-4-6:1m",
@@ -3299,6 +3335,7 @@ Resources:
                     "eu.amazon.nova-pro-v1:0",
                     "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "eu.anthropic.claude-haiku-5-5",
                     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "eu.anthropic.claude-sonnet-4-6",
                     "eu.anthropic.claude-sonnet-4-6:1m",
@@ -3316,6 +3353,7 @@ Resources:
                     "eu.anthropic.claude-opus-5-5",
                     "eu.anthropic.claude-opus-5-5:1m",
                     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "global.anthropic.claude-haiku-5-5",
                     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "global.anthropic.claude-sonnet-4-6",
                     "global.anthropic.claude-sonnet-4-6:1m",
@@ -3384,7 +3422,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               system_prompt:
@@ -3450,6 +3488,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -3470,6 +3509,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -3495,6 +3535,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -3514,7 +3555,7 @@ Resources:
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
-                    default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                    default: "us.anthropic.claude-sonnet-4-6"
                     order: 0
                   temperature:
                     type: number
@@ -3564,6 +3605,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -3584,6 +3626,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -3609,6 +3652,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -3628,7 +3672,7 @@ Resources:
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
-                    default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                    default: "us.anthropic.claude-sonnet-4-6"
                     order: 0
                   temperature:
                     type: number
@@ -3915,7 +3959,15 @@ Resources:
             Value: !Ref AWS::Region
           - Name: LAMBDA_ARCHITECTURE
             Value: !Ref LambdaArchitecture
-      TimeoutInMinutes: 90
+      # Inside CloudFormation's 60-minute custom-resource ServiceTimeout, not
+      # beyond it. At 90 a slow build outlived the DockerBuildRun resource that
+      # waits for it, so the stack failed with "CloudFormation did not receive a
+      # response from your Custom Resource" -- which names the custom resource
+      # and says nothing about the build -- instead of CodeBuild's own legible
+      # timeout. Half of issue #1310 was that misdirection. The build takes ~10
+      # minutes today, and the in-buildspec retry deadline is 2400s, so this
+      # leaves ample headroom while still failing first.
+      TimeoutInMinutes: 55
 
   CodeBuildExecutionRole:
     Type: AWS::IAM::Role

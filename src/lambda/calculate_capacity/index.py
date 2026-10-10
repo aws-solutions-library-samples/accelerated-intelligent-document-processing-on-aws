@@ -6,6 +6,17 @@ import json
 import os
 import time
 import boto3
+
+# `Attr` is imported by name rather than reached as
+# `boto3.dynamodb.conditions.Attr`. That attribute path exists only because
+# creating a `dynamodb` *resource* imports the subpackage as a side effect, so the
+# metering scan's filter expression was relying on a neighbouring line having run
+# first, and would raise `AttributeError` if that resource were replaced by a
+# cached client. Kept in this first import block deliberately: the imports further
+# down sit below module-level statements and are pinned at four `E402` findings in
+# `scripts/lint_debt.json`, so adding a fifth there would fail
+# `make check-lint-debt`.
+from boto3.dynamodb.conditions import Attr
 from datetime import datetime, timedelta
 from log_sanitizer import sanitize_event_for_logging
 from validation import (
@@ -24,6 +35,52 @@ from typing import Any, Dict
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Latency spread past which the plan advises queuing or load balancing, as a
+# multiple of the typical processing time. Deliberately a fixed constant rather
+# than one of the `RECOMMENDATION_*` environment variables, for two reasons.
+#
+# It gates advice, not arithmetic: crossing it appends one sentence to the
+# recommendation list and moves no quota figure, so a reader who disagrees with
+# the threshold loses a suggestion rather than getting a wrong number. Every
+# `RECOMMENDATION_*` variable in this module is by contrast *required* and
+# raises when unset (see the page-threshold read below), because each of those
+# does feed a reported figure. Making this one configurable in that style would
+# add a required variable that has to be wired in `template.yaml` before any
+# deployed stack could generate recommendations at all; giving it a default
+# instead would make it the only soft one of the group.
+#
+# The value is a judgement, not a measurement. `calculate_latency_distribution`
+# derives the factor as `complexity * (1 + max(0, utilization - 1) * 0.5)`, so
+# with ordinary complexity it reaches 3.0 only once demand is several times
+# capacity — by which point the tail, not the mean, is what an operator feels,
+# and queuing is the response that helps. Below it the spread is generally
+# covered by the 10% buffer already applied to every quota figure.
+HIGH_LATENCY_VARIANCE_FACTOR = 3.0
+
+# Prose for the `dataSource` a plan was built from, used in the headline
+# recommendation. Every value this module can put into that field has an entry,
+# and the set is closed by a test rather than by inspection: the derivation in
+# `test_capacity_arithmetic.py` walks this file for the three shapes that assign
+# it — a `data_source` assignment, a `"dataSource"` entry in a dict literal, and
+# the default of a `.get("dataSource", ...)` — and fails if the two sets differ
+# in either direction. That makes a newly added source a red gate rather than a
+# row that quietly reads "unknown", and it also refuses a key kept here with
+# nothing able to produce it, which is the state the sole recognised value was
+# in: the mapping knew only `"environment_config"`, which nothing assigns, so
+# every reachable plan — including one built entirely from measured document
+# timestamps — described its own provenance as unknown.
+#
+# A value from outside this module still has to render, because the caller
+# supplies the distribution dict and the recommendations are advisory; the
+# fallback below names the unrecognised value instead of flattening it to
+# "unknown", so it can be traced back to whatever produced it.
+DATA_SOURCE_DESCRIPTIONS = {
+    "document_timestamps": "measured document timestamps",
+    "real_lambda_durations": "measured Lambda durations",
+    "no_demand": "no configured processing demand",
+    "unknown": "a source the measurement step did not report",
+}
 
 
 def convert_decimal_to_float(obj):
@@ -64,11 +121,22 @@ def retry_with_backoff(func, max_retries=3, base_delay=1):
     return None
 
 
-def get_real_latency_metrics(pattern):
+def get_real_latency_metrics(pattern, latency_metrics_hours=None):
     """Get processing times from recent processed documents' metering data.
-    
+
     Uses the actual metering data structure from DynamoDB with Metering attribute.
     Estimates processing time from gb_seconds (Lambda GB-seconds = memory_gb * time_seconds).
+
+    Args:
+        latency_metrics_hours: How far back to look, in hours. Passed down from the
+            UI's time-range selector for the current request. ``None`` means the
+            request did not choose one, and the deployed default in
+            ``LATENCY_METRICS_HOURS`` applies. It arrives as an argument rather
+            than through the environment because a Lambda container is reused: a
+            request that wrote its choice into ``os.environ`` set the default for
+            every later invocation served by that container, so one user's
+            six-hour view silently became everybody's until the container aged
+            out.
     """
     global _processing_times_cache, _cache_expiry
     
@@ -90,9 +158,12 @@ def get_real_latency_metrics(pattern):
         # Query recent documents with pagination support
         # Use attribute_exists with correct attribute name (Metering, not meteringData)
         # Time filter: only use recent documents for latency metrics (default 24 hours)
-        # Read latencyMetricsHours from input if provided (passed from UI time range selector)
-        # Falls back to environment variable, then default 24 hours
-        latency_metrics_hours = int(os.environ.get("LATENCY_METRICS_HOURS", "24"))
+        # The per-request value threaded down from the UI time range selector wins;
+        # otherwise the deployed default, otherwise 24 hours.
+        if latency_metrics_hours is None:
+            latency_metrics_hours = int(os.environ.get("LATENCY_METRICS_HOURS", "24"))
+        else:
+            latency_metrics_hours = int(latency_metrics_hours)
         min_recent_docs = int(os.environ.get("LATENCY_METRICS_MIN_DOCS", "5"))
         cutoff_time = datetime.utcnow() - timedelta(hours=latency_metrics_hours)
         cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -348,16 +419,15 @@ def get_real_latency_metrics(pattern):
         # Validate we have meaningful processing times
         total_time = sum(base_times.values())
         data_source = "real_lambda_durations"  # Track data source
-        
-        # NO ESTIMATION FALLBACK - require real timing data
-        if total_time == 0:
-            raise ValueError(
-                "No processing time data found in documents. "
-                "Documents must have either /lambda/duration gb_seconds data in Metering, "
-                "or WorkflowStartTime/CompletionTime timestamps. "
-                "Process documents through the full workflow to generate timing data."
-            )
-        
+
+        # NO ESTIMATION FALLBACK - require real timing data. The check is below,
+        # after the timestamp-derived total has been computed, because either
+        # source is sufficient on its own: a document carrying usable
+        # WorkflowStartTime/CompletionTime timestamps and no per-step gb_seconds
+        # is a complete answer for the total, and testing the per-step sum here
+        # would refuse it while advising the operator to supply the timestamps it
+        # already has.
+
         # Use total document times if available (most accurate), otherwise use sum of step times
         processing_time_percentiles = {}
         if total_document_times:
@@ -378,10 +448,17 @@ def get_real_latency_metrics(pattern):
             }
             print(f"✅ Using document processing times from timestamps: P50={total_time:.1f}s, P99={processing_time_percentiles['p99']:.1f}s (from {n} documents)")
         else:
-            # Final validation
+            # Final validation: neither source produced a time, so there is
+            # nothing to plan from. Both alternatives are named because either one
+            # would have been accepted.
             total_time = sum(base_times.values())
             if total_time == 0:
-                raise ValueError("No valid processing times found in metering data. Ensure documents are being processed with timing information.")
+                raise ValueError(
+                    "No processing time data found in documents. "
+                    "Documents must have either /lambda/duration gb_seconds data in Metering, "
+                    "or WorkflowStartTime/CompletionTime timestamps. "
+                    "Process documents through the full workflow to generate timing data."
+                )
             print(f"✅ Total estimated processing time per document (sum of steps): {total_time:.1f}s")
         
         # If we have total_document_times, scale base_times proportionally
@@ -439,18 +516,19 @@ def generate_adaptive_recommendations(
     document_configs,
 ):
     """Generate adaptive recommendations based on enhanced analysis.
-    
-    Uses default thresholds if environment variables are not set.
+
+    Every `RECOMMENDATION_*` threshold is required and raises `ValueError` when
+    unset; none of them defaults. The two pattern-specific volume thresholds and
+    `HIGH_LATENCY_VARIANCE_FACTOR` are fixed values in the code instead — see that
+    constant for why.
     """
     recommendations = []
 
     try:
         # Basic processing info with data source
         data_source = latency_distribution.get("dataSource", "unknown")
-        source_text = (
-            "environment configuration"
-            if data_source == "environment_config"
-            else "unknown source"
+        source_text = DATA_SOURCE_DESCRIPTIONS.get(
+            data_source, f"unrecognised source '{data_source}'"
         )
         recommendations.append(
             f"Processing {int(total_docs_per_hour)} documents/hour using {pattern.upper()} (based on {source_text})"
@@ -509,7 +587,7 @@ def generate_adaptive_recommendations(
         # Infrastructure-based recommendations
         if latency_distribution.get("exceedsLimit"):
             recommendations.append(
-                "⏰ Processing time exceeds SLA - consider increasing timeouts or reducing document complexity"
+                "⏰ P99 processing time exceeds SLA - consider increasing timeouts or reducing document complexity"
             )
 
         # Quota analysis with specific actions
@@ -575,7 +653,7 @@ def generate_adaptive_recommendations(
         variance_factor = float(
             latency_distribution.get("varianceFactor", "1.0").rstrip("x")
         )
-        if variance_factor > 3.0:
+        if variance_factor > HIGH_LATENCY_VARIANCE_FACTOR:
             recommendations.append(
                 "📈 High latency variance detected - consider implementing request queuing or load balancing"
             )
@@ -606,21 +684,18 @@ def generate_rpm_quota_codes(model_ids):
             rpm_quotas[model_id] = rpm_mapping[model_id]
             continue
             
-        # Clean model ID by removing region prefix and version suffixes
-        clean_model_id = model_id.lower()
-        if '.' in clean_model_id:
-            clean_model_id = clean_model_id.split('.', 2)[-1]  # Remove region prefix like "us." or "eu."
-        clean_model_id = clean_model_id.split(':')[0]  # Remove version suffix like ":1m"
-        
+        # Clean model ID by removing the version suffix only. The region prefix
+        # ("us.", "eu.", "global.") is what selects the inference profile, and
+        # Service Quotas holds a separate limit per profile, so discarding it
+        # would let a "global." model take a "us." quota code.
+        clean_model_id = model_id.lower().split(':')[0]  # Remove version suffix like ":1m"
+
         # Try to match against cleaned mapping keys
         matched = False
         for model_type, quota_code in rpm_mapping.items():
             # Clean the mapping key the same way for comparison
-            clean_mapping_key = model_type.lower()
-            if '.' in clean_mapping_key:
-                clean_mapping_key = clean_mapping_key.split('.', 2)[-1]
-            clean_mapping_key = clean_mapping_key.split(':')[0]
-            
+            clean_mapping_key = model_type.lower().split(':')[0]
+
             # Match if the cleaned keys are equal or one contains the other
             if clean_model_id == clean_mapping_key or clean_model_id in clean_mapping_key or clean_mapping_key in clean_model_id:
                 rpm_quotas[model_id] = quota_code
@@ -640,7 +715,9 @@ def get_simple_quotas():
     Requires valid quota configuration and API access - no fallback defaults.
     Raises ValueError if quotas cannot be retrieved.
     """
-    quotas = {"bedrock": None, "bedrock_models": {}, "bedrock_models_rpm": {}}
+    # Per-model mappings only. There is deliberately no account-wide scalar
+    # alongside them: see the closing comment of this function.
+    quotas = {"bedrock_models": {}, "bedrock_models_rpm": {}}
 
     quotas_client = boto3.client("service-quotas")
     region = boto3.Session().region_name
@@ -718,10 +795,18 @@ def get_simple_quotas():
 
     print(f"📊 Retrieved {retrieved_count} quotas from AWS Service Quotas API")
 
-    # Set bedrock quota from retrieved values
-    if quotas["bedrock_models"]:
-        quotas["bedrock"] = max(quotas["bedrock_models"].values())
-    else:
+    # No account-wide scalar is derived from these, and adding one back is the
+    # defect to avoid. A single number cannot say *which* model is the
+    # constraint, which is the only actionable thing about a set of per-model
+    # limits; and the collapse that used to stand here took the **maximum**, so
+    # every throughput figure the report published described the account's most
+    # generously provisioned model whatever models the plan's steps actually
+    # called. Both consumers take the per-model mappings instead:
+    # `calculate_latency_distribution` reduces them to the binding minimum at the
+    # point of use and names the model holding it, and
+    # `build_simple_quota_requirements` looks up each step's own model via
+    # `_lookup_quota`.
+    if not quotas["bedrock_models"]:
         raise ValueError("No Bedrock model quotas were retrieved. Check BEDROCK_MODEL_QUOTA_CODES configuration.")
 
     return quotas
@@ -794,6 +879,57 @@ def calculate_document_complexity_factor(document_configs):
         raise ValueError(f"Error calculating complexity factor: {e}")
 
 
+# Which `model_config` key supplies each Bedrock inference step's model, and which
+# steps each pattern runs through Bedrock. `build_simple_quota_requirements` builds
+# its per-step demands from the same two facts, and
+# `test_the_plan_model_set_agrees_with_the_step_level_quota_builder` derives its set
+# from that function's own output for all three patterns, so a step added there
+# without being added here is a red gate rather than a silent divergence.
+STEP_MODEL_CONFIG_KEYS = {
+    "Classification": "classification_model",
+    "Extraction": "extraction_model",
+    "Assessment": "assessment_model",
+    "Summarization": "summarization_model",
+    "OCR": "ocr_model",
+}
+PATTERN_BEDROCK_STEPS = {
+    "pattern-1": ("Summarization",),
+    "pattern-2": (
+        "Classification",
+        "Extraction",
+        "Assessment",
+        "Summarization",
+        "OCR",
+    ),
+    "pattern-3": ("Extraction", "Assessment", "Summarization", "OCR"),
+}
+
+
+def plan_model_ids(pattern, model_config):
+    """The Bedrock models a plan's steps actually call, in step order.
+
+    An empty result is a legitimate answer, not an error: a pattern-1 plan with no
+    summarization model configured calls Bedrock from no step, and OCR is blank
+    whenever Textract is doing the reading rather than a Bedrock model.
+    """
+    if not model_config:
+        return []
+    steps = PATTERN_BEDROCK_STEPS.get(pattern, PATTERN_BEDROCK_STEPS["pattern-3"])
+    model_ids = []
+    for step in steps:
+        model_id = model_config.get(STEP_MODEL_CONFIG_KEYS[step])
+        # OCR is stripped before the emptiness test because a whitespace-only
+        # value there means Textract, matching the step-level quota builder.
+        if step == "OCR":
+            model_id = model_id.strip() if model_id else model_id
+        # Duplicates are left in: two steps sharing a model is ordinary, the
+        # caller keys a dict on these so the reduction dedupes anyway, and a
+        # dedupe here would be a line no input could distinguish.
+        if model_id:
+            model_ids.append(model_id)
+    return model_ids
+
+
 def calculate_latency_distribution(
     docs_per_hour,
     pages_per_hour,
@@ -802,20 +938,82 @@ def calculate_latency_distribution(
     max_allowed_latency,
     quotas,
     document_configs=None,
+    latency_metrics_hours=None,
+    model_config=None,
 ):
     """
     Calculate latency distribution using simplified approach.
     Quota capacity determines processing speed - insufficient quota causes throttling and delays.
+
+    ``latency_metrics_hours`` is the request's own history window, forwarded to
+    ``get_real_latency_metrics``; see that function for why it is an argument.
     """
 
     # max_allowed_latency is in seconds (from frontend), convert to minutes for internal calculations
     max_allowed_minutes = max_allowed_latency / 60
 
-    # Get processing capacity from quotas - REQUIRED, no defaults
-    bedrock_quota_tpm = quotas.get("bedrock")
+    # Get processing capacity from quotas - REQUIRED, no defaults.
+    #
+    # Reduced from the per-model TPM mapping here, at the point of use, rather
+    # than upstream, and reduced over **the models this plan's steps call** rather
+    # than over every model the stack can be configured with. Both halves of that
+    # matter and they fail differently.
+    #
+    # Taking the *binding* model — the minimum — is what makes the figure a limit:
+    # a document is throttled at the narrowest quota any of its steps touches, so
+    # the maximum this replaced overstated throughput by the ratio between the
+    # widest and narrowest quota in the mapping.
+    #
+    # Reducing over the plan's models rather than the whole mapping is what makes
+    # it a limit on *this* plan. `BEDROCK_MODEL_QUOTA_CODES` lists every model the
+    # stack supports, so a minimum over all of them would be bound by whichever
+    # model the account is least provisioned for whether or not the pipeline ever
+    # calls it — a mirror image of the old error, understating instead of
+    # overstating, and naming a model an operator has no reason to request an
+    # increase for. Resolution goes through `_lookup_quota` so the `:1m` context
+    # suffix falls back to its base model, as it does in the step-level builder.
+    #
+    # Two skips, each narrower than a refusal. A model whose quota is **zero** is
+    # left out rather than allowed to bind, which keeps this function's refusal
+    # behaviour exactly what it was — a zero never won the maximum this replaced,
+    # so an all-zero mapping was and remains the only one refused. A model the
+    # mapping does not hold at all is also skipped, because
+    # `build_simple_quota_requirements` raises on precisely that case a few steps
+    # later, naming the model and the variable to fix; refusing here as well would
+    # only replace that message with a less specific one. Either way the
+    # per-step table is where a single model's shortfall is reported.
+    #
+    # With no model configuration to narrow by — an older caller, or a plan that
+    # calls Bedrock from no step at all — the reduction falls back to the whole
+    # mapping, which is pessimistic rather than wrong and is the only answer
+    # available without knowing the steps.
+    all_tpm_by_model = quotas.get("bedrock_models") or {}
+    planned_model_ids = plan_model_ids(pattern, model_config)
+    planned_tpm_by_model = {
+        model_id: _lookup_quota(all_tpm_by_model, model_id)
+        for model_id in planned_model_ids
+    }
+    bedrock_quota_tpm_by_model = {
+        model_id: quota
+        for model_id, quota in (planned_tpm_by_model or all_tpm_by_model).items()
+        if quota
+    }
+    if not bedrock_quota_tpm_by_model and planned_tpm_by_model:
+        print(
+            f"⚠️ No usable TPM quota for the planned models {planned_model_ids} - "
+            "falling back to the account's full model mapping for the throughput estimate"
+        )
+        bedrock_quota_tpm_by_model = {
+            model_id: quota for model_id, quota in all_tpm_by_model.items() if quota
+        }
+    binding_tpm_model, bedrock_quota_tpm = min(
+        bedrock_quota_tpm_by_model.items(),
+        key=lambda entry: entry[1],
+        default=(None, None),
+    )
     if not bedrock_quota_tpm:
         raise ValueError("Bedrock TPM quota not available. Ensure BEDROCK_MODEL_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
-    
+
     bedrock_quota_rpm = quotas.get("bedrock_models_rpm", {})
     if not bedrock_quota_rpm:
         raise ValueError("Bedrock RPM quotas not available. Ensure BEDROCK_MODEL_RPM_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
@@ -849,7 +1047,7 @@ def calculate_latency_distribution(
     effective_capacity = min(token_limited_capacity, request_limited_capacity)
     
     print(f"🔍 Capacity Analysis:")
-    print(f"  - Token-limited capacity: {token_limited_capacity:.1f} docs/min ({bedrock_quota_tpm} TPM ÷ {avg_tokens_per_request:.0f} tokens)")
+    print(f"  - Token-limited capacity: {token_limited_capacity:.1f} docs/min ({bedrock_quota_tpm} TPM for {binding_tpm_model} ÷ {avg_tokens_per_request:.0f} tokens)")
     print(f"  - Request-limited capacity: {request_limited_capacity:.1f} docs/min")
     print(f"  - Effective capacity: {effective_capacity:.1f} docs/min")
     
@@ -906,7 +1104,7 @@ def calculate_latency_distribution(
 
     # Get ACTUAL processing time and queue delays from real documents
     try:
-        latency_data = get_real_latency_metrics(pattern)
+        latency_data = get_real_latency_metrics(pattern, latency_metrics_hours)
         base_times = latency_data["base_times"]
         
         # Use total_processing_time if available (from timestamps), otherwise sum of steps
@@ -990,12 +1188,25 @@ def calculate_latency_distribution(
     p95_seconds = proc_p95 + queue_p95
     p99_seconds = proc_p99 + queue_p99
 
-    # Check if latency exceeds limits
-    exceeds_limit = total_latency_minutes > max_allowed_minutes
+    # Check if latency exceeds limits.
+    #
+    # Judged on the tail, not the median. An SLA is a promise about the documents
+    # that go slowly, and the median is insensitive to them by construction: a
+    # plan whose typical document lands inside the limit while one in a hundred
+    # takes ten times as long is not meeting it, and comparing the P50 reports
+    # that plan as compliant. P99 is also what the flag is already described as
+    # everywhere it is consumed — the warning banner in the UI reads "Your P99
+    # latency exceeds the configured SLA target", and the percentile chart marks
+    # each row against the SLA line independently.
+    #
+    # The median is still carried in the message, because the gap between the two
+    # is what tells an operator whether to chase a slow tail or a slow pipeline.
+    p99_latency_minutes = p99_seconds / 60
+    exceeds_limit = p99_latency_minutes > max_allowed_minutes
     warning_message = None
 
     if exceeds_limit:
-        warning_message = f"Processing time ({total_latency_minutes:.1f}min) exceeds SLA ({max_allowed_minutes:.1f}min) due to insufficient quota capacity"
+        warning_message = f"P99 processing time ({p99_latency_minutes:.1f}min) exceeds SLA ({max_allowed_minutes:.1f}min); the median is {total_latency_minutes:.1f}min"
 
     # Calculate factors for display
     load_factor = utilization
@@ -1109,8 +1320,15 @@ def build_simple_quota_requirements(
     # Add 10% buffer to base demand for safety margin
     BUFFER_FACTOR = 1.1  # 10% buffer
     
+    # Every per-step token key is indexed, OCR included. The sole producer of this
+    # breakdown is the handler below, whose initialiser writes all five for every
+    # hour of the day, so an absent key means the caller assembled a shape this
+    # function cannot plan from. Defaulting one of them to zero silently plans no
+    # quota at all for that stage, and the failure mode of an under-provisioned
+    # quota is production throttling that points nowhere near here; a KeyError
+    # names the missing key at the point it is needed.
     for hour_data in hourly_breakdown:
-        ocr_tpm = hour_data.get("ocrTokensPerHour", 0) / 60 * BUFFER_FACTOR
+        ocr_tpm = hour_data["ocrTokensPerHour"] / 60 * BUFFER_FACTOR
         classification_tpm = hour_data["classificationTokensPerHour"] / 60 * BUFFER_FACTOR
         extraction_tpm = hour_data["extractionTokensPerHour"] / 60 * BUFFER_FACTOR
         assessment_tpm = hour_data["assessmentTokensPerHour"] / 60 * BUFFER_FACTOR
@@ -1201,9 +1419,30 @@ def build_simple_quota_requirements(
         metering_table_name = os.environ.get('METERING_TABLE_NAME')
         
         requests_per_doc = 0  # Average requests per document for this step
+        # One measured page count per sampled metering record, averaged after the
+        # scan. Accumulated rather than folded in as it goes: the running form this
+        # replaced was `(running + next) / 2`, which halves the weight of
+        # everything already seen at every step, so page counts of 1, 10 and 100
+        # reported 52.8 instead of their mean of 37.
+        #
+        # "Record" rather than "document" because the scan filters the whole table
+        # on `Metering` existing, and a document's run snapshots carry that
+        # attribute alongside its live item, so a document processed several times
+        # contributes a sample each time. That sampling is what the request-rate
+        # average above does too and is not changed here.
+        measured_page_counts = []
         actual_pages_per_doc = None
         metering_data_available = False
-        
+        # True once a recorded Bedrock request for this step has been left out
+        # because the configuration excludes the key it was recorded under. That
+        # is a different condition from "no request data was ever recorded", and
+        # the operator acts on it differently, so the two are not merged below.
+        requests_excluded_by_config = False
+        # Cleared when the step's request rate has no measurement behind it and
+        # none can be inferred, so the RPM row is withheld while the TPM row —
+        # which needs no metering — is still reported.
+        rpm_measurable = True
+
         if metering_table_name:
             try:
                 table = dynamodb.Table(metering_table_name)
@@ -1219,7 +1458,7 @@ def build_simple_quota_requirements(
 
                 while len(items) < MAX_METERING_ITEMS and pages_scanned < max_pages:
                     scan_kwargs = {
-                        'FilterExpression': boto3.dynamodb.conditions.Attr('Metering').exists(),
+                        'FilterExpression': Attr('Metering').exists(),
                         'Limit': PAGE_SIZE
                     }
 
@@ -1259,23 +1498,40 @@ def build_simple_quota_requirements(
                     # Convert Decimal types to float/int for math operations
                     metering_data = convert_decimal_to_float(metering_data)
                     
-                    # Extract actual page count from metering data
-                    if 'number_of_pages' in item:
-                        # float() so the running average below is well-typed:
-                        # convert_decimal_to_float() is recursive and so is inferred
-                        # as returning a scalar/dict/list union, which the "+" and "/"
-                        # below cannot accept. A page count is always scalar.
-                        pages = float(convert_decimal_to_float(item['number_of_pages']))
-                        if actual_pages_per_doc is None:
-                            actual_pages_per_doc = pages
-                        else:
-                            actual_pages_per_doc = (actual_pages_per_doc + pages) / 2  # Running average
+                    # This document's page count, as the tracking table stores it.
+                    # `PageCount` is the attribute both of its writers set, on the
+                    # line next to the `Metering` payload this scan filters on;
+                    # `number_of_pages` — read here previously — is a column of the
+                    # Athena reporting table and is never an attribute here, so the
+                    # measured figure was silently unavailable on every stack and
+                    # the report always fell back to the configured page values.
+                    # Both writers omit the attribute for a zero page count rather
+                    # than storing a zero, but the positive test is made here too:
+                    # a document contributing no pages is not a measurement of a
+                    # document's length, and resting that on what two files
+                    # elsewhere happen to do makes it their property rather than
+                    # this function's.
+                    if 'PageCount' in item:
+                        # float() because convert_decimal_to_float() is recursive and
+                        # so is inferred as returning a scalar/dict/list union, which
+                        # sum() below cannot accept. A page count is always scalar.
+                        pages = float(convert_decimal_to_float(item['PageCount']))
+                        if pages > 0:
+                            measured_page_counts.append(pages)
                     
-                    # Find requests for this step in this document
-                    # For Assessment, we need to handle the case where only GranularAssessment entries exist
-                    assessment_requests_for_doc = 0
-                    found_assessment_data = False
-                    
+                    # Requests this document contributes to this step. A step can
+                    # issue several Bedrock calls under distinct metering keys —
+                    # agentic extraction records one entry per model or tool
+                    # invocation, and Assessment records regular and granular
+                    # entries separately — so every matching key is accumulated and
+                    # the document counts once towards the average however many it
+                    # carried. One accumulator serves both branches below: which of
+                    # them runs is fixed by step_name for the whole scan, and
+                    # counting per-key in one and per-document in the other is the
+                    # defect this replaced.
+                    requests_for_doc = 0
+                    found_data_for_doc = False
+
                     for key, value in metering_data.items():
                         # Look for bedrock entries that match the processing step
                         if isinstance(value, dict) and 'bedrock' in key.lower():
@@ -1292,18 +1548,20 @@ def build_simple_quota_requirements(
                                         # Count granular requests when enabled
                                         requests = value.get('requests', 0)
                                         if requests > 0:
-                                            assessment_requests_for_doc += requests
-                                            found_assessment_data = True
+                                            requests_for_doc += requests
+                                            found_data_for_doc = True
                                             print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: GranularAssessment = {requests} requests (granular enabled)")
                                     else:
                                         # Skip GranularAssessment when disabled
+                                        if value.get('requests', 0) > 0:
+                                            requests_excluded_by_config = True
                                         print(f"🔍 Skipping GranularAssessment (disabled): {key}")
                                 elif is_assessment:
                                     # Regular Assessment entry - always use actual requests
                                     requests = value.get('requests', 0)
                                     if requests > 0:
-                                        assessment_requests_for_doc += requests
-                                        found_assessment_data = True
+                                        requests_for_doc += requests
+                                        found_data_for_doc = True
                                         print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: Assessment = {requests} requests (from {key})")
                                 # Continue iterating to find all assessment-related entries
                                 continue
@@ -1312,18 +1570,17 @@ def build_simple_quota_requirements(
                                 if step_name.lower() not in key_lower:
                                     continue
                                 
-                                # Use actual requests from metering data
+                                # Use actual requests from metering data, continuing
+                                # through the remaining keys rather than stopping at
+                                # the first match.
                                 requests = value.get('requests', 0)
                                 if requests > 0:
-                                    total_requests += requests
-                                    doc_count += 1
-                                    metering_data_available = True
-                                    print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: {step_name} = {requests} requests (from metering)")
-                                    break  # Found data for this step in this doc, move to next doc
-                    
-                    # For Assessment, add the accumulated requests after checking all keys
-                    if step_name == "Assessment" and found_assessment_data:
-                        total_requests += assessment_requests_for_doc
+                                    requests_for_doc += requests
+                                    found_data_for_doc = True
+                                    print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: {step_name} = {requests} requests (from {key})")
+
+                    if found_data_for_doc:
+                        total_requests += requests_for_doc
                         doc_count += 1
                         metering_data_available = True
                 
@@ -1331,6 +1588,13 @@ def build_simple_quota_requirements(
                 if doc_count > 0:
                     requests_per_doc = total_requests / doc_count
                     print(f"✅ {step_name}: Average {requests_per_doc:.1f} requests/doc from {doc_count} documents")
+
+                # Mean pages per document over the sampled records, which is the
+                # figure an operator checks against their own corpus.
+                if measured_page_counts:
+                    actual_pages_per_doc = sum(measured_page_counts) / len(
+                        measured_page_counts
+                    )
                         
             except Exception as e:
                 print(f"⚠️ Could not read metering data for {step_name}: {e}")
@@ -1340,10 +1604,18 @@ def build_simple_quota_requirements(
         # Calculate actual requests per hour based on scheduled docs/hour and avg requests/doc
         actual_requests_per_hour = 0
         if requests_per_doc > 0:
-            # Sum up docs per hour from schedule and multiply by avg requests per doc
-            total_scheduled_docs_per_hour = sum(h.get("docsPerHour", 0) for h in hourly_breakdown)
-            actual_requests_per_hour = requests_per_doc * total_scheduled_docs_per_hour
-            print(f"🔍 {step_name} RPM calc: {requests_per_doc:.1f} req/doc × {total_scheduled_docs_per_hour} docs/hour = {actual_requests_per_hour:.1f} requests/hour")
+            # Take the busiest hour's docs/hour and multiply by avg requests per doc.
+            # RPM is a per-minute limit, so it has to be scaled from one hour, as the
+            # peak_*_tpm figures above are: summing all 24 would report a whole day's
+            # volume as a per-minute rate, 24x over for a load spread evenly across
+            # the day. This maximum is over docsPerHour where TPM's is over that
+            # step's tokensPerHour, so the two can land on different hours; that is
+            # the conservative answer, since each quota must cover its own worst hour.
+            peak_scheduled_docs_per_hour = max(
+                (h.get("docsPerHour", 0) for h in hourly_breakdown), default=0
+            )
+            actual_requests_per_hour = requests_per_doc * peak_scheduled_docs_per_hour
+            print(f"🔍 {step_name} RPM calc: {requests_per_doc:.1f} req/doc × {peak_scheduled_docs_per_hour} docs/hour (peak hour) = {actual_requests_per_hour:.1f} requests/hour")
         
         # If no metering data available and no demand, skip this step quietly
         if (not metering_data_available or actual_requests_per_hour == 0) and peak_tpm == 0:
@@ -1356,12 +1628,40 @@ def build_simple_quota_requirements(
             if step_name == "OCR" and peak_tpm == 0:
                 print(f"ℹ️ Skipping OCR - no OCR tokens configured (OCR not in use)")
                 continue
-            
-            raise ValueError(
-                f"No request count data found for {step_name}. "
-                f"Documents must have metering data with '{step_name.lower()}/bedrock' entries. "
-                f"Process documents through the full workflow to generate metering data."
-            )
+
+            # Every recorded request for this step was excluded by the
+            # configuration rather than never measured: on a history recorded
+            # entirely under GranularAssessment keys, turning granular assessment
+            # off leaves Assessment with demand and nothing countable. That is a
+            # configuration change, not a gap in the documents, so it costs the
+            # step its request rate instead of failing the report other steps are
+            # still measurable from. No request figure is invented for it. The
+            # message names GranularAssessment because the flag can only be set in
+            # the Assessment branch above; a second setter would have to
+            # generalise it.
+            #
+            # Only the RPM row is lost. The TPM row is computed from the
+            # operator's own token schedule and the Service Quotas value and
+            # reads no metering at all, so withholding it would hide an answer
+            # that is fully available — and hide it behind advice to process more
+            # documents, which cannot change it. The step keeps its token
+            # planning and loses only the figure that genuinely has no
+            # measurement behind it.
+            if requests_excluded_by_config and not metering_data_available:
+                print(
+                    f"ℹ️ No RPM row for {step_name} - every recorded Bedrock request for it "
+                    f"is under a GranularAssessment key, which is excluded while granular "
+                    f"assessment is disabled. Process documents with the current "
+                    f"configuration, or re-enable granular assessment, to plan this step's "
+                    f"request rate. Its TPM row is unaffected."
+                )
+                rpm_measurable = False
+            else:
+                raise ValueError(
+                    f"No request count data found for {step_name}. "
+                    f"Documents must have metering data with '{step_name.lower()}/bedrock' entries. "
+                    f"Process documents through the full workflow to generate metering data."
+                )
         
         peak_rpm = (actual_requests_per_hour / 60) * BUFFER_FACTOR
         
@@ -1369,12 +1669,48 @@ def build_simple_quota_requirements(
         
         # Log actual page count if found
         if actual_pages_per_doc is not None:
-            print(f"📄 Actual pages per document from metering: {actual_pages_per_doc:.1f}")
+            print(f"📄 Actual pages per document from metering: {actual_pages_per_doc:.1f} (mean of {len(measured_page_counts)} metering records)")
         else:
             print("ℹ️ Using configured page values (no metering data)")
 
-        # Include configured inference types with demand
-        should_include = peak_tpm > 0 or peak_rpm > 1.0  # Include if there's meaningful demand
+        # A step belongs in the report if it has quota demand of either kind:
+        # configured tokens, or Bedrock requests actually recorded against it.
+        # The threshold is zero on both terms, and the symmetry is the point —
+        # a floor above zero on one of them made the two halves of the rule
+        # disagree about what "running" means.
+        #
+        # Zero rather than some small positive rate because of what an absent
+        # row means. The report is the operator's list of quotas to check, and a
+        # step with no row is indistinguishable from a step that is switched
+        # off. A floor of one request a minute therefore rendered "runs, and
+        # needs almost no headroom" identically to "not in the pipeline" — and
+        # only for the step whose rate was low, so the report was quietest
+        # exactly where it was least expected to be. A small figure describes
+        # itself; silence does not, and `requiredQuota` carries the magnitude
+        # either way.
+        #
+        # The skips above have in fact already decided this, and with the
+        # threshold at zero this is a floor rather than a filter: it cannot fire.
+        # Note that it is *not* true that `peak_rpm > 0` here — the withheld-RPM
+        # fall-through above reaches this line with `actual_requests_per_hour`
+        # at zero, and so with `peak_rpm` at 0.0. What holds is the disjunction,
+        # by two different routes:
+        #
+        #   * on the ordinary path the second skip's condition was false, so
+        #     `actual_requests_per_hour > 0` and therefore `peak_rpm > 0`;
+        #   * on the withheld-RPM path `peak_rpm` is 0.0, but the *first* skip
+        #     has already continued for any step with `peak_tpm == 0` — its
+        #     condition is the second's plus that conjunct — so `peak_tpm > 0`.
+        #
+        # Either way one term is positive. Replacing the `else` below with an
+        # unconditional `raise` leaves every test in this directory passing, so
+        # there is deliberately no test for that branch: no input reaches it, and
+        # a test asserting its message would be pinning nothing. It is kept so
+        # that a step carrying no demand of either kind cannot acquire a row of
+        # zeroes if those skips change, and its message names both terms because
+        # naming only the token figure described a step dropped for its request
+        # rate as having "no demand".
+        should_include = peak_tpm > 0 or peak_rpm > 0
 
         if should_include:
             print(
@@ -1390,8 +1726,31 @@ def build_simple_quota_requirements(
                 tpm_status_text = (
                     "✅ Sufficient" if peak_tpm <= model_quota_tpm else "⚠️ Increase Needed"
                 )
+            # Reported past 100%, because the size of a shortfall is the whole
+            # decision the operator is making. Capped, a plan needing five times
+            # its quota and one needing 1.01 times were the same number, so the
+            # headline could not tell a near miss from a request that has to be
+            # escalated. `status` and `requiredQuota` already say a shortfall
+            # exists and how large it is; capping this made the one field
+            # expressing it as a ratio the only one that hid it.
+            #
+            # Nothing downstream constrains it to 100, and in fact nothing
+            # downstream reads it: `sanitize_quota_requirements` in
+            # `src/lambda/calculate_capacity_resolver/index.py` rebuilds every row
+            # from the five fields the GraphQL type declares, so this one does not
+            # cross the API boundary at all. That, rather than the UI's TypeScript
+            # interface, is the durable reason — an interface is one line away
+            # from declaring the field, whereas the resolver actively strips it.
+            #
+            # So this is an internal figure today. It is still worth being a true
+            # ratio: the percentages the UI displays are recomputed in the browser
+            # from `requiredQuota` and `currentQuota` and have never been capped,
+            # so a capped value here disagreed with what the operator was shown
+            # for the same quantity, and would have carried that disagreement
+            # into whatever surfaces this field next. There is no bar or
+            # fixed-width gauge anywhere that a value above 100 could overflow.
             tpm_utilization_percent = (
-                min((peak_tpm / model_quota_tpm) * 100, 100)
+                (peak_tpm / model_quota_tpm) * 100
                 if peak_tpm > 0 and model_quota_tpm > 0
                 else 0
             )
@@ -1413,36 +1772,49 @@ def build_simple_quota_requirements(
             }
             requirements.append(tpm_requirement)
 
-            # RPM requirement
-            rpm_quota_display = f"{model_quota_rpm:,}"
-            rpm_status = "success" if peak_rpm <= model_quota_rpm else "warning"
-            if peak_rpm == 0:
-                rpm_status_text = "✅ No Demand"
-            else:
-                rpm_status_text = (
-                    "✅ Sufficient" if peak_rpm <= model_quota_rpm else "⚠️ Increase Needed"
+            # RPM requirement. Withheld, rather than reported as zero, when the
+            # request rate has no measurement behind it: a "0 RPM" row would read
+            # as a measured absence of requests rather than as an absence of
+            # measurement, and the TPM row above is the half of this step that is
+            # genuinely known. The `peak_rpm` of 0.0 that the log above prints for
+            # this step is the arithmetic on an unmeasured zero, which is why it
+            # is not published as a row.
+            if rpm_measurable:
+                rpm_quota_display = f"{model_quota_rpm:,}"
+                rpm_status = "success" if peak_rpm <= model_quota_rpm else "warning"
+                if peak_rpm == 0:
+                    rpm_status_text = "✅ No Demand"
+                else:
+                    rpm_status_text = (
+                        "✅ Sufficient" if peak_rpm <= model_quota_rpm else "⚠️ Increase Needed"
+                    )
+                # Uncapped for the same reason as the TPM figure above. Written
+                # out twice because the two rows are built separately, so a cap
+                # removed from one says nothing about the other.
+                rpm_utilization_percent = (
+                    (peak_rpm / model_quota_rpm) * 100
+                    if peak_rpm > 0 and model_quota_rpm > 0
+                    else 0
                 )
-            rpm_utilization_percent = (
-                min((peak_rpm / model_quota_rpm) * 100, 100)
-                if peak_rpm > 0 and model_quota_rpm > 0
-                else 0
-            )
 
-            rpm_requirement = {
-                "service": f"{step_name} ({model_display_name}) - RPM",
-                "category": "Bedrock Models RPM",
-                "currentQuota": rpm_quota_display,
-                "requiredQuota": f"{round(peak_rpm):,}",
-                "status": rpm_status,
-                "statusText": rpm_status_text,
-                "utilizationPercent": rpm_utilization_percent,
-                "usedFor": step_name,
-                "modelId": model_id,
-                "quotaType": "RPM",
-            }
-            requirements.append(rpm_requirement)
+                rpm_requirement = {
+                    "service": f"{step_name} ({model_display_name}) - RPM",
+                    "category": "Bedrock Models RPM",
+                    "currentQuota": rpm_quota_display,
+                    "requiredQuota": f"{round(peak_rpm):,}",
+                    "status": rpm_status,
+                    "statusText": rpm_status_text,
+                    "utilizationPercent": rpm_utilization_percent,
+                    "usedFor": step_name,
+                    "modelId": model_id,
+                    "quotaType": "RPM",
+                }
+                requirements.append(rpm_requirement)
         else:
-            print(f"❌ Skipping {step_name} - no demand (peak_tpm={peak_tpm})")
+            print(
+                f"❌ Skipping {step_name} - no demand of either kind "
+                f"(peak_tpm={peak_tpm}, peak_rpm={peak_rpm:.3f})"
+            )
 
     print(f"Built {len(requirements)} quota requirements")
     return requirements
@@ -1776,11 +2148,17 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             total_pages_per_hour += docs_per_hour_config * avg_pages
             total_tokens_per_hour += doc_total_tokens * docs_per_hour_config
 
-        # Override LATENCY_METRICS_HOURS from UI input if provided
+        # Per-request latency history window from the UI time range selector.
+        # Held as a local and passed down rather than written into os.environ: the
+        # container outlives the request, so an environment write made this
+        # request's choice the default for every later invocation the same
+        # container served.
         latency_metrics_hours_input = input_data.get("latencyMetricsHours")
+        latency_metrics_hours = None
         if latency_metrics_hours_input:
-            os.environ["LATENCY_METRICS_HOURS"] = str(int(latency_metrics_hours_input))
-            # Clear cache so new time range takes effect
+            latency_metrics_hours = int(latency_metrics_hours_input)
+            # The cache is keyed by pattern alone, so entries computed over the
+            # previous window would otherwise be returned for this one.
             global _processing_times_cache, _cache_expiry
             _processing_times_cache = {}
             _cache_expiry = 0
@@ -1795,6 +2173,8 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             max_allowed_latency,
             quotas,
             document_configs,
+            latency_metrics_hours,
+            model_config,
         )
 
         # Build quota requirements using Applied account-level quota values

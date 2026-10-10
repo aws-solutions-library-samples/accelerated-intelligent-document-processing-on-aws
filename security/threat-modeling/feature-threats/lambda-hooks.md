@@ -156,7 +156,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | High |
 | **Affected Components** | `patterns/unified/statemachine/workflow.asl.json` (the `Catch` blocks on `PostOcrHook`, `PostClassificationHook`, `PostExtractionHook`, `PostRuleValidationHook`, `PostSummarizationHook`, `PostprocessingHook`), `patterns/unified/src/pipeline_hooks_function/index.py` |
-| **Mitigations** | **In place today:** the dispatcher does raise on a failed `onError: fail` hook, so the signal exists and is recorded in execution state; `preprocessing` — the hook point with the widest blast radius, running before any processing and able to replace the source document — is genuinely terminal; hook failures are visible in CloudWatch and in the execution history for an operator who looks. **Pending — do not read as present:** routing the remaining six hook points' `onError: fail` failures to a terminal failure state, so the declared behaviour matches the actual behaviour, is tracked in **issue #919**. Until that merges, treat `onError: fail` at any point other than `preprocessing` as best-effort, and do not rely on a hook at those points as a gate. |
+| **Mitigations** | `onError: fail` is terminal at **every** hook point. Each of the seven states routes its catch to a terminal failure state — `PreprocessingHookFailed`, `PostExtractionHookFailed`, or the shared `PostStepHookFailed` for the other five — so the declared behaviour and the actual behaviour now agree, and a hook at any point may be relied on as a gate. Verified against `patterns/unified/statemachine/workflow.asl.json` by reading each hook state's `Catch`, not from the setting's documentation. The dispatcher raises on a failed `onError: fail` hook, so the signal exists and is recorded in execution state, and hook failures remain visible in CloudWatch and in the execution history. ⚠️ `onError: continue` is unchanged and still routes forward by design — the distinction this threat was about is now the one the configuration key makes. |
 | **Residual risk / recommendation** | Even once the routing is corrected, a hook is customer code and a *gate implemented as a hook* is only as reliable as the hook's own availability. Where a control must hold, prefer `preprocessing` (terminal today) and alert on the rate of failed and halted executions rather than inferring success from the absence of errors. |
 
 ## 4. Security Controls Summary
@@ -167,7 +167,7 @@ flowchart TD
 | **Separate IAM roles** | Hook Lambdas use customer-managed IAM roles | HOOK.T01, HOOK.T05, HOOK.T06 |
 | **Hook tag gating** | Dispatcher only invokes Lambdas tagged `idp:feature-id` | HOOK.T06 |
 | **Admin-gated registration** | Hook ARNs are set in config (Admin/Author), versioned and auditable | HOOK.T06 |
-| **Fail-closed error handling** | `onError: fail` is terminal **at the `preprocessing` hook point only** — its Step Functions catch routes to a failure state. At the other six hook points the catch routes *forward*, so the setting does not halt the workflow (**HOOK.T07**, fix pending in issue #919) | HOOK.T06 |
+| **Fail-closed error handling** | `onError: fail` is terminal at **all seven** hook points — each state's Step Functions catch routes to a terminal failure state (**HOOK.T07**, closed by issue #919) | HOOK.T06 |
 | **Visible in-flight status** | `PREPROCESSING` status is distinct and abortable | HOOK.T06 |
 | **Generic hook contract** | `arn` + opaque key/value `args`; no feature-specific fields | HOOK.T06 |
 | **Output validation** | Schema validation of hook return values | HOOK.T03 |

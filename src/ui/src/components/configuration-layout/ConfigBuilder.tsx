@@ -90,6 +90,10 @@ const _CLAUDE_EFFORT_TOKENS = [
   // not the 'high' every other model here defaults to.
   'claude-opus-5-5',
   'claude-fable-5',
+  // Haiku 5.5 is the first Haiku to accept effort — Haiku 4.5 rejects it with a
+  // 400, which is why the comment above excludes it by name. Default 'medium' per
+  // the model card, and unlike Opus 5.5 thinking can still be disabled here.
+  'claude-haiku-5-5',
 ];
 function modelSupportsReasoningEffort(modelId: unknown): boolean {
   if (typeof modelId !== 'string' || !modelId) {

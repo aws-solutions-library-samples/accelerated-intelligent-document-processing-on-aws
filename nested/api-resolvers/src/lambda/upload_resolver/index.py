@@ -9,9 +9,9 @@ import os
 
 import boto3
 from botocore.config import Config
-from log_sanitizer import sanitize_event_for_logging
 
 from idp_common import s3_targets
+from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
     PrefixMappingStore,
     canonical_key,
@@ -23,6 +23,7 @@ from idp_common.config_scope import (
     caller_sub_from_claims,
     resolve_allowed_config_versions,
 )
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -158,7 +159,40 @@ def _allowed_config_versions(event):
         )
 
 
-def resolve_destination(event, object_key, version=None, revision=None):
+def _profile_exists(manager):
+    """A callable answering "does this profile head item exist?", or ``None``.
+
+    ``ProjectionExpression`` matters: a configuration body is tens to hundreds of KB
+    gzipped into the same item, and this is asked once per mapped upload.
+    """
+    if manager is None:
+        return None
+
+    def exists(profile):
+        item = manager.table.get_item(
+            Key={"Configuration": f"Config#{profile}"},
+            ProjectionExpression="Configuration",
+        ).get("Item")
+        return bool(item)
+
+    return exists
+
+
+def _configuration_manager():
+    """A ConfigurationManager over this deployment's table, or ``None``.
+
+    Built per request rather than at module scope so an unset table name degrades
+    to "no seams" instead of raising at import.
+    """
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        return None
+    return ConfigurationManager(table_name=table_name)
+
+
+def resolve_destination(
+    event, object_key, version=None, revision=None, mappings=None
+):
     """What configuration an upload to ``object_key`` would process under.
 
     This is the control that closes a gap predating prefix mappings:
@@ -180,13 +214,43 @@ def resolve_destination(event, object_key, version=None, revision=None):
     when a prefix mapping in ``reject`` conflict mode would refuse the upload at
     ingest — refusing here is strictly better than minting a URL for an upload that
     is going to fail.
+
+    ⚠️ **Every seam ``resolve_config_assignment`` accepts must be supplied here, and
+    with the same meaning the ingest path gives it.** This function answers the same
+    question ``queue_sender`` will answer about the same object a moment later, and
+    the two answers diverge the instant the seam sets differ — the pure resolver is
+    deterministic, so a disagreement can only come from the inputs:
+
+    * Omitting ``published_revision`` makes an unpinned request's effective revision
+      ``None``, which then "disagrees" with a mapping pinned to the revision that
+      profile has in fact published. A ``reject`` mapping would refuse an upload
+      here that ingest accepts — a 400 on a legitimate upload the preview said was
+      fine.
+    * Omitting ``active_profile`` leaves the resolved profile ``None`` whenever no
+      mapping matches and no ``version`` was named, and a ``None`` profile skips the
+      scope guard entirely. That is the most common upload shape there is, so the
+      scope check this function exists for would not run on it — the gap would be
+      *reported* closed while the widest route stayed open.
+    * Omitting ``profile_exists`` lets a mapping naming a deleted profile resolve to
+      a phantom, where ingest would fall through and flag it.
+
+    ``scripts/tests/test_prefix_mapping_call_sites.py`` asserts this across all four
+    callers, because the resolver's own suite cannot see a caller by construction.
     """
     allowed = _allowed_config_versions(event)
+    manager = _configuration_manager()
     assignment = resolve_config_assignment(
         object_key,
         metadata_profile=version,
         metadata_revision=revision,
-        mappings=_prefix_mappings(),
+        mappings=_prefix_mappings() if mappings is None else mappings,
+        active_profile=(
+            manager.resolve_active_version if manager is not None else None
+        ),
+        published_revision=(
+            manager.resolve_published_revision if manager is not None else None
+        ),
+        profile_exists=_profile_exists(manager),
         # `allowed` is empty for an unscoped caller, which `scope_allows` reads as
         # unrestricted — so this adds no restriction to the common case.
         allowed_profiles=list(allowed) if allowed else None,
@@ -447,6 +511,13 @@ def _handle_upload_sample_document(event):
                 extra_args["Metadata"]["config-revision"] = str(revision)
             extra_args["MetadataDirective"] = "REPLACE"
 
+        # Read the mapping set ONCE, outside the loop. A batch sample expands to
+        # many files and this path runs inside API Gateway's 29s integration
+        # ceiling, so a strongly-consistent GetItem per file is latency this
+        # operation did not previously spend. The scope lookup is already
+        # per-container cached.
+        mappings = _prefix_mappings()
+
         object_keys = []
         for source_key in source_keys:
             base_name = os.path.basename(source_key)
@@ -459,7 +530,9 @@ def _handle_upload_sample_document(event):
             s3_targets.assert_write_target_allowed(
                 input_bucket, target_key, ALLOWED_BUCKETS, logger=logger
             )
-            resolve_destination(event, target_key, version, revision)
+            resolve_destination(
+                event, target_key, version, revision, mappings=mappings
+            )
             s3_client.copy_object(
                 CopySource={"Bucket": config_bucket, "Key": source_key},
                 Bucket=input_bucket,

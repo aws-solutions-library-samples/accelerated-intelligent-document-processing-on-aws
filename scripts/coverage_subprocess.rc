@@ -1,0 +1,39 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# The coverage configuration a SUBPROCESS started by a measured suite runs under.
+#
+# coverage.py ships a `.pth` file that calls `coverage.process_startup()` in every
+# Python process on the machine, and that call does nothing unless
+# COVERAGE_PROCESS_START names a configuration file. This is that file.
+# `scripts/coverage_all.py` sets the variable (see `subprocess_coverage_env`); nothing
+# else in this repository does, and no coverage run picks this file up implicitly --
+# its name is deliberately not one coverage or pytest-cov searches for, which keeps
+# the property the rest of the repository already has: every coverage option in force
+# is one a command line or this variable spells out.
+#
+# `parallel` is the whole content and it is not optional. `process_startup` builds its
+# Coverage object from this file alone, so without it every subprocess writes to the
+# one data file the parent is also writing, last writer wins. With it each process
+# writes `<data file>.<host>.<pid>.<random>` and the parent's `combine()` -- which
+# pytest-cov runs at session end -- merges them.
+#
+# The two paths are substituted from the environment rather than written here, because
+# both have to be ABSOLUTE and this file cannot know where the checkout is:
+#
+#  * COVERAGE_FILE (read by coverage directly) is the data file. Relative, it resolves
+#    against each subprocess's own working directory, so a suite that runs the code under
+#    test with `cwd=tmp_path` writes its data where nothing will ever combine it.
+#    Measured on a probe whose only execution is such a subprocess: 0.00% with this file
+#    alone, 100.00% with COVERAGE_FILE absolute as well.
+#  * COVERAGE_SUBPROCESS_SOURCE is the tree under measurement. Without it a child
+#    measures every file it imports, the parent's `combine()` merges all of it, and the
+#    report stops describing one tree: measured over the whole `scripts` tree, 1,189 files
+#    at 31.52% rather than 51 files at 82%. A single test file does not show it, because
+#    its children import nothing from outside.
+#
+# `scripts/coverage_all.py` sets all three together, so a subprocess either has the whole
+# mechanism or none of it.
+[run]
+parallel = true
+source = ${COVERAGE_SUBPROCESS_SOURCE}

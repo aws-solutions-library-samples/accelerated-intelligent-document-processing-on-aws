@@ -1,0 +1,1037 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+"""
+Tests for `idp-cli publish`, `idp-cli chat` and `idp-cli bootstrap`.
+
+These three commands share a shape: each is a thin CLI layer over something
+expensive — a full SAM build, a live multi-agent chat session, a Bedrock
+authoring call — so the layer's whole job is translating options into arguments
+and translating a result back into output and an exit code. That is what these
+tests check, and they never let the expensive thing run.
+
+What shaped them:
+
+- **`publish` has twelve options and passes eleven of them through to one call.**
+  An option that silently fails to reach `publish.build` produces the wrong
+  artifact, uploaded to the wrong place, with a green terminal — so each flag is
+  asserted at the call boundary by keyword, and the defaults are asserted too.
+  The default matters as much as the override: `--lint/--no-lint` defaults to
+  `True`, and a build that quietly skipped linting would look identical.
+- **`bootstrap` has two modes that differ in which stream carries what.** Without
+  `--stack-name` it prints a JSON schema to stdout and its progress lines to
+  stderr, so `idp-cli bootstrap -p "..." > schema.json` yields parseable JSON;
+  with `--stack-name` nothing machine-readable reaches stdout and the progress
+  lines stay there. `CliRunner` combines the two streams by default, so the tests
+  that care read `result.stdout` specifically — asserting on the combined text
+  cannot tell the two modes apart, which is the bug the split exists to prevent.
+- **`chat` is argument forwarding and one refusal.** `idp_cli/chat.py` itself is
+  covered elsewhere; here the question is only whether the four options arrive
+  and what happens when the optional agents dependency is absent.
+"""
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+from click.testing import CliRunner
+
+from idp_cli import cli as cli_module
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()
+
+
+def _publish_result(**overrides):
+    """A `PublishResult` as `client.publish.build` really returns one.
+
+    Built from the real pydantic model rather than a `MagicMock` so that a field
+    the command reads but the model does not have fails here instead of silently
+    yielding a `MagicMock` in the output.
+    """
+    from idp_sdk.models.publish import PublishResult
+
+    fields = {
+        "success": True,
+        "template_url": "https://s3.us-east-1.amazonaws.com/b/idp-main.yaml",
+        # A path-shaped value only; nothing reads or creates it. Deliberately not
+        # under /tmp, which both ruff (S108) and bandit (B108) flag on sight.
+        "template_path": "build/idp-main.yaml",
+        "bucket": "b-us-east-1",
+        "prefix": "idp-cli",
+        "version": "0.6.9",
+    }
+    fields.update(overrides)
+    return PublishResult(**fields)
+
+
+class TestPublishOptionTranslation:
+    """Every `publish` option must arrive at `client.publish.build` intact."""
+
+    def test_defaults_are_passed_explicitly(self, runner, tmp_path):
+        """
+        The defaults are part of the contract, not an absence.
+
+        `lint` defaults to True and `no_validate`/`public`/`clean_build` to False.
+        A build that silently skipped linting or validation would produce the same
+        console output as one that did not, so the defaults are asserted at the
+        boundary rather than assumed.
+        """
+        client = MagicMock()
+        client.publish.build.return_value = _publish_result()
+        with patch.object(cli_module, "IDPClient", return_value=client) as factory:
+            result = runner.invoke(
+                cli_module.cli,
+                ["publish", "--source-dir", str(tmp_path), "--region", "us-east-1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        factory.assert_called_once_with(region="us-east-1")
+        kwargs = client.publish.build.call_args.kwargs
+        assert kwargs == {
+            "source_dir": str(tmp_path),
+            "bucket": None,
+            "prefix": None,
+            "region": "us-east-1",
+            "headless": False,
+            "govcloud": False,
+            "public": False,
+            "max_workers": None,
+            "clean_build": False,
+            "no_validate": False,
+            "verbose": False,
+            "lint": True,
+        }
+
+    def test_every_flag_reaches_the_build_call(self, runner, tmp_path):
+        client = MagicMock()
+        client.publish.build.return_value = _publish_result()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "publish",
+                    "--source-dir",
+                    str(tmp_path),
+                    "--region",
+                    "eu-central-1",
+                    "--bucket-basename",
+                    "my-artifacts",
+                    "--prefix",
+                    "v1",
+                    "--headless",
+                    "--govcloud",
+                    "--public",
+                    "--max-workers",
+                    "3",
+                    "--clean-build",
+                    "--no-validate",
+                    "--verbose",
+                    "--no-lint",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        kwargs = client.publish.build.call_args.kwargs
+        assert kwargs == {
+            "source_dir": str(tmp_path),
+            "bucket": "my-artifacts",
+            "prefix": "v1",
+            "region": "eu-central-1",
+            "headless": True,
+            "govcloud": True,
+            "public": True,
+            "max_workers": 3,
+            "clean_build": True,
+            "no_validate": True,
+            "verbose": True,
+            "lint": False,
+        }
+
+    def test_headless_and_govcloud_together_are_accepted(self, runner, tmp_path):
+        """
+        `publish` accepts both variants at once, unlike `deploy`, which refuses them.
+
+        The asymmetry is deliberate and worth pinning in both directions: `publish`
+        *generates* template variants, so asking for two is meaningful, while
+        `deploy` *deploys one stack* and could only pick one. A test asserting a
+        refusal here would be asserting the wrong contract.
+        """
+        client = MagicMock()
+        client.publish.build.return_value = _publish_result()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "publish",
+                    "--source-dir",
+                    str(tmp_path),
+                    "--region",
+                    "us-east-1",
+                    "--headless",
+                    "--govcloud",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert client.publish.build.call_args.kwargs["headless"] is True
+        assert client.publish.build.call_args.kwargs["govcloud"] is True
+
+    def test_region_is_required(self, runner, tmp_path):
+        result = runner.invoke(
+            cli_module.cli, ["publish", "--source-dir", str(tmp_path)]
+        )
+        assert result.exit_code != 0
+        assert "--region" in result.output
+
+    def test_a_source_dir_that_does_not_exist_is_refused_before_any_client(
+        self, runner, tmp_path
+    ):
+        """
+        `--source-dir` is a `click.Path(exists=True, file_okay=False)`, so a missing
+        directory — or a file where a directory belongs — is refused by argument
+        parsing, before an `IDPClient` is constructed. Asserting the client was
+        never built is the half that matters: a refusal that happens after the
+        client is built has already resolved a stack and a region.
+        """
+        missing = tmp_path / "nope"
+        a_file = tmp_path / "afile"
+        a_file.write_text("x", encoding="utf-8")
+
+        with patch.object(cli_module, "IDPClient") as factory:
+            for bad in (missing, a_file):
+                result = runner.invoke(
+                    cli_module.cli,
+                    ["publish", "--source-dir", str(bad), "--region", "us-east-1"],
+                )
+                assert result.exit_code == 2, result.output
+            factory.assert_not_called()
+
+
+class TestPublishResultHandling:
+    def test_deployment_urls_are_printed_with_all_three_variants(
+        self, runner, tmp_path
+    ):
+        client = MagicMock()
+        client.publish.build.return_value = _publish_result(
+            headless_template_url="https://s3/idp-headless.yaml",
+            govcloud_template_url="https://s3/idp-govcloud.yaml",
+        )
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["publish", "--source-dir", str(tmp_path), "--region", "us-east-1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Publish complete" in result.output
+        client.publish.print_deployment_urls.assert_called_once_with(
+            template_url="https://s3.us-east-1.amazonaws.com/b/idp-main.yaml",
+            region="us-east-1",
+            headless_template_url="https://s3/idp-headless.yaml",
+            govcloud_template_url="https://s3/idp-govcloud.yaml",
+        )
+
+    def test_a_missing_template_url_becomes_an_empty_string_not_none(
+        self, runner, tmp_path
+    ):
+        """
+        `print_deployment_urls` is called with `result.template_url or ""`.
+
+        Pinned because the coalesce is load-bearing: the parameter is typed as a
+        string downstream, and a successful build that reported no URL would
+        otherwise pass `None` into string formatting.
+        """
+        client = MagicMock()
+        client.publish.build.return_value = _publish_result(template_url=None)
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["publish", "--source-dir", str(tmp_path), "--region", "us-east-1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            client.publish.print_deployment_urls.call_args.kwargs["template_url"] == ""
+        )
+
+    def test_a_failed_build_exits_one_and_prints_the_error(self, runner, tmp_path):
+        client = MagicMock()
+        client.publish.build.return_value = _publish_result(
+            success=False, error="ruff found 3 problems"
+        )
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["publish", "--source-dir", str(tmp_path), "--region", "us-east-1"],
+            )
+
+        assert result.exit_code == 1
+        assert "Publish failed: ruff found 3 problems" in result.output
+        client.publish.print_deployment_urls.assert_not_called()
+
+    def test_an_exception_during_build_exits_one_and_prints_the_error(
+        self, runner, tmp_path
+    ):
+        client = MagicMock()
+        client.publish.build.side_effect = RuntimeError("docker daemon not running")
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["publish", "--source-dir", str(tmp_path), "--region", "us-east-1"],
+            )
+
+        assert result.exit_code == 1
+        assert "docker daemon not running" in result.output
+
+
+class TestChatCommandForwarding:
+    """`idp-cli chat` forwards four options to `idp_cli.chat.run_chat` and nothing else."""
+
+    def test_the_four_options_are_forwarded_by_keyword(self, runner):
+        with patch("idp_cli.chat.run_chat") as run_chat:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "chat",
+                    "--stack-name",
+                    "IDP",
+                    "--region",
+                    "us-west-2",
+                    "--prompt",
+                    "how many documents?",
+                    "--enable-code-intelligence",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        run_chat.assert_called_once_with(
+            stack_name="IDP",
+            region="us-west-2",
+            prompt="how many documents?",
+            enable_code_intelligence=True,
+        )
+
+    def test_the_defaults_are_forwarded_as_none_and_false(self, runner):
+        """
+        `--region` and `--prompt` default to `None` and the flag to `False`.
+
+        `prompt=None` is what selects the interactive REPL over single-shot mode, so
+        a default that arrived as `""` instead would silently run one empty turn and
+        exit.
+        """
+        with patch("idp_cli.chat.run_chat") as run_chat:
+            result = runner.invoke(cli_module.cli, ["chat", "--stack-name", "IDP"])
+
+        assert result.exit_code == 0, result.output
+        run_chat.assert_called_once_with(
+            stack_name="IDP",
+            region=None,
+            prompt=None,
+            enable_code_intelligence=False,
+        )
+
+    def test_stack_name_is_required(self, runner):
+        result = runner.invoke(cli_module.cli, ["chat"])
+        assert result.exit_code != 0
+        assert "--stack-name" in result.output
+
+    def test_the_missing_dependency_remedy_keeps_the_agents_extra(self, runner):
+        """The printed remedy has to be the command that fixes the problem.
+
+        `chat` guards its import of the optional agents dependency tree and prints a
+        remedy, and that remedy goes through Rich's console markup. Written as a bare
+        `[agents]`, Rich reads it as a style tag, fails to resolve it as a style and
+        drops it silently, so the user was told:
+
+            Chat requires idp_common to be installed.
+              Run: pip install -e 'lib/idp_common_pkg'
+
+        — which fixes nothing. `idp_common` is already installed in the situation
+        that produces this message; the missing piece is the extra. The user runs the
+        suggested command, watches it succeed, retries `idp-cli chat` and gets the
+        identical error.
+
+        Asserted on the *rendered* output rather than on the source string, because
+        the defect was entirely in the rendering: the source said `[agents]` and the
+        terminal did not.
+
+        Forced by putting `None` at `sys.modules["idp_cli.chat"]`, which the import
+        system treats as "this module is known to be unimportable" and turns into an
+        `ImportError` at the `from .chat import run_chat` statement.
+        """
+        import sys
+
+        with patch.dict(sys.modules, {"idp_cli.chat": None}):
+            result = runner.invoke(cli_module.cli, ["chat", "--stack-name", "IDP"])
+
+        assert result.exit_code == 1
+        assert "Chat requires idp_common[agents] to be installed." in result.output
+        assert "Run: pip install -e 'lib/idp_common_pkg[agents]'" in result.output
+        # No stray backslash reached the terminal: the escape is for Rich's parser,
+        # not something the user should read.
+        assert "\\[agents]" not in result.output
+
+
+def _rich_reads_as_a_style(content: str) -> bool:
+    """Would Rich resolve `[<content>]` as a style tag rather than drop it?
+
+    Asked of Rich itself rather than of a list of style names, because a list is the
+    thing that goes stale. A closing tag (`[/red]`, `[/]`) is a tag whatever follows
+    the slash.
+
+    ⚠️ `Style.parse` is **stricter** than what the renderer accepts, in two ways, and
+    the direction is what makes it safe to use here. The renderer resolves a tag
+    through `Console.get_style`, which also consults the active theme, so
+    `[bar.back]` and `[repr.number]` parse as nothing here while rendering fine; and
+    Rich only treats `[...]` as a tag at all when it begins with `[a-z#/@]`, so
+    `[Y/w/n]` and `[Document]` are never tags. Both errors are in the over-reporting
+    direction, which asks for an escape that was not needed — and an escape that was
+    not needed is harmless, because `\\[Y/w/n]` renders as `[Y/w/n]`. So this cannot
+    miss a genuine drop, which is the property the scan needs.
+    """
+    from rich.style import Style
+
+    bare = content.lstrip("/")
+    if not bare:
+        return True
+    try:
+        Style.parse(bare)
+    except Exception:
+        return False
+    return True
+
+
+#: The names this package renders Rich markup through. `progress` is a
+#: `rich.progress.Progress`, whose `print` goes through the same markup parser as a
+#: `Console`'s; scoping the scan to names ending in "console" left its ten call sites
+#: unread, and one of them was dropping a pip extra. Asserted to be the complete set
+#: by `test_the_scan_covers_every_name_this_package_prints_rich_markup_through`, so a
+#: new printer cannot be introduced with its call sites silently unscanned.
+_RICH_PRINTER_NAMES = frozenset({"console", "err_console", "progress"})
+
+
+def _rich_print_receivers():
+    """Every name in the package that `.print(...)` is called on, with a count."""
+    import ast
+    import collections
+    import pathlib
+
+    package = pathlib.Path(cli_module.__file__).parent
+    receivers = collections.Counter()
+    for source in sorted(package.glob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "print"
+                and isinstance(node.func.value, ast.Name)
+            ):
+                receivers[node.func.value.id] += 1
+    return receivers
+
+
+def _square_bracket_text_rich_would_drop():
+    """Every `[...]` in a Rich-printed literal that Rich silently removes.
+
+    Yields `"<file>:<line>: [<content>]"`. Rich's markup parser treats any
+    `[...]` as a tag; one it cannot resolve as a style is dropped with no error
+    and no warning, so the text inside it never reaches the terminal and the only
+    way to notice is to read the output and miss it.
+
+    Scoped to **string literals** passed to one of `_RICH_PRINTER_NAMES`. Two
+    boundaries follow from that, both deliberate and neither implied away by a green
+    run:
+
+    * A docstring is not in the set — click renders a command's help with its own
+      formatter, so `[multi_document_discovery]` in `discover-multidoc`'s help is
+      correct as written and escaping it there would print a backslash — and neither
+      is `_SETUP_HELP`, which goes to a plain `print()`. Both are excluded by where
+      they are rather than by being named.
+    * **A string that arrives as a variable is invisible here**, because there is no
+      literal to read. `idp_common.synthesis.engine.INSTALL_HINT` is exactly that
+      case: it names the `[synthesis-generator]` extra, reaches a `progress.print`
+      from another package, and no AST scan of this package can see inside it. It is
+      escaped at its call site and covered by a test that renders the real constant,
+      which is the only thing that works for this shape.
+    """
+    import ast
+    import pathlib
+    import re
+
+    package = pathlib.Path(cli_module.__file__).parent
+    sources = sorted(package.glob("*.py"))
+    assert sources, "found no modules to scan, so this check asserts nothing"
+
+    # Not preceded by a backslash: that is how the escaped form appears in the
+    # runtime string the AST gives us, and it is the form Rich keeps.
+    bracketed = re.compile(r"(?<!\\)\[([^\[\]]*)\]")
+
+    for source in sources:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "print"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in _RICH_PRINTER_NAMES
+            ):
+                continue
+            for arg in node.args:
+                literals = []
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    literals.append(arg.value)
+                elif isinstance(arg, ast.JoinedStr):
+                    literals.extend(
+                        part.value
+                        for part in arg.values
+                        if isinstance(part, ast.Constant)
+                        and isinstance(part.value, str)
+                    )
+                for text in literals:
+                    for content in bracketed.findall(text):
+                        if not _rich_reads_as_a_style(content):
+                            yield f"{source.name}:{node.lineno}: [{content}]"
+
+
+def test_the_bracket_scan_finds_an_unescaped_tag_when_there_is_one():
+    """The scan is not vacuous: given a real offender, it reports it.
+
+    Measured by asking the discriminator about the three contents that were
+    unescaped in this package -- a pip extra, a profile-name placeholder and a
+    prompt's answer hint -- rather than by asserting the scan currently finds
+    nothing, which is what a clean tree makes it do and which a broken scan would
+    also do.
+    """
+    assert not _rich_reads_as_a_style("agents")
+    assert not _rich_reads_as_a_style("system default")
+    assert not _rich_reads_as_a_style("y/N")
+    # And the discriminator still recognises the styles this package really uses,
+    # or the scan would report every coloured line in the file.
+    for style in ("red", "bold green", "dim", "/yellow", "/"):
+        assert _rich_reads_as_a_style(style), style
+
+
+def test_the_scan_covers_every_name_this_package_prints_rich_markup_through():
+    """`_RICH_PRINTER_NAMES` is the complete set, derived and compared.
+
+    The scan started out matching names ending in "console", which read 813 call
+    sites and left the 10 on `progress` — a `rich.progress.Progress`, whose `print`
+    goes through the same markup parser — entirely unscanned. One of those was
+    dropping a pip extra. A new printer introduced under a third name would recreate
+    that gap silently, so the set is checked against the tree rather than trusted.
+    """
+    receivers = _rich_print_receivers()
+
+    assert receivers, "found no `.print(...)` calls at all, so the scan reads nothing"
+    assert set(receivers) == _RICH_PRINTER_NAMES, (
+        "a name is printed through that the markup scan does not cover (or a covered "
+        f"name has gone): found {dict(receivers)}, covering {sorted(_RICH_PRINTER_NAMES)}"
+    )
+
+
+def test_no_rich_print_drops_text_through_markup():
+    """No `[...]` in a printed message is silently removed by Rich.
+
+    The class behind the `chat` remedy above, and not only that instance: the same
+    mistake was dropping the profile name from `config-upload`'s "this will update
+    the default [system default] config profile" warning and the `[y/N]` hint from
+    the test-set overwrite prompt, leaving a question with no answers offered.
+    """
+    offenders = sorted(_square_bracket_text_rich_would_drop())
+
+    assert not offenders, (
+        "Rich reads each of these as a style tag, cannot resolve it, and drops it "
+        "along with the text inside -- so the message reaching the terminal is "
+        "missing exactly the part that was put in brackets to stand out. Escape the "
+        f"opening bracket (`\\\\[...]`): {offenders}"
+    )
+
+
+def _rich_printed_install_hint_interpolations():
+    """Every Rich-printed f-string interpolating an `INSTALL_HINT`, and whether it escapes.
+
+    Yields `(location, escaped)`. This is the shape the literal scan above cannot
+    reach: the bracketed text lives in a constant in **another package**, so there is
+    no literal in this tree to read. What *is* readable here is the call site — the
+    expression the f-string interpolates — and whether `escape(...)` wraps it. So the
+    rule is stated over call sites rather than over content.
+    """
+    import ast
+    import pathlib
+
+    package = pathlib.Path(cli_module.__file__).parent
+
+    def escapes(node) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "escape"
+        )
+
+    def mentions_install_hint(node) -> bool:
+        return any(
+            isinstance(inner, ast.Attribute) and inner.attr.endswith("INSTALL_HINT")
+            for inner in ast.walk(node)
+        )
+
+    for source in sorted(package.glob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "print"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in _RICH_PRINTER_NAMES
+            ):
+                continue
+            for arg in node.args:
+                if not isinstance(arg, ast.JoinedStr):
+                    continue
+                for part in arg.values:
+                    if not isinstance(part, ast.FormattedValue):
+                        continue
+                    if not mentions_install_hint(part.value):
+                        continue
+                    yield (
+                        f"{source.name}:{node.lineno}",
+                        escapes(part.value),
+                    )
+
+
+def test_a_rich_printed_install_hint_is_escaped_at_its_call_site():
+    """`bootstrap` prints an install hint that names a pip extra, from elsewhere.
+
+    `idp_common.synthesis.engine.INSTALL_HINT` names `[synthesis-generator]`, and
+    unescaped Rich dropped it — telling the user to `pip install idp_common`, which
+    is already installed: the identical failure to the `[agents]` one above. It is
+    escaped at the call site rather than in the constant, because the constant is
+    shared with consumers that do not render through Rich (the bootstrap module and
+    the capability field), for which a backslash would be wrong.
+
+    Asserted over the **call site**, because that is what is readable from this
+    package — a test that rendered the constant through `escape` itself would pass
+    with the call site unescaped, which is a test about `rich.markup.escape` rather
+    than about this code. Both halves are asserted: the constant really does carry
+    the extra, and Rich really does drop it unescaped, so neither the rule nor its
+    motivation rests on being read.
+    """
+    from rich.console import Console
+
+    from idp_common.synthesis import engine
+
+    assert "[synthesis-generator]" in engine.INSTALL_HINT, (
+        "the constant no longer names a pip extra, so the rule below is about nothing"
+    )
+
+    console = Console(force_terminal=False, width=400)
+    with console.capture() as unescaped:
+        console.print(f"[yellow]{engine.INSTALL_HINT}[/yellow]")
+    assert "[synthesis-generator]" not in unescaped.get(), (
+        "Rich no longer drops this, so the escape may no longer be needed"
+    )
+
+    interpolations = list(_rich_printed_install_hint_interpolations())
+
+    assert interpolations, (
+        "found no Rich-printed install hint at all, so this test asserts nothing"
+    )
+    unprotected = [where for where, escaped in interpolations if not escaped]
+    assert not unprotected, (
+        "an install hint naming a pip extra is interpolated into Rich markup without "
+        "`escape(...)`, so the extra is dropped and the remedy printed installs a "
+        f"package that is already installed: {unprotected}"
+    )
+
+
+class TestBootstrapLocalMode:
+    """Without `--stack-name`, bootstrap authors a schema, prints it, and saves nothing."""
+
+    def test_the_schema_goes_to_stdout_as_parseable_json(self, runner):
+        """
+        This is the assertion the stdout/stderr split exists for.
+
+        `idp-cli bootstrap -p "..." > schema.json` has to yield a file
+        `json.load` accepts, which means not one progress line may reach stdout.
+        Parsing `result.stdout` is what proves that; `result.output` combines both
+        streams and would pass with the header lines interleaved.
+        """
+        schema = {"$id": "invoice", "properties": {"total": {"type": "number"}}}
+        with (
+            patch(
+                "idp_common.synthesis.bootstrap.resolve_schema",
+                return_value=(schema, "catalog", "invoice-template"),
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+        ):
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout) == schema
+
+    def test_progress_and_the_catalog_match_go_to_stderr(self, runner):
+        schema = {"$id": "invoice"}
+        with (
+            patch(
+                "idp_common.synthesis.bootstrap.resolve_schema",
+                return_value=(schema, "catalog", "invoice-template"),
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+        ):
+            result = runner.invoke(cli_module.cli, ["bootstrap", "-p", "an invoice"])
+
+        assert result.exit_code == 0, result.output
+        combined = result.output
+        assert "Local mode — schema will not be saved" in combined
+        assert "Schema authored (tier: catalog)" in combined
+        assert "Catalog match: invoice-template" in combined
+        # None of those lines may be on stdout, which carries only the payload.
+        assert "Local mode" not in result.stdout
+        assert "Catalog match" not in result.stdout
+
+    def test_an_unavailable_generator_is_reported_but_does_not_stop_local_mode(
+        self, runner
+    ):
+        """
+        Local mode never generates documents, so an unavailable generator is a note
+        rather than a failure. A refusal here would make `bootstrap` unusable for
+        exactly the case it is most useful for: seeing the schema before installing
+        the heavy optional dependency.
+        """
+        with (
+            patch(
+                "idp_common.synthesis.bootstrap.resolve_schema",
+                return_value=({"$id": "x"}, "llm", None),
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(False, "pdf2image missing"),
+            ),
+        ):
+            result = runner.invoke(cli_module.cli, ["bootstrap", "-p", "a form"])
+
+        assert result.exit_code == 0, result.output
+        assert "document generator unavailable (pdf2image missing)" in result.output
+        assert json.loads(result.stdout) == {"$id": "x"}
+
+    def test_a_schema_that_could_not_be_authored_exits_one(self, runner):
+        with (
+            patch(
+                "idp_common.synthesis.bootstrap.resolve_schema",
+                return_value=(None, "none", None),
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+        ):
+            result = runner.invoke(cli_module.cli, ["bootstrap", "-p", "???"])
+
+        assert result.exit_code == 1
+        assert "Failed to author a schema" in result.output
+        assert result.stdout.strip() == ""
+
+    def test_the_status_callback_renders_a_percentage_and_a_message(self, runner):
+        """
+        The nested `_status(pct, msg)` callback formats as `[ 42%] message` with the
+        percentage right-aligned in three columns. It is the only progress a long
+        authoring run shows, so a callback that raised on a float — `:3.0f` on a
+        string, say — would turn a slow success into a traceback.
+        """
+        captured = []
+
+        def fake_resolve(request, status_cb=None):
+            captured.append(status_cb)
+            status_cb(42.4, "Searching catalog")
+            status_cb(100.0, "Done")
+            return {"$id": "x"}, "catalog", None
+
+        with (
+            patch(
+                "idp_common.synthesis.bootstrap.resolve_schema",
+                side_effect=fake_resolve,
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+        ):
+            result = runner.invoke(cli_module.cli, ["bootstrap", "-p", "a form"])
+
+        assert result.exit_code == 0, result.output
+        assert captured and captured[0] is not None
+        assert "[ 42%] Searching catalog" in result.output
+        assert "[100%] Done" in result.output
+
+    def test_the_request_carries_every_option(self, runner):
+        """
+        `BootstrapRequest` is the single object every option lands in, so one wrong
+        field name here is an option that silently does nothing. Repeatable
+        `--field-hint` must accumulate into a list, and both spellings of the
+        profile options (`--config-profile`/`--config-version`) must reach the same
+        field.
+        """
+        seen = {}
+
+        def fake_resolve(request, status_cb=None):
+            seen["request"] = request
+            return {"$id": "x"}, "catalog", None
+
+        with (
+            patch(
+                "idp_common.synthesis.bootstrap.resolve_schema",
+                side_effect=fake_resolve,
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+        ):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "bootstrap",
+                    "-p",
+                    "a bank statement",
+                    "--class-name",
+                    "BankStatement",
+                    "--field-hint",
+                    "AccountNumber",
+                    "--field-hint",
+                    "ClosingBalance",
+                    "--config-version",
+                    "src-profile",
+                    "--target-profile",
+                    "new-profile",
+                    "--count",
+                    "7",
+                    "--threshold",
+                    "9",
+                    "--augment",
+                    "--model-id",
+                    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        request = seen["request"]
+        assert request.prompt == "a bank statement"
+        assert request.class_name == "BankStatement"
+        assert request.field_hints == ["AccountNumber", "ClosingBalance"]
+        assert request.config_version == "src-profile"
+        assert request.target_version == "new-profile"
+        assert request.doc_count == 7
+        assert request.quality_threshold == 9
+        assert request.augment is True
+        assert request.model_id == "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+    def test_prompt_is_required(self, runner):
+        result = runner.invoke(cli_module.cli, ["bootstrap"])
+        assert result.exit_code != 0
+        assert "--prompt" in result.output
+
+
+class TestBootstrapStackMode:
+    """With `--stack-name`, bootstrap writes a config profile and maybe a test set."""
+
+    def _patched(self, run_bootstrap_result, *, config_table="IDP-Configuration"):
+        client = MagicMock()
+        client.discovery._get_config_table.return_value = config_table
+        return (
+            patch("idp_sdk.IDPClient", return_value=client),
+            patch(
+                "idp_common.synthesis.bootstrap.run_bootstrap",
+                return_value=run_bootstrap_result,
+            ),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+            patch("idp_common.config.configuration_manager.ConfigurationManager"),
+            client,
+        )
+
+    def _result(self, **overrides):
+        from idp_common.synthesis.bootstrap import BootstrapResult
+
+        fields = {
+            "success": True,
+            "config_version": "bootstrap-invoice",
+            "resolution_tier": "catalog",
+            "generator_available": True,
+        }
+        fields.update(overrides)
+        return BootstrapResult(**fields)
+
+    def test_a_successful_run_reports_the_profile_the_test_set_and_the_tier(
+        self, runner
+    ):
+        p_client, p_run, p_gen, p_cfg, client = self._patched(
+            self._result(
+                catalog_match="invoice-template",
+                test_set_id="ts-123",
+                docs_generated=3,
+            )
+        )
+        with p_client, p_run, p_gen, p_cfg:
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Config profile: bootstrap-invoice" in result.output
+        assert "Resolution tier: catalog" in result.output
+        assert "Catalog match: invoice-template" in result.output
+        assert "Test set: ts-123 (3 doc(s))" in result.output
+
+    def test_the_configuration_table_is_resolved_and_exported_for_the_manager(
+        self, runner, monkeypatch
+    ):
+        """
+        The table name is resolved through the SDK and exported as
+        `CONFIGURATION_TABLE_NAME`, because `ConfigurationManager` reads it from the
+        environment. Both halves are asserted: the lookup uses the stack the user
+        named, and the manager is constructed for the same region the lookup used —
+        a manager built in a different region reads a table that does not exist
+        there, which surfaces as an empty configuration rather than an error.
+        """
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
+        p_client, p_run, p_gen, p_cfg, client = self._patched(
+            self._result(), config_table="IDP-Config-abc123"
+        )
+        with p_client, p_run, p_gen, p_cfg as manager:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "bootstrap",
+                    "-p",
+                    "an invoice",
+                    "--stack-name",
+                    "IDP",
+                    "--region",
+                    "eu-central-1",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        client.discovery._get_config_table.assert_called_once_with("IDP")
+        import os
+
+        assert os.environ["CONFIGURATION_TABLE_NAME"] == "IDP-Config-abc123"
+        manager.assert_called_once_with(region="eu-central-1")
+
+    def test_the_test_set_bucket_comes_from_the_environment(self, runner, monkeypatch):
+        monkeypatch.setenv("TEST_SET_BUCKET", "my-test-sets")
+        p_client, p_run, p_gen, p_cfg, client = self._patched(self._result())
+        with p_client, p_run as run_bootstrap, p_gen, p_cfg:
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert run_bootstrap.call_args.kwargs["test_set_bucket"] == "my-test-sets"
+
+    def test_an_unavailable_generator_explains_the_skipped_test_set(self, runner):
+        p_client, p_run, p_gen, p_cfg, client = self._patched(
+            self._result(test_set_id=None, generator_available=False)
+        )
+        with p_client, p_run, p_gen, p_cfg:
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Test set skipped (generator unavailable)" in result.output
+        assert "Config is ready" in result.output
+
+    def test_a_non_fatal_note_is_reported_alongside_success(self, runner):
+        """
+        `BootstrapResult` can carry both `success=True` and an `error` string — a
+        partial run where the config landed but something secondary did not. The
+        command reports it as a note and still exits 0, which is the right answer
+        and the surprising one, so it is pinned.
+        """
+        p_client, p_run, p_gen, p_cfg, client = self._patched(
+            self._result(error="test set upload was truncated")
+        )
+        with p_client, p_run, p_gen, p_cfg:
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Note: test set upload was truncated" in result.output
+
+    def test_a_failed_run_exits_one(self, runner):
+        p_client, p_run, p_gen, p_cfg, client = self._patched(
+            self._result(success=False, error="no catalog match and authoring failed")
+        )
+        with p_client, p_run, p_gen, p_cfg:
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 1
+        assert (
+            "Bootstrap failed: no catalog match and authoring failed" in result.output
+        )
+
+    def test_an_exception_exits_one_with_the_message(self, runner):
+        client = MagicMock()
+        client.discovery._get_config_table.side_effect = RuntimeError(
+            "stack IDP not found"
+        )
+        with (
+            patch("idp_sdk.IDPClient", return_value=client),
+            patch(
+                "idp_common.synthesis.engine.generator_available",
+                return_value=(True, ""),
+            ),
+        ):
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 1
+        assert "stack IDP not found" in result.output
+
+    def test_stack_mode_keeps_progress_lines_on_stdout(self, runner):
+        """
+        The mirror of the local-mode test. With `--stack-name` nothing
+        machine-readable is written, so the progress lines stay on stdout; the two
+        modes choosing different streams is the behaviour, and a test that only
+        read the combined output could not distinguish them.
+        """
+        p_client, p_run, p_gen, p_cfg, client = self._patched(self._result())
+        with p_client, p_run, p_gen, p_cfg:
+            result = runner.invoke(
+                cli_module.cli,
+                ["bootstrap", "-p", "an invoice", "--stack-name", "IDP"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "IDP Config Bootstrap" in result.stdout
+        assert "Stack: IDP" in result.stdout

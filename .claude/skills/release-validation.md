@@ -1,15 +1,30 @@
 # Release Validation — the whole battery for a published release, in one request
 
 Use this skill when the user says something like **"validate the 0.6.8 release"**,
-"run the full release validation", "run everything against the release — functional,
-upgrade, govcloud, headless, benchmarks, security", or "is the release good?". It is
-the umbrella over every per-tier skill in this directory: it fixes the tier list, the
-order, the stacks, the three documents that come out, and the PRs that carry them.
+"run the full release validation", "run all the release regression, security and
+benchmark tests", "run everything against the release — functional, upgrade, govcloud,
+headless, benchmarks, security", or "is the release good?". It is the umbrella over
+every per-tier skill in this directory: it fixes the tier list, the order, the stacks,
+the four deliverables that come out, and the PRs that carry them.
 
-The user gives one sentence. You run every tier below, write the three records, open
+The user gives one sentence. You run every tier below, write the four deliverables, open
 the PRs, and report back in the shape under **Reporting**. Do not ask which tiers to
 run — the tier list is the deliverable. Ask only for the two things you genuinely
 cannot infer (see **Inputs**), and only if they are not already in the request.
+
+**The eight tiers, and what each is the only source of.** A release is validated when
+all eight have a row in the record — including any that could not run, with the reason.
+
+| | Tier | The only thing it proves |
+|---|---|---|
+| A | Offline gates — SRT, `make test`, lint, typecheck, dep-audit, build, **coverage** | the tree is self-consistent and packages cleanly |
+| B | Security — SRT + RBAC static + RBAC dynamic + ZAP, curated | authorization and the deployed API surface |
+| C | Deploy variants — hosting global/private, WAF, Jobs API, seller | the template deploys in each shipped configuration |
+| D | Template transforms — `--headless`, `--govcloud` | the *transformed* templates deploy and process a document |
+| E | In-place upgrade `PREV → VERSION` | the customer upgrade path, and what it changed in extracted values |
+| F | Benchmarks — release A/B, then the guidance refresh | whether this release regressed, and what a customer should configure |
+| G | Browser UX review | whether a person can complete the web-UI flows |
+| H | Library integration tests | `idp_common` against real AWS rather than `moto` |
 
 > **What "validated" means here.** `docs/release-validation/README.md` defines the
 > tier list and the record format; `docs/release-validation/v0.6.6.md` is the worked
@@ -73,6 +88,15 @@ are all decided below.
    and tears down roughly eight stacks and took **most of a working day** for
    v0.6.6 and about seven hours for v0.6.8, with real Bedrock/Textract spend on the
    benchmark side (corefast is 19 cells × 3 repeats × 3 docs per side, ~$32 a side).
+   Tiers A–E and G fit in that first day; **tier F2/F3 is a second day on its own** —
+   3,455 runs and $2,114 at v0.6.8 — so give the run count and rough cost from
+   `run_matrix.py --estimate` over every planned suite before launching any of it, and
+   name what you would cut first if the answer is too expensive.
+7. **Confirm the release is not about to be superseded.** Check open PRs for a fix
+   against the artifact under test (`gh pr list --search "is:open label:bug"`, and read
+   the `[Unreleased]` CHANGELOG section). A defect serious enough to warrant a patch
+   release makes the expensive half of tier F throwaway work — better to know before
+   spending two days than after. See the warning under **Outputs**.
 
 ## The tiers
 
@@ -91,9 +115,28 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |
 | Build + package | `publish.py … --clean-build` in a **clean env** (`env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin AWS_PROFILE=default bash -lc '…'`) | template validation + cfn-lint clean on all packaged templates | `full-test-battery.md` |
+| **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every one of the **9** measurable trees measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
 
 The build is needed anyway: the transform tiers publish from source, and the
 self-deploy stack-tests take its `idp-main.yaml` URL as `TEMPLATE_URL`.
+
+⚠️ **Measure coverage, do not report `make coverage-summary`.** That target prints the
+figures recorded in `scripts/coverage_debt.json`, which is a **ratchet baseline** — a
+floor written when the debt was last paid down, not a measurement of the release in
+front of you. `make coverage-all` is what measures all nine trees;
+`make coverage-table COVERAGE_ARGS=--tree=NAME` prints one tree from the last run
+without re-measuring. Quoting the recorded number as the release's coverage is the same
+class of error as quoting `filesAnalyzed` from memory, and it cannot fail visibly —
+the baseline is always self-consistent.
+
+The coverage subsystem is newer than most of this battery (`#1160`, 2026-09-22, in the
+0.6.10 cycle) and it carries no `CHANGELOG` entry, so it is easy to miss that it exists
+at all: nine trees, a per-file ratchet with a 1% tolerance, and
+`make check-coverage-debt` failing when a file loses coverage or a new module arrives
+unratcheted. `make test` does **not** produce a coverage report, so without this row a
+release ships with no coverage figure measured at all — which is what happened up to
+and including v0.6.10, where `idp_sdk` sat at a recorded **36.61% over 51 files**, the
+lowest of the nine and the one worth watching in the record.
 
 ### B. Security (against a live stack at `v<VERSION>`)
 
@@ -127,20 +170,16 @@ make stacktest-seller                                    # REGION deliberately U
   `execute-api` interface endpoint. Discover it with the `describe-*` calls in
   `run-stack-tests.md` and **state in the record which VPC was used** (redacted).
   Only if that VPC is missing do you stop and ask; never create one unasked.
-- **Seller: leave `REGION` unset (us-east-1).** `tests/stacktest.sh` still does not
-  forward `--region` to `dynamic_activation_test.py` (open since v0.6.6); in any
-  other region three refusal assertions pass **vacuously** on API Gateway's SigV4
-  403. A us-east-1 run is a real pass. If it has been fixed when you read this,
-  say so in the record and delete this bullet.
-- **Seller: delete the leftover log group first, and again after.** Every run leaves
-  `/aws/apigateway/idp-seller-entitlement-citest-activation` behind — the template
-  does **not** retain it, so it is most likely re-created by API Gateway's buffered
-  access-log delivery after the stage is gone, and the teardown script does not
-  sweep it — and CloudFormation's
-  `AWS::EarlyValidation::ResourceExistenceCheck` then fails the *next* run at
-  changeset creation. `aws logs delete-log-group --region us-east-1 --log-group-name
-  /aws/apigateway/idp-seller-entitlement-citest-activation` before you run, and in
-  cleanup. Open since v0.6.8.
+- **Seller: `REGION` is still left unset, but no longer to dodge a bug.** `stacktest.sh`
+  now forwards `--region` to `dynamic_activation_test.py`, with a comment naming the
+  hazard, so the three refusal assertions can no longer pass **vacuously** on API
+  Gateway's own SigV4 403 outside `us-east-1`; and teardown now sweeps
+  `/aws/apigateway/idp-seller-entitlement-citest-activation` itself, so the pre-run and
+  post-run manual deletes are gone. Both were open through v0.6.9 and both were verified
+  fixed at v0.6.10. `us-east-1` remains the default because that is where the synthetic
+  product registry lives. What the tier still does **not** cover: the positive path — a
+  token issued and verified — needs `--entitled-profile`, and teardown leaves a KMS key
+  pending deletion on a 7-day window that keeps billing.
 - **Concurrency.** At most **two** stack deploys in flight at once, and never more
   than the IAM role headroom allows (preflight step 5). Six at once is what burst
   the account's control planes (Logs create-consistency, CodeBuild role-trust
@@ -300,10 +339,82 @@ record and keep the video for the team channel.
 
 Skill: `ux-test.md`.
 
-## Ordering that fits in a day
+### H. Library integration tests (against the reference stack)
+
+The suites marked `@pytest.mark.integration` are excluded from `make test` and from
+GitHub CI, and GitLab runs them in a job of its own with AWS credentials
+(`integration_tests`). So a release validated with tier A alone has **never run them
+against the artifact under test** — they are the only tier that exercises
+`idp_common` against real Bedrock, Textract, S3 and DynamoDB rather than `moto`.
+
+```bash
+cd lib/idp_common_pkg && make test-integration      # needs AWS; point it at the reference stack's region
+cd lib/idp_cli_pkg   && python -m pytest -v -m integration
+```
+
+Run them on the same account and region as the reference stack, after tier E so the
+stack is at `v<VERSION>`. Record the count and every failure. Two things to get right:
+
+- **Pin `PYTHONPATH` to this checkout** (`make` does it via `PYTHONHERMETIC`; a bare
+  `pytest` does not) or the run measures whichever tree `site-packages` points at. See
+  the note under *A run measures the checkout you started it from* in `CLAUDE.md`.
+- A test that **skips for a missing resource is not a pass.** Count skips separately
+  and say what was skipped; an integration suite that silently degrades to zero
+  executed assertions is the failure mode this tier exists to avoid.
+
+Skill: `testing-qa.md` for the markers and fixtures.
+
+## Operating a multi-hour run — what actually goes wrong
+
+The tiers above are the easy part. A full battery is **two days of wall clock** with
+hundreds of AWS-bound runs in flight, and every serious problem in the last two passes
+was in *running* it, not in the tests. Five rules, each of which cost a pass to learn.
+
+1. **Assume the host will restart, and make progress resumable.** A 0.6.10 pass lost
+   **11 hours** to a host patch reboot that killed six benchmark lanes mid-suite; the
+   session's scheduled wake-ups died with them, so nothing reported the loss. Keep a
+   state file naming every suite and its planned run count, and on every check compare
+   **launched against planned** per suite — `runmap.json` records `suite`, `overrides`
+   and the launched list, so a killed lane is detectable from the tree alone. A lane
+   that died looks exactly like a lane that is merely slow if you only watch for
+   errors.
+2. **Never score while anything is still running.** `aggregate.py` happily scores a
+   partial run and writes a summary that looks complete. One premature `score_all`
+   left seven grids on disk with 117 of 133 rows and no marker saying so. Score after
+   the last lane exits, and re-score everything at the end rather than trusting what is
+   already there.
+3. **Name lane logs by the axis, not the override value.** `coresynth` with
+   `extraction_model=sonnet5`, `classification_model=sonnet5` and
+   `confidence_model=sonnet5` are three different measurements whose value is the same
+   string; a log slug built from the value alone sends all three to one file and three
+   concurrent writers destroy it. Use the `<axis>-<value>` slug `make_configs.py`
+   already uses for its config files, which is also what `RETENTION.md` requires for
+   the scored directory.
+4. **Check `git rev-parse --abbrev-ref HEAD` before attributing any offline result,
+   and prefer a worktree.** Several assistant sessions may share this checkout; during
+   the 0.6.10 pass another session moved it onto a feature branch mid-run, so the tree
+   the gates had measured was no longer the tree on disk. Record the **commit** each
+   gate ran at, never "the current tree", and do the writing in
+   `git worktree add` so a PR cannot pick up another session's uncommitted work. Stage
+   named paths; never `git add -A` here.
+5. **Do a failure census before writing a single guidance number.** Count
+   non-`COMPLETED` rows across every scored set, then **attribute each group** before
+   drawing any conclusion. In the 0.6.10 pass the raw rate was 4.1%, of which nearly
+   half were a pre-existing study's sets where failure is the measured outcome, three
+   were `scaling`'s by-design simple-mode cliff, and the rest traced to one product
+   defect — three different meanings that a single percentage hides.
+
+**Long drivers go detached** (`setsid nohup … > scratch/<tier>.log 2>&1 &`) with
+`PYTHONUNBUFFERED=1`, because the tool kills background children under memory pressure
+and `run_stacktest.py`/`run_matrix.py` buffer stdout when redirected — the verdict
+appears only at exit. Track progress from CloudFormation and `runmap.json`, not the log.
+
+## Ordering across two days
 
 1. Preflight → `make srt-scan` → start `publish.py --clean-build` detached.
-2. While it builds: `make test`, `make lint-cicd`, `make dep-audit`, `make typecheck`.
+2. While it builds: `make test`, `make lint-cicd`, `make dep-audit`, `make typecheck`,
+   and `make coverage-all` + `make check-coverage-debt` (the coverage sweep measures
+   nine trees and is the slowest of the offline gates — start it early and leave it).
 3. Deploy the **upgrade** PREV stack (long) and the **transform headless** run, two in flight.
 4. When a `v<VERSION>` stack exists: `make security-results` against it, then the
    tier-G UX review on the same stack (it needs nothing else deployed, and the
@@ -320,17 +431,38 @@ Skill: `ux-test.md`.
    `aggregate.py` as each run ends (a run dir that already exists from a prerelease
    must be re-scored, not skipped), and pull the S3 outputs you cite before teardown.
    This is the long pole: budget **a second day** for it and say so up front.
-9. Aggregate, compare, figures; regenerate every `docs/benchmarking/` file (F4);
-   write the three records; sweep ENIs; tear down all but one reference stack at
-   `v<VERSION>` (say which one you left up and why).
+9. Tier H on the reference stack while F2/F3 runs — the integration suites are quick
+   and need the same stack, so they cost nothing extra in wall clock.
+10. Failure census (see **Operating a multi-hour run**, rule 5) — attribute every
+    non-`COMPLETED` row *before* any number from it reaches a document.
+11. Aggregate, compare, figures; regenerate every `docs/benchmarking/` file (F4);
+    write the four deliverables; sweep orphaned ENIs in the stack-test VPC; tear down
+    all but one reference stack at `v<VERSION>` (say which one you left up and why).
 
-## Outputs — three records, two PRs
+## Outputs — four deliverables, two PRs
 
-| Record | Path | Notes |
+| Deliverable | Path | Notes |
 |---|---|---|
-| Release validation record | `docs/release-validation/v<VERSION>.md` + a new row at the top of `docs/release-validation/README.md` | copy the previous record's structure: **Verdict → Results per tier group → Findings (ordered by how much they matter) → What was NOT validated → Reproduce** |
-| Security snapshot | `security/test-results/<VERSION>/` | produced by `make security-results`; eyeball redactions |
-| Benchmark audit **and** guidance refresh | `docs/benchmarking/releases/v<VERSION>.md` + README row (F1); `docs/benchmarking/config-guidance.md` re-headed to `v<VERSION>` with the model-selection section, `index.md` model table, and every other paper in the folder whose data was re-measured (F2–F4); `benchmarks/results/v<VERSION>/<suite>/…` for every suite run; `baseline.json`; cited images | see tier F. A PR that carries only the A/B entry is an incomplete tier F and the record must say so |
+| Release validation record | `docs/release-validation/v<VERSION>.md` + a new row at the top of `docs/release-validation/README.md` | copy the previous record's structure: **Verdict → Results per tier group → Findings (ordered by how much they matter) → What was NOT validated → Reproduce**. Every tier A–H gets a row, including the ones that were NOT RUN, with the reason |
+| Security results | `security/test-results/<VERSION>/` | produced by `make security-results`; eyeball redactions. Compare all four gate values against `<PREV>`'s snapshot — movement in either direction is a finding |
+| **Test coverage report** | the *Test coverage* section of the validation record, plus `scripts/coverage_debt.json` if the ratchet moved | the measured per-tree table (tree · files · coverage), its **delta against PREV's record**, the lowest-covered tree named explicitly, and whether `make check-coverage-debt` passed. Measured with `make coverage-all` — never the recorded baseline |
+| Benchmark results **and** the config guide | `docs/benchmarking/releases/v<VERSION>.md` + README row (F1); `docs/benchmarking/config-guidance.md` re-headed to `v<VERSION>` with the model-selection section, `index.md` model table, and every other paper in the folder whose data was re-measured (F2–F4); `benchmarks/results/v<VERSION>/<suite>/…` for every suite run; `baseline.json`; cited images | see tier F. A PR that carries only the A/B entry is an incomplete tier F and the record must say so |
+
+**A tier with no deliverable row is a tier nobody will notice was skipped.** Coverage was
+absent from this list until v0.6.11 and so was never measured for any release, despite the
+subsystem existing and a ratchet gate being wired into both CIs.
+
+⚠️ **If the release is superseded mid-pass, write no records for it.** A published
+`idp-main_<VERSION>.yaml` is immutable — `docs/release-runbook.md`: "There is no
+'unpublish' … treat it as an immutable historical artifact". So a defect found during
+validation is fixed in a **patch release**, never by re-cutting the version under test,
+and the battery then re-runs against the new published artifact. When that happens, stop
+the expensive tiers immediately rather than finishing them: guidance measured on a build
+that is about to be superseded is superseded with it. Keep the measurements in gitignored
+`scratch/` with a carry-forward list, delete the untracked result and snapshot
+directories, and revert any `baseline.json` promotion — a promoted baseline whose release
+has no record leaves the next release's `--compare` diffing against a grid nothing
+documents.
 
 Redaction applies to the validation record too: account ids, VPC/subnet/SG/VPCE
 ids, API hostnames, pool ids, stack physical ids and local paths become
@@ -341,8 +473,8 @@ GitLab; push with `git push github <branch>` and verify the PR's `headRefOid`
 matches your commit, see the `idp1-remotes-origin-is-gitlab` memory). Two PRs,
 both targeting `develop`:
 
-1. `docs/release-validation-v<VERSION>` — the validation record, its README row,
-   and `security/test-results/<VERSION>/`.
+1. `docs/release-validation-v<VERSION>` — the validation record (including its test-coverage
+   and integration-test sections), its README row, and `security/test-results/<VERSION>/`.
 2. `docs/benchmark-v<VERSION>` — the release A/B entry and README row, the refreshed
    `config-guidance.md` and `index.md` (and any other regenerated paper), every
    `benchmarks/results/v<VERSION>/<suite>/` set, `baseline.json`, images.
@@ -376,6 +508,10 @@ context first, then the verdict, in prose, per the writing-style memory:
      their price on any profile — with the ratio, not just the sign;
    - which `docs/benchmarking/` files were regenerated and which still carry data
      from an earlier release, by name;
+   - **the measured per-tree coverage table and its movement from PREV**, naming any
+     tree that lost coverage even where the ratchet's tolerance absorbed it, and
+     naming the lowest-covered tree explicitly rather than reporting only an average
+     — nine trees averaged hides a tree in the thirties;
    - surprising **improvements** too — v0.6.6 found a defect open since v0.6.0 had
      quietly closed, which was the most useful line in that record.
 4. Findings in test/tooling code, marked as such, separately from product findings.
@@ -387,10 +523,18 @@ with the test extras, and never write "GovCloud works" from a commercial run.
 
 ## Standing issues to recognise, not rediscover (delete when fixed)
 
-- **Seller stack-test region** (2026-08-28, still open 2026-09-12): run with
-  `REGION` unset; see tier C.
-- **Seller stack-test leftover log group** (2026-09-12): delete
-  `/aws/apigateway/idp-seller-entitlement-citest-activation` before and after; see tier C.
+- **`make security-results` curates an SRT verdict its own gate disagrees with**
+  (2026-09-26, open). `make srt-scan` carries a scope decision: Bandit `B105`/`B106`
+  match an identifier's *name* against a password wordlist, and in test code that no
+  deployment artifact is built from they are reported at Bandit's own severity rather
+  than blocking. `scripts/security/curate_results.py` implements no equivalent, so the
+  **published** snapshot read `SRT — FAIL ❌ (5 open/reopened HIGH)` for a release whose
+  security gate was green, on the same `.srt/issues.json`. Check the open-HIGH list
+  against the scan's own "identifier-name findings in test code" block before believing
+  a red snapshot, and say in the record which of the two you are reporting.
+- **`make coverage-summary` is a baseline, not a measurement** (see tier A). It prints
+  `scripts/coverage_debt.json`, which is a ratchet floor and always self-consistent, so
+  quoting it as the release's coverage cannot fail visibly.
 - **`make srt-scan` without setup re-opens suppressed findings** (2026-09-12): always
   `CI=1 python scripts/srt/setup.py` first; see preflight step 3. Same gap inside
   `scripts/security/run_security_tests.sh`.

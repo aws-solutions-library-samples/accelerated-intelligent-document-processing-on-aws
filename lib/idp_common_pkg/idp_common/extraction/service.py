@@ -2346,22 +2346,81 @@ class ExtractionService:
         return sum(tb["rows"] for tb in tables if tb["cols"] == n_props)
 
     @staticmethod
+    def _declared_max_items(spec: Any) -> int | None:
+        """A usable ``maxItems`` on one array spec, as a row ceiling, or ``None``.
+
+        ``None`` means "this schema declares no bound I can read", and every value
+        this reader does not fully understand resolves to it. That direction is not
+        arbitrary: the ceiling is only ever used to SHRINK the OCR evidence
+        (``_expected_rows_for_width``), so misreading a value low silences the
+        shortfall check for a whole width group, while declining to read it leaves
+        the pre-existing behaviour exactly in place.
+
+        ``maxItems`` can arrive as a **string**: ``ConfigurationRecord._stringify_values``
+        stringifies every numeric scalar on the way into the Configuration table and
+        nothing converts ``classes`` back on read. That rule is not re-implemented
+        here — five separate copies of it had accumulated before #797, and
+        ``coerce_numeric_schema_keywords`` exists so there is one. It is applied to
+        the value on the way in, which also means an unreadable constraint is logged
+        rather than silently ignored (#823), and what is left for this method is the
+        question that is actually its own: is this number a usable row ceiling?
+
+        ``bool`` is refused before anything else, because ``True`` is an ``int`` in
+        Python and would read as a ceiling of 1 — silencing the check for the whole
+        width group. Everything else is decided by ``int()`` rather than by ``float()``:
+        a ``Decimal`` (the shape a DynamoDB number takes) and an integral float
+        (``15.0``) convert, a fractional one does not equal its truncation and is
+        refused, and a value ``int()`` cannot read at all resolves to ``None``.
+
+        The ``except`` is deliberately broad, and that breadth is the contract rather
+        than laziness. This method is called from ``_build_extraction_issues``, which
+        ``_save_results`` invokes with no enclosing ``try``, so an exception raised
+        over a schema constraint costs the section its entire processing-issue list —
+        precisely the #797 failure. Enumerating exception types is how that happens:
+        ``float()`` raises ``OverflowError`` (outside ``TypeError``/``ValueError``) on
+        an integer too large to convert, which the Web-UI round trip above can
+        produce, and an object with a raising ``__float__`` can raise anything at all.
+        A very large ceiling needs no special case either: it is above any OCR row
+        count, so ``min`` leaves the evidence untouched.
+        """
+        raw = spec.get("maxItems") if isinstance(spec, dict) else None
+        if raw is None or isinstance(raw, bool):
+            return None
+        raw = coerce_numeric_schema_keywords({"maxItems": raw}).get("maxItems")
+        try:
+            as_int = int(raw)  # type: ignore[call-overload]
+            exact = as_int == raw
+        except Exception:  # noqa: BLE001 - see the contract in the docstring
+            return None
+        return as_int if exact and as_int >= 0 else None
+
+    @classmethod
     def _object_list_targets(
-        schema: dict[str, Any], values: Any
-    ) -> list[tuple[str, int, list[Any]]]:
-        """``(label, item_property_count, rows)`` for every list of OBJECTS the
-        schema declares at the top level — ``items`` resolved through ``$ref``
+        cls, schema: dict[str, Any], values: Any
+    ) -> list[tuple[str, int, list[Any], int | None]]:
+        """``(label, item_property_count, rows, max_rows)`` for every list of OBJECTS
+        the schema declares at the top level — ``items`` resolved through ``$ref``
         (every shipped preset defines its rows in ``$defs``), descending one level
         into an array of instances (the multi-instance wrapper, or any list whose
         items carry their own lists) so the inner lists are compared as rows
         across all instances. A wrapper whose instances carry no lists is skipped
         — instances are documents, not table rows. Lists of scalars are not
         targets: their items are not table rows.
+
+        ``max_rows`` is the schema's declared ceiling on the row count this target
+        contributes, or ``None`` when it declares none (#1046, item 4). For a
+        top-level list that is its own ``maxItems``. For an inner list the compared
+        rows are the CONCATENATION over the outer list's instances, so a
+        per-instance ``maxItems`` is not a bound on them: the declared bound is the
+        product of the outer and inner ceilings, and is ``None`` unless both are
+        declared. Multiplying by the number of instances actually extracted would
+        instead shrink the evidence in proportion to how many instances extraction
+        lost, which is the case the check exists to catch.
         """
         from idp_common.config.schema_utils import deref_schema
 
         root = schema or {}
-        out: list[tuple[str, int, list[Any]]] = []
+        out: list[tuple[str, int, list[Any], int | None]] = []
         props = root.get("properties") or {}
 
         def _items_props(spec: dict[str, Any]) -> dict[str, Any] | None:
@@ -2380,26 +2439,32 @@ class ExtractionService:
                 continue  # scalars, or an untyped list
             rows = values.get(name) if isinstance(values, dict) else None
             rows = rows if isinstance(rows, list) else []
-            inner: dict[str, dict[str, Any]] = {}
+            outer_max = cls._declared_max_items(spec)
+            inner: dict[str, tuple[dict[str, Any], int | None]] = {}
             for k, v in iprops.items():
                 v = deref_schema(v, root) if isinstance(v, dict) else v
                 if isinstance(v, dict) and v.get("type") == "array":
                     ip = _items_props(v)
                     if ip:
-                        inner[k] = ip
+                        inner[k] = (ip, cls._declared_max_items(v))
             if inner:
-                for iname, ip in inner.items():
+                for iname, (ip, inner_max) in inner.items():
                     concat = [
                         r
                         for inst in rows
                         if isinstance(inst, dict) and isinstance(inst.get(iname), list)
                         for r in inst[iname]
                     ]
-                    out.append((f"{name}[].{iname}", len(ip), concat))
+                    bound = (
+                        None
+                        if outer_max is None or inner_max is None
+                        else outer_max * inner_max
+                    )
+                    out.append((f"{name}[].{iname}", len(ip), concat, bound))
             elif root.get(X_AWS_IDP_INSTANCE_ARRAY) == name:
                 continue  # bare multi-instance wrapper: instances are documents
             else:
-                out.append((name, len(iprops), rows))
+                out.append((name, len(iprops), rows, outer_max))
         return out
 
     def _simple_mode_input_preflight(
@@ -3718,20 +3783,41 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # judged as a GROUP: total rows extracted across the width vs total
             # matched OCR rows. Judging each against the shared sum warned on
             # every complete statement with sibling tables.
-            groups: dict[int, list[tuple[str, list[Any]]]] = {}
-            for label, n_props, rows in self._object_list_targets(
+            groups: dict[int, list[tuple[str, list[Any], int | None]]] = {}
+            for label, n_props, rows, max_rows in self._object_list_targets(
                 self._class_schema or {}, extracted_fields
             ):
-                groups.setdefault(n_props, []).append((label, rows))
+                groups.setdefault(n_props, []).append((label, rows, max_rows))
             for n_props, members in sorted(groups.items()):
                 labels = [
-                    lb for lb, rows in members if any(isinstance(r, dict) for r in rows)
+                    lb
+                    for lb, rows, _mx in members
+                    if any(isinstance(r, dict) for r in rows)
                 ]
                 if not labels:
                     continue  # every list of this width is empty: extraction_incomplete
-                expected = self._expected_rows_for_width(n_props, tables)
+                ocr_rows = self._expected_rows_for_width(n_props, tables)
+                # A declared `maxItems` is the config author's own statement of how
+                # many rows this group can legitimately hold, so OCR evidence above
+                # it is not evidence of a shortfall: `maxItems: 15` over a 40-row
+                # table, correctly capped at 15, used to score 15/41 (#1046 item 4),
+                # and `extraction/validation.py` already treats trimming to
+                # `maxItems` as a CORRECTION rather than a loss. The cap is the SUM
+                # over the group's members, because `extracted` is summed over them
+                # and `expected` is shared — and it applies only when EVERY member
+                # declares one, since a single undeclared member leaves the group's
+                # legitimate total unbounded. Declining to cap is the safe direction:
+                # a cap can only ever suppress a firing.
+                caps = [mx for _lb, _rows, mx in members]
+                group_cap = (
+                    sum(c for c in caps if c is not None)
+                    if caps and None not in caps
+                    else None
+                )
+                expected = ocr_rows if group_cap is None else min(ocr_rows, group_cap)
+                capped = expected < ocr_rows
                 extracted = sum(
-                    1 for _lb, rows in members for r in rows if isinstance(r, dict)
+                    1 for _lb, rows, _mx in members for r in rows if isinstance(r, dict)
                 )
                 if (
                     expected < self._OCR_ROW_ESTIMATE_MIN
@@ -3785,6 +3871,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # (#1032); 'warn' leaves the advisory-only behaviour in place.
                 # The DETECTION is identical either way — same floor, same ratio.
                 shortfall_action = self._row_shortfall_action()
+                # Only present when the ceiling actually binds, so the wording and
+                # the root cause are byte-identical to before for every schema that
+                # declares no `maxItems` — which is every shipped preset.
+                cap_clause = (
+                    f" (bounded to {expected} by the declared maxItems of the "
+                    f"list field(s))"
+                    if capped
+                    else ""
+                )
+                cap_note = f" (capped at maxItems {group_cap})" if capped else ""
                 outcome = (
                     " The section is therefore marked FAILED (extraction."
                     "row_shortfall_action is 'fail'); the rows that were extracted "
@@ -3801,22 +3897,31 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         message=(
                             f"Extracted {extracted} row(s) for list field(s) "
                             f"{fields_str}, but the section's OCR text contains about "
-                            f"{expected} rows in {n_props}-column table(s) of that "
-                            f"shape — the list is likely truncated.{outcome}{rec}"
+                            f"{ocr_rows} rows in {n_props}-column table(s) of that "
+                            f"shape{cap_clause} — the list is likely truncated."
+                            f"{outcome}{rec}"
                         ),
                         root_cause=(
                             f"{'agentic' if is_agentic else 'traditional'} extraction "
                             f"with model "
                             f"{self._pending_extraction_model or self.config.extraction.model}; "
                             f"{extracted} extracted rows vs ~{expected} matching OCR "
-                            f"table rows for {fields_str}"
+                            f"table rows{cap_note} for {fields_str}"
                         ),
                         section_id=section_id,
                         details={
                             "list_fields": labels,
                             "item_property_count": n_props,
                             "extracted_rows": extracted,
+                            # The figure the ratio is taken against, so
+                            # `extracted / ocr_estimated_rows == ratio` still holds.
+                            # `ocr_matched_table_rows` is the unbounded OCR evidence
+                            # and `declared_max_items` the ceiling that shrank it
+                            # (None when the group declares none), so the capping is
+                            # visible in the processing report rather than implicit.
                             "ocr_estimated_rows": expected,
+                            "ocr_matched_table_rows": ocr_rows,
+                            "declared_max_items": group_cap,
                             "ratio": round(extracted / expected, 3),
                             "ocr_tables": tables,
                             "agentic": is_agentic,

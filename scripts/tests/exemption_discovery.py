@@ -92,6 +92,20 @@ PYTHON_PATHSPECS = (
     # to test_gate_exemption_registry.py, which is the one place such a list is meant
     # to be impossible to add unregistered.
     "config_library/*.py",
+    # The free-metering-unit declaration (#1212) is production code, not a test
+    # constant: both cost implementations import it, so it has to live where a
+    # Lambda can reach it. It is nonetheless a list of members that a check stops
+    # applying to, which is exactly what this registry is for, so discovery has to
+    # reach the one file.
+    #
+    # Named rather than widened to `lib/*/idp_common/*.py` on a measurement: that
+    # glob finds 33 further constants in the shared library — required-key sets,
+    # status enumerations, retry-code pins — none of which has ever been triaged
+    # against this registry. Adding them all unregistered would fail the meta-test
+    # in one direction, and registering 33 surfaces nobody has read is how a
+    # reviewer learns to rubber-stamp it. The wider glob is worth doing; it is its
+    # own change.
+    "lib/*/idp_common/metering_units.py",
 )
 
 #: Non-Python files that carry exemptions, and the pattern that finds one in each.

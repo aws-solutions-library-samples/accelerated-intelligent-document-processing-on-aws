@@ -342,14 +342,39 @@ def test_spec_field_and_arg_names_match_real_graphql_parse():
     # the SDL leniently (we only need the Query/Mutation field+arg structure).
     doc = graphql.parse(_SCHEMA.read_text())
 
+    # ⚠️ An absent optional AST list is `None` in graphql-core 3.3 and `()` in 3.2,
+    # so a field declaring no arguments reads as None on the newer parser and
+    # iterating it raises TypeError. The dependency is deliberately a RANGE
+    # (`graphql-core>=3.2,<4`) because the point of this test is to be an
+    # independent oracle, and pinning it to an old parser would retire the oracle
+    # to keep the test quiet. That means both shapes are live: a machine that
+    # resolved 3.2 passes while CI, resolving 3.3, fails. Read both, and do not
+    # replace this with a pin.
+    def _nodes(maybe_list):
+        return maybe_list or ()
+
     truth: dict[str, set[str]] = {}
     for defn in doc.definitions:
         if not isinstance(
             defn, graphql.ObjectTypeDefinitionNode
         ) or defn.name.value not in ("Query", "Mutation"):
             continue
-        for field in defn.fields:
-            truth[field.name.value] = {a.name.value for a in field.arguments}
+        for field in _nodes(defn.fields):
+            truth[field.name.value] = {a.name.value for a in _nodes(field.arguments)}
+
+    # Both branches of the shape tolerance above must be exercised by the real
+    # schema, or `or ()` could be quietly swallowing a parser that had stopped
+    # reporting arguments at all. Every assertion below would still pass on an
+    # empty spec side, so this is the check that keeps the tolerance honest.
+    assert any(args for args in truth.values()), (
+        "no Query/Mutation field parsed with any arguments, so the real parser is "
+        "not reporting them and the arg comparison below is vacuous"
+    )
+    assert any(not args for args in truth.values()), (
+        "every field parsed with arguments, so the no-argument case this test "
+        "tolerates is no longer present in schema.graphql — re-derive the "
+        "tolerance rather than leaving it untested"
+    )
 
     spec = json.loads(_SPEC_PATH.read_text())
     spec_fields = {f: {a["name"] for a in v["args"]} for f, v in spec["fields"].items()}
@@ -393,7 +418,7 @@ def test_empty_args_accepted_unless_non_null_required(validation, spec):
 
 def test_required_arg_count_is_stable(spec):
     """Guardrail so a schema change that alters the required-arg surface is
-    visible in the diff (114 fields require a non-null arg as of this spec — the
+    visible in the diff (115 fields require a non-null arg as of this spec — the
     test-set lifecycle ops getTestSetVersions/publishTestSetVersion/
     removeDocumentsFromTestSet/sendTestRunToReview added 91–94, the
     draft-labeling ops generateDraftLabels/getDraftLabelJob added 95–96,
@@ -405,12 +430,13 @@ def test_required_arg_count_is_stable(spec):
     getConfigProfileRevision, restoreConfigProfileRevision,
     labelConfigProfileRevision, deleteConfigProfileRevision — 105–109, each
     requiring profileName and all but the first also revision, and
-    openTestSetAnnotationDraft the 110th, createEmptyTestSet the 111th, and the three
-    config-prefix-mapping ops that take a required argument — putConfigPrefixMapping
-    (prefix, configProfile), deleteConfigPrefixMapping (prefix) and
-    resolveConfigPrefixMapping (objectKey) — 112–114. listConfigPrefixMappings takes
-    no arguments at all, so it is deliberately not among them)."""
+    openTestSetAnnotationDraft the 110th, createEmptyTestSet the 111th,
+    addDocumentsToTestSetByKey the 112th, and the three config-prefix-mapping ops
+    that take a required argument — putConfigPrefixMapping (prefix,
+    configProfile), deleteConfigPrefixMapping (prefix) and
+    resolveConfigPrefixMapping (objectKey) — 113–115. listConfigPrefixMappings
+    takes no arguments at all, so it is deliberately not among them)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 114
+    assert len(required) == 115

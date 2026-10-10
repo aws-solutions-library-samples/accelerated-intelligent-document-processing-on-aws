@@ -10,6 +10,14 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from idp_common.api_adapter import ResourceNotFound  # type: ignore
+from idp_common.config_scope import (  # type: ignore
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.dynamodb.client import DynamoDBError  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
@@ -294,6 +302,8 @@ def handler(event, context):
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
         return add_documents_to_test_set(event["arguments"])
+    elif field_name == "addDocumentsToTestSetByKey":
+        return add_documents_to_test_set_by_key(event["arguments"], event)
     elif field_name == "addDocumentsToTestSetFromUpload":
         return add_documents_to_test_set_from_upload(event["arguments"])
     elif field_name == "updateTestSet":
@@ -363,7 +373,7 @@ def add_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # The caller's name wins. This used to be derived from the filename
     # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
@@ -382,13 +392,13 @@ def add_test_set_from_upload(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
@@ -459,13 +469,13 @@ def add_test_set(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Generate test set ID with name format, replace spaces with dashes
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
@@ -579,11 +589,11 @@ def create_empty_test_set(args):
     document_class_type = args.get("documentClassType")
 
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = test_set_name.replace(" ", "-").lower()
     now = datetime.utcnow().isoformat() + "Z"
@@ -613,7 +623,7 @@ def create_empty_test_set(args):
         if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
             "ConditionalCheckFailed" in str(e)
         ):
-            raise Exception(f"A test set with id '{test_set_id}' already exists")
+            raise ValueError(f"A test set with id '{test_set_id}' already exists")
         raise
     # After the row: a marker without a row is a stray folder discovery ignores,
     # while a row without a marker is reaped on the next getTestSets.
@@ -636,28 +646,26 @@ def create_empty_test_set(args):
     return result
 
 
-def add_documents_to_test_set(args):
-    logger.info(f"Adding documents to existing test set: {args}")
+MAX_KEYS_PER_ADD = 500
 
-    test_set_id = args["testSetId"]
-    file_pattern = args["filePattern"]
-    bucket_type = args["bucketType"]
-    file_count = args["fileCount"]
 
-    # Look up existing test set
+def _begin_test_set_append(test_set_id):
+    """Look up a COMPLETED test set and mark it UPDATING for an append job.
+
+    statusUpdatedAt is what makes the job reapable: without it a set whose copier
+    dies sits in UPDATING forever, because _reap_abandoned_test_sets has no way to
+    tell a slow copy from an abandoned one.
+    """
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
-    # it a set whose copier dies sits in UPDATING forever, because
-    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
@@ -671,27 +679,18 @@ def add_documents_to_test_set(args):
             ":now": datetime.utcnow().isoformat() + "Z",
         },
     )
+    return item, tracking_table
 
-    # Send file copying job to SQS queue
+
+def _queue_test_set_copy(message_body):
     sqs = boto3.client("sqs")
-    queue_url = os.environ["TEST_SET_COPY_QUEUE_URL"]
-
-    message_body = {
-        "testSetId": test_set_id,
-        "filePattern": file_pattern,
-        "bucketType": bucket_type,
-        "trackingTable": tracking_table,
-        "mode": "append",
-    }
-    if args.get("modifiedAfter"):
-        message_body["modifiedAfter"] = args["modifiedAfter"]
-
-    sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
-
-    logger.info(
-        f"Queued append job for test set {test_set_id} with pattern '{file_pattern}'"
+    sqs.send_message(
+        QueueUrl=os.environ["TEST_SET_COPY_QUEUE_URL"],
+        MessageBody=json.dumps(message_body),
     )
 
+
+def _updating_test_set_summary(test_set_id, item):
     return {
         "id": test_set_id,
         "name": item["name"],
@@ -703,6 +702,156 @@ def add_documents_to_test_set(args):
     }
 
 
+def add_documents_to_test_set(args):
+    logger.info(f"Adding documents to existing test set: {args}")
+
+    test_set_id = args["testSetId"]
+    file_pattern = args["filePattern"]
+    bucket_type = args["bucketType"]
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
+
+    message_body = {
+        "testSetId": test_set_id,
+        "filePattern": file_pattern,
+        "bucketType": bucket_type,
+        "trackingTable": tracking_table,
+        "mode": "append",
+    }
+    if args.get("modifiedAfter"):
+        message_body["modifiedAfter"] = args["modifiedAfter"]
+
+    _queue_test_set_copy(message_body)
+
+    logger.info(
+        f"Queued append job for test set {test_set_id} with pattern '{file_pattern}'"
+    )
+
+    return _updating_test_set_summary(test_set_id, item)
+
+
+def _normalize_object_keys(raw_keys):
+    if not isinstance(raw_keys, list) or not raw_keys:
+        raise ValueError("objectKeys must be a non-empty list of document keys")
+    seen = set()
+    keys = []
+    for key in raw_keys:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("objectKeys must contain only non-empty strings")
+        key = key.strip()
+        if key.startswith("/") or key.endswith("/") or "/../" in f"/{key}/":
+            raise ValueError(f"Invalid document key: {key}")
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    if len(keys) > MAX_KEYS_PER_ADD:
+        raise ValueError(
+            f"At most {MAX_KEYS_PER_ADD} documents can be added in one request "
+            f"({len(keys)} selected)"
+        )
+    return keys
+
+
+_SELECTION_REFUSED = (
+    "Access denied: one or more of the selected documents cannot be added to a "
+    "test set. Only documents that finished processing, under a configuration "
+    "profile you can access, can be added."
+)
+_BATCH_GET_LIMIT = 100
+
+
+def _caller_config_scope(event):
+    """The caller's ``allowedConfigVersions``, or None when unrestricted.
+
+    Admins and direct IAM invocations (no ``identity``) are unrestricted and never
+    looked up. For everyone else the lookup fails CLOSED: a scope that cannot be
+    evaluated is refused, not treated as unrestricted.
+    """
+    identity = event.get("identity") if event else None
+    if identity is None or _caller_in_groups(event, ("Admin",)):
+        return None
+    claims = identity.get("claims") or {}
+    try:
+        return resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=boto3.resource("dynamodb"),
+        )
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying addDocumentsToTestSetByKey: configuration scope could not be "
+            "resolved: %s",
+            e,
+        )
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _document_rows(object_keys):
+    rows = {}
+    keys = [{"PK": f"doc#{k}", "SK": "none"} for k in object_keys]
+    for start in range(0, len(keys), _BATCH_GET_LIMIT):
+        for row in db_client.batch_get_items(keys[start : start + _BATCH_GET_LIMIT]):
+            key = row.get("ObjectKey") or str(row.get("PK", "")).removeprefix("doc#")
+            rows[key] = row
+    return rows
+
+
+def _enforce_selection_scope(event, object_keys):
+    """Refuse the whole selection unless every document may be added.
+
+    A document may be added when it has a tracking row, finished processing, and
+    was processed under a profile the caller's ``allowedConfigVersions`` admits
+    (checked with ``scope_allows``, which denies a missing profile name whenever a
+    scope is set). The refusal names no document and no reason, so a scoped caller
+    cannot use it to learn which keys exist or where they sit.
+    """
+    allowed_config_versions = _caller_config_scope(event)
+    rows = _document_rows(object_keys)
+    for key in object_keys:
+        row = rows.get(key)
+        if (
+            row is None
+            or row.get("ObjectStatus") != "COMPLETED"
+            or not scope_allows(allowed_config_versions, row.get("ConfigVersion"))
+        ):
+            logger.warning(
+                "Rejecting addDocumentsToTestSetByKey: a selected document is "
+                "missing, unfinished, or outside the caller's scope"
+            )
+            raise PermissionError(_SELECTION_REFUSED)
+
+
+def add_documents_to_test_set_by_key(args, event=None):
+    test_set_id = args["testSetId"]
+    object_keys = _normalize_object_keys(args.get("objectKeys"))
+    logger.info(
+        f"Adding {len(object_keys)} selected document(s) to test set {test_set_id}"
+    )
+
+    _enforce_selection_scope(event, object_keys)
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
+
+    _queue_test_set_copy(
+        {
+            "testSetId": test_set_id,
+            "objectKeys": object_keys,
+            "bucketType": "input",
+            "trackingTable": tracking_table,
+            "mode": "append",
+        }
+    )
+
+    logger.info(
+        f"Queued append job for test set {test_set_id} with {len(object_keys)} key(s)"
+    )
+
+    return _updating_test_set_summary(test_set_id, item)
+
+
 def add_documents_to_test_set_from_upload(args):
     logger.info(f"Adding documents to test set from zip upload: {args}")
 
@@ -712,16 +861,16 @@ def add_documents_to_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
@@ -1093,10 +1242,10 @@ def publish_test_set_version(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if (_as_int(meta.get("fileCount")) or 0) <= 0:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has no documents; add documents before "
             "publishing a version"
         )
@@ -1146,7 +1295,7 @@ def publish_test_set_version(args, event=None):
                     test_set_id, client_token, held_by_other
                 )
                 if my_claimed_at is None:
-                    raise Exception(
+                    raise ValueError(
                         f"A publish of test set '{test_set_id}' for this attempt is already "
                         "running. It may still succeed — wait for it to finish rather than "
                         "publishing again."
@@ -1155,7 +1304,7 @@ def publish_test_set_version(args, event=None):
                 # In flight, and it has produced no version yet. Publishing now would
                 # duplicate the work that attempt is about to finish, which is the whole
                 # failure this token exists to prevent.
-                raise Exception(
+                raise ValueError(
                     f"A publish of test set '{test_set_id}' for this attempt is already "
                     "running. It may still succeed — wait for it to finish rather than "
                     "publishing again."
@@ -1182,7 +1331,7 @@ def publish_test_set_version(args, event=None):
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise Exception(f"Test set '{test_set_id}' not found")
+                raise ResourceNotFound(f"Test set '{test_set_id}' not found")
             raise
         next_version = int(reserve["Attributes"]["latestVersion"])
 
@@ -1336,7 +1485,7 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
         # after the copy, so an oversize set would otherwise fail with a generic
         # error and fail identically on every retry — permanently unable to start
         # annotating, with nothing saying why.
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
             f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
             "Publishing a version of a set this large needs an asynchronous snapshot, "
@@ -1397,14 +1546,15 @@ def open_test_set_annotation_draft(args, event=None):
     anything, where the alternative is a number that refers to nothing at all.
 
     Idempotent: opening a draft that is already open returns it and copies nothing, which
-    matters because the annotate view calls this on entry.
+    matters because two annotators can press Start annotating on the same set, and
+    because the second press after a reload must not snapshot again.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     existing_draft = _as_int(meta.get("draftVersion"))
     if existing_draft:
@@ -1480,11 +1630,70 @@ def open_test_set_annotation_draft(args, event=None):
     # Written after the snapshot: a failure part-way leaves no draft pointer, so the
     # next call retries the copy rather than annotating against a version whose content
     # was never captured.
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="SET draftVersion = :d",
-        expression_attribute_values={":d": draft_version},
-    )
+    #
+    # Conditional because the `existing_draft` check above is a read and this is the
+    # write, and between the two a second annotator can have opened the same
+    # transition -- two people pressing Start annotating on one set, which is the
+    # only thing that calls this. (It is *not* called on entering the annotate view:
+    # the workspace deliberately asks rather than opening a transition on arrival,
+    # and a UI test pins that it is never reached from a `useEffect`. So the window
+    # is two deliberate presses, not every page load.) Both then read no draft, both
+    # compute a `draft_version`, and the later write replaces the earlier one: the
+    # pointer names one transition while two were opened, and the queue links handed
+    # to the first annotator belong to a transition the metadata row no longer
+    # mentions. The condition is the same statement the early return makes, evaluated
+    # where it can be relied on -- `draftVersion` is only ever SET here and REMOVEd
+    # by publishing, never stored as zero, so `attribute_not_exists` and "no draft
+    # open" are the same fact.
+    #
+    # ⚠️ **It does not cover a set that has never been published, and that residual is
+    # measured rather than theoretical.** On that path the branch above calls
+    # `publish_test_set_version`, and publishing *removes* `draftVersion` as part of
+    # committing its transition. So if the other caller's whole open lands before
+    # this one's publish, this call's own publish clears the winner's pointer and the
+    # condition is then true: both callers return `alreadyOpen: False`, two
+    # transitions are opened, and the row names only the later one -- exactly the loss
+    # this condition closes everywhere else. Closing it needs the publish and the
+    # claim to be one atomic step, which is a restructure of this function rather than
+    # a stronger condition: no predicate over the row can distinguish "nobody has
+    # claimed" from "I just removed the claim myself". It is bounded to the first
+    # annotation session of a set, after which the guard holds. See the test named
+    # for it.
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="SET draftVersion = :d",
+            expression_attribute_values={":d": draft_version},
+            condition_expression="attribute_not_exists(draftVersion)",
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # Somebody opened the transition first. Returning theirs is what the early
+        # return above would have done had the read seen it, so this is the same
+        # answer rather than a new failure. The snapshot this call took is wasted
+        # and harmless -- it copied a published version's labels to where they
+        # already were.
+        fresh = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        winner = _as_int((fresh or {}).get("draftVersion"))
+        if not winner:
+            # No draft to return: a publish committed the transition in the same
+            # window, which is the one thing that removes the attribute. The state
+            # this call computed no longer describes the set, and the annotate
+            # view's next on-entry call opens the right transition against the new
+            # base, so raising is the honest answer rather than writing anyway.
+            raise
+        logger.info(
+            f"Test set '{test_set_id}': another caller opened draft version "
+            f"{winner} first; returning it instead of version {draft_version}"
+        )
+        return {
+            "testSetId": test_set_id,
+            "baseVersion": winner - 1,
+            "draftVersion": winner,
+            "snapshotObjectCount": 0,
+            "alreadyOpen": True,
+        }
 
     logger.info(
         f"Opened annotation draft {draft_version} for test set '{test_set_id}' "
@@ -1687,26 +1896,26 @@ def generate_draft_labels(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     file_count = int(meta.get("fileCount", 0) or 0)
     if file_count <= 0:
-        raise Exception(f"Test set '{test_set_id}' has no documents to label")
+        raise ValueError(f"Test set '{test_set_id}' has no documents to label")
 
     already_labeled = 0
     if not object_keys:
         object_keys, already_labeled = _documents_needing_labels(test_set_id)
         if not object_keys and already_labeled:
-            raise Exception(
+            raise ValueError(
                 f"Every document in '{test_set_id}' already has ground truth "
                 f"({already_labeled} document(s)) — there is nothing to draft-label. "
                 "Run a test to score the pipeline against it instead."
@@ -1826,16 +2035,16 @@ def reextract_test_set_document(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     if document_class:
@@ -1922,9 +2131,9 @@ def _validate_regrouping(sections, previously_labelled_pages):
     entirely is exactly the defect a reviewer is here to fix.
     """
     if not sections:
-        raise Exception("A document must have at least one section")
+        raise ValueError("A document must have at least one section")
     if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
-        raise Exception(
+        raise ValueError(
             f"Too many sections ({len(sections)}); the maximum is "
             f"{MAX_SECTIONS_PER_DOCUMENT}"
         )
@@ -1938,19 +2147,19 @@ def _validate_regrouping(sections, previously_labelled_pages):
         # renumber around a group that no longer exists. The page-level checks below
         # cannot catch it: both groups' pages are legitimately accounted for.
         if section_id in section_ids:
-            raise Exception(f"Section '{section_id}' appears more than once")
+            raise ValueError(f"Section '{section_id}' appears more than once")
         section_ids.add(section_id)
         indices = section.get("pageIndices")
         if not isinstance(indices, list) or not indices:
-            raise Exception(f"Section '{section_id}' has no pages")
+            raise ValueError(f"Section '{section_id}' has no pages")
         for raw in indices:
             if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
-                raise Exception(
+                raise ValueError(
                     f"Section '{section_id}' has an invalid page index {raw!r}; "
                     "expected a non-negative integer"
                 )
             if raw in seen:
-                raise Exception(
+                raise ValueError(
                     f"Page index {raw} is in both section '{seen[raw]}' and "
                     f"section '{section_id}'"
                 )
@@ -1958,7 +2167,7 @@ def _validate_regrouping(sections, previously_labelled_pages):
 
     lost = sorted(previously_labelled_pages - set(seen))
     if lost:
-        raise Exception(
+        raise ValueError(
             f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
             "would no longer belong to any section, which would discard the ground "
             "truth for those pages"
@@ -1998,22 +2207,22 @@ def update_test_set_document_sections(args, event=None):
     incoming = input_data.get("sections") or []
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     for section in incoming:
         if not validate_document_class(section.get("documentClass")):
-            raise Exception(
+            raise ValueError(
                 f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
                 "characters of letters, digits, spaces, hyphens or underscores"
             )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
     if not existing:
-        raise Exception(
+        raise ValueError(
             f"'{object_key}' has no baseline sections to re-group. Generate draft "
             "labels for this test set first."
         )
@@ -2177,18 +2386,45 @@ def get_draft_label_job(args):
     test_set_id = args["testSetId"]
     job_id = args["jobId"]
 
-    job = db_client.get_item(
-        {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
-    )
+    key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
+    job = db_client.get_item(key)
     if not job:
-        raise Exception(f"Labeling job '{job_id}' not found")
+        raise ResourceNotFound(f"Labeling job '{job_id}' not found")
 
     if job.get("status") in ("COMPLETED", "FAILED"):
         return _label_job_to_result(job)
 
-    return _label_job_to_result(
-        _harvest_label_job(job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS)
-    )
+    try:
+        harvested = _harvest_label_job(
+            job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # The harvest refused to write blind after losing its merge budget, which
+        # is the right call there and the wrong answer here. This is the progress
+        # poll the UI drives on a timer, so propagating would turn a condition
+        # that heals itself into a visible error on a read: the writer that won
+        # every round has its progress in the row, this pass's S3 work is
+        # idempotent, and the next poll is five seconds away. Report what is
+        # stored instead. The queue-side caller already treats a failed harvest
+        # this way; this makes the read side match it, narrowly -- any other
+        # failure still propagates.
+        #
+        # ⚠️ One rejection this cannot tell apart from that one is a condition that
+        # will never hold again, and absorbing it reports a stalled job as live
+        # progress on every poll with nothing raised. The condition and the shape of
+        # row that does it are written out at the condition itself; the two comments
+        # only describe the problem together. Logged at INFO for that reason: a run
+        # of these lines on one job id is the signal.
+        logger.info(
+            f"Draft labeling job {job_id}: another harvest held the write for "
+            "every attempt; reporting the stored state and leaving the rest to "
+            "the next poll"
+        )
+        harvested = db_client.get_item(key) or job
+
+    return _label_job_to_result(harvested)
 
 
 def _walk_confidence(explainability_info):
@@ -2411,7 +2647,7 @@ def get_annotation_queue(args, event=None):
     include_completed = bool(args.get("includeCompleted"))
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     # Scope check precedes any read, so an unauthorized caller cannot even learn
     # whether the set exists.
@@ -2419,7 +2655,7 @@ def get_annotation_queue(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     label_job = _harvest_active_label_job(test_set_id, meta)
 
@@ -2803,13 +3039,13 @@ def estimate_review_effort(args):
     config_version = args.get("configVersion")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not (0.0 < target_accuracy <= 100.0):
-        raise Exception("targetAccuracy must be between 0 and 100")
+        raise ValueError("targetAccuracy must be between 0 and 100")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Resolve the configuration whose confidence semantics produced these labels
     # (argument > bound field > the drafting run's resolved version), so the
@@ -2947,6 +3183,19 @@ TERMINAL_DOCUMENT_STATUSES = frozenset(
 # giving up on it. Absence cannot be distinguished from "not started yet", so this
 # is deliberately far beyond any plausible processing time.
 STALE_LABEL_JOB_HOURS = 6
+
+# How many times a harvest may merge and re-attempt its progress write after
+# another harvest of the same job wrote first.
+#
+# Small, because a rebuilt attempt here costs one GetItem and no S3 work at all:
+# the conflict is resolved by taking the union of the two views, never by redoing
+# the copying. Contention is bounded in practice by the number of open UI views of
+# one job, and each loser's second attempt starts from the winner's state, so it
+# collides only with a third writer. Exhausting the budget raises rather than
+# writing unconditionally, because falling back to a blind write would be the
+# defect this guard exists to prevent, and the next poll -- five seconds away -- is
+# a harmless retry of the whole pass.
+_MAX_HARVEST_WRITE_ATTEMPTS = 4
 
 
 def _collect_doc_confidences(test_set_id):
@@ -3129,7 +3378,14 @@ def _harvest_label_job(job, deadline=None):
     done = set(job.get("harvestedFiles") or [])
     failed = list(job.get("failedFiles") or [])
     resolved = done | set(failed)
-    pending = 0
+    # The documents this pass is waiting on, by name rather than as a count. The
+    # names are what a merge after a lost write needs: another harvest of the same
+    # job may have resolved one of them, and subtracting the set it wrote is exact,
+    # where a count could only be guessed at. Recomputing the count from `files`
+    # instead would be wrong in the other direction -- a document whose copy raised
+    # below is deliberately in neither `done` nor `failed` and deliberately not
+    # pending, so counting it would hold the job RUNNING forever.
+    pending_files = set()
     out_of_time = False
     for file_name in files:
         if file_name in resolved:
@@ -3138,7 +3394,7 @@ def _harvest_label_job(job, deadline=None):
             # Remaining documents are pending, not lost: the job stays RUNNING and
             # the next poll picks them up.
             out_of_time = True
-            pending += 1
+            pending_files.add(file_name)
             continue
 
         doc = tracking_table.get_item(
@@ -3168,7 +3424,7 @@ def _harvest_label_job(job, deadline=None):
                 )
                 failed.append(file_name)
             else:
-                pending += 1
+                pending_files.add(file_name)
             continue
 
         try:
@@ -3202,41 +3458,105 @@ def _harvest_label_job(job, deadline=None):
                 f"Draft labeling: failed to harvest '{file_name}' for job {job_id}: {e}"
             )
 
-    labeled = len(done)
-    if pending:
-        status = "RUNNING"
-    elif failed and not labeled:
-        # Nothing to harvest and nothing left to wait for.
-        status = "FAILED"
-    else:
-        status = "COMPLETED"
     now = datetime.utcnow().isoformat() + "Z"
-    update_expr = "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
-    expr_values = {
-        ":s": status,
-        ":n": labeled,
-        ":h": sorted(done),
-        ":f": sorted(set(failed)),
-    }
-    if status == "FAILED":
-        update_expr += ", #er = :e"
-        expr_values[":e"] = (
-            f"All {len(set(failed))} document(s) failed processing; no labels were "
-            "produced"
+    job_key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
+    # What this pass read, and therefore what the write is allowed to assume is
+    # still stored. Both are read-derived accumulating lists, so writing them back
+    # blind discarded an overlapping harvest's progress: every caller that displays
+    # a job drives this harvest on a five-second timer, and three separate UI
+    # components do, so two passes over one job is the ordinary case rather than an
+    # edge. What the loser dropped was not cosmetic -- a `failedFiles` entry lost
+    # this way makes the next pass count an already-failed document as pending,
+    # which is exactly the state that used to leave a job RUNNING forever.
+    expected_done = sorted(job.get("harvestedFiles") or [])
+    expected_failed = sorted(set(job.get("failedFiles") or []))
+    for attempt in range(1, _MAX_HARVEST_WRITE_ATTEMPTS + 1):
+        labeled = len(done)
+        if pending_files:
+            status = "RUNNING"
+        elif failed and not labeled:
+            # Nothing to harvest and nothing left to wait for.
+            status = "FAILED"
+        else:
+            status = "COMPLETED"
+        update_expr = (
+            "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
         )
-    if status in ("COMPLETED", "FAILED"):
-        update_expr += ", completedAt = :c"
-        expr_values[":c"] = now
+        expr_values = {
+            ":s": status,
+            ":n": labeled,
+            ":h": sorted(done),
+            ":f": sorted(set(failed)),
+        }
+        if status == "FAILED":
+            update_expr += ", #er = :e"
+            expr_values[":e"] = (
+                f"All {len(set(failed))} document(s) failed processing; no labels were "
+                "produced"
+            )
+        if status in ("COMPLETED", "FAILED"):
+            update_expr += ", completedAt = :c"
+            expr_values[":c"] = now
 
-    expr_names = {"#st": "status"}
-    if status == "FAILED":
-        expr_names["#er"] = "error"
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)},
-        update_expression=update_expr,
-        expression_attribute_names=expr_names,
-        expression_attribute_values=expr_values,
-    )
+        expr_names = {"#st": "status", "#h": "harvestedFiles", "#f": "failedFiles"}
+        if status == "FAILED":
+            expr_names["#er"] = "error"
+        expr_values[":exp_h"] = expected_done
+        expr_values[":exp_f"] = expected_failed
+        # List equality in a condition is order-sensitive -- DynamoDB compares the
+        # document, not the set -- so this holds only because every writer of these
+        # two attributes stores them sorted, a few lines above (and `failedFiles`
+        # deduplicated, which is why `expected_failed` applies `set` and
+        # `expected_done` does not). Keep the `sorted(...)` when touching either.
+        #
+        # ⚠️ **A stored list this cannot reproduce is a silent permanent stall, not a
+        # slow path, and the absorb in `get_draft_label_job` is half of why.** An
+        # unsorted or duplicated stored list makes the condition false on every
+        # attempt, the budget exhausts, this function raises -- and the poll then
+        # absorbs that rejection and reports the stored row. Measured: the job stays
+        # RUNNING across every poll with no error and no progress, indefinitely, where
+        # the unguarded write normalised such a row on the first poll. The absorb is
+        # still right (see the reasoning at it), because the rejection it is written
+        # for does heal itself; the two comments have to be read together, because
+        # neither is wrong on its own and the combination is what wedges. Reaching it
+        # needs a writer outside this function -- a manual repair or a migration, since
+        # every version of this code has stored both sorted.
+        condition = (
+            "(attribute_not_exists(#h) OR #h = :exp_h) "
+            "AND (attribute_not_exists(#f) OR #f = :exp_f)"
+        )
+        try:
+            db_client.update_item(
+                key=job_key,
+                update_expression=update_expr,
+                expression_attribute_names=expr_names,
+                expression_attribute_values=expr_values,
+                condition_expression=condition,
+            )
+            break
+        except DynamoDBError as e:
+            if e.error_code != "ConditionalCheckFailedException":
+                raise
+            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
+                raise
+            # Merge rather than redo. The expensive part of this pass -- reading
+            # each document and writing its draft labels to S3 -- has already
+            # happened and is idempotent, so a lost conflict must not discard it
+            # and must not repeat it. Both attributes accumulate, so the union of
+            # the two views is the correct settled state, and subtracting it from
+            # the names still outstanding is what keeps the derived status honest
+            # without recomputing it from the file list.
+            fresh = db_client.get_item(job_key) or {}
+            expected_done = sorted(fresh.get("harvestedFiles") or [])
+            expected_failed = sorted(set(fresh.get("failedFiles") or []))
+            done |= set(expected_done)
+            failed = sorted(set(failed) | set(expected_failed))
+            pending_files -= done | set(failed)
+            logger.info(
+                f"Draft labeling job {job_id}: another harvest wrote first; "
+                f"merging and retrying (attempt {attempt} of "
+                f"{_MAX_HARVEST_WRITE_ATTEMPTS})"
+            )
 
     meta_expr = "SET labelJobStatus = :s"
     meta_values = {":s": status}
@@ -3251,7 +3571,7 @@ def _harvest_label_job(job, deadline=None):
     )
 
     logger.info(
-        f"Draft labeling job {job_id}: labeled={labeled} pending={pending} "
+        f"Draft labeling job {job_id}: labeled={labeled} pending={len(pending_files)} "
         f"failed={len(set(failed))} status={status}"
         + (
             f" (stopped after {HARVEST_TIME_BUDGET_SECONDS}s; resuming on the "
@@ -3450,30 +3770,30 @@ def remove_documents_from_test_set(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     file_names = args["fileNames"]
     logger.info(f"Removing {len(file_names)} document(s) from test set {test_set_id}")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
     # A harvest in progress writes a baseline for each document as its run
     # finishes; deleting a document under it leaves that baseline orphaned as
     # "Extra baseline files". A copier or extractor in flight recounts on
     # completion and would overwrite the count computed here.
     if meta.get("labelJobStatus") == "RUNNING":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is being draft-labeled; wait for the job "
             "to finish before removing documents"
         )
     if meta.get("status") in IN_FLUX_TEST_SET_STATUSES:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is busy ({meta.get('status')}); try again "
             "when it is COMPLETED"
         )
     for file_name in file_names:
         if not file_name or file_name.startswith("/") or "//" in file_name:
-            raise Exception(f"Invalid document name: {file_name!r}")
+            raise ValueError(f"Invalid document name: {file_name!r}")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -3583,11 +3903,11 @@ def clear_draft_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -3698,11 +4018,11 @@ def reset_test_set_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -3832,13 +4152,13 @@ def update_test_set(args):
 
     # Validate description if provided
     if description is not None and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Build update expression dynamically
     update_parts = []
@@ -4328,14 +4648,14 @@ def get_test_set_documents(args):
     # The id is derived from a validated name, so it must satisfy the same charset.
     # This also rejects '/' and '..', which could traverse outside the S3 prefix.
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if object_key and ".." in object_key:
-        raise Exception("Invalid object key")
+        raise ValueError("Invalid object key")
     limit = max(1, min(int(limit), 1000))
 
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     input_prefix = f"{test_set_id}/input/"

@@ -72,6 +72,22 @@ const designerState = (): BuilderSchema =>
   ] as unknown as BuilderSchema;
 
 describe('the two routes to a $ref attribute (#957)', () => {
+  /**
+   * 30s rather than the suite's 10s default, and the only test in the file that
+   * needs it. It is the file's slowest by an order of magnitude — ~1.4s locally
+   * against ~80ms for the SchemaInspector tests below — because it is the one
+   * that drives the *whole* designer through two routes against a single
+   * `SchemaBuilder` render, so every interaction re-renders the Cloudscape tree.
+   * That cost is the test's purpose and not a defect in it: rendering each route
+   * separately would be faster and would no longer compare the two shapes, which
+   * is the only thing this test exists to do.
+   *
+   * It timed out at 10s on a loaded CI runner while passing in 1.4s locally — a
+   * 7x margin that the shared runner consumed, with `jsdom` built 104 times in
+   * one run. Raising the default for all 1,173 tests to cover this one would
+   * license slow tests everywhere (see the `testTimeout` comment in
+   * vite.config.js); raising it here states which test is slow and why.
+   */
   it('produce identical JSON for the same class selection', async () => {
     const user = userEvent.setup();
     const exported: Json[][] = [];
@@ -102,7 +118,7 @@ describe('the two routes to a $ref attribute (#957)', () => {
     expect(properties().billTo).toEqual(properties().shipsTo);
     expect(properties().billTo).toEqual({ $ref: '#/$defs/Address', description: 'Where the goods go' });
     expect(Object.keys(properties().shipsTo as Json)).not.toContain('type');
-  });
+  }, 30000);
 });
 
 describe("the inspector's Reference Existing Class picker", () => {

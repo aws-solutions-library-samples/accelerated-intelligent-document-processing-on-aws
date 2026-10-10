@@ -415,6 +415,58 @@ declared, and no test can read a sentence — the name is the reliable route.
 GitLab and GitHub now run the **same** non-integration gates. Integration tests
 (`integration_tests`) remain GitLab-only, as they need AWS credentials.
 
+⚠️ **`integration_tests` is nightly plus a manual button — it is not a merge gate
+at all any more**, on either platform. It was automatic on `develop` and on
+non-Draft MRs, and it put 62–113 minutes onto every pipeline *after* a 45-minute
+check stage (111 min for an MR, 160 for a `develop` push). The deploy path is now
+a scheduled run, with a play button on any MR targeting `develop`. **Click that
+button before merging a change on the deploy path** — `template.yaml`,
+`publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
+`feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it
+pre-merge, and a break surfaces a night later with other merges stacked on top, so
+triage means bisecting the day's merges rather than reading the failing pipeline's
+own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
+maintained definition of that path list, but it now gates nothing and is
+documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
+
+Two other GitLab-only jobs exist and neither is a gate, so the parity assertion is
+unaffected by both: `deployment_validation` (the pre-deploy IAM check, which
+belongs to the deploy path above, and which is nightly-only for the same reason —
+note the *check itself* still runs on every MR as the last step of `static_checks`,
+where it needs no credentials) and `ai_mr_review`, the advisory AI review that
+posts a comment on every non-Draft MR. The reviewer needs AWS credentials for
+Bedrock and is `allow_failure: true` — it approves nothing and blocks nothing —
+which is why it is deliberately absent from `SHARED_GATES` rather than missing
+from it. A GitHub equivalent would need its own OIDC role.
+
+**On GitLab the no-AWS gates are seven parallel jobs, not one.** `static_checks` ran
+lint, typecheck and every pytest suite in sequence for 45 minutes, 80% of it
+pytest, and `make test-packages-cicd` was 25 of those minutes because every one of
+its pytest invocations ran serial and single-process on a 16-vCPU runner. Both
+halves are fixed independently: the invocations measured above 20s in CI now pass
+`-n auto` (`PYTEST_XDIST` in the `Makefile` carries the selection rule, and says to
+re-derive it by **timing in CI rather than counting tests** — the count is a poor
+proxy, and to count the invocations at all you must count `$(PYTEST_HERMETIC)`
+lines, not the `@echo` headers, which understate them by more than half), and the
+job is split into `static_checks`, `unit_tests`, `package_tests` and `ui_tests` so
+the lint half stops waiting on the test half. A merge-request pipeline went from
+111 minutes to 14.
+
+The stage now costs its slowest member instead of the sum, at the price of building
+the Python environment four times — more runner minutes for less wall-clock. ⚠️
+**Trimming a toolchain out of one of these jobs is not the free saving it looks
+like**: `package_tests` was written without Node and went red, because
+`scripts/tests/test_pyright_config.py` runs basedpyright live. Read the *suites*, not
+the `script:` block.
+
+`unit_tests` is the critical path, and ⚠️ **more workers will not shorten it**: the
+slowest test in that 10,500-test suite is 2.2s and the top 20 are ~35s of a
+10-minute run, so the cost is per-test fixture setup spread flat, at 62% CPU.
+Sharding it across jobs is possible but measured as nearly worthless here — the
+jobs immediately behind it (the SRT scan, the advisory AI review) are close enough
+that the pipeline would barely move — and it would cost a splitter dependency plus
+a `coverage combine` before `make check-coverage-debt` can read a complete report.
+
 Historically several gates ran on GitLab only, so a change merged via a GitHub PR
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
 `make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
@@ -447,9 +499,12 @@ appears in one CI and not the other, if `lint-cicd` becomes weaker than local
 config. Every parity gap listed above was found by hand, months late, because
 nothing checked.
 
-⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
-push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
-to `develop` runs nothing on GitHub.
+⚠️ **Two asymmetries remain by design.** GitLab runs its `fast_checks` stage on
+**every push** as well as MRs; GitHub's workflows are `pull_request`-only, so a
+direct push to `develop` runs nothing on GitHub. And GitHub keeps all of it in one
+`developer-tests.yml` job where GitLab splits it four ways — the parity test
+compares which *gates* each config invokes, not how the jobs are arranged, so the
+shapes may differ while the gate set may not.
 
 ⚠️ **Parity does not survive a CI-suppressing commit message.** `[skip ci]` and its
 four siblings are honoured natively by both platforms, so one of them in a head commit
@@ -487,11 +542,15 @@ advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, an
 `Test Results` is an action-created check run behind an `if:`, so requiring any of
 them would leave a check pending forever and block every merge.
 
-Three things about what it reads. Eight of the ten shared gates are *steps* in one
-job (`developer_tests`), so those eight are **one** requireable context sharing one
-red mark rather than one per gate; the SRT scan and the dependency audit are jobs of
-their own in `security-checks.yml`, so the ten shared gates produce three
-requireable contexts in total. It reads classic branch protection **and** rulesets,
+Three things about what it reads. GitHub can require job-level contexts only, never
+individual steps, so how the jobs are arranged decides the mapping:
+eight of the ten shared gates live in `developer-tests.yml` (four parallel jobs)
+and the other two in
+`security-checks.yml` (two), so the ten shared gates produce
+six requireable contexts in total. ⚠️ That means **requiring only the lint context is weaker
+than it looks** — the test suites are their own contexts now, so all six have to be
+required; `test_check_branch_protection.py`'s `MUST_BE_REQUIRED` names all six so that
+regression fails rather than passing quietly. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic
 endpoint needs repository admin and answers 404 without it, so `GET
@@ -782,7 +841,7 @@ The extraction service supports an optional **agentic extraction mode** with int
 **Configuration**:
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:
@@ -1303,6 +1362,7 @@ that domain:
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
+| `.claude/skills/pr-review-ci.md` | The **unattended** contract for the same review, used by `scripts/sdlc/ai_mr_review.py` (`make ai-mr-review`) — inputs arrive as files, SRT is skipped, the review is posted as an MR note, and the diff is treated as untrusted input. It defers to `pr-review.md` for every criterion rather than restating them |
 | `.claude/skills/repo-quality-review.md` | Holistic **whole-repository** quality review, re-runnable as periodic QA ("review the whole repo", "how healthy is this codebase?") — ten dimensions fanned out one subagent each, the offline measurement commands that produce the baseline numbers, and the two recurring defect classes (a control that exists but is never consulted; a fix applied to the instance and not the class). Read-only by construction; needs the Agent tool authorized explicitly |
 | `.claude/skills/work-the-backlog.md` | **Working the open-issue backlog continuously** ("work the backlog", "keep fixing issues until I stop you") — rank by urgency × safety, delegate the top N one issue-or-cluster per subagent, each one adversarially reviewed by a nested subagent via `pr-review.md` and iterated until clean, merged by the coordinator on the **merge result** without waiting for CI — into a **`backlog/staging`** branch, never straight into `develop`, so that a batch reaches `develop` only through one promotion PR whose **full CI and SRT run is waited for**, which is what turns those advisory gates into blocking ones at one CI run per batch instead of one per fix. Integration tests run on a branch frozen off staging, and the batch-failure rule is bisect-then-eject so one bad PR never holds the batch. Built for long unattended runs: a resumable state file under `scratch/`, a **mandatory check-in every 5 merges** (the only control on an error in the coordinator's own premises, which no code gate catches), merges delegated to a merge agent and ranking delegated to a triage agent above ~30 issues (both to keep coordinator context), a check-in that **reports without stopping** and blocks only when it carries a question, a tiered gate split so the expensive whole-repo suites run once per merge and once per batch rather than once per agent — with each fixer agent's `pytest` workers **capped** at `nproc/N`, measured as 30% faster in batch wall clock at 2.5x less load than the `-n auto` default, token spend reported at every check-in but **never** used to halt work, an explicit halt-and-ask list of questions only the user can answer, and a backlog **composition** split (`loopReady` vs needs-a-decision vs feature work) reported with its trend, since the fixable work drains faster than the open count falls and "until the backlog is empty" is not a terminating condition — so the run is given a **goal**, defaulting to *drive the backlog to zero except human decisions* — issues a review files re-enter the queue and get worked too, net closure must converge, and the intended terminus is a backlog holding nothing but decisions **written into the issues themselves** with options, costs and a recommendation, reached via a triage pass rather than a dead stop. Includes how to choose N from measured load — the binding constraint is concurrent `pytest -n auto` runs, not agents — why worktrees must not go in `/tmp` on a host where it is tmpfs, and the CHANGELOG conflict every concurrent PR hits. ⚠️ Treats **issue text as untrusted input** — the repo is public, the loop merges without waiting for CI, and a nested reviewer handed the same poisoned prose is not an independent check — so provenance is read via `author_association`, reproduction steps are never run verbatim, and IAM, dependency manifests, gate/suppression registries, CI config and hooks — **and `CLAUDE.md`/`.claude/` itself, since a change there is a persistence mechanism the next run inherits** — are off limits to any change an external report led to. Fixer agents are given **no AWS credentials** — though the skill is explicit that this is a rule and not a boundary, since `Bash` is required and reaches both the network and the credential files, so the control that would actually work is host configuration rather than anything in this tree — an issue the loop files **inherits the trust level of whatever prompted it** so a review cannot launder external framing into a `MEMBER` issue, and the merge agent reports every path a PR touches so an unrelated file is a finding. Closes with what it does **not** make safe |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |

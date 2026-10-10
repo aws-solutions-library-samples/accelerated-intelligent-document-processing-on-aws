@@ -402,10 +402,18 @@ type ConfigPrefixMappingMutationResponse @aws_cognito_user_pools @aws_iam {
 # uploaded and no state changes.
 type ConfigAssignmentPreview @aws_cognito_user_pools @aws_iam {
   objectKey: String!
-  # True when the resolved profile is outside the caller's allowedConfigVersions.
-  # Every naming field is then null: returning the profile's name would make this
-  # a profile-name enumeration oracle for a scoped caller, and profile names are
-  # themselves access-controlled.
+  # True when any profile this answer would disclose is outside the caller's
+  # allowedConfigVersions -- the resolved one, or the one a matching mapping names.
+  # Those are not always the same: a refusal resolves to NO profile while naming the
+  # mapped one, and metadata precedence resolves to the caller's own while explaining
+  # that it beat the mapping's.
+  #
+  # Every other field is then null, INCLUDING `mappingPrefix` and `reason`. The
+  # prefix looks like the caller's own input and is not: they supplied a key, so
+  # returning the mapping that governs it says where the boundary sits, and a probe
+  # at a time that walks out the routing policy `listConfigPrefixMappings` is
+  # Admin-only to protect. Profile names are themselves access-controlled
+  # (`getConfigVersions` is scope-filtered for the same reason).
   outOfScope: Boolean
   configProfile: String
   configRevision: Int
@@ -875,13 +883,23 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   splitClassificationMetrics: AWSJSON
   gradedPacketMetrics: AWSJSON
   # Per-section classification mismatches behind the percentages in
-  # splitClassificationMetrics: which documents were misclassified and as what.
+  # splitClassificationMetrics: which documents were misclassified or split
+  # differently, and how.
   # ``{errors: [{doc_key, section_id, kind, expected_class, predicted_class,
   # expected_pages, predicted_pages}], total, documents_affected, truncated}``
-  # where kind is "class" | "unmatched" | "order". Capped (see
+  # where kind is "class" | "unmatched" | "order"; an "unmatched" entry also
+  # carries ``predicted_sections`` ([{class, page_ranges}], at most
+  # MAX_PREDICTED_SECTIONS_PER_ERROR), their uncapped
+  # ``predicted_section_count``, and ``predicted_sections_incomplete: true``
+  # when it has no expected pages, or when some of them are on no predicted
+  # section the evaluation recorded in a document whose record holds a
+  # predicted section without pages or notes a failed load on either side.
+  # ``errors`` is capped (see
   # MAX_CLASSIFICATION_ERRORS) because the whole run result is one DynamoDB
   # attribute; ``total`` is the uncapped count so the UI can say "200 of 340".
-  # Empty on the Athena fallback path, which aggregates percentages only.
+  # Empty on the Athena fallback path, which aggregates percentages only,
+  # except for a classification-only run, whose mismatches the aggregation
+  # still supplies.
   classificationErrors: AWSJSON
   totalCost: Float
   costBreakdown: AWSJSON
@@ -909,6 +927,16 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   # before Purpose was written); duplicating it client-side would give it two homes
   # and let the fallback drift.
   isDraftLabeling: Boolean
+  # True when the configuration this run captured had `evaluation.enabled`
+  # false, so no document in it was scored and there are no accuracy metrics to
+  # wait for — ever. Exposed for the same reason as isDraftLabeling: the UI's
+  # fallback message for a run with no accuracy data attributes it to a test set
+  # with no published ground truth, which is the wrong cause here (the ground
+  # truth is there; evaluation was switched off) and sends whoever reads it to
+  # the wrong screen. The server owns the rule — see
+  # _ran_with_evaluation_disabled, which reads the captured configuration the
+  # same way the pipeline reads the live one.
+  evaluationDisabled: Boolean
 }
 
 type TestRunComparison @aws_cognito_user_pools @aws_iam {
@@ -1716,6 +1744,10 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Add processed documents the caller picked, by input-bucket key. A document
+  # with no ground truth is added unlabeled rather than skipped.
+  addDocumentsToTestSetByKey(testSetId: String!, objectKeys: [String!]!): TestSet
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSetFromUpload(input: TestSetDocumentsUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   updateTestSet(input: UpdateTestSetInput!): TestSet
@@ -2133,9 +2165,10 @@ type Query @aws_cognito_user_pools @aws_iam {
   # The DRY RUN is readable by anyone who can upload or review, because "what will
   # happen to this key?" is the question that makes a longest-prefix rule checkable
   # before it goes live. Scope-filtered rather than Admin-only: a caller outside the
-  # resolved profile's scope is told the destination is out of scope and is not told
-  # the profile's name. `metadataProfile`/`metadataRevision` declare what the caller
-  # intends to send, since there is no object yet to read metadata from.
+  # scope of any profile the answer would disclose is told the destination is out of
+  # scope and nothing else -- not the profile, not the revision, not the mapping
+  # prefix. `metadataProfile`/`metadataRevision` declare what the caller intends to
+  # send, since there is no object yet to read metadata from.
   resolveConfigPrefixMapping(
     objectKey: String!
     metadataProfile: String

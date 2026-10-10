@@ -398,10 +398,31 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         index._user_scope_cache.clear()
 
     @staticmethod
+    def _activate(profile):
+        """Make `profile` this deployment's active Configuration Profile.
+
+        Must be called with the `resolver` fixture in scope, so the writes land in
+        moto rather than in a real account.
+        """
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        table.put_item(Item={"Configuration": f"Config#{profile}"})
+        table.put_item(
+            Item={"Configuration": "Config#__active", "ActiveVersion": profile}
+        )
+
+    @staticmethod
     def _mapping(index, prefix, profile, **kwargs):
+        """Write a mapping, and the profile head item it names.
+
+        The head item is not decoration. This resolver injects `profile_exists`, so
+        a mapping naming a profile that is not in the table resolves as *stale* and
+        falls through rather than applying — which is the correct behaviour and
+        makes a fixture that omits the profile test the opposite of what it says.
+        """
         from idp_common.config.prefix_mappings import PrefixMappingStore
 
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        table.put_item(Item={"Configuration": f"Config#{profile}"})
         PrefixMappingStore(table).put(prefix, profile, **kwargs)
 
     def test_the_metadata_route_is_refused_out_of_scope(self, resolver):
@@ -612,3 +633,58 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
             assert index._prefix_mappings() == []
         finally:
             index._prefix_mappings.__globals__["_dynamodb"] = original
+
+    def test_the_active_profile_route_is_scope_checked(self, resolver):
+        """The widest upload shape there is: no `version`, no mapping match.
+
+        This was allowed because the resolver was not given `active_profile`, so the
+        resolved profile was None and a None profile skips the scope guard. The
+        route the control exists for was the one it did not cover.
+        """
+        index, _ = resolver
+        self._activate("finance-prod")
+        self._scope(index, "teamA")
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))
+
+        assert str(excinfo.value).startswith("Unauthorized")
+        assert "finance-prod" not in str(excinfo.value)
+
+    def test_the_active_profile_route_allows_an_in_scope_caller(self, resolver):
+        index, _ = resolver
+        self._activate("teamA-prod")
+        self._scope(index, "teamA-*")
+
+        result = index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))
+
+        assert result["objectKey"] == "x.pdf"
+
+    def test_a_pinned_mapping_agrees_with_an_unpinned_request(self, resolver):
+        """The preview, the upload and ingest must give the same verdict.
+
+        A `reject` mapping pinned to r7 against a request that names the profile but
+        no revision: without `published_revision` injected here, the request's
+        effective revision is None, "disagrees" with 7, and the upload is refused —
+        a 400 on a legitimate upload that the preview said was fine and that ingest
+        would have accepted.
+        """
+        index, _ = resolver
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        table.put_item(
+            Item={"Configuration": "Config#reg", "PublishedRevision": 7}
+        )
+        from idp_common.config.prefix_mappings import PrefixMappingStore
+
+        PrefixMappingStore(table).put(
+            "regulated/", "reg", config_revision=7, metadata_precedence="reject"
+        )
+
+        result = index.handler(
+            _event(
+                "uploadDocument",
+                {"fileName": "x.pdf", "prefix": "regulated", "version": "reg"},
+            )
+        )
+
+        assert result["objectKey"] == "regulated/x.pdf"

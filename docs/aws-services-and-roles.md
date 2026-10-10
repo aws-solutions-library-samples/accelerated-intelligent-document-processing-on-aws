@@ -20,7 +20,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon S3** | Stores input documents, processed outputs, and web UI assets | ✓ | ✓ |
 | **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
-| **AWS Step Functions** | Orchestrates document processing workflows | ✓ | ✓ |
+| **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
 | **Amazon EventBridge** | Triggers document processing workflows when files are uploaded | ✓ | ✓ |
 | **Amazon CloudFront** | Delivers the web UI with global distribution (default hosting mode) | ✓ | ✓ |
@@ -292,9 +292,12 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (reporting/Athena results buckets)
   * `logs:*`
 
-* **Data-Mart Rollup Lambda Role** (`DataMartRollupFunction`, scheduled hourly + daily):
+* **Data-Mart Rollup Lambda Role** (`DataMartRollupFunction`, scheduled hourly + daily + reconciler + migration state-machine task-mode invocations):
   * `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:GetQueryResults`, `athena:StopQueryExecution` (writes rollup tables via `INSERT INTO`)
   * `glue:GetDatabase`, `glue:GetTable`, `glue:GetPartitions`, `glue:CreatePartition`, `glue:BatchCreatePartition` (partition management on rollup tables)
+  * `glue:GetDatabases`, `glue:GetTables` — required by the rollup Lambda's direct Glue-catalog scan of `document_sections_*` tables (used to build the `doc_class` CTE that fills in `document_class` for historical metering rows). On a missing grant, `get_tables` raises `AccessDeniedException` and the discovery function re-raises it so the invocation errors and the DLQ alarm fires — a permissions regression here surfaces immediately rather than degrading every historical row to `'unknown'` in the rollup output
+  * `ssm:GetParameter`, `ssm:PutParameter` on `/idp/<stack-name>/data-mart-rollup/*` — the state machine's two-phase migration marker (`state=in_progress` after purge, `state=completed` on success). Read by `_check_marker_state`, written by `_write_marker` — both are task-mode invocations of this Lambda
+  * `s3:DeleteObject` on the four rollup prefixes (`metering_hourly/*`, `metering_daily/*`, `metering_docs_hourly/*`, `metering_docs_daily/*`) under the reporting bucket — used by the migration state machine's `InitialPurge` task, scoped to date= partitions inside the migration window so older aggregates outside the window are preserved
   * `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics` (`*` — API doesn't support resource-level scoping) for reading `AWS/Lambda/Duration`, `AWS/Lambda/Invocations`, `IDPControlPlane/AthenaBytesScanned`, `IDPControlPlane/BedrockInputTokens`, `IDPControlPlane/BedrockOutputTokens`
   * `tag:GetResources` (`*` — account-scoped API) for tag-based Lambda discovery
   * `cloudformation:ListStackResources` (scoped to this stack + its nested stacks) to walk the stack tree
@@ -303,6 +306,16 @@ The solution creates various IAM roles to run different components of the system
   * `s3:AbortMultipartUpload`, `s3:ListBucketMultipartUploads`, `s3:ListMultipartUploadParts` (reporting bucket only) — part of AWS's reference policy for Athena `INSERT INTO`, which switches to a multipart upload once a result part exceeds its buffer
   * `sqs:SendMessage` on its DLQ (async-failure destination)
   * KMS on the stack CMK
+
+* **Data-Mart Migration State-Machine Role** (`DataMartMigrationStateMachine`, invoked by the CFN custom-resource dispatcher on every `MigrationVersion` change):
+  * `lambda:InvokeFunction` on `DataMartRollupFunction` only — the state machine drives every migration step by invoking that Lambda in task modes (`check_marker_state`, `check_lake_state`, `purge_rollup_prefixes`, `write_marker`, `plan_migration_chunks`, `backfill`, `backfill_daily_range`, `check_hours_failed`)
+  * CloudWatch Logs delivery — `logs:CreateLogDelivery`, `logs:GetLogDelivery`, `logs:UpdateLogDelivery`, `logs:DeleteLogDelivery`, `logs:ListLogDeliveries`, `logs:PutResourcePolicy`, `logs:DescribeResourcePolicies`, `logs:DescribeLogGroups` (`*` resource — the SFN service creates the delivery, not the state machine itself)
+  * X-Ray write permissions — `xray:PutTraceSegments`, `xray:PutTelemetryRecords`, `xray:GetSamplingRules`, `xray:GetSamplingTargets`. Granted **unconditionally** in the template — `EnableXRayTracing` gates whether the function's `Tracing` mode is `Active` or `PassThrough`, not the permissions themselves
+
+* **Data-Mart Migration Dispatcher Role** (`DataMartMigrationDispatcherFunction`, CFN custom-resource entry point):
+  * `states:StartExecution` on `DataMartMigrationStateMachine` only — starts the state machine asynchronously and returns SUCCESS to CFN immediately; the migration continues after the CustomResource completes
+  * `ssm:DeleteParameter` on `/idp/<stack-name>/data-mart-rollup/*` — deletes the SSM migration marker on `ForceFresh=true` (so the state machine's `CheckMarker` sees `ParameterNotFound` and takes the full-flow branch), and cleans it up on stack Delete so a same-name recreate starts clean. Read access is deliberately NOT granted here — the marker is read from the rollup Lambda's own role, not this one
+  * No KMS grant on the dispatcher role. The dispatcher does not encrypt or decrypt any customer data — its only writes are `states:StartExecution` (no customer-data payload beyond `days` / `chunk_hours` / `version` / `anchor`) and `ssm:DeleteParameter`; the SSM parameter's own encryption is handled by SSM's service-owned key, not the stack CMK
 
 * **Metering Hour Migration Lambda Role** (`MeteringHourMigrationFunction`, one-shot CFN custom resource):
   * `s3:ListBucket` (reporting bucket) for listing pre-migration parquet files

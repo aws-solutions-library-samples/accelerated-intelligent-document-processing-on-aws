@@ -99,6 +99,7 @@ export interface ExportableDocument {
   configVersion?: string;
   configSource?: string;
   configMappingPrefix?: string;
+  configAssignmentError?: string;
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -279,6 +280,11 @@ const buildPlan = (doc: ExportableDocument, settings: ExportSettings | undefined
     // UI around it, where the profile name alone does not say why.
     configSource: doc.configSource ?? null,
     configMappingPrefix: doc.configMappingPrefix ?? null,
+    // The one field that says why a document never processed — a prefix mapping
+    // in `reject` mode refused it, say. Omitting it from an export of a failed
+    // document leaves the archive showing no results and no reason, which is
+    // exactly the case someone exports a document to ask about.
+    configAssignmentError: doc.configAssignmentError ?? null,
     pageCount: doc.pageCount ?? null,
     evaluationStatus: doc.evaluationStatus ?? null,
     hitlStatus: doc.hitlStatus ?? null,
@@ -579,6 +585,7 @@ export const exportDocuments = async (
         configVersion: entry.doc.configVersion ?? null,
         configSource: entry.doc.configSource ?? null,
         configMappingPrefix: entry.doc.configMappingPrefix ?? null,
+        configAssignmentError: entry.doc.configAssignmentError ?? null,
         pageCount: entry.doc.pageCount ?? null,
         evaluationStatus: entry.doc.evaluationStatus ?? null,
       },

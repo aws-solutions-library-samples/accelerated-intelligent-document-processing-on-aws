@@ -1009,12 +1009,23 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         if metering_read.is_present
         else f"{metering_read.state}: {metering_read.error}"
     )
-    cost, by = lib.price_metering(metering) if metering is not None else (None, None)
-    by_phase = {} if metering is not None else None
-    for k, units in (metering or {}).items():
-        phase = k.split("/")[0]
-        c, _ = lib.price_metering({k: units})
-        by_phase[phase] = round(by_phase.get(phase, 0.0) + c, 5)
+    # ...and it refuses to price a metering row it DID read but cannot fully price
+    # (GitHub #1146). A model absent from `pricing.yaml` contributes nothing, which
+    # is the same arithmetic as contributing zero, so the row's cost comes back
+    # non-zero and plausible while being strictly below truth — and unlike an unread
+    # row there is no zero anywhere to notice. `cost_unpriced` names the entries.
+    priced = lib.price_metering(metering) if metering is not None else None
+    priceable = priced is not None and priced.complete
+    cost_unpriced = priced.why or None if priced is not None else None
+    cost = priced.total if priceable and priced is not None else None
+    by = priced.by_key if priceable and priced is not None else None
+    by_phase = {} if priceable else None
+    if priceable and priced is not None and by_phase is not None:
+        for k in metering or {}:
+            phase = k.split("/")[0]
+            by_phase[phase] = round(
+                by_phase.get(phase, 0.0) + priced.by_meter_key.get(k, 0.0), 5
+            )
     # Token counts, both summed across the whole document and split by phase.
     #
     # The doc-level sum mixes every model the pipeline called (Sonnet for
@@ -1048,6 +1059,7 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         "wall_s": _wall(row),
         "cost": round(cost, 4) if cost is not None else None,
         "cost_unread": cost_unread,
+        "cost_unpriced": cost_unpriced,
         "cost_by_phase": by_phase,
         "cost_by_key": (
             {k: round(v, 5) for k, v in (by or {}).items()} if by is not None else None

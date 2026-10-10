@@ -7,12 +7,20 @@ the Step Functions event-history parsing it depends on.
 
 This is the tool the error-analyzer agent calls first, and everything it does next
 is driven by what comes back — `document_found` decides whether analysis proceeds
-at all, `primary_failed_function` decides which log group to search, and
-`lambda_request_ids` are the only thing that correlates a CloudWatch log line with
-this document rather than a concurrent one. So the tests assert the *contents* of
-the returned dict, not just that it was returned: a tool that reports
-`document_found: True` with an empty request-id list sends the agent to search a
-log group with no filter, which is how a diagnosis becomes a guess.
+at all, `primary_failed_function` and `primary_failed_state` are what the agent is
+told failed and therefore where it looks, and `lambda_request_ids` are the only
+thing that correlates a CloudWatch log line with this document rather than a
+concurrent one. So the tests assert the *contents* of the returned dict, not just
+that it was returned: a tool that reports `document_found: True` with an empty
+request-id list sends the agent to search a log group with no filter, which is how
+a diagnosis becomes a guess.
+
+Note that the route from these fields to a log group runs through the agent's own
+reasoning, not through code: `cloudwatch_tool` selects log groups from an SSM list
+by document status and prioritises request ids using a **different**
+`extract_lambda_request_ids` — the X-Ray one — so nothing here is read
+programmatically. The tool's docstring is the whole contract, which is why its
+wording is part of the change these tests cover.
 
 `extract_lambda_request_ids` is pure and gets the bulk of the cases. The boto3
 Lambda client is stubbed; nothing here reaches AWS.
@@ -49,6 +57,9 @@ _OUTCOME_DETAIL_KEY = {
     "TaskTimedOut": "taskTimedOutEventDetails",
     "TaskStartFailed": "taskStartFailedEventDetails",
     "TaskSubmitFailed": "taskSubmitFailedEventDetails",
+    "ActivityFailed": "activityFailedEventDetails",
+    "ActivityScheduleFailed": "activityScheduleFailedEventDetails",
+    "ActivityTimedOut": "activityTimedOutEventDetails",
     "TaskStateEntered": "stateEnteredEventDetails",
     "TaskStateExited": "stateExitedEventDetails",
 }
@@ -160,6 +171,64 @@ def _optimized_chain(
             _OUTCOME_DETAIL_KEY[outcome_type]: dict(detail or {}),
         },
     ]
+
+
+def _schedule_failure_history(
+    outcome_type: str = "LambdaFunctionScheduleFailed",
+    *,
+    detail: dict[str, Any] | None = None,
+    attempts: int = 1,
+    state_name: str = "OCRStep",
+) -> list[dict[str, Any]]:
+    """The events a task state emits when the invocation was never scheduled.
+
+    ⚠️ **There is no scheduling event and no `Started` event, because there cannot
+    be.** A `*ScheduleFailed` event is emitted *instead of* the corresponding
+    `*Scheduled` one, so the only identity in this history is the enclosing state's
+    name — the function the state would have invoked appears nowhere.
+
+    Building this with `_direct_chain` instead would place a `Scheduled` **and** a
+    `Started` event before a failure *to schedule*, and would then assert a
+    capability against a history the service cannot emit. That is the ordering gap
+    `TestTheFixtureMatchesTheServiceApiModel` states it cannot close: event sequence
+    is not in the API model.
+
+    **Status of the ordering claim.** It is strongly-supported inference, not
+    observation: the API reference documents
+    `LambdaFunctionScheduleFailedEventDetails` only as "details about a failed Lambda
+    function schedule event" and says nothing about sequence, and no live execution
+    was observed here — every history in this file is synthesised. What supports it is
+    the service model, where `LambdaFunctionScheduledEventDetails.resource` is a
+    **required** member, so a scheduling attempt that failed because the resource
+    could not be resolved cannot have emitted one.
+
+    `attempts` chains that many failures, which is the shape a `Retry` ladder
+    produces: each attempt adds a link and no new state transition.
+    """
+    events: list[dict[str, Any]] = [
+        {
+            "type": "TaskStateEntered",
+            "id": 1,
+            "previousEventId": 0,
+            "stateEnteredEventDetails": {"name": state_name, "input": "{}"},
+        }
+    ]
+    for attempt in range(attempts):
+        events.append(
+            {
+                "type": outcome_type,
+                "id": 2 + attempt,
+                "previousEventId": 1 + attempt,
+                _OUTCOME_DETAIL_KEY[outcome_type]: dict(
+                    detail
+                    or {
+                        "error": "Lambda.AccessDeniedException",
+                        "cause": "is not authorized to perform: lambda:InvokeFunction",
+                    }
+                ),
+            }
+        )
+    return events
 
 
 def _state_event(
@@ -285,8 +354,10 @@ class TestExtractLambdaRequestIds:
         assert result == {
             "function_request_map": {},
             "failed_functions": [],
+            "failed_states": [],
             "all_request_ids": [],
             "primary_failed_function": None,
+            "primary_failed_state": None,
         }
 
     # ------------------------------------------------------------ the core defect
@@ -893,15 +964,18 @@ class TestTheFixtureMatchesTheServiceApiModel:
       deliberately rather than the invariant rotting silently.
 
     ⚠️ **Two limits worth knowing before reading a pass here as "the fixtures are
-    right".** It spans the three shared builders — ``_direct_chain``,
-    ``_optimized_chain`` and ``_state_event`` — and not the handful of histories
-    written inline elsewhere in this file, which are currently valid but unchecked. And
-    it constrains **keys and fields, not sequences**: event *ordering* is not in the
-    API model, so a history assembled in an order the service cannot emit passes every
-    assertion here. That gap is not hypothetical — a schedule-failure case built from
-    ``_direct_chain`` placed a ``Scheduled`` and a ``Started`` event before a failure
-    *to schedule*, and asserted a capability the parser does not have. It is the same
-    species as the defect this class exists to prevent, one layer up.
+    right".** It spans the four shared builders — ``_direct_chain``,
+    ``_optimized_chain``, ``_state_event`` and ``_schedule_failure_history`` — and not
+    the handful of histories written inline elsewhere in this file, which are currently
+    valid but unchecked. And it constrains **keys and fields, not sequences**: event
+    *ordering* is not in the API model, so a history assembled in an order the service
+    cannot emit passes every assertion here. That gap is not hypothetical — a
+    schedule-failure case built from ``_direct_chain`` placed a ``Scheduled`` and a
+    ``Started`` event before a failure *to schedule*, and asserted a capability the
+    parser did not have. It is the same species as the defect this class exists to
+    prevent, one layer up. ``_schedule_failure_history`` is the builder that gets that
+    ordering right, and what makes it right is the argument in its docstring, not
+    anything asserted here.
     """
 
     @staticmethod
@@ -953,6 +1027,13 @@ class TestTheFixtureMatchesTheServiceApiModel:
                 _state_event(
                     state_type, name="S", detail=self._plausible_detail(state_type)
                 )
+            )
+        for schedule_failure in (
+            "LambdaFunctionScheduleFailed",
+            "ActivityScheduleFailed",
+        ):
+            events += _schedule_failure_history(
+                schedule_failure, detail=self._plausible_detail(schedule_failure)
             )
         return events
 
@@ -1161,66 +1242,42 @@ class TestTheInvokeTimeFailureFamily:
         assert result["failed_functions"] == ["OCRFunction"]
         assert result["primary_failed_function"] == "OCRFunction"
 
-    def test_a_schedule_failure_names_nothing_because_it_has_no_scheduled_event(self):
-        """⚠️ **The one invoke-time type this does NOT attribute**, asserted at the
-        answer it actually gives rather than the one the other three give.
+    def test_a_schedule_failure_names_its_state_since_no_function_is_in_the_history(
+        self,
+    ):
+        """⚠️ **The one invoke-time type that can name no function**, answered with the
+        enclosing state instead — the identity such a history does carry.
 
         A schedule failure is what Step Functions emits *instead of*
-        `LambdaFunctionScheduled`, so there is no scheduling event for the causal walk
-        to land on and the failure contributes no function name. The history below is
-        the shape the service can produce; building it with `_direct_chain` instead
-        would place a `Scheduled` **and** a `Started` event before a failure *to
-        schedule*, which asserts a capability the code does not have against a history
-        that cannot occur.
+        `LambdaFunctionScheduled`, so the function it would have invoked appears nowhere
+        in the history and the causal walk has no scheduling event to land on. Before
+        this, every field went empty and the operator was directed to no function, no
+        state and no log group for the whole class — which is what a
+        `lambda:InvokeFunction` denial produces (#1183).
 
-        **Status of the two halves.** The *consequence* is measured — this history
-        gives `[]` and `None`, while the `_direct_chain` shape gives `['OCRFunction']`.
-        The *ordering* is strongly-supported inference rather than measurement: the API
-        reference documents only "details about a failed Lambda function schedule
-        event", and no live execution was observed. What supports it is the model —
-        `LambdaFunctionScheduledEventDetails.resource` is a **required** member, so a
-        scheduling attempt that failed because the resource could not be resolved
-        cannot have emitted one.
-
-        Not a regression: the previous parser did not read this event type at all, so
-        the outcome is the same empty value. Giving it the enclosing state's name is
-        the better eventual behaviour and is deliberately not done here — reaching for
-        the state name is how the `TaskStateEntered` cross-attribution arose, so it
-        wants its own change and its own measurement. Tracked separately.
+        The state name goes in a **separate** field. `failed_functions` is consumed as
+        function names, including for choosing a log group, and `OCRStep` names no log
+        group; widening that field would have made every consumer's read of it
+        conditional on something it cannot see.
         """
-        history = [
-            {
-                "type": "TaskStateEntered",
-                "id": 1,
-                "previousEventId": 0,
-                "stateEnteredEventDetails": {"name": "OCRStep", "input": "{}"},
-            },
-            {
-                "type": "LambdaFunctionScheduleFailed",
-                "id": 2,
-                "previousEventId": 1,
-                "lambdaFunctionScheduleFailedEventDetails": {
-                    "error": "Lambda.AccessDeniedException",
-                    "cause": "not authorized to perform: lambda:InvokeFunction",
-                },
-            },
-        ]
+        result = extract_lambda_request_ids(_schedule_failure_history())
 
-        result = extract_lambda_request_ids(history)
+        assert result["failed_states"] == ["OCRStep"]
+        assert result["primary_failed_state"] == "OCRStep"
+        # And the function fields stay empty rather than being fed a state name.
         assert result["failed_functions"] == []
         assert result["primary_failed_function"] is None
 
-    def test_the_event_type_is_still_read_so_a_later_fallback_would_work(self):
-        """`LambdaFunctionScheduleFailed` stays in the parser's maps even though it
-        resolves to no name today. Reading it costs nothing, and it is what a
-        state-name fallback would attach to when one is added."""
+    def test_the_schedule_failure_type_is_read_and_classified_as_a_task_attempt(self):
+        """The two memberships the behaviour above rests on, pinned directly so that
+        dropping either fails here as well as in the behavioural case."""
         from idp_common.agents.error_analyzer.tools.lambda_tool import (
-            _FAILURE_EVENTS_WITH_A_FUNCTION,
             _OUTCOME_DETAIL_KEYS,
+            _TASK_ATTEMPT_FAILURE_EVENTS,
         )
 
         assert "LambdaFunctionScheduleFailed" in _OUTCOME_DETAIL_KEYS
-        assert "LambdaFunctionScheduleFailed" in _FAILURE_EVENTS_WITH_A_FUNCTION
+        assert "LambdaFunctionScheduleFailed" in _TASK_ATTEMPT_FAILURE_EVENTS
 
     @pytest.mark.parametrize("outcome", ["TaskStartFailed", "TaskSubmitFailed"])
     def test_an_optimized_invocation_that_never_started_names_its_function(
@@ -1371,3 +1428,670 @@ class TestTheWalkBoundsAreRatcheted:
         ]
         result = extract_lambda_request_ids(events)
         assert result["failed_functions"] == []
+
+
+@pytest.mark.unit
+class TestTheFailureVocabularyIsDerivedFromTheServiceModel:
+    """The parser's failure vocabulary, recomputed from botocore rather than reviewed.
+
+    Two sets in `lambda_tool` decide whether a failure is seen at all, and a
+    hand-maintained list is how the invoke-time family came to be missing from both
+    (#1171) and how the schedule-failure class stayed unattributed afterwards (#1183).
+    So each is stated here as a **rule over the `HistoryEventType` enumeration** and
+    compared against the constant: a service that adds a failure type nobody has
+    classified fails here rather than being silently unread, and a spelling dropped from
+    the constant fails here too.
+
+    botocore is already a dependency of this module and its Step Functions model is the
+    authority the service is built from, so the derivation is offline and needs no
+    credentials.
+
+    ⚠️ **One gap, in the derivation rather than in the constants.** A type is found to be
+    error-bearing by reaching its detail shape through `_detail_key_for`, which assumes
+    the `<eventType>EventDetails` naming convention. Every type in the model today that
+    has a per-type detail member follows it, and the two that do not — the state
+    transitions — share a detail member by design. A future failure type whose detail
+    member is named some other way would not register as error-bearing, so nothing here
+    would demand it be classified.
+    """
+
+    _SCHEDULED_SUFFIX = "Scheduled"
+    _SCHEDULE_FAILED_SUFFIX = "ScheduleFailed"
+
+    @staticmethod
+    def _model():
+        import botocore.session
+
+        return botocore.session.get_session().get_service_model("stepfunctions")
+
+    @classmethod
+    def _event_types(cls) -> set[str]:
+        return set(cls._model().shape_for("HistoryEventType").enum)
+
+    @staticmethod
+    def _detail_key_for(event_type: str) -> str:
+        """The detail member a per-type shape would be reached through.
+
+        `LambdaFunctionScheduleFailed` -> `lambdaFunctionScheduleFailedEventDetails`.
+        The state-transition types are the exception the model itself makes: they share
+        `stateEnteredEventDetails`/`stateExitedEventDetails`, and `HistoryEvent`
+        declares no `taskStateEnteredEventDetails` at all.
+        """
+        return event_type[0].lower() + event_type[1:] + "EventDetails"
+
+    @classmethod
+    def _error_bearing_types(cls) -> set[str]:
+        """Every event type whose own detail shape declares both `error` and `cause`.
+
+        That pair is what makes an event a report of something having failed; every
+        other event type either carries an `output`, carries nothing, or carries
+        bookkeeping.
+        """
+        history_event = cls._model().shape_for("HistoryEvent")
+        found = set()
+        for event_type in cls._event_types():
+            member = history_event.members.get(cls._detail_key_for(event_type))
+            if member is not None and {"error", "cause"} <= set(member.members):
+                found.add(event_type)
+        return found
+
+    @classmethod
+    def _schedulable_families(cls) -> set[str]:
+        """The prefix of every family that can be *scheduled*.
+
+        Derived, not listed: a family that has a `<Family>Scheduled` event is a family
+        whose events describe one attempt at invoking something. Today that is
+        `Activity`, `LambdaFunction` and `Task`.
+        """
+        return {
+            event_type[: -len(cls._SCHEDULED_SUFFIX)]
+            for event_type in cls._event_types()
+            if event_type.endswith(cls._SCHEDULED_SUFFIX)
+        }
+
+    @classmethod
+    def _task_attempt_failures(cls) -> set[str]:
+        families = cls._schedulable_families()
+        return {
+            event_type
+            for event_type in cls._error_bearing_types()
+            if any(event_type.startswith(family) for family in families)
+        }
+
+    def test_the_parsers_failure_set_is_exactly_the_derived_one(self):
+        from idp_common.agents.error_analyzer.tools.lambda_tool import (
+            _TASK_ATTEMPT_FAILURE_EVENTS,
+        )
+
+        derived = self._task_attempt_failures()
+        assert set(_TASK_ATTEMPT_FAILURE_EVENTS) == derived, (
+            "the parser's task-attempt failure set has drifted from the service "
+            f"model. Missing: {sorted(derived - set(_TASK_ATTEMPT_FAILURE_EVENTS))}; "
+            f"unknown to the model: "
+            f"{sorted(set(_TASK_ATTEMPT_FAILURE_EVENTS) - derived)}"
+        )
+
+    def test_the_families_that_can_be_scheduled_are_the_three_the_parser_reads(self):
+        assert self._schedulable_families() == {"Activity", "LambdaFunction", "Task"}
+
+    def test_what_the_second_clause_excludes_and_why(self):
+        """Non-vacuity for the "can be scheduled" clause, and the exclusion list.
+
+        Without it the set would pull in five error-bearing types that are not one
+        attempt at invoking something. Each is excluded for its own reason, and this
+        pins the membership so that a sixth cannot appear unnoticed:
+
+        * the three `Execution*` types end the execution — by the time one arrives a
+          caught failure has already entered its handler, so attributing them names the
+          handler (#1139);
+        * `MapRunFailed` aggregates a distributed Map run rather than one attempt;
+        * `EvaluationFailed` is an expression evaluation, and its detail carries its own
+          required `state` member, so it needs none of this machinery.
+        """
+        excluded = self._error_bearing_types() - self._task_attempt_failures()
+        assert excluded == {
+            "ExecutionFailed",
+            "ExecutionAborted",
+            "ExecutionTimedOut",
+            "MapRunFailed",
+            "EvaluationFailed",
+        }
+        assert (
+            "state" in self._model().shape_for("EvaluationFailedEventDetails").members
+        )
+
+    def test_the_schedule_failure_class_is_exactly_two_types_and_both_are_read(self):
+        """The answer to "what else is in that family", derived rather than recalled.
+
+        A `*ScheduleFailed` event is emitted *instead of* its family's `*Scheduled`
+        one, which is what makes its attempt unattributable to a function: the
+        enumeration holds the pair for exactly two families.
+        """
+        from idp_common.agents.error_analyzer.tools.lambda_tool import (
+            _OUTCOME_DETAIL_KEYS,
+            _TASK_ATTEMPT_FAILURE_EVENTS,
+        )
+
+        schedule_failures = {
+            event_type
+            for event_type in self._event_types()
+            if event_type.endswith(self._SCHEDULE_FAILED_SUFFIX)
+        }
+        assert schedule_failures == {
+            "LambdaFunctionScheduleFailed",
+            "ActivityScheduleFailed",
+        }
+        for event_type in schedule_failures:
+            sibling = (
+                event_type[: -len(self._SCHEDULE_FAILED_SUFFIX)]
+                + self._SCHEDULED_SUFFIX
+            )
+            assert sibling in self._event_types(), (
+                f"{event_type} has no {sibling} to be emitted instead of, so the "
+                "premise of the state fallback does not hold for it"
+            )
+            assert event_type in _OUTCOME_DETAIL_KEYS
+            assert event_type in _TASK_ATTEMPT_FAILURE_EVENTS
+
+    def test_the_task_family_has_no_schedule_failure_which_is_why_it_still_resolves(
+        self,
+    ):
+        """The exclusion that matters most, stated as the model's own answer.
+
+        `TaskStartFailed` and `TaskSubmitFailed` are invoke-time failures too, and they
+        are deliberately **not** part of the class #1183 is about: the enumeration holds
+        no `TaskScheduleFailed`, so a `Task`-family attempt has always got as far as
+        `TaskScheduled` and the causal walk still finds its function. If AWS ever adds
+        one, this fails and the fallback's reach has to be reconsidered.
+        """
+        assert "TaskScheduleFailed" not in self._event_types()
+
+    def test_every_type_the_parser_reads_maps_to_a_real_detail_member(self):
+        from idp_common.agents.error_analyzer.tools.lambda_tool import (
+            _OUTCOME_DETAIL_KEYS,
+            _RESOURCE_BEARING_EVENTS,
+        )
+
+        declared = set(self._model().shape_for("HistoryEvent").members)
+        for mapping in (_OUTCOME_DETAIL_KEYS, _RESOURCE_BEARING_EVENTS):
+            for event_type, detail_key in mapping.items():
+                assert event_type in self._event_types(), (
+                    f"{event_type} is not a HistoryEventType"
+                )
+                assert detail_key in declared, (
+                    f"{event_type} is mapped to {detail_key}, which HistoryEvent does "
+                    "not declare"
+                )
+
+    def test_each_failure_type_is_read_through_its_own_detail_key(self):
+        from idp_common.agents.error_analyzer.tools.lambda_tool import (
+            _OUTCOME_DETAIL_KEYS,
+            _TASK_ATTEMPT_FAILURE_EVENTS,
+        )
+
+        for event_type in _TASK_ATTEMPT_FAILURE_EVENTS:
+            assert _OUTCOME_DETAIL_KEYS[event_type] == self._detail_key_for(event_type)
+
+    def test_activity_scheduling_is_deliberately_not_read_as_a_function_source(self):
+        """A judgement, with the model's answer beside it so it cannot rot quietly.
+
+        `ActivityScheduled` declares a required `resource` exactly as the two the walk
+        reads do — but an activity ARN is never a Lambda function name, so adding it
+        would make the walk stop at a scheduling event and return nothing, replacing the
+        state name an activity failure can otherwise be given with silence.
+        """
+        from idp_common.agents.error_analyzer.tools.lambda_tool import (
+            _RESOURCE_BEARING_EVENTS,
+        )
+
+        activity_scheduled = self._model().shape_for("ActivityScheduledEventDetails")
+        assert "resource" in activity_scheduled.members
+        assert "ActivityScheduled" not in _RESOURCE_BEARING_EVENTS
+        for detail_key in _RESOURCE_BEARING_EVENTS.values():
+            shape = self._model().shape_for(detail_key[0].upper() + detail_key[1:])
+            assert "resource" in shape.members
+
+
+@pytest.mark.unit
+class TestTheStateFallbackIsBoundedByWhatTheChainNames:
+    """The boundary of the state-name answer, which is the whole risk in #1183.
+
+    Reaching for the state name is how the cross-attribution fixed in #1171 arose:
+    there, state-transition events were resolved causally, and because a
+    `TaskStateEntered` event *precedes* its own scheduling event the walk landed on the
+    previous task's. So the rule is about **capability, not about a spelling**: a state
+    name is given only when the attempt's causal chain reaches no scheduling event *that
+    names a function*, and every other shape must still come back with what it came back
+    with before.
+
+    ⚠️ **"No scheduling event at all" is the wrong way to say that, and the difference
+    is testable.** Two different histories satisfy the rule. One has no scheduling event
+    — a `*ScheduleFailed` is emitted instead of it. The other has one that is transparent
+    to the walk because its family's scheduling event never names a Lambda function,
+    which is the Activity family: `test_an_activity_failure_after_a_successful_schedule`
+    below is that case, and a rule phrased as "no scheduling event at all" would forbid
+    the answer the code gives it.
+
+    Each case below is an attempt to get a state name reported where one would be wrong,
+    or to get the pre-#1183 answer back where a better one is now available.
+    """
+
+    def test_an_attempt_that_names_its_function_reports_no_state(self):
+        """Disjointness. A state name alongside a function name would read as two
+        findings about one failure, and the function name is the better one."""
+        result = extract_lambda_request_ids(
+            _direct_chain("LambdaFunctionFailed", detail={"error": "Unhandled"})
+        )
+        assert result["failed_functions"] == ["OCRFunction"]
+        assert result["failed_states"] == []
+        assert result["primary_failed_state"] is None
+
+    def test_a_scheduling_event_that_named_nothing_usable_still_names_nothing(self):
+        """The #1128 guard, and the reason this is not a general fallback.
+
+        A layer ARN in a scheduling event's `resource` contributes no function name on
+        purpose — a plausible-looking wrong name is worse than none, because it selects
+        the log group the agent searches. The history *did* say which resource was to be
+        invoked, in a form this module declines to read, so the walk stops there. Falling
+        through to the state would turn every such case into a state-name answer and
+        make the fallback general, which is what the issue rules out.
+        """
+        layer = "arn:aws:lambda:us-east-1:123456789012:layer:SharedDeps:3"
+        result = extract_lambda_request_ids(
+            _direct_chain("LambdaFunctionFailed", resource=layer, detail={"error": "x"})
+        )
+        assert result["failed_functions"] == []
+        assert result["failed_states"] == []
+
+    def test_a_non_lambda_service_integration_names_nothing_either(self):
+        """The same boundary reached the other way.
+
+        An optimized integration that is not `lambda:invoke` has no `FunctionName` in
+        its parameters, so its `TaskScheduled` resolves to no function — and it is still
+        a scheduling event, so the walk stops. A Bedrock or SQS task failure therefore
+        reports exactly what it reported before this change.
+        """
+        events = _optimized_chain("TaskFailed", detail={"error": "ModelTimeout"})
+        events[1]["taskScheduledEventDetails"] = {
+            "resource": "invokeModel",
+            "resourceType": "bedrock",
+            "region": "us-east-1",
+            "parameters": json.dumps({"ModelId": "some.model"}),
+        }
+        result = extract_lambda_request_ids(events)
+        assert result["failed_functions"] == []
+        assert result["failed_states"] == []
+
+    def test_a_denial_mid_pipeline_no_longer_names_the_previous_function(self):
+        """⚠️ **The realistic shape, and the reason this change removes a wrong answer
+        rather than filling in a blank one.**
+
+        Every other schedule-failure history in this file begins at the state entry, which
+        is the truth only for the first state of an execution or a window that starts
+        mid-flight. The service chains a state's `TaskStateEntered` to the **previous
+        state's** `TaskStateExited`, so on a real execution the chain continues: entry ->
+        exit -> succeeded -> started -> scheduled is five hops, inside the six-hop bound.
+
+        Measured on this history before the walk gained its two state branches:
+        `failed_functions == ['OCRFunction']` and `primary_failed_function ==
+        'OCRFunction'` — the previous, **successful** function, named as the one that
+        failed, which is what an operator is told to go and look at. That is the
+        #1171/#1139 cross-attribution, still live for this event type.
+
+        Which branch does what, measured on this history over all four combinations:
+
+        | state-entered | state-exit | answer |
+        |---|---|---|
+        | present | present | `failed_states=['ClassificationStep']` |
+        | absent | present | nothing at all |
+        | present | absent | `failed_states=['ClassificationStep']` |
+        | absent | absent | `failed_functions=['OCRFunction']` |
+
+        So **either branch alone** suppresses the wrong name — the walk needs to reach
+        the previous state's scheduling event, and both terminate it before that — while
+        only the **entered** branch supplies the right one. The entered branch is examined
+        first, which is why removing the exit branch changes nothing here; that branch
+        earns its place on `test_a_state_that_has_already_exited_is_never_named`, a chain
+        that reaches an exit *before* any entry.
+        """
+        completed_step = _direct_chain(
+            "LambdaFunctionSucceeded", first_id=2, state_name="OCRStep"
+        )
+        # `_direct_chain` starts every history at the execution's beginning, so its state
+        # entry points at event 0. Here it follows `ExecutionStarted`.
+        completed_step[0]["previousEventId"] = 1
+        history = [
+            {"type": "ExecutionStarted", "id": 1, "previousEventId": 0},
+            *completed_step,
+            {
+                "type": "TaskStateExited",
+                "id": 6,
+                "previousEventId": 5,
+                "stateExitedEventDetails": {"name": "OCRStep", "output": "{}"},
+            },
+            {
+                "type": "TaskStateEntered",
+                "id": 7,
+                "previousEventId": 6,
+                "stateEnteredEventDetails": {
+                    "name": "ClassificationStep",
+                    "input": "{}",
+                },
+            },
+            {
+                "type": "LambdaFunctionScheduleFailed",
+                "id": 8,
+                "previousEventId": 7,
+                "lambdaFunctionScheduleFailedEventDetails": {
+                    "error": "Lambda.AccessDeniedException"
+                },
+            },
+        ]
+
+        result = extract_lambda_request_ids(history)
+
+        assert result["failed_states"] == ["ClassificationStep"]
+        assert result["failed_functions"] == [], (
+            "the denial was attributed to a function; on this history the only "
+            "reachable one is OCRFunction, which succeeded"
+        )
+        assert result["primary_failed_function"] is None
+
+    def test_an_activity_failure_after_a_successful_schedule(self):
+        """The second way the chain can name no function, and the one the rule's short
+        phrasing gets wrong.
+
+        `ActivityScheduled` carries a required `resource`, but it is an activity ARN and
+        never a function name, so the walk passes through it rather than stopping — and
+        an activity failure of any kind is answered with its state. There *is* a
+        scheduling event in this chain, so "a state name only where no scheduling event
+        exists" would forbid this answer. What the code implements is "no scheduling event
+        that names a function", and this is the case that distinguishes the two.
+        """
+        history = [
+            {
+                "type": "TaskStateEntered",
+                "id": 1,
+                "previousEventId": 0,
+                "stateEnteredEventDetails": {"name": "HumanReviewStep", "input": "{}"},
+            },
+            {
+                "type": "ActivityScheduled",
+                "id": 2,
+                "previousEventId": 1,
+                "activityScheduledEventDetails": {
+                    "resource": "arn:aws:states:us-east-1:123456789012:activity:Review"
+                },
+            },
+            {
+                "type": "ActivityStarted",
+                "id": 3,
+                "previousEventId": 2,
+                "activityStartedEventDetails": {"workerName": "worker-1"},
+            },
+            {
+                "type": "ActivityFailed",
+                "id": 4,
+                "previousEventId": 3,
+                "activityFailedEventDetails": {"error": "Rejected"},
+            },
+        ]
+
+        result = extract_lambda_request_ids(history)
+
+        assert result["failed_states"] == ["HumanReviewStep"]
+        assert result["failed_functions"] == []
+
+    def test_a_state_that_has_already_exited_is_never_named(self):
+        """The walk stops at a state **exit**.
+
+        Its own state's entry is the first state event a real attempt walks back to. A
+        chain that reaches an *exit* first has left the state the attempt belonged to, so
+        every state from there back completed successfully — naming one is the
+        cross-attribution of #1171 and #1139 in a new place. Without this guard the walk
+        continues to `EarlierStep`'s entry and reports a step that finished. The
+        realistic-history case above is the same guard with the previous state's
+        invocation events present, where what comes back instead is a function name.
+        """
+        events = [
+            {
+                "type": "TaskStateEntered",
+                "id": 1,
+                "previousEventId": 0,
+                "stateEnteredEventDetails": {"name": "EarlierStep", "input": "{}"},
+            },
+            {
+                "type": "TaskStateExited",
+                "id": 2,
+                "previousEventId": 1,
+                "stateExitedEventDetails": {"name": "EarlierStep", "output": "{}"},
+            },
+            {
+                "type": "LambdaFunctionScheduleFailed",
+                "id": 3,
+                "previousEventId": 2,
+                "lambdaFunctionScheduleFailedEventDetails": {
+                    "error": "Lambda.AccessDeniedException"
+                },
+            },
+        ]
+        result = extract_lambda_request_ids(events)
+        assert result["failed_states"] == [], (
+            "a state that had already exited was reported as the failing step"
+        )
+        assert result["failed_functions"] == []
+
+    def test_a_schedule_failure_with_no_state_in_the_history_names_nothing(self):
+        """The honest residual, kept as the answer rather than papered over.
+
+        A window that starts after the state was entered — a truncated page, a history
+        read from the failure backwards — holds no identity at all, and the tool reports
+        none rather than inventing one.
+        """
+        history = _schedule_failure_history()[1:]
+        result = extract_lambda_request_ids(history)
+        assert result["failed_states"] == []
+        assert result["primary_failed_state"] is None
+
+    def test_a_retry_ladder_still_names_the_state_once(self):
+        """Each retry adds a link and no new state transition, so the last attempt in a
+        long ladder sits outside the hop bound. The first attempt is one hop from the
+        state entry and answers for all of them, and the name is reported once."""
+        result = extract_lambda_request_ids(_schedule_failure_history(attempts=9))
+        assert result["failed_states"] == ["OCRStep"]
+        assert result["primary_failed_state"] == "OCRStep"
+
+    def test_a_state_entry_beyond_the_hop_bound_is_not_reached(self):
+        """The bound applies to this walk too: far enough back, the answer is silence
+        rather than a name found by walking through unrelated history."""
+        from idp_common.agents.error_analyzer.tools.lambda_tool import _MAX_CAUSAL_HOPS
+
+        history = _schedule_failure_history(attempts=_MAX_CAUSAL_HOPS + 2)
+        result = extract_lambda_request_ids([history[0], history[-1]])
+        assert result["failed_states"] == []
+
+    def test_an_unnamed_state_entry_reports_nothing_rather_than_an_empty_name(self):
+        """`""` in `failed_states` would render as a step with no name, which reads as a
+        finding. The rejection is on truthiness at the one use site; a second guard
+        inside `_state_named_by` was measured redundant and is not there."""
+        history = _schedule_failure_history()
+        history[0]["stateEnteredEventDetails"] = {"name": "", "input": "{}"}
+        assert extract_lambda_request_ids(history)["failed_states"] == []
+
+    @pytest.mark.parametrize("malformed_index", [0, 1])
+    def test_one_malformed_detail_does_not_discard_the_whole_history(
+        self, malformed_index
+    ):
+        """A detail that is not an object, in either kind of event.
+
+        Found while writing the state cases above: a `stateEnteredEventDetails` of
+        `"OCRStep"` instead of `{"name": "OCRStep"}` raised `AttributeError` out of
+        `extract_lambda_request_ids`, where `retrieve_document_context`'s broad `except`
+        turns it into `document_found: False` — so one malformed event took the whole
+        document's context with it, request ids included. Nothing the service sends looks
+        like this, which is exactly why the failure mode would be a total one and
+        unreproducible. The event is skipped instead, and the rest of the history is
+        still read: the intact `OCRFunction` failure below is the evidence for "still
+        read", since an assertion on the empty field alone would also pass if the whole
+        call had been abandoned.
+        """
+        history = _schedule_failure_history()
+        history[malformed_index][
+            _OUTCOME_DETAIL_KEY[history[malformed_index]["type"]]
+        ] = "OCRStep"
+        history += _direct_chain("LambdaFunctionFailed", first_id=20)
+
+        result = extract_lambda_request_ids(history)
+
+        assert result["failed_states"] == []
+        assert result["failed_functions"] == ["OCRFunction"]
+
+    def test_an_activity_schedule_failure_is_answered_the_same_way(self):
+        """Closure over the derived vocabulary. This solution declares no Activity, so
+        the case is synthetic — but `ActivityScheduleFailed` is the other half of the
+        class, and an activity's history never carries a function ARN at all."""
+        result = extract_lambda_request_ids(
+            _schedule_failure_history("ActivityScheduleFailed", state_name="WorkStep")
+        )
+        assert result["failed_states"] == ["WorkStep"]
+        assert result["failed_functions"] == []
+
+    def test_a_schedule_failures_state_name_does_not_reach_the_function_request_map(
+        self,
+    ):
+        """A uuid in a denial's cause is not a Lambda request id — the invocation never
+        happened — so a schedule failure contributes no mapping, however its cause reads.
+
+        The claim is scoped to this path on purpose. `function_request_map` is **not**
+        exclusively function names: the state-transition path keys a request id found in a
+        state's input or output under that state's name, which
+        `test_a_state_name_keys_a_request_id_when_no_function_is_resolvable` asserts and
+        #1171 chose deliberately. What this pins is that the new state attribution does
+        not add to that.
+        """
+        result = extract_lambda_request_ids(
+            _schedule_failure_history(
+                detail={"cause": f"AccessDenied, RequestId: {UUID_A}"}
+            )
+        )
+        assert result["failed_states"] == ["OCRStep"]
+        assert result["function_request_map"] == {}
+        assert "OCRStep" not in result["failed_functions"]
+
+    def test_several_states_that_could_not_invoke_are_reported_in_history_order(self):
+        """`failed_states` is ordered, and `primary_failed_state` is the earliest.
+
+        A `Map` over sections whose invoke permission is missing produces one of these
+        per iteration, and the order an operator reads them in should be the order they
+        happened. The new field therefore dedupes with `dict.fromkeys`;
+        `failed_functions` keeps its existing `set` because re-ordering an existing
+        output for no defect would change what every failing document reports today.
+
+        ⚠️ **This case alone catches the mutation only probabilistically.** Replacing
+        `dict.fromkeys` with `set` was measured red at 8 of 8 `PYTHONHASHSEED` values
+        here, and green at 1 of 40 when the sweep was widened — a small set of short
+        strings can happen to iterate in insertion order under some seed, and at
+        `PYTHONHASHSEED=16` that mutant passes this whole module. The correct code passes
+        under every seed, so there is no flakiness in the other direction. The
+        deterministic half is
+        `test_the_new_field_is_deduped_by_a_construct_that_preserves_order`, which reads
+        the source; this case is what says the resulting order is the history's.
+        """
+        history = _schedule_failure_history(state_name="OCRStep")
+        for offset, state in enumerate(
+            ("ClassificationStep", "ExtractionStep", "AssessmentStep")
+        ):
+            entered_id = 10 + offset * 2
+            history += [
+                {
+                    "type": "TaskStateEntered",
+                    "id": entered_id,
+                    "previousEventId": entered_id - 1,
+                    "stateEnteredEventDetails": {"name": state},
+                },
+                {
+                    "type": "LambdaFunctionScheduleFailed",
+                    "id": entered_id + 1,
+                    "previousEventId": entered_id,
+                    "lambdaFunctionScheduleFailedEventDetails": {
+                        "error": "Lambda.AccessDeniedException"
+                    },
+                },
+            ]
+
+        result = extract_lambda_request_ids(history)
+
+        assert result["failed_states"] == [
+            "OCRStep",
+            "ClassificationStep",
+            "ExtractionStep",
+            "AssessmentStep",
+        ]
+        assert result["primary_failed_state"] == "OCRStep"
+
+    def test_the_new_field_is_deduped_by_a_construct_that_preserves_order(self):
+        """The deterministic half of the ordering claim, asserted against the source.
+
+        No input can reliably distinguish `dict.fromkeys` from `set` here: hash
+        randomisation decides whether a four-element set of short strings happens to
+        iterate in insertion order, and measured over 40 seeds one of them does. So the
+        behavioural case above is a ~97.5% detector and this reads the code instead.
+
+        `failed_functions` is deliberately **not** included: it keeps `set`, because
+        re-ordering an output that every failing document already produces would be a
+        change with no defect behind it.
+        """
+        import ast
+        import inspect
+
+        from idp_common.agents.error_analyzer.tools import lambda_tool
+
+        tree = ast.parse(inspect.getsource(lambda_tool))
+        # Every expression this module assigns to a `failed_states` key. There are two:
+        # the parser's result dict, which is where the dedupe happens, and the tool
+        # response, which passes the already-deduped list through.
+        assigned = [
+            ast.unparse(value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Dict)
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant) and key.value == "failed_states"
+        ]
+        assert len(assigned) == 2, (
+            f"expected the parser's dict and the tool response; found {assigned}"
+        )
+        assert "list(dict.fromkeys(failed_states))" in assigned, (
+            f"`failed_states` is built by {assigned}. An unordered construct there makes "
+            "the order an operator reads the failed steps in depend on the hash seed"
+        )
+        assert not any("set(" in expression for expression in assigned)
+
+    def test_the_tool_passes_both_identities_through_to_the_agent(self):
+        """The caller half. `extract_lambda_request_ids` is pure; this is the dict the
+        agent actually reads, and a field the parser fills but the tool drops would be
+        the same defect one layer up."""
+        stream = MagicMock()
+        stream.read.return_value = json.dumps(
+            {
+                "status": "FAILED",
+                "processingDetail": {
+                    "executionArn": "arn:aws:states:us-east-1:1:execution:sm:abc",
+                    "events": _schedule_failure_history(),
+                },
+                "timing": {"timestamps": {}},
+            }
+        ).encode("utf-8")
+        with (
+            patch(
+                "idp_common.agents.error_analyzer.tools.lambda_tool.boto3.client"
+            ) as client_factory,
+            patch.dict("os.environ", {"LOOKUP_FUNCTION_NAME": "stack-DocumentLookup"}),
+        ):
+            client_factory.return_value.invoke.return_value = {"Payload": stream}
+            result = retrieve_document_context("report.pdf")
+
+        assert result["document_found"] is True
+        assert result["failed_states"] == ["OCRStep"]
+        assert result["primary_failed_state"] == "OCRStep"
+        assert result["failed_functions"] == []
+        assert result["primary_failed_function"] is None

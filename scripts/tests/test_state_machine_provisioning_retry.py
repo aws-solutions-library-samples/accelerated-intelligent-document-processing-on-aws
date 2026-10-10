@@ -54,6 +54,7 @@ ASL_JSON_PATHS = {
     "backfill-gsi": REPO_ROOT
     / "src/lambda/backfill_gsi_attributes/statemachine.asl.json",
     "finetuning": REPO_ROOT / "src/lambda/finetuning_state_machine/definition.json",
+    "data-mart-migration": REPO_ROOT / "src/statemachine/data_mart_migration.asl.json",
 }
 # The fifth state machine is defined inline (YAML `Definition:`) in this template.
 CONFBENCH_TEMPLATE = REPO_ROOT / "feature-platform/confbench-testset/template.yaml"

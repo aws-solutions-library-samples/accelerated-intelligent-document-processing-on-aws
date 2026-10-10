@@ -45,10 +45,7 @@ import useClassificationComparison from '../../hooks/use-classification-comparis
 import { exportDocument, isBaselineAvailable, triggerBrowserDownload } from './document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
-// Exact-key pricing resolution, ported from the backend's _get_unit_cost. Kept in
-// its own module so it can be unit-tested without mounting this component — see
-// pricing.test.ts, which pins the cache-read case this file used to get wrong.
-import { lookupUnitPrice } from './pricing';
+import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
 // Uncomment the line below to enable debugging
 // import { debugDocumentStructure } from '../common/debug-utils';
@@ -196,18 +193,6 @@ const ConfidenceAlertsSection = ({ sections, mergedConfig }: ConfidenceAlertsSec
   return <StatusIndicator type="warning">{totalAlertCount}</StatusIndicator>;
 };
 
-// Helper function to parse serviceApi key into context and service
-const parseServiceApiKey = (serviceApiKey: string): { context: string; serviceApi: string } => {
-  const parts = serviceApiKey.split('/');
-  if (parts.length >= 3) {
-    const context = parts[0];
-    const serviceApi = parts.slice(1).join('/');
-    return { context, serviceApi };
-  }
-  // Fallback for keys that don't follow the new format (less than 3 parts) - set context to ''
-  return { context: '', serviceApi: serviceApiKey };
-};
-
 // Helper function to format cost cells
 const formatCostCell = (rowItem: MeteringRowItem): React.JSX.Element | string => {
   if (rowItem.isTotal) {
@@ -255,53 +240,18 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   }
 
   // Transform metering data into table rows with context parsing
-  const rawTableItems: MeteringRowItem[] = [];
-  const contextTotals: Record<string, number> = {};
-  let totalCost = 0;
-
-  Object.entries(meteringData).forEach(([originalServiceApiKey, metrics]) => {
-    const { context, serviceApi } = parseServiceApiKey(originalServiceApiKey);
-
-    Object.entries(metrics as Record<string, unknown>).forEach(([unit, value]) => {
-      const numericValue = Number(value);
-
-      // Look up the unit price from the pricing data using the parsed serviceApi.
-      // Exact key with a '/'-suffix walk and an exact unit match, mirroring the
-      // backend's _get_unit_cost. null means genuinely unpriced (rendered
-      // 'None'/'N/A'); 0 means metered but not chargeable.
-      let unitPrice: number | null = lookupUnitPrice(pricingData, serviceApi, unit);
-      let unitPriceDisplayValue = 'None';
-      let cost = 0;
-      if (unitPrice !== null && !Number.isNaN(unitPrice)) {
-        unitPriceDisplayValue = `$${unitPrice}`;
-        cost = numericValue * unitPrice;
-        totalCost += cost;
-
-        // Track context totals
-        if (!contextTotals[context]) {
-          contextTotals[context] = 0;
-        }
-        contextTotals[context] += cost;
-
-        logger.debug(`Found price for ${serviceApi}/${unit}: ${unitPriceDisplayValue}`);
-      } else {
-        unitPrice = null;
-        logger.debug(`No price found for ${serviceApi}/${unit}, using None`);
-      }
-
-      rawTableItems.push({
-        context,
-        serviceApi,
-        unit,
-        value: String(numericValue),
-        unitCost: unitPriceDisplayValue,
-        cost: unitPrice !== null ? `$${cost.toFixed(4)}` : 'N/A',
-        costValue: cost,
-        isTotal: false,
-        isSubtotal: false,
-      });
-    });
-  });
+  const { rows, contextTotals, totalCost } = priceMetering(meteringData, pricingData);
+  const rawTableItems: MeteringRowItem[] = rows.map(({ context, serviceApi, unit, value, unitPrice, cost }) => ({
+    context,
+    serviceApi,
+    unit,
+    value: String(value),
+    unitCost: unitPrice !== null ? `$${unitPrice}` : 'None',
+    cost: unitPrice !== null ? `$${cost.toFixed(4)}` : 'N/A',
+    costValue: cost,
+    isTotal: false,
+    isSubtotal: false,
+  }));
 
   // Group items by context and add subtotals
   const tableItems: MeteringRowItem[] = [];
@@ -439,37 +389,6 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   );
 };
 
-// Helper function to calculate total costs using pricing data
-const calculateTotalCosts = (
-  meteringData: Record<string, Record<string, unknown>> | null,
-  documentItem: MappedDocument,
-  pricingData: PricingLookup | null,
-): { totalCost: number; costPerPage: number } => {
-  if (!meteringData) return { totalCost: 0, costPerPage: 0 };
-
-  let totalCost = 0;
-
-  if (pricingData) {
-    Object.entries(meteringData).forEach(([originalServiceApiKey, metrics]) => {
-      // Parse the serviceApi key to remove context prefix
-      const { serviceApi } = parseServiceApiKey(originalServiceApiKey);
-
-      Object.entries(metrics).forEach(([unit, value]) => {
-        const numericValue = Number(value);
-        const unitPrice = lookupUnitPrice(pricingData, serviceApi, unit);
-        if (unitPrice !== null && !Number.isNaN(unitPrice)) {
-          totalCost += numericValue * unitPrice;
-        }
-      });
-    });
-  }
-
-  const numPages = (documentItem && documentItem.pageCount) || 1;
-  const costPerPage = totalCost / numPages;
-
-  return { totalCost, costPerPage };
-};
-
 // Expandable section containing the metering table
 const MeteringExpandableSection = ({ meteringData, documentItem }: MeteringExpandableSectionProps): React.JSX.Element => {
   const [expanded, setExpanded] = useState(false);
@@ -495,7 +414,7 @@ const MeteringExpandableSection = ({ meteringData, documentItem }: MeteringExpan
   }, [pricing]);
 
   // Calculate the cost per page for the header
-  const { totalCost, costPerPage } = calculateTotalCosts(meteringData, documentItem, pricingData);
+  const { totalCost, costPerPage } = calculateTotalCosts(meteringData, documentItem?.pageCount, pricingData);
 
   return (
     <Box margin={{ top: 'l', bottom: 'm' }}>

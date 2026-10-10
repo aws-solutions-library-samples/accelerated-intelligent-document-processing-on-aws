@@ -100,8 +100,14 @@ def _emit(metric_name, dimensions=None):
     try:
         datum = {"MetricName": metric_name, "Value": 1, "Unit": "Count"}
         if dimensions:
+            # Truncated to CloudWatch's 255-character dimension-value limit. S3 keys
+            # reach 1024 bytes and nothing caps a mapping prefix's length, so an
+            # untruncated prefix makes put_metric_data raise InvalidParameterValue --
+            # which the bare `except` below would swallow, losing the metric silently
+            # for exactly the long-prefix deployments most likely to need it.
             datum["Dimensions"] = [
-                {"Name": name, "Value": value} for name, value in dimensions.items()
+                {"Name": name, "Value": str(value)[:255]}
+                for name, value in dimensions.items()
             ]
         cloudwatch.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=[datum])
     except Exception:
@@ -257,7 +263,6 @@ def handler(event, context):
         document.config_assignment_error = assignment.reason
         document.config_source = assignment.source
         document.config_mapping_prefix = assignment.mapping_prefix
-        document.completion_time = current_time
         document_service.create_document(document, expires_after=expires_after)
         logger.warning("Refused %s at ingest: %s", object_key, assignment.reason)
         return {

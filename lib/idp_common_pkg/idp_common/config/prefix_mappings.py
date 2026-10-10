@@ -21,7 +21,11 @@ Two halves, deliberately separate:
 
 * :class:`PrefixMappingStore` is the DynamoDB half.
 * :func:`resolve_config_assignment` is the decision, and it takes **no** boto3 client
-  and reads **no** environment. Its only seams are two injected callables. That is
+  and reads **no** environment. Its only seams are three injected callables
+  (``active_profile``, ``published_revision``, ``profile_exists``), and every
+  caller must supply all three — see
+  ``scripts/tests/test_prefix_mapping_call_sites.py`` for what a caller that
+  omits one gets wrong. That is
   what makes the whole precedence matrix testable as a table with no AWS, which is
   the only way a precedence rule of this shape stays verifiable.
 
@@ -104,11 +108,14 @@ preference but a defect:
 
 * The **PII anonymizer** copies a redacted document back into the Input bucket beside
   the original, stamped with a *companion* profile that has no preprocessing hook.
-  Its own handler calls that stamp "the PRIMARY guard against infinite redaction",
-  with the filename check only a secondary net — so overriding it can reinstate the
-  redaction loop. Under ``reject`` it is worse: the host deletes the original once the
-  hook halts, so a reject on that prefix loses the original *and* never processes the
-  copy.
+  Overriding that stamp runs the copy under whatever hooks the mapped profile
+  registers instead of under none. Under ``reject`` it is far worse than a
+  misconfiguration: in ``redactcopy_and_stop`` the hook returns ``halt=true`` and the
+  host then deletes the original, so a reject on that prefix loses the original *and*
+  never processes the copy — unrecoverable loss of the document, from one mapping an
+  admin typed. (The redaction loop itself is not at risk: that is stopped by the
+  ``_is_redacted_key`` filename check, which does not depend on the configuration the
+  copy runs under.)
 * **Test Studio** stamps the profile and revision a run is defined by. Overriding it
   does not fail the run; it produces accuracy and confidence numbers describing a
   configuration other than the one recorded, which is worse than a failure.
@@ -212,16 +219,29 @@ class PrefixMappingConflict(RuntimeError):
 def canonical_key(key: str) -> str:
     """The form of ``key`` that matching is defined against.
 
-    Strips leading slashes and collapses repeated ones. S3 permits all of
-    ``finance/x.pdf``, ``/finance/x.pdf`` and ``finance//x.pdf`` as *distinct* keys,
-    and a mapping on ``finance/`` matches only the first — so without this, adding one
-    character to an upload prefix bypasses a ``reject`` mapping entirely. Trailing
-    slashes are preserved, because they are the prefix/exact mode selector.
+    S3 treats ``finance/x.pdf``, ``/finance/x.pdf``, ``finance//x.pdf`` and
+    ``finance/./x.pdf`` as four *distinct* keys, and a mapping written as
+    ``finance/`` or ``finance/x.pdf`` matches only the first. Each of the other three
+    is therefore a one-character route around a ``reject`` mapping, which is the
+    whole point of normalising here rather than matching the key as typed:
+
+    * leading and repeated slashes are collapsed;
+    * ``.`` segments are dropped, because they name the same object S3 serves for the
+      key without them and ``prefix_rejection_reason`` already refuses them in a
+      *mapping*, so accepting them in a *key* is the asymmetry a client exploits;
+    * ``..`` segments are **left alone**, deliberately. S3 keys are opaque strings
+      with no parent directory, so ``a/b/../c`` is a real, distinct object and
+      resolving it the way a filesystem would would make this function claim a key
+      that S3 would serve from somewhere else. Refusing them in a mapping and
+      matching them literally in a key is consistent: such an object simply has no
+      mapping unless one names it literally.
+
+    Trailing slashes are preserved, because they are the prefix/exact mode selector.
     """
     if not key:
         return ""
     trailing = key.endswith("/")
-    segments = [segment for segment in key.split("/") if segment]
+    segments = [segment for segment in key.split("/") if segment and segment != "."]
     canonical = "/".join(segments)
     if trailing and canonical:
         canonical += "/"
@@ -449,19 +469,46 @@ def resolve_config_assignment(
     # Scope is applied in exactly one place, over whatever was decided. Checking it
     # per branch is how the metadata route — a caller naming a profile directly, with
     # no mapping involved — ends up unchecked, which is the pre-existing gap on
-    # uploadDocument that this control closes. A rejection needs no scope check: the
-    # document is already refused and naming a scope would add nothing.
-    if (
-        allowed_profiles is not None
-        and assignment.profile
-        and not assignment.rejected
-        and not scope_allows(allowed_profiles, assignment.profile)
+    # uploadDocument that this control closes.
+    #
+    # ⚠️ The test is on the MAPPED profile as well as the resolved one, and that is
+    # not belt-and-braces. Two outcomes name a profile the caller may not be
+    # entitled to while `assignment.profile` is something else entirely:
+    #
+    # * a **rejection** sets `profile=None`, so a guard predicated on
+    #   `assignment.profile` skips it — and `reason` names the mapped profile and
+    #   its pinned revision, which is the whole secret;
+    # * **metadata precedence** resolves to the caller's OWN profile, which is in
+    #   scope by construction, while `reason` explains that it beat the mapping's —
+    #   naming it.
+    #
+    # Either one hands a scoped caller the name of a profile outside their scope,
+    # one key at a time, through an operation Author and Viewer can both call. That
+    # is the oracle `getConfigVersions` is scope-filtered to prevent, so the
+    # subject of the check is "any profile this answer would disclose", not "the
+    # profile this answer selected".
+    matched = find_match(object_key, mappings or [])
+    disclosed = [
+        p
+        for p in (assignment.profile, matched["configProfile"] if matched else None)
+        if p
+    ]
+    if allowed_profiles is not None and any(
+        not scope_allows(allowed_profiles, p) for p in disclosed
     ):
         return ConfigAssignment(
-            profile=assignment.profile,
-            revision=assignment.revision,
+            # Nothing that could describe a profile survives: not the profile, not
+            # the revision (a pinned number is an attribute of a profile the caller
+            # cannot see), not `reason`, and not `mapping_prefix`.
+            #
+            # The prefix looks like the caller's own input and is not. The caller
+            # supplied a KEY; the prefix is the mapping that governs it, so
+            # returning it for `a/b/c/d/x.pdf` discloses that the boundary sits at
+            # `a/b/` — a refinement of the input, and one probe at a time it walks
+            # out the routing policy that `listConfigPrefixMappings` is Admin-only
+            # to protect. The caller still learns the actionable part, which is that
+            # the destination is not theirs.
             source=assignment.source,
-            mapping_prefix=assignment.mapping_prefix,
             conflict=assignment.conflict,
             unresolvable=assignment.unresolvable,
             scope_denied=True,

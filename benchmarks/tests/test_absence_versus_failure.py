@@ -344,7 +344,9 @@ class TestReadMetering:
         read = lib.read_metering("t", "r", "d")
         assert read.is_present
         assert read.value == {}
-        assert lib.price_metering(read.value)[0] == 0.0
+        priced = lib.price_metering(read.value)
+        assert priced.complete
+        assert priced.total == 0.0
 
     def test_no_tracking_row_at_all_is_an_absence(self, ddb):
         ddb(item=None)
@@ -430,13 +432,22 @@ class TestCostRefusesAnUnreadMeteringRow:
         assert row["tokens"] == {}
 
     def test_a_metered_run_is_priced(self, scored_doc):
+        """⚠️ The metering key has to be one ``pricing.yaml`` actually holds.
+
+        ``textract/analyze_document`` without a feature suffix is not an entry — the
+        shipped keys are ``analyze_document-Tables``, ``-Layout`` and friends — so it
+        prices to exactly 0.00, which satisfies ``is not None``. Assert a POSITIVE
+        cost, so this stays a test about pricing rather than about nullity.
+        """
+        assert "textract/analyze_document-Tables" in lib.PRICING
         row = scored_doc(
             lib.Reading.present(
-                {"OCR/textract/analyze_document": {"pages": 3}},
+                {"OCR/textract/analyze_document-Tables": {"pages": 3}},
             )
         )
-        assert row["cost"] is not None
+        assert row["cost"] is not None and row["cost"] > 0
         assert row["cost_unread"] is None
+        assert row["cost_unpriced"] is None
 
     @pytest.mark.parametrize(
         ("read", "state"),

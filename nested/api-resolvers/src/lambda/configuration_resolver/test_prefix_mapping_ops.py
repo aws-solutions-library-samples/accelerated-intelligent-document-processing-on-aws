@@ -73,6 +73,9 @@ def manager(monkeypatch, store):
     fake.mark_revision_pinned.return_value = True
     fake.resolve_active_version.return_value = "active"
     fake.resolve_published_revision.return_value = 4
+    # A MagicMock attribute is truthy, so without this every deleteConfigVersion
+    # test stops at the stack-managed guard before reaching the one under test.
+    fake.get_configuration.return_value.managed = False
     monkeypatch.setattr(index, "ConfigurationManager", lambda *a, **k: fake)
     monkeypatch.setattr(index, "_prefix_mapping_store", lambda _m: store)
     monkeypatch.setattr(
@@ -287,9 +290,15 @@ def test_pinning_a_revision_protects_it_from_retention(manager, store):
 
 
 @pytest.mark.unit
-def test_a_failed_pin_means_the_mapping_is_not_created(manager, store):
-    """Otherwise the revision body stays prunable under a mapping that names it, and
-    the mapping is a time bomb that fires whenever retention next runs."""
+def test_a_failed_pin_is_reported_rather_than_passing_silently(manager, store):
+    """The revision body would otherwise stay prunable under a mapping naming it --
+    a time bomb that fires whenever retention next runs.
+
+    The mapping IS created: the pin is taken after the put, because
+    `PrefixMappingStore.delete` never unpins, so a pin taken first and then
+    orphaned by a failed put can never be released. So the honest outcome here is a
+    saved mapping plus an error telling the admin the revision is unprotected.
+    """
     manager.mark_revision_pinned.return_value = False
     result = index.handler(
         _event(
@@ -299,7 +308,8 @@ def test_a_failed_pin_means_the_mapping_is_not_created(manager, store):
         None,
     )
     assert result["success"] is False
-    store.put.assert_not_called()
+    assert "could not be protected from retention" in result["error"]["message"]
+    store.put.assert_called_once()
 
 
 @pytest.mark.unit
@@ -412,10 +422,65 @@ def test_the_dry_run_does_not_name_a_profile_outside_the_callers_scope(
     assert assignment["configRevision"] is None
     assert "finance-prod" not in assignment["reason"]
     assert "teamA" not in assignment["reason"]
-    # The prefix IS returned: the caller already knows the key they asked about, so
-    # it discloses nothing they did not supply, and it is what makes the answer
-    # actionable ("that folder is not yours") rather than merely a refusal.
-    assert assignment["mappingPrefix"] == "finance/"
+    # The prefix is withheld too. It looks like the caller's own input and is not:
+    # they supplied a KEY, so returning the mapping that governs it tells them the
+    # boundary sits at `finance/` rather than at `finance/x.pdf`, and one probe at a
+    # time that walks out the routing policy `listConfigPrefixMappings` is
+    # Admin-only to protect. They still learn the actionable part.
+    assert assignment["mappingPrefix"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "precedence,metadata_profile",
+    [
+        # A rejection resolves to NO profile, so a scope guard predicated on the
+        # resolved profile skips it entirely -- while the reason names the mapped
+        # profile and its pinned revision, which is the whole secret.
+        ("reject", "teamA"),
+        # Metadata precedence resolves to the caller's OWN profile, in scope by
+        # construction, while the reason explains that it beat the mapping's --
+        # naming it.
+        ("metadata", "teamA"),
+    ],
+)
+def test_no_branch_of_the_dry_run_names_an_out_of_scope_profile(
+    manager, store, monkeypatch, precedence, metadata_profile
+):
+    """The two branches where the disclosed profile is not the resolved one.
+
+    Checking only the resolved profile leaves both of these handing a scoped caller
+    the name of a profile outside their scope, one key at a time, through an
+    operation Author and Viewer can both call.
+    """
+    store.list.return_value = [
+        {
+            "prefix": "finance/",
+            "configProfile": "finance-prod-secret",
+            "configRevision": 7,
+            "metadataPrecedence": precedence,
+        }
+    ]
+    monkeypatch.setattr(
+        index, "_get_user_allowed_config_versions", lambda email, sub="": ["teamA"]
+    )
+    result = index.handler(
+        _event(
+            "resolveConfigPrefixMapping",
+            {"objectKey": "finance/x.pdf", "metadataProfile": metadata_profile},
+            groups=("Viewer",),
+            email="viewer@example.com",
+        ),
+        None,
+    )
+    assignment = result["assignment"]
+    assert assignment["outOfScope"] is True
+    assert assignment["configProfile"] is None
+    assert assignment["configRevision"] is None
+    assert assignment["mappingPrefix"] is None
+    serialized = str(assignment)
+    assert "finance-prod-secret" not in serialized
+    assert "r7" not in serialized
 
 
 @pytest.mark.unit
@@ -442,3 +507,105 @@ def test_the_dry_run_requires_an_object_key(manager, store):
     result = index.handler(_event("resolveConfigPrefixMapping", {}), None)
     assert result["success"] is False
     assert result["error"]["type"] == "ValidationError"
+
+
+@pytest.mark.unit
+class TestAProfileCannotOutliveAMappingThatNamesIt:
+    """Deleting a profile a mapping names would leave the mapping resolving to
+    nothing.
+
+    `ConfigRevisionStore.delete_profile` drops every revision body regardless of
+    whether a mapping pinned one, so the mapping stays listed as configured while
+    every document arriving at its prefix silently processes under the default
+    configuration -- and a reprocess stamps the phantom name onto the tracking row.
+    Refusing beats cascading: a mapping is an operator's routing decision and
+    deleting it on their behalf is not this operation's call.
+    """
+
+    def test_delete_is_refused_while_a_mapping_names_the_profile(self, manager, store):
+        store.list.return_value = [
+            {"prefix": "acme/", "configProfile": "lending", "enabled": True},
+            {"prefix": "other/", "configProfile": "unrelated", "enabled": True},
+        ]
+        result = index.handler(
+            _event("deleteConfigVersion", {"versionName": "lending"}), None
+        )
+        assert result["success"] is False
+        assert "acme/" in result["error"]["message"]
+
+    def test_a_disabled_mapping_still_blocks_the_delete(self, manager, store):
+        """Re-enabling it later must not resolve to a profile that is gone."""
+        store.list.return_value = [
+            {"prefix": "acme/", "configProfile": "lending", "enabled": False}
+        ]
+        result = index.handler(
+            _event("deleteConfigVersion", {"versionName": "lending"}), None
+        )
+        assert result["success"] is False
+
+    def test_delete_proceeds_when_no_mapping_names_the_profile(self, manager, store):
+        store.list.return_value = [
+            {"prefix": "other/", "configProfile": "unrelated", "enabled": True}
+        ]
+        result = index.handler(
+            _event("deleteConfigVersion", {"versionName": "lending"}), None
+        )
+        # Reaches the real delete path rather than being refused by this guard.
+        assert "configuration prefix mapping" not in str(
+            result.get("error", {}).get("message", "")
+        )
+
+    def test_an_unreadable_mapping_set_refuses_the_delete(self, manager, store):
+        """Fails CLOSED here, unlike the ingest path. This is an irreversible admin
+        delete, so "cannot tell whether a mapping depends on it" must not read as
+        "nothing does"."""
+        store.list.side_effect = RuntimeError("throttled")
+        result = index.handler(
+            _event("deleteConfigVersion", {"versionName": "lending"}), None
+        )
+        assert result["success"] is False
+        assert "Could not confirm" in result["error"]["message"]
+
+
+@pytest.mark.unit
+class TestTheRetentionPinIsTakenAfterTheMappingExists:
+    def test_a_failed_put_leaves_no_orphan_pin(self, manager, store):
+        """`PrefixMappingStore.delete` never unpins -- a test run may have pinned the
+        same revision and nothing records which referent asked -- so a pin taken
+        before a put that then fails is permanent, with no mapping referencing it
+        and nothing that can release it."""
+        from idp_common.config.prefix_mappings import PrefixMappingConflict
+
+        store.put.side_effect = PrefixMappingConflict("someone else won")
+        result = index.handler(
+            _event(
+                "putConfigPrefixMapping",
+                {"prefix": "acme/", "configProfile": "lending", "configRevision": 3},
+            ),
+            None,
+        )
+        assert result["success"] is False
+        manager.mark_revision_pinned.assert_not_called()
+
+    def test_a_successful_put_takes_the_pin(self, manager, store):
+        index.handler(
+            _event(
+                "putConfigPrefixMapping",
+                {"prefix": "acme/", "configProfile": "lending", "configRevision": 3},
+            ),
+            None,
+        )
+        manager.mark_revision_pinned.assert_called_once_with("lending", 3)
+
+    def test_an_explicit_null_enabled_does_not_disable_the_mapping(
+        self, manager, store
+    ):
+        """Absent and null both mean "not specified", and the default is enabled."""
+        index.handler(
+            _event(
+                "putConfigPrefixMapping",
+                {"prefix": "acme/", "configProfile": "lending", "enabled": None},
+            ),
+            None,
+        )
+        assert store.put.call_args.kwargs["enabled"] is True

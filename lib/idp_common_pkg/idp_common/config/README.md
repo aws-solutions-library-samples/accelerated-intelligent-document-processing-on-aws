@@ -64,6 +64,154 @@ if not result["valid"]:
         print("ERROR:", err)
 ```
 
+### A key no field matches is reported, at every depth
+
+⚠️ **Of the models reachable from `IDPConfig`, three take `extra="allow"`, none
+takes `extra="forbid"`, and every other one takes Pydantic's default
+`extra="ignore"`.** So a key no field matches is **dropped during validation**, and
+the setting the author believes they changed simply is not set — which is
+indistinguishable from a working configuration, because the shipped default is in
+force and the run completes.
+
+That scope is exactly `IDPConfig`'s tree, and **`extra="forbid"` on a record root
+buys nothing below it.** This module holds three other root models. `PricingConfig`
+and `ModelConfigLimitsConfig` forbid extras at depth 0, so a stray key *there*
+raises — but `PricingEntry`, `PricingUnit` and `ModelLimitEntry`, the element types
+of their one list field each, take the permissive default, so a mistyped key inside
+a row was dropped in silence
+([#1211](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211)).
+`SchemaConfig` takes `extra="allow"` and its fields name no model, so it drops
+nothing and has nothing to report.
+
+⚠️ **`ModelConfigLimitsConfig` is not reachable from `IDPConfig` at any depth** —
+there is no `model_limits` field on it — which is why the walk written for #1134
+never saw a limit row. `PricingEntry` *is* reachable, via `IDPConfig.pricing`, so a
+misspelled key in a pricing row was already reported when a whole configuration
+document was validated and not when the `DefaultPricing`/`CustomPricing` record was
+validated on its own. The walk takes any root model, so what was missing in both
+cases was the call.
+
+Each record root now makes that call from its own `mode="before"` validator, through
+the shared `log_ignored_config_keys`, which is also what `IDPConfig`'s validator uses
+— one wording, one `deprecated`/`unknown` split, one bound on the line, and the
+message names the root it came from.
+
+⚠️ **Attach a new root's report to its validator, not to a save path**, and the reason
+is not that the save path is bypassed. `save_custom_pricing` and
+`save_custom_model_config_limits` both call `save_configuration`, and the UI resolver
+calls them — so `save_configuration` *is* reached for an operator's edit. What it is
+not reached with is a dict: the resolver validates `ModelConfigLimitsConfig(**payload)`
+itself and hands the helper a model, so `save_configuration`'s
+`if isinstance(config, dict)` branch — the only place a report there could live — never
+sees the operator's keys. By the time the record arrives, the keys have already been
+dropped. Three modules construct these roots from a dict
+(`ConfigurationManager`, the configuration resolver behind the Pricing and Model Limits
+panels, and `update_configuration` at deploy time), and the validator is the one place
+that covers all three.
+
+`include_top_level` stays off for all of them, and on the two that forbid extras that
+is not a matter of taste: Pydantic raises for a depth-0 key, so a line saying it was
+ignored would be false. Note that a root's declared fields are not only its one list —
+both carry a `config_type` discriminator, which `save_custom_model_config_limits` sets
+deliberately — so "anything but the list raises" is not the rule; "anything no field
+matches" is.
+
+⚠️ **One shape joins neither the walk nor the report**, inherited from #1134 and
+unguarded for these three roots: a field whose annotation names *more than one* model
+resolves to no model, so its subtree is never entered and a key dropped inside it is
+reported by nothing. No field of that shape exists in any of the four root trees today.
+`test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` guards it for the
+`IDPConfig` tree only.
+
+`tests/unit/config/test_record_root_unknown_keys.py` derives the root set from the
+annotation on `ConfigurationManager.save_configuration` — the enumeration production
+code already keeps — and the models under each root from the annotations, so a fifth
+record type is covered by those tests without being named in them. It also checks
+`config_library/pricing.yaml` and `config_library/model_config_limits.yaml` against
+their own roots. `scripts/tests/test_preset_keys_are_read.py` deliberately excludes
+those two files from its scan, correctly, because they are not `IDPConfig` documents;
+the effect was that no gate read them against any model.
+
+`IDPConfig.log_deprecated_fields` reports those keys. It walks the whole model
+tree, so a key at any depth is named with its **dotted path**:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+`validate_config()` puts the same findings in `result["warnings"]`, which is where
+`idp-cli config-validate` shows them — the moment a typo is cheap to fix — and in
+`result["ignored_keys"]` as `{path, kind, suggestion}` for a caller that needs to act
+rather than print. `idp-cli` and `idp_sdk` both consume those, so **this is the only
+reporter at any depth**. Each used to compute its own top-level extras as
+`set(config) - set(IDPConfig.model_fields)`, which said two keys the loader honours
+would be ignored — `description`, which `update_configuration` pops and stores, and
+`rule_classes`, which is renamed to `policy_classes` — and, once the library began
+reporting too, said everything else twice.
+
+`config-validate --strict` keeps its contract of failing on a **top-level** extra
+only. Extending it downwards would fail configurations that pass today, in the one
+flag built for a pipeline; the nested finding is reported either way.
+
+**It reports; it does not reject.** `extra` is unchanged on every model, so a
+stored configuration that loads today still loads. Rejecting would refuse
+configurations that work, and would need a migration story for every key a later
+version removes.
+
+The walk is `models.collect_ignored_config_keys(data, model)`, and it is public
+because the gates that ask the same question of shipped files call it rather than
+reimplementing the resolution, so none of them can drift from what a load actually
+drops: `scripts/tests/test_preset_keys_are_read.py` over `config_library/`,
+`tests/unit/config/test_unknown_nested_keys.py` over the merged defaults, and
+`tests/unit/config/test_record_root_unknown_keys.py` over the pricing and model-limit
+records.
+
+Three things to know before using it:
+
+- **Migrate first.** A legacy key is *relocated* on load, not dropped —
+  `extraction.agentic.validation` becomes `extraction.validation` — so against a
+  pre-migration dict the walk reports a key that works. The model validator runs
+  after `migrations.migrate_config` for that reason; `validate_config` migrates a
+  copy before asking.
+- **Two things are deliberately not unknown**, and both are read off the models
+  rather than listed. A field whose annotation names no model is a free-form
+  document whose keys are the author's (`classes`, `policy_classes`, a hook's
+  `args`), so the walk does not enter it. A model with `extra="allow"` *keeps* an
+  undeclared key, so nothing is dropped and there is nothing to report.
+- ⚠️ **One thing is a gap rather than a decision:** a field whose annotation names
+  *more than one* model — a discriminated union — is not entered, because nothing
+  in the annotation says which member a value is, and keys in there **are** dropped.
+  No field in the tree is shaped that way today, and
+  `test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` fails when one
+  appears, because otherwise the guarantee narrows silently: the models the walk
+  reaches would stop including that subtree and every derived parametrisation would
+  shrink with it.
+- **One path is suppressed**, `discovery.output_format`, a dead knob this repository
+  ships in its own system defaults. The reasoning, the ratchets and why it is not in
+  `scripts/tests/gate_exemptions.json` are written at
+  `SUPPRESSED_IGNORED_KEY_PATHS`.
+- **The mis-nested case is the sharp one.** `dpi` is a real field of
+  `ImageConfig`; written as `ocr.dpi` it is dropped, and `ImageConfig`'s
+  validator never runs — so `ocr.dpi: "abc"` is accepted in silence while
+  `ocr.image.dpi: "abc"` raises. When you probe this config tree, assert the
+  value **arrived** (`cfg.ocr.image.dpi == expected`), never that construction
+  succeeded.
+- **A suggestion is offered only when it is the only answer.** First the wrong-depth
+  question, read outwards from where the key was written — the written prefix, then
+  its parent, stopping at the first level with any candidate — which answers both
+  directions: `ocr.dpi` → `ocr.image.dpi` and `ocr.image.backend` → `ocr.backend`.
+  Within that level the shallowest candidate wins if it is alone there, and a tie
+  declines: `enabled` is declared at eight places one level under `extraction`, so
+  `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
+  and declines rather than answering with `classification.model`. Failing that, a
+  close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
+  than none: it sends the author to edit something correct. A list step is spelled
+  `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
+  mapping subtree gets findings but no suggestions, because a suggestion there would
+  have to invent a key name.
+
 ## Files
 
 | File | Purpose |
@@ -283,6 +431,16 @@ plus the published revision and anything labeled or pinned by a test run. A
 count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning
 runs in `ConfigRevisionStore.prune()` on write.
 
+Those exemptions are from pruning only. The Configuration bucket's one lifecycle
+rule, `DeleteAfterNDays` in `template.yaml`, has no filter, so it expires every
+revision body `DataRetentionInDays` after it was written, labeled and pinned ones
+included, and only the published revision can still be read after that, through
+the rebuild below. Every other revision stays subject to that expiry by design: a
+lifecycle filter can select a prefix but cannot exclude one, and the bucket also
+holds `config_library/` and `samples/` under the same rule, so sparing
+`config_revisions/` would mean replacing that rule with one per prefix that should
+still expire.
+
 `restore_revision()` is forward-only: it saves the chosen revision as a *new*
 revision rather than rewinding the counter, so history is never rewritten.
 
@@ -298,10 +456,107 @@ Two deliberate choices:
 
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
-  enter a comparison.
+  enter a comparison. The one exception is below.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.
+
+**The published revision survives its body expiring.** Revision bodies live in the
+Configuration bucket, whose lifecycle rule expires every object after
+`DataRetentionInDays`, while every new document is pinned to the profile's
+`PublishedRevision`. `_read_revision_body()` (behind `get_revision()`,
+`restore_revision()` and every pinned read) therefore rebuilds a missing body from
+the head. It does so only when all of these hold:
+
+- the requested revision equals both `PublishedRevision` and `LatestRevision`;
+- its index entry still exists;
+- the head is proven to hold it, by either:
+  - its `storedHash` matching the head now. Every revision a save publishes
+    records one: a hash of its configuration as the head stores it, excluding
+    metadata. Metadata includes the `Managed` attribute, which is read back into
+    the configuration as `managed`, so a head that differs from the revision only
+    in whether it is stack-managed still passes, and the configuration served
+    carries the head's flag: the flag says who maintains the profile, not how it
+    processes documents. For a revision cut from what the save wrote, that is the hash
+    `_write_record()` returns; for the pre-history backfill an unchanged first
+    save publishes, it is derived from the backfill's own body (below); or
+  - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
+    later than the revision's `createdAt`.
+
+Every other missing body still raises.
+
+`storedHash` is read with `ConfigRevisionStore.get_entry()`, which returns an index
+entry as stored. `list()`, which is what the revision-list API returns, leaves it
+out.
+
+The fingerprints are not used as the proof. They cover only `classes` and the
+confidence settings, and they cannot match a head at all when its classes carry
+numbers, because `_stringify_values` stores those numbers as strings and they come
+back as strings.
+
+An unchanged save cuts no revision but rewrites the head. Stack deployments do this
+to `default` and managed profiles, so an unchanged save refreshes the published
+entry's `storedHash` (`_refresh_published_stored_hash()`). The exception is the
+update that migrates a stack from the legacy configuration format: the
+configuration custom resource then writes those heads directly
+(`save_configuration_bypass_manager()`), so that update cuts no revision and
+refreshes no hash. The refresh is computed
+from the revision's **own body**. Once that body has expired, it is computed from
+the configuration of the head the save **replaced**, which `save_configuration()`
+keeps from the read it already makes, and only when that head passes the proof
+above: published and latest, and `_head_is_revision()`. It is never computed from
+the head the save wrote. A head changed by a writer that cut no revision is
+therefore never recorded as the published revision; for example, a Lambda without
+`CONFIGURATION_BUCKET`, where history is disabled. Nor is the head an unchanged
+save wrote when it stores something the replaced head did not: `True == 1`, so
+replacing a `true` with `1` wherever the configuration model leaves a value
+untyped, as it does inside a class, counts as unchanged, yet the head then stores
+`"1"` where the revision held `true`. The reverse is a change, because a stored
+number reads back as a string and `"1" != True`.
+
+The first save after upgrading into revision history follows the same rule. It
+cuts the configuration it replaces as a pre-history backfill, and when it changes
+nothing it publishes that backfill instead of cutting a second revision. The
+backfill's `storedHash` is derived from the backfill's own body
+(`_stored_hash_of_body()`), not taken from the head the save wrote. Where that save
+stored the configuration differently, a pinned read of the backfill therefore
+raises once its body expires, instead of being served from the head.
+
+So once a body has expired, an unchanged save keeps the revision servable when the
+head it replaces was proven and the head it writes is exactly how the current code
+stores that head's configuration. An upgrade to a release that stores the same
+configuration differently meets that condition; a save that swaps `True` for `1` as
+above does not. Where the replaced head was not proven, the save proves nothing. A
+revision cut before `storedHash` existed is the case to know. Until a save records
+its hash, the legacy rule is its only proof, and that proof is gone the first time
+anything rewrites the head. Earlier releases rewrote the head on every unchanged
+save and recorded nothing, so once the body of a revision whose head they rewrote
+has expired, nothing can prove it unless a refresh recorded its hash while the body
+still existed. A pinned read of it raises, as does a pinned read of a revision
+whose head a writer changed without cutting one.
+
+The profile then recovers only when a save that changes the configuration cuts a
+new revision. The error a pinned read raises ends with `EXPIRED_REVISION_REMEDY`,
+which says so and covers `default` and stack-managed profiles too, since the editor
+cannot save either: `default` can still be changed with Save as default or
+`idp-cli config-upload`, and a stack-managed profile gets a new revision from a
+stack update that changes it, with an editable copy to process its documents under
+until then. The test runner's refusal at submit carries the same remedy, followed
+by an instruction to resubmit the run pinned to the new revision once one exists.
+
+The legacy rule can also accept a head it should not, for one kind of revision. It
+accepts the head the revision's own save wrote, and a pre-history backfill that an
+earlier release published on an unchanged save is the one revision whose own save
+can have written a different configuration, as with the `True` and `1` above. Any
+save while the backfill's body still exists closes this: one that changes the
+configuration cuts a new revision, and an unchanged one records the backfill's own
+hash, so that head is refused once the body expires. Once the body has expired with
+neither, nothing can tell the head from the backfill, and a pinned read of the
+backfill is served from the head.
+
+The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
+so each pinned read of an expired published body is rebuilt again and logged at
+WARNING.
 
 `resolve_published_revision(profile)` returns the revision a new document should be
 pinned to, or None when the profile has no history (an older deployment, or one
@@ -359,10 +614,21 @@ change takes effect immediately" true rather than aspirational; a TTL cache save
 almost nothing against one small item and buys the worst admin experience available
 (a mapping that looks saved and does not apply, for an interval nothing explains).
 
-**`MAX_MAPPINGS` is enforced at write time.** `revisions.py` needs no such guard
-because `DEFAULT_REVISION_CAP` bounds its list. Nothing bounds this one, and the
-aggregate item is on the ingest path, so overflowing DynamoDB's 400 KB item limit
-would be an ingest outage rather than a failed admin write.
+**`MAX_MAPPINGS` (200) is enforced at write time**, and `normalize_entry` truncates
+`description` to 500 characters. `revisions.py` needs no such guard because
+`DEFAULT_REVISION_CAP` bounds its list. Nothing bounds this one, and the aggregate item
+is on the ingest path, so overflowing DynamoDB's 400 KB item limit would be an ingest
+outage rather than a failed admin write — a `ValidationException` at entry 201 would
+land on every queued document, not on the admin who caused it.
+
+⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
+`unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
+revision as given, with no lookup. So a mapping whose profile has been deleted falls
+back and is reported, while a mapping whose pinned *revision* has been deleted or has
+expired resolves cleanly at ingest and raises in
+`ConfigurationManager._load_revision_config` downstream. That is the intended trade —
+the per-document cost of a second lookup against a failure that surfaces loudly anyway —
+but it means `PrefixMappingUnresolvable` cannot be read as "the mapping still resolves".
 
 ⚠️ **`_read_item` re-raises a `ClientError`, and must keep doing so.** This is the one
 place the store must *not* copy `ConfigRevisionStore._read_index_item`, which logs and
@@ -404,6 +670,35 @@ has no caller to scope.
 The check is on the **resolved** profile, and that is the only form that works: there
 are two routes to choosing a profile — naming one in upload metadata, and choosing a
 prefix a mapping governs — and checking the request covers one of them.
+
+⚠️ **The subject is every profile the answer could *disclose*, not the one it
+selected.** Two outcomes name a profile while `assignment.profile` is something else
+entirely: a **rejection** resolves to no profile at all, yet its `reason` names the
+mapped profile and its pinned revision; and **metadata precedence** resolves to the
+caller's own profile, in scope by construction, while its `reason` explains that it beat
+the mapping's — naming it. A guard predicated on `assignment.profile` skips both, and
+each hands a scoped caller the name of a profile outside their scope one key at a time,
+through an operation Author and Viewer can both call. So `scope_denied` is decided over
+the union of the resolved profile and the *matched* mapping's profile.
+
+**On denial, nothing that could describe a profile survives — including
+`mapping_prefix`.** Not the profile, not the revision (a pinned number is an attribute
+of a profile the caller cannot see), not `reason`, and not the prefix. The prefix is the
+one that looks like the caller's own input and is not: the caller supplied a **key**, and
+the prefix is the mapping that governs it, so answering `a/b/c/d/x.pdf` with `a/b/`
+discloses where the boundary sits — a refinement of the input, and one probe at a time it
+walks out the routing policy `listConfigPrefixMappings` is Admin-only to protect. What
+survives is the actionable part: the destination is not theirs.
+
+### The revision travels with the profile it belongs to
+
+A caller-supplied `revision` means nothing against a profile the caller did not name, so
+a mapping supplies **both or neither** — the reprocess resolver honours a `revision`
+argument only where the *profile* came from the caller (`SOURCE_EXPLICIT_REQUEST`) or
+from the document's own pin (`SOURCE_DOCUMENT_PIN`), and never carries one onto a
+mapping-supplied profile. That is the same hazard `resolve_config_assignment` guards
+internally when it clears the metadata's revision on a profile change, and passing one
+through at the call site would reintroduce it there.
 
 ## Rollback-safe DynamoDB serialization
 

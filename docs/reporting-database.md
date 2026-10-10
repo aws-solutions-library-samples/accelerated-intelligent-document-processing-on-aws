@@ -215,9 +215,33 @@ The metering table now includes automated cost calculation capabilities:
   WHERE unit_cost IS NULL;   -- add pricing entries for anything listed here
   ```
 
-  A unit that is simply *absent from an entry that exists* is a genuine `0.0` —
-  it is not chargeable for that service (e.g. Bedrock's `totalTokens` and
-  `requests`).
+  A unit *absent from an entry that exists* is a genuine `0.0` only when it is
+  **declared non-chargeable** for that service, or when its metered count is `0`
+  (a count of zero costs nothing at any rate). The declaration lives in one place,
+  `idp_common.metering_units`, and each entry records the authority behind it.
+  The basis on which that set was populated is that **a unit appearing in no
+  priced entry of AWS's published price list is treated as non-chargeable**:
+  Bedrock's `totalTokens` and `requests` are there because no Bedrock usagetype
+  names a total token count, and on-demand model inference is priced in tokens,
+  images or video and never per request.
+
+  ⚠️ **That is an accepted assumption, not something the price list states.** A
+  price list catalogues published SKUs; it does not say what AWS bills. So a unit
+  AWS charges for and publishes no dimension for is treated as free here and
+  billed at `$0.00`, and that risk is accepted rather than eliminated. It is
+  bounded in one partial, measured way: every token unit the shipped Bedrock
+  pricing prices does appear as a published Bedrock dimension, so on that service
+  every unit known to be chargeable is listed. The non-Bedrock units this project
+  meters — `pages`, `documents`, `gb_seconds`, and Lambda `requests` — were not
+  checked against their own services' price lists.
+
+  Any *other* unit an entry omits is written as `NULL`, not `0.0`, and appears in
+  the query above. That matters because Bedrock's `usage` block grows: a numeric
+  field a future model returns reaches the metering table automatically, and if
+  its absence from your pricing configuration were read as "free" it would be
+  billed at `$0.00` with nothing to distinguish it from a unit AWS does not
+  charge for. If you see a unit listed by that query, add its rate to the pricing
+  configuration for that model.
 
 #### Pricing Configuration Format
 

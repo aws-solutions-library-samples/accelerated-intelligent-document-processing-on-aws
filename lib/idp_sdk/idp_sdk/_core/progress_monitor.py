@@ -9,27 +9,53 @@ Monitors batch processing progress by querying document status via LookupFunctio
 
 import json
 import logging
-from typing import Dict, List
+import os
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
 import boto3
+
+from idp_sdk.models.base import (
+    TERMINAL_DOCUMENT_STATES,
+    DocumentBucket,
+    classify_document_state,
+)
 
 logger = logging.getLogger(__name__)
 
 # A document in one of these will never change again, so the monitor can stop
-# polling it. REDACTED_SUPERSEDED is terminal by design: a preprocessing hook
-# replaced the original with a redacted copy, so it never reaches COMPLETED —
-# without it here, monitoring spins until timeout on every redact-and-stop doc.
-_TERMINAL_STATES = frozenset(
-    {"COMPLETED", "FAILED", "ABORTED", "NOT_FOUND", "REDACTED_SUPERSEDED"}
-)
-# Terminal AND not a success. REDACTED_SUPERSEDED is deliberately NOT here: the
-# original was intentionally superseded, which is not a processing failure.
-_FAILED_STATES = frozenset({"FAILED", "ABORTED", "NOT_FOUND"})
-# Terminal and not a failure. REDACTED_SUPERSEDED counts as done so a batch
-# containing one can still reach 100%.
-_SUCCESS_STATES = frozenset({"COMPLETED", "REDACTED_SUPERSEDED"})
-# Accepted but not yet being worked on.
-_NOT_STARTED_STATES = frozenset({"QUEUED", "PENDING_UPLOAD", "UNKNOWN"})
+# polling it. Taken from `idp_sdk.models.base`, where the four progress buckets
+# are defined as a partition of `DocumentState` that an import-time check and an
+# offline test both hold to -- so a state added to the enum cannot reach this
+# module unclassified. REDACTED_SUPERSEDED is terminal by design: a preprocessing
+# hook replaced the original with a redacted copy, so it never reaches COMPLETED,
+# and without it here monitoring spins until timeout on every redact-and-stop doc.
+_TERMINAL_STATES = frozenset(state.value for state in TERMINAL_DOCUMENT_STATES)
+
+#: How long after a batch was submitted a `NOT_FOUND` document is still read as
+#: in flight rather than as a settled failure.
+#:
+#: `NOT_FOUND` means the tracking table holds no row for the document id, and
+#: `idp_sdk.models.base` classifies it as terminal-and-failed on the premise that
+#: "a document id with no row in the tracking table will never acquire one by
+#: waiting". That premise is false for the first few seconds after an upload: the
+#: row is written by QueueSender, which S3 reaches through EventBridge
+#: *asynchronously*, so between the upload returning and the row appearing there
+#: is a window in which the document legitimately does not exist yet.
+#:
+#: A monitor that polls inside that window used to latch the document as
+#: permanently failed on its very first poll, cache it as terminal, never ask
+#: again, and report the whole batch complete-and-failed in under two seconds.
+#: Downstream that reads as "nothing was produced" rather than "nothing has
+#: started", which is how it cost a CI suite several nights: the batch was
+#: declared failed 1.6s after upload, `download-results` found zero files, and
+#: the step reported a content assertion miss with no failed execution anywhere.
+#:
+#: 60s is the latency budget the queue path is allowed before a missing row is
+#: genuinely a missing row. It is deliberately generous: the cost of waiting too
+#: long is a slower failure, and the cost of not waiting long enough is a false
+#: one.
+NOT_FOUND_GRACE_SECONDS = float(os.environ.get("IDP_NOT_FOUND_GRACE_SECONDS", "60"))
 
 
 class ProgressMonitor:
@@ -56,7 +82,11 @@ class ProgressMonitor:
         if not self.lookup_function:
             raise ValueError("LookupFunctionName not found in stack resources")
 
-    def get_batch_status(self, document_ids: List[str]) -> Dict:
+    def get_batch_status(
+        self,
+        document_ids: List[str],
+        batch_started_at: Optional[datetime] = None,
+    ) -> Dict:
         """
         Get status of all documents in batch using optimized batch query
 
@@ -64,6 +94,15 @@ class ProgressMonitor:
 
         Args:
             document_ids: List of document IDs to check
+            batch_started_at: When the batch was submitted, if known. Within
+                `NOT_FOUND_GRACE_SECONDS` of it, a `NOT_FOUND` document is
+                reported as queued instead of failed and is not cached, because
+                the QueueSender row it is missing may still be on its way. Pass
+                `None` -- the default -- when the submission time is unknown or
+                irrelevant, and `NOT_FOUND` settles immediately as it always
+                did; that is what keeps a status query against a mistyped or
+                long-gone document id answering at once instead of hanging for a
+                minute.
 
         Returns:
             Dictionary with status summary
@@ -82,13 +121,15 @@ class ProgressMonitor:
             logger.warning("No document IDs provided for batch status check")
             return status_summary
 
+        not_found_is_terminal = self._not_found_has_settled(batch_started_at)
+
         # Separate finished (cached) from active (need to query) documents
         docs_to_query = []
         for doc_id in document_ids:
             if doc_id in self.finished_docs:
                 # Use cached status
                 cached = self.finished_docs[doc_id]
-                self._categorize_document(cached, status_summary)
+                self._categorize_document(cached, status_summary, not_found_is_terminal)
             else:
                 docs_to_query.append(doc_id)
 
@@ -108,10 +149,13 @@ class ProgressMonitor:
             statuses = self._batch_query_documents(docs_to_query)
 
             for status in statuses:
-                self._categorize_document(status, status_summary)
+                self._categorize_document(status, status_summary, not_found_is_terminal)
 
-                # Cache finished documents (terminal states)
-                if status["status"] in _TERMINAL_STATES:
+                # Cache finished documents (terminal states). The cache is a
+                # commitment -- a cached document is never queried again -- so a
+                # NOT_FOUND still inside its grace window must stay out of it,
+                # or the grace window would only ever apply to the first poll.
+                if self._is_settled(status["status"], not_found_is_terminal):
                     self.finished_docs[status["document_id"]] = status
 
         except Exception as e:
@@ -120,9 +164,11 @@ class ProgressMonitor:
             for doc_id in docs_to_query:
                 try:
                     status = self.get_document_status(doc_id)
-                    self._categorize_document(status, status_summary)
+                    self._categorize_document(
+                        status, status_summary, not_found_is_terminal
+                    )
 
-                    if status["status"] in _TERMINAL_STATES:
+                    if self._is_settled(status["status"], not_found_is_terminal):
                         self.finished_docs[status["document_id"]] = status
                 except Exception as e:
                     logger.error(f"Error getting status for {doc_id}: {e}")
@@ -201,33 +247,77 @@ class ProgressMonitor:
 
         return statuses
 
-    def _categorize_document(self, status: Dict, status_summary: Dict):
+    @staticmethod
+    def _not_found_has_settled(batch_started_at: Optional[datetime]) -> bool:
+        """Return whether a missing tracking row can now be called a failure.
+
+        True when the batch was submitted longer ago than
+        `NOT_FOUND_GRACE_SECONDS`, or when its submission time is unknown.
+
+        A naive timestamp is read as UTC rather than rejected: the batch
+        metadata this is derived from is written with `datetime.now(timezone.utc)`
+        and so is aware, but it round-trips through JSON and an older batch
+        document may not carry an offset. Guessing UTC is right for every writer
+        in this codebase, and the alternative -- treating it as unparseable and
+        settling immediately -- would reintroduce the race it exists to close.
+
+        Args:
+            batch_started_at: Batch submission time, or None if not known.
+
+        Returns:
+            True if `NOT_FOUND` should be reported as a settled failure.
+        """
+        if batch_started_at is None:
+            return True
+        if batch_started_at.tzinfo is None:
+            batch_started_at = batch_started_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - batch_started_at).total_seconds()
+        # A clock skew that dates the batch in the future gives a negative age,
+        # which falls on the in-grace side. That is the safe direction: it delays
+        # a verdict rather than declaring a document failed that was never
+        # looked for, and the caller's own polling deadline still bounds the wait.
+        return age >= NOT_FOUND_GRACE_SECONDS
+
+    @staticmethod
+    def _is_settled(status_value: str, not_found_is_terminal: bool) -> bool:
+        """Return whether this status will never change, so it can be cached."""
+        if status_value == "NOT_FOUND" and not not_found_is_terminal:
+            return False
+        return status_value in _TERMINAL_STATES
+
+    def _categorize_document(
+        self,
+        status: Dict,
+        status_summary: Dict,
+        not_found_is_terminal: bool = True,
+    ):
         """
         Categorize a document status into the appropriate summary bucket
 
         Args:
             status: Document status dictionary
             status_summary: Status summary dictionary to update
+            not_found_is_terminal: When False, a `NOT_FOUND` document is reported
+                as queued rather than failed, because its QueueSender row may
+                still be in flight. Defaults to True, which is the unconditional
+                behaviour every caller had before the grace window existed.
         """
         status_value = status["status"]
+        bucket = classify_document_state(status_value)
 
-        if status_value in _SUCCESS_STATES:
-            status_summary["completed"].append(status)
-        elif status_value in _FAILED_STATES:
+        if bucket is DocumentBucket.FAILED and status_value == "NOT_FOUND":
+            if not not_found_is_terminal:
+                # Still inside the grace window: the document has been accepted
+                # but no tracking row exists yet, which is what "queued" means.
+                # Reported without an `error`, so a transient state cannot be
+                # displayed as a failure or counted as one.
+                status_summary[DocumentBucket.QUEUED.value].append(status)
+                return
             # NOT_FOUND is treated as failed - document was never tracked in DynamoDB
-            if status_value == "NOT_FOUND":
-                status["error"] = "Document not found in tracking table"
-                status["failed_step"] = "QueueSender"
-            status_summary["failed"].append(status)
-        elif status_value in _NOT_STARTED_STATES:
-            status_summary["queued"].append(status)
-        else:
-            # Anything else is a mid-pipeline step, so default to "running"
-            # rather than enumerating them. The previous explicit list omitted
-            # OCR, PREPROCESSING, POSTPROCESSING and
-            # RULE_VALIDATION_POLICY_CLASSIFICATION, so documents in those very
-            # ordinary states were reported as "Queued".
-            status_summary["running"].append(status)
+            status["error"] = "Document not found in tracking table"
+            status["failed_step"] = "QueueSender"
+
+        status_summary[bucket.value].append(status)
 
     def get_document_status(self, doc_id: str) -> Dict:
         """

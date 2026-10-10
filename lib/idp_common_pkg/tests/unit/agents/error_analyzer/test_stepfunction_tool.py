@@ -48,6 +48,7 @@ from unittest.mock import patch
 import pytest
 
 from idp_common.agents.error_analyzer.tools.stepfunction_tool import (
+    _FAILURE_EVENTS,
     _analyze_execution_timeline,
     _build_analysis_summary,
     _build_response,
@@ -58,6 +59,7 @@ from idp_common.agents.error_analyzer.tools.stepfunction_tool import (
     _get_execution_data,
     analyze_workflow_execution,
 )
+from idp_common.stepfunctions_history import failure_detail_key
 
 MODULE = "idp_common.agents.error_analyzer.tools.stepfunction_tool"
 EXECUTION_ARN = "arn:aws:states:us-east-1:123456789012:execution:idp-sm:abc123"
@@ -1554,3 +1556,50 @@ class TestAFailedLaterPageKeepsWhatWasGathered:
             client.get_execution_history.side_effect = RuntimeError("no history")
             with pytest.raises(RuntimeError):
                 _get_execution_data(EXECUTION_ARN)
+
+
+@pytest.mark.unit
+class TestEveryTypeInTheSharedVocabularyReportsItsOwnErrorText:
+    """#1185: the detail member is derived, so widening the shared vocabulary cannot
+    leave a recognised failure reporting nothing.
+
+    This replaced an `if/elif` chain over three type names plus a `"TimedOut" in
+    event_type` catch-all that read only the execution and task timeout members. Of the
+    fifteen types in the vocabulary that chain handled five: two more fell into the
+    catch-all and reported a **hardcoded placeholder cause**, discarding the real one, and
+    the remaining eight returned `{}` — falsy, so the caller dropped them and reported a
+    failing state with no failure point beside it. Two answers about one execution
+    disagreeing is exactly what #1185 was filed about.
+    """
+
+    @pytest.mark.parametrize("event_type", sorted(_FAILURE_EVENTS))
+    def test_the_real_error_and_cause_are_reported(self, event_type):
+        details = _extract_failure_details(
+            {
+                "type": event_type,
+                failure_detail_key(event_type): {
+                    "error": "REAL_ERROR",
+                    "cause": "REAL_CAUSE",
+                },
+            }
+        )
+        assert details, f"{event_type} produced no details, so the caller drops it"
+        assert details["error"] == "REAL_ERROR", event_type
+        assert details["cause"] == "REAL_CAUSE", (
+            f"{event_type} discarded the real cause in favour of a placeholder"
+        )
+
+    @pytest.mark.parametrize("event_type", sorted(_FAILURE_EVENTS))
+    def test_a_failure_with_no_detail_still_reports_something(self, event_type):
+        """A failure with no explanation is still a failure; empty text reads as success
+        to the caller, which tests `if failure_details:`."""
+        details = _extract_failure_details({"type": event_type})
+        assert details, event_type
+        assert details["error"] and details["cause"], event_type
+
+    def test_the_vocabulary_this_covers_is_the_shared_one(self):
+        """Closure, so the parametrisation cannot fall behind the shared set."""
+        from idp_common.stepfunctions_history import FAILURE_EVENTS as SHARED
+
+        assert set(_FAILURE_EVENTS) == set(SHARED)
+        assert len(_FAILURE_EVENTS) > 5, "the vocabulary looks unwidened"

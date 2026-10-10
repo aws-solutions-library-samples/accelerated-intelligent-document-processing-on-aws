@@ -30,7 +30,7 @@ describe('the "Start empty" source', () => {
   it('is offered, and says where the documents come from later', () => {
     const empty = CREATE_SOURCES.find((s) => s.value === 'empty');
     expect(empty?.label).toBe('Start empty');
-    expect(empty?.description).toMatch(/files in a bucket, a zip, or generated documents/);
+    expect(empty?.description).toMatch(/processed documents, files in a bucket, a zip, or generated documents/);
   });
 
   it('creates through its own mutation, with nothing but the set’s own fields', () => {

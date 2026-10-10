@@ -70,7 +70,7 @@ def _load_script():
 
 mod = _load_script()
 
-EXPECTED = ["Dependency Audit (SCA)", "Lint, Type Check, and Test"]
+EXPECTED = ["Dependency Audit (SCA)", "Static Checks (lint, types, scans)"]
 
 # Every check context that MUST come out of the derivation as required-eligible,
 # mapped to a gate command that anchors it to real work.
@@ -79,7 +79,7 @@ EXPECTED = ["Dependency Audit (SCA)", "Lint, Type Check, and Test"]
 # checked only the job running `make lint-cicd`, so adding a `paths:` filter to
 # `security-checks.yml`'s `pull_request` trigger — a change a maintainer might
 # plausibly make to save CI minutes — collapsed the derived required set to
-# ['Lint, Type Check, and Test'] with every test in this file still green. Both
+# ['Static Checks (lint, types, scans)'] with every test in this file still green. Both
 # security gates silently dropped out, and worse, the tool would then have
 # reported them under `unknown_required_checks`, actively advising an
 # administrator to UN-require the SRT scan and the dependency audit.
@@ -87,8 +87,18 @@ EXPECTED = ["Dependency Audit (SCA)", "Lint, Type Check, and Test"]
 # The names are asserted directly because that is the string branch protection
 # has to match; the gate command is asserted alongside so that keeping the name
 # while gutting the job's work also fails.
+# The three test jobs are listed for the same reason the two security gates are.
+# `developer-tests.yml` used to be ONE job, so requiring the context that ran
+# `make lint-cicd` happened to require the unit suites, the package suites and the
+# UI tests along with it. It is now four independent jobs and each is its own
+# context, so requiring only the lint one would leave every test suite advisory —
+# a strictly weaker gate than before the split, reached by a change that looks like
+# a speedup. Naming them here is what makes that regression fail.
 MUST_BE_REQUIRED = {
-    "Lint, Type Check, and Test": "make lint-cicd",
+    "Static Checks (lint, types, scans)": "make lint-cicd",
+    "Unit Tests (idp_common)": "make test-cicd",
+    "Package and Lambda Test Suites": "make test-packages-cicd",
+    "UI Unit Tests": "npx vitest run",
     "SRT Security Review": "make srt-scan",
     "Dependency Audit (SCA)": "scripts/security/dep_audit.py",
 }
@@ -455,7 +465,7 @@ def test_job_level_if_condition_is_advisory(tmp_path: Path) -> None:
             branches: ["**"]
         jobs:
           developer_tests:
-            name: Lint, Type Check, and Test
+            name: Static Checks (lint, types, scans)
             if: github.event.pull_request.draft == false
             runs-on: ubuntu-latest
             steps: [{run: "make lint-cicd"}]
@@ -1144,7 +1154,7 @@ def test_branch_summary_state_is_labelled_in_the_report(
 @pytest.mark.unit
 def test_ruleset_required_checks_count_towards_classic_protection() -> None:
     """Both mechanisms gate at once, so the union is what actually blocks a merge."""
-    payload = _fully_protected(contexts=["Lint, Type Check, and Test"])
+    payload = _fully_protected(contexts=["Static Checks (lint, types, scans)"])
     state = mod.ProtectionState(
         state=mod.PROTECTION_CLASSIC,
         classic=payload,
@@ -1173,7 +1183,7 @@ def test_fully_configured_protection_has_no_findings() -> None:
 @pytest.mark.unit
 def test_missing_required_check_is_reported_by_name() -> None:
     """The drift case: a job renamed, or a new gate never added to protection."""
-    payload = _fully_protected(contexts=["Lint, Type Check, and Test"])
+    payload = _fully_protected(contexts=["Static Checks (lint, types, scans)"])
     findings = mod.evaluate(payload, EXPECTED, "develop")
     keys = [f.key for f in findings]
     assert keys == ["missing_required_checks"]

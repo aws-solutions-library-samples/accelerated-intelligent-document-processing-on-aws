@@ -1142,8 +1142,9 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fieldMetrics: any = results.fieldMetrics ? parseFieldMetrics(results.fieldMetrics as string) : null;
   // Per-section classification mismatches. Absent on runs aggregated before this
-  // shipped and on the Athena fallback path, both of which parse to {} — the
-  // panel renders nothing rather than an empty table in that case.
+  // shipped and on the Athena fallback path when the aggregation Lambda supplied
+  // none, both of which parse to {} — the panel renders nothing rather than an
+  // empty table in that case.
   const classificationErrors = results.classificationErrors ? parseClassificationErrors(results.classificationErrors as string) : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _confusionMatrix: any = results.confusionMatrix ? parseConfusionMatrix(results.confusionMatrix as string) : null;
@@ -1401,7 +1402,22 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           </Alert>
         )}
 
-        {!hasAccuracyData && results.status === 'COMPLETE' && !results.isDraftLabeling && (
+        {/* Evaluation switched off in the configuration this run captured, so
+            nothing was scored however much ground truth the test set has. The
+            generic message below attributes missing metrics to a set with no
+            published ground truth, which sends you to the test set to look for
+            a problem that is not there — the setting is in the configuration
+            profile. The server owns the rule and reports it as
+            evaluationDisabled. */}
+        {!hasAccuracyData && results.status === 'COMPLETE' && !results.isDraftLabeling && results.evaluationDisabled && (
+          <Alert type="info" header="No accuracy metrics — evaluation is turned off in this configuration">
+            This run was processed with <Box variant="code">evaluation.enabled</Box> set to false, so its documents were never scored
+            against the test set&apos;s ground truth. Turn evaluation on in the configuration profile and run the test set again to get
+            accuracy metrics.
+          </Alert>
+        )}
+
+        {!hasAccuracyData && results.status === 'COMPLETE' && !results.isDraftLabeling && !results.evaluationDisabled && (
           <Alert type="warning" header="No Accuracy Data">
             Test run completed but accuracy metrics are not available. This usually means the test set had no published ground truth to
             score against.

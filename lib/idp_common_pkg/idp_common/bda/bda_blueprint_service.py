@@ -21,14 +21,17 @@
 # `test_the_reportargumenttype_pragma_is_still_here` enforces: deleting this line
 # leaves every gate green while silently withdrawing the protection.
 # pyright: reportArgumentType=error
+import contextvars
 import json
 import logging
 import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from copy import deepcopy
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Iterator, Optional
 
 from botocore.exceptions import ClientError
 from deepdiff import DeepDiff
@@ -52,6 +55,35 @@ from idp_common.config.schema_constants import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _DropRecording:
+    """One class's collection of properties the transform dropped.
+
+    Created by ``BdaBlueprintService._recording_drops_for`` and reachable only from
+    the thread that entered it, which is what makes the ``class_name`` label
+    trustworthy: the transform is a deep call tree and the recorder sits at the
+    bottom of it, so the label has to be ambient rather than passed, but an ambient
+    value on the *instance* is shared by every sync worker thread.
+    """
+
+    class_name: Optional[str]
+    drops: list = field(default_factory=list)
+
+
+# The recording in force for the calling thread, or None when the transform is being
+# run outside any per-class recording (``BlueprintOptimizer``, and direct calls to the
+# transform helpers). A ContextVar rather than an instance attribute because a new
+# thread starts with an empty context, so a worker running ``_process_single_class``
+# cannot see — or overwrite — the label a sibling worker is using. A
+# ``threading.local()`` would isolate the threads too but not the tasks: an executor
+# reuses its threads, so the second class a worker picked up would inherit the first
+# one's drops. Resetting the token on exit is what bounds a recording to one
+# invocation. Issue #1193.
+_drop_recording: contextvars.ContextVar[Optional[_DropRecording]] = (
+    contextvars.ContextVar("idp_bda_drop_recording", default=None)
+)
+
+
 class BdaBlueprintService:
     def __init__(
         self,
@@ -68,9 +100,24 @@ class BdaBlueprintService:
         # eu-west-1 and used to write the classes to the ambient region.
         self.config_manager = ConfigurationManager(region=region)
         self.max_workers = int(os.environ.get("BDA_SYNC_MAX_WORKERS", "5"))
-        # Track skipped properties during schema transformation for reporting
+        # Every property the transform has dropped on this instance, in the order it
+        # was dropped, for diagnostics. What a caller is *reported* comes from the
+        # per-class recording instead (`_recording_drops_for`), so nothing reads this
+        # list to decide what a class's warnings are — a read filtered by class name
+        # is what turned a mislabelled drop into a missing one. Issue #1193.
         self._skipped_properties = []
-        self._current_class = None  # Track which class is being processed
+        # Blueprints the most recent replace-mode sync removed from the BDA project
+        # but could not then delete, so they are orphaned in the account: invisible
+        # to every project-scoped read, still counting against blueprint limits and
+        # still matchable by name prefix. Set by
+        # `create_blueprints_from_custom_configuration`, which resets it at the start
+        # of every sync, and read by its callers afterwards.
+        #
+        # A separate channel rather than an entry in the per-class status list that
+        # sync returns, because callers *count* that list into "classes synced" and
+        # "classes failed" — an entry for something that is not a class would corrupt
+        # both, and every class really did sync. Issue #1194.
+        self.orphaned_blueprint_arns: list = []
 
         return
 
@@ -1088,37 +1135,70 @@ class BdaBlueprintService:
 
         return result
 
+    @contextmanager
+    def _recording_drops_for(
+        self, docu_class: Optional[str]
+    ) -> Iterator[_DropRecording]:
+        """Collect the properties the transform drops while processing one class.
+
+        Yields the recording itself, so the caller reads back exactly what was
+        recorded inside the block rather than filtering a shared list by class name,
+        and can name the class once it knows it (``_process_single_class`` derives the
+        class id inside the block, where a malformed schema is already handled, and so
+        passes ``None`` here and assigns ``recording.class_name`` a few statements
+        later). ``docu_class`` therefore has no default, deliberately: opening a
+        recording with no class has to be a decision at the call site rather than
+        something a caller can do by omission.
+
+        The recording is visible only to the calling thread and only for the duration
+        of the block, which is what lets ``_process_classes_parallel`` run one of these
+        per worker without the labels colliding (issue #1193).
+
+        Nesting is safe: the previous recording is restored on exit, including when the
+        block raises.
+        """
+        recording = _DropRecording(class_name=docu_class)
+        token = _drop_recording.set(recording)
+        try:
+            yield recording
+        finally:
+            _drop_recording.reset(token)
+
     def _record_skipped_property(self, name: str, kind: str, message: str) -> None:
         """Record a property dropped from a blueprint, and say so in the log.
 
-        Every entry recorded here reaches the caller as a per-class warning
-        (``_process_single_class`` collects them), and the sync resolver surfaces
-        them in its response. A drop that is only logged is invisible: the class
-        is reported ``success`` with no warnings while a whole section has left
-        its extraction contract.
+        Every entry recorded inside a ``_recording_drops_for`` block reaches the
+        caller as a per-class warning (``_process_single_class`` returns the list that
+        context manager yields), and the sync resolver surfaces them in its response.
+        A drop that is only logged is invisible: the class is reported ``success`` with
+        no warnings while a whole section has left its extraction contract.
 
-        ⚠️ ``_current_class`` is one instance attribute and ``_process_classes_parallel``
-        runs ``_process_single_class`` on up to ``BDA_SYNC_MAX_WORKERS`` threads, so the
-        label here is racy. Because ``_process_single_class`` collects by filtering on
-        that label, a mislabelled drop is *omitted* from its real class's warnings
-        rather than merely misfiled — the exact outcome this recorder exists to
-        prevent. It does not reproduce under natural scheduling, only under a forced
-        interleaving; the remedy (pass the class explicitly, or make both this list and
-        the label thread-local) is issue #1193.
+        Outside such a block — ``BlueprintOptimizer``, or a direct call to one of the
+        transform helpers — there is no class to attribute the drop to, so it is
+        logged and appended to ``_skipped_properties`` with a ``class`` of ``None``.
+        Nothing reads it there; the transform still has to be able to drop a property
+        without a recording open.
 
-        Note also that the update path records each drop twice: ``_check_for_updates``
-        runs the transform to diff, and the update runs it again. Nothing
-        de-duplicates.
+        Note that the update path records each drop twice: ``_check_for_updates`` runs
+        the transform to diff, and the update runs it again. Nothing de-duplicates.
         """
-        self._skipped_properties.append(
-            {
-                "class": self._current_class,
-                "property": name,
-                "type": kind,
-                "message": message,
-            }
-        )
-        logger.warning(f"Class '{self._current_class}': {message}")
+        recording = _drop_recording.get()
+        class_name = recording.class_name if recording is not None else None
+        entry = {
+            "class": class_name,
+            "property": name,
+            "type": kind,
+            "message": message,
+        }
+        if recording is not None:
+            recording.drops.append(entry)
+        # Also kept on the instance as an ordered record of everything dropped,
+        # independently of which class was being processed.
+        self._skipped_properties.append(entry)
+        if class_name is None:
+            logger.warning(message)
+        else:
+            logger.warning(f"Class '{class_name}': {message}")
 
     def _process_object_properties(self, properties: dict) -> dict:
         """
@@ -1535,63 +1615,102 @@ class BdaBlueprintService:
         Returns:
             dict: Status information with class, blueprint_arn, blueprint_version, status, direction, classes_modified, warnings
         """
-        try:
-            blueprint_arn = custom_class.get("blueprint_arn", None)
-            blueprint_name = custom_class.get("blueprint_name", None)
-            docu_class = custom_class.get(
-                ID_FIELD, custom_class.get(X_AWS_IDP_DOCUMENT_TYPE, "")
-            )
-
-            # A blueprint name must match [a-zA-Z0-9-_]+, so a class id
-            # carrying a space or punctuation has to be reduced before it goes
-            # into one — otherwise CreateBlueprint fails with a raw
-            # ValidationException for every affected class and the version is
-            # left with a project and zero blueprints.
-            bda_class_name = self._sanitize_class_name(docu_class)
-            if not bda_class_name:
-                raise ValueError(
-                    f"Document class '{docu_class}' has no characters that are "
-                    f"valid in a BDA blueprint name ([a-zA-Z0-9-_]). Rename the "
-                    f"class in your configuration before syncing to BDA."
-                )
-            if bda_class_name != docu_class:
-                logger.warning(
-                    "Class '%s' is not a valid BDA blueprint name component; "
-                    "using '%s' for its blueprint name.",
-                    docu_class,
-                    bda_class_name,
+        # One recording per invocation, entered before anything the transform
+        # can reach. `_process_classes_parallel` runs this method on up to
+        # BDA_SYNC_MAX_WORKERS threads, and the recording is bound to the calling
+        # thread, so the class a dropped property is filed under can no longer be
+        # whichever sibling assigned an instance attribute most recently.
+        with self._recording_drops_for(None) as recording:
+            try:
+                blueprint_arn = custom_class.get("blueprint_arn", None)
+                blueprint_name = custom_class.get("blueprint_name", None)
+                docu_class = custom_class.get(
+                    ID_FIELD, custom_class.get(X_AWS_IDP_DOCUMENT_TYPE, "")
                 )
 
-            # Set current class context for tracking skipped properties
-            self._current_class = docu_class
-
-            blueprint_exists = self._blueprint_lookup(existing_blueprints, docu_class)
-            if blueprint_exists:
-                blueprint_arn = blueprint_exists.get("blueprintArn")
-                blueprint_name = blueprint_exists.get("blueprintName")
-
-            classes_modified = False
-            blueprint_version = None
-
-            if blueprint_arn:
-                if blueprint_exists is None:
-                    # `blueprint_arn` came from the class's own `blueprint_arn`
-                    # key rather than from the lookup, so there is no blueprint to
-                    # compare the schema against. Nothing in this repository writes
-                    # that key, so this is unreached today; without the check the
-                    # comparison below subscripts None and the class is reported
-                    # failed with a bare TypeError.
+                # A blueprint name must match [a-zA-Z0-9-_]+, so a class id
+                # carrying a space or punctuation has to be reduced before it goes
+                # into one — otherwise CreateBlueprint fails with a raw
+                # ValidationException for every affected class and the version is
+                # left with a project and zero blueprints.
+                bda_class_name = self._sanitize_class_name(docu_class)
+                if not bda_class_name:
                     raise ValueError(
-                        f"Class '{docu_class}' names blueprint {blueprint_arn} in "
-                        f"its own schema, but no blueprint for it is associated "
-                        f"with the BDA project, so there is nothing to compare "
-                        f"its schema against."
+                        f"Document class '{docu_class}' has no characters that are "
+                        f"valid in a BDA blueprint name ([a-zA-Z0-9-_]). Rename the "
+                        f"class in your configuration before syncing to BDA."
                     )
-                # Check for updates on existing blueprint
-                if self._check_for_updates(
-                    custom_class=custom_class, blueprint=blueprint_exists
-                ):
-                    # Sanitize the class before transformation
+                if bda_class_name != docu_class:
+                    logger.warning(
+                        "Class '%s' is not a valid BDA blueprint name component; "
+                        "using '%s' for its blueprint name.",
+                        docu_class,
+                        bda_class_name,
+                    )
+
+                # Name the recording now that the class id is known, so every drop
+                # below is attributed to it.
+                recording.class_name = docu_class
+
+                blueprint_exists = self._blueprint_lookup(
+                    existing_blueprints, docu_class
+                )
+                if blueprint_exists:
+                    blueprint_arn = blueprint_exists.get("blueprintArn")
+                    blueprint_name = blueprint_exists.get("blueprintName")
+
+                classes_modified = False
+                blueprint_version = None
+
+                if blueprint_arn:
+                    if blueprint_exists is None:
+                        # `blueprint_arn` came from the class's own `blueprint_arn`
+                        # key rather than from the lookup, so there is no blueprint to
+                        # compare the schema against. Nothing in this repository writes
+                        # that key, so this is unreached today; without the check the
+                        # comparison below subscripts None and the class is reported
+                        # failed with a bare TypeError.
+                        raise ValueError(
+                            f"Class '{docu_class}' names blueprint {blueprint_arn} in "
+                            f"its own schema, but no blueprint for it is associated "
+                            f"with the BDA project, so there is nothing to compare "
+                            f"its schema against."
+                        )
+                    # Check for updates on existing blueprint
+                    if self._check_for_updates(
+                        custom_class=custom_class, blueprint=blueprint_exists
+                    ):
+                        # Sanitize the class before transformation
+                        sanitized_class, name_mapping = self._sanitize_property_names(
+                            deepcopy(custom_class)
+                        )
+                        if name_mapping:
+                            custom_class.clear()
+                            custom_class.update(sanitized_class)
+                            classes_modified = True
+
+                        blueprint_schema = (
+                            self._transform_json_schema_to_bedrock_blueprint(
+                                custom_class
+                            )
+                        )
+
+                        self.blueprint_creator.update_blueprint(
+                            blueprint_arn=blueprint_arn,
+                            stage="LIVE",
+                            schema=json.dumps(blueprint_schema),
+                        )
+                        # Create version but don't associate with project yet (to avoid race condition)
+                        version_result = self.blueprint_creator.create_blueprint_version_without_project_update(
+                            blueprint_arn=blueprint_arn
+                        )
+                        blueprint_version = version_result["blueprint"].get(
+                            "blueprintVersion"
+                        )
+                        logger.info(f"Updated blueprint for class {docu_class}")
+
+                else:
+                    # Create new blueprint
                     sanitized_class, name_mapping = self._sanitize_property_names(
                         deepcopy(custom_class)
                     )
@@ -1600,15 +1719,26 @@ class BdaBlueprintService:
                         custom_class.update(sanitized_class)
                         classes_modified = True
 
+                    blueprint_name = (
+                        f"{self.blueprint_name_prefix}-{bda_class_name}-"
+                        f"{uuid.uuid4().hex[:8]}"
+                    )
                     blueprint_schema = self._transform_json_schema_to_bedrock_blueprint(
                         custom_class
                     )
 
-                    self.blueprint_creator.update_blueprint(
-                        blueprint_arn=blueprint_arn,
-                        stage="LIVE",
+                    result = self.blueprint_creator.create_blueprint(
+                        document_type="DOCUMENT",
+                        blueprint_name=blueprint_name,
                         schema=json.dumps(blueprint_schema),
                     )
+                    status = result["status"]
+                    if status != "success":
+                        raise Exception(f"Failed to create blueprint: {result}")
+
+                    blueprint_arn = result["blueprint"]["blueprintArn"]
+                    blueprint_name = result["blueprint"]["blueprintName"]
+
                     # Create version but don't associate with project yet (to avoid race condition)
                     version_result = self.blueprint_creator.create_blueprint_version_without_project_update(
                         blueprint_arn=blueprint_arn
@@ -1616,79 +1746,43 @@ class BdaBlueprintService:
                     blueprint_version = version_result["blueprint"].get(
                         "blueprintVersion"
                     )
-                    logger.info(f"Updated blueprint for class {docu_class}")
+                    logger.info(f"Created blueprint for class {docu_class}")
 
-            else:
-                # Create new blueprint
-                sanitized_class, name_mapping = self._sanitize_property_names(
-                    deepcopy(custom_class)
+                # Collect the warnings this invocation recorded. Read from the
+                # recording rather than filtered out of a shared list by class name:
+                # the filter is what turned a drop labelled with a sibling's name into
+                # a drop reported against no class at all.
+                class_warnings = list(recording.drops)
+
+                return {
+                    "class": docu_class,
+                    "status": "success",
+                    "warnings": class_warnings,
+                    "_internal": {
+                        "blueprint_arn": blueprint_arn,
+                        "blueprint_version": blueprint_version,
+                        "classes_modified": classes_modified,
+                    },
+                }
+
+            except Exception as e:
+                class_name = (
+                    custom_class.get(
+                        ID_FIELD, custom_class.get(X_AWS_IDP_DOCUMENT_TYPE, "unknown")
+                    )
+                    if custom_class
+                    else "unknown"
                 )
-                if name_mapping:
-                    custom_class.clear()
-                    custom_class.update(sanitized_class)
-                    classes_modified = True
-
-                blueprint_name = (
-                    f"{self.blueprint_name_prefix}-{bda_class_name}-"
-                    f"{uuid.uuid4().hex[:8]}"
-                )
-                blueprint_schema = self._transform_json_schema_to_bedrock_blueprint(
-                    custom_class
-                )
-
-                result = self.blueprint_creator.create_blueprint(
-                    document_type="DOCUMENT",
-                    blueprint_name=blueprint_name,
-                    schema=json.dumps(blueprint_schema),
-                )
-                status = result["status"]
-                if status != "success":
-                    raise Exception(f"Failed to create blueprint: {result}")
-
-                blueprint_arn = result["blueprint"]["blueprintArn"]
-                blueprint_name = result["blueprint"]["blueprintName"]
-
-                # Create version but don't associate with project yet (to avoid race condition)
-                version_result = self.blueprint_creator.create_blueprint_version_without_project_update(
-                    blueprint_arn=blueprint_arn
-                )
-                blueprint_version = version_result["blueprint"].get("blueprintVersion")
-                logger.info(f"Created blueprint for class {docu_class}")
-
-            # Collect any warnings for this class
-            class_warnings = [
-                w for w in self._skipped_properties if w.get("class") == docu_class
-            ]
-
-            return {
-                "class": docu_class,
-                "status": "success",
-                "warnings": class_warnings,
-                "_internal": {
-                    "blueprint_arn": blueprint_arn,
-                    "blueprint_version": blueprint_version,
-                    "classes_modified": classes_modified,
-                },
-            }
-
-        except Exception as e:
-            class_name = (
-                custom_class.get(
-                    ID_FIELD, custom_class.get(X_AWS_IDP_DOCUMENT_TYPE, "unknown")
-                )
-                if custom_class
-                else "unknown"
-            )
-            logger.error(f"Error processing class {class_name}: {e}")
-            logger.error(f"Dump class {json.dumps(custom_class)}")
-            return {
-                "class": class_name,
-                "status": "failed",
-                # Carry the reason with the result. Callers previously reported
-                # only a failed count, so a per-class cause (an API
-                # ValidationException, say) was visible only in CloudWatch.
-                "error": str(e),
-            }
+                logger.error(f"Error processing class {class_name}: {e}")
+                logger.error(f"Dump class {json.dumps(custom_class)}")
+                return {
+                    "class": class_name,
+                    "status": "failed",
+                    # Carry the reason with the result. Callers previously reported
+                    # only a failed count, so a per-class cause (an API
+                    # ValidationException, say) was visible only in CloudWatch.
+                    "error": str(e),
+                }
 
     def _process_classes_parallel(
         self, classess: list, existing_blueprints: list
@@ -2119,12 +2213,21 @@ class BdaBlueprintService:
                   For bda_to_idp: BDA blueprints are added to IDP classes (existing classes kept).
                   For idp_to_bda: IDP classes are pushed to BDA (existing BDA-only blueprints kept).
 
+        Returns:
+            list: one status entry per document class processed. A replace-mode sync
+            may additionally leave orphaned blueprints, which are **not** in that list
+            — they belong to no class — and are reported on
+            ``self.orphaned_blueprint_arns`` for the caller to surface.
+
         Raises:
             Exception: If blueprint creation fails
         """
         logger.info(
             f"Starting blueprint synchronization with direction: {sync_direction}, mode: {sync_mode}"
         )
+        # Cleared per sync so a caller cannot read a previous sync's orphans as this
+        # one's, and so a sync that leaves none says so.
+        self.orphaned_blueprint_arns = []
 
         try:
             # Validate sync direction and mode
@@ -2334,12 +2437,13 @@ class BdaBlueprintService:
                 # Synchronize deletes only in replace mode (remove BDA blueprints not in IDP)
                 # In merge mode, keep existing BDA-only blueprints alive
                 if sync_mode == "replace":
-                    # ⚠️ The orphaned ARNs this returns are discarded here, so a
-                    # failed delete reaches CloudWatch and nothing the caller or the
-                    # UI sees, while the sync still reports success. That is the same
-                    # "only logged is invisible" standard applied to dropped schema
-                    # properties and not applied here. Issue #1194.
-                    self._synchronize_deletes(
+                    # A blueprint that could not be deleted is already out of the
+                    # project by the time the delete is attempted, so nothing
+                    # project-scoped will offer it again and only an account-wide
+                    # cleanup will remove it. Recorded for the caller to surface: a
+                    # failure that reaches only CloudWatch is a failure the user who
+                    # asked for the sync never learns about.
+                    self.orphaned_blueprint_arns = self._synchronize_deletes(
                         existing_blueprints=existing_blueprints,
                         blueprints_updated=blueprints_updated,
                     )

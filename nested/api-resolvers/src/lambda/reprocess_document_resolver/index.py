@@ -7,7 +7,14 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import boto3
-from idp_common.docs_service import create_document_service
+
+from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.prefix_mappings import (
+    SOURCE_DOCUMENT_PIN,
+    SOURCE_EXPLICIT_REQUEST,
+    PrefixMappingStore,
+    resolve_config_assignment,
+)
 from idp_common.config_scope import (
     ScopeLookupError,
     caller_email_from_claims,
@@ -15,12 +22,7 @@ from idp_common.config_scope import (
     resolve_allowed_config_versions,
     scope_allows,
 )
-from idp_common.config.prefix_mappings import (
-    SOURCE_DOCUMENT_PIN,
-    SOURCE_EXPLICIT_REQUEST,
-    PrefixMappingStore,
-    resolve_config_assignment,
-)
+from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
@@ -208,15 +210,47 @@ def _prefix_mappings():
             "without them",
             e,
         )
+        _emit("PrefixMappingLookupFailed")
         return []
 
 
-def _version_for_document(
-    requested_version, object_key, current_versions, allowed_versions=None
-):
-    """The profile to reprocess one document under, and where it came from.
+def _emit(metric_name):
+    """Fire-and-forget telemetry, into the ROOT stack's namespace.
 
-    Returns ``(version, source, mapping_prefix)``.
+    The reprocess path sends straight to the document queue, so ``queue_sender``
+    never runs for it and the three prefix-mapping alarms would otherwise cover one
+    entry point of two — the same reason ``StaleOutputPurgeFailed`` has two emitters.
+    Both publish dimensionless into ``METRIC_NAMESPACE``, so one alarm covers both.
+    """
+    try:
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[{"MetricName": metric_name, "Value": 1, "Unit": "Count"}],
+        )
+    except Exception:
+        pass  # telemetry must not affect a reprocess
+
+
+def _configuration_manager():
+    """A ConfigurationManager over this deployment's table, or ``None``."""
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        return None
+    return ConfigurationManager(table_name=table_name)
+
+
+def _version_for_document(
+    requested_version,
+    requested_revision,
+    object_key,
+    current_versions,
+    allowed_versions=None,
+    mappings=None,
+    manager=None,
+):
+    """The configuration to reprocess one document under, and where it came from.
+
+    Returns ``(version, revision, source, mapping_prefix)``.
 
     The order is a precedence chain and each step is there for a different reason:
 
@@ -236,25 +270,52 @@ def _version_for_document(
        so the rule holds even if (2) ever stops producing a pin.
     4. **Otherwise unpinned**, and ``queue_processor`` resolves the active profile —
        previous behaviour, unchanged.
+
+    ⚠️ **The revision travels with the profile it belongs to.** Revision numbers are
+    per profile, so a caller's ``revision`` argument means nothing against a profile
+    the caller did not name. Passing one through alongside a mapping-supplied profile
+    would stamp, say, r5 of profile A onto profile B — the hazard
+    ``resolve_config_assignment`` guards against internally, reintroduced at the call
+    site. So a mapping supplies both or neither, and ``revision`` is honoured only
+    where ``version`` came from the caller or from the document's own pin.
     """
     if requested_version:
-        return requested_version, SOURCE_EXPLICIT_REQUEST, None
+        return (
+            requested_version,
+            requested_revision,
+            SOURCE_EXPLICIT_REQUEST,
+            None,
+        )
 
     pinned = current_versions.get(object_key) or None
     if pinned:
-        return pinned, SOURCE_DOCUMENT_PIN, None
+        # The caller named no profile, so a `revision` argument is theirs to apply to
+        # the document's existing one -- the pair the UI's reprocess dialog sends.
+        return pinned, requested_revision, SOURCE_DOCUMENT_PIN, None
 
-    mappings = _prefix_mappings()
     if not mappings:
-        return None, None, None
+        return None, requested_revision, None, None
 
     assignment = resolve_config_assignment(
         object_key,
         mappings=mappings,
+        active_profile=(
+            manager.resolve_active_version if manager is not None else None
+        ),
+        published_revision=(
+            manager.resolve_published_revision if manager is not None else None
+        ),
+        profile_exists=(
+            (lambda profile: _profile_head_exists(manager, profile))
+            if manager is not None
+            else None
+        ),
         # Scope is evaluated on the RESOLVED profile. For an unscoped caller
         # `allowed_versions` is empty, which `scope_allows` reads as unrestricted.
         allowed_profiles=list(allowed_versions) if allowed_versions else None,
     )
+    if assignment.unresolvable:
+        _emit("PrefixMappingUnresolvable")
     if assignment.scope_denied or not assignment.mapping_prefix:
         if assignment.scope_denied:
             logger.warning(
@@ -262,10 +323,26 @@ def _version_for_document(
                 "profile is outside the caller's configuration scope",
                 object_key,
             )
-        return None, None, None
+        return None, requested_revision, None, None
 
     logger.info("Reprocess of %s: %s", object_key, assignment.reason)
-    return assignment.profile, assignment.source, assignment.mapping_prefix
+    _emit("PrefixMappingApplied")
+    # Both, or neither: the mapping's revision, never the caller's.
+    return (
+        assignment.profile,
+        assignment.revision,
+        assignment.source,
+        assignment.mapping_prefix,
+    )
+
+
+def _profile_head_exists(manager, profile):
+    """Whether a profile head item is there, without reading its body."""
+    item = manager.table.get_item(
+        Key={"Configuration": f"Config#{profile}"},
+        ProjectionExpression="Configuration",
+    ).get("Item")
+    return bool(item)
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -410,19 +487,34 @@ def handler(event, context):
             + (f" with version: {version}" if version else "")
         )
 
+        # Read the mapping set and build the manager ONCE, outside the loop. A batch
+        # reprocess is bounded by API Gateway's 29s integration ceiling, and this
+        # path previously spent no reads here at all.
+        mappings = _prefix_mappings()
+        manager = _configuration_manager()
+
         # Process each document
         success_count = 0
         for object_key in object_keys:
             try:
-                resolved_version, config_source, mapping_prefix = (
-                    _version_for_document(
-                        version, object_key, current_versions, allowed_versions
-                    )
+                (
+                    resolved_version,
+                    resolved_revision,
+                    config_source,
+                    mapping_prefix,
+                ) = _version_for_document(
+                    version,
+                    revision,
+                    object_key,
+                    current_versions,
+                    allowed_versions,
+                    mappings=mappings,
+                    manager=manager,
                 )
                 reprocess_document(
                     object_key,
                     resolved_version,
-                    revision,
+                    resolved_revision,
                     config_source=config_source,
                     config_mapping_prefix=mapping_prefix,
                 )

@@ -20,6 +20,7 @@ The IDP Common library provides these main modules:
 - **[BDA](bda/README.md)**: Bedrock Data Automation integration
 - **[Document Service Factory](docs_service_README.md)**: The `create_document_service()` entry point Lambdas use to record document state (always DynamoDB-backed)
 - **Document Failure** (`document_failure.py`): recording *why* a document failed before the handler re-raises — see [Recording a document-level failure](#-recording-a-document-level-failure) below
+- **Document deletion** (`delete_documents.py`): the irreversible cleanup path behind `idp-cli delete-documents`, the SDK's `batch.delete_documents()` and the UI's delete action — see [Selecting documents to delete](#-selecting-documents-to-delete) below
 - **[Reporting](reporting/README.md)**: Analytics data storage
 - **[Assessment](assessment/README.md)**: Confidence scoring and bounding boxes
 - **[Discovery](discovery/README.md)**: Document class and schema discovery
@@ -89,12 +90,69 @@ class Document:
     hitl_metadata: List[HitlMetadata] = field(default_factory=list)
     hitl_status: Optional[str] = None
     hitl_triggered: bool = False
-    hitl_sections_pending: List[str] = field(default_factory=list)
-    hitl_sections_completed: List[str] = field(default_factory=list)
+    # None = "nothing to say about the review"; [] = "no sections pending".
+    # See "The two review lists are Optional on purpose" below.
+    hitl_sections_pending: Optional[List[str]] = None
+    hitl_sections_completed: Optional[List[str]] = None
     
     # Confidence alerts
     confidence_alert_count: int = 0
 ```
+
+#### The two review lists are `Optional` on purpose
+
+`hitl_sections_pending` and `hitl_sections_completed` default to `None`, unlike
+every other collection on `Document`, and the default carries meaning that
+`DocumentDynamoDBService.update_document` depends on:
+
+| Value | Means | What the writer does |
+|---|---|---|
+| `None` | This document object has nothing to say about the review | Emits no clause; the stored attribute is left alone |
+| `[]` | No sections are pending (or none completed) | Writes the empty list, clearing the stored attribute |
+| `["sec-2"]` | These sections are outstanding | Writes the list |
+
+`[]` is a fact worth persisting: it is the state a document reaches when its last
+section is reviewed, and `complete_section_review` derives `all_completed` from the
+**stored** list on the next review — so a stale list there is what put `HITLStatus`
+back to `InProgress` on a finished document (#1214), and `HITLStatus` is what the
+web UI's review queue and its per-document badges are driven by. `None` is the state
+of every `Document` a pipeline step builds, since none of them touch review state,
+and those steps write the **whole** document — so a writer that cannot tell the two
+apart either never clears the list, which was the defect, or clears it on behalf of
+callers that never meant to, which is worse because nothing reports it.
+
+⚠️ **`[]` can only reach one of these fields by an in-process assignment.** Neither
+transport into a `Document` can produce it:
+
+| Route | An empty list arrives as |
+|---|---|
+| `Document.from_dict` (Step Functions payload, SQS body, a feature hook's hand-built `updatedDocument`) | `None` |
+| `DocumentDynamoDBService._dynamodb_item_to_document` (a stored `[]`, the normal state of a reviewed document) | `None` |
+| `Document.to_dict` (outbound) | omitted entirely |
+
+That is what bounds the change's reach. There are exactly four sites that assign one
+of these lists a literal `[]` — `complete_section_review` and the `processChanges`
+resolver on `pending`, `processresults_function` and `bda_processresults_function` on
+`completed` — each of them in the same process as its own `update_document` call, and
+they are the only code that can clear a stored attribute. Every other caller of
+`update_document` emits no clause for these two attributes, which is byte-identical
+to what the old truthiness test did. Two reasons that matters beyond the fresh-model
+case: a hook may spell out the whole document and include `"hitl_sections_pending":
+[]` as boilerplate, which read literally would destroy a live review list; and an
+unrelated whole-document write against an already-reviewed document (an abort, a
+section re-grouping, an SDK rerun) would otherwise re-assert the stored `[]` and
+become a lost update against a concurrent re-trigger.
+
+Two consequences for anyone touching this:
+
+- **Read them as `document.hitl_sections_pending or []`.** Every reader in the
+  repository already does.
+- **Do not change one side of that table without the others.** A writer that needs
+  an empty list to survive serialization has to change `to_dict` *and* the two
+  inbound coercions, and changing `to_dict` alone also changes the pipeline-hook
+  payload contract documented in `docs/feature-platform.md`. The pairing is pinned by
+  `test_neither_transport_can_carry_an_empty_review_list` in
+  `tests/unit/dynamodb/test_service_hitl_sections_clear.py`.
 
 ### Page
 
@@ -528,13 +586,27 @@ zero calls:
 
 `stepfunctions_history.py` answers one question about a Step Functions execution
 history — which state the terminal failure is attributable to — and it exists because
-two callers answered it separately and both got it wrong the same way.
+four callers answered it separately and each got it wrong in its own way.
 
 ```python
-from idp_common.stepfunctions_history import failing_state, failing_state_is_resolvable
+from idp_common.stepfunctions_history import failing_state, terminal_failure
 
 state = failing_state(events)          # events in either direction; None if unknowable
+failure = terminal_failure(events)     # + the error text; None if nothing failed
 ```
+
+The four are the error-analyzer agent tool, the CodeBuild deployment harness, the
+monitoring timeline (`idp_common.monitoring.stepfunctions_service`) and the web UI's
+execution viewer. Two of them reported a `Catch` handler instead of the state that failed
+(#1139, #1168); two reported the **first** failure in the history instead of the one the
+execution ended on (#1185).
+
+**Why the last failure and not the first.** The unified workflow retries throttles,
+service exceptions and timeouts in many places, so a failed execution routinely carries a
+`TaskFailed` it went on to survive. Taking the earliest one names a state that succeeded
+and an error nobody needs to act on. Note the shape of a `Retry`: it re-runs the **task**,
+not the state, so the history holds one `TaskStateEntered` for that state and the retried
+attempt appears as another schedule/start pair beneath it.
 
 **Why "the last state entered before the failure" is the wrong answer.** A `Catch` that
 routes to a `Fail` state enters that handler *before* the terminal `ExecutionFailed`
@@ -564,17 +636,140 @@ Two things to know before relying on the answer:
   for a caller paging backwards from the failure, and it deliberately refuses to call an
   execution-level failure resolved while pages remain: the handler's own transition
   would otherwise satisfy it.
-- Attribution infers causality from **adjacency**, so inside a concurrent `Map` — whose
-  iterations share one history and therefore interleave — it can name a sibling
-  iteration's state. Walking `previousEventId` is the exact fix and has not been made.
-  Such a walk has to start from an **outcome** event: a `TaskStateEntered` precedes its
-  own `TaskScheduled`, so walking back from a state transition reaches the *previous*
-  state's events.
+- Attribution here infers causality from **adjacency**, so inside a concurrent `Map` or
+  `Parallel` — whose branches share one history and therefore interleave — it can name a
+  sibling branch's state. Walking `previousEventId` is the exact fix, and the UI's
+  execution resolver now does it; this module still uses adjacency, because its callers
+  report one state name for the whole execution rather than per-instance status. Such a
+  walk has to start from an **outcome** event: a `TaskStateEntered` precedes its own
+  `TaskScheduled`, so walking back from a state transition reaches the *previous* state's
+  events — and it has to be a walk rather than one hop, since a failure event names
+  `TaskStarted`, which names `TaskScheduled`, which names the transition.
+- One failure event needs no inference at all: `EvaluationFailed` carries the state name
+  in its own detail, and `state` is a *required* member of that shape, so where the event
+  exists the name is always there. It is believed over adjacency.
+
+**The failure vocabulary is a rule about capability, not a list of spellings.** An event
+type can carry a failure exactly when its own detail shape declares both `error` and
+`cause`; sixteen of the `HistoryEventType` values do, and fifteen of those are treated as
+failures. The rule everyone writes first — "the name ends in `Failed`, `TimedOut` or
+`Aborted`" — additionally admits nine container and transition events that carry no error
+text whatsoever (`MapStateFailed`, `ParallelStateFailed`, `MapIterationFailed`,
+`TaskStateAborted` and five more). Each of those reports only that something inside it
+failed, and that something is itself in the vocabulary and arrives earlier, so admitting
+them would move attribution outward from the state that failed to the state containing it.
+`ExecutionAborted` is the one capable type deliberately held out: an abort is an
+externally requested stop that `describe_execution` reports as a status, so an execution
+cancelled while healthy reports no failure rather than one naming whichever state it
+happened to be in — a confident wrong answer, which costs more than an admitted gap. On an
+execution aborted *after* a genuine failure the exclusion changes the state named not at
+all; the task-level event is matched on its own account either way.
+The classification is asserted against the bundled service model for every member of the
+enum, so a type the service adds later has to be placed rather than defaulting into or out
+of the vocabulary.
 
 The module imports nothing outside the standard library, deliberately — the CodeBuild
-deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its two callers
-and cannot afford `strands`, which the other one (the error-analyzer agent tool) pulls
-in.
+deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its callers and
+cannot afford `strands`, which the error-analyzer agent tool pulls in. That is also why
+the vocabulary is spelled out as a literal here and the derivation from the model lives in
+the tests.
+
+## 🧹 Selecting documents to delete
+
+`delete_documents.py` deletes customer data irreversibly, so its two selectors —
+`get_documents_by_batch(table, batch_id)` and `get_documents_by_pattern(table, pattern)`
+— are held to two rules that are easy to lose in a refactor.
+
+**A selector matches by path segment, not by substring.** `batch-1` selects
+`batch-1/a.pdf` and not `batch-10/b.pdf`; the purge of a document's outputs covers
+`invoice.pdf` and everything under `invoice.pdf/`, not `invoice.pdf.bak/`. A caller who
+wants a broad match asks for it with `get_documents_by_pattern`, where the breadth is
+visible in the argument. The predicates are named functions (`_is_in_batch`,
+`_is_document_output`) for that reason: a selector in front of an irreversible operation
+is worth reading on its own.
+
+**An empty result means "nothing matched", and a failure raises.** Both selectors return
+`List[str]`, which has no room to report a failure, and an empty list is the ordinary
+answer for an empty batch — so a handler that returned `[]` on error reported a failure
+as a successful no-op: `delete_documents([])` answers `success=True, deleted_count=0`.
+So:
+
+- A selector that is not a string raises `TypeError`, and an empty string raises
+  `ValueError`, both before any scan is issued. `None` is the shape this arrives in —
+  `batch_id=record.get("id")` where the id is absent — and the empty string is refused
+  because neither reading of it ("everything", "nothing") is what a caller meant. Use
+  `pattern="*"` to select every document.
+- A scan failure propagates. Nothing is caught, and that is per exception class rather
+  than an omission: every shape DynamoDB declares for `Scan` is an operational fault
+  (three throttles, a missing table, a server error, all `ClientError`), the client-side
+  family is `BotoCoreError`, and both shipped callers turn an empty selection into a
+  reported success. Propagating cannot widen a delete, since a raise selects nothing.
+- A record the predicate cannot read propagates too, rather than being skipped. An
+  `ObjectKey` written as a DynamoDB `N` arrives as a `Decimal`, and a selector that
+  skipped it would return a **partial** list — which is the one shape of the old
+  behaviour that actually deleted something and called it complete. Note that
+  `get_documents_by_pattern` answers `TypeError` for this and for a caller who passed a
+  non-string pattern, so the message is what distinguishes them.
+
+Callers need not add their own handling to stay safe, but should expect to see these:
+`idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and
+`idp-cli delete-documents` prints the cause and exits 1.
+
+## 🧹 Reporting a delete that did not finish
+
+The same rule the selectors follow now holds inside the cleanup itself: **a value that
+means "there was nothing there" cannot also mean "the call failed".**
+`_query_shard_for_object_key` returns `[]` for a shard holding no entry for the document,
+`_try_exact_list_deletion` returns `False` for a key that was not there, and
+`delete_single_document` records `False` as `list_entries: False` **with no error** — so a
+throttled shard query used to be reported as a completed delete while the row stayed in
+the document list, with nothing anywhere saying so.
+
+- **A fault in the list-entry cleanup propagates** to `delete_single_document`, which
+  records it in `errors` and answers `success=False`. The three fallback strategies swallow
+  nothing except a `ValueError` from `calculate_shard`: an unparseable `QueuedTime` is a
+  property of the record, cannot be got past by retrying, and must not abort the rest of
+  the document's cleanup.
+- **A throttle is retried before it becomes a failure.** `_call_with_retry` wraps every
+  DynamoDB and S3 call on this path: four attempts, exponential backoff from 0.2 s capped
+  at 2 s, no further attempt started once `RETRY_MAX_ELAPSED_SECONDS` of retrying is
+  spent, and the final attempt's exception raised unchanged so a caller can still read
+  the error code. Read that budget precisely: it gates attempt *starts*, so what the
+  ladder adds is the budget **plus at most one more attempt** — and under sustained
+  throttling with a bare client, whose own legacy ladder spends 25 s inside the first
+  attempt, this layer contributes one attempt and no sleeps. Its value there is that it
+  stops rather than multiplies. Which faults are worth another attempt comes from botocore's own
+  `ThrottledRetryableChecker` and `TransientRetryableChecker` rather than a list written
+  here — throttles, 5xx and connection failures are retried; `ValidationException`,
+  `AccessDeniedException` and `ResourceNotFoundException` are not.
+- ⚠️ **The retry is deliberately small, because it is not the only one.** A client built
+  as `boto3.resource("dynamodb")` with no `Config` runs botocore's `legacy` retry mode,
+  whose DynamoDB entry allows 10 attempts — so the two layers multiply. This one lives in
+  the module rather than at each caller's client construction for one reason: the module
+  is handed a `Table` and cannot configure the client underneath it, and a ladder here
+  cannot be bypassed by a new caller that forgets to pass a `Config`.
+- **The document record is kept when list-entry cleanup failed.** Every list-entry
+  strategy is reached through that record's `QueuedTime`, so deleting it after a failed
+  cleanup left the orphaned row unreachable — the retry the reported failure asks for
+  found no metadata, ran no strategy, and answered `success=True` with the row still
+  listed. An S3 failure does not hold the record back; only a list-entry failure does.
+- ⚠️ **The record is kept when cleanup *raises*, which is narrower than "whenever a row
+  is left behind".** The three strategies can also simply find nothing — a row more than
+  one shard away, a `QueuedTime` differing from the one the row was written under, or the
+  swallowed `ValueError` path — and that is `list_entries: False` with no error, so the
+  record is deleted and the row becomes unreachable exactly as before. That case is
+  unchanged by this and is not reported as a failure.
+- ⚠️ **A failed delete leaves the document visible with its content already gone.** The
+  kept `doc#` record is what the UI's document list reads (`ItemType="document"` on
+  `TypeDateIndex`), while the input object and the output versions are deleted earlier in
+  the same attempt — so the row remains and opens a document whose bytes are no longer
+  there. That is the honest state for a delete that did not finish, and re-running the
+  delete is what clears it, but it is worth knowing before reading the list.
+- **Retrying a delete is safe, and the residual is in the reporting.** `DeleteItem` here
+  carries no condition expression, so re-issuing it cannot delete twice or corrupt
+  anything; what a retry can lose is the *evidence*, since a row removed by an attempt
+  whose response was lost returns no `ALL_OLD` attributes and reads as "there was nothing
+  to delete". That understates the cleanup and never overstates it.
 
 ## 📝 Best Practices
 

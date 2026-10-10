@@ -183,9 +183,15 @@ number of (service, unit) rows a doc touched.
 - **NEVER** `GROUP BY service_api` or `unit` on `metering_docs_*` — those columns don't exist.
 
 ### 1. `metering_hourly`
-- **Grain**: (hour, config_version, service_api, unit)
-- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Grain**: (hour, config_version, document_class, service_api, unit)
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `document_class` (VARCHAR, may be NULL for partitions written before the schema-widening migration — see below), `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
+- **`document_class`**: resolves to the class the pipeline assigned to each document (`invoice`, `w2`, `1099`, etc.). Three special values a per-class report has to handle:
+  - **`NULL`** — rows written before the schema-widening migration. Read as "class not recorded for these older aggregates" rather than "unknown class". Filter with `WHERE document_class IS NOT NULL` when reporting per-class cost so the null bucket doesn't inflate an "unclassified" total.
+  - **`'unknown'`** — post-migration row whose per-document classification path returned nothing (no `document_sections_*` fallback match either). Distinct from `NULL`: the pipeline ran, the join was attempted, no class was resolved. Report as its own bucket or filter with `document_class NOT IN ('unknown', 'mixed')` when the question is about known-class-only cost.
+  - **`'mixed'`** — post-migration row for a document whose sections resolved to more than one class (a packet containing e.g. a W2 and an invoice). Same filter rule as `'unknown'`: exclude it when the question is about single-class totals.
+
+  Every post-widening row goes through `COALESCE(m.document_class, dc.document_class, 'unknown')` on the write path, so the three-way partition above covers every value the column can take on a stack whose migration has completed.
 - **`sum_cost` is NULLABLE.** The rollup's grain is exactly the key that pricing is
   resolved by, so a `(service_api, unit)` with no pricing entry yields `sum_cost =
   NULL` for the whole group rather than a partial total. NULL means unknown, not
@@ -197,8 +203,8 @@ number of (service, unit) rows a doc touched.
 - **Freshness**: sealed hour N is written at N+1:05 UTC. **The most recent complete clock-hour is NOT yet sealed** — safe cut-off is `hour_ts < date_trunc('hour', current_timestamp) - interval '1' hour` (skip current + previous).
 
 ### 2. `metering_daily`
-- **Grain**: (day, config_version, service_api, unit)
-- **Columns**: `day` (DATE), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition key `date` (VARCHAR YYYY-MM-DD; equals `CAST(day AS VARCHAR)`)
+- **Grain**: (day, config_version, document_class, service_api, unit)
+- **Columns**: `day` (DATE), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition key `date` (VARCHAR YYYY-MM-DD; equals `CAST(day AS VARCHAR)`)
 - ⚠️ `hour_ts` does NOT exist on this table. Query `day` instead.
 - **`sum_cost` is NULLABLE**, inherited from `metering_hourly` for the same reason —
   see the note on that table above, including the `COALESCE` guidance.
@@ -206,14 +212,14 @@ number of (service, unit) rows a doc touched.
 - **Freshness**: sealed day D is written at D+1 00:15 UTC.
 
 ### 3. `metering_docs_hourly`
-- **Grain**: (hour, config_version)
-- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `n_docs`, `sum_pages`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Grain**: (hour, config_version, document_class)
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `n_docs`, `sum_pages`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Meaning**: `n_docs = COUNT(DISTINCT document_id)` inside the hour.
 - **Partitioned by**: `date`, `hour`. Same partition-filter rule as `metering_hourly`.
 
 ### 4. `metering_docs_daily`
-- **Grain**: (day, config_version)
-- **Columns**: `day` (DATE), `config_version`, `n_docs`, `sum_pages`, plus partition key `date` (VARCHAR YYYY-MM-DD)
+- **Grain**: (day, config_version, document_class)
+- **Columns**: `day` (DATE), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `n_docs`, `sum_pages`, plus partition key `date` (VARCHAR YYYY-MM-DD)
 - **⚠️ `n_docs` is a doc-hours count, NOT a cross-day unique-doc count** — it's
   `SUM(hourly n_docs)`, so a doc that appears in 3 hours during the day counts as 3.
   For strict unique docs across days, query raw `metering` with `COUNT(DISTINCT document_id)`.

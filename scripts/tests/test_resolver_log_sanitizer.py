@@ -307,9 +307,21 @@ def _lambda_dirs() -> list[Path]:
     Returned as paths rather than bare names because the two trees are indexed
     together from here on, and a name is not unique across them.
     """
+    # Discovered through git, not `iterdir()`. A bare filesystem listing counts anything
+    # that happens to be sitting there, and `__pycache__` appears the moment any `.py`
+    # exists at that level -- so adding a `conftest.py` beside these handlers turned a
+    # build artifact into a "resolver directory with no CodeUri" and failed this suite.
+    # A directory is a handler directory only if git tracks Python inside it, which is
+    # the same rule `_tracked_python` below already uses.
+    tracked = _tracked_python()
     dirs: list[Path] = []
     for root in LAMBDA_ROOTS:
-        dirs.extend(p.resolve() for p in root.iterdir() if p.is_dir())
+        for candidate in root.iterdir():
+            if not candidate.is_dir():
+                continue
+            here = candidate.resolve()
+            if any(f.parent == here for f in tracked):
+                dirs.append(here)
     return sorted(dirs)
 
 
@@ -1149,6 +1161,39 @@ def test_canonical_importers_carry_an_idp_common_layer():
         "in any CloudFormation template in this repo, so the import fails at cold "
         "start. Either attach the layer or vendor the module with "
         f"scripts/sync_resolver_log_sanitizer.sh: {sorted(broken)}"
+    )
+
+
+def test_vendoring_directories_carry_no_idp_common_layer():
+    """The other direction: a committed copy must not sit beside the layer.
+
+    ``test_canonical_importers_carry_an_idp_common_layer`` above refuses an import
+    the function cannot satisfy. This refuses the opposite state — a function that
+    carries the layer *and* a committed ``log_sanitizer.py`` it imports as a bare
+    sibling. That leaves two importable modules of the same name with resolution
+    decided by ``sys.path`` order, and the sync script's own premise ("the functions
+    listed below deliberately carry no Lambda layer, so they cannot import
+    idp_common at runtime either") stops being true of that directory, so the copy
+    is being kept in step for no reason.
+
+    ``scripts/tests/test_s3_targets_vendored.py`` already calls exactly this
+    combination a defect for its own module, in
+    ``test_the_split_matches_which_functions_carry_the_layer``. Without this
+    assertion the two gates disagree: that one fails while this one stays green on
+    the same condition, which is how ``upload_resolver`` ended up in that state
+    when it gained the layer for ``idp_common.config.prefix_mappings``.
+    """
+    layers = _layers_by_code_dir()
+    broken = []
+    for directory in _lambda_dirs():
+        if not _imports_vendored_sanitizer(directory):
+            continue
+        if layers.get(directory):
+            broken.append(_label(directory))
+    assert not broken, (
+        f"These functions carry an IDPCommon layer AND a committed {VENDORED_NAME} "
+        f"they import as a bare sibling — two importable modules of the same name. "
+        f"Import {CANONICAL_IMPORT} and delete the copy: {sorted(broken)}"
     )
 
 

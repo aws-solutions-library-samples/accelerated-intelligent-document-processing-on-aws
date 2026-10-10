@@ -44,7 +44,13 @@ _MIN_PREFIX_TIERS = (
     # ``opus-5`` also matches ``opus-5-5``, and that is the correct answer rather
     # than a lucky one: the Opus 5.5 model card publishes the same 512-token
     # minimum and the same 4-checkpoint maximum as Opus 5.
-    (re.compile(r"claude-(opus-5|fable-5)"), 512),
+    # ``haiku-5-5`` needs its own alternative here and must precede the
+    # ``haiku-4-5`` tier below. Nothing about the Haiku family carries over: Haiku
+    # 4.5's minimum is 4,096 tokens — the largest tier in this table — and Haiku
+    # 5.5's model card publishes 512, the smallest. Matching on a shared
+    # ``haiku-`` stem would therefore have given this model an 8x-too-high
+    # minimum and warned that classes which do cache will not.
+    (re.compile(r"claude-(opus-5|fable-5|haiku-5-5)"), 512),
     (re.compile(r"claude-opus-4-7"), 2048),
     (re.compile(r"claude-(opus-4-6|opus-4-5|haiku-4-5)"), 4096),
     # Sonnet 5, Sonnet 4.6, Opus 4.8, Sonnet 4.5, Sonnet 4, Opus 4.1, Opus 4, 3.7 Sonnet
@@ -340,7 +346,7 @@ def describe_cache_state(summary: Mapping[str, Any]) -> str:
         )
         return (
             f"never cached — the cache point was inert ({counts}); the prompt "
-            f"prefix is probably below {floor}: run 'idp-cli config validate' for "
+            f"prefix is probably below {floor}: run 'idp-cli config-validate' for "
             f"the per-class estimate"
         )
     if state == "disabled":

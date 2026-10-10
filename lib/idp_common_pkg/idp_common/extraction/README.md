@@ -585,6 +585,19 @@ point reaches Bedrock. A cache write is 1.25× input price and pays back only on
 second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
 better off with `off`.
 
+⚠️ **Bedrock permits at most four `cache_control` blocks in one request, and the
+Advanced path already uses three of them.** It counts additively across the three
+places they can appear — one in `system` (Strands `cache_prompt`), one in
+`toolConfig` (`cache_tools`), and one per message block — so a fifth is rejected
+outright with `ValidationException: A maximum of 4 blocks with cache_control may be
+provided. Found 5.`, which is not retried and fails the section keeping no rows.
+There is one message-level block, the trailing one `_prepare_prompt_content`
+appends, and **adding a second cache point to the message content is therefore the
+last one available**. This is also why `invoke_agent_with_retry` *resumes* a failed
+attempt's conversation rather than sending the prompt again: a second copy of the
+prompt is a fourth block and a third copy is a fifth
+([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)).
+
 Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Opus 5.5 /
 Fable 5, 1,024
 on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
@@ -1241,7 +1254,7 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
-> warns at `idp-cli config validate` / SDK validate time — the web UI does not validate
+> warns at `idp-cli config-validate` / SDK validate time — the web UI does not validate
 > on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
 > not a config rejection: a stored config must keep loading, and the new key is a
 > free-form class key that older releases ignore.
@@ -1464,7 +1477,7 @@ Configure agentic extraction in your configuration file:
 
 ```yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-6"  # Anthropic Claude recommended for agentic
+  model: "us.anthropic.claude-sonnet-5"  # Anthropic Claude recommended for agentic
   agentic:
     enabled: true
     max_concurrent_batches: 1  # Parallel processing (2-10 for very large docs)
@@ -2101,7 +2114,7 @@ When OCR confidence data is unavailable, the tool relies on `parse_success_rate`
 ```yaml
 # config.yaml
 extraction:
-  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: "us.anthropic.claude-sonnet-5"
   agentic:
     enabled: true
     table_parsing:
@@ -2231,7 +2244,39 @@ signals make both loud without changing what is extracted:
   extracted vs total matched OCR rows — so complete sibling tables (Deposits, Withdrawals)
   never warn against their shared evidence. Fires when the matched tables hold at least 30
   rows and the group extracted fewer than half of them (`_OCR_ROW_ESTIMATE_MIN`,
-  `_OCR_ROW_SHORTFALL_RATIO`). It needs OCR that emits Markdown tables — Textract with the
+  `_OCR_ROW_SHORTFALL_RATIO`).
+
+  A declared **`maxItems`** bounds `expected`
+  (`_declared_max_items`, returned as the fourth element of each `_object_list_targets`
+  tuple): the schema's own ceiling on the row count is a ceiling on the evidence, since a
+  list extracted to its `maxItems` is complete by the config author's definition and
+  `validation.py` already treats trimming to it as a CORRECTION. The group ceiling is the
+  SUM over the group's members and applies only when EVERY member declares one, because
+  `extracted` is summed over the group and `expected` is shared, so one undeclared sibling
+  leaves the legitimate total unbounded — and declining to bound is the safe direction,
+  a bound can only ever suppress a firing. For an inner list the compared rows are the
+  concatenation across the outer list's instances, so a per-instance `maxItems` is not a
+  bound on them: the ceiling is the PRODUCT of the outer and inner ones and is absent
+  unless both are declared (multiplying by the instances actually extracted would shrink
+  the evidence in proportion to how many instances extraction lost). The reader itself
+  is `_declared_max_items`, which refuses `bool` before anything else (`True` is an `int`
+  and would read as a ceiling of 1), delegates the string form to
+  `coerce_numeric_schema_keywords` rather than re-implementing the #797 rule a sixth
+  time, and decides the rest by `int()` inside a deliberately broad `except` — it is
+  called from `_build_extraction_issues`, which `_save_results` invokes with no enclosing
+  `try`, so anything it raises costs the section its whole processing-issue list, and
+  `float()` raises `OverflowError` on an integer too large to convert.
+  ⚠️ A ceiling under `_OCR_ROW_ESTIMATE_MIN` takes the field out of the check entirely,
+  including a shortfall against the ceiling itself (2 rows of a declared 15 is silent),
+  and more generally an UNDER-declared ceiling weakens the check in proportion at any
+  size, because the ceiling becomes the denominator. That is the price of `maxItems`
+  being a usable per-field opt-out for a group-shaped array. `details` carries
+  `ocr_estimated_rows` (the compared figure, so `extracted / ocr_estimated_rows == ratio`
+  still holds), `ocr_matched_table_rows` (unbounded) and `declared_max_items`, and the
+  message and `root_cause` state the bound only when it binds — so every schema declaring
+  no `maxItems`, which is every shipped preset
+  (`TestMaxItemsBoundsTheEvidence::test_no_shipped_preset_declares_a_ceiling_so_nothing_shipped_changes`
+  walks the config library and asserts it), is byte-identical to before. It needs OCR that emits Markdown tables — Textract with the
   `TABLES` feature (textractor always writes the separator row) or BDA — which is the SHIPPED
   DEFAULT (`ocr.features: [TABLES, LAYOUT, SIGNATURES]`), so the check is live on every shipped
   preset but the two `ocr-benchmark` ones; a config that drops `TABLES` has no pipe tables and
@@ -2244,12 +2289,12 @@ signals make both loud without changing what is extracted:
   two-property `account_summary`) is compared against it. That trade is why
   `row_shortfall_action` defaults to `warn`: a 2- or 3-property array modelling an entity
   GROUP is structurally identical to one modelling table ROWS, and on the default preset a
-  fully correct extraction of `account_summary` scores 5/38 = 0.13. Five attribution shapes
+  fully correct extraction of `account_summary` scores 5/38 = 0.13. Four attribution shapes
   are known to over-count — the section-wide sum, sibling lists whose property counts differ
   (the same-width grouping keys on equality), a nested sub-list replacing its parent as the
-  compared target, `maxItems` not bounding `expected`, and a list under a plain object
-  property never being compared — and narrowing them is what would let `fail` be a default
-  (GitHub issue #1046). Note one narrowing is already ruled out by measurement: replacing the
+  compared target, and a list under a plain object property never being compared — and
+  narrowing them is what would let `fail` be a default (GitHub issue #1046). A declared
+  `maxItems` is not among them: it bounds `expected`, as described above. Note one narrowing is already ruled out by measurement: replacing the
   sum with the LARGEST matching table neither fixes `account_summary` (the Daily Balance table
   alone is 32 rows against 5 extracted) nor survives the true-positive case, because a table
   reprinted per page is N tables of the same width and the sum is what lets the check see 800

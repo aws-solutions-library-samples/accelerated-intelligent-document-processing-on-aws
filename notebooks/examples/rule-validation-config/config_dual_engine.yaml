@@ -6,7 +6,7 @@
 # ============================================================================
 classificationMethod: textbasedHolisticClassification
 classification:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model: us.anthropic.claude-sonnet-4-6
   temperature: "0"
   top_p: "0"
   top_k: "20"
@@ -25,11 +25,10 @@ classification:
 # Extraction (simple invoice fields)
 # ============================================================================
 extraction:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model: us.anthropic.claude-sonnet-4-6
   temperature: "0"
   top_p: "0"
   top_k: "20"
-  max_tokens: "4096"
   system_prompt: |
     You are a document extraction specialist. Extract structured fields from documents.
   task_prompt: |
@@ -55,7 +54,7 @@ rule_validation:
     Information Not Found: No relevant data exists in the document content.
   extraction_results: null
   fact_extraction:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are a Document Fact Extraction Specialist responsible for identifying
       and extracting factual evidence relevant to rule validation.
@@ -88,7 +87,7 @@ rule_validation:
     top_k: 20
     max_tokens: 4096
   rule_validation_orchestrator:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are a Compliance Validation Specialist. Review extracted evidence
       and make a compliance recommendation for the given rule.
@@ -124,7 +123,7 @@ rule_validation:
 
   # Z3 engine: rule translation (NL → SMT-LIB RuleJSON)
   z3_rule_translator:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     system_prompt: |
       You are an expert at translating business rules into formal SMT-LIB constraints for the Z3 theorem prover.
 
@@ -194,8 +193,6 @@ rule_validation:
         ]
       }}
     temperature: 0
-    top_p: 0
-    top_k: 20
     max_tokens: 4096
     few_shot_examples:
       - rule: "Municipal tax must match SAP tax within 5% margin"
@@ -280,8 +277,6 @@ rule_validation:
         }}
       }}
     temperature: 0
-    top_p: 0
-    top_k: 20
     max_tokens: 2048
 
   z3_timeout_ms: 5000

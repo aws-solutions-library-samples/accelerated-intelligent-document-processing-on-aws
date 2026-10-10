@@ -823,6 +823,7 @@ export type Mutation = {
   abortTestRuns: AbortWorkflowResponse;
   abortWorkflow: AbortWorkflowResponse;
   addDocumentsToTestSet?: Maybe<TestSet>;
+  addDocumentsToTestSetByKey?: Maybe<TestSet>;
   addDocumentsToTestSetFromUpload?: Maybe<TestSetUploadResponse>;
   addTestSet?: Maybe<TestSet>;
   addTestSetFromUpload?: Maybe<TestSetUploadResponse>;
@@ -969,6 +970,12 @@ export type MutationAddDocumentsToTestSetArgs = {
   fileCount: Scalars['Int']['input'];
   filePattern: Scalars['String']['input'];
   modifiedAfter?: InputMaybe<Scalars['String']['input']>;
+  testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationAddDocumentsToTestSetByKeyArgs = {
+  objectKeys: Array<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -2113,6 +2120,7 @@ export type TestRun = {
   context?: Maybe<Scalars['String']['output']>;
   costBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  evaluationDisabled?: Maybe<Scalars['Boolean']['output']>;
   excludedDocumentCount?: Maybe<Scalars['Int']['output']>;
   failedFiles?: Maybe<Scalars['Int']['output']>;
   fieldMetrics?: Maybe<Scalars['AWSJSON']['output']>;

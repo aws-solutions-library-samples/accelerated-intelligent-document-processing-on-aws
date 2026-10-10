@@ -35,6 +35,10 @@ _dynamodb = boto3.resource("dynamodb")
 _user_scope_cache: dict = {}
 _USER_SCOPE_CACHE_TTL = 60  # seconds
 
+# How many orphaned blueprint ARNs to name in the response message. The rest are
+# counted and left to the log line, which carries all of them.
+ORPHAN_ARNS_IN_MESSAGE = 10
+
 
 def _get_caller_info(event: Dict[str, Any]) -> Dict[str, Any]:
     """The caller's identity from the resolver event.
@@ -95,6 +99,12 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     - "bidirectional": Sync both directions (default for backward compatibility)
     - "cleanup_orphaned": Delete orphaned BDA blueprints not in current IDP config
     """
+    # Bound before the try so the handler of last resort can still ask the service
+    # whether the sync left a blueprint behind. The deletes run before the last two
+    # steps of a sync, both of which can raise, so "the sync raised" does not mean
+    # "nothing was removed from the project".
+    bda_service = None
+
     try:
         logger.info("Starting BDA/IDP sync")
         # NOTE: do NOT log full event — it contains identity.claims which
@@ -305,6 +315,38 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
         logger.info(f"BDA Service results: {result}")
 
+        # A replace-mode sync removes a blueprint from the project before deleting it,
+        # so a delete that fails leaves one in the account that no project-scoped read
+        # can see and only the account-wide cleanup will find. It belongs to no
+        # document class, so it is absent from the per-class result above; without
+        # this it reached CloudWatch and nowhere the user looks.
+        #
+        # Carried on `message` rather than as a new response field because that is what
+        # the UI already renders, and the literal "WARNING" is load-bearing there: a
+        # sync message containing it is left on screen instead of being auto-dismissed
+        # after five seconds.
+        orphaned_arns = list(bda_service.orphaned_blueprint_arns)
+        orphan_detail = ""
+        if orphaned_arns:
+            # Named individually up to a limit. A sync that left dozens produces one
+            # unreadable multi-kilobyte alert otherwise, and the count plus the remedy
+            # is what the reader acts on; every ARN is in the log line below.
+            shown = orphaned_arns[:ORPHAN_ARNS_IN_MESSAGE]
+            listed = ", ".join(shown)
+            if len(orphaned_arns) > len(shown):
+                listed += f", and {len(orphaned_arns) - len(shown)} more (see the logs)"
+            orphan_detail = (
+                f". WARNING: {len(orphaned_arns)} blueprint(s) were removed from the "
+                f"BDA project but could not be deleted, so they remain in the account, "
+                f"count against the blueprint limit and can still be matched by name "
+                f"prefix. They are removed by the orphaned-blueprint cleanup — this "
+                f"same operation with direction 'cleanup_orphaned'. Affected: "
+                f"{listed}"
+            )
+            logger.error(
+                f"Sync left {len(orphaned_arns)} orphaned blueprint(s): {orphaned_arns}"
+            )
+
         # Extract processed class names and warnings for response
         sync_failed_classes = []
         sync_succeeded_classes = []
@@ -351,7 +393,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 manager.set_bda_sync_status(versionName, "error")
             return {
                 "success": False,
-                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}",
+                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}{orphan_detail}",
                 "processedClasses": [],
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
@@ -361,15 +403,24 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     # to a short shape so a UI rendering both fields doesn't
                     # duplicate the same failure-reasons text twice.
                     # Round-7 review fix.
+                    #
+                    # The orphan warning is the exception, and deliberately appears in
+                    # both fields on this branch: the web UI's failure path renders
+                    # `error.message` and falls back to `message` only when it is
+                    # absent, so text that is only on `message` here is in the response
+                    # and invisible. `message` keeps it as the complete record.
                     "type": "SYNC_ERROR",
-                    "message": f"Failed to sync classes: {', '.join(sync_failed_classes)}",
+                    "message": (
+                        f"Failed to sync classes: "
+                        f"{', '.join(sync_failed_classes)}{orphan_detail}"
+                    ),
                 },
             }
         elif len(sync_failed_classes) > 0:
             # Partial failure
             return {
                 "success": True,  # Partial success
-                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}",
+                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}{orphan_detail}",
                 "processedClasses": sync_succeeded_classes,
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
@@ -417,6 +468,8 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     f"Skipped: {'; '.join(warning_details)}"
                 )
 
+            message += orphan_detail
+
             response = {
                 "success": True,
                 "message": message,
@@ -434,11 +487,29 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"BDA/IDP sync failed: {str(e)}", exc_info=True)
+        # Guarded on `bda_service` rather than on the attribute. A `getattr` default
+        # covers the `None` case too, but it also covers an attribute that has gone
+        # missing — which would report no orphans, silently and forever, and that is the
+        # exact failure this change exists to remove.
+        failed_orphans = (
+            list(bda_service.orphaned_blueprint_arns) if bda_service is not None else []
+        )
+        orphan_note = ""
+        if failed_orphans:
+            logger.error(
+                f"The failed sync left {len(failed_orphans)} orphaned "
+                f"blueprint(s): {failed_orphans}"
+            )
+            orphan_note = (
+                f" WARNING: it also left {len(failed_orphans)} blueprint(s) removed "
+                f"from the BDA project but not deleted. Run this operation with "
+                f"direction 'cleanup_orphaned' to remove them."
+            )
         return {
             "success": False,
             "error": {
                 "type": "SYNC_ERROR",
-                "message": f"Sync operation failed: {str(e)}",
+                "message": f"Sync operation failed: {str(e)}.{orphan_note}",
             },
             "processedClasses": [],
             "direction": arguments.get("direction", "bidirectional")

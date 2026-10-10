@@ -25,6 +25,7 @@ from idp_common.config.prefix_mappings import (
     PRECEDENCE_VALUES,
     PrefixMappingConflict,
     PrefixMappingStore,
+    find_match,
     prefix_rejection_reason,
     resolve_config_assignment,
 )
@@ -1408,6 +1409,19 @@ def handle_delete_profile_revision(manager, profile, revision):
 # ---------------------------------------------------------------------------
 
 
+def _profile_head_exists(manager, profile):
+    """Whether a profile head item is there, without reading its configuration body.
+
+    ``ProjectionExpression`` matters: the body is tens to hundreds of KB gzipped
+    into the same item.
+    """
+    item = manager.table.get_item(
+        Key={"Configuration": f"Config#{profile}"},
+        ProjectionExpression="Configuration",
+    ).get("Item")
+    return bool(item)
+
+
 def _prefix_mapping_store(manager):
     return PrefixMappingStore(manager.table)
 
@@ -1499,33 +1513,43 @@ def handle_put_prefix_mapping(manager, args, actor):
                         ),
                     },
                 }
-            # Retention keeps the published revision, labelled revisions and
-            # test-run-pinned revisions, and nothing else. A revision-pinned mapping
-            # is a FOURTH referent `prune()` does not know about, so without this the
-            # body would eventually be deleted under a mapping that still names it.
-            # Reuses the mechanism test runs already use.
-            if not manager.mark_revision_pinned(profile, revision):
-                return {
-                    "success": False,
-                    "error": {
-                        "type": "Error",
-                        "message": (
-                            f"Could not protect r{revision} of '{profile}' from "
-                            f"retention, so the mapping was not created. Retry, or "
-                            f"label that revision first."
-                        ),
-                    },
-                }
-
         entry = _prefix_mapping_store(manager).put(
             prefix,
             profile,
             config_revision=revision,
             metadata_precedence=precedence,
-            enabled=bool(args.get("enabled", True)),
+            # An explicit `enabled: null` must not read as disabled -- absent and
+            # null both mean "not specified", and the default is enabled.
+            enabled=bool(True if args.get("enabled") is None else args["enabled"]),
             description=args.get("description"),
             actor=actor,
         )
+
+        # Pin AFTER the mapping exists, not before. Retention keeps the published
+        # revision, labelled revisions and test-run-pinned revisions, and nothing
+        # else, so a revision-pinned mapping is a FOURTH referent `prune()` does not
+        # know about and the body would eventually be deleted under a mapping that
+        # still names it. But `PrefixMappingStore.delete` deliberately never unpins
+        # (a test run may have pinned the same revision and nothing records which
+        # referent asked), so a pin taken before a put that then fails --
+        # PrefixMappingConflict, MAX_MAPPINGS, a validation refusal -- is a
+        # permanent pin with no mapping referencing it and nothing that can ever
+        # release it. Pinning second makes the only failure the recoverable one.
+        if revision is not None and not manager.mark_revision_pinned(
+            profile, revision
+        ):
+            return {
+                "success": False,
+                "error": {
+                    "type": "Error",
+                    "message": (
+                        f"The mapping for '{prefix}' was saved, but r{revision} of "
+                        f"'{profile}' could not be protected from retention, so it "
+                        f"may be pruned. Label that revision, or re-save the "
+                        f"mapping to retry."
+                    ),
+                },
+            }
         return {"success": True, "mapping": entry}
     except PrefixMappingConflict as e:
         return {"success": False, "error": {"type": "Conflict", "message": str(e)}}
@@ -1595,13 +1619,18 @@ def handle_resolve_prefix_mapping(manager, args, allowed_config_versions):
             "error": {"type": "ValidationError", "message": "objectKey is required"},
         }
     try:
+        mappings = _prefix_mapping_store(manager).list()
         assignment = resolve_config_assignment(
             key,
             metadata_profile=args.get("metadataProfile"),
             metadata_revision=args.get("metadataRevision"),
-            mappings=_prefix_mapping_store(manager).list(),
+            mappings=mappings,
             active_profile=manager.resolve_active_version,
             published_revision=manager.resolve_published_revision,
+            # Supplied so this call site injects the same seams as the ingest path
+            # and the upload resolver; a dry run that answers a different question
+            # from the one ingest will answer is worse than no dry run.
+            profile_exists=lambda profile: _profile_head_exists(manager, profile),
         )
     except Exception as e:
         logger.error(f"Error resolving the configuration for {key!r}: {e}")
@@ -1613,21 +1642,36 @@ def handle_resolve_prefix_mapping(manager, args, allowed_config_versions):
             },
         }
 
-    # The scope check is applied HERE, on the resolved profile, rather than delegated
-    # to resolve_config_assignment's own `allowed_profiles`. Same matcher
+    # The scope check is applied HERE rather than delegated to
+    # resolve_config_assignment's own `allowed_profiles`. Same matcher
     # (`scope_allows`, the one every consumer shares), but local — so the
     # enforcement is visible in this file, which is what makes it verifiable by
-    # scan_api_rbac's S4 check rather than merely asserted in this entry.
-    if assignment.profile and not scope_allows(
-        allowed_config_versions, assignment.profile
-    ):
+    # scan_api_rbac's S4 check rather than merely asserted in the expectations entry.
+    #
+    # ⚠️ The subject is every profile this answer could DISCLOSE, not the one it
+    # selected. Two outcomes name a profile while `assignment.profile` is something
+    # else: a rejection has no profile at all, and metadata precedence resolves to
+    # the caller's own (in-scope by construction) while explaining that it beat the
+    # mapping's. Checking only `assignment.profile` leaves both of those naming an
+    # out-of-scope profile in `reason`, one probe at a time — the oracle
+    # `getConfigVersions` is scope-filtered to prevent.
+    matched = find_match(key, mappings)
+    disclosed = [
+        p
+        for p in (assignment.profile, matched["configProfile"] if matched else None)
+        if p
+    ]
+    if any(not scope_allows(allowed_config_versions, p) for p in disclosed):
         return {
             "success": True,
             "assignment": {
                 "objectKey": key,
                 "outOfScope": True,
-                "mappingPrefix": assignment.mapping_prefix,
-                # Names neither the profile nor the scope -- see the docstring.
+                # Nothing describing a profile survives, including the prefix: the
+                # caller supplied a KEY, so returning the mapping that governs it
+                # tells them where the boundary sits and walks out the routing
+                # policy a probe at a time. They still learn the actionable part.
+                "mappingPrefix": None,
                 "reason": (
                     "That destination is governed by a Configuration Profile "
                     "outside your allowed configuration scope."
@@ -1635,8 +1679,8 @@ def handle_resolve_prefix_mapping(manager, args, allowed_config_versions):
                 "configProfile": None,
                 "configRevision": None,
                 "source": None,
-                "conflict": assignment.conflict,
-                "rejected": False,
+                "conflict": None,
+                "rejected": None,
             },
         }
     return {
@@ -1776,6 +1820,51 @@ def handle_delete_config_version(manager, version, delete_bda_project=True):
                 }
         except Exception as e:
             logger.warning(f"Error checking managed status for version {version}: {e}")
+
+        # Refuse while a config prefix mapping still names this profile. Deleting it
+        # anyway drops every revision body (ConfigRevisionStore.delete_profile does
+        # not spare a pinned one), leaving a mapping that is still listed as
+        # configured and resolves to nothing: every document arriving at that prefix
+        # would then silently process under the default configuration, and a
+        # reprocess would stamp the phantom name onto the tracking row. Refusing is
+        # better than cascading, because a mapping is an operator's routing decision
+        # and deleting it on their behalf is not this operation's job to infer.
+        try:
+            naming = [
+                entry["prefix"]
+                for entry in _prefix_mapping_store(manager).list()
+                if entry["configProfile"] == version
+            ]
+        except Exception as e:  # noqa: BLE001
+            # Fail CLOSED here, unlike the ingest path: this is an irreversible admin
+            # delete, so "cannot tell whether a mapping depends on it" must not read
+            # as "nothing does".
+            logger.error(
+                f"Could not read the configuration prefix mappings while deleting "
+                f"'{version}': {e}"
+            )
+            return {
+                "success": False,
+                "error": {
+                    "type": "Error",
+                    "message": (
+                        "Could not confirm whether a configuration prefix mapping "
+                        "depends on this profile, so it was not deleted. Retry."
+                    ),
+                },
+            }
+        if naming:
+            return {
+                "success": False,
+                "error": {
+                    "type": "ValidationError",
+                    "message": (
+                        f"Cannot delete profile '{version}': it is assigned by "
+                        f"{len(naming)} configuration prefix mapping(s) "
+                        f"({', '.join(sorted(naming))}). Delete or repoint them first."
+                    ),
+                },
+            }
 
         # Check for linked BDA project and optionally delete it
         bda_cleanup_message = ""
