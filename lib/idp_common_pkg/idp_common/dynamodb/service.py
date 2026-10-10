@@ -375,6 +375,23 @@ class DocumentDynamoDBService:
         if document.test_set_id:
             item["TestSetId"] = document.test_set_id
 
+        # The configuration and its provenance are written on the CREATE path too,
+        # not only on the update path below. A document refused at ingest — a prefix
+        # mapping in `reject` conflict mode — is created and never updated, so
+        # without this its row carries no ConfigVersion; and `scope_allows` denies a
+        # document with no profile to name to *every* scoped caller, so the person
+        # whose upload was refused would see no row at all rather than a failure.
+        if document.config_version:
+            item["ConfigVersion"] = document.config_version
+        if document.config_revision is not None:
+            item["ConfigRevision"] = int(document.config_revision)
+        if document.config_source:
+            item["ConfigSource"] = document.config_source
+        if document.config_mapping_prefix:
+            item["ConfigMappingPrefix"] = document.config_mapping_prefix
+        if document.config_assignment_error:
+            item["ConfigAssignmentError"] = document.config_assignment_error
+
         if expires_after:
             item["ExpiresAfter"] = expires_after
 
@@ -438,6 +455,27 @@ class DocumentDynamoDBService:
             set_expressions.append("#ConfigRevision = :ConfigRevision")
             expression_names["#ConfigRevision"] = "ConfigRevision"
             expression_values[":ConfigRevision"] = int(document.config_revision)
+
+        # Where that profile came from, and the prefix mapping that decided it.
+        # Without these the UI can show WHICH configuration a document used but not
+        # WHY, and with four possible sources "why" is the question an operator
+        # actually has.
+        if document.config_source:
+            set_expressions.append("#ConfigSource = :ConfigSource")
+            expression_names["#ConfigSource"] = "ConfigSource"
+            expression_values[":ConfigSource"] = document.config_source
+
+        if document.config_mapping_prefix:
+            set_expressions.append("#ConfigMappingPrefix = :ConfigMappingPrefix")
+            expression_names["#ConfigMappingPrefix"] = "ConfigMappingPrefix"
+            expression_values[":ConfigMappingPrefix"] = document.config_mapping_prefix
+
+        if document.config_assignment_error:
+            set_expressions.append("#ConfigAssignmentError = :ConfigAssignmentError")
+            expression_names["#ConfigAssignmentError"] = "ConfigAssignmentError"
+            expression_values[":ConfigAssignmentError"] = (
+                document.config_assignment_error
+            )
 
         # Set workflow status based on document status
         if document.status == Status.FAILED:
@@ -760,6 +798,9 @@ class DocumentDynamoDBService:
             initial_event_time=item.get("InitialEventTime"),
             config_version=item.get("ConfigVersion"),
             config_revision=coerce_revision(item.get("ConfigRevision")),
+            config_source=item.get("ConfigSource"),
+            config_mapping_prefix=item.get("ConfigMappingPrefix"),
+            config_assignment_error=item.get("ConfigAssignmentError"),
         )
 
         # Convert status
@@ -1523,6 +1564,10 @@ class DocumentDynamoDBService:
             item["ConfigVersion"] = document.config_version
         if document.config_revision is not None:
             item["ConfigRevision"] = int(document.config_revision)
+        if document.config_source:
+            item["ConfigSource"] = document.config_source
+        if document.config_mapping_prefix:
+            item["ConfigMappingPrefix"] = document.config_mapping_prefix
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
         if document.metering:

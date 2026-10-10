@@ -329,14 +329,32 @@ operations:
   uploadDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
+    scope_enforced_in: _handle_upload_document
     args: { fileName: "x.pdf" }
-    note: presigned-URL generation only; nothing uploaded by the test
+    note: >
+      Presigned-URL generation only; nothing is uploaded by the test. The scope
+      check is on the RESOLVED Configuration Profile, not on the requested one, and
+      that is the only form that works: there are two routes to choosing a profile
+      and checking the request would cover one of them. The `version` argument names
+      a profile directly; a config prefix mapping lets the DESTINATION PREFIX choose
+      one with no metadata involved at all. `resolve_destination` resolves both
+      through one function and refuses when the result is outside the caller's
+      allowedConfigVersions. Before that this operation checked the caller's Cognito
+      group and the target bucket and nothing else, so a scoped Author could put a
+      document into any profile in the deployment -- i.e. into any scoped user's
+      document-visibility partition -- by naming it.
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
+    scope_enforced_in: _handle_upload_sample_document
     args: { sampleId: "__nope__" }
+    note: >
+      The second caller-chosen-prefix writer into the Input bucket, so it carries
+      the identical resolved-profile scope check as uploadDocument above.
   deleteDocumentVersion:
     groups: [Admin]
     kind: mutation
@@ -423,6 +441,63 @@ operations:
     scope_checked: true
     enforced_in: *cfg
     args: { profileName: "__nope__", revision: 1 }
+  # Config prefix mappings: an S3 prefix in the Input bucket -> a Configuration
+  # Profile. CRUD is Admin-only, and that is an access-control decision rather than
+  # a convenience one: a mapping ASSIGNS a profile, a document's profile is the
+  # document-visibility partition for every scoped user, so writing a mapping
+  # decides who can see the documents landing under that prefix. The three write/read
+  # ops carry no `scope_checked` because an Admin has no scope to check; the scope
+  # that matters for a mapping is enforced where a non-Admin meets it, at upload
+  # time, on the RESOLVED profile -- see uploadDocument below.
+  listConfigPrefixMappings:
+    groups: [Admin]
+    kind: read
+    enforced_in: *cfg
+    args: {}
+    note: >
+      Deliberately NOT scope-filtered, and Admin-only for that reason. The mapping
+      set is a statement of the deployment's routing policy; a partially-filtered
+      view of a longest-prefix rule is actively misleading, because you cannot tell
+      which mapping wins when some of them are hidden from you.
+  putConfigPrefixMapping:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    args: { prefix: "__nope__/", configProfile: "__nope__" }
+  deleteConfigPrefixMapping:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    args: { prefix: "__nope__/" }
+  resolveConfigPrefixMapping:
+    # Admin+Author, NOT Viewer. The dry run exists to serve the upload form, and
+    # Author is the lowest role that can upload at all -- a Viewer has no Upload
+    # entry in the navigation, so the grant would have no consumer while still
+    # disclosing routing policy. That matters because the scope filter only
+    # engages for a caller who HAS a scope: an unscoped Viewer would get the
+    # profile, the prefix and the reason in full, and could enumerate the mapping
+    # set one probed key at a time -- reconstructing exactly what makes
+    # listConfigPrefixMappings Admin-only.
+    groups: [Admin, Author]
+    kind: read
+    # scope_FILTERED, not scope_checked: this operation returns 200 with every
+    # naming field nulled for an out-of-scope destination, and never 403s. The two
+    # flags are indistinguishable to scan_api_rbac's S4 check (it tests
+    # `scope_checked or scope_filtered`) and to the dynamic driver, so nothing would
+    # have caught the wrong one -- but they feed different published figures, and
+    # declaring the refusing kind here put "18 verify scope, 4 filter" into the
+    # threat model for a surface that verifies 17 and filters 5.
+    scope_filtered: true
+    enforced_in: *cfg
+    args: { objectKey: "__nope__/x.pdf" }
+    note: >
+      The dry run, and the one prefix-mapping op a non-Admin may call: it answers
+      "what configuration would this key process under?", which is what makes a
+      longest-prefix rule checkable before it is live. Its answer is SCOPE-FILTERED
+      rather than refused -- a caller outside the resolved profile's scope is told
+      the destination is out of scope and is NOT told the profile's name, because
+      returning it would make this a profile-name enumeration oracle for every
+      scoped caller. getConfigVersions is scope_filtered for the same reason.
   getPricing:
     groups: [Admin, Author, Viewer]
     kind: read

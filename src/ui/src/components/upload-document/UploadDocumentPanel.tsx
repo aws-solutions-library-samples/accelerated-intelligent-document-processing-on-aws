@@ -28,6 +28,8 @@ import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import useSampleDocuments, { type SampleDocument } from '../../hooks/use-sample-documents';
 import useConfigurationLibrary from '../../hooks/use-configuration-library';
+import useConfigPrefixMappings, { type ConfigAssignmentPreview } from '../../hooks/use-config-prefix-mappings';
+import { canonicalKey, sanitizeFileName } from '../../utils/config-prefix-key';
 
 import useSettingsContext from '../../contexts/settings';
 import { SUPPORTED_UPLOAD_EXTENSIONS } from '../common/constants';
@@ -53,6 +55,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
   const { versions, getVersionOptions, saveAsNewVersion } = useConfigurationVersions();
   const { listSamples, uploadSample } = useSampleDocuments();
   const { getFile } = useConfigurationLibrary();
+  const { previewAssignment } = useConfigPrefixMappings();
 
   const [uploadSourceType, setUploadSourceType] = useState<UploadSource>('local');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -63,6 +66,9 @@ const UploadDocumentPanel = (): React.JSX.Element => {
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
   // null = the profile's current configuration.
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+  // What a config prefix mapping would do to an upload at this prefix. null when
+  // nothing matched, which is the common case and shows no UI at all.
+  const [assignment, setAssignment] = useState<ConfigAssignmentPreview | null>(null);
 
   // Sample-browser state
   const [samples, setSamples] = useState<SampleDocument[]>([]);
@@ -88,6 +94,53 @@ const UploadDocumentPanel = (): React.JSX.Element => {
       }
     }
   }, [versions, selectedVersion, getVersionOptions]);
+
+  /**
+   * The key the preview asks about — built exactly the way `upload_resolver`
+   * builds the real one.
+   *
+   * When a file is chosen this is that file's **actual** destination key, which
+   * is what makes the `exact` half of the feature previewable at all: an exact
+   * mapping names one object key, and the literal `__probe__` placeholder can
+   * never equal one — so probing the placeholder leaves an exact mapping,
+   * including one in `reject` mode, with no pre-flight warning at all. The
+   * placeholder is therefore only the
+   * fallback for "no file selected yet", where a prefix mapping still resolves
+   * the same way for any filename.
+   *
+   * The first file stands for the batch. A second file under the same prefix
+   * resolves the same prefix mapping; only an exact mapping could differ between
+   * them, and one object's worth of warning is better than none.
+   */
+  const probePrefix = canonicalKey(prefix).replace(/\/+$/, '');
+  const probeFileName = sanitizeFileName(selectedFiles[0]?.name ?? '__probe__');
+  const probeKey = probePrefix ? `${probePrefix}/${probeFileName}` : probeFileName;
+
+  /**
+   * Preview what a config prefix mapping would do to this upload.
+   *
+   * Debounced because it fires on every keystroke in the prefix field. The
+   * declared profile is passed through, because whether this is a CONFLICT
+   * depends on it — a mapping that agrees with the selection is not one.
+   */
+  useEffect(() => {
+    // Clear the old verdict NOW, not when the new one arrives. Held across the
+    // debounce window it is an answer about a key that is no longer the one
+    // being uploaded: correcting a prefix away from a `reject` mapping would keep
+    // the error and the disabled button for up to a second, and typing *into* one
+    // would leave the button enabled — so a click in that window starts an upload
+    // the server is always going to refuse.
+    setAssignment(null);
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const result = await previewAssignment(probeKey, selectedVersion?.value, selectedRevision);
+      if (!cancelled) setAssignment(result);
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [probeKey, selectedVersion?.value, selectedRevision, previewAssignment]);
 
   // Load the bundled sample manifest the first time the user switches to it.
   useEffect(() => {
@@ -324,6 +377,62 @@ const UploadDocumentPanel = (): React.JSX.Element => {
 
   const isSampleMode = uploadSourceType === 'sample';
 
+  /**
+   * What the mapping will do, stated before the upload rather than discovered
+   * after it. This is the difference between a feature that surprises people and
+   * one that explains itself, and it costs one read-only call.
+   *
+   * Nothing is rendered when no mapping matched — the common case must stay free
+   * of new noise.
+   */
+  const prefixMappingNotice = (() => {
+    if (!assignment) return null;
+
+    // Checked BEFORE `mappingPrefix`, deliberately. An out-of-scope answer
+    // always carries `mappingPrefix: null` — the API names neither the mapping
+    // nor the profile to a caller not entitled to see them, because that would
+    // enumerate profile names — so that is the *normal* shape of this refusal
+    // rather than an edge case. `uploadWouldBeRefused` reads `outOfScope`
+    // regardless and disables the button, so gating the notice on
+    // `mappingPrefix` would leave a dead-end form: no explanation, no way
+    // forward. The `reason` names nothing privileged.
+    if (assignment.outOfScope) {
+      return (
+        <Alert type="error" header="You cannot upload to this folder">
+          {assignment.reason}
+        </Alert>
+      );
+    }
+
+    // Everything below this point describes a mapping, so there has to be one.
+    if (!assignment.mappingPrefix) return null;
+
+    if (assignment.rejected) {
+      return (
+        <Alert type="error" header="This upload would be refused">
+          {assignment.reason} Choose that profile, or upload somewhere else.
+        </Alert>
+      );
+    }
+    if (assignment.conflict) {
+      const mappingWins = assignment.source === 'prefix-mapping';
+      return (
+        <Alert type="warning" header={mappingWins ? 'Your profile selection will be ignored' : 'Your selection overrides the mapping'}>
+          {assignment.reason}
+        </Alert>
+      );
+    }
+    return <Alert type="info">{assignment.reason}</Alert>;
+  })();
+
+  /**
+   * A `reject` mapping, or a destination outside the caller's scope, fails
+   * server-side anyway — so disabling the button here is not the control, it just
+   * stops someone wasting an upload on it. The scope and reject checks are both
+   * enforced in `upload_resolver` before any URL is minted.
+   */
+  const uploadWouldBeRefused = !!assignment && (!!assignment.rejected || !!assignment.outOfScope);
+
   return (
     <Container header={<Header variant="h2">Upload Documents</Header>}>
       {error && (
@@ -369,6 +478,8 @@ const UploadDocumentPanel = (): React.JSX.Element => {
           onChange={setSelectedRevision}
           disabled={isUploading}
         />
+
+        {prefixMappingNotice}
 
         {!isSampleMode && (
           <FormField
@@ -431,7 +542,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
           variant="primary"
           onClick={isSampleMode ? uploadSelectedSample : uploadLocalFiles}
           loading={isUploading}
-          disabled={isUploading || (isSampleMode ? !selectedSample : selectedFiles.length === 0)}
+          disabled={isUploading || uploadWouldBeRefused || (isSampleMode ? !selectedSample : selectedFiles.length === 0)}
         >
           {isSampleMode ? 'Process sample' : `Upload ${selectedFiles.length > 0 ? `(${selectedFiles.length} files)` : ''}`}
         </Button>

@@ -221,6 +221,79 @@ S3 error.
 byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
 scratch.
 
+### Configuration Prefix Mappings
+
+A [config prefix mapping](configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
+assigns a Configuration Profile to everything arriving under an S3 prefix. Because
+that decision happens at ingest and is then invisible in the document's own result,
+it is instrumented: five metrics in the stack's own namespace (`<StackName>`). Three of them have **two emitters** — the queue sender on upload ingest and the reprocess resolver on a re-run — publishing into the same namespace with the same dimension schema, so one alarm covers both paths; `PrefixMappingRejected` and `PrefixMappingConflict` are ingest-only, because a reprocess carries no upload metadata to conflict with.
+
+| Metric | Published when | Dimensions |
+|---|---|---|
+| `PrefixMappingApplied` | A mapping **matched** the object's key | `Prefix` |
+| `PrefixMappingConflict` | A mapping and the upload's own metadata disagreed, and one of them won | `Winner` (`prefix-mapping` or `metadata`) |
+| `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document at ingest | none |
+| `PrefixMappingLookupFailed` | The mapping set could not be read | none |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists | none |
+
+All five publish only on the event, so no data means it has not happened.
+
+⚠️ **Two of these do not mean quite what their names suggest, and both differences
+matter when you build a graph on them.** `PrefixMappingApplied` is published whenever a
+mapping *matched the key* — which includes the case where the conflict mode handed the
+decision to the upload's own metadata, and the case where the mapped profile turned out
+to be missing. So it counts documents a mapping was consulted for, not documents a
+mapping decided. For the latter, subtract both `PrefixMappingConflict` filtered to
+`Winner=metadata` and `PrefixMappingUnresolvable`. And `PrefixMappingConflict` is published
+only when the document *proceeded*: a refusal returns before it, so a refused document
+publishes `PrefixMappingRejected` alone and appears in neither of the other two. Summing
+conflicts to count disagreements therefore undercounts by exactly the refusals.
+
+**Three of the five are alarmed**, with different thresholds for different reasons.
+`PrefixMappingLookupFailed` and `PrefixMappingUnresolvable` alarm on the **first**
+occurrence: both mean documents are being processed under something *other* than what an
+admin configured, and neither is visible anywhere else — the documents succeed, report
+success, and carry extraction from the wrong configuration. This is the same shape as
+the stale-output purge above, a quiet failure whose only signal has to be a metric,
+because the document's own status is green. `PrefixMappingRejected` alarms on **volume**
+instead, covered below.
+
+`PrefixMappingLookupFailed` is quiet by construction, because resolution deliberately
+**fails open**. Halting document ingest for a whole deployment when a *routing* table
+cannot be read is worse than processing under the active profile, which is what every
+one of those documents did before mappings existed. The cost of that choice is that
+during such a window every "Refuse the conflict" mapping is bypassed, which is exactly
+why the metric is alarmed rather than only logged. The most common cause is a KMS or
+table-policy change denying `dynamodb:GetItem` on the `ConfigurationTable` to the queue
+sender's role — check that before assuming a transient DynamoDB error.
+
+`PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
+been deleted. The document still processes — under the profile its upload named, or the
+active one — and the log line names which mapping is stale.
+`putConfigPrefixMapping` refuses a mapping naming something that does not exist, so this
+is always a *later* deletion rather than a typo at creation.
+
+⚠️ **It does not cover a missing revision**, and nothing else does either. The
+existence check at ingest is on the profile; a revision the mapping *pins* is passed
+through without being looked for. A mapping pinned to a revision that has since been
+deleted, or whose stored body has passed its `DataRetentionInDays` expiry, therefore
+publishes no metric at ingest — the document is stamped with that revision number and
+then **fails** later, when the configuration is loaded, which at least means it is not
+silently processed under something else. The pin protects a revision from history
+pruning, not from an explicit `deleteConfigProfileRevision` (which refuses only a
+profile's *current* revision) and not from body expiry, so both routes are reachable. If
+your mappings pin revisions, audit them against the profile's revision history rather
+than expecting this alarm to catch it.
+
+`PrefixMappingRejected` is alarmed too, but it is not a fault signal: a refusing
+mapping doing its job publishes it. Hence a threshold above zero — more than five
+refusals in each of two consecutive five-minute periods — rather than the
+first-occurrence thresholds above. Alarm on it to notice that a producer is
+persistently submitting to a prefix it is not configured for, which is a wiring problem
+at the producer rather than in this deployment. Each refused document appears in the
+UI as **Failed** with the reason on it, so no investigation starts from the metric
+alone.
+
 ### Confidence Assessment Degraded
 
 Confidence assessment is an *enrichment* pass: extraction has already run,

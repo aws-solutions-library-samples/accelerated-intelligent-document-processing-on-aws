@@ -1,0 +1,21 @@
+{
+  "comment": "Shared by src/ui/src/utils/__tests__/config-prefix-key.test.ts and scripts/tests/test_config_prefix_key_mirror.py. Each pair is an S3 key and its canonical form. Add cases here, never to one suite alone - the point is that both implementations are measured against the same table.",
+  "cases": [
+    ["acme/invoices/x.pdf", "acme/invoices/x.pdf"],
+    ["/acme/invoices/x.pdf", "acme/invoices/x.pdf"],
+    ["acme//invoices/x.pdf", "acme/invoices/x.pdf"],
+    ["//acme//invoices//x.pdf", "acme/invoices/x.pdf"],
+    ["acme/./invoices/x.pdf", "acme/invoices/x.pdf"],
+    ["./acme/invoices/x.pdf", "acme/invoices/x.pdf"],
+    ["acme/invoices/", "acme/invoices/"],
+    ["/acme/invoices/", "acme/invoices/"],
+    ["acme//invoices//", "acme/invoices/"],
+    ["acme/invoices", "acme/invoices"],
+    ["a/b/../c.pdf", "a/b/../c.pdf"],
+    ["x.pdf", "x.pdf"],
+    ["/", ""],
+    ["//", ""],
+    ["", ""],
+    ["Invoices/x.pdf", "Invoices/x.pdf"]
+  ]
+}

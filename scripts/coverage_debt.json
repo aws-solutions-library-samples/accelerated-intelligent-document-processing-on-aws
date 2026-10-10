@@ -17,7 +17,7 @@
   "tolerancePct": 1.0,
   "trees": {
     "idp_common": {
-      "total": 83.25,
+      "total": 83.59,
       "files": {
         "idp_common/__init__.py": 100.0,
         "idp_common/agents/__init__.py": 44.44,
@@ -246,11 +246,12 @@
         "idp_common/utils/settings_helper.py": 80.95,
         "idp_common/utils/strands_agent_tools/__init__.py": 100.0,
         "idp_common/utils/strands_agent_tools/todo_list.py": 32.35,
-        "idp_common/utils/transient_errors.py": 100.0
+        "idp_common/utils/transient_errors.py": 100.0,
+        "idp_common/config/prefix_mappings.py": 98.73
       }
     },
     "scripts": {
-      "total": 82.12,
+      "total": 83.05,
       "files": {
         "scripts/api_security_cases.py": 93.65,
         "scripts/check_account_ids.py": 97.42,
@@ -303,7 +304,8 @@
         "scripts/ux_recorder.py": 54.11,
         "scripts/ux_recorder_cdp.py": 74.6,
         "scripts/ux_recorder_render.py": 66.44,
-        "scripts/ux_test_session.py": 0.0
+        "scripts/ux_test_session.py": 0.0,
+        "scripts/sdlc/validate_buildspec.py": 78.12
       }
     },
     "idp_sdk": {
@@ -363,10 +365,9 @@
       }
     },
     "main_stack_extensions": {
-      "total": 95.28,
+      "total": 95.64,
       "files": {
         "lambdas/apply_feature_config_preset/index.py": 88.54,
-        "lambdas/apply_feature_config_preset/log_sanitizer.py": 74.0,
         "lambdas/check_feature_entitlement/index.py": 89.57,
         "lambdas/check_feature_entitlement/log_sanitizer.py": 74.0,
         "lambdas/get_feature_launch_url/index.py": 85.33,
@@ -376,17 +377,19 @@
         "lambdas/register_feature_hooks/hook_point_reachability.py": 100.0,
         "lambdas/register_feature_hooks/index.py": 91.19,
         "lambdas/subscribe_feature/index.py": 84.87,
-        "lambdas/unsubscribe_feature/index.py": 88.79
+        "lambdas/unsubscribe_feature/index.py": 88.79,
+        "lambdas/get_feature_launch_url/log_sanitizer.py": 74.0
       }
     },
     "idp_cli": {
-      "total": 98.97,
+      "total": 99.68,
       "files": {
         "idp_cli/__init__.py": 100.0,
         "idp_cli/chat.py": 100.0,
         "idp_cli/cli.py": 98.76,
         "idp_cli/display.py": 100.0,
-        "idp_cli/search_tracking_table.py": 100.0
+        "idp_cli/search_tracking_table.py": 100.0,
+        "idp_cli/parameters.py": 100.0
       }
     },
     "idp_feature_sdk": {
@@ -399,7 +402,8 @@
         "idp_feature_sdk/pack.py": 100.0,
         "idp_feature_sdk/publisher.py": 100.0,
         "idp_feature_sdk/scaffold.py": 100.0,
-        "idp_feature_sdk/seller_service.py": 100.0
+        "idp_feature_sdk/seller_service.py": 100.0,
+        "idp_feature_sdk/parameters.py": 100.0
       }
     },
     "seller_entitlement": {

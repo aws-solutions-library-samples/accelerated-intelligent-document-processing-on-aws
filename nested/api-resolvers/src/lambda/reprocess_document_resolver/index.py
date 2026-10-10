@@ -7,7 +7,14 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import boto3
-from idp_common.docs_service import create_document_service
+
+from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.prefix_mappings import (
+    SOURCE_DOCUMENT_PIN,
+    SOURCE_EXPLICIT_REQUEST,
+    PrefixMappingStore,
+    resolve_config_assignment,
+)
 from idp_common.config_scope import (
     ScopeLookupError,
     caller_email_from_claims,
@@ -15,6 +22,7 @@ from idp_common.config_scope import (
     resolve_allowed_config_versions,
     scope_allows,
 )
+from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
@@ -119,13 +127,10 @@ def _caller_scope_or_deny(caller):
     if caller["is_admin"]:
         return None
     try:
-        return _get_user_allowed_config_versions(
-            caller["email"], caller.get("sub", "")
-        )
+        return _get_user_allowed_config_versions(caller["email"], caller.get("sub", ""))
     except ScopeLookupError as e:
         logger.error(
-            "Denying reprocessDocument: config-version scope could not be "
-            "resolved: %s",
+            "Denying reprocessDocument: config-version scope could not be resolved: %s",
             e,
         )
         raise PermissionError(
@@ -184,26 +189,214 @@ def _enforce_document_scope(allowed_versions, object_keys):
     return current
 
 
-def _version_for_document(requested_version, object_key, current_versions):
-    """The profile to reprocess one document under.
+def _prefix_mappings():
+    """The deployment's config prefix mappings, or ``[]`` if unavailable.
 
-    An explicit ``version`` argument wins — it has already been scope-checked. When
-    none is given, a **scoped** caller's reprocess is pinned to the profile the
-    document already carries, which `_enforce_document_scope` has just verified is in
-    their scope.
+    Fails open, matching ``queue_sender``: reprocessing a document under the profile
+    it already has, or under the active one, is a far better outcome than refusing
+    the reprocess because a *routing* table could not be read.
+    """
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        return []
+    try:
+        return PrefixMappingStore(_dynamodb.Table(table_name)).list()
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "Could not read the configuration prefix mappings (%s); reprocessing "
+            "without them",
+            e,
+        )
+        _emit("PrefixMappingLookupFailed")
+        return []
 
-    That pin is the forward half of the same control. Left unpinned, the document
-    reaches `queue_processor` with no `config_version`, which resolves the
-    **globally active** profile — a value nothing scope-checks, and one that may sit
-    outside the caller's scope. Reprocessing would then move the caller's own
-    document *out* of their scope, and stamp the tracking row accordingly.
 
-    Unscoped callers and Admins get an empty ``current_versions`` and so keep the
-    previous behaviour exactly: no pin, and the active profile is used.
+def _emit(metric_name, dimensions=None):
+    """Fire-and-forget telemetry, into the ROOT stack's namespace.
+
+    The reprocess path sends straight to the document queue, so ``queue_sender``
+    never runs for it and the prefix-mapping alarms would otherwise cover one entry
+    point of two — the same reason ``StaleOutputPurgeFailed`` has two emitters.
+
+    ⚠️ **The dimension schema has to match ``queue_sender``'s, not merely the
+    namespace.** A dimensionless datum is a *different metric* from one carrying
+    ``Prefix``, so the dashboard's ``SEARCH('{<ns>,Prefix} …')`` filter does not
+    match it and a reprocess that picked up a mapping would never appear on the
+    graph — covering one entry point of two, which is the asymmetry this function
+    exists to prevent. The alarms are unaffected either way (none is on
+    ``PrefixMappingApplied``), so the graph is the thing to get right here.
+    Truncated to CloudWatch's 255-character dimension-value limit, as S3 keys
+    exceed it and ``put_metric_data`` would raise.
+    """
+    try:
+        datum = {"MetricName": metric_name, "Value": 1, "Unit": "Count"}
+        if dimensions:
+            datum["Dimensions"] = [
+                {"Name": name, "Value": str(value)[:255]}
+                for name, value in dimensions.items()
+            ]
+        cloudwatch.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=[datum])
+    except Exception:
+        pass  # telemetry must not affect a reprocess
+
+
+def _configuration_manager():
+    """A ConfigurationManager over this deployment's table, or ``None``."""
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        return None
+    return ConfigurationManager(table_name=table_name)
+
+
+def _version_for_document(
+    requested_version,
+    requested_revision,
+    object_key,
+    current_versions,
+    allowed_versions=None,
+    mappings=None,
+    manager=None,
+    seam_cache=None,
+):
+    """The configuration to reprocess one document under, and where it came from.
+
+    Returns ``(version, revision, source, mapping_prefix)``.
+
+    The order is a precedence chain and each step is there for a different reason:
+
+    1. **An explicit ``version`` argument wins.** It has already been scope-checked,
+       and it is a deliberate choice by an authenticated caller.
+    2. **A scoped caller's reprocess stays pinned to the document's own profile.**
+       ``_enforce_document_scope`` has just verified that profile is in their scope.
+       ⚠️ This step must come *before* the prefix mapping, and the reason is easy to
+       get backwards: the pin exists for exactly the case "no explicit profile was
+       requested", which is also the case a mapping would like to fill. Consulting
+       the mapping first would let a reprocess move a scoped caller's own document
+       out of their scope — reintroducing the bug this module's header documents,
+       through a feature that looks unrelated to it.
+    3. **Then a prefix mapping**, so that moving a mapping and reprocessing is how an
+       operator re-runs a backlog under a new profile. Only reachable for an
+       unscoped caller or an Admin, and the resolved profile is scope-checked anyway
+       so the rule holds even if (2) ever stops producing a pin.
+    4. **Otherwise unpinned**, and ``queue_processor`` resolves the active profile —
+       previous behaviour, unchanged.
+
+    ⚠️ **The revision travels with the profile it belongs to.** Revision numbers are
+    per profile, so a caller's ``revision`` argument means nothing against a profile
+    the caller did not name. Passing one through alongside a mapping-supplied profile
+    would stamp, say, r5 of profile A onto profile B — the hazard
+    ``resolve_config_assignment`` guards against internally, reintroduced at the call
+    site. So a mapping supplies both or neither, and ``revision`` is honoured only
+    where ``version`` came from the caller or from the document's own pin.
     """
     if requested_version:
-        return requested_version
-    return current_versions.get(object_key) or None
+        return (
+            requested_version,
+            requested_revision,
+            SOURCE_EXPLICIT_REQUEST,
+            None,
+        )
+
+    pinned = current_versions.get(object_key) or None
+    if pinned:
+        # The caller named no profile, so a `revision` argument is theirs to apply to
+        # the document's existing one -- the pair the UI's reprocess dialog sends.
+        return pinned, requested_revision, SOURCE_DOCUMENT_PIN, None
+
+    if not mappings:
+        return None, requested_revision, None, None
+
+    seam_cache = {} if seam_cache is None else seam_cache
+    assignment = resolve_config_assignment(
+        object_key,
+        mappings=mappings,
+        active_profile=_memo_active(manager, seam_cache),
+        published_revision=_memo_published(manager, seam_cache),
+        profile_exists=_memo_exists(manager, seam_cache),
+        # Scope is evaluated on the RESOLVED profile. For an unscoped caller
+        # `allowed_versions` is empty, which `scope_allows` reads as unrestricted.
+        allowed_profiles=list(allowed_versions) if allowed_versions else None,
+    )
+    if assignment.unresolvable:
+        # Logged as well as emitted, with the same marker queue_sender uses. The
+        # alarm description sends an operator looking for this string, and the
+        # metric has two emitters -- an alarm fired by a reprocess with no log
+        # line on this path sends them to the wrong Lambda.
+        logger.warning("Stale prefix mapping for %s: %s", object_key, assignment.reason)
+        _emit("PrefixMappingUnresolvable")
+    if assignment.scope_denied or not assignment.mapping_prefix:
+        if assignment.scope_denied:
+            logger.warning(
+                "Not applying a prefix mapping to %s on reprocess: the mapped "
+                "profile is outside the caller's configuration scope",
+                object_key,
+            )
+        return None, requested_revision, None, None
+
+    logger.info("Reprocess of %s: %s", object_key, assignment.reason)
+    _emit("PrefixMappingApplied", {"Prefix": assignment.mapping_prefix})
+    # Both, or neither: the mapping's revision, never the caller's.
+    return (
+        assignment.profile,
+        assignment.revision,
+        assignment.source,
+        assignment.mapping_prefix,
+    )
+
+
+def _profile_head_exists(manager, profile):
+    """Whether a profile head item is there, without reading its body."""
+    item = manager.table.get_item(
+        Key={"Configuration": f"Config#{profile}"},
+        ProjectionExpression="Configuration",
+    ).get("Item")
+    return bool(item)
+
+
+# The three resolver seams, memoized for one request. A batch reprocess of N
+# documents sharing one prefix would otherwise spend up to 3N DynamoDB reads whose
+# answers are identical, inside API Gateway's 29s integration ceiling -- which is
+# the shape that turns a constant factor into a timeout on a large batch. Same
+# treatment upload_resolver gives the same three seams.
+
+
+def _memo_active(manager, cache):
+    if manager is None:
+        return None
+
+    def active():
+        if "active" not in cache:
+            cache["active"] = manager.resolve_active_version()
+        return cache["active"]
+
+    return active
+
+
+def _memo_published(manager, cache):
+    if manager is None:
+        return None
+
+    def published(profile):
+        key = ("published", profile)
+        if key not in cache:
+            cache[key] = manager.resolve_published_revision(profile)
+        return cache[key]
+
+    return published
+
+
+def _memo_exists(manager, cache):
+    if manager is None:
+        return None
+
+    def exists(profile):
+        key = ("exists", profile)
+        if key not in cache:
+            cache[key] = _profile_head_exists(manager, profile)
+        return cache[key]
+
+    return exists
+
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -348,14 +541,38 @@ def handler(event, context):
             + (f" with version: {version}" if version else "")
         )
 
+        # Read the mapping set and build the manager ONCE, outside the loop. A batch
+        # reprocess is bounded by API Gateway's 29s integration ceiling, and this
+        # path previously spent no reads here at all.
+        mappings = _prefix_mappings()
+        manager = _configuration_manager()
+        seam_cache: dict = {}
+
         # Process each document
         success_count = 0
         for object_key in object_keys:
             try:
+                (
+                    resolved_version,
+                    resolved_revision,
+                    config_source,
+                    mapping_prefix,
+                ) = _version_for_document(
+                    version,
+                    revision,
+                    object_key,
+                    current_versions,
+                    allowed_versions,
+                    mappings=mappings,
+                    manager=manager,
+                    seam_cache=seam_cache,
+                )
                 reprocess_document(
                     object_key,
-                    _version_for_document(version, object_key, current_versions),
-                    revision,
+                    resolved_version,
+                    resolved_revision,
+                    config_source=config_source,
+                    config_mapping_prefix=mapping_prefix,
                 )
                 success_count += 1
             except Exception as e:
@@ -374,7 +591,13 @@ def handler(event, context):
         raise e
 
 
-def reprocess_document(object_key, version=None, revision=None):
+def reprocess_document(
+    object_key,
+    version=None,
+    revision=None,
+    config_source=None,
+    config_mapping_prefix=None,
+):
     """
     Reprocess a document by creating a fresh Document object and queueing it.
     This exactly mirrors the queue_sender pattern for consistency and avoids
@@ -385,6 +608,11 @@ def reprocess_document(object_key, version=None, revision=None):
         version: Optional Configuration Profile to use for reprocessing
         revision: Optional revision of that profile. Omit to reprocess under the
             profile's current configuration.
+        config_source: Where ``version`` came from — see
+            ``_version_for_document``. Recorded on the document so a reprocess
+            that picked up a prefix mapping is distinguishable from one the
+            caller pinned, which is otherwise invisible after the fact.
+        config_mapping_prefix: The mapping prefix that decided it, when one did.
     """
     logger.info(
         f"Reprocessing document: {object_key}"
@@ -419,6 +647,8 @@ def reprocess_document(object_key, version=None, revision=None):
         sections=[],
         config_version=version,  # Set the configuration version if provided
         config_revision=revision,
+        config_source=config_source,
+        config_mapping_prefix=config_mapping_prefix,
     )
 
     logger.info(f"Created fresh document object for reprocessing: {object_key}")

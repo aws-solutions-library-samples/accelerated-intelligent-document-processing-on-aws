@@ -1,0 +1,22 @@
+query ListConfigPrefixMappings {
+  listConfigPrefixMappings {
+    success
+    mappings {
+      prefix
+      matchKind
+      configProfile
+      configRevision
+      metadataPrecedence
+      enabled
+      description
+      createdAt
+      createdBy
+      updatedAt
+      updatedBy
+    }
+    error {
+      type
+      message
+    }
+  }
+}

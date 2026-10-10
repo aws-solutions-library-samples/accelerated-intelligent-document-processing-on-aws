@@ -1977,6 +1977,12 @@ Resources:
           # the parent template; an empty value denies a non-admin caller, because
           # a scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          # The config prefix mappings, so a reprocess with no explicit profile
+          # re-resolves them — which is how an operator re-runs a backlog under a
+          # new profile. This resolver had no ConfigurationTable grant at all
+          # before; see `_version_for_document` for why the mapping is consulted
+          # only AFTER a scoped caller's pin.
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           # Namespace for the ``StaleOutputPurgeFailed`` metric emitted
           # on partial-purge failure — parity with queue_sender's #719
           # telemetry so operators can alarm on both ingest and
@@ -1993,6 +1999,9 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Read-only: this resolver reads the prefix mappings, never writes them.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTableName
         - SQSSendMessagePolicy:
             QueueName: !Ref DocumentQueueName
         - S3ReadPolicy:
@@ -2613,6 +2622,18 @@ Resources:
       Description: Lambda function to return signed upload URL via GraphQL API
       MemorySize: 512
       Timeout: 60
+      Layers:
+        # Needed for idp_common.config.prefix_mappings and idp_common.config_scope:
+        # this resolver decides which Configuration Profile a destination implies and
+        # whether the caller may write into it, and that rule is enforced in four
+        # deploy artifacts. The alternative for a layerless function is to vendor a
+        # committed copy, which several resolvers here still do; that would put a
+        # security-critical matcher behind a drift guard instead of behind one
+        # implementation, and a scope matcher that drifts between call sites is
+        # itself the privilege-escalation bug idp_common.config_scope exists to
+        # prevent. So this function takes the layer and imports s3_targets and
+        # log_sanitizer from it rather than keeping copies.
+        - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -2629,6 +2650,17 @@ Resources:
           OUTPUT_BUCKET: !Ref OutputBucketName
           EVALUATION_BASELINE_BUCKET: !Ref EvaluationBaselineBucketName
           TEST_SET_BUCKET: !Ref TestSetBucketName
+          # The config prefix mappings live in the ConfigurationTable, keyed
+          # ConfigPrefixMap#__index. Read here so the resolver can tell which
+          # Configuration Profile a destination prefix implies BEFORE it mints a
+          # presigned POST — which is what lets it refuse a destination outside the
+          # caller's scope, and refuse one a `reject` mapping would fail at ingest.
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          # RBAC: resolve the caller's allowedConfigVersions so the RESOLVED profile
+          # can be scope-checked. Always wired by the parent template; an empty
+          # value DENIES a caller rather than reading as unrestricted, because a
+          # scope that cannot be evaluated is not a caller without restrictions.
+          USERS_TABLE_NAME: !Ref UsersTableName
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
       LoggingConfig:
         LogGroup: !Ref UploadResolverFunctionLogGroup
@@ -2652,6 +2684,12 @@ Resources:
         # back to the TestSetBucket via uploadDocument's presigned POST.
         - S3WritePolicy:
             BucketName: !Ref TestSetBucketName
+        # Read-only on both tables. This resolver only ever READS the prefix
+        # mappings and the caller's scope — mapping CRUD is Admin-only and lives in
+        # the configuration resolver — so a write grant here would be a way to edit
+        # the deployment's routing policy from the upload path.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -2661,6 +2699,15 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !Ref CustomerManagedEncryptionKeyArn
+            # RBAC: read-only lookup of the caller's `allowedConfigVersions`, via
+            # the UsersTable `SUB#` pointer item (GetItem) and `EmailIndex` (Query).
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
   ListDocumentsByDateRangeResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

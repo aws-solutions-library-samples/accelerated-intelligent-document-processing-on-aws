@@ -189,6 +189,12 @@ FIELD_ALIASES: Dict[str, str] = {
     "labelConfigProfileRevision": "deleteConfigVersion",
     "listConfigProfileRevisions": "deleteConfigVersion",
     "restoreConfigProfileRevision": "deleteConfigVersion",
+    # Config prefix mappings (S3 prefix -> Configuration Profile), served by the
+    # same configuration resolver.
+    "listConfigPrefixMappings": "deleteConfigVersion",
+    "putConfigPrefixMapping": "deleteConfigVersion",
+    "deleteConfigPrefixMapping": "deleteConfigVersion",
+    "resolveConfigPrefixMapping": "deleteConfigVersion",
     "getConfigVersion": "deleteConfigVersion",
     "getConfigVersions": "deleteConfigVersion",
     "getConfigurationLibraryFile": "deleteConfigVersion",

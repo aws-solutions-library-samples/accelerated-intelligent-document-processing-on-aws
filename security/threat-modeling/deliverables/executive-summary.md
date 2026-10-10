@@ -31,7 +31,7 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 | **Lambda Functions** | 115+ |
 | **DynamoDB Tables** | 12 |
 | **S3 Buckets** | 13 |
-| **UI API operations** | 118 (single `POST /op/{field}` route) |
+| **UI API operations** | 123 (single `POST /op/{field}` route) |
 | **Processing Modes** | 2 (Pipeline, BDA) |
 | **RBAC Roles** | 5 (Admin, Author, Reviewer, Annotator, Viewer) + separate M2M OAuth realm for the Jobs API |
 | **UI hosting modes** | 2 (CloudFront, API Gateway S3 proxy) |
@@ -123,7 +123,7 @@ The system's high configurability (prompts, schemas, model selection, agent tool
 
 RBAC is enforced **entirely inside the resolver Lambdas** — the API Gateway Cognito authorizer only authenticates the JWT and performs no group evaluation. Any resolver missing its server-side check exposes a privileged operation to every authenticated user (AUTH.T03, AUTH.T08). The system is single-tenant per deployment.
 
-**Mitigations**: Per-operation resolver authorization for all 118 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
+**Mitigations**: Per-operation resolver authorization for all 123 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
 
 The harness is doing work the platform is not: the dispatcher itself does not
 default-deny — it resolves any field it can map, and the one dispatcher-level

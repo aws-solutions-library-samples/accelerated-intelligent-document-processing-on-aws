@@ -15,6 +15,7 @@ export const UPLOAD_DOCUMENT_PATH = `${DOCUMENTS_PATH}/upload`;
 export const DISCOVERY_PATH = `${DOCUMENTS_PATH}/discovery`;
 export const DISCOVERY_JOB_PATH = `${DOCUMENTS_PATH}/discovery/job`;
 export const USER_MANAGEMENT_PATH = `${DOCUMENTS_PATH}/users`;
+export const CONFIG_PREFIX_MAPPINGS_PATH = `${DOCUMENTS_PATH}/prefix-mappings`;
 export const AGENT_CHAT_PATH = '/agentchat';
 export const WELCOME_PATH = '/welcome';
 /** localStorage key: set when the user dismisses the welcome landing page. */

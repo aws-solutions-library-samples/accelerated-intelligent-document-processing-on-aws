@@ -9,6 +9,11 @@
  * revision history, because a dropdown whose only entry is "Current" is noise
  * rather than a choice — and most deployments will be in exactly that state
  * until someone saves a configuration.
+ *
+ * The other load-bearing property is *when the selection is reset*. The reset
+ * belongs to a profile **change** and must not fire on mount or on an unrelated
+ * re-render, because consumers hand this component their form state and the
+ * write paths behind those forms are full replaces.
  */
 
 import React from 'react';
@@ -83,15 +88,43 @@ describe('ConfigRevisionSelector', () => {
     expect(screen.getByText('r5')).toBeInTheDocument();
   });
 
-  it('clears a stale selection when the profile changes', () => {
+  it('does not clear the selection on mount, because mounting is not a change', () => {
+    // The case this exists for: an edit form mounts the selector with the
+    // profile AND the revision it has on record. A reset here reaches the
+    // parent's form state before the user has touched anything, and because
+    // `putConfigPrefixMapping` is a full replace, saving after editing an
+    // unrelated field then silently unpinned the revision.
+    //
+    // There is deliberately no `onChange.mockClear()` before this assertion.
+    // One used to sit between the render and the rerender in the case below,
+    // which is precisely why the mount-time call went unnoticed: the only call
+    // that mattered was the one being discarded.
+    state.revisions = REVISIONS;
+    const onChange = vi.fn();
+    render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('clears a stale selection when the profile actually changes', () => {
     // A revision number only means something inside one profile: r5 of `lending`
     // is unrelated to r5 of `claims`.
     state.revisions = REVISIONS;
     const onChange = vi.fn();
     const { rerender } = render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />);
-    onChange.mockClear();
     rerender(<ConfigRevisionSelector profileName="claims" value={5} onChange={onChange} />);
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(null);
+  });
+
+  it('does not clear on a re-render that leaves the profile alone', () => {
+    // The upload panel re-renders this on every keystroke in its prefix field,
+    // so "fires once per render" and "fires on a change" are not the same
+    // property and both need pinning.
+    state.revisions = REVISIONS;
+    const onChange = vi.fn();
+    const { rerender } = render(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} />);
+    rerender(<ConfigRevisionSelector profileName="lending" value={5} onChange={onChange} disabled />);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('surfaces a load error rather than silently offering only "Current"', () => {
