@@ -321,21 +321,44 @@ runs Claude Code (via Bedrock) over the MR diff with
 `allow_failure: true`, has `needs: []` so it does not wait for `static_checks`, and
 it is deliberately absent from `test_ci_gate_parity.py`'s `SHARED_GATES` — a
 model's opinion must not decide whether code merges, and a Bedrock throttle must
-not red-line an MR. It is **GitLab-only** because the AWS credentials are here; a
-GitHub equivalent would need its own OIDC role.
+not red-line an MR.
+
+**The same reviewer also runs on GitHub**, as `ai_pr_review` in
+`.github/workflows/ai-pr-review.yml` (`scripts/sdlc/ai_mr_review.py --forge
+github`). It is advisory there too, by a different mechanism: GitHub has no
+`allow_failure`, so what keeps it advisory is that its status-check context is
+pinned in `MUST_STAY_ADVISORY` in
+`scripts/tests/test_check_branch_protection.py` and absent from `SHARED_GATES`.
+Three differences are worth reading before relying on either side:
+
+| | GitLab | GitHub |
+|---|---|---|
+| AWS credential | the integration-test role `idp-sdlc-GitLab`, assumed by the runner fleet's `gitlab-runners-prod` role and gated on `GitLab:Group`/`GitLab:Project` session tags (`scripts/sdlc/cfn/credential-vendor.yml`) | a **Bedrock-only** role assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
+| Posting token | `GITLAB_REVIEW_TOKEN`, a project access token that has to be provisioned — `CI_JOB_TOKEN` cannot create notes | the built-in `GITHUB_TOKEN` with `pull-requests: write`; nothing to provision |
+| Fork contributions | not reviewed — masked variables are absent from a fork pipeline | reviewed by the **hourly `schedule`**, which is triggered by the repository rather than by the contribution and so holds the credentials regardless of origin |
+
+⚠️ **GitHub reads `on: schedule` from the workflow file on the *default* branch,
+which is `main`.** Until `ai-pr-review.yml` reaches `main` the cron never fires
+and says nothing, so fork coverage is silently absent. The `pull_request`
+trigger is unaffected and works from `develop`.
 
 ⚠️ **It runs automatically, and it costs real money per run.** A 5,400-line MR
 measured **$3.42** in CI ($6.12 locally), and reviews are idempotent per head SHA,
 so a new push means a new paid review. Three things bound that and all three must
-stay: `interruptible: true` (a push mid-review cancels it, so a burst costs about
-one review rather than one per push — this is the main protection and it is one
-line), Draft MRs excluded (the WIP phase, where pushes are frequent, is free), and
-exactly one triggering rule with **no scheduled sweep** — the script supports one
-(`--all-open`) but enabling it applies the per-push multiplier to the whole open
-queue. The unbounded residual is pushes spaced further apart than a review takes
-(~9 min in CI); if that dominates, add a cooldown in `ai_mr_review.py` rather than
-reverting to a manual button. Pinned by
-`test_the_automatic_trigger_keeps_its_cost_bounds`.
+stay. The first is the per-push multiplier and is spelled differently on each
+platform: `interruptible: true` on GitLab, `concurrency: cancel-in-progress` on
+GitHub — a push mid-review cancels it, so a burst costs about one review rather
+than one per push. This is the main protection and it is one line on either side.
+The second is that drafts are excluded, so the WIP phase, where pushes are
+frequent, is free. The third differs in substance: GitLab has exactly one
+triggering rule and **no scheduled sweep**, because a sweep there would apply the
+per-push multiplier to the whole open queue; GitHub does run one, bounded to
+`--max-mrs 3` per tick, and it is affordable only because the per-head-SHA marker
+makes a tick with no new head cost nothing. The unbounded residual on both is
+pushes spaced further apart than a review takes (~9 min in CI); if that dominates,
+add a cooldown in `ai_mr_review.py` rather than reverting to a manual button.
+Pinned by `test_the_automatic_trigger_keeps_its_cost_bounds` and
+`test_the_github_trigger_keeps_its_cost_bounds`.
 
 Automatic also means no human is in the loop before a model reads
 author-controlled text, which is why the sandbox note below matters.
