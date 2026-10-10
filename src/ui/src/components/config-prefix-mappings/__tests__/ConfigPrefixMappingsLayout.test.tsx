@@ -239,6 +239,46 @@ describe('ConfigPrefixMappingsLayout', () => {
     expect(putCalls()[0][0].variables).toMatchObject({ prefix: 'acme/invoices/', configProfile: 'lending', configRevision: 7 });
   });
 
+  it('reloads the table and keeps the modal open when only the retention pin failed', async () => {
+    // The mapping EXISTS in this response -- the put landed and only the pin on
+    // its revision did not. So the row has to appear behind the warning: showing
+    // "was saved, but r7 ... could not be protected" over a table with no such
+    // row reads as nothing having been saved, which is the opposite of what the
+    // admin has to act on. The modal stays open because there IS something to do.
+    mockGraphql.mockImplementation(({ query }: { query: string }) => {
+      if (query.includes('putConfigPrefixMapping')) {
+        return Promise.resolve({
+          data: {
+            putConfigPrefixMapping: {
+              success: false,
+              error: {
+                type: 'PartialSuccess',
+                message: "The mapping for 'acme/invoices/' was saved, but r7 of 'lending' could not be protected from retention.",
+              },
+            },
+          },
+        });
+      }
+      return routeGraphql({ query });
+    });
+
+    render(<ConfigPrefixMappingsLayout />);
+    await screen.findByText('acme/invoices/');
+    const listsBefore = listCalls();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await screen.findByText(/Edit mapping for/);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // `All` because the warning renders twice on purpose -- once on the page and
+    // once inside the still-open modal, which is where the admin is looking.
+    expect(await screen.findAllByText(/could not be protected from retention/)).not.toHaveLength(0);
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(listsBefore));
+    // Still open, and the warning survived the reload.
+    expect(screen.getByText(/Edit mapping for/)).toBeInTheDocument();
+    expect(screen.getAllByText(/could not be protected from retention/).length).toBeGreaterThan(0);
+  });
+
   it('refuses a prefix that already has a mapping, pointing at Edit', async () => {
     render(<ConfigPrefixMappingsLayout />);
     await screen.findByText('acme/invoices/');

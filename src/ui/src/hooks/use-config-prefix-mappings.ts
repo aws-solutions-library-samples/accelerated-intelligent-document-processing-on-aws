@@ -61,6 +61,16 @@ export interface ConfigAssignmentPreview {
   reason?: string | null;
 }
 
+/**
+ * What a save did, which is three outcomes rather than two.
+ *
+ * `saved-with-warning` is the partial success the server marks `PartialSuccess`:
+ * the mapping was written and the retention pin on its revision was not, so the
+ * row exists and the admin still has something to do about it. A caller that
+ * collapses it into `failed` leaves the saved row off the table.
+ */
+export type SaveOutcome = 'saved' | 'saved-with-warning' | 'failed';
+
 export interface PutMappingInput {
   prefix: string;
   configProfile: string;
@@ -89,9 +99,14 @@ const useConfigPrefixMappings = () => {
    * which is the order resolution evaluates. Do not re-sort in the table: a
    * longest-prefix rule shown in any other order cannot be read correctly.
    */
-  const loadMappings = useCallback(async () => {
+  const loadMappings = useCallback(async (preserveError = false) => {
     setLoading(true);
-    setError(null);
+    // `preserveError` exists for exactly one caller: the partial-success save,
+    // where the mapping WAS written but its revision pin failed. That row has to
+    // appear in the table while the warning explaining what to do about it stays
+    // on screen, and clearing the error would drop the only notice that a pinned
+    // revision is unprotected. A genuine load failure below still reports itself.
+    if (!preserveError) setError(null);
     try {
       const result = await client.graphql({ query: listConfigPrefixMappings });
       const response = result.data.listConfigPrefixMappings;
@@ -110,7 +125,7 @@ const useConfigPrefixMappings = () => {
     }
   }, []);
 
-  const saveMapping = useCallback(async (input: PutMappingInput): Promise<boolean> => {
+  const saveMapping = useCallback(async (input: PutMappingInput): Promise<SaveOutcome> => {
     setError(null);
     try {
       const result = await client.graphql({
@@ -127,13 +142,17 @@ const useConfigPrefixMappings = () => {
       const response = result.data.putConfigPrefixMapping;
       if (!response?.success) {
         setError(errorMessage(response?.error, 'Failed to save the mapping'));
-        return false;
+        // `PartialSuccess` is the server's marker for the one failure where the
+        // mapping exists anyway: the put landed and the retention pin on its
+        // revision did not. The caller has to treat that differently from a
+        // refusal, so it is reported rather than flattened into `false`.
+        return response?.error?.type === 'PartialSuccess' ? 'saved-with-warning' : 'failed';
       }
-      return true;
+      return 'saved';
     } catch (err) {
       logger.error('Error saving a configuration prefix mapping', err);
       setError('Failed to save the mapping');
-      return false;
+      return 'failed';
     }
   }, []);
 

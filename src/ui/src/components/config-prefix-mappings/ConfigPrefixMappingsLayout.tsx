@@ -50,6 +50,15 @@ import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
  *   asked for.
  */
 
+/**
+ * Mirrors `_MAX_DESCRIPTION_LEN` in
+ * `lib/idp_common_pkg/idp_common/config/prefix_mappings.py`. Shown as a constraint
+ * rather than enforced here: the server refuses an over-length description with a
+ * message naming the limit, and a client-side `maxLength` counts characters while
+ * the server counts bytes, so enforcing it here would disagree on multibyte text.
+ */
+const DESCRIPTION_LIMIT_BYTES = 500;
+
 const PRECEDENCE_OPTIONS: { value: MetadataPrecedence; label: string; description: string }[] = [
   {
     value: 'mapping',
@@ -238,7 +247,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
 
   const submit = useCallback(async () => {
     setSaving(true);
-    const ok = await saveMapping({
+    const outcome = await saveMapping({
       prefix: form.prefix.trim(),
       configProfile: form.configProfile,
       configRevision: form.configRevision,
@@ -247,10 +256,15 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
       description: form.description,
     });
     setSaving(false);
-    if (ok) {
-      setShowForm(false);
-      await loadMappings();
-    }
+    if (outcome === 'failed') return;
+    // Reload on BOTH surviving outcomes. On `saved-with-warning` the mapping was
+    // written and only its retention pin failed, so the modal stays open with the
+    // warning while the table behind it has to show the row that now exists --
+    // otherwise the admin reads "was saved, but..." over a table with no such row.
+    // `preserveError` keeps that warning on screen across the reload.
+    const warned = outcome === 'saved-with-warning';
+    if (!warned) setShowForm(false);
+    await loadMappings(warned);
   }, [form, saveMapping, loadMappings]);
 
   // The in-flight guard is not cosmetic: the second of two clicks sends a second
@@ -413,7 +427,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
             actions={
               <SpaceBetween direction="horizontal" size="xs">
                 {/* Icon-only, so the label is the only thing a screen reader has to go on. */}
-                <Button iconName="refresh" ariaLabel="Refresh mappings" onClick={loadMappings} loading={loading} />
+                <Button iconName="refresh" ariaLabel="Refresh mappings" onClick={() => loadMappings()} loading={loading} />
                 <Button variant="primary" onClick={openCreate}>
                   Create mapping
                 </Button>
@@ -607,7 +621,18 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
               </Toggle>
             </FormField>
 
-            <FormField label="Description" description="Optional. Why this mapping exists.">
+            {/*
+              The limit is stated because the server REFUSES an over-length
+              description rather than truncating it, so an admin who pastes a long
+              one gets an error on save. It is a byte limit, not a character one
+              (the mapping table has to stay inside DynamoDB's item-size limit), so
+              the constraint says so rather than implying 500 characters always fit.
+            */}
+            <FormField
+              label="Description"
+              description="Optional. Why this mapping exists."
+              constraintText={`At most ${DESCRIPTION_LIMIT_BYTES} bytes — fewer characters if it uses accented or non-Latin text.`}
+            >
               <Textarea
                 value={form.description}
                 onChange={({ detail }) => setForm((f) => ({ ...f, description: detail.value }))}

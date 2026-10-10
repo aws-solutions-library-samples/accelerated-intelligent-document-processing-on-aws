@@ -25,6 +25,7 @@ from idp_common.config.prefix_mappings import (
     PRECEDENCE_VALUES,
     PrefixMappingConflict,
     PrefixMappingStore,
+    description_rejection_reason,
     find_match,
     prefix_rejection_reason,
     resolve_config_assignment,
@@ -1454,7 +1455,9 @@ def handle_put_prefix_mapping(manager, args, actor):
     revision = args.get("configRevision")
     precedence = args.get("metadataPrecedence") or DEFAULT_PRECEDENCE
 
-    rejection = prefix_rejection_reason(prefix)
+    rejection = prefix_rejection_reason(prefix) or description_rejection_reason(
+        args.get("description")
+    )
     if rejection:
         return {
             "success": False,
@@ -1540,8 +1543,15 @@ def handle_put_prefix_mapping(manager, args, actor):
         ):
             return {
                 "success": False,
+                # A DISTINCT error type, and the written entry alongside it, because
+                # this is the one `success: false` on this operation where the
+                # mapping does exist. A caller that cannot tell it apart from a
+                # validation refusal shows a warning over a table that has no such
+                # row, which reads as "nothing was saved" -- the opposite of what
+                # the message says and of what the admin has to act on.
+                "mapping": entry,
                 "error": {
-                    "type": "Error",
+                    "type": "PartialSuccess",
                     "message": (
                         f"The mapping for '{prefix}' was saved, but r{revision} of "
                         f"'{profile}' could not be protected from retention, so it "

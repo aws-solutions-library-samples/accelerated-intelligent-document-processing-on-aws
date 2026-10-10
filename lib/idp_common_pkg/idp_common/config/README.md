@@ -614,8 +614,18 @@ change takes effect immediately" true rather than aspirational; a TTL cache save
 almost nothing against one small item and buys the worst admin experience available
 (a mapping that looks saved and does not apply, for an interval nothing explains).
 
-**`MAX_MAPPINGS` (200) is enforced at write time**, and `normalize_entry` truncates
-`description` to 500 characters. `revisions.py` needs no such guard because
+**`MAX_MAPPINGS` (200) is enforced at write time**, and so is a length bound on every
+per-entry field. All of them are in **UTF-8 bytes**, which is the unit the item-size
+arithmetic beside the constants is in: counting characters would let a 500-character CJK
+description occupy 2000 bytes, so each bound would read as satisfied while the aggregate
+item went over. The three fields an admin types — `prefix`, `configProfile`,
+`description` — are **refused** with a message naming the field and its limit
+(`description_rejection_reason`); the two actor strings are **truncated**
+(`_truncate_bytes` in `normalize_entry`), because they are claims from the caller's token
+rather than typed input and refusing a write over the length of an identity the caller
+did not choose would be unactionable. `normalize_entry` also runs on *read*, so the
+truncation covers entries written before the refusal existed or by a direct table write.
+`revisions.py` needs no such guard because
 `DEFAULT_REVISION_CAP` bounds its list. Nothing bounds this one, and the aggregate item
 is on the ingest path, so overflowing DynamoDB's 400 KB item limit would be an ingest
 outage rather than a failed admin write — a `ValidationException` at entry 201 would

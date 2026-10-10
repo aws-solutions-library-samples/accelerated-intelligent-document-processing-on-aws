@@ -59,11 +59,20 @@ nothing bounds this one, and a ``ValidationException`` at entry 201 would be an
 
 The count alone does not establish that bound, so every per-entry field has a
 length limit too — ``prefix``, ``configProfile``, ``description`` and the two
-actor strings — and the constants carry the arithmetic. What going over costs is
-an opaque ``ValidationException`` on the *admin write* (DynamoDB refuses an
-oversized ``update_item``, so the item never becomes unreadable and ingest is
-unaffected), which is why each bound is refused individually with a message
-naming it rather than left to surface as "Failed to save mapping".
+actor strings — and the constants carry the arithmetic. **Every one of them is in
+UTF-8 bytes**, because the arithmetic is, and UTF-8 runs to four bytes per
+character: a 500-*character* CJK description is 1500 bytes, and 200 of those would
+put the aggregate item over 400 KB while every individual bound read as satisfied.
+
+What going over costs is an opaque ``ValidationException`` on the *admin write*
+(DynamoDB refuses an oversized ``update_item``, so the item never becomes
+unreadable and ingest is unaffected), which is why **the three fields an admin
+types** — ``prefix``, ``configProfile`` and ``description`` — are each refused with
+a message naming the field and its limit, rather than left to surface as "Failed
+to save mapping". The two **actor** strings are the exception and are *truncated*:
+they are claims from the caller's token rather than something they typed, so
+refusing a write over the length of an identity the caller did not choose would be
+unactionable. Both behaviours are deliberate; neither field is unbounded.
 
 Matching
 --------
@@ -188,12 +197,20 @@ _MAX_DESCRIPTION_LEN = 500
 # `test_the_cap_and_the_length_bounds_together_hold_the_item_limit` measures the
 # real serialization rather than trusting this sum.
 #
+# ⚠️ Every number above is UTF-8 BYTES, and so is every bound that enforces one —
+# `len(value.encode("utf-8"))` where the field is refused, `_truncate_bytes` where
+# it is shortened. Counting characters instead would leave the sum above claiming a
+# closure it does not have: UTF-8 runs to four bytes per character, so 500
+# characters of CJK or emoji is up to 2000 bytes and the per-entry worst case
+# approaches 4.7 KB, i.e. ~940 KB at MAX_MAPPINGS. Measured by
+# `test_multibyte_fields_do_not_escape_the_item_arithmetic`.
+#
 # What going over would actually cost: DynamoDB refuses an `update_item` that
 # would exceed 400 KB, so the item never becomes unreadable and ingest is not
 # affected. The consequence is that an admin near the ceiling gets `put`'s generic
 # "Failed to save mapping" wrapping an opaque ValidationException, with no
-# indication that a length is the problem — which is why each bound is refused
-# individually, with a message naming it.
+# indication that a length is the problem — which is why the three fields an admin
+# types are each refused with a message naming the field and its limit.
 #
 # Refusing a long prefix costs nothing real: a prefix longer than any key it could
 # match is already inert, and 512 bytes of S3 key prefix is far past any real
@@ -326,6 +343,43 @@ def prefix_rejection_reason(prefix: str) -> Optional[str]:
     return None
 
 
+def _truncate_bytes(value: str, limit: int) -> str:
+    """``value`` shortened to at most ``limit`` UTF-8 bytes, on a character boundary.
+
+    Byte-counted, not character-counted, because the item-size arithmetic beside
+    the constants is in bytes — see the ⚠️ note there. Slicing the encoded form can
+    land mid-character, so the tail is decoded with ``errors="ignore"``, which drops
+    the partial character rather than producing an invalid string DynamoDB would
+    refuse for a different reason.
+    """
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit].decode("utf-8", "ignore")
+
+
+def description_rejection_reason(description: Any) -> Optional[str]:
+    """Why ``description`` cannot be stored, or ``None``.
+
+    Refused rather than truncated, unlike the actor strings: the description is
+    something the admin typed, so silently storing a shortened copy would report
+    ``success: true`` for a mapping whose stored form is not what was entered. The
+    same argument ``prefix_rejection_reason`` makes.
+    """
+    if description is None:
+        return None
+    size = len(str(description).encode("utf-8"))
+    if size > _MAX_DESCRIPTION_LEN:
+        return (
+            f"A mapping description may be at most {_MAX_DESCRIPTION_LEN} bytes; "
+            f"this one is {size}. The limit is in bytes rather than characters "
+            f"because it is one of the per-entry bounds that keeps the mapping "
+            f"table inside DynamoDB's item-size limit, and non-Latin characters "
+            f"take more than one byte each."
+        )
+    return None
+
+
 def match_kind(prefix: str) -> str:
     """``MATCH_PREFIX`` when ``prefix`` ends in ``/``, else ``MATCH_EXACT``.
 
@@ -355,7 +409,14 @@ def normalize_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
             precedence if precedence in PRECEDENCE_VALUES else DEFAULT_PRECEDENCE
         ),
         "enabled": bool(entry.get("enabled", True)),
-        "description": (str(entry.get("description") or ""))[:_MAX_DESCRIPTION_LEN]
+        # Truncated here even though the API refuses an over-length description
+        # (`description_rejection_reason`), because `normalize_entry` also runs on
+        # READ and so over entries written before that refusal existed or by a
+        # direct table write. The refusal is what an admin sees; this is what keeps
+        # the item-size arithmetic true regardless of how an entry got there.
+        "description": _truncate_bytes(
+            str(entry.get("description") or ""), _MAX_DESCRIPTION_LEN
+        )
         or None,
         "createdAt": entry.get("createdAt"),
         # Truncated, not refused: an actor string is a claim from the caller's
@@ -364,10 +425,10 @@ def normalize_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         # per-entry field with no other limit, and MAX_MAPPINGS' item-size
         # arithmetic depends on every field having one.
         "createdBy": (str(entry.get("createdBy") or "") or None)
-        and str(entry["createdBy"])[:_MAX_ACTOR_LEN],
+        and _truncate_bytes(str(entry["createdBy"]), _MAX_ACTOR_LEN),
         "updatedAt": entry.get("updatedAt"),
         "updatedBy": (str(entry.get("updatedBy") or "") or None)
-        and str(entry["updatedBy"])[:_MAX_ACTOR_LEN],
+        and _truncate_bytes(str(entry["updatedBy"]), _MAX_ACTOR_LEN),
     }
 
 
@@ -596,6 +657,15 @@ def _decide(
     entries = list(mappings or [])
 
     def _active() -> ConfigAssignment:
+        # The revision IS resolved here, unlike `_from_metadata` below, and the
+        # asymmetry is the intended one rather than an oversight. A mapping-assigned
+        # or active-profile document had no revision chosen for it by anybody, so
+        # taking the published one at ingest is what makes the whole queue agree
+        # about which body it ran under -- leaving it to `queue_processor` means a
+        # promotion between ingest and processing silently splits a batch across two
+        # configurations. A document whose uploader named a profile is the opposite
+        # case: resolving its revision at ingest would pin a choice the uploader did
+        # not make, so that path deliberately passes the revision through as given.
         profile = None
         if active_profile is not None:
             try:

@@ -295,6 +295,58 @@ def test_put_refuses_an_unknown_conflict_mode(manager, store):
     store.put.assert_not_called()
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param("D" * 501, id="ascii-over-by-one"),
+        # 200 CJK characters is 600 UTF-8 bytes. The bound is in bytes, so this is
+        # over it while being well under 500 characters -- which is the case a
+        # character-counted check would admit and DynamoDB would then have to
+        # refuse, as an opaque ValidationException on a different request.
+        pytest.param("あ" * 200, id="multibyte-under-500-characters"),
+    ],
+)
+def test_put_refuses_an_over_length_description(manager, store, description):
+    """Refused with a message naming the limit, not stored truncated.
+
+    `normalize_entry` would shorten it, which would report `success: true` for a
+    mapping whose stored description is not the one the admin typed.
+    """
+    result = index.handler(
+        _event(
+            "putConfigPrefixMapping",
+            {
+                "prefix": "acme/",
+                "configProfile": "lending",
+                "description": description,
+            },
+        ),
+        None,
+    )
+    assert result["success"] is False
+    assert result["error"]["type"] == "ValidationError"
+    assert "500 bytes" in result["error"]["message"]
+    store.put.assert_not_called()
+
+
+@pytest.mark.unit
+def test_put_accepts_a_description_at_the_limit(manager, store):
+    result = index.handler(
+        _event(
+            "putConfigPrefixMapping",
+            {
+                "prefix": "acme/",
+                "configProfile": "lending",
+                "description": "D" * 500,
+            },
+        ),
+        None,
+    )
+    assert result["success"] is True
+    store.put.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # put: the retention pin
 # ---------------------------------------------------------------------------

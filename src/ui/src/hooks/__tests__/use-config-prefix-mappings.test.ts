@@ -46,7 +46,7 @@ vi.mock('../../graphql/generated', () => ({
   resolveConfigPrefixMapping: 'resolveConfigPrefixMapping',
 }));
 
-import useConfigPrefixMappings from '../use-config-prefix-mappings';
+import useConfigPrefixMappings, { SaveOutcome } from '../use-config-prefix-mappings';
 
 describe('useConfigPrefixMappings', () => {
   beforeEach(() => {
@@ -86,13 +86,76 @@ describe('useConfigPrefixMappings', () => {
     });
 
     const { result } = renderHook(() => useConfigPrefixMappings());
-    let ok = true;
+    let outcome: SaveOutcome = 'saved';
     await act(async () => {
-      ok = await result.current.saveMapping({ prefix: '/acme/', configProfile: 'lending' });
+      outcome = await result.current.saveMapping({ prefix: '/acme/', configProfile: 'lending' });
     });
 
-    expect(ok).toBe(false);
+    expect(outcome).toBe('failed');
     expect(result.current.error).toBe("A mapping prefix must not start with '/'.");
+  });
+
+  it('reports a saved mapping whose retention pin failed as a partial success, not a failure', async () => {
+    // The mapping EXISTS after this response. Collapsing it into 'failed' is what
+    // leaves the page showing "was saved, but r7 ... could not be protected" over
+    // a table with no such row, which reads as nothing having been saved.
+    graphql.mockResolvedValue({
+      data: {
+        putConfigPrefixMapping: {
+          success: false,
+          mapping: { prefix: 'acme/', configProfile: 'lending', configRevision: 7 },
+          error: {
+            type: 'PartialSuccess',
+            message: "The mapping for 'acme/' was saved, but r7 of 'lending' could not be protected from retention, so it may be pruned.",
+          },
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useConfigPrefixMappings());
+    let outcome: SaveOutcome = 'saved';
+    await act(async () => {
+      outcome = await result.current.saveMapping({ prefix: 'acme/', configProfile: 'lending', configRevision: 7 });
+    });
+
+    expect(outcome).toBe('saved-with-warning');
+    expect(result.current.error).toContain('was saved, but r7');
+  });
+
+  it('keeps the save warning on screen across a reload that preserves it', async () => {
+    // The partial-success path reloads the table so the saved row appears, and the
+    // warning has to survive that reload or the admin loses the only notice that a
+    // pinned revision is unprotected.
+    graphql.mockResolvedValue({
+      data: {
+        putConfigPrefixMapping: {
+          success: false,
+          error: { type: 'PartialSuccess', message: 'pin failed' },
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useConfigPrefixMappings());
+    await act(async () => {
+      await result.current.saveMapping({ prefix: 'acme/', configProfile: 'lending', configRevision: 7 });
+    });
+    expect(result.current.error).toBe('pin failed');
+
+    graphql.mockResolvedValue({
+      data: { listConfigPrefixMappings: { success: true, mappings: [{ prefix: 'acme/', configProfile: 'lending' }] } },
+    });
+    await act(async () => {
+      await result.current.loadMappings(true);
+    });
+
+    expect(result.current.mappings).toHaveLength(1);
+    expect(result.current.error).toBe('pin failed');
+
+    // And the default still clears it, which is what every other caller wants.
+    await act(async () => {
+      await result.current.loadMappings();
+    });
+    expect(result.current.error).toBeNull();
   });
 
   it('defaults a new mapping to mapping-wins and enabled', async () => {

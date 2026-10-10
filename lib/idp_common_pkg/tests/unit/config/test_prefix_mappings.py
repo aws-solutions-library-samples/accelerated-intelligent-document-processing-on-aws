@@ -36,8 +36,10 @@ from idp_common.config.prefix_mappings import (
     PrefixMappingConflict,
     PrefixMappingStore,
     canonical_key,
+    description_rejection_reason,
     find_match,
     match_kind,
+    normalize_entry,
     prefix_rejection_reason,
     resolve_config_assignment,
     sort_entries,
@@ -733,6 +735,70 @@ def test_the_cap_and_the_length_bounds_together_hold_the_item_limit():
         f"against DynamoDB's 400 KB item limit. Lower MAX_MAPPINGS or the length "
         f"bounds — the overflow surfaces on the INGEST read."
     )
+
+
+@pytest.mark.unit
+def test_multibyte_fields_do_not_escape_the_item_arithmetic():
+    """The bounds are in BYTES, which is the unit the arithmetic above is in.
+
+    UTF-8 runs to four bytes per character, so a character-counted description and
+    actor pair would let the same nominally-at-the-limit entry be up to four times
+    larger — ~940 KB at MAX_MAPPINGS, over the 400 KB item limit every individual
+    bound would still read as satisfying. The description is refused at the API and
+    both are truncated on normalization; this measures the result of both.
+    """
+    assert description_rejection_reason("あ" * 200) is not None, (
+        "600 bytes of CJK is over the 500-byte description bound and must be "
+        "refused; a character count would admit it."
+    )
+
+    entries = [
+        normalize_entry(
+            {
+                "prefix": ("p" * 508 + f"{n:04d}" + "/"),
+                "configProfile": "q" * 128,
+                "configRevision": 999999,
+                "metadataPrecedence": "reject",
+                "enabled": True,
+                # Four bytes per character, at four times the character bound.
+                "description": "🧾" * 500,
+                "createdAt": "2026-10-10T00:00:00.000000Z",
+                "createdBy": "あ" * 256,
+                "updatedAt": "2026-10-10T00:00:00.000000Z",
+                "updatedBy": "あ" * 256,
+            }
+        )
+        for n in range(MAX_MAPPINGS)
+    ]
+    for entry in entries:
+        assert len(entry["description"].encode("utf-8")) <= 500
+        assert len(entry["createdBy"].encode("utf-8")) <= 256
+        assert len(entry["updatedBy"].encode("utf-8")) <= 256
+
+    size = len(str(sort_entries(entries)).encode("utf-8"))
+    assert size < 400 * 1024, (
+        f"MAX_MAPPINGS multibyte entries serialize to {size:,} bytes against "
+        f"DynamoDB's 400 KB item limit. The per-entry bounds must be counted in "
+        f"UTF-8 bytes, not characters."
+    )
+
+
+@pytest.mark.unit
+def test_an_over_length_description_is_refused_with_a_message_naming_the_limit():
+    """Refused rather than truncated, because the admin typed it.
+
+    A silently shortened description reports `success: true` for a mapping whose
+    stored form is not what was entered. The actor strings are the deliberate
+    exception and are covered by the normalization assertions above.
+    """
+    assert description_rejection_reason(None) is None
+    assert description_rejection_reason("") is None
+    assert description_rejection_reason("D" * 500) is None
+
+    reason = description_rejection_reason("D" * 501)
+    assert reason is not None
+    assert "500 bytes" in reason
+    assert "501" in reason
 
 
 @pytest.mark.unit

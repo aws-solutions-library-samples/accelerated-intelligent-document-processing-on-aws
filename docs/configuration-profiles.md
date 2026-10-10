@@ -509,10 +509,13 @@ a document's profile is the document-visibility partition for any user restricte
 documents landing under that prefix.
 
 A deployment holds at most **200** mappings, and each mapping's optional description is
-capped at **500 characters**. The ceiling is enforced when you save rather than left to
-DynamoDB: the whole mapping set is one item that *every* queued document reads, so
-letting it grow past DynamoDB's 400 KB item limit would be an ingest outage rather than
-a failed admin write.
+capped at **500 bytes** — in bytes rather than characters, so accented or non-Latin text
+fits fewer than 500 characters, and the form field says so. The ceilings are enforced
+when you save rather than left to DynamoDB: the whole mapping set is one item that
+*every* queued document reads, so letting it grow past DynamoDB's 400 KB item limit
+would be an ingest outage rather than a failed admin write. A description over the limit
+is **refused** with a message naming it, not silently shortened, so a mapping that saves
+is the mapping you entered.
 
 ### How a mapping is chosen
 
