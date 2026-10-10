@@ -57,6 +57,12 @@ are load-bearing:
 nothing bounds this one, and a ``ValidationException`` at entry 201 would be an
 **ingest-path outage**, because the aggregate item is what ingest reads.
 
+The count alone does not establish that bound, so ``prefix`` and ``configProfile``
+are length-bounded too (``_MAX_PREFIX_LEN``, ``_MAX_PROFILE_LEN``) and
+``description`` is truncated. Without those, 200 entries carrying 1 KB S3 key
+prefixes exceed 400 KB on their own — and the overflow lands on the ingest *read*
+rather than on the admin write that caused it.
+
 Matching
 --------
 
@@ -168,6 +174,19 @@ MAX_MAPPINGS = 200
 
 _MAX_DESCRIPTION_LEN = 500
 
+# Length bounds that make MAX_MAPPINGS actually establish the 400 KB item bound it
+# is there for. A count alone does not: S3 keys run to 1024 bytes and a profile
+# name is only shape-validated, so 200 entries of unbounded prefix and profile
+# exceed DynamoDB's item limit comfortably — and that overflow lands on the INGEST
+# read, not on the admin write that caused it.
+#
+# Refusing a long prefix costs nothing real: a prefix longer than the longest key
+# S3 will accept cannot match any object, so it was already inert. The profile
+# bound is the same character class `revisions.py` restricts a profile name to,
+# at a length no profile approaches.
+_MAX_PREFIX_LEN = 1024
+_MAX_PROFILE_LEN = 128
+
 # What a mapping does when the object also carries conflicting upload metadata.
 #
 # Named for *metadata* rather than for "tags": the value being adjudicated is S3 user
@@ -275,6 +294,11 @@ def prefix_rejection_reason(prefix: str) -> Optional[str]:
         )
     if "//" in prefix:
         return "A mapping prefix must not contain '//'."
+    if len(prefix.encode("utf-8")) > _MAX_PREFIX_LEN:
+        return (
+            f"A mapping prefix may be at most {_MAX_PREFIX_LEN} bytes. S3 keys do "
+            f"not exceed that, so a longer prefix could never match anything."
+        )
     segments = prefix.split("/")
     if any(segment in (".", "..") for segment in segments):
         return "A mapping prefix must not contain '.' or '..' path segments."
@@ -881,6 +905,10 @@ class PrefixMappingStore:
             raise ValueError(rejection)
         if not config_profile:
             raise ValueError("A Configuration Profile is required.")
+        if len(config_profile.encode("utf-8")) > _MAX_PROFILE_LEN:
+            raise ValueError(
+                f"A Configuration Profile name may be at most {_MAX_PROFILE_LEN} bytes."
+            )
         if metadata_precedence not in PRECEDENCE_VALUES:
             raise ValueError(
                 f"Unknown conflict mode {metadata_precedence!r}; expected one of "

@@ -620,6 +620,62 @@ def test_the_mapping_count_is_capped_at_write_time():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "prefix,fragment",
+    [
+        ("a" * 1025 + "/", "1024 bytes"),
+        ("\u00e9" * 600 + "/", "1024 bytes"),  # bytes, not characters
+    ],
+)
+def test_an_over_long_prefix_is_refused(prefix, fragment):
+    """MAX_MAPPINGS bounds the entry COUNT; without a length bound the 400 KB item
+    limit it exists to protect is still reachable, and the overflow lands on the
+    ingest read rather than on the admin write that caused it."""
+    reason = prefix_rejection_reason(prefix)
+    assert reason and fragment in reason
+
+
+@pytest.mark.unit
+@mock_aws
+def test_an_over_long_profile_name_is_refused():
+    store = PrefixMappingStore(_make_table())
+    with pytest.raises(ValueError, match="at most"):
+        store.put("acme/", "p" * 129)
+
+
+@pytest.mark.unit
+@mock_aws
+def test_the_cap_and_the_length_bounds_together_hold_the_item_limit():
+    """The worst case the write path permits, measured rather than asserted.
+
+    MAX_MAPPINGS entries each at the maximum prefix, profile and description
+    length. If this ever exceeds 400 KB, ingest starts failing to READ the item
+    and no admin action caused it on that request.
+    """
+    entries = [
+        {
+            "prefix": ("p" * 1000 + f"{n:04d}" + "/"),
+            "configProfile": "q" * 128,
+            "configRevision": 999999,
+            "metadataPrecedence": "reject",
+            "enabled": True,
+            "description": "D" * 500,
+            "createdAt": "2026-10-10T00:00:00.000000Z",
+            "createdBy": "an.administrator@example.com",
+            "updatedAt": "2026-10-10T00:00:00.000000Z",
+            "updatedBy": "an.administrator@example.com",
+        }
+        for n in range(MAX_MAPPINGS)
+    ]
+    size = len(str(sort_entries(entries)).encode("utf-8"))
+    assert size < 400 * 1024, (
+        f"the worst case the write path permits serializes to {size:,} bytes, "
+        f"against DynamoDB's 400 KB item limit. Lower MAX_MAPPINGS or the length "
+        f"bounds — the overflow surfaces on the INGEST read."
+    )
+
+
+@pytest.mark.unit
 @mock_aws
 def test_a_full_mapping_set_stays_well_inside_the_dynamodb_item_limit():
     store = PrefixMappingStore(_make_table())

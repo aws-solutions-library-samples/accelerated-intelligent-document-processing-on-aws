@@ -8964,6 +8964,13 @@ Resources:
       Namespace: !Ref AWS::StackName
       Statistic: Sum
       Period: 300
+      # Threshold 5 over TWO periods, deliberately unlike the other two alarms
+      # here (threshold 0 over one). Those two fire on the first occurrence
+      # because each means documents ran under something other than what was
+      # configured. A refusal is the opposite: it is the control working as the
+      # administrator asked, so one of them is not news. What IS news is a
+      # producer persistently submitting to a prefix it does not satisfy, which
+      # is a sustained rate rather than an event -- so this alarms on volume.
       EvaluationPeriods: 2
       Threshold: 5
       ComparisonOperator: GreaterThanThreshold

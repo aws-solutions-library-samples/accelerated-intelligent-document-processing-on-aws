@@ -1178,10 +1178,13 @@ def test_vendoring_directories_carry_no_idp_common_layer():
 
     ``scripts/tests/test_s3_targets_vendored.py`` already calls exactly this
     combination a defect for its own module, in
-    ``test_the_split_matches_which_functions_carry_the_layer``. Without this
-    assertion the two gates disagree: that one fails while this one stays green on
-    the same condition, which is how ``upload_resolver`` ended up in that state
-    when it gained the layer for ``idp_common.config.prefix_mappings``.
+    ``test_the_split_matches_which_functions_carry_the_layer``. **The two gates have
+    to agree.** With only one direction asserted, a function that both vendors a
+    copy *and* carries the layer satisfies the drift gate — the copy is byte
+    identical, so nothing is drifting — while which of the two modules actually
+    loads depends on ``sys.path`` order. That is the state this direction forbids,
+    and the one a function reaches the moment it is given the layer for some
+    unrelated reason and nobody notices the copy beside it.
     """
     layers = _layers_by_code_dir()
     broken = []

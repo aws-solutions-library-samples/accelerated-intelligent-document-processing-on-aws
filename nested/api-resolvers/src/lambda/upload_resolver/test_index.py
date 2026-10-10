@@ -688,3 +688,18 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         )
 
         assert result["objectKey"] == "regulated/x.pdf"
+
+    def test_an_unwired_configuration_table_refuses_rather_than_degrading(
+        self, resolver, monkeypatch
+    ):
+        """Fail CLOSED, matching the scope lookup rather than the ingest path.
+
+        Degrading here would leave `active_profile` unanswerable, so an upload
+        naming no profile resolves to no profile, which the scope guard cannot
+        compare -- the check silently off for the commonest upload shape there is.
+        """
+        index, _ = resolver
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
+
+        with pytest.raises(PermissionError):
+            index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))

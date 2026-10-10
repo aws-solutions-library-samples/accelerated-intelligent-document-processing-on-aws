@@ -2626,11 +2626,13 @@ Resources:
         # Needed for idp_common.config.prefix_mappings and idp_common.config_scope:
         # this resolver decides which Configuration Profile a destination implies and
         # whether the caller may write into it, and that rule is enforced in four
-        # deploy artifacts. Vendoring a copy here — as this function does for
-        # s3_targets and log_sanitizer — would put a security-critical matcher behind
-        # a drift guard instead of behind one implementation, and a scope matcher
-        # that drifts between call sites is itself the privilege-escalation bug
-        # idp_common.config_scope exists to prevent.
+        # deploy artifacts. The alternative for a layerless function is to vendor a
+        # committed copy, which several resolvers here still do; that would put a
+        # security-critical matcher behind a drift guard instead of behind one
+        # implementation, and a scope matcher that drifts between call sites is
+        # itself the privilege-escalation bug idp_common.config_scope exists to
+        # prevent. So this function takes the layer and imports s3_targets and
+        # log_sanitizer from it rather than keeping copies.
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:

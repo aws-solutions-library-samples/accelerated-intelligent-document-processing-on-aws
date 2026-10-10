@@ -173,8 +173,6 @@ def _profile_exists(manager, cache=None):
     without it the cost is two DynamoDB round trips per file for answers that
     cannot change within the call.
     """
-    if manager is None:
-        return None
     memo = {} if cache is None else cache
 
     def exists(profile):
@@ -191,8 +189,6 @@ def _profile_exists(manager, cache=None):
 
 def _published_revision(manager, cache=None):
     """``resolve_published_revision``, memoized for one request. See above."""
-    if manager is None:
-        return None
     memo = {} if cache is None else cache
 
     def published(profile):
@@ -204,14 +200,33 @@ def _published_revision(manager, cache=None):
 
 
 def _configuration_manager():
-    """A ConfigurationManager over this deployment's table, or ``None``.
+    """A ConfigurationManager over this deployment's table.
 
-    Built per request rather than at module scope so an unset table name degrades
-    to "no seams" instead of raising at import.
+    ⚠️ **Refuses rather than degrading when the table is not wired.** Returning
+    ``None`` here would leave ``active_profile`` unanswerable, and an upload that
+    names no profile then resolves to no profile — which the scope guard cannot
+    compare, so a scoped caller is *not refused*. That is fail-OPEN on the
+    commonest upload shape there is, and it would silently disable the check this
+    resolver exists to apply.
+
+    The same reasoning as ``_allowed_config_versions``, which raises on an
+    unreadable users table: the resolver and the environment variables that
+    configure it are one CloudFormation resource deployed together, so an unset
+    one is a template fault, and reading a template fault as "no restrictions" is
+    how the fault becomes the vulnerability. ``queue_sender`` is the deliberate
+    opposite and fails open, because it handles an S3 event with no caller to
+    scope — there is nothing there for a refusal to protect.
     """
     table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
     if not table_name:
-        return None
+        logger.error(
+            "CONFIGURATION_TABLE_NAME is not set; refusing uploads rather than "
+            "resolving a destination whose configuration scope cannot be checked. "
+            "This is a deployment fault — the template wires it unconditionally."
+        )
+        raise PermissionError(
+            "Unauthorized: uploads are not configured for this deployment."
+        )
     return ConfigurationManager(table_name=table_name)
 
 
@@ -275,9 +290,7 @@ def resolve_destination(
         metadata_profile=version,
         metadata_revision=revision,
         mappings=_prefix_mappings() if mappings is None else mappings,
-        active_profile=(
-            manager.resolve_active_version if manager is not None else None
-        ),
+        active_profile=manager.resolve_active_version,
         published_revision=_published_revision(manager, revision_cache),
         profile_exists=_profile_exists(manager, exists_cache),
         # `allowed` is empty for an unscoped caller, which `scope_allows` reads as
@@ -360,12 +373,18 @@ def _handle_upload_document(event):
         # Sanitize file name to avoid URL encoding issues
         sanitized_file_name = file_name.replace(" ", "_")
 
-        # Build the object key - only use prefix if provided. The prefix is
-        # canonicalized first: S3 accepts `finance/x.pdf`, `/finance/x.pdf` and
-        # `finance//x.pdf` as three DISTINCT keys, and a prefix mapping on
-        # `finance/` matches only the first. Without this, adding one character to
-        # the prefix would bypass a mapping — including one in `reject` conflict
-        # mode. uploadSampleDocument has always stripped slashes; this one had not.
+        # Build the object key - only use prefix if provided, canonicalizing the
+        # prefix so the key this POST is signed for is the same form everything
+        # downstream reports.
+        #
+        # This is NOT what stops a non-canonical prefix evading a mapping:
+        # `find_match` canonicalizes the object key itself, so `/finance/x.pdf`
+        # resolves to the same mapping as `finance/x.pdf` whatever this site does,
+        # and a `reject` mapping fires either way. What it buys is that the object
+        # lands at the canonical key rather than at a near-duplicate differing only
+        # in slashes — so the document's key, the `ConfigMappingPrefix` recorded
+        # against it and what an operator sees in the bucket all agree, and a
+        # re-upload of "the same" path cannot silently become a second object.
         prefix = canonical_key(prefix or "").rstrip("/")
         if prefix:
             object_key = f"{prefix}/{sanitized_file_name}"
@@ -501,7 +520,11 @@ def _handle_upload_sample_document(event):
 
         arguments = event.get("arguments", {})
         sample_id = arguments.get("sampleId")
-        prefix = (arguments.get("prefix") or "").strip("/")
+        # Same canonicalization as uploadDocument, so the two paths really are
+        # bounded alike rather than only commented as such: `canonical_key` does
+        # more than strip slashes (it drops `.` segments and collapses repeats),
+        # and a future change to it would otherwise silently split the two.
+        prefix = canonical_key(arguments.get("prefix") or "").rstrip("/")
         version = arguments.get("version")
         revision = arguments.get("revision")
         if not sample_id:
