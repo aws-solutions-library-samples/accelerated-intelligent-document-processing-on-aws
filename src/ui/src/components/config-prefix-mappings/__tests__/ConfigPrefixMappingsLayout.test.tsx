@@ -12,12 +12,12 @@
  *
  * What is pinned here:
  *
- * - **The page issues one list request.** The effect that loads the mappings
- *   used to also call `fetchVersions`, which is a plain arrow function rather
- *   than a `useCallback`, and list it as a dependency. Each render produced a
- *   new identity, which re-fired the effect, which set state — continuous
- *   requests for as long as an Admin left the tab open, with the table never
- *   leaving `loading`.
+ * - **The page issues one list request.** The mount effect must not depend on
+ *   `fetchVersions`: it is a plain arrow function rather than a `useCallback`, so
+ *   each render gives it a new identity, which re-fires the effect, which sets
+ *   state — continuous requests for as long as an Admin leaves the tab open,
+ *   with the table never leaving `loading`. `useConfigurationVersions` already
+ *   fetches on its own mount, so the page does not need to ask.
  * - **Opening the edit modal preserves the pinned revision.** The revision
  *   selector resets its value when the profile changes, and populating the form
  *   looked like a profile change. Since `putConfigPrefixMapping` is a full

@@ -17,7 +17,7 @@
   "tolerancePct": 1.0,
   "trees": {
     "idp_common": {
-      "total": 83.37,
+      "total": 83.59,
       "files": {
         "idp_common/__init__.py": 100.0,
         "idp_common/agents/__init__.py": 44.44,
@@ -247,7 +247,7 @@
         "idp_common/utils/strands_agent_tools/__init__.py": 100.0,
         "idp_common/utils/strands_agent_tools/todo_list.py": 32.35,
         "idp_common/utils/transient_errors.py": 100.0,
-        "idp_common/config/prefix_mappings.py": 63.91
+        "idp_common/config/prefix_mappings.py": 98.73
       }
     },
     "scripts": {

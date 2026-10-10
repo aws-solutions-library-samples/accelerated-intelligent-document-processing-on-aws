@@ -9,11 +9,11 @@ prefix mapping governs an S3 key. `canonicalKey` in
 upload panel can preview the key the upload will actually land on rather than the
 one the user typed.
 
-Nothing structural stops those two drifting, and a *partial* mirror has already
-caused the exact failure: stripping leading and trailing slashes but not interior
-repeats made a typed `acme//invoices` preview as unmapped while the upload landed
-on `acme/invoices/<file>` — so a `reject` mapping gave no warning and the user got
-a 400 at ingest. This is the same defect class
+Nothing structural stops those two drifting, and a *partial* mirror is worse than
+no mirror: one that strips leading and trailing slashes but not interior repeats
+previews a typed `acme//invoices` as unmapped while the upload lands on
+`acme/invoices/<file>`, which is governed — so under a `reject` mapping the user
+gets no warning and a 400 at ingest. This is the same defect class
 `test_resolver_log_sanitizer.py` and `test_s3_targets_vendored.py` exist for one
 layer down, and `test_prefix_mapping_call_sites.py` for one layer up.
 

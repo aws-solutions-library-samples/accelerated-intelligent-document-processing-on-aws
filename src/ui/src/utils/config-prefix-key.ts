@@ -9,11 +9,11 @@
  * the upload panel can ask "what would happen to this key?" about the key the
  * upload will actually land on, rather than about the one the user typed.
  *
- * ⚠️ **A partial mirror is worse than none**, and that is not hypothetical: an
- * earlier version stripped leading and trailing slashes but not interior repeats,
- * so a typed `acme//invoices` previewed as *unmapped* while the upload landed on
- * `acme/invoices/<file>` — governed by a mapping. Under a `reject` mapping the
- * user got no warning and a 400 at ingest.
+ * ⚠️ **A partial mirror is worse than none.** It must collapse interior repeats as
+ * well as leading and trailing slashes, and drop `.` segments. One that only
+ * strips the ends previews `acme//invoices` as *unmapped* while the upload lands
+ * on `acme/invoices/<file>`, which is governed — so under a `reject` mapping the
+ * user gets no warning and a 400 at ingest.
  *
  * The two implementations are pinned in step by a shared fixture table,
  * `__tests__/config-prefix-key.fixtures.json`, read by BOTH this module's vitest

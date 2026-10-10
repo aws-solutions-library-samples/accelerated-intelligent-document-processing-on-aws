@@ -327,6 +327,24 @@ def test_precedence_matrix(
 
 
 @pytest.mark.unit
+def test_an_internal_producer_with_no_profile_says_why_the_mapping_did_not_apply():
+    """The reason reaches an operator asking exactly that question.
+
+    `_active()`'s wording ("no prefix mapping matched") is false here: a mapping
+    may well match, and was deliberately not consulted.
+    """
+    assignment = _resolve(
+        "acme/x.pdf",
+        submission_source="test-studio",
+        mappings=[_mapping("acme/", "mapped")],
+    )
+    assert assignment.profile == "active"
+    assert "test-studio" in assignment.reason
+    assert "do not apply to internal submissions" in assignment.reason
+    assert "No prefix mapping matched" not in assignment.reason
+
+
+@pytest.mark.unit
 def test_an_agreeing_revision_is_not_a_conflict_either():
     """Profile AND revision must both agree, or `reject` fails correct SDK uploads."""
     mappings = [

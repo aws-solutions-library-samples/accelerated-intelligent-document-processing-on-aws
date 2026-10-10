@@ -621,7 +621,27 @@ def _decide(
                     f"apply to internal submissions."
                 ),
             )
-        return _active()
+        # An internal producer that named no profile still gets the active one --
+        # but NOT `_active()`'s reason, which says "no prefix mapping matched".
+        # Mappings were never consulted on this branch, so for a Test Studio or
+        # PII-anonymizer document landing under a mapped prefix that sentence
+        # asserts something false, and it is exactly what an operator reads when
+        # asking why the mapping did not apply.
+        fallback = _active()
+        return ConfigAssignment(
+            profile=fallback.profile,
+            revision=fallback.revision,
+            source=fallback.source,
+            reason=(
+                f"Submitted by {submission_source!r}, which named no profile. "
+                f"Prefix mappings do not apply to internal submissions, so the "
+                + (
+                    f"active profile {fallback.profile!r} was used."
+                    if fallback.profile
+                    else "default configuration was used."
+                )
+            ),
+        )
 
     match = find_match(object_key, entries)
 

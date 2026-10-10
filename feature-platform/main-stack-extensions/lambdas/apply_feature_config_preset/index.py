@@ -95,8 +95,20 @@ try:
 except ImportError:  # pragma: no cover - exercised only without the layer
 
     def sanitize_event_for_logging(event):
-        """Pass through, flagged, when the redactor is unavailable."""
-        return {"_redact_disabled": "idp_common unavailable", "keys": sorted(event)}
+        """Pass through, flagged, when the redactor is unavailable.
+
+        Never raises, matching the canonical module's own contract. The only
+        caller is `logger.info(sanitize_event_for_logging(event))`, and the only
+        path that reaches this fallback is the layerless one in a CUSTOM
+        RESOURCE -- so a TypeError on a non-dict event, or on a dict whose keys
+        do not sort against each other, would be the failed stack operation the
+        guard above exists to prevent.
+        """
+        try:
+            keys = sorted(event)
+        except TypeError:
+            keys = type(event).__name__
+        return {"_redact_disabled": "idp_common unavailable", "keys": keys}
 
 
 logger = logging.getLogger()

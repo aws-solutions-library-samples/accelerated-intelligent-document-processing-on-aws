@@ -534,10 +534,10 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
               />
             </FormField>
 
-            {/* The profile list comes from `useConfigurationVersions`, whose
-                `loading` and `error` were previously dropped on the floor: on a
-                failed fetch the dropdown was simply empty, with no status and no
-                reason, and Save could never enable because no profile could be
+            {/* The profile list comes from `useConfigurationVersions`, and its
+                `loading`/`error` are surfaced rather than dropped: without them a
+                failed fetch leaves the dropdown simply empty, with no status and
+                no reason, and Save can never enable because no profile can be
                 picked. */}
             <FormField
               label="Configuration Profile"

@@ -102,8 +102,9 @@ const UploadDocumentPanel = (): React.JSX.Element => {
    * When a file is chosen this is that file's **actual** destination key, which
    * is what makes the `exact` half of the feature previewable at all: an exact
    * mapping names one object key, and the literal `__probe__` placeholder can
-   * never equal one, so an exact mapping — including one in `reject` mode — gave
-   * no pre-flight warning whatsoever. The placeholder survives only as the
+   * never equal one — so probing the placeholder leaves an exact mapping,
+   * including one in `reject` mode, with no pre-flight warning at all. The
+   * placeholder is therefore only the
    * fallback for "no file selected yet", where a prefix mapping still resolves
    * the same way for any filename.
    *
@@ -123,12 +124,12 @@ const UploadDocumentPanel = (): React.JSX.Element => {
    * depends on it — a mapping that agrees with the selection is not one.
    */
   useEffect(() => {
-    // Clear the old verdict NOW, not when the new one arrives. Holding the
-    // previous answer for the debounce window meant it was being shown about a
-    // key that is no longer the one being uploaded: correcting a prefix away
-    // from a `reject` mapping kept the error and the disabled button for up to a
-    // second, and typing *into* one left the button enabled, so a click in that
-    // window started an upload the server was always going to refuse.
+    // Clear the old verdict NOW, not when the new one arrives. Held across the
+    // debounce window it is an answer about a key that is no longer the one
+    // being uploaded: correcting a prefix away from a `reject` mapping would keep
+    // the error and the disabled button for up to a second, and typing *into* one
+    // would leave the button enabled — so a click in that window starts an upload
+    // the server is always going to refuse.
     setAssignment(null);
     let cancelled = false;
     const timer = setTimeout(async () => {
@@ -388,13 +389,13 @@ const UploadDocumentPanel = (): React.JSX.Element => {
     if (!assignment) return null;
 
     // Checked BEFORE `mappingPrefix`, deliberately. An out-of-scope answer
-    // always carries `mappingPrefix: null` — the API does not name the mapping
-    // or the profile to a caller not entitled to see it, because doing so
-    // enumerated profile names — so that is the *normal* shape of this refusal
+    // always carries `mappingPrefix: null` — the API names neither the mapping
+    // nor the profile to a caller not entitled to see them, because that would
+    // enumerate profile names — so that is the *normal* shape of this refusal
     // rather than an edge case. `uploadWouldBeRefused` reads `outOfScope`
     // regardless and disables the button, so gating the notice on
-    // `mappingPrefix` produced a dead-end form: no explanation, no way forward.
-    // The `reason` names nothing privileged.
+    // `mappingPrefix` would leave a dead-end form: no explanation, no way
+    // forward. The `reason` names nothing privileged.
     if (assignment.outOfScope) {
       return (
         <Alert type="error" header="You cannot upload to this folder">
