@@ -66,7 +66,15 @@ def store():
 
 @pytest.fixture
 def manager(monkeypatch, store):
-    fake = MagicMock()
+    # spec'd against the REAL ConfigurationManager, not a bare MagicMock. A bare
+    # mock accepts any attribute with any signature, so it cannot see a call that
+    # would raise on a live stack -- which is how
+    # `get_raw_configuration(profile)` shipped past these tests when the real
+    # method takes `(config_type, version)`. `spec=` makes a wrong name or a wrong
+    # arity a test failure here instead of a 500 in the deployed resolver.
+    from idp_common.config.configuration_manager import ConfigurationManager
+
+    fake = MagicMock(spec=ConfigurationManager)
     # A profile that exists, with a retained revision and a published one.
     fake.get_raw_configuration.return_value = {"notes": "exists"}
     fake.get_revision.return_value = {"notes": "a revision body"}
@@ -76,6 +84,11 @@ def manager(monkeypatch, store):
     # A MagicMock attribute is truthy, so without this every deleteConfigVersion
     # test stops at the stack-managed guard before reaching the one under test.
     fake.get_configuration.return_value.managed = False
+    # `table` is set in __init__, so a class-level spec does not carry it. The
+    # default is a profile head that EXISTS, since most cases need the put to
+    # proceed past the existence probe.
+    fake.table = MagicMock()
+    fake.table.get_item.return_value = {"Item": {"Configuration": "Config#lending"}}
     monkeypatch.setattr(index, "ConfigurationManager", lambda *a, **k: fake)
     monkeypatch.setattr(index, "_prefix_mapping_store", lambda _m: store)
     monkeypatch.setattr(
@@ -213,7 +226,9 @@ def test_put_refuses_an_unusable_prefix(manager, store, prefix):
 def test_put_refuses_a_profile_that_does_not_exist(manager, store):
     """Refusing here beats discovering it at ingest, where the operator who notices
     is not the one who made the typo."""
-    manager.get_raw_configuration.return_value = None
+    # The probe is a projected GetItem on the profile head, so "absent" is an
+    # empty response rather than a None configuration.
+    manager.table.get_item.return_value = {}
     result = index.handler(
         _event(
             "putConfigPrefixMapping",

@@ -1481,7 +1481,7 @@ def handle_put_prefix_mapping(manager, args, actor):
         }
 
     try:
-        if manager.get_raw_configuration(profile) is None:
+        if not _profile_head_exists(manager, profile):
             return {
                 "success": False,
                 "error": {
