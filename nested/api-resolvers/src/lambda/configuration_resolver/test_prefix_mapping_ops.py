@@ -127,8 +127,8 @@ def test_mapping_crud_is_admin_only(manager, field, args, group):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("group", ["Admin", "Author", "Viewer"])
-def test_the_dry_run_is_readable_by_anyone_who_can_upload_or_review(manager, group):
+@pytest.mark.parametrize("group", ["Admin", "Author"])
+def test_the_dry_run_is_readable_by_the_roles_that_can_upload(manager, group):
     result = index.handler(
         _event(
             "resolveConfigPrefixMapping",
@@ -141,7 +141,7 @@ def test_the_dry_run_is_readable_by_anyone_who_can_upload_or_review(manager, gro
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("group", ["Reviewer", "Annotator"])
+@pytest.mark.parametrize("group", ["Viewer", "Reviewer", "Annotator"])
 def test_the_dry_run_is_refused_to_roles_that_cannot_upload(manager, group):
     with pytest.raises(Exception, match="Unauthorized"):
         index.handler(
@@ -434,8 +434,8 @@ def test_the_dry_run_does_not_name_a_profile_outside_the_callers_scope(
         _event(
             "resolveConfigPrefixMapping",
             {"objectKey": "finance/x.pdf"},
-            groups=("Viewer",),
-            email="viewer@example.com",
+            groups=("Author",),
+            email="author@example.com",
         ),
         None,
     )
@@ -491,8 +491,8 @@ def test_no_branch_of_the_dry_run_names_an_out_of_scope_profile(
         _event(
             "resolveConfigPrefixMapping",
             {"objectKey": "finance/x.pdf", "metadataProfile": metadata_profile},
-            groups=("Viewer",),
-            email="viewer@example.com",
+            groups=("Author",),
+            email="author@example.com",
         ),
         None,
     )
