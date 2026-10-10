@@ -324,6 +324,11 @@ def _version_for_document(
         allowed_profiles=list(allowed_versions) if allowed_versions else None,
     )
     if assignment.unresolvable:
+        # Logged as well as emitted, with the same marker queue_sender uses. The
+        # alarm description sends an operator looking for this string, and the
+        # metric has two emitters -- an alarm fired by a reprocess with no log
+        # line on this path sends them to the wrong Lambda.
+        logger.warning("Stale prefix mapping for %s: %s", object_key, assignment.reason)
         _emit("PrefixMappingUnresolvable")
     if assignment.scope_denied or not assignment.mapping_prefix:
         if assignment.scope_denied:

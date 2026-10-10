@@ -639,18 +639,32 @@ def test_the_mapping_count_is_capped_at_write_time():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "prefix,fragment",
+    "prefix",
     [
-        ("a" * 1025 + "/", "1024 bytes"),
-        ("\u00e9" * 600 + "/", "1024 bytes"),  # bytes, not characters
+        "a" * 513 + "/",
+        "\u00e9" * 300 + "/",  # bytes, not characters
     ],
 )
-def test_an_over_long_prefix_is_refused(prefix, fragment):
-    """MAX_MAPPINGS bounds the entry COUNT; without a length bound the 400 KB item
-    limit it exists to protect is still reachable, and the overflow lands on the
-    ingest read rather than on the admin write that caused it."""
+def test_an_over_long_prefix_is_refused(prefix):
+    """MAX_MAPPINGS bounds the entry COUNT only.
+
+    Every per-entry field needs a length limit as well, or the item-size
+    arithmetic does not close -- and what going over costs is an opaque
+    ValidationException on the admin write, so each bound is refused individually
+    with a message naming it.
+    """
     reason = prefix_rejection_reason(prefix)
-    assert reason and fragment in reason
+    assert reason and "512 bytes" in reason
+
+
+@pytest.mark.unit
+@mock_aws
+def test_an_over_long_actor_is_truncated_rather_than_refused():
+    """An actor string comes from the caller's token, not from something they
+    typed, so refusing their write over its length would be unactionable."""
+    store = PrefixMappingStore(_make_table())
+    store.put("acme/", "lending", actor="a" * 400)
+    assert len(store.get("acme/")["createdBy"]) == 256
 
 
 @pytest.mark.unit
@@ -672,16 +686,20 @@ def test_the_cap_and_the_length_bounds_together_hold_the_item_limit():
     """
     entries = [
         {
-            "prefix": ("p" * 1000 + f"{n:04d}" + "/"),
+            # Every field at its maximum, INCLUDING the two actor strings -- they
+            # are a token claim rather than typed input, so they are truncated
+            # rather than refused, and leaving them unbounded is what put this
+            # sum over the limit.
+            "prefix": ("p" * 508 + f"{n:04d}" + "/"),
             "configProfile": "q" * 128,
             "configRevision": 999999,
             "metadataPrecedence": "reject",
             "enabled": True,
             "description": "D" * 500,
             "createdAt": "2026-10-10T00:00:00.000000Z",
-            "createdBy": "an.administrator@example.com",
+            "createdBy": "a" * 256,
             "updatedAt": "2026-10-10T00:00:00.000000Z",
-            "updatedBy": "an.administrator@example.com",
+            "updatedBy": "b" * 256,
         }
         for n in range(MAX_MAPPINGS)
     ]

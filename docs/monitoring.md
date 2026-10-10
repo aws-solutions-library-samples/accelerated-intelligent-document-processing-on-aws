@@ -226,8 +226,7 @@ scratch.
 A [config prefix mapping](configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
 assigns a Configuration Profile to everything arriving under an S3 prefix. Because
 that decision happens at ingest and is then invisible in the document's own result,
-it is instrumented: five metrics in the stack's own namespace (`<StackName>`),
-published by the queue sender.
+it is instrumented: five metrics in the stack's own namespace (`<StackName>`). Three of them have **two emitters** — the queue sender on upload ingest and the reprocess resolver on a re-run — publishing into the same namespace with the same dimension schema, so one alarm covers both paths; `PrefixMappingRejected` and `PrefixMappingConflict` are ingest-only, because a reprocess carries no upload metadata to conflict with.
 
 | Metric | Published when | Dimensions |
 |---|---|---|

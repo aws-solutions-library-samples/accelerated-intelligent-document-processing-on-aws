@@ -57,11 +57,13 @@ are load-bearing:
 nothing bounds this one, and a ``ValidationException`` at entry 201 would be an
 **ingest-path outage**, because the aggregate item is what ingest reads.
 
-The count alone does not establish that bound, so ``prefix`` and ``configProfile``
-are length-bounded too (``_MAX_PREFIX_LEN``, ``_MAX_PROFILE_LEN``) and
-``description`` is truncated. Without those, 200 entries carrying 1 KB S3 key
-prefixes exceed 400 KB on their own — and the overflow lands on the ingest *read*
-rather than on the admin write that caused it.
+The count alone does not establish that bound, so every per-entry field has a
+length limit too — ``prefix``, ``configProfile``, ``description`` and the two
+actor strings — and the constants carry the arithmetic. What going over costs is
+an opaque ``ValidationException`` on the *admin write* (DynamoDB refuses an
+oversized ``update_item``, so the item never becomes unreadable and ingest is
+unaffected), which is why each bound is refused individually with a message
+naming it rather than left to surface as "Failed to save mapping".
 
 Matching
 --------
@@ -174,18 +176,32 @@ MAX_MAPPINGS = 200
 
 _MAX_DESCRIPTION_LEN = 500
 
-# Length bounds that make MAX_MAPPINGS actually establish the 400 KB item bound it
-# is there for. A count alone does not: S3 keys run to 1024 bytes and a profile
-# name is only shape-validated, so 200 entries of unbounded prefix and profile
-# exceed DynamoDB's item limit comfortably — and that overflow lands on the INGEST
-# read, not on the admin write that caused it.
+# Length bounds, so that MAX_MAPPINGS together with them actually closes the
+# arithmetic against DynamoDB's 400 KB item limit. A count alone does not, and
+# neither do these three alone: the per-entry worst case is
 #
-# Refusing a long prefix costs nothing real: a prefix longer than the longest key
-# S3 will accept cannot match any object, so it was already inert. The profile
-# bound is the same character class `revisions.py` restricts a profile name to,
-# at a length no profile approaches.
-_MAX_PREFIX_LEN = 1024
+#   prefix 512 + profile 128 + description 500 + 2 timestamps (54)
+#   + 2 actor strings (2 x 256) + ~114 bytes of attribute names  ~= 1.8 KB
+#
+# which at MAX_MAPPINGS is ~368 KB — inside the limit with room, where a 1024-byte
+# prefix and unbounded actor strings put it at ~480 KB, i.e. over.
+# `test_the_cap_and_the_length_bounds_together_hold_the_item_limit` measures the
+# real serialization rather than trusting this sum.
+#
+# What going over would actually cost: DynamoDB refuses an `update_item` that
+# would exceed 400 KB, so the item never becomes unreadable and ingest is not
+# affected. The consequence is that an admin near the ceiling gets `put`'s generic
+# "Failed to save mapping" wrapping an opaque ValidationException, with no
+# indication that a length is the problem — which is why each bound is refused
+# individually, with a message naming it.
+#
+# Refusing a long prefix costs nothing real: a prefix longer than any key it could
+# match is already inert, and 512 bytes of S3 key prefix is far past any real
+# layout. The actor bound is well past the longest email address RFC 5321 permits
+# (320).
+_MAX_PREFIX_LEN = 512
 _MAX_PROFILE_LEN = 128
+_MAX_ACTOR_LEN = 256
 
 # What a mapping does when the object also carries conflicting upload metadata.
 #
@@ -342,9 +358,16 @@ def normalize_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         "description": (str(entry.get("description") or ""))[:_MAX_DESCRIPTION_LEN]
         or None,
         "createdAt": entry.get("createdAt"),
-        "createdBy": entry.get("createdBy"),
+        # Truncated, not refused: an actor string is a claim from the caller's
+        # token rather than something they typed, so refusing their write over its
+        # length would be unactionable. It is bounded because it is the one
+        # per-entry field with no other limit, and MAX_MAPPINGS' item-size
+        # arithmetic depends on every field having one.
+        "createdBy": (str(entry.get("createdBy") or "") or None)
+        and str(entry["createdBy"])[:_MAX_ACTOR_LEN],
         "updatedAt": entry.get("updatedAt"),
-        "updatedBy": entry.get("updatedBy"),
+        "updatedBy": (str(entry.get("updatedBy") or "") or None)
+        and str(entry["updatedBy"])[:_MAX_ACTOR_LEN],
     }
 
 
