@@ -487,7 +487,14 @@ def resolve_config_assignment(
     # is the oracle `getConfigVersions` is scope-filtered to prevent, so the
     # subject of the check is "any profile this answer would disclose", not "the
     # profile this answer selected".
-    matched = find_match(object_key, mappings or [])
+    # Not computed for an internal producer: `_decide` does not consult mappings at
+    # all on that branch (rule 1), so a mapping that does not govern the document
+    # must not be able to deny it. Unreachable today -- the only caller passing
+    # `submission_source` passes no scope -- but a fifth passing both would get an
+    # internal submission refused by a mapping it had explicitly bypassed, which
+    # contradicts this module's own precedence contract. Also skips a sort of up to
+    # MAX_MAPPINGS entries on a per-document path.
+    matched = None if submission_source else find_match(object_key, mappings or [])
     disclosed = [
         p
         for p in (assignment.profile, matched["configProfile"] if matched else None)

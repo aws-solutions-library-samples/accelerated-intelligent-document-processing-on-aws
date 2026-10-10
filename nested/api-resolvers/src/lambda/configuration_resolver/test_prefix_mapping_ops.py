@@ -11,14 +11,22 @@ The properties under test:
   prefix. A missing schema directive must not make it reachable.
 - **A mapping that could never resolve is refused at write time.** Discovering a
   typo at ingest means the operator who notices is not the one who made it.
-- **A pinned revision is protected from retention before the mapping exists.**
-  `prune()` spares the published, labelled and test-run-pinned revisions and
-  nothing else, so a revision-pinned mapping is a fourth referent it does not know
-  about. If the pin cannot be taken, the mapping is not created — otherwise the
-  body stays prunable and the mapping is a time bomb.
+- **A pinned revision is protected from retention, and the pin is taken AFTER the
+  mapping is written.** `prune()` spares the published, labelled and
+  test-run-pinned revisions and nothing else, so a revision-pinned mapping is a
+  fourth referent it does not know about. `PrefixMappingStore.delete` never
+  unpins — a test run may have pinned the same revision and nothing records which
+  referent asked — so a pin taken *before* a put that then fails is permanent,
+  with no mapping referencing it and nothing that can ever release it. Pinning
+  second makes the only possible failure the recoverable one: the mapping is
+  saved and the admin is told the revision is unprotected.
 - **The dry run does not leak profile names.** It is the one prefix-mapping
-  operation a non-Admin may call, so a scoped caller outside the resolved
-  profile's scope learns that the destination is out of scope and nothing else.
+  operation a non-Admin may call, and the filter is over *every profile the
+  answer could disclose* rather than the one it selected — a rejection resolves
+  to no profile while naming the mapped one, and metadata precedence resolves to
+  the caller's own while explaining it beat the mapping's. An out-of-scope caller
+  learns that the destination is out of scope and nothing else, not even the
+  mapping prefix.
 """
 
 import importlib.util

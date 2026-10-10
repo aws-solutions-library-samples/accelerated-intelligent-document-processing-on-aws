@@ -29,6 +29,7 @@ import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import useSampleDocuments, { type SampleDocument } from '../../hooks/use-sample-documents';
 import useConfigurationLibrary from '../../hooks/use-configuration-library';
 import useConfigPrefixMappings, { type ConfigAssignmentPreview } from '../../hooks/use-config-prefix-mappings';
+import { canonicalKey, sanitizeFileName } from '../../utils/config-prefix-key';
 
 import useSettingsContext from '../../contexts/settings';
 import { SUPPORTED_UPLOAD_EXTENSIONS } from '../common/constants';
@@ -48,35 +49,6 @@ type UploadSource = 'local' | 'sample';
 // under. Samples currently only ship for the unified architecture, so this is
 // always 'unified'; kept as a helper to mirror ConfigurationLayout's mapping.
 const SAMPLE_CONFIG_PATTERN_DIR = 'unified';
-
-/**
- * The form of an S3 key that prefix-mapping resolution is defined against.
- *
- * A mirror of `canonical_key` in
- * `lib/idp_common_pkg/idp_common/config/prefix_mappings.py`, and it has to be
- * the whole mirror rather than a leading/trailing slash trim. S3 accepts
- * `acme/invoices/x.pdf`, `/acme/invoices/x.pdf` and `acme//invoices/x.pdf` as
- * three *distinct* keys, and a mapping on `acme/invoices/` matches only the
- * first — but `upload_resolver` canonicalizes the prefix before building the
- * key, so the upload lands on the first whatever was typed. A probe that only
- * trimmed the outer slashes therefore asked about an unmapped key while the
- * upload went to a mapped one: a typed `acme//invoices` gave no warning here and
- * a 400 at ingest from a `reject` mapping.
- *
- * Trailing slashes are preserved, because the trailing slash is the
- * prefix/exact mode selector. `.` segments go, like the server's.
- */
-const canonicalKey = (key: string): string => {
-  const trailing = key.endsWith('/');
-  const canonical = key
-    .split('/')
-    .filter((segment) => segment && segment !== '.')
-    .join('/');
-  return trailing && canonical ? `${canonical}/` : canonical;
-};
-
-/** Mirrors `upload_resolver`'s only filename rewrite, so the probe key is the real one. */
-const sanitizeFileName = (name: string): string => name.replace(/ /g, '_');
 
 const UploadDocumentPanel = (): React.JSX.Element => {
   const { settings } = useSettingsContext();

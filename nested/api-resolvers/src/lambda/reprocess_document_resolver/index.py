@@ -127,13 +127,10 @@ def _caller_scope_or_deny(caller):
     if caller["is_admin"]:
         return None
     try:
-        return _get_user_allowed_config_versions(
-            caller["email"], caller.get("sub", "")
-        )
+        return _get_user_allowed_config_versions(caller["email"], caller.get("sub", ""))
     except ScopeLookupError as e:
         logger.error(
-            "Denying reprocessDocument: config-version scope could not be "
-            "resolved: %s",
+            "Denying reprocessDocument: config-version scope could not be resolved: %s",
             e,
         )
         raise PermissionError(
@@ -214,19 +211,31 @@ def _prefix_mappings():
         return []
 
 
-def _emit(metric_name):
+def _emit(metric_name, dimensions=None):
     """Fire-and-forget telemetry, into the ROOT stack's namespace.
 
     The reprocess path sends straight to the document queue, so ``queue_sender``
-    never runs for it and the three prefix-mapping alarms would otherwise cover one
-    entry point of two — the same reason ``StaleOutputPurgeFailed`` has two emitters.
-    Both publish dimensionless into ``METRIC_NAMESPACE``, so one alarm covers both.
+    never runs for it and the prefix-mapping alarms would otherwise cover one entry
+    point of two — the same reason ``StaleOutputPurgeFailed`` has two emitters.
+
+    ⚠️ **The dimension schema has to match ``queue_sender``'s, not merely the
+    namespace.** A dimensionless datum is a *different metric* from one carrying
+    ``Prefix``, so the dashboard's ``SEARCH('{<ns>,Prefix} …')`` filter does not
+    match it and a reprocess that picked up a mapping would never appear on the
+    graph — covering one entry point of two, which is the asymmetry this function
+    exists to prevent. The alarms are unaffected either way (none is on
+    ``PrefixMappingApplied``), so the graph is the thing to get right here.
+    Truncated to CloudWatch's 255-character dimension-value limit, as S3 keys
+    exceed it and ``put_metric_data`` would raise.
     """
     try:
-        cloudwatch.put_metric_data(
-            Namespace=METRIC_NAMESPACE,
-            MetricData=[{"MetricName": metric_name, "Value": 1, "Unit": "Count"}],
-        )
+        datum = {"MetricName": metric_name, "Value": 1, "Unit": "Count"}
+        if dimensions:
+            datum["Dimensions"] = [
+                {"Name": name, "Value": str(value)[:255]}
+                for name, value in dimensions.items()
+            ]
+        cloudwatch.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=[datum])
     except Exception:
         pass  # telemetry must not affect a reprocess
 
@@ -326,7 +335,7 @@ def _version_for_document(
         return None, requested_revision, None, None
 
     logger.info("Reprocess of %s: %s", object_key, assignment.reason)
-    _emit("PrefixMappingApplied")
+    _emit("PrefixMappingApplied", {"Prefix": assignment.mapping_prefix})
     # Both, or neither: the mapping's revision, never the caller's.
     return (
         assignment.profile,
@@ -343,6 +352,7 @@ def _profile_head_exists(manager, profile):
         ProjectionExpression="Configuration",
     ).get("Item")
     return bool(item)
+
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
