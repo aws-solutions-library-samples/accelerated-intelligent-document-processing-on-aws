@@ -411,8 +411,7 @@
     ],
     "resolveConfigPrefixMapping": [
       "Admin",
-      "Author",
-      "Viewer"
+      "Author"
     ],
     "restoreConfigProfileRevision": [
       "Admin",

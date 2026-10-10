@@ -2174,7 +2174,7 @@ type Query @aws_cognito_user_pools @aws_iam {
     metadataProfile: String
     metadataRevision: Int
   ): ConfigAssignmentPreviewResponse
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
 
   getPricing: PricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])

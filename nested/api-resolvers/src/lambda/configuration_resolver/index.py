@@ -139,7 +139,7 @@ _OPERATION_REQUIRED_GROUPS = {
     # would otherwise be a profile-name enumeration oracle for a scoped caller, and
     # profile names are access-controlled (getConfigVersions is scope-filtered for
     # exactly this reason). See handle_resolve_prefix_mapping.
-    "resolveConfigPrefixMapping": {"Admin", "Author", "Viewer"},
+    "resolveConfigPrefixMapping": {"Admin", "Author"},
     "getPricing": {"Admin", "Author", "Viewer"},
     "getModelConfigLimits": {"Admin", "Author", "Viewer"},
     "listConfigurationLibrary": {"Admin", "Author", "Viewer"},

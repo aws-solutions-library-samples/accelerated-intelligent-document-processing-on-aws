@@ -800,7 +800,7 @@ If you have existing configurations from before this feature:
 | `listConfigProfileRevisions` | `profileName: String!` | Returns the profile's revision history, newest first |
 | `getConfigProfileRevision` | `profileName: String!`, `revision: Int!` | Returns the full configuration recorded in one revision |
 | `listConfigPrefixMappings` | *(none)* | Every prefix mapping, most-specific first. **Admin only**, and deliberately *not* scope-filtered: a partially-hidden view of a longest-prefix rule cannot tell you which mapping wins |
-| `resolveConfigPrefixMapping` | `objectKey: String!`, `metadataProfile: String`, `metadataRevision: Int` | Dry run — which profile and revision a key would process under, which mapping matched, and why. The two metadata arguments declare what the caller intends to send, since there is no object yet to read metadata from. Admin, Author, Viewer, and **scope-filtered**: an out-of-scope destination returns `outOfScope: true` with every naming field null, including `mappingPrefix` |
+| `resolveConfigPrefixMapping` | `objectKey: String!`, `metadataProfile: String`, `metadataRevision: Int` | Dry run — which profile and revision a key would process under, which mapping matched, and why. The two metadata arguments declare what the caller intends to send, since there is no object yet to read metadata from. Admin and Author (the dry run serves the upload form, and a Viewer cannot upload), and **scope-filtered**: an out-of-scope destination returns `outOfScope: true` with every naming field null, including `mappingPrefix` |
 
 ### Mutations
 

@@ -703,3 +703,25 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
 
         with pytest.raises(PermissionError):
             index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))
+
+    def test_a_scoped_caller_is_refused_when_nothing_is_activated(self, resolver):
+        """The second upgrade-visible 403, and the one that is not an attack.
+
+        `resolve_active_version` answers `default` on a stack where no profile has
+        been activated, and `default` is outside a scoped caller's scope -- so a
+        plain upload with no profile selected is refused. That is the right
+        boundary (a document under a profile they cannot see is one they cannot
+        find again), which is why the message has to say what to do instead.
+        """
+        index, _ = resolver
+        self._activate("default")
+        self._scope(index, "teamA")
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))
+
+        message = str(excinfo.value)
+        assert "Select a Configuration Profile" in message
+        # Still names neither the refused profile nor the caller's scope.
+        assert "default" not in message
+        assert "teamA" not in message

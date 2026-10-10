@@ -470,7 +470,15 @@ operations:
     enforced_in: *cfg
     args: { prefix: "__nope__/" }
   resolveConfigPrefixMapping:
-    groups: [Admin, Author, Viewer]
+    # Admin+Author, NOT Viewer. The dry run exists to serve the upload form, and
+    # Author is the lowest role that can upload at all -- a Viewer has no Upload
+    # entry in the navigation, so the grant would have no consumer while still
+    # disclosing routing policy. That matters because the scope filter only
+    # engages for a caller who HAS a scope: an unscoped Viewer would get the
+    # profile, the prefix and the reason in full, and could enumerate the mapping
+    # set one probed key at a time -- reconstructing exactly what makes
+    # listConfigPrefixMappings Admin-only.
+    groups: [Admin, Author]
     kind: read
     # scope_FILTERED, not scope_checked: this operation returns 200 with every
     # naming field nulled for an out-of-scope destination, and never 403s. The two

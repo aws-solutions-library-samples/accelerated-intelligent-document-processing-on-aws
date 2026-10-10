@@ -309,9 +309,20 @@ def resolve_destination(
         # names are themselves access-controlled (getConfigVersions is
         # scope-filtered for exactly this reason). The detail goes to the log for
         # whoever triages it.
+        # Names neither the profile nor the scope -- a 403 reporting which profile
+        # it refused is a profile-name enumeration oracle -- but it does say what
+        # to do, because the commonest way to reach this is not an attack.
+        #
+        # ⚠️ A scoped caller uploading with NO profile selected lands here on a
+        # stack where nothing has been activated: `resolve_active_version` answers
+        # `default` in that case, and `default` is outside their scope. Refusing is
+        # right (a document under a profile they cannot see is one they cannot find
+        # again), and selecting a profile is the remedy -- so the message has to
+        # carry it, since the detail that would explain it cannot be disclosed.
         raise PermissionError(
             "Unauthorized: that destination is governed by a Configuration Profile "
-            "outside your allowed configuration scope."
+            "outside your allowed configuration scope. Select a Configuration "
+            "Profile you have access to, or upload to a different folder."
         )
     if assignment.rejected:
         raise ValueError(assignment.reason)

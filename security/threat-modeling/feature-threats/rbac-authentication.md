@@ -73,7 +73,7 @@ Authorization is enforced at multiple layers:
 > `ddb_direct`; the distinct union is 123, matching
 > `scripts/api_rbac_expectations.yaml` entry for entry. `ddb_direct` is the one place
 > the dispatcher itself enforces groups, via its own `_REQUIRED_GROUPS` table.
-> Across all 123: 24 require `Admin`; 41 `Admin`+`Author`; 16
+> Across all 123: 24 require `Admin`; 42 `Admin`+`Author`; 15
 > `Admin`+`Author`+`Viewer`; 7 `Admin`+`Author`+`Annotator`; 4
 > `Admin`+`Reviewer`+`Annotator`; 2 `Admin`+`Reviewer`; 1
 > `Admin`+`Author`+`Annotator`+`Viewer` (every group except `Reviewer`);

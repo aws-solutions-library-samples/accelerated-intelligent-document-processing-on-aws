@@ -256,6 +256,7 @@ def _version_for_document(
     allowed_versions=None,
     mappings=None,
     manager=None,
+    seam_cache=None,
 ):
     """The configuration to reprocess one document under, and where it came from.
 
@@ -305,20 +306,13 @@ def _version_for_document(
     if not mappings:
         return None, requested_revision, None, None
 
+    seam_cache = {} if seam_cache is None else seam_cache
     assignment = resolve_config_assignment(
         object_key,
         mappings=mappings,
-        active_profile=(
-            manager.resolve_active_version if manager is not None else None
-        ),
-        published_revision=(
-            manager.resolve_published_revision if manager is not None else None
-        ),
-        profile_exists=(
-            (lambda profile: _profile_head_exists(manager, profile))
-            if manager is not None
-            else None
-        ),
+        active_profile=_memo_active(manager, seam_cache),
+        published_revision=_memo_published(manager, seam_cache),
+        profile_exists=_memo_exists(manager, seam_cache),
         # Scope is evaluated on the RESOLVED profile. For an unscoped caller
         # `allowed_versions` is empty, which `scope_allows` reads as unrestricted.
         allowed_profiles=list(allowed_versions) if allowed_versions else None,
@@ -357,6 +351,51 @@ def _profile_head_exists(manager, profile):
         ProjectionExpression="Configuration",
     ).get("Item")
     return bool(item)
+
+
+# The three resolver seams, memoized for one request. A batch reprocess of N
+# documents sharing one prefix would otherwise spend up to 3N DynamoDB reads whose
+# answers are identical, inside API Gateway's 29s integration ceiling -- which is
+# the shape that turns a constant factor into a timeout on a large batch. Same
+# treatment upload_resolver gives the same three seams.
+
+
+def _memo_active(manager, cache):
+    if manager is None:
+        return None
+
+    def active():
+        if "active" not in cache:
+            cache["active"] = manager.resolve_active_version()
+        return cache["active"]
+
+    return active
+
+
+def _memo_published(manager, cache):
+    if manager is None:
+        return None
+
+    def published(profile):
+        key = ("published", profile)
+        if key not in cache:
+            cache[key] = manager.resolve_published_revision(profile)
+        return cache[key]
+
+    return published
+
+
+def _memo_exists(manager, cache):
+    if manager is None:
+        return None
+
+    def exists(profile):
+        key = ("exists", profile)
+        if key not in cache:
+            cache[key] = _profile_head_exists(manager, profile)
+        return cache[key]
+
+    return exists
 
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
@@ -507,6 +546,7 @@ def handler(event, context):
         # path previously spent no reads here at all.
         mappings = _prefix_mappings()
         manager = _configuration_manager()
+        seam_cache: dict = {}
 
         # Process each document
         success_count = 0
@@ -525,6 +565,7 @@ def handler(event, context):
                     allowed_versions,
                     mappings=mappings,
                     manager=manager,
+                    seam_cache=seam_cache,
                 )
                 reprocess_document(
                     object_key,

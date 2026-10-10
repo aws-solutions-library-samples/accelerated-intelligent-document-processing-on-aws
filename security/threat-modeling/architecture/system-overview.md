@@ -290,10 +290,10 @@ union is 123, which is exactly the number of entries in
 
 | Required groups | Ops |
 |---|---|
-| Admin + Author | 41 |
+| Admin + Author | 42 |
 | Admin only | 24 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 18 |
-| Admin + Author + Viewer | 16 |
+| Admin + Author + Viewer | 15 |
 | Any authenticated user, group or no group (`ANY`) | 8 |
 | Admin + Annotator + Author | 7 |
 | Admin + Annotator + Reviewer | 4 |
