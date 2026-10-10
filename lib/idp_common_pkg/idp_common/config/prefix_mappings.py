@@ -754,7 +754,11 @@ def _decide(
         if agrees:
             # (4) Agreement is not a conflict. Without this, `reject` would fail every
             # document the SDK stamped correctly and the conflict metric would fire
-            # constantly on the harmless case.
+            # constantly on the harmless case. Agreement is judged on the EFFECTIVE
+            # revision on both sides, so an upload naming only a profile agrees with
+            # an unpinned mapping on that profile -- and conflicts with one pinned to
+            # anything other than what is published, which is the intended reading:
+            # that upload asked for the published body and the mapping says otherwise.
             assignment = _from_mapping(
                 False,
                 f"Prefix mapping {prefix!r} and the upload both specify profile "
@@ -774,9 +778,14 @@ def _decide(
                     + (f" r{mapped_revision}" if mapped_revision is not None else "")
                     + f", but it carries conflicting upload metadata naming "
                     f"{metadata_profile!r}"
+                    # The EFFECTIVE revision, not the raw one. Agreement above is
+                    # judged on the effective revision, so when the profiles match
+                    # the revisions must be what differ -- and interpolating a raw
+                    # `None` would print the same profile on both sides of a
+                    # conflict message with nothing to distinguish them.
                     + (
-                        f" r{metadata_revision}"
-                        if metadata_revision is not None
+                        f" r{metadata_effective_revision}"
+                        if metadata_effective_revision is not None
                         else ""
                     )
                     + ". That mapping is configured to refuse conflicting "

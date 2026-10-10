@@ -377,6 +377,30 @@ def test_an_unpinned_mapping_agrees_with_metadata_naming_the_published_revision(
     assert assignment.revision == 9
 
 
+@pytest.mark.unit
+def test_a_same_profile_rejection_names_both_effective_revisions():
+    """The reason has to show the operator what actually differs.
+
+    When the profiles match, the revisions are what conflict, and the upload's
+    revision may be implicit -- it named none and inherits the published one. The
+    reason interpolates the EFFECTIVE revision for that reason: interpolating the
+    raw value prints the same profile on both sides with nothing distinguishing
+    them, which reads as a bug in the resolver rather than a conflict to fix.
+    """
+    assignment = _resolve(
+        "acme/x.pdf",
+        metadata_profile="lending",
+        metadata_revision=None,
+        mappings=[
+            _mapping("acme/", "lending", configRevision=3, metadataPrecedence="reject")
+        ],
+        published_revision=lambda _p: 9,
+    )
+    assert assignment.rejected is True
+    assert "'lending' r3" in assignment.reason
+    assert "'lending' r9" in assignment.reason
+
+
 # ---------------------------------------------------------------------------
 # Revisions
 # ---------------------------------------------------------------------------

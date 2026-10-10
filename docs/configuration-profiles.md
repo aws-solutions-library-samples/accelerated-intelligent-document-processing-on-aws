@@ -544,8 +544,11 @@ Each mapping states what happens when the object carries upload metadata naming 
 | **Refuse the conflict** | The document is refused at ingest and recorded as **Failed**, with the reason shown on the document. For prefixes where processing under the wrong configuration is worse than not processing at all |
 
 Metadata that **agrees** with the mapping is not a conflict, so "Refuse the conflict"
-does not fail documents the SDK or the UI stamped with the same profile the mapping
-assigns.
+does not fail documents the SDK or the UI stamped with the configuration the mapping
+assigns. Agreement means the same profile **and the same effective revision** — an
+upload naming no revision is compared against the profile's published revision, so it
+agrees with an unpinned mapping and with one pinned to whatever is currently published,
+and conflicts with one pinned to an older revision.
 
 The web UI tells you what will happen before you upload: choose a prefix in the
 **Upload Documents** panel and it states which profile will apply, warns when your
@@ -601,7 +604,7 @@ writes to `<name>-<timestamp>/`, so a mapping on `my-batch/` matches nothing whi
 looking correct.
 
 The same dry run (`resolveConfigPrefixMapping`) backs the Upload Documents panel's
-preview, which an Author or a Viewer can reach, and there it is **scope-filtered**: for
+preview, which an Author can reach, and there it is **scope-filtered**: for
 a destination governed by a profile outside the caller's `allowedConfigVersions`, the
 answer says only that the destination is outside their allowed configuration scope. The
 profile name, the revision, the reason **and the mapping prefix** are all withheld.

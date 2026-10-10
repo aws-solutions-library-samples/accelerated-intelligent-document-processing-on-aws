@@ -132,7 +132,7 @@ _OPERATION_REQUIRED_GROUPS = {
     # getConfigVersion there is no reduced payload for it to receive.
     "listConfigProfileRevisions": {"Admin", "Author", "Viewer"},
     "getConfigProfileRevision": {"Admin", "Author", "Viewer"},
-    # The dry run. Readable by anyone who can upload or review, because it answers
+    # The dry run. Readable by the roles that can upload, because it answers
     # "what will happen to this key?" — the single most useful affordance here, and
     # the one that makes a longest-prefix rule checkable before it is live. It is
     # SCOPE-FILTERED rather than Admin-only: returning the profile a key resolves to
@@ -516,9 +516,9 @@ def handler(event, context):
             )
         elif operation == "resolveConfigPrefixMapping":
             # The one prefix-mapping operation a non-Admin can call, so its answer
-            # is scope-filtered rather than refused — a Viewer needs to know what
-            # will happen to a key without learning the names of profiles outside
-            # their scope.
+            # is scope-filtered rather than refused — a SCOPED Author needs to
+            # know what will happen to a key without learning the names of
+            # profiles outside their scope.
             return handle_resolve_prefix_mapping(
                 manager, event["arguments"], allowed_versions
             )
