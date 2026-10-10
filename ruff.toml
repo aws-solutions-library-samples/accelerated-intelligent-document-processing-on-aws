@@ -262,7 +262,6 @@ exclude = [
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
     "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
-    "nested/api-resolvers/src/lambda/upload_resolver/index.py",
     "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",

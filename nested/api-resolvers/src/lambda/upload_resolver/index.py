@@ -27,7 +27,9 @@ from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
-logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
+logging.getLogger("idp_common.bedrock.client").setLevel(
+    os.environ.get("BEDROCK_LOG_LEVEL", "INFO")
+)
 # Get LOG_LEVEL from environment variable with INFO as default
 
 # Two S3 clients: one for the presigned URLs handed to the browser, one for this
@@ -84,6 +86,7 @@ s3_client = boto3.client("s3", config=s3_config)
 # fails if a copy diverges.
 ALLOWED_BUCKETS = s3_targets.resolve_allowed_buckets()
 
+
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
 
@@ -97,6 +100,7 @@ def _caller_in_groups(event, allowed):
     if isinstance(groups, str):
         groups = [groups]
     return bool(set(allowed).intersection(groups))
+
 
 _dynamodb = boto3.resource("dynamodb")
 
@@ -151,31 +155,52 @@ def _allowed_config_versions(event):
         )
     except ScopeLookupError:
         logger.warning(
-            "Denying an upload: the caller's configuration scope could not be "
-            "evaluated"
+            "Denying an upload: the caller's configuration scope could not be evaluated"
         )
         raise PermissionError(
             "Unauthorized: your configuration scope could not be determined."
         )
 
 
-def _profile_exists(manager):
+def _profile_exists(manager, cache=None):
     """A callable answering "does this profile head item exist?", or ``None``.
 
     ``ProjectionExpression`` matters: a configuration body is tens to hundreds of KB
-    gzipped into the same item, and this is asked once per mapped upload.
+    gzipped into the same item.
+
+    ``cache`` memoizes the answer for one request. A batch sample expands to many
+    files and the whole loop runs inside API Gateway's 29s integration ceiling, so
+    without it the cost is two DynamoDB round trips per file for answers that
+    cannot change within the call.
     """
     if manager is None:
         return None
+    memo = {} if cache is None else cache
 
     def exists(profile):
-        item = manager.table.get_item(
-            Key={"Configuration": f"Config#{profile}"},
-            ProjectionExpression="Configuration",
-        ).get("Item")
-        return bool(item)
+        if profile not in memo:
+            item = manager.table.get_item(
+                Key={"Configuration": f"Config#{profile}"},
+                ProjectionExpression="Configuration",
+            ).get("Item")
+            memo[profile] = bool(item)
+        return memo[profile]
 
     return exists
+
+
+def _published_revision(manager, cache=None):
+    """``resolve_published_revision``, memoized for one request. See above."""
+    if manager is None:
+        return None
+    memo = {} if cache is None else cache
+
+    def published(profile):
+        if profile not in memo:
+            memo[profile] = manager.resolve_published_revision(profile)
+        return memo[profile]
+
+    return published
 
 
 def _configuration_manager():
@@ -191,7 +216,13 @@ def _configuration_manager():
 
 
 def resolve_destination(
-    event, object_key, version=None, revision=None, mappings=None
+    event,
+    object_key,
+    version=None,
+    revision=None,
+    mappings=None,
+    exists_cache=None,
+    revision_cache=None,
 ):
     """What configuration an upload to ``object_key`` would process under.
 
@@ -247,10 +278,8 @@ def resolve_destination(
         active_profile=(
             manager.resolve_active_version if manager is not None else None
         ),
-        published_revision=(
-            manager.resolve_published_revision if manager is not None else None
-        ),
-        profile_exists=_profile_exists(manager),
+        published_revision=_published_revision(manager, revision_cache),
+        profile_exists=_profile_exists(manager, exists_cache),
         # `allowed` is empty for an unscoped caller, which `scope_allows` reads as
         # unrestricted — so this adds no restriction to the common case.
         allowed_profiles=list(allowed) if allowed else None,
@@ -306,28 +335,30 @@ def _handle_upload_document(event):
             )
 
         # Extract variables from the event
-        arguments = event.get('arguments', {})
-        file_name = arguments.get('fileName')
-        content_type = arguments.get('contentType', 'application/octet-stream')
-        prefix = arguments.get('prefix', '')
-        version = arguments.get('version')  # Optional version parameter
-        revision = arguments.get('revision')  # Optional revision of that version
-        
+        arguments = event.get("arguments", {})
+        file_name = arguments.get("fileName")
+        content_type = arguments.get("contentType", "application/octet-stream")
+        prefix = arguments.get("prefix", "")
+        version = arguments.get("version")  # Optional version parameter
+        revision = arguments.get("revision")  # Optional revision of that version
+
         if not file_name:
             raise ValueError("fileName is required")
-        
+
         # Get bucket from arguments or fallback to INPUT_BUCKET if needed by patterns
-        bucket_name = arguments.get('bucket')
-        
-        if not bucket_name and os.environ.get('INPUT_BUCKET'):
+        bucket_name = arguments.get("bucket")
+
+        if not bucket_name and os.environ.get("INPUT_BUCKET"):
             # Support legacy pattern usage that relies on INPUT_BUCKET
-            bucket_name = os.environ.get('INPUT_BUCKET')
+            bucket_name = os.environ.get("INPUT_BUCKET")
             logger.info(f"Using INPUT_BUCKET fallback: {bucket_name}")
         elif not bucket_name:
-            raise ValueError("bucket parameter is required when INPUT_BUCKET is not configured")
-        
+            raise ValueError(
+                "bucket parameter is required when INPUT_BUCKET is not configured"
+            )
+
         # Sanitize file name to avoid URL encoding issues
-        sanitized_file_name = file_name.replace(' ', '_')
+        sanitized_file_name = file_name.replace(" ", "_")
 
         # Build the object key - only use prefix if provided. The prefix is
         # canonicalized first: S3 accepts `finance/x.pdf`, `/finance/x.pdf` and
@@ -368,26 +399,28 @@ def _handle_upload_document(event):
             # so nothing is a surprise to the person uploading.
 
         # Generate a presigned POST URL for uploading
-        logger.info(f"Generating presigned POST data for: {object_key} with content type: {content_type}")
-        
+        logger.info(
+            f"Generating presigned POST data for: {object_key} with content type: {content_type}"
+        )
+
         # Prepare fields and conditions
-        fields = {'Content-Type': content_type}
+        fields = {"Content-Type": content_type}
         conditions = [
-            ['content-length-range', 1, 104857600],  # 1 Byte to 100 MB
-            {'Content-Type': content_type}
+            ["content-length-range", 1, 104857600],  # 1 Byte to 100 MB
+            {"Content-Type": content_type},
         ]
-        
+
         # Add version as metadata
         if version:
-            fields['x-amz-meta-config-version'] = version
-            conditions.append({'x-amz-meta-config-version': version})
+            fields["x-amz-meta-config-version"] = version
+            conditions.append({"x-amz-meta-config-version": version})
             # A revision only means something in the context of a profile, so it
             # is only stamped when one was chosen. The queue processor pins the
             # profile's current revision when this is absent.
             if revision is not None:
-                fields['x-amz-meta-config-revision'] = str(revision)
-                conditions.append({'x-amz-meta-config-revision': str(revision)})
-        
+                fields["x-amz-meta-config-revision"] = str(revision)
+                conditions.append({"x-amz-meta-config-revision": str(revision)})
+
         # Presign client: this URL goes to the browser, so it must carry the
         # VPC-endpoint host in private deployments.
         presigned_post = s3_presign_client.generate_presigned_post(
@@ -395,11 +428,11 @@ def _handle_upload_document(event):
             Key=object_key,
             Fields=fields,
             Conditions=conditions,
-            ExpiresIn=900  # 15 minutes
+            ExpiresIn=900,  # 15 minutes
         )
-        
+
         logger.info(f"Generated presigned POST data: {json.dumps(presigned_post)}")
-        
+
         # Return the presigned POST data and object key.
         # usePostMethod is a STRING ("true") per the schema (PresignedUploadUrl.
         # usePostMethod: String!) and the UI parses it via
@@ -408,11 +441,11 @@ def _handle_upload_document(event):
         # bool here reaches the UI as `true` and breaks .toLowerCase(). Keep it
         # a string.
         return {
-            'presignedUrl': json.dumps(presigned_post),
-            'objectKey': object_key,
-            'usePostMethod': 'true'
+            "presignedUrl": json.dumps(presigned_post),
+            "objectKey": object_key,
+            "usePostMethod": "true",
         }
-    
+
     except Exception as e:
         logger.error(f"Error generating presigned URL: {str(e)}")
         raise
@@ -517,6 +550,11 @@ def _handle_upload_sample_document(event):
         # operation did not previously spend. The scope lookup is already
         # per-container cached.
         mappings = _prefix_mappings()
+        # Memoized across the loop for the same reason `mappings` is hoisted: the
+        # answers cannot change within one request, and a batch sample pays per
+        # file otherwise.
+        exists_cache: dict = {}
+        revision_cache: dict = {}
 
         object_keys = []
         for source_key in source_keys:
@@ -531,7 +569,13 @@ def _handle_upload_sample_document(event):
                 input_bucket, target_key, ALLOWED_BUCKETS, logger=logger
             )
             resolve_destination(
-                event, target_key, version, revision, mappings=mappings
+                event,
+                target_key,
+                version,
+                revision,
+                mappings=mappings,
+                exists_cache=exists_cache,
+                revision_cache=revision_cache,
             )
             s3_client.copy_object(
                 CopySource={"Bucket": config_bucket, "Key": source_key},

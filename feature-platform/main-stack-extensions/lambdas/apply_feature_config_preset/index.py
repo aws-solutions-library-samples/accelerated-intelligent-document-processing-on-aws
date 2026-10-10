@@ -74,7 +74,30 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 
-from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+# ⚠️ Guarded, because this module is written throughout on the premise that
+# `idp_common` may be ABSENT: every other import of it here is lazy and inside a
+# function with a fallback, and the docstring's contract is that an install
+# degrades rather than fails when the library is unavailable. The layer is
+# attached conditionally — `IDPCommonBaseLayerArn` defaults to `''` and
+# `HasIDPCommonBaseLayer` gates it — so a module-level import raises ImportError
+# at cold start in a deployment that leaves it empty. This is a CUSTOM RESOURCE,
+# so that turns a tolerable loss of configuration history into a FAILED STACK
+# OPERATION. The host template passes the ARN today, which makes the unguarded
+# form latent rather than live; the condition and the docstring both still say
+# the layerless case is supported, so the code has to agree with them.
+#
+# The fallback is a pass-through rather than a reimplementation on purpose: this
+# handler's own event logging is the only consumer, a partial redactor would be
+# worse than an obvious one, and `_redact_disabled` makes the degradation visible
+# in the log line itself.
+try:
+    from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+except ImportError:  # pragma: no cover - exercised only without the layer
+
+    def sanitize_event_for_logging(event):
+        """Pass through, flagged, when the redactor is unavailable."""
+        return {"_redact_disabled": "idp_common unavailable", "keys": sorted(event)}
+
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))

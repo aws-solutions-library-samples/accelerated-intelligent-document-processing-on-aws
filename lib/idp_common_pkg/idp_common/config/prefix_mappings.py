@@ -508,6 +508,13 @@ def resolve_config_assignment(
             # the revision (a pinned number is an attribute of a profile the caller
             # cannot see), not `reason`, and not `mapping_prefix`.
             #
+            # `rejected` is dropped deliberately too. A destination that is BOTH
+            # out of scope and in `reject` mode is reported as a scope denial
+            # only: the caller is not entitled to know a mapping governs that
+            # prefix at all, and "you may not write here" is the complete answer
+            # either way. The omission is a choice, not an oversight in the field
+            # list.
+            #
             # The prefix looks like the caller's own input and is not. The caller
             # supplied a KEY; the prefix is the mapping that governs it, so
             # returning it for `a/b/c/d/x.pdf` discloses that the boundary sits at
@@ -814,8 +821,8 @@ class PrefixMappingStore:
             if len(updated) > MAX_MAPPINGS:
                 raise ValueError(
                     f"This deployment allows at most {MAX_MAPPINGS} configuration "
-                    f"prefix mappings and already has {len(entries)}. Delete one "
-                    f"before adding another."
+                    f"prefix mappings and this change would make {len(updated)}. "
+                    f"Delete one before adding another."
                 )
             try:
                 self.table.update_item(

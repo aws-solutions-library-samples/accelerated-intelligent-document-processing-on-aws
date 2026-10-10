@@ -91,6 +91,29 @@ def resolve_active_config_version(config_table):
         scan_kwargs["ExclusiveStartKey"] = last_key
 
 
+# Built once per container, not once per document. This runs on the hottest
+# ingest path there is, and the clients above (sqs/s3/cloudwatch) are already
+# module-scope for the same reason: a fresh boto3 resource per invocation discards
+# the connection pool and re-reads the credential chain. Memoized on the table
+# name rather than built at import, because the environment variable is read at
+# call time and an unset one must degrade rather than raise at cold start.
+_CONFIG_CLIENTS: dict = {}
+
+
+def _config_table(table_name):
+    key = ("table", table_name)
+    if key not in _CONFIG_CLIENTS:
+        _CONFIG_CLIENTS[key] = boto3.resource("dynamodb").Table(table_name)
+    return _CONFIG_CLIENTS[key]
+
+
+def _config_manager(table_name):
+    key = ("manager", table_name)
+    if key not in _CONFIG_CLIENTS:
+        _CONFIG_CLIENTS[key] = ConfigurationManager(table_name=table_name)
+    return _CONFIG_CLIENTS[key]
+
+
 def _emit(metric_name, dimensions=None):
     """Fire-and-forget telemetry. Never let an emit affect document ingest.
 
@@ -139,7 +162,7 @@ def resolve_configuration(document, object_key):
         )
         return None
 
-    table = boto3.resource("dynamodb").Table(config_table_name)
+    table = _config_table(config_table_name)
 
     mappings = []
     try:
@@ -158,7 +181,7 @@ def resolve_configuration(document, object_key):
         )
         _emit("PrefixMappingLookupFailed")
 
-    manager = ConfigurationManager(table_name=config_table_name)
+    manager = _config_manager(config_table_name)
 
     def profile_exists(profile):
         """Whether a profile head item is there, without reading its body.
