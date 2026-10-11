@@ -417,8 +417,12 @@ type ConfigAssignmentPreview @aws_cognito_user_pools @aws_iam {
   outOfScope: Boolean
   configProfile: String
   configRevision: Int
-  # Where it came from: "metadata", "prefix-mapping", "active-profile",
-  # "internal-producer", or "rejected".
+  # Where it came from: "metadata", "prefix-mapping", "active-profile" or
+  # "rejected". Four values, not the seven a DOCUMENT can carry: the dry run has no
+  # object, so it passes no `submission-source` and can never answer
+  # "internal-producer", and "document-pin"/"explicit-request" belong to reprocess.
+  # Listing a value this field cannot return invites a UI branch for a case that
+  # cannot occur.
   source: String
   mappingPrefix: String
   # A mapping and the declared upload metadata disagreed.

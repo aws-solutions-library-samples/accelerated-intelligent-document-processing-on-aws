@@ -1,21 +1,145 @@
 {
   "comment": "Shared by src/ui/src/utils/__tests__/config-prefix-key.test.ts and scripts/tests/test_config_prefix_key_mirror.py. Each pair is an S3 key and its canonical form. Add cases here, never to one suite alone - the point is that both implementations are measured against the same table.",
   "cases": [
-    ["acme/invoices/x.pdf", "acme/invoices/x.pdf"],
-    ["/acme/invoices/x.pdf", "acme/invoices/x.pdf"],
-    ["acme//invoices/x.pdf", "acme/invoices/x.pdf"],
-    ["//acme//invoices//x.pdf", "acme/invoices/x.pdf"],
-    ["acme/./invoices/x.pdf", "acme/invoices/x.pdf"],
-    ["./acme/invoices/x.pdf", "acme/invoices/x.pdf"],
-    ["acme/invoices/", "acme/invoices/"],
-    ["/acme/invoices/", "acme/invoices/"],
-    ["acme//invoices//", "acme/invoices/"],
-    ["acme/invoices", "acme/invoices"],
-    ["a/b/../c.pdf", "a/b/../c.pdf"],
-    ["x.pdf", "x.pdf"],
-    ["/", ""],
-    ["//", ""],
-    ["", ""],
-    ["Invoices/x.pdf", "Invoices/x.pdf"]
-  ]
+    [
+      "acme/invoices/x.pdf",
+      "acme/invoices/x.pdf"
+    ],
+    [
+      "/acme/invoices/x.pdf",
+      "acme/invoices/x.pdf"
+    ],
+    [
+      "acme//invoices/x.pdf",
+      "acme/invoices/x.pdf"
+    ],
+    [
+      "//acme//invoices//x.pdf",
+      "acme/invoices/x.pdf"
+    ],
+    [
+      "acme/./invoices/x.pdf",
+      "acme/invoices/x.pdf"
+    ],
+    [
+      "./acme/invoices/x.pdf",
+      "acme/invoices/x.pdf"
+    ],
+    [
+      "acme/invoices/",
+      "acme/invoices/"
+    ],
+    [
+      "/acme/invoices/",
+      "acme/invoices/"
+    ],
+    [
+      "acme//invoices//",
+      "acme/invoices/"
+    ],
+    [
+      "acme/invoices",
+      "acme/invoices"
+    ],
+    [
+      "a/b/../c.pdf",
+      "a/b/../c.pdf"
+    ],
+    [
+      "x.pdf",
+      "x.pdf"
+    ],
+    [
+      "/",
+      ""
+    ],
+    [
+      "//",
+      ""
+    ],
+    [
+      "",
+      ""
+    ],
+    [
+      "Invoices/x.pdf",
+      "Invoices/x.pdf"
+    ]
+  ],
+  "rejections": [
+    [
+      "acme/",
+      null
+    ],
+    [
+      "acme/invoices/",
+      null
+    ],
+    [
+      "acme/invoices/jan.pdf",
+      null
+    ],
+    [
+      "acme",
+      null
+    ],
+    [
+      "Invoices/",
+      null
+    ],
+    [
+      "a",
+      null
+    ],
+    [
+      "/",
+      "A root mapping is not allowed"
+    ],
+    [
+      "//",
+      "A root mapping is not allowed"
+    ],
+    [
+      "///",
+      "must not start with '/'"
+    ],
+    [
+      "/acme/",
+      "must not start with '/'"
+    ],
+    [
+      "/acme//x/",
+      "must not start with '/'"
+    ],
+    [
+      "acme//invoices/",
+      "must not contain '//'"
+    ],
+    [
+      "acme//",
+      "must not contain '//'"
+    ],
+    [
+      "acme/./invoices/",
+      "must not contain '.' or '..' path segments"
+    ],
+    [
+      "acme/../invoices/",
+      "must not contain '.' or '..' path segments"
+    ],
+    [
+      "./acme/",
+      "must not contain '.' or '..' path segments"
+    ],
+    [
+      "..",
+      "must not contain '.' or '..' path segments"
+    ]
+  ],
+  "rejectionNotes": "Each entry is [prefix, fragment-of-the-refusal-or-null]. The fragment names WHICH rule fires, not the whole sentence, because the client expands two of the server's messages for the admin reading them. Entries matching several rules ('/', '/acme//x/') are what pin the shared check ORDER.",
+  "serverOnlyRules": {
+    "leading-or-trailing-whitespace": "The client trims before validating, since the trimmed value is what it sends, so this rule cannot fire there.",
+    "prefix-length-in-bytes": "A 512-byte bound the client does not restate; a prefix that long is already inert and the server refuses it with a message naming the limit.",
+    "empty-prefix": "The server refuses an empty prefix; the client returns null for it so an untouched field shows no error. Save stays disabled on empty regardless."
+  }
 }

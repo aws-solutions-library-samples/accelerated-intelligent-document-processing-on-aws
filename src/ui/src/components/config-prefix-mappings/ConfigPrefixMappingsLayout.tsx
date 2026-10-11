@@ -32,7 +32,7 @@ import useConfigPrefixMappings, {
   MetadataPrecedence,
 } from '../../hooks/use-config-prefix-mappings';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
-import { storedPrefix, type MatchMode } from '../../utils/config-prefix-key';
+import { prefixError, storedPrefix, type MatchMode } from '../../utils/config-prefix-key';
 
 /**
  * Admin page for config prefix mappings: an S3 prefix in the Input bucket to a
@@ -106,40 +106,6 @@ const EMPTY_FORM: FormState = {
   metadataPrecedence: 'mapping',
   enabled: true,
   description: '',
-};
-
-/**
- * Why the typed prefix can never work as a mapping, or null if it can.
- *
- * A client-side mirror of the server's `prefix_rejection_reason`
- * (`lib/idp_common_pkg/idp_common/config/prefix_mappings.py`) — the server stays
- * the authority, this only saves a round trip. It is returned as a **string**
- * because it is rendered as the form field's `errorText`, not its
- * `constraintText`: constraint text is advisory, so a screen reader never
- * announces it as a problem and Save stays enabled. A prefix that can never
- * match is not advice.
- *
- * The checks are in the server's order on purpose. They overlap — `'/'` fails
- * three of them — so the order decides which sentence the admin reads, and the
- * two sides disagreeing about that is a confusing way to be consistent.
- */
-const prefixError = (prefix: string): string | null => {
-  if (!prefix) return null;
-  const ROOT_REFUSAL =
-    'A root mapping is not allowed: it would change the configuration of every unmapped upload in this deployment. The active Configuration Profile already serves that purpose.';
-  if (prefix === '/' || prefix === '//') return ROOT_REFUSAL;
-  if (prefix.startsWith('/')) {
-    return "A mapping prefix must not start with '/'. S3 keys do not, so the mapping would never match.";
-  }
-  if (prefix.includes('//')) {
-    return "A mapping prefix must not contain '//'. S3 treats 'acme//invoices/' as a different folder from 'acme/invoices/', so the mapping would never match.";
-  }
-  if (prefix.split('/').some((segment) => segment === '.' || segment === '..')) {
-    return "A mapping prefix must not contain '.' or '..' path segments.";
-  }
-  // Last, as on the server: anything left that canonicalizes to nothing at all.
-  if (prefix.split('/').every((segment) => !segment)) return ROOT_REFUSAL;
-  return null;
 };
 
 /**

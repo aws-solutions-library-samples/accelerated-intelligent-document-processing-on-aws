@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from idp_common.config.prefix_mappings import canonical_key
+from idp_common.config.prefix_mappings import canonical_key, prefix_rejection_reason
 
 REPO_ROOT = Path(
     subprocess.run(
@@ -98,3 +98,80 @@ def test_python_canonicalization_matches_the_shared_table(key, expected):
         "the table — the vitest suite reads the same file, so the TypeScript mirror "
         "will then fail until it is changed to match."
     )
+
+
+def _rejection_cases() -> list[tuple[str, str | None]]:
+    data = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    return [(prefix, fragment) for prefix, fragment in data["rejections"]]
+
+
+@pytest.mark.unit
+def test_the_rejection_table_exists_and_covers_both_verdicts():
+    """A table of only-refusals or only-acceptances would pin half the rule."""
+    cases = _rejection_cases()
+    assert len(cases) >= 12
+    assert any(fragment is None for _, fragment in cases), "no accepted prefix"
+    assert any(fragment is not None for _, fragment in cases), "no refused prefix"
+    # Entries matching several rules are what pin the ORDER; without one the table
+    # cannot tell a reordered implementation from a correct one.
+    assert ("/acme//x/", "must not start with '/'") in cases
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("prefix,fragment", _rejection_cases())
+def test_python_prefix_rejection_matches_the_shared_table(prefix, fragment):
+    """`prefix_rejection_reason` is the authority `prefixError` mirrors.
+
+    The fragment names which RULE fires rather than the whole sentence: the client
+    expands two of these messages for the admin reading them, so the two sides may
+    word a refusal differently. What they may not do is disagree about *whether* a
+    prefix is refused, or about *which* rule refused it -- which is what a reader
+    of two different reasons for the same prefix would have to reconcile.
+    """
+    actual = prefix_rejection_reason(prefix)
+    if fragment is None:
+        assert actual is None, (
+            f"the server refuses {prefix!r} ({actual!r}) but the shared table says "
+            f"it is usable, so the form would accept a mapping the API rejects"
+        )
+    else:
+        assert actual is not None, (
+            f"the server accepts {prefix!r}, which the shared table says is "
+            f"refused for: {fragment!r}"
+        )
+        assert fragment in actual, (
+            f"prefix_rejection_reason({prefix!r}) refused it for a DIFFERENT rule "
+            f"than the table records.\n  got:      {actual!r}\n  expected to "
+            f"contain: {fragment!r}\nIf the check order changed deliberately, "
+            f"update the table -- the vitest suite reads the same file, so the "
+            f"TypeScript mirror will then fail until it matches."
+        )
+
+
+@pytest.mark.unit
+def test_the_server_only_rules_are_recorded_and_real():
+    """The documented asymmetries have to be asymmetries that exist.
+
+    The client does not restate three of the server's rules, and that is a decision
+    rather than drift -- but a decision recorded in a file nothing checks rots. Each
+    entry is verified to be a rule the server actually enforces, so deleting one
+    server-side leaves a note describing a difference that is no longer there.
+    """
+    data = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    rules = data["serverOnlyRules"]
+    assert set(rules) == {
+        "leading-or-trailing-whitespace",
+        "prefix-length-in-bytes",
+        "empty-prefix",
+    }
+    for reason in rules.values():
+        assert len(reason) > 40, "a recorded asymmetry needs its reason written out"
+
+    # Each one, measured against the real implementation.
+    assert prefix_rejection_reason(" acme/ ") is not None
+    assert prefix_rejection_reason("a" * 600 + "/") is not None
+    assert prefix_rejection_reason("") is not None
+
+    # And the client's counterpart genuinely does not carry them: it is handed the
+    # TRIMMED value, so the whitespace rule is unreachable there by construction.
+    assert prefix_rejection_reason(" acme/ ".strip()) is None

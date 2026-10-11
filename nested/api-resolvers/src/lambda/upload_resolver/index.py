@@ -342,11 +342,6 @@ def resolve_destination(
             object_key,
             sorted(allowed),
         )
-        # The message names neither the profile nor the scope. A 403 that reports
-        # which profile it refused is a profile-name enumeration oracle, and profile
-        # names are themselves access-controlled (getConfigVersions is
-        # scope-filtered for exactly this reason). The detail goes to the log for
-        # whoever triages it.
         # Names neither the profile nor the scope -- a 403 reporting which profile
         # it refused is a profile-name enumeration oracle -- but it does say what
         # to do, because the commonest way to reach this is not an attack.
