@@ -448,7 +448,7 @@ operations:
   # decides who can see the documents landing under that prefix. The three write/read
   # ops carry no `scope_checked` because an Admin has no scope to check; the scope
   # that matters for a mapping is enforced where a non-Admin meets it, at upload
-  # time, on the RESOLVED profile -- see uploadDocument below.
+  # time, on the RESOLVED profile -- see uploadDocument above.
   listConfigPrefixMappings:
     groups: [Admin]
     kind: read
@@ -484,9 +484,13 @@ operations:
     # naming field nulled for an out-of-scope destination, and never 403s. The two
     # flags are indistinguishable to scan_api_rbac's S4 check (it tests
     # `scope_checked or scope_filtered`) and to the dynamic driver, so nothing would
-    # have caught the wrong one -- but they feed different published figures, and
-    # declaring the refusing kind here put "18 verify scope, 4 filter" into the
-    # threat model for a surface that verifies 17 and filters 5.
+    # have caught the wrong one -- but they feed different published figures, so
+    # declaring the refusing kind here moved one operation from the filtering tally
+    # to the verifying one and published both wrong. No figure is restated here on
+    # purpose: test_api_policy_counts_in_docs.py reads these declarations back and
+    # pins them against DOC PROSE, and it cannot see a number inside a YAML
+    # comment -- so a count written here is one nothing can stop going stale. The
+    # threat model and docs/rbac.md are where they live.
     scope_filtered: true
     enforced_in: *cfg
     args: { objectKey: "__nope__/x.pdf" }

@@ -44,11 +44,16 @@ import { prefixError, storedPrefix, type MatchMode } from '../../utils/config-pr
  *   most-specific-first, which is the order resolution evaluates them in, so the
  *   page reads as the decision procedure. A longest-prefix rule shown in any
  *   other order cannot be read correctly.
- * - **The prefix field does not "help".** It never appends or strips a trailing
- *   slash, because the slash is the prefix/exact mode selector; it shows which
- *   mode the typed value selected instead. Normalizing it would make an
- *   exact-key mapping unexpressible and would silently change what the admin
- *   asked for.
+ * - **The match mode is asked, not inferred.** A stored prefix ending in `/` is a
+ *   folder and one without is an exact object key, so the two modes are one
+ *   character apart with a total difference in effect: an exact-key entry governs
+ *   nothing beneath it, and uploads land at `<prefix>/<filename>`. Leaving that to
+ *   punctuation the admin types means a folder name saved without its slash
+ *   matches no document, reports nothing, and makes the conflict mode look broken
+ *   when it was never reached. So the form carries an explicit mode control and
+ *   `storedPrefix` derives the stored value from it, shown before saving. Both
+ *   modes stay expressible, which is the reason the slash follows a deliberate
+ *   choice rather than simply always being appended.
  */
 
 /**
