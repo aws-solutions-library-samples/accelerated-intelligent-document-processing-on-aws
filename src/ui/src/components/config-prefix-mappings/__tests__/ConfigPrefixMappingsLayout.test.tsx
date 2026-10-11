@@ -279,13 +279,75 @@ describe('ConfigPrefixMappingsLayout', () => {
     expect(screen.getAllByText(/could not be protected from retention/).length).toBeGreaterThan(0);
   });
 
+  it('saves a folder name with the trailing slash the mode implies', async () => {
+    // The regression this control exists for. A folder name saved WITHOUT the
+    // slash is an exact-object-key mapping, which never matches an uploaded
+    // document (the upload panel builds `<prefix>/<filename>`), so the mapping is
+    // stored, governs nothing, and every document shows its own upload tag -- which
+    // reads as the conflict mode being broken rather than never reached.
+    render(<ConfigPrefixMappingsLayout />);
+    await screen.findByText('acme/invoices/');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create mapping' }));
+    const prefixInput = await screen.findByPlaceholderText('acme/invoices');
+    fireEvent.change(prefixInput, { target: { value: 'bob1' } });
+
+    // Stated before saving, so the derived value is never a surprise.
+    expect(await screen.findByText(/Saved as/)).toBeInTheDocument();
+    expect(screen.getByText('bob1/')).toBeInTheDocument();
+
+    // Save needs a profile too, so the mutation payload for a create is not
+    // asserted here; `storedPrefix` is covered exhaustively in
+    // `src/ui/src/utils/__tests__/config-prefix-key.test.ts`, and the mapping that
+    // reaches the wire is asserted on the edit path below, which has a profile.
+  });
+
+  it('saves an exact object key without a trailing slash when that mode is chosen', async () => {
+    // Exact mode stays fully expressible -- that is why the slash is derived from
+    // an explicit choice rather than always appended.
+    render(<ConfigPrefixMappingsLayout />);
+    await screen.findByText('acme/invoices/');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create mapping' }));
+    fireEvent.click(screen.getByRole('radio', { name: /One exact object key/ }));
+
+    const prefixInput = await screen.findByPlaceholderText('acme/invoices/2026-01-statement.pdf');
+    // Typed WITH a trailing slash, which exact mode must strip: such a key is an
+    // S3 folder pseudo-object, which the ingest Lambda skips outright, so it could
+    // never match a document.
+    fireEvent.change(prefixInput, { target: { value: 'bob1/report.pdf/' } });
+
+    // The trailing slash is stripped: such a key is an S3 folder pseudo-object,
+    // which the ingest Lambda skips, so it could never match a document.
+    expect(await screen.findByText('bob1/report.pdf')).toBeInTheDocument();
+  });
+
+  it('opens an existing mapping in the match mode it was stored with', async () => {
+    // `acme/invoices/` is a folder mapping, so Edit must not present it as exact
+    // and silently rewrite it on save.
+    render(<ConfigPrefixMappingsLayout />);
+    await screen.findByText('acme/invoices/');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await screen.findByText(/Edit mapping for/);
+
+    expect(screen.getByRole('radio', { name: /A folder, and everything under it/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(putCalls().length).toBe(1));
+    expect(putCalls()[0][0].variables.prefix).toBe('acme/invoices/');
+  });
+
   it('refuses a prefix that already has a mapping, pointing at Edit', async () => {
     render(<ConfigPrefixMappingsLayout />);
     await screen.findByText('acme/invoices/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Create mapping' }));
-    const prefixInput = await screen.findByPlaceholderText('acme/invoices/');
-    fireEvent.change(prefixInput, { target: { value: 'acme/invoices/' } });
+    const prefixInput = await screen.findByPlaceholderText('acme/invoices');
+    // Typed WITHOUT the trailing slash, which is how an administrator types a
+    // folder name. The duplicate check runs against the value that will be saved
+    // (`acme/invoices/`), so this is caught; checking the typed value would let it
+    // through as new and silently replace the existing mapping.
+    fireEvent.change(prefixInput, { target: { value: 'acme/invoices' } });
 
     expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
     expect(screen.getByText(/Use Edit on that row/i)).toBeInTheDocument();
@@ -303,7 +365,7 @@ describe('ConfigPrefixMappingsLayout', () => {
     await screen.findByText('acme/invoices/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Create mapping' }));
-    const prefixInput = await screen.findByPlaceholderText('acme/invoices/');
+    const prefixInput = await screen.findByPlaceholderText('acme/invoices');
     fireEvent.change(prefixInput, { target: { value: 'acme//invoices/' } });
 
     expect(await screen.findByText(/must not contain '\/\/'/)).toBeInTheDocument();

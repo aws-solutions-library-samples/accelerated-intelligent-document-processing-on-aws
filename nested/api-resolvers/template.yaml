@@ -2661,6 +2661,21 @@ Resources:
           # value DENIES a caller rather than reading as unrestricted, because a
           # scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          # Namespace for ``PrefixMappingLookupFailed``. This is the THIRD emitter
+          # of that metric, and it is the one that matters most for authorization:
+          # the mapping set is read twice for one document, here and again by
+          # QueueSender seconds later, by two different roles. If this read fails
+          # and QueueSender's succeeds, the upload is scope-checked against an
+          # UNMAPPED destination and then assigned the mapping's profile at ingest,
+          # which can place a scoped caller's document outside their own scope. The
+          # fail-open is still the right trade -- refusing every upload because a
+          # routing table blipped is an outage of the UI's primary action -- but the
+          # window has to be visible, so it is alarmed rather than only logged.
+          # ``!Ref StackName`` (the parameter from the root template), NOT
+          # ``!Ref AWS::StackName``: this is a nested template, so the
+          # pseudo-parameter resolves to the generated nested stack name and the
+          # datum would land in a namespace no alarm reads.
+          METRIC_NAMESPACE: !Ref StackName
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
       LoggingConfig:
         LogGroup: !Ref UploadResolverFunctionLogGroup
@@ -2690,6 +2705,20 @@ Resources:
         # the deployment's routing policy from the upload path.
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTableName
+        # Emit ``PrefixMappingLookupFailed`` when the mapping read fails here, so
+        # the degraded-enforcement window described above is alarmed rather than
+        # buried in an ERROR log. Namespace-scoped, so this Lambda cannot write
+        # under any other stack's metrics.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter, NOT ``!Ref AWS::StackName``
+                  # (nested template) -- see the METRIC_NAMESPACE comment above.
+                  cloudwatch:namespace: !Ref StackName
         - Statement:
             - Effect: Allow
               Action:

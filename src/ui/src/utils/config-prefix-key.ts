@@ -42,3 +42,40 @@ export const canonicalKey = (key: string): string => {
 
 /** Mirrors `upload_resolver`'s only filename rewrite, so the probe key is the real one. */
 export const sanitizeFileName = (name: string): string => name.replace(/ /g, '_');
+
+/** Which match mode a mapping uses: a folder prefix, or one exact object key. */
+export type MatchMode = 'prefix' | 'exact';
+
+/**
+ * The prefix value actually SAVED for a typed path and a chosen match mode.
+ *
+ * ⚠️ **The trailing slash is semantic and must not be left to punctuation the
+ * administrator happens to type.** The server stores the prefix verbatim and reads
+ * the trailing slash as the mode selector (`match_kind` in
+ * `lib/idp_common_pkg/idp_common/config/prefix_mappings.py`): `acme/` governs
+ * everything beneath it, `acme` governs one object literally named `acme`.
+ *
+ * A folder name saved without the slash is therefore an exact-object-key mapping
+ * that can never match an uploaded document, because the upload panel builds
+ * `<prefix>/<filename>`. The mapping is stored and listed and governs nothing, and
+ * every document falls through to its own upload tag with no mapping recorded --
+ * which in the document list is indistinguishable from "the mapping deferred to the
+ * upload", so the conflict mode reads as broken rather than as never reached.
+ *
+ * So the mode is an explicit control in the form and this derives the stored
+ * string from it. Normalizing a typed value *without* such a control is what the
+ * original design rightly refused, since it makes exact mode unexpressible;
+ * deriving it from a deliberate choice keeps both modes reachable and removes the
+ * trap.
+ *
+ * Exact mode strips a trailing slash rather than keeping it: a key ending in `/`
+ * is an S3 folder pseudo-object, which the ingest Lambda skips outright, so such a
+ * mapping could never match a document either.
+ */
+export const storedPrefix = (prefix: string, mode: MatchMode): string => {
+  const trimmed = prefix.trim();
+  if (!trimmed) return '';
+  const withoutTrailing = trimmed.replace(/\/+$/, '');
+  if (!withoutTrailing) return '';
+  return mode === 'prefix' ? `${withoutTrailing}/` : withoutTrailing;
+};

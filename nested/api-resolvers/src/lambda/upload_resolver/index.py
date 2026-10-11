@@ -103,6 +103,30 @@ def _caller_in_groups(event, allowed):
 
 
 _dynamodb = boto3.resource("dynamodb")
+_cloudwatch = boto3.client("cloudwatch")
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+
+
+def _emit(metric_name):
+    """Fire-and-forget telemetry, into the ROOT stack's namespace.
+
+    Dimensionless on purpose, which is the opposite of what ``queue_sender`` and
+    ``reprocess_document_resolver`` do for ``PrefixMappingApplied``: those carry a
+    ``Prefix`` dimension so the dashboard's ``SEARCH('{<ns>,Prefix} ...')``
+    expression finds them. ``PrefixMappingLookupFailed`` is read by an **alarm** on
+    the bare metric, and a dimensioned datum would not be in the alarm's
+    time series -- so it has to be dimensionless to be seen at all. There is also
+    nothing useful to dimension it by here: the read that failed was of the whole
+    mapping set, not of anything about this key.
+    """
+    try:
+        _cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[{"MetricName": metric_name, "Value": 1, "Unit": "Count"}],
+        )
+    except Exception:  # noqa: BLE001
+        pass  # telemetry must never affect an upload
+
 
 # Per-container scope cache. The UI calls uploadDocument once per file, so a
 # multi-file upload would otherwise cost one UsersTable query per file. Only
@@ -121,6 +145,19 @@ def _prefix_mappings():
     ``_allowed_config_versions``). Refusing every upload because a routing table is
     unreadable would make a transient DynamoDB error an outage of the UI's primary
     action.
+
+    ⚠️ **The fail-open is bounded, and the bound is what the metric is for.** The
+    premise "unmapped as far as this request is concerned" holds only while the read
+    also fails at ingest, and the mapping set is read **twice**, seconds apart, by
+    two different roles. If this read fails and ``queue_sender``'s succeeds, the
+    upload is scope-checked against an *unmapped* destination -- so it resolves to
+    the caller's own metadata profile or the active one, both in scope -- and is then
+    assigned the mapping's profile at ingest, which can land a scoped caller's
+    document in a profile outside their own scope. That is the thing the new check
+    exists to prevent, so the window is not left to an ERROR log: this is the third
+    emitter of ``PrefixMappingLookupFailed`` and ``PrefixMappingLookupFailedAlarm``
+    fires on the first occurrence. The availability trade stands; the invisibility
+    did not.
     """
     table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
     if not table_name:
@@ -133,6 +170,7 @@ def _prefix_mappings():
             "destination as unmapped",
             e,
         )
+        _emit("PrefixMappingLookupFailed")
         return []
 
 

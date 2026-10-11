@@ -294,6 +294,291 @@ PRECEDENCE_MATRIX = [
 ]
 
 
+# Every row of PRECEDENCE_MATRIX uses a mapping stored as `acme/` -- with the
+# trailing slash, so prefix mode. That left the mapping SHAPE untested, and it is
+# the one dimension an administrator chooses by punctuation rather than by a
+# control: an entry stored without a trailing slash is an EXACT OBJECT KEY, so
+# `bob1` governs an object literally named `bob1` and governs nothing at all under
+# `bob1/`. A deployment whose three mappings were all stored that way resolved
+# every upload by metadata with `mapping_prefix=None` -- indistinguishable, from
+# the document list, from "the mapping lost the conflict", and in fact "no mapping
+# was ever found". The conflict modes were never reached.
+#
+# So the matrix is re-run over both shapes. The folder-prefix half must behave
+# exactly as PRECEDENCE_MATRIX says; the exact-key half must match NOTHING for a
+# key with a filename under it, whatever the conflict mode, which is the property
+# that makes the two shapes different rather than two spellings of one thing.
+FOLDER_KEY = "acme/x.pdf"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "metadata_profile,precedence,expected_profile,expected_source,"
+    "expected_conflict,expected_rejected",
+    [
+        # (no upload tag) x (each conflict mode)
+        (None, "mapping", "mapped", SOURCE_PREFIX_MAPPING, False, False),
+        (None, "metadata", "mapped", SOURCE_PREFIX_MAPPING, False, False),
+        (None, "reject", "mapped", SOURCE_PREFIX_MAPPING, False, False),
+        # (upload tag that conflicts) x (each conflict mode)
+        ("chosen", "mapping", "mapped", SOURCE_PREFIX_MAPPING, True, False),
+        ("chosen", "metadata", "chosen", SOURCE_METADATA, True, False),
+        ("chosen", "reject", None, SOURCE_REJECTED, True, True),
+        # (upload tag that agrees) x (each conflict mode)
+        ("mapped", "mapping", "mapped", SOURCE_PREFIX_MAPPING, False, False),
+        ("mapped", "metadata", "mapped", SOURCE_PREFIX_MAPPING, False, False),
+        ("mapped", "reject", "mapped", SOURCE_PREFIX_MAPPING, False, False),
+    ],
+)
+def test_a_folder_prefix_mapping_governs_documents_under_it(
+    metadata_profile,
+    precedence,
+    expected_profile,
+    expected_source,
+    expected_conflict,
+    expected_rejected,
+):
+    """The shape an administrator means when they type a folder name."""
+    assignment = _resolve(
+        FOLDER_KEY,
+        metadata_profile=metadata_profile,
+        mappings=[_mapping("acme/", "mapped", metadataPrecedence=precedence)],
+    )
+    assert assignment.profile == expected_profile
+    assert assignment.source == expected_source
+    assert assignment.conflict is expected_conflict
+    assert assignment.rejected is expected_rejected
+    # Recorded on every outcome, refusals included: it is what distinguishes "a
+    # mapping decided this" from "no mapping was found", which are otherwise the
+    # same two fields on the document.
+    assert assignment.mapping_prefix == "acme/"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+@pytest.mark.parametrize("metadata_profile", [None, "chosen", "mapped"])
+def test_an_exact_key_mapping_governs_nothing_underneath_it(
+    precedence, metadata_profile
+):
+    """`acme` does NOT govern `acme/x.pdf`, in any conflict mode.
+
+    This is the live failure mode written down: typing a folder name with no
+    trailing slash stores an exact-object-key mapping, which never matches an
+    uploaded document, so the resolution falls through to the upload's own tag and
+    the conflict mode is never consulted. The resolver is behaving correctly here
+    -- the fix belongs in the form that let the mapping be written -- but the
+    behaviour has to be pinned, because "no mapping matched" and "the mapping
+    deferred to the upload" are the same two fields on the document and only the
+    absent `mapping_prefix` tells them apart.
+    """
+    assignment = _resolve(
+        FOLDER_KEY,
+        metadata_profile=metadata_profile,
+        mappings=[_mapping("acme", "mapped", metadataPrecedence=precedence)],
+    )
+    assert assignment.mapping_prefix is None, (
+        "an exact-key mapping matched a key BENEATH it, which would make the "
+        "trailing slash meaningless and every folder mapping a catch-all"
+    )
+    assert assignment.rejected is False, (
+        "`reject` fired for a mapping that does not govern this key -- an "
+        "exact-key mapping must not fail documents under it"
+    )
+    assert assignment.conflict is False
+    # Falls through to exactly what the deployment did before mappings existed.
+    if metadata_profile:
+        assert assignment.profile == metadata_profile
+        assert assignment.source == SOURCE_METADATA
+    else:
+        assert assignment.profile == "active"
+        assert assignment.source == SOURCE_ACTIVE_PROFILE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+@pytest.mark.parametrize("metadata_profile", [None, "chosen", "mapped"])
+def test_an_exact_key_mapping_governs_its_own_object(precedence, metadata_profile):
+    """And the same entry DOES govern the one object it names, so the mode works."""
+    assignment = _resolve(
+        "acme",
+        metadata_profile=metadata_profile,
+        mappings=[_mapping("acme", "mapped", metadataPrecedence=precedence)],
+    )
+    assert assignment.mapping_prefix == "acme"
+
+
+# ---------------------------------------------------------------------------
+# The same matrix, end to end through the STORE
+# ---------------------------------------------------------------------------
+#
+# Everything above resolves against mapping dicts written inline. That leaves one
+# join untested, and it is the join that failed in a real deployment: the entry an
+# administrator SAVES, read back the way ingest reads it, against the key the
+# upload panel actually creates.
+#
+# Three mappings saved as `bob1`/`bob2`/`bob3` (one per conflict mode) resolved
+# every upload by its own tag with no mapping applied, because a saved prefix with
+# no trailing slash is an exact object key and the uploads landed at
+# `bob1/<file>.pdf`. Each layer was individually correct and the composition was
+# not, so this class is deliberately composed of the real parts: `put()` as the API
+# writes, `list()` as ingest reads, `resolve_config_assignment` as both callers call
+# it. It is the regression test for that deployment, and it is the matrix the
+# feature is actually judged on.
+#
+# UPLOAD_TAGS covers "tagged vs untagged" in the three forms that behave
+# differently -- no tag at all, a tag naming a DIFFERENT profile, and a tag naming
+# the SAME profile the mapping assigns (which is deliberately not a conflict).
+
+UPLOAD_TAGS = [
+    pytest.param(None, id="untagged"),
+    pytest.param("chosen", id="tagged-conflicting"),
+    pytest.param("mapped", id="tagged-agreeing"),
+]
+
+# What a FOLDER-prefix mapping must do, keyed (tag, mode).
+FOLDER_EXPECTATIONS = {
+    (None, "mapping"): ("mapped", SOURCE_PREFIX_MAPPING, False, False),
+    (None, "metadata"): ("mapped", SOURCE_PREFIX_MAPPING, False, False),
+    (None, "reject"): ("mapped", SOURCE_PREFIX_MAPPING, False, False),
+    ("chosen", "mapping"): ("mapped", SOURCE_PREFIX_MAPPING, True, False),
+    ("chosen", "metadata"): ("chosen", SOURCE_METADATA, True, False),
+    ("chosen", "reject"): (None, SOURCE_REJECTED, True, True),
+    ("mapped", "mapping"): ("mapped", SOURCE_PREFIX_MAPPING, False, False),
+    ("mapped", "metadata"): ("mapped", SOURCE_PREFIX_MAPPING, False, False),
+    ("mapped", "reject"): ("mapped", SOURCE_PREFIX_MAPPING, False, False),
+}
+
+
+@pytest.mark.unit
+class TestTheSavedMappingMatrix:
+    """put() -> list() -> resolve, over every tag x conflict-mode x shape."""
+
+    UPLOADED_KEY = "bob1/lending_package.pdf"
+
+    @staticmethod
+    def _saved(prefix, precedence):
+        """One mapping, written and read back through the real store."""
+        store = PrefixMappingStore(_make_table())
+        store.put(
+            prefix,
+            "mapped",
+            metadata_precedence=precedence,
+            actor="admin@example.com",
+        )
+        return store.list()
+
+    @pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+    @pytest.mark.parametrize("tag", UPLOAD_TAGS)
+    @mock_aws
+    def test_a_folder_prefix_mapping_saved_by_the_api(self, tag, precedence):
+        """`bob1/` governs `bob1/<file>`, and every conflict mode is reached."""
+        mappings = self._saved("bob1/", precedence)
+        assert mappings[0]["matchKind"] == "prefix"
+
+        assignment = _resolve(
+            self.UPLOADED_KEY, metadata_profile=tag, mappings=mappings
+        )
+        profile, source, conflict, rejected = FOLDER_EXPECTATIONS[(tag, precedence)]
+        assert assignment.profile == profile
+        assert assignment.source == source
+        assert assignment.conflict is conflict
+        assert assignment.rejected is rejected
+        assert assignment.mapping_prefix == "bob1/"
+
+    @pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+    @pytest.mark.parametrize("tag", UPLOAD_TAGS)
+    @mock_aws
+    def test_an_exact_key_mapping_saved_by_the_api_governs_nothing_under_it(
+        self, tag, precedence
+    ):
+        """`bob1` governs only `bob1`, so NO conflict mode is reached.
+
+        This is the deployment's observed behaviour, pinned: the resolution falls
+        through to the upload's own tag in all nine combinations, and
+        `mapping_prefix` stays None -- which is the only field distinguishing this
+        from "the mapping deferred to the upload".
+        """
+        mappings = self._saved("bob1", precedence)
+        assert mappings[0]["matchKind"] == "exact"
+
+        assignment = _resolve(
+            self.UPLOADED_KEY, metadata_profile=tag, mappings=mappings
+        )
+        assert assignment.mapping_prefix is None
+        assert assignment.conflict is False
+        assert assignment.rejected is False
+        assert assignment.profile == (tag or "active")
+        assert assignment.source == (SOURCE_METADATA if tag else SOURCE_ACTIVE_PROFILE)
+
+    @pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+    @pytest.mark.parametrize("tag", UPLOAD_TAGS)
+    @mock_aws
+    def test_an_exact_key_mapping_saved_by_the_api_governs_its_own_object(
+        self, tag, precedence
+    ):
+        """And it does govern the single object it names, in every mode."""
+        mappings = self._saved("bob1", precedence)
+        assignment = _resolve("bob1", metadata_profile=tag, mappings=mappings)
+        profile, source, conflict, rejected = FOLDER_EXPECTATIONS[(tag, precedence)]
+        assert assignment.profile == profile
+        assert assignment.source == source
+        assert assignment.conflict is conflict
+        assert assignment.rejected is rejected
+        assert assignment.mapping_prefix == "bob1"
+
+    @mock_aws
+    def test_three_mappings_one_per_mode_each_govern_their_own_folder(self):
+        """The deployment's actual setup, spelled correctly.
+
+        One folder per conflict mode, all three saved into one index, all three
+        uploads carrying a tag that conflicts -- which is the scenario where the
+        three modes must visibly differ from each other.
+        """
+        store = PrefixMappingStore(_make_table())
+        for n, precedence in enumerate(["mapping", "metadata", "reject"], start=1):
+            store.put(
+                f"bob{n}/",
+                f"lending{n}",
+                metadata_precedence=precedence,
+                actor="admin@example.com",
+            )
+        mappings = store.list()
+        assert len(mappings) == 3
+
+        outcomes = {
+            key: _resolve(key, metadata_profile="fake-w2", mappings=mappings)
+            for key in (
+                "bob1/lending_package.pdf",
+                "bob2/lending_package.pdf",
+                "bob3/lending_package.pdf",
+            )
+        }
+
+        # mapping wins
+        first = outcomes["bob1/lending_package.pdf"]
+        assert (first.profile, first.source, first.conflict) == (
+            "lending1",
+            SOURCE_PREFIX_MAPPING,
+            True,
+        )
+        # upload metadata wins
+        second = outcomes["bob2/lending_package.pdf"]
+        assert (second.profile, second.source, second.conflict) == (
+            "fake-w2",
+            SOURCE_METADATA,
+            True,
+        )
+        assert second.mapping_prefix == "bob2/", (
+            "the prefix must be recorded even though the mapping lost, or the "
+            "document cannot explain why metadata won"
+        )
+        # refused
+        third = outcomes["bob3/lending_package.pdf"]
+        assert third.rejected is True
+        assert third.source == SOURCE_REJECTED
+        assert "lending3" in third.reason and "fake-w2" in third.reason
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "submission_source,metadata_profile,matches,precedence,"

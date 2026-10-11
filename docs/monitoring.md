@@ -226,7 +226,7 @@ scratch.
 A [config prefix mapping](configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
 assigns a Configuration Profile to everything arriving under an S3 prefix. Because
 that decision happens at ingest and is then invisible in the document's own result,
-it is instrumented: five metrics in the stack's own namespace (`<StackName>`). Three of them have **two emitters** — the queue sender on upload ingest and the reprocess resolver on a re-run — publishing into the same namespace with the same dimension schema, so one alarm covers both paths; `PrefixMappingRejected` and `PrefixMappingConflict` are ingest-only, because a reprocess carries no upload metadata to conflict with.
+it is instrumented: five metrics in the stack's own namespace (`<StackName>`). Three of them have **more than one emitter** — the queue sender on upload ingest and the reprocess resolver on a re-run — publishing into the same namespace with the same dimension schema, so one alarm covers both paths; `PrefixMappingLookupFailed` has a **third**, the upload resolver, for the reason below. `PrefixMappingRejected` and `PrefixMappingConflict` are ingest-only, because a reprocess carries no upload metadata to conflict with.
 
 | Metric | Published when | Dimensions |
 |---|---|---|
@@ -266,6 +266,19 @@ during such a window every "Refuse the conflict" mapping is bypassed, which is e
 why the metric is alarmed rather than only logged. The most common cause is a KMS or
 table-policy change denying `dynamodb:GetItem` on the `ConfigurationTable` to the queue
 sender's role — check that before assuming a transient DynamoDB error.
+
+⚠️ **One of this metric's three emitters is an authorization signal, not just an
+availability one.** The upload resolver reads the mapping set to decide whether the
+caller may write to the destination at all, and the queue sender reads it again seconds
+later to assign the configuration. If the first read fails and the second succeeds, the
+upload was scope-checked against a destination that looked *unmapped* — so it resolved
+to the caller's own profile, in scope — and was then assigned the mapping's profile at
+ingest, which can place a scope-restricted user's document under a profile outside their
+scope. Nothing is wrong with the mapping and nothing fails; the document simply ends up
+somewhere the check would have refused. A `PrefixMappingLookupFailed` whose log line
+came from the upload resolver is therefore worth reviewing against the documents that
+arrived in the same window, which the `ConfigSource` and `ConfigMappingPrefix` fields on
+each tracking row make answerable.
 
 `PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
 been deleted. The document still processes — under the profile its upload named, or the

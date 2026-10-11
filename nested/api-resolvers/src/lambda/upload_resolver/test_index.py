@@ -634,6 +634,73 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         finally:
             index._prefix_mappings.__globals__["_dynamodb"] = original
 
+    def test_an_unreadable_mapping_table_publishes_the_alarmed_metric(self, resolver):
+        """The fail-open above is an AUTHORIZATION window, not only availability.
+
+        This read and `queue_sender`'s happen seconds apart under two roles. If
+        this one fails and that one succeeds, the upload is scope-checked against
+        an apparently unmapped destination -- so it resolves in scope and passes --
+        and is then assigned the mapping's profile at ingest, possibly outside the
+        caller's scope. Allowing the upload is the right trade; leaving the window
+        invisible is not, so this is the third emitter of the alarmed metric and
+        the datum must be DIMENSIONLESS to be in the alarm's time series at all.
+        """
+        index, _ = resolver
+        published = []
+
+        class Boom:
+            def Table(self, _name):
+                raise RuntimeError("throttled")
+
+        class Recorder:
+            def put_metric_data(self, **kwargs):
+                published.append(kwargs)
+
+        original_ddb = index._dynamodb
+        original_cw = index._cloudwatch
+        try:
+            index._prefix_mappings.__globals__["_dynamodb"] = Boom()
+            index._emit.__globals__["_cloudwatch"] = Recorder()
+            assert index._prefix_mappings() == []
+        finally:
+            index._prefix_mappings.__globals__["_dynamodb"] = original_ddb
+            index._emit.__globals__["_cloudwatch"] = original_cw
+
+        assert len(published) == 1
+        assert published[0]["Namespace"] == index.METRIC_NAMESPACE
+        datum = published[0]["MetricData"][0]
+        assert datum["MetricName"] == "PrefixMappingLookupFailed"
+        # `PrefixMappingLookupFailedAlarm` declares no Dimensions, so a dimensioned
+        # datum is a different time series and the alarm would never see it.
+        assert "Dimensions" not in datum
+
+    def test_telemetry_failure_does_not_fail_the_upload(self, resolver):
+        """A metric that cannot be published must not turn into a 500.
+
+        The emitter exists to make a degraded window visible; if it could raise, a
+        CloudWatch outage would convert a successful fail-open into a failed upload
+        -- strictly worse than the invisibility it was added to fix.
+        """
+        index, _ = resolver
+
+        class Boom:
+            def Table(self, _name):
+                raise RuntimeError("throttled")
+
+        class AlsoBroken:
+            def put_metric_data(self, **_kwargs):
+                raise RuntimeError("cloudwatch unavailable")
+
+        original_ddb = index._dynamodb
+        original_cw = index._cloudwatch
+        try:
+            index._prefix_mappings.__globals__["_dynamodb"] = Boom()
+            index._emit.__globals__["_cloudwatch"] = AlsoBroken()
+            assert index._prefix_mappings() == []
+        finally:
+            index._prefix_mappings.__globals__["_dynamodb"] = original_ddb
+            index._emit.__globals__["_cloudwatch"] = original_cw
+
     def test_the_active_profile_route_is_scope_checked(self, resolver):
         """The widest upload shape there is: no `version`, no mapping match.
 

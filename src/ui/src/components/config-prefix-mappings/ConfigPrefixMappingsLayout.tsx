@@ -32,6 +32,7 @@ import useConfigPrefixMappings, {
   MetadataPrecedence,
 } from '../../hooks/use-config-prefix-mappings';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
+import { storedPrefix, type MatchMode } from '../../utils/config-prefix-key';
 
 /**
  * Admin page for config prefix mappings: an S3 prefix in the Input bucket to a
@@ -87,6 +88,7 @@ const PRECEDENCE_LABELS: Record<string, string> = {
 
 interface FormState {
   prefix: string;
+  matchMode: MatchMode;
   configProfile: string;
   configRevision: number | null;
   metadataPrecedence: MetadataPrecedence;
@@ -96,6 +98,9 @@ interface FormState {
 
 const EMPTY_FORM: FormState = {
   prefix: '',
+  // Folder by default: it is what an administrator almost always wants, and it is
+  // the only one of the two that governs uploaded documents at all.
+  matchMode: 'prefix',
   configProfile: '',
   configRevision: null,
   metadataPrecedence: 'mapping',
@@ -137,19 +142,20 @@ const prefixError = (prefix: string): string | null => {
   return null;
 };
 
-/** Which mode the typed prefix selects, shown live so it is never a surprise. */
-const describePrefix = (prefix: string): React.ReactNode => {
-  if (!prefix || prefixError(prefix)) return null;
-  if (prefix.endsWith('/')) {
-    return (
-      <Box color="text-body-secondary">
-        Prefix match: every object whose key starts with <strong>{prefix}</strong>.
-      </Box>
-    );
-  }
+/**
+ * What will be saved, and what it will govern. Shown live, because the stored
+ * value is derived (see `storedPrefix`) and an administrator must not have to
+ * infer it.
+ */
+const describePrefix = (prefix: string, mode: MatchMode): React.ReactNode => {
+  const stored = storedPrefix(prefix, mode);
+  if (!stored || prefixError(stored)) return null;
   return (
     <Box color="text-body-secondary">
-      Exact match: only the single object at <strong>{prefix}</strong>. Add a trailing &lsquo;/&rsquo; to match a folder instead.
+      Saved as <strong>{stored}</strong> —{' '}
+      {mode === 'prefix'
+        ? 'every object whose key starts with that, including documents in sub-folders.'
+        : 'only the single object with exactly that key, and nothing beneath it.'}
     </Box>
   );
 };
@@ -212,7 +218,10 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
     (mapping: ConfigPrefixMapping) => {
       setError(null);
       setForm({
-        prefix: mapping.prefix,
+        // Derived from the stored value, so an existing mapping opens showing the
+        // mode it actually has rather than the default.
+        prefix: mapping.prefix.replace(/\/+$/, ''),
+        matchMode: mapping.prefix.endsWith('/') ? 'prefix' : 'exact',
         configProfile: mapping.configProfile,
         configRevision: mapping.configRevision ?? null,
         metadataPrecedence: (mapping.metadataPrecedence as MetadataPrecedence) ?? 'mapping',
@@ -236,19 +245,22 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
    * disabled while editing, so this only has to hold for the create path.
    */
   const formPrefixError = useMemo(() => {
-    const typed = form.prefix.trim();
-    const invalid = prefixError(typed);
+    // Validated and compared against the value that will be SAVED, not the value
+    // typed: those differ by the derived trailing slash, so checking the typed one
+    // would let `acme` through as new while `acme/` already exists.
+    const stored = storedPrefix(form.prefix, form.matchMode);
+    const invalid = prefixError(stored);
     if (invalid) return invalid;
-    if (!editingPrefix && typed && mappings.some((m) => m.prefix === typed)) {
-      return `A mapping for '${typed}' already exists. Use Edit on that row to change it — saving here would replace its profile, pinned revision and conflict mode.`;
+    if (!editingPrefix && stored && mappings.some((m) => m.prefix === stored)) {
+      return `A mapping for '${stored}' already exists. Use Edit on that row to change it — saving here would replace its profile, pinned revision and conflict mode.`;
     }
     return null;
-  }, [form.prefix, editingPrefix, mappings]);
+  }, [form.prefix, form.matchMode, editingPrefix, mappings]);
 
   const submit = useCallback(async () => {
     setSaving(true);
     const outcome = await saveMapping({
-      prefix: form.prefix.trim(),
+      prefix: storedPrefix(form.prefix, form.matchMode),
       configProfile: form.configProfile,
       configRevision: form.configRevision,
       metadataPrecedence: form.metadataPrecedence,
@@ -534,17 +546,47 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
           <SpaceBetween size="m">
             {error && <Alert type="error">{error}</Alert>}
 
+            {/* The match mode is its own control rather than a trailing slash the
+                administrator is expected to type. See `storedPrefix`: a folder name
+                saved without the slash becomes an exact-object-key mapping that can
+                never match an uploaded document, and nothing afterwards reports
+                that -- the mapping is listed, governs nothing, and every document
+                shows its own upload tag. Making the mode explicit is what keeps
+                both modes reachable without that trap. */}
             <FormField
-              label="S3 prefix"
-              description="Relative to the Input bucket root. End with '/' to match a folder; omit it to match one exact object key."
-              constraintText={describePrefix(form.prefix)}
+              label="What this mapping matches"
+              description="Documents arrive under a folder, so that is almost always the right choice. Exact object key exists for pinning one specific object."
+            >
+              <RadioGroup
+                value={form.matchMode}
+                onChange={({ detail }) => setForm((f) => ({ ...f, matchMode: detail.value as MatchMode }))}
+                items={[
+                  {
+                    value: 'prefix',
+                    label: 'A folder, and everything under it',
+                    description: 'Every document uploaded to this folder or any sub-folder.',
+                  },
+                  {
+                    value: 'exact',
+                    label: 'One exact object key',
+                    description:
+                      'Only the single object whose key matches exactly. Does not match documents inside a folder of the same name.',
+                  },
+                ]}
+              />
+            </FormField>
+
+            <FormField
+              label={form.matchMode === 'prefix' ? 'Folder path' : 'Object key'}
+              description="Relative to the Input bucket root. The trailing '/' is added or removed to match your choice above."
+              constraintText={describePrefix(form.prefix, form.matchMode)}
               errorText={formPrefixError ?? undefined}
             >
               <Input
                 value={form.prefix}
                 disabled={!!editingPrefix}
                 onChange={({ detail }) => setForm((f) => ({ ...f, prefix: detail.value }))}
-                placeholder="acme/invoices/"
+                placeholder={form.matchMode === 'prefix' ? 'acme/invoices' : 'acme/invoices/2026-01-statement.pdf'}
               />
             </FormField>
 

@@ -523,10 +523,23 @@ is the mapping you entered.
 |---|---|
 | Longest match wins | `acme/invoices/` beats `acme/` for `acme/invoices/jan.pdf` |
 | Exact keys outrank prefixes | An entry with no trailing `/` matches that one object key, and wins over any prefix entry however long |
-| The trailing `/` selects the mode | `acme/invoices/` is a folder prefix; `acme/invoices/jan.pdf` is one object. Nothing adds or removes the slash for you |
+| The trailing `/` selects the mode | `acme/invoices/` is a folder prefix; `acme/invoices/jan.pdf` is one object. You pick which in the form — **What this mapping matches** — and the slash is added or removed to match that choice, so the stored value is shown before you save |
 | Matching is case-sensitive | S3 keys are, so `Invoices/` and `invoices/` are different folders and only one of them can be mapped |
 | A disabled mapping never matches | It is kept, so you can turn one off without losing who created it and why |
 | No root mapping | An empty prefix is refused: it would change every unmapped upload in the deployment, which is what the active profile already means |
+
+⚠️ **A folder mapping must be stored with its trailing slash, and that is why the
+form asks which you mean rather than reading the slash you typed.** The two modes are
+one character apart and the failure is silent and total: `bob1` is an *exact object
+key*, so it governs an object literally named `bob1` and governs nothing under
+`bob1/`. Uploads land at `bob1/<filename>`, so such a mapping is stored, listed, and
+never matches anything — every document is processed under the profile its own upload
+named, with no mapping recorded against it. On the document list that is
+indistinguishable from "the mapping deferred to the upload", so the conflict mode
+reads as broken when in fact it was never reached. The **Config source** column is
+what tells the two apart: a mapping that applied shows `Prefix mapping` and names the
+prefix, and a mapping that never matched shows `Upload metadata` with no prefix at
+all.
 
 Two things the table does not make obvious. **An empty prefix set changes nothing** —
 with no mapping matching, a document is processed under the profile its upload named,
@@ -682,7 +695,7 @@ When a document is processed, the configuration version used is recorded:
    | `document-pin` | Kept from the previous run | A reprocess with no explicit profile reused what the document already carried |
    | `explicit-request` | Chosen when reprocessing | A profile named in the Reprocess dialog |
    | `internal-producer` | Pinned by the submitting feature | A `submission-source` producer (Test Studio, the PII anonymizer) pinned its own |
-   | `rejected` | Refused at ingest | A "Refuse the conflict" mapping failed the document; no configuration was assigned |
+   | `rejected` | Refused at ingest | A "Refuse the conflict" mapping failed the document, and no configuration was applied to it. The row still shows the profile the **upload** declared — that is deliberate, since a document with no profile is invisible to every scope-restricted user, including the one whose upload was refused |
 
 4. **UI Display**: The config version appears in the Document List table; the version,
    its source, and the mapping prefix when one applied appear in the Document Details
