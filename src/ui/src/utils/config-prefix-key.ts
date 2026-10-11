@@ -63,10 +63,10 @@ export type MatchMode = 'prefix' | 'exact';
  * upload", so the conflict mode reads as broken rather than as never reached.
  *
  * So the mode is an explicit control in the form and this derives the stored
- * string from it. Normalizing a typed value *without* such a control is what the
- * original design rightly refused, since it makes exact mode unexpressible;
- * deriving it from a deliberate choice keeps both modes reachable and removes the
- * trap.
+ * string from it. Note what that does NOT license: normalizing a typed value with
+ * no such control would make exact mode unexpressible, because there would be no
+ * way left to ask for one. Both modes stay reachable only because the slash
+ * follows a stated choice.
  *
  * Exact mode strips a trailing slash rather than keeping it: a key ending in `/`
  * is an S3 folder pseudo-object, which the ingest Lambda skips outright, so such a
