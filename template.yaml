@@ -7698,9 +7698,12 @@ Resources:
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIG_TABLE: !Ref ConfigurationTable
-          # Namespace for the ``StaleOutputPurgeFailed`` telemetry metric
-          # (issue #719). Matches every other IDP Lambda's convention:
-          # stack-name isolates per-deployment.
+          # Namespace for this Lambda's telemetry: ``StaleOutputPurgeFailed``
+          # (issue #719) and the five prefix-mapping metrics
+          # (``PrefixMappingApplied``, ``Conflict``, ``Rejected``,
+          # ``LookupFailed``, ``Unresolvable``), three of which are alarmed.
+          # Matches every other IDP Lambda's convention: stack-name isolates
+          # per-deployment.
           METRIC_NAMESPACE: !Ref AWS::StackName
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
@@ -7728,10 +7731,14 @@ Resources:
               Action:
                 - s3:DeleteObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
-        # Issue #719: emit ``StaleOutputPurgeFailed`` on partial-purge
-        # failure so operators can alarm on the metric rather than
-        # scraping ERROR logs. Matches the pattern in
-        # queue_processor._put_drift_sample. Fire-and-forget — the emit
+        # Emit this Lambda's metrics so operators can alarm on them rather
+        # than scraping ERROR logs: ``StaleOutputPurgeFailed`` on
+        # partial-purge failure (issue #719), and the five prefix-mapping
+        # metrics, of which ``PrefixMappingLookupFailed``,
+        # ``PrefixMappingUnresolvable`` and ``PrefixMappingRejected`` are
+        # alarmed. Six metrics through one namespace-conditioned grant, so
+        # narrowing this statement affects all of them. Matches the pattern
+        # in queue_processor._put_drift_sample. Fire-and-forget — every emit
         # is wrapped in its own try/except so telemetry can't affect
         # document ingest.
         - Statement:

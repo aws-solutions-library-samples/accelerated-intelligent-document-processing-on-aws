@@ -805,6 +805,46 @@ def test_no_active_profile_is_a_normal_state_not_a_failure():
 
 
 @pytest.mark.unit
+def test_the_no_mapping_path_resolves_the_revision_at_ingest():
+    """The one way a deployment with ZERO mappings behaves differently.
+
+    The profile is what it always was, but the revision is now pinned here rather
+    than backfilled when `queue_processor` dequeues the document. That is the
+    difference an operator planning a promotion while a backlog drains needs to
+    know about, so it is asserted rather than only described -- and it is asserted
+    with no mappings at all, because that is the configuration it applies to and
+    the reason it cannot be called a mapping-only change.
+    """
+    assignment = _resolve(
+        "unmapped/x.pdf", mappings=[], published_revision=lambda _p: 9
+    )
+    assert assignment.source == SOURCE_ACTIVE_PROFILE
+    assert assignment.profile == "active"
+    assert assignment.revision == 9, (
+        "the active-profile path must resolve the published revision at ingest; "
+        "leaving it None defers the pin to dequeue, which splits a queue spanning "
+        "a promotion across two configurations"
+    )
+
+
+@pytest.mark.unit
+def test_an_upload_that_names_a_profile_keeps_its_revision_unresolved():
+    """The deliberate other half of that asymmetry.
+
+    Resolving here would pin a revision the uploader did not choose, so this path
+    passes the revision through as given and `queue_processor` still backfills it.
+    """
+    assignment = _resolve(
+        "unmapped/x.pdf",
+        metadata_profile="chosen",
+        mappings=[],
+        published_revision=lambda _p: 9,
+    )
+    assert assignment.source == SOURCE_METADATA
+    assert assignment.revision is None
+
+
+@pytest.mark.unit
 def test_a_raising_active_profile_lookup_degrades_to_no_pin():
     def boom():
         raise RuntimeError("no")
@@ -831,6 +871,77 @@ def test_scope_is_checked_on_the_resolved_profile_not_the_requested_one():
         "elsewhere/x.pdf", metadata_profile="finance-prod", allowed_profiles=["teamA"]
     )
     assert via_metadata.scope_denied is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "precedence,metadata_profile",
+    [
+        # Each row produces a DIFFERENT status-flag combination on the underlying
+        # assignment, which is what makes the flags a disclosure channel: `reject`
+        # sets source="rejected", a disagreement sets conflict, and the mapping
+        # naming a profile that does not exist sets unresolvable.
+        ("mapping", None),
+        ("mapping", "teamA-prod"),
+        ("metadata", "teamA-prod"),
+        ("reject", "teamA-prod"),
+    ],
+)
+def test_a_scope_denial_discloses_nothing_about_the_mapping(
+    precedence, metadata_profile
+):
+    """An out-of-scope caller must not be able to tell a governed prefix from a
+    bare one, and none of the three status flags names a profile -- which is why
+    they are easy to leave in and why each is a channel on its own.
+
+    `source` is "rejected" exactly when a reject-mode mapping matched, `conflict`
+    only when a mapping disagreed with the caller's own metadata, `unresolvable`
+    only when a mapping named a missing profile. Probing a key and reading any of
+    them walks out the routing policy `listConfigPrefixMappings` is Admin-only to
+    protect. Pinned at the RESOLVER rather than only at the API handler, because
+    the handler's field-by-field nulling is defence in depth and a caller added
+    later would inherit the disclosure by doing nothing wrong.
+    """
+    governed = _resolve(
+        "finance/x.pdf",
+        metadata_profile=metadata_profile,
+        mappings=[_mapping("finance/", "finance-prod", metadataPrecedence=precedence)],
+        allowed_profiles=["teamA"],
+        profile_exists=lambda _p: False,
+    )
+    assert governed.scope_denied is True
+
+    # Byte-identical to the answer for a prefix no mapping governs at all, apart
+    # from the fields that describe the CALLER's own request.
+    assert governed.profile is None
+    assert governed.revision is None
+    assert governed.mapping_prefix is None
+    assert governed.rejected is False
+    assert governed.conflict is False
+    assert governed.unresolvable is False
+    assert governed.source == SOURCE_ACTIVE_PROFILE, (
+        "source still carries the decision a mapping drove; for `reject` it reads "
+        "'rejected', which tells an out-of-scope caller a mapping governs the key"
+    )
+    assert "finance" not in governed.reason
+
+
+@pytest.mark.unit
+def test_a_denial_for_a_governed_prefix_is_indistinguishable_from_an_ungoverned_one():
+    """The property the field list above exists to produce, asserted directly."""
+    governed = _resolve(
+        "finance/x.pdf",
+        metadata_profile="other-prod",
+        mappings=[_mapping("finance/", "finance-prod", metadataPrecedence="reject")],
+        allowed_profiles=["teamA"],
+    )
+    ungoverned = _resolve(
+        "finance/x.pdf", metadata_profile="other-prod", allowed_profiles=["teamA"]
+    )
+    assert governed == ungoverned, (
+        "a caller can tell a reject-mode mapping from no mapping by comparing the "
+        "two denials, which is one probe per prefix against the routing policy"
+    )
 
 
 @pytest.mark.unit

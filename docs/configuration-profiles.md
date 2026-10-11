@@ -541,9 +541,13 @@ what tells the two apart: a mapping that applied shows `Prefix mapping` and name
 prefix, and a mapping that never matched shows `Upload metadata` with no prefix at
 all.
 
-Two things the table does not make obvious. **An empty prefix set changes nothing** —
-with no mapping matching, a document is processed under the profile its upload named,
-or under the active profile, exactly as before. And **a mapping is not a security
+Two things the table does not make obvious. **An empty prefix set does not change
+which profile a document gets** — with no mapping matching, it is processed under the
+profile its upload named, or under the active profile, as before. The revision is the
+one thing that moved: for an upload that names no profile it is now fixed when the
+document arrives rather than when it is picked up for processing, so a backlog
+draining across a revision promotion runs entirely on the revision published when each
+document arrived instead of splitting across both. And **a mapping is not a security
 boundary on ingest**: a principal holding `s3:PutObject` on the Input bucket chooses
 its own prefix, and therefore its own profile, with no API call for anything to check.
 See [RBAC](rbac.md) for what the API layer does and does not enforce.

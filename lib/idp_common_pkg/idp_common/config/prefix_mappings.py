@@ -549,8 +549,12 @@ def resolve_config_assignment(
        of them an override is a defect rather than a preference (see the module
        docstring).
     2. No mapping matches → the metadata's profile if it named one, else the active
-       profile. Byte-for-byte today's behaviour, which is what makes mappings purely
-       additive.
+       profile. The **profile** is what a deployment with no mappings always
+       resolved; the one difference is that an unnamed profile's revision is now
+       resolved here rather than backfilled at dequeue by ``queue_processor``, so a
+       queue spanning a promotion no longer splits across two revisions. ``_active``
+       carries the argument for that; it applies with zero mappings configured, so
+       it is not a mapping-only change and must not be described as one.
     3. A mapping matches and there is no metadata → the mapping.
     4. Both, and they agree → the mapping, and **not** flagged as a conflict.
     5. Both, and they disagree → ``metadataPrecedence`` decides: ``mapping`` (the
@@ -595,50 +599,64 @@ def resolve_config_assignment(
     # is the oracle `getConfigVersions` is scope-filtered to prevent, so the
     # subject of the check is "any profile this answer would disclose", not "the
     # profile this answer selected".
-    # Not computed for an internal producer: `_decide` does not consult mappings at
-    # all on that branch (rule 1), so a mapping that does not govern the document
-    # must not be able to deny it. Unreachable today -- the only caller passing
-    # `submission_source` passes no scope -- but a fifth passing both would get an
-    # internal submission refused by a mapping it had explicitly bypassed, which
-    # contradicts this module's own precedence contract. Also skips a sort of up to
-    # MAX_MAPPINGS entries on a per-document path.
-    matched = None if submission_source else find_match(object_key, mappings or [])
-    disclosed = [
-        p
-        for p in (assignment.profile, matched["configProfile"] if matched else None)
-        if p
-    ]
-    if allowed_profiles is not None and any(
-        not scope_allows(allowed_profiles, p) for p in disclosed
-    ):
-        return ConfigAssignment(
-            # Nothing that could describe a profile survives: not the profile, not
-            # the revision (a pinned number is an attribute of a profile the caller
-            # cannot see), not `reason`, and not `mapping_prefix`.
-            #
-            # `rejected` is dropped deliberately too. A destination that is BOTH
-            # out of scope and in `reject` mode is reported as a scope denial
-            # only: the caller is not entitled to know a mapping governs that
-            # prefix at all, and "you may not write here" is the complete answer
-            # either way. The omission is a choice, not an oversight in the field
-            # list.
-            #
-            # The prefix looks like the caller's own input and is not. The caller
-            # supplied a KEY; the prefix is the mapping that governs it, so
-            # returning it for `a/b/c/d/x.pdf` discloses that the boundary sits at
-            # `a/b/` — a refinement of the input, and one probe at a time it walks
-            # out the routing policy that `listConfigPrefixMappings` is Admin-only
-            # to protect. The caller still learns the actionable part, which is that
-            # the destination is not theirs.
-            source=assignment.source,
-            conflict=assignment.conflict,
-            unresolvable=assignment.unresolvable,
-            scope_denied=True,
-            reason=(
-                "That destination is governed by a Configuration Profile outside "
-                "your allowed configuration scope."
-            ),
-        )
+    # Computed inside this branch, not above it. Only a scope-bearing caller reads
+    # the result, and `find_match` sorts up to MAX_MAPPINGS entries through
+    # `normalize_entry`; the ingest path passes no scope, so hoisting it would pay
+    # that cost once per document and discard it every time.
+    #
+    # Not computed for an internal producer either: `_decide` does not consult
+    # mappings at all on that branch (rule 1), so a mapping that does not govern the
+    # document must not be able to deny it. Unreachable today -- the only caller
+    # passing `submission_source` passes no scope -- but a fifth passing both would
+    # get an internal submission refused by a mapping it had explicitly bypassed,
+    # which contradicts this module's own precedence contract.
+    if allowed_profiles is not None:
+        matched = None if submission_source else find_match(object_key, mappings or [])
+        disclosed = [
+            p
+            for p in (assignment.profile, matched["configProfile"] if matched else None)
+            if p
+        ]
+        if any(not scope_allows(allowed_profiles, p) for p in disclosed):
+            return ConfigAssignment(
+                # ⚠️ **Every field is left at its default, and that is the whole
+                # point of returning a fresh object rather than editing a copy.**
+                # Not the profile, not the revision (a pinned number is an attribute
+                # of a profile the caller cannot see), not `reason`, not
+                # `mapping_prefix`, and not the three status flags.
+                #
+                # The flags are the non-obvious half, because none of them names a
+                # profile and all three disclose one governs: `source` is
+                # ``"rejected"`` exactly when a `reject`-mode mapping matched,
+                # `conflict` is true only when a mapping disagreed with the caller's
+                # own metadata, and `unresolvable` is true only when a mapping named
+                # a profile that does not exist. Any one of them lets an
+                # out-of-scope caller tell "no mapping here" from "a mapping here",
+                # one probe at a time, which is the routing policy
+                # `listConfigPrefixMappings` is Admin-only to protect.
+                #
+                # `rejected` is dropped on the same grounds: a destination that is
+                # BOTH out of scope and in `reject` mode is reported as a scope
+                # denial only, because the caller is not entitled to know a mapping
+                # governs that prefix and "you may not write here" is the complete
+                # answer either way.
+                #
+                # `handle_resolve_prefix_mapping` nulls these fields again on its
+                # way out. That stays, as defence in depth -- but it must not be the
+                # only control, or a caller added later inherits the disclosure by
+                # doing nothing wrong.
+                #
+                # The prefix looks like the caller's own input and is not. The caller
+                # supplied a KEY; the prefix is the mapping that governs it, so
+                # returning it for `a/b/c/d/x.pdf` discloses that the boundary sits
+                # at `a/b/` — a refinement of the input. The caller still learns the
+                # actionable part, which is that the destination is not theirs.
+                scope_denied=True,
+                reason=(
+                    "That destination is governed by a Configuration Profile "
+                    "outside your allowed configuration scope."
+                ),
+            )
     return assignment
 
 

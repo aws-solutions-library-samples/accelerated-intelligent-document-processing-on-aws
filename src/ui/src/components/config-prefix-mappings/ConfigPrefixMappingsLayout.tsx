@@ -162,6 +162,15 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
   const [editingPrefix, setEditingPrefix] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  /**
+   * The save landed but its retention pin did not.
+   *
+   * Kept apart from `error` only to choose the Alert *type*: the mapping exists
+   * and the row is in the table, so a red alert over a saved mapping says the
+   * opposite of the message, which asks the admin to label the revision or
+   * re-save -- a recoverable action, not a failure.
+   */
+  const [savedWithWarning, setSavedWithWarning] = useState(false);
   const [deleting, setDeleting] = useState<ConfigPrefixMapping | null>(null);
   const [deleteInFlight, setDeleteInFlight] = useState(false);
   const [testKey, setTestKey] = useState('');
@@ -180,6 +189,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
 
   const openCreate = useCallback(() => {
     setError(null);
+    setSavedWithWarning(false);
     setForm(EMPTY_FORM);
     setEditingPrefix(null);
     setShowForm(true);
@@ -188,6 +198,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
   const openEdit = useCallback(
     (mapping: ConfigPrefixMapping) => {
       setError(null);
+      setSavedWithWarning(false);
       setForm({
         // Derived from the stored value, so an existing mapping opens showing the
         // mode it actually has rather than the default.
@@ -246,6 +257,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
     // otherwise the admin reads "was saved, but..." over a table with no such row.
     // `preserveError` keeps that warning on screen across the reload.
     const warned = outcome === 'saved-with-warning';
+    setSavedWithWarning(warned);
     if (!warned) setShowForm(false);
     await loadMappings(warned);
   }, [form, saveMapping, loadMappings]);
@@ -423,7 +435,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
       >
         <SpaceBetween size="m">
           {error && (
-            <Alert type="error" dismissible onDismiss={() => setError(null)}>
+            <Alert type={savedWithWarning ? 'warning' : 'error'} dismissible onDismiss={() => setError(null)}>
               {error}
             </Alert>
           )}
@@ -515,7 +527,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
       >
         <Form>
           <SpaceBetween size="m">
-            {error && <Alert type="error">{error}</Alert>}
+            {error && <Alert type={savedWithWarning ? 'warning' : 'error'}>{error}</Alert>}
 
             {/* The match mode is its own control rather than a trailing slash the
                 administrator is expected to type. See `storedPrefix`: a folder name

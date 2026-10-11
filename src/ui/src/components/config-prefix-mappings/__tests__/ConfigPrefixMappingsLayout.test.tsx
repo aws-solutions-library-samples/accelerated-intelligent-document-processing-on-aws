@@ -277,6 +277,14 @@ describe('ConfigPrefixMappingsLayout', () => {
     // Still open, and the warning survived the reload.
     expect(screen.getByText(/Edit mapping for/)).toBeInTheDocument();
     expect(screen.getAllByText(/could not be protected from retention/).length).toBeGreaterThan(0);
+
+    // Rendered as a WARNING, not an error: the mapping exists and its row is in
+    // the table behind the modal, and the message asks the admin to label the
+    // revision or re-save -- a recoverable action. A red alert over a saved
+    // mapping says the opposite of what the text says.
+    const alerts = document.querySelectorAll('[role="alert"], [class*="awsui_alert"]');
+    const warning = Array.from(alerts).some((el) => /could not be protected/.test(el.textContent ?? '') && /warning/.test(el.className));
+    expect(warning).toBe(true);
   });
 
   it('saves a folder name with the trailing slash the mode implies', async () => {
