@@ -9750,7 +9750,7 @@ Resources:
                 "type": "metric",
                 "x": 0,
                 "y": 48,
-                "width": 12,
+                "width": 24,
                 "height": 6,
                 "properties": {
                   "metrics": [

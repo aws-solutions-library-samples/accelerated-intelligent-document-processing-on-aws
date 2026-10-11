@@ -240,12 +240,24 @@ def _emit(metric_name, dimensions=None):
         pass  # telemetry must not affect a reprocess
 
 
+# Per-container cache, keyed on the table name so a changed environment is not
+# served a stale client. Matches `queue_sender`'s `_CONFIG_CLIENTS` and the upload
+# resolver's caches, which is the point: this resolver sits behind API Gateway's
+# 29-second ceiling -- the same reason the seams below are memoized -- and three
+# paths answering one question should not differ in whether they rebuild the
+# client. Called once per request rather than per document, so this is latency
+# across requests rather than per-document cost.
+_CONFIG_MANAGERS: dict = {}
+
+
 def _configuration_manager():
     """A ConfigurationManager over this deployment's table, or ``None``."""
     table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
     if not table_name:
         return None
-    return ConfigurationManager(table_name=table_name)
+    if table_name not in _CONFIG_MANAGERS:
+        _CONFIG_MANAGERS[table_name] = ConfigurationManager(table_name=table_name)
+    return _CONFIG_MANAGERS[table_name]
 
 
 def _version_for_document(

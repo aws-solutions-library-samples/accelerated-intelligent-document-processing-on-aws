@@ -544,3 +544,34 @@ class TestConfigPrefixMappingsOnReprocess:
     def test_no_configuration_table_wired_is_not_an_error(self, monkeypatch):
         monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
         assert index._prefix_mappings() == []
+
+    def test_the_configuration_manager_is_built_once_per_container(
+        self, monkeypatch
+    ):
+        """Memoized like the two sibling paths, and keyed on the table name.
+
+        The key matters as much as the cache: a changed environment must not be
+        served a client pointed at the previous deployment's table, which is a
+        silent wrong-answer rather than a latency cost.
+        """
+        index._CONFIG_MANAGERS.clear()
+        built = []
+
+        class FakeManager:
+            def __init__(self, table_name=None):
+                built.append(table_name)
+
+        monkeypatch.setattr(index, "ConfigurationManager", FakeManager)
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "table-a")
+
+        first = index._configuration_manager()
+        second = index._configuration_manager()
+        assert first is second
+        assert built == ["table-a"]
+
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "table-b")
+        third = index._configuration_manager()
+        assert third is not first
+        assert built == ["table-a", "table-b"]
+
+        index._CONFIG_MANAGERS.clear()

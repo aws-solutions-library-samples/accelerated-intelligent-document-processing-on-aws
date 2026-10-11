@@ -589,11 +589,12 @@ same revision, and nothing records which one asked for it. Release it with an ex
 revision delete.
 
 ⚠️ **That exemption is narrower than "the mapping cannot outlive its configuration",
-and nothing at ingest tells you when it has.** Pruning is one of three ways a pinned
-revision can go: its stored body still expires `DataRetentionInDays` after the revision
+and nothing at ingest tells you when it has.** Pruning is the only one of the three
+ways a revision can go that the pin covers, which leaves two it does not: its stored
+body still expires `DataRetentionInDays` after the revision
 was cut (see [Retention](#retention)), and an Admin can still delete it outright, since
-`deleteConfigProfileRevision` refuses only a profile's *current* revision. In any of
-those cases the mapping keeps resolving at ingest — the profile-existence check does not
+`deleteConfigProfileRevision` refuses only a profile's *current* revision. In either
+case the mapping keeps resolving at ingest — the profile-existence check does not
 look for the revision — and the document fails later, when the configuration is loaded.
 A long-lived mapping pinned to an old revision is therefore worth re-checking against
 the profile's revision history; a mapping left on **Published** has none of this to
@@ -650,7 +651,11 @@ onto a different profile reads a configuration nobody asked for.
 
 ### Monitoring
 
-Five CloudWatch metrics in the stack's namespace, emitted by the queue sender:
+Five CloudWatch metrics in the stack's namespace. They do **not** all come from one
+place: three have more than one emitter, so an alarm on them can fire for a datum the
+queue sender never published. [Monitoring](monitoring.md) has the per-metric list; the
+short form is the queue sender at ingest, the reprocess resolver on a re-run, and the
+upload resolver when it mints a presigned POST.
 
 | Metric | Meaning |
 |---|---|
