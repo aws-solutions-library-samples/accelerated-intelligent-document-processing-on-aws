@@ -507,6 +507,28 @@ integration_tests:
     - python3 scripts/sdlc/integration_test_deployment.py
 
   after_script:
+    # ⚠️ RE-CREDENTIAL FIRST. Everything below runs on the JOB's credentials,
+    # which the runner's credential vendor mints BEFORE the job starts and which
+    # AWS hard-caps at 1h for a chained assume. This job routinely runs 58-63
+    # minutes, so whether after_script has working credentials at all was a coin
+    # flip decided by how long the deploy took. The monitor persists each
+    # session it mints (AFTER_SCRIPT_CREDS_FILE in
+    # scripts/sdlc/integration_test_deployment.py, written at startup and on
+    # every 50-min refresh), and sourcing it is what makes the log capture below
+    # independent of the job's own credential lifetime. after_script cannot
+    # re-assume the role itself: that call needs live credentials, which is
+    # exactly what it has run out of.
+    #
+    # Absent (the script died before the monitor started, or the self-assume
+    # failed), we fall through on the ambient creds — the pre-fix behaviour.
+    - |
+      if [ -f "aws_after_script_creds.env" ]; then
+        . ./aws_after_script_creds.env
+        echo "🔑 Sourced the monitor's refreshed credentials for log capture"
+      else
+        echo "ℹ️ No persisted credentials — using the job's own (expired past ~1h)"
+      fi
+
     # Display CodeBuild logs directly in GitLab runner console
     - |
       if [ -f "pipeline_execution_id.txt" ]; then
@@ -523,16 +545,36 @@ integration_tests:
         # left no record of what it ran, and GitLab then warned about all three
         # missing artifacts. Observed on execution 0eeaf069 (job 28681138), whose
         # BuildAction id resolved fine when queried a few minutes later.
+        #
+        # ⚠️ KEEP THE STDERR. This loop used to send it to /dev/null, which made
+        # a dead credential look exactly like that race — the 2026-10-11 nightly
+        # (job 30872567) spent all 12 attempts re-sending an ExpiredToken and
+        # then reported "no logs were fetched" for a run that passed 12/12.
+        # Retrying cannot fix a credential, so those errors break the loop
+        # immediately and are carried into the artifact instead of being hidden.
         BUILD_ID=""
+        RESOLVE_ERR=""
         for attempt in $(seq 1 12); do
-          BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>/dev/null || echo "")
-          if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
-            [ "$attempt" -gt 1 ] && echo "Resolved CodeBuild id on attempt $attempt"
-            break
+          if BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>resolve_err.txt); then
+            if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
+              [ "$attempt" -gt 1 ] && echo "Resolved CodeBuild id on attempt $attempt"
+              break
+            fi
+            echo "CodeBuild action-execution record not queryable yet (attempt $attempt/12); waiting 5s..."
+          else
+            RESOLVE_ERR=$(tr -d '\r' < resolve_err.txt | grep -v '^$' | tail -2 | tr '\n' ' ')
+            BUILD_ID=""
+            echo "⚠️ list-action-executions FAILED (attempt $attempt/12): $RESOLVE_ERR"
+            case "$RESOLVE_ERR" in
+              *ExpiredToken*|*RequestExpired*|*InvalidClientTokenId*|*UnrecognizedClientException*|*AccessDenied*|*NoCredentialProviders*|*Unable\ to\ locate\ credentials*)
+                echo "   ↳ This is a CREDENTIAL failure, not eventual consistency — retrying cannot help. Stopping."
+                break
+                ;;
+            esac
           fi
-          echo "CodeBuild action-execution record not queryable yet (attempt $attempt/12); waiting 5s..."
           sleep 5
         done
+        rm -f resolve_err.txt
 
         if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
           echo "CodeBuild ID: $BUILD_ID"
@@ -608,10 +650,25 @@ integration_tests:
             printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>No ZAP DAST report for this run: the zapdast probe was skipped (IDP_TEST_ZAP=false or the probe did not run).</p>\n' > zap-report.html
           fi
         else
-          echo "⚠️ Could not resolve the CodeBuild execution for $EXECUTION_ID after 12 attempts (~60s)."
+          echo "⚠️ Could not resolve the CodeBuild execution for $EXECUTION_ID."
           echo "   The build itself is unaffected — this only costs the log/summary artifacts."
           echo "   Look it up manually: aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID"
-          printf 'Could not resolve the CodeBuild execution for pipeline execution %s after 12 attempts (~60s).\nNo logs were fetched. The build result itself is reported by the job status above.\n' "$EXECUTION_ID" > codebuild_logs.txt
+          # Name WHICH failure this was. "after 12 attempts (~60s)" on its own
+          # reads as an eventual-consistency race and sent triage down that path
+          # for a credential expiry; the two need different fixes.
+          {
+            printf 'Could not resolve the CodeBuild execution for pipeline execution %s.\n' "$EXECUTION_ID"
+            if [ -n "$RESOLVE_ERR" ]; then
+              printf '\nThe AWS CLI call itself failed: %s\n' "$RESOLVE_ERR"
+              printf 'That is an API/credential failure, NOT the eventual-consistency race\n'
+              printf 'the retry loop exists for. If it mentions an expired token, the job\n'
+              printf 'outlived its 1h credentials and did not source the persisted session.\n'
+            else
+              printf '\nThe query succeeded but returned no BuildAction record after 12\n'
+              printf 'attempts (~60s) — the eventual-consistency race.\n'
+            fi
+            printf '\nNo logs were fetched. The build result itself is reported by the job status above.\n'
+          } > codebuild_logs.txt
           cp codebuild_logs.txt deployment_summary.txt
           printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>Not collected: the CodeBuild execution could not be resolved.</p>\n' > zap-report.html
         fi
@@ -678,25 +735,46 @@ integration_tests:
 
       job_status, job_url, sha = sys.argv[1:4]
       ok = job_status == "success"
+      # ⚠️ A green job is NOT the same claim as "the suite passed".
+      # integration_test_deployment.py exits 0 on the HANDOFF path too (the
+      # monitor stopped before the pipeline reached a terminal state, on the
+      # 110-min deadline or on a credential expiry it could not refresh), and it
+      # drops this marker when it does. Reporting that as ✅ PASSED asserts
+      # something nobody checked.
+      handed_off = pathlib.Path("monitor_handoff.txt").is_file()
 
       summary = ""
       p = pathlib.Path("deployment_summary.txt")
       if p.is_file():
           summary = p.read_text(errors="replace").strip()
-      # A Slack message caps at 4000 characters and the whole post is rejected past
-      # it, so truncate rather than lose the notification. The rest is in the job
-      # artifacts, which the message links to.
-      if len(summary) > 2000:
-          summary = summary[:2000] + "\n… (truncated — full summary in the job artifacts)"
       if not summary:
           summary = "(no deployment summary was produced — see the job log)"
+      # A Slack message caps at 4000 characters and the whole post is rejected past
+      # it, so truncate rather than lose the notification. The rest is in the job
+      # artifacts, which the message links to. Truncate AFTER the notes below are
+      # attached, so a long summary can never push the handoff warning off the end
+      # — that warning is the part a reader most needs.
       if not ok:
           summary += ("\n\nTriage by bisecting the day's merges: the pipeline's own "
                       "commit is not necessarily the cause.")
+      elif handed_off:
+          summary = (
+              pathlib.Path("monitor_handoff.txt").read_text(errors="replace").strip()
+              + "\n\n" + summary
+          )
+      if len(summary) > 2000:
+          summary = summary[:2000] + "\n… (truncated — full summary in the job artifacts)"
+
+      if not ok:
+          status = "❌ FAILED"
+      elif handed_off:
+          status = "⚠️ UNVERIFIED (monitor handed off)"
+      else:
+          status = "✅ PASSED"
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
-          "status": "✅ PASSED" if ok else "❌ FAILED",
+          "status": status,
           "commit": sha[:8],
           "job_url": job_url,
           "summary": summary,
@@ -712,6 +790,11 @@ integration_tests:
           echo "⚠️ Slack post failed (HTTP error or bad webhook) — deploy result unaffected"
         fi
       fi
+
+    # Shred the persisted session. It is not in `artifacts:` (that list is
+    # explicit paths), but a GitLab runner can reuse a workspace between jobs,
+    # and the next job's deployment zip is built from this directory.
+    - rm -f aws_after_script_creds.env
 
   artifacts:
     when: always
