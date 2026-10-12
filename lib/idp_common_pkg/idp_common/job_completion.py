@@ -17,10 +17,11 @@ an execution ends, and ``queue_sender`` when the gate refuses a document.
 
 **What the gate writes into the ``Files`` map is ``Status.FAILED``,** not the
 document's own ``QUARANTINED`` / ``MALWARE_SCAN_FAILED``. The map is the job-level
-view, and three separate copies of the terminal-status set read it —
-``job_tracker``, ``api_handler.compute_job_status`` and the job list resolver —
-so a value none of them knows would hang the job in a new way. The precise reason
-stays on the document row, where the UI shows it.
+view, and the terminal-status set that reads it is spelled out twice —
+:data:`TERMINAL_FILE_STATUSES` here, which ``job_tracker`` and the gate both go
+through, and the ``terminal`` literal in ``api_handler.compute_job_status`` — so a
+value neither knows would hang the job in a new way. The precise reason stays on
+the document row, where the UI shows it.
 """
 
 import logging

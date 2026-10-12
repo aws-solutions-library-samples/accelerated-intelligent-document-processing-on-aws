@@ -8111,8 +8111,10 @@ Resources:
         Amazon GuardDuty found malware in a document uploaded to this stack's
         input bucket. The document was NOT processed and is quarantined with
         status QUARANTINED; the file itself remains in the input bucket, tagged
-        GuardDutyMalwareScanStatus=THREATS_FOUND. Find it in the web UI's
-        document list to see the threat name, then review and delete the object.
+        GuardDutyMalwareScanStatus=THREATS_FOUND. Find it by its QUARANTINED
+        status in the web UI's document list, then OPEN it - the threat name is
+        on the document's own page, in its malware-scan alert and detail field,
+        not in the list - then review and delete the object.
       Namespace: !Ref AWS::StackName
       MetricName: MalwareScanThreatsFound
       Statistic: Sum

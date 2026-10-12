@@ -11,6 +11,7 @@ storage and retrieval through direct DynamoDB operations, bypassing AppSync.
 import datetime
 import json
 import logging
+import re
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -1481,6 +1482,28 @@ class DocumentDynamoDBService:
             expression_values[value_ref] = value
 
         update_expression = "SET " + ", ".join(set_expressions)
+
+        if condition_expression:
+            # An expression attribute NAME is registered only by a SET clause,
+            # i.e. by an `extra_attributes` key that does NOT begin with ':'. A
+            # condition referencing a name nothing registers is accepted here,
+            # rejected by DynamoDB as a ValidationException, and — because a
+            # caller guarding a compare-and-set necessarily wraps it in
+            # `except` — easy to swallow. The caller then believes its condition
+            # did not hold when in fact it never ran. Raised rather than
+            # repaired: the fix is to decide what the condition should compare,
+            # and silently registering a name would write an attribute the
+            # caller never asked for.
+            unregistered = sorted(
+                set(re.findall(r"#\w+", condition_expression)) - set(expression_names)
+            )
+            if unregistered:
+                raise ValueError(
+                    f"condition_expression references {unregistered}, which "
+                    f"nothing registers. Add the bare attribute name (no ':' "
+                    f"prefix) to extra_attributes so a SET clause registers it; "
+                    f"registered here: {sorted(expression_names)}"
+                )
 
         response = self.client.update_item(
             key=key,

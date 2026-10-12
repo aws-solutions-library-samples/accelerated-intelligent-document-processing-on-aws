@@ -255,8 +255,9 @@ def malware_policy_for(config_version=None, config_revision=None) -> "dict":
     """Read the ``malware_scanning`` policy for one document's configuration.
 
     Read from the document's own Configuration Profile, so the policy applied to
-    a document is the one recorded in the version it was queued under rather than
-    whatever is active when the verdict happens to land.
+    a document is the one in the configuration version pinned at upload rather
+    than whatever is active when the verdict happens to land — which may be
+    minutes later and, for a batch, a different version for every file.
 
     ``allow_unscannable`` needs TWO yeses: the config value and the
     ``AllowUnscannableDocuments`` stack parameter. The config is editable by any
@@ -742,16 +743,16 @@ def handle_scan_result(event):
         # write is a no-op by construction when the condition holds.
         extra_attributes["MalwareScanVersionId"] = verdict_version
     elif verdict_version or stored_version:
-        # One side has a discriminator and the other does not. Report it so the
-        # mismatch is attributable (a row written before version pinning, or an
-        # event missing both version id and ETag), and keep going on the status
-        # clause alone — that preserves the at-least-once guard the condition
-        # exists for, and the "stored equals verdict" compare in
-        # `_handle_verdict_condition_failure` still falls through to the
-        # duplicate path for a true duplicate.
+        # One side has a discriminator and the other does not: GuardDuty omitted
+        # the version from the event, or the bucket is unversioned and the ETag
+        # was absent too. Report it so the mismatch is attributable, and fall
+        # back to the status clause alone — that preserves the at-least-once
+        # guard the condition exists for, and the "stored equals verdict" compare
+        # in `_handle_verdict_condition_failure` still routes a true duplicate to
+        # the duplicate path.
         logger.warning(
-            "Verdict version mismatch for %s: event=%r stored=%r — admitting on "
-            "the status clause alone. If this is sustained, something upstream "
+            "Verdict version mismatch for %s: event=%r stored=%r — falling back "
+            "to the status clause alone. If this is sustained, something upstream "
             "is not supplying the object version.",
             object_key,
             verdict_version,
@@ -806,6 +807,22 @@ def handle_scan_result(event):
                     extra_attributes={
                         ":queued": Status.QUEUED.value,
                         ":verdict_time": verdict_time,
+                        # SET as well as compared, for the same reason as
+                        # MalwareScanVersionId on the admission above: an
+                        # expression attribute NAME is only registered by a SET
+                        # clause, and `update_document_status` registers
+                        # `#<Name>` solely for extra_attributes keys that do not
+                        # begin with ':'. Without this line `#MalwareScanTime`
+                        # reaches DynamoDB undefined and the call raises
+                        # ValidationException on EVERY execution — which the
+                        # except below logs rather than raises, so the row would
+                        # stay QUEUED with nothing in the queue and no way back:
+                        # the retried verdict's own condition wants
+                        # ObjectStatus=MALWARE_SCANNING and would read the row as
+                        # a duplicate. The write is a no-op by construction,
+                        # since the condition only holds when the stored value
+                        # already equals this one.
+                        "MalwareScanTime": verdict_time,
                     },
                 )
             except Exception as revert_error:  # noqa: BLE001
@@ -994,9 +1011,11 @@ def _finalize_job_file_if_job_document(object_key, status):
     ``GET /jobs/<id>`` answers ``IN_PROGRESS`` indefinitely.
 
     ``Status.FAILED`` is what goes into the ``Files`` map rather than the
-    document's own ``QUARANTINED``/``MALWARE_SCAN_FAILED``: three separate copies
-    of the terminal-status set read that map, so a value none of them knows would
-    hang the job in a new way. The precise reason stays on the document row.
+    document's own ``QUARANTINED``/``MALWARE_SCAN_FAILED``: the terminal-status
+    set that reads that map is spelled out twice — ``TERMINAL_FILE_STATUSES`` in
+    ``idp_common.job_completion`` and the ``terminal`` literal in
+    ``api_handler.compute_job_status`` — so a value neither knows would hang the
+    job in a new way. The precise reason stays on the document row.
     """
     parsed = parse_job_document_id(object_key)
     if parsed is None:

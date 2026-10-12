@@ -591,6 +591,13 @@ Resources:
                   # changing that validator for all of them, which is a separate
                   # change with its own blast radius — not something to smuggle
                   # in behind a new feature.
+                  #
+                  # ⚠️ If `scripts/sdlc/validate_service_role_permissions.py`
+                  # ever gains per-action support, THIS is the statement to
+                  # revisit: a deployer who will never set
+                  # MalwareScanning=CREATE_PLAN can already drop this line
+                  # today, as `docs/malware-scanning.md` records under
+                  # "Enabling it".
                   - guardduty:*
                 Resource: '*'
               # UPGRADE-ONLY. No current template declares an AWS::AppSync::*
