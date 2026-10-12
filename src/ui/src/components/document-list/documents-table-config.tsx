@@ -19,6 +19,7 @@ import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
+import { MALWARE_REFUSED_STATUSES } from '../common/malware-scan';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
@@ -533,6 +534,17 @@ export const DocumentsCommonHeader = ({
   const hasClaimableItems = selectedItems.some((item) => item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner);
   // Check if any selected items can be released (has review owner and HITL not completed)
   const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted);
+  // Reprocess re-queues a document directly, bypassing the malware-scanning
+  // ingest gate — the refused file is still in the input bucket, so reprocessing
+  // a quarantined document would push it into OCR and Bedrock. The resolver
+  // refuses it server-side; disabling the button here is so a reviewer finds out
+  // before clicking rather than from an error. ANY refused document in the
+  // selection disables it, because reprocess acts on the whole selection.
+  const refusedSelection = selectedItems.filter((item) => MALWARE_REFUSED_STATUSES.includes((item.objectStatus || '').toUpperCase()));
+  const reprocessDisabledReason =
+    refusedSelection.length > 0
+      ? `${refusedSelection.length} selected document(s) were refused by malware scanning and cannot be reprocessed. Delete them, or re-upload an unprotected copy of a file GuardDuty could not read.`
+      : null;
 
   const downloadMenuItems = buildDownloadMenuItems(
     selectedItems,
@@ -592,11 +604,11 @@ export const DocumentsCommonHeader = ({
             </span>
           )}
           {onReprocess && (
-            <span title={destructiveDisabledReason || 'Reprocess selected documents'}>
+            <span title={destructiveDisabledReason || reprocessDisabledReason || 'Reprocess selected documents'}>
               <Button
                 iconName="redo"
                 variant="normal"
-                disabled={!!destructiveDisabledReason || !hasSelectedItems}
+                disabled={!!destructiveDisabledReason || !!reprocessDisabledReason || !hasSelectedItems}
                 onClick={onReprocess}
                 ariaLabel="Reprocess"
               />

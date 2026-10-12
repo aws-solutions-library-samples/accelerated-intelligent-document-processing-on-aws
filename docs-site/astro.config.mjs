@@ -258,6 +258,7 @@ export default defineConfig({
           label: "Planning & Security",
           items: [
             { label: "Threat Model", slug: "threat-model" },
+            { label: "Malware Scanning", slug: "malware-scanning" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",

@@ -11,14 +11,16 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg"))
 from idp_common.models import Status
 
-# Mock idp_common before importing index
+# Mock idp_common before importing index. `job_completion` is deliberately NOT
+# mocked: it holds the all-files-terminal check and the zip build that this
+# handler's behaviour is almost entirely made of, so stubbing it would leave
+# these tests asserting against a MagicMock rather than the logic.
 mock_job_service = MagicMock()
 mock_job_service_module = MagicMock()
 mock_job_service_module.create_job_service = MagicMock(return_value=mock_job_service)
 mock_models_module = MagicMock()
 mock_models_module.Status = Status
 
-sys.modules["idp_common"] = MagicMock()
 sys.modules["idp_common.job_service"] = mock_job_service_module
 sys.modules["idp_common.models"] = mock_models_module
 
@@ -171,11 +173,20 @@ class TestHandler:
 
 
 class TestCreateResultsZip:
-    """Tests for create_results_zip function."""
+    """Tests for the shared zip builder, exercised through this handler.
+
+    The function itself now lives in ``idp_common.job_completion`` so the ingest
+    malware gate can finalize a job file for a document that never ran a workflow.
+    Its own unit tests are in ``lib/idp_common_pkg/tests/unit/test_job_completion.py``;
+    these two stay here because they pin the wiring — the bucket this handler
+    passes and the key it writes.
+    """
 
     def test_creates_zip_from_output_files(self, mock_s3):
         """Test ZIP is created from all files in job prefix."""
-        from index import create_results_zip
+        import index
+
+        from idp_common.job_completion import create_results_zip
 
         mock_s3.list_objects_v2.return_value = {
             "Contents": [
@@ -185,7 +196,7 @@ class TestCreateResultsZip:
         }
         mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"content")}
 
-        create_results_zip("uuid")
+        assert create_results_zip("uuid", mock_s3, index.OUTPUT_BUCKET) is True
 
         mock_s3.put_object.assert_called_once()
         call_args = mock_s3.put_object.call_args
@@ -194,10 +205,12 @@ class TestCreateResultsZip:
 
     def test_handles_empty_output_files(self, mock_s3):
         """Test ZIP creation handles case with no output files."""
-        from index import create_results_zip
+        import index
+
+        from idp_common.job_completion import create_results_zip
 
         mock_s3.list_objects_v2.return_value = {}
 
-        create_results_zip("uuid")
+        assert create_results_zip("uuid", mock_s3, index.OUTPUT_BUCKET) is False
 
         mock_s3.put_object.assert_not_called()

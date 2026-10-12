@@ -33,6 +33,27 @@ The solution automatically creates an integrated dashboard that displays:
 
 ![Throughput Metrics Dashboard](../images/Dashboard2.png)
 
+### Malware Scanning (ingest gate)
+
+Present on every deployment, and flat unless `MalwareScanning` is enabled — the
+metrics are only emitted by the ingest gate. All six are in the stack's own
+namespace (`<StackName>`):
+
+- **`MalwareScanClean`**: admitted after a clean GuardDuty scan
+- **`MalwareScanThreatsFound`**: a detection; the document was quarantined and
+  never processed
+- **`MalwareScanUnscannableBlocked`**: refused because no verdict was obtainable
+- **`MalwareScanUnscannableAllowed`**: admitted *without* a verdict, under the
+  configured policy — worth watching, because these documents were not scanned
+- **`MalwareScanVerdictBeforeIngest`**: a verdict arrived ahead of the upload
+  event and the delivery was retried. A few are normal; a sustained rate means
+  verdicts are outrunning EventBridge
+- **`MalwareScanVerdictDuplicate`**: GuardDuty re-delivered a verdict already
+  applied. Expected — delivery is at-least-once — and harmless
+
+See [malware-scanning.md](./malware-scanning.md) for what each outcome means and
+what to do about it.
+
 ### Error Tracking
 
 - **Workflow Failures**: Step Function execution failures with error categorization
@@ -647,6 +668,14 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 `INSUFFICIENT_DATA` makes a **broken** alarm indistinguishable from a quiet one
 (see the `WorkflowErrorsAlarm` note below).
 
+Most of them send no recovery notification — the majority set only
+`AlarmActions`, so returning to `OK` is silent. The ones that *do* notify on
+recovery are the four DLQ-depth alarms plus the reporting-rollup and
+circuit-breaker alarms, where "it is draining again" or "Bedrock is healthy
+again" is itself the information an operator is waiting for. For a count-of-events
+alarm there is no such moment: recovery just means the five-minute window moved
+on.
+
 | Alarm | Fires when | Topic | Tuned by |
 |---|---|---|---|
 | `WorkflowErrorsAlarm` | Failed Step Functions executions ≥ threshold in 5 min | `AlertsTopic` | `ErrorThreshold` (default `1`) |
@@ -665,6 +694,8 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript within 15 min — sustained write contention on one job record, or reads that keep failing. These messages are gone | `AlertsTopic` | — |
 | `AgentTranscriptDrainIncompleteAlarm` | Ten or more transcript writes left unfinished within 15 min when the agents that queued them closed. Distinct from the row above: these writes were not cancelled and often complete on the next thaw, so the transcript may be late rather than incomplete | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
+| `<stack>-malware-threats-found` | Amazon GuardDuty found malware in any uploaded document within 5 min. Created only when `MalwareScanning` is not `DISABLED` | `AlertsTopic` | Threshold is fixed at ≥ 1 — one infected upload is an incident |
+| `<stack>-malware-unscannable-documents` | More than four documents refused for want of a scan verdict within 15 min. Created only when `MalwareScanning` is not `DISABLED` | `AlertsTopic` | Threshold is fixed at > 4 |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
 `AlertsTopic` carries the display name **Workflow Alerts**.

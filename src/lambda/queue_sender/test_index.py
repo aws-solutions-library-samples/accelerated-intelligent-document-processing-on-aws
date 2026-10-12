@@ -9,11 +9,34 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# The real Status enum, before idp_common is stubbed below. Mocking it would make
+# every status assertion here compare one MagicMock attribute against another,
+# which passes whatever the handler stores — and what the handler stores IS the
+# behaviour under test for the malware gate.
+sys.path.insert(
+    0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg")
+)
+from idp_common.job_completion import parse_job_document_id  # noqa: E402
+from idp_common.models import Status  # noqa: E402
+
 # idp_common and aws_xray_sdk are heavy/AWS-dependent; mock them before import.
 sys.modules["idp_common"] = MagicMock()
-sys.modules["idp_common.models"] = MagicMock()
+mock_models_module = MagicMock()
+mock_models_module.Status = Status
+sys.modules["idp_common.models"] = mock_models_module
 sys.modules["idp_common.docs_service"] = MagicMock()
 sys.modules["idp_common.document_versions"] = MagicMock()
+sys.modules["idp_common.job_service"] = MagicMock()
+
+# `parse_job_document_id` is pure, so the real one is used: a stub would make the
+# "is this a /Jobs document" question answer whatever the test says, and getting
+# that wrong is how a refused job file hangs its whole batch.
+# `finalize_job_file` IS stubbed, so these tests can assert the handler calls it
+# with the right arguments; its own behaviour is covered by
+# lib/idp_common_pkg/tests/unit/test_job_completion.py.
+mock_job_completion = MagicMock()
+mock_job_completion.parse_job_document_id = parse_job_document_id
+sys.modules["idp_common.job_completion"] = mock_job_completion
 
 mock_xray_core = MagicMock()
 # capture() is used as a decorator; make it a pass-through.
@@ -323,3 +346,1360 @@ class TestReuploadCleanup:
             index.handler(make_event("doc.pdf"), None)
 
         assert call_order == ["purge", "create_document", "send_message"]
+
+
+# --- Malware-scanning ingest gate --------------------------------------------
+#
+# Every test below drives `index.handler` rather than the helpers, because the
+# property that matters is end-to-end: for a given event and configuration, does
+# a document reach SQS or not. A test that called `decide_admission` alone would
+# pass while the handler ignored its answer.
+
+
+def make_scan_result_event(
+    key: str = "doc.pdf",
+    bucket: str = "test-input-bucket",
+    scan_status: str = "COMPLETED",
+    result_status: str = "NO_THREATS_FOUND",
+    threats=None,
+    status_reasons=None,
+) -> dict:
+    """A GuardDuty 'Object Scan Result' event, shaped as the service sends it."""
+    return {
+        "detail-type": "GuardDuty Malware Protection Object Scan Result",
+        "source": "aws.guardduty",
+        "time": "2026-10-11T00:00:00Z",
+        "detail": {
+            "schemaVersion": "1.0",
+            "scanStatus": scan_status,
+            "resourceType": "S3_OBJECT",
+            "s3ObjectDetails": {
+                "bucketName": bucket,
+                "objectKey": key,
+                "eTag": "etag",
+                "versionId": "vid",
+                "s3Throttled": False,
+            },
+            "scanResultDetails": {
+                "scanResultStatus": result_status,
+                "threats": threats,
+                "statusReasons": status_reasons,
+            },
+        },
+    }
+
+
+class ConditionalCheckFailed(Exception):
+    """Stands in for idp_common's DynamoDBError on a lost compare-and-set.
+
+    The handler branches on the ``error_code`` attribute rather than the
+    exception class, so this reproduces the shape it actually reads.
+    """
+
+    def __init__(self):
+        super().__init__("The conditional request failed")
+        self.error_code = "ConditionalCheckFailedException"
+
+
+def _mock_document(key="doc.pdf"):
+    doc = MagicMock()
+    doc.config_version = "v1"
+    doc.config_revision = None
+    doc.id = key
+    doc.input_key = key
+    doc.to_json.return_value = "{}"
+    doc.malware_scan_status = None
+    doc.malware_scan_result = None
+    doc.malware_scan_threat = None
+    doc.malware_scan_reasons = []
+    doc.malware_scan_time = None
+    doc.malware_scan_version_id = None
+    return doc
+
+
+@pytest.mark.unit
+class TestGateIsOffByDefault:
+    """With MalwareScanning DISABLED nothing about ingest changes.
+
+    This is the property the whole feature's safety rests on: every existing
+    deployment keeps today's behaviour byte for byte, so the gate cannot break an
+    ingest path by being merged.
+    """
+
+    def test_upload_is_queued_immediately(self):
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", False),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            response = index.handler(make_event("doc.pdf"), None)
+
+        assert doc.status == Status.QUEUED
+        assert "held_for_malware_scan" not in response
+        mock_doc_service.create_document.assert_called_once()
+        mock_sqs.send_message.assert_called_once()
+
+    def test_a_verdict_arriving_anyway_is_refused_not_acted_on(self):
+        """A stale rule, or a stack switched to DISABLED mid-flight.
+
+        Admitting on the strength of it would be acting on a gate this stack no
+        longer claims to run, and the document row would move without anyone
+        having asked for scanning.
+        """
+        import index
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", False),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+        ):
+            response = index.handler(make_scan_result_event(), None)
+
+        assert response["skipped"] == "scanning_disabled"
+        mock_sqs.send_message.assert_not_called()
+        mock_doc_service.update_document_status.assert_not_called()
+
+
+@pytest.mark.unit
+class TestGateHoldsTheUpload:
+    """With scanning enabled an upload is recorded but NOT enqueued."""
+
+    def _run(self, key="doc.pdf"):
+        import index
+
+        doc = _mock_document(key)
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "MALWARE_SCANNING_MODE", "CREATE_PLAN"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            response = index.handler(make_event(key), None)
+        return response, doc, mock_sqs, mock_doc_service
+
+    def test_document_is_created_in_malware_scanning(self):
+        response, doc, _, mock_doc_service = self._run()
+        assert doc.status == Status.MALWARE_SCANNING
+        assert response["held_for_malware_scan"] is True
+        mock_doc_service.create_document.assert_called_once()
+
+    def test_nothing_is_enqueued(self):
+        """The whole point: no SQS message means no Step Functions execution, so
+        an infected file's bytes never reach OCR, image rendering or Bedrock."""
+        _, _, mock_sqs, _ = self._run()
+        mock_sqs.send_message.assert_not_called()
+
+    def test_the_stale_output_purge_still_runs_on_upload(self):
+        """#719 is about the key's previous occupant, which this upload has
+        already replaced — so it must happen now, not when the verdict lands."""
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3") as mock_s3,
+            patch.object(index, "delete_current_output_objects") as mock_purge,
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_purge.return_value = 2
+            index.handler(make_event("doc.pdf"), None)
+
+        mock_purge.assert_called_once_with(
+            mock_s3, "test-output-bucket", "doc.pdf", subprefixes=("pages/",)
+        )
+
+
+@pytest.mark.unit
+class TestValidationObjectIsNotADocument:
+    """GuardDuty PUTs a probe object into the protected bucket to prove it can
+    write. It arrives as an ordinary Object Created event, and without a skip it
+    becomes a phantom document in the UI — one per stack, and another every time
+    the plan revalidates."""
+
+    def test_upload_of_the_probe_object_is_skipped(self):
+        import index
+
+        with (
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "delete_current_output_objects") as mock_purge,
+            patch.object(index.Document, "from_s3_event") as mock_from_event,
+        ):
+            response = index.handler(
+                make_event("malware-protection-resource-validation-object"), None
+            )
+
+        assert response["skipped"] == "malware_validation_object"
+        mock_sqs.send_message.assert_not_called()
+        mock_doc_service.create_document.assert_not_called()
+        mock_from_event.assert_not_called()
+        mock_purge.assert_not_called()
+
+    def test_a_prefixed_probe_object_is_also_skipped(self):
+        """A plan scoped to object prefixes writes the probe under each prefix,
+        so matching only the bucket-root form would reintroduce the phantom."""
+        import index
+
+        with (
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index.Document, "from_s3_event"),
+        ):
+            response = index.handler(
+                make_event("incoming/malware-protection-resource-validation-object"),
+                None,
+            )
+
+        assert response["skipped"] == "malware_validation_object"
+        mock_doc_service.create_document.assert_not_called()
+
+    def test_the_skip_does_not_depend_on_scanning_being_enabled(self):
+        """In GATE_ONLY the plan is managed outside this stack and can be
+        attached at any time, so the probe can arrive while this stack's own
+        parameter still reads DISABLED."""
+        import index
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", False),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index.Document, "from_s3_event"),
+        ):
+            response = index.handler(
+                make_event("malware-protection-resource-validation-object"), None
+            )
+
+        assert response["skipped"] == "malware_validation_object"
+        mock_doc_service.create_document.assert_not_called()
+
+    def test_a_verdict_for_the_probe_object_is_ignored(self):
+        import index
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "document_service") as mock_doc_service,
+        ):
+            response = index.handler(
+                make_scan_result_event(
+                    key="malware-protection-resource-validation-object"
+                ),
+                None,
+            )
+
+        assert response["skipped"] == "malware_validation_object"
+        mock_doc_service.update_document_status.assert_not_called()
+
+
+@pytest.mark.unit
+class TestAdmissionPolicy:
+    """`decide_admission` is the policy, and it DEFAULT-DENIES.
+
+    Driven directly because it is pure; the handler's use of its answer is
+    covered by TestVerdictHandling below.
+    """
+
+    def test_a_completed_clean_scan_admits(self):
+        import index
+
+        assert index.decide_admission("COMPLETED", "NO_THREATS_FOUND", False) == (
+            Status.QUEUED,
+            "clean",
+        )
+
+    def test_threats_found_quarantines_regardless_of_the_unscannable_policy(self):
+        """`allow_unscannable` must not be readable as 'allow anything'."""
+        import index
+
+        for allow in (False, True):
+            assert index.decide_admission("COMPLETED", "THREATS_FOUND", allow) == (
+                Status.QUARANTINED,
+                "threats_found",
+            )
+
+    @pytest.mark.parametrize(
+        "scan_status,result_status",
+        [
+            ("SKIPPED", "UNSUPPORTED"),
+            ("SKIPPED", "ACCESS_DENIED"),
+            ("FAILED", "FAILED"),
+            # Unrecognised values, which is what a future GuardDuty API addition
+            # or a malformed event looks like from here.
+            ("COMPLETED", ""),
+            ("", ""),
+            ("COMPLETED", "SOME_FUTURE_STATUS"),
+            # The documented pair disagreeing: a payload this code does not
+            # understand, so it must not be read as clean.
+            ("SKIPPED", "NO_THREATS_FOUND"),
+        ],
+    )
+    def test_everything_else_is_blocked_when_failing_closed(
+        self, scan_status, result_status
+    ):
+        import index
+
+        status, reason = index.decide_admission(scan_status, result_status, False)
+        assert status == Status.MALWARE_SCAN_FAILED
+        assert reason == "unscannable_blocked"
+
+    @pytest.mark.parametrize(
+        "scan_status,result_status",
+        [("SKIPPED", "UNSUPPORTED"), ("FAILED", "FAILED"), ("COMPLETED", "")],
+    )
+    def test_the_same_cases_are_admitted_when_failing_open(
+        self, scan_status, result_status
+    ):
+        import index
+
+        status, reason = index.decide_admission(scan_status, result_status, True)
+        assert status == Status.QUEUED
+        assert reason == "unscannable_allowed"
+
+
+@pytest.mark.unit
+class TestTheUnscannableCeiling:
+    """The config policy is Admin-editable from the web UI; the stack parameter
+    is not. So `on_unscannable: allow` must be unable to admit anything on its
+    own, or the posture is one UI edit deep."""
+
+    def _allow(self, ceiling, config_value):
+        import index
+
+        fake_config = {"malware_scanning": {"on_unscannable": config_value}}
+        with (
+            patch.object(index, "ALLOW_UNSCANNABLE_CEILING", ceiling),
+            patch.dict(
+                sys.modules,
+                {"idp_common.config": MagicMock(get_config=lambda **kw: fake_config)},
+            ),
+        ):
+            return index.malware_policy_for()["allow_unscannable"]
+
+    def test_config_allow_with_the_ceiling_down_is_refused(self):
+        assert self._allow(ceiling=False, config_value="allow") is False
+
+    def test_config_allow_with_the_ceiling_up_is_honoured(self):
+        assert self._allow(ceiling=True, config_value="allow") is True
+
+    def test_config_block_with_the_ceiling_up_still_blocks(self):
+        assert self._allow(ceiling=True, config_value="block") is False
+
+    def test_an_absent_config_section_blocks(self):
+        import index
+
+        with (
+            patch.object(index, "ALLOW_UNSCANNABLE_CEILING", True),
+            patch.dict(
+                sys.modules,
+                {"idp_common.config": MagicMock(get_config=lambda **kw: {})},
+            ),
+        ):
+            assert index.malware_policy_for()["allow_unscannable"] is False
+
+    def test_an_unreadable_config_blocks(self):
+        """An unreadable policy is not a permissive one."""
+        import index
+
+        def boom(**kwargs):
+            raise RuntimeError("DynamoDB unavailable")
+
+        with (
+            patch.object(index, "ALLOW_UNSCANNABLE_CEILING", True),
+            patch.dict(sys.modules, {"idp_common.config": MagicMock(get_config=boom)}),
+        ):
+            assert index.malware_policy_for()["allow_unscannable"] is False
+
+
+@pytest.mark.unit
+class TestVerdictHandling:
+    """What the handler does with each verdict, end to end."""
+
+    def _run(self, event, allow_unscannable=False, key="doc.pdf"):
+        import index
+
+        doc = _mock_document(key)
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "ALERTS_TOPIC_ARN", "arn:aws:sns:us-east-1:1:alerts"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={
+                    "allow_unscannable": allow_unscannable,
+                    "alert_on_block": True,
+                },
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = doc
+            response = index.handler(event, None)
+        return response, doc, mock_sqs, mock_sns, mock_cw, mock_doc_service
+
+    def test_a_clean_verdict_enqueues_the_document(self):
+        response, doc, mock_sqs, _, mock_cw, mock_doc_service = self._run(
+            make_scan_result_event()
+        )
+
+        assert response["queued"] is True
+        assert response["malware_verdict"] == "clean"
+        assert doc.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+        mock_doc_service.update_document_status.assert_called_once()
+        assert "MalwareScanClean" in str(mock_cw.put_metric_data.call_args_list)
+
+    def test_the_transition_is_a_compare_and_set(self):
+        """GuardDuty delivers at least once, so an unconditional write would let
+        a duplicate verdict enqueue the same document twice."""
+        _, _, _, _, _, mock_doc_service = self._run(make_scan_result_event())
+
+        kwargs = mock_doc_service.update_document_status.call_args.kwargs
+        assert kwargs["condition_expression"] == (
+            "attribute_exists(PK) AND #ObjectStatus = :scanning "
+            "AND #MalwareScanVersionId = :verdict_version"
+        )
+        assert kwargs["extra_attributes"][":scanning"] == "MALWARE_SCANNING"
+
+    def test_the_condition_also_pins_the_object_version(self):
+        """The status clause alone would let a clean verdict for one upload admit
+        a different one — see TestSameKeyReuploadRace below."""
+        _, _, _, _, _, mock_doc_service = self._run(make_scan_result_event())
+
+        kwargs = mock_doc_service.update_document_status.call_args.kwargs
+        assert (
+            "#MalwareScanVersionId = :verdict_version" in kwargs["condition_expression"]
+        )
+        # "vid" is what make_scan_result_event puts in s3ObjectDetails.versionId.
+        assert kwargs["extra_attributes"][":verdict_version"] == "vid"
+        # SET as well as compared, because an expression attribute NAME has to be
+        # registered by the SET clause; referencing it only in the condition makes
+        # DynamoDB reject the request as malformed.
+        assert kwargs["extra_attributes"]["MalwareScanVersionId"] == "vid"
+
+    def test_the_verdict_and_the_status_land_in_one_write(self):
+        """Two writes would leave a window where the UI shows QUARANTINED with no
+        threat name to display."""
+        _, _, _, _, _, mock_doc_service = self._run(
+            make_scan_result_event(
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+        )
+
+        assert mock_doc_service.update_document_status.call_count == 1
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert extra["MalwareScanResult"] == "THREATS_FOUND"
+        assert extra["MalwareScanThreat"] == "EICAR-Test-File (not a virus)"
+        assert extra["MalwareScanStatus"] == "COMPLETED"
+        assert extra["MalwareScanTime"] == "2026-10-11T00:00:00Z"
+
+    def test_the_clean_verdict_is_recorded_too(self):
+        """ "The scan ran and found nothing" is the observation an auditor needs,
+        and without it an absent verdict is ambiguous between clean and never
+        scanned."""
+        _, doc, _, _, _, mock_doc_service = self._run(make_scan_result_event())
+
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert extra["MalwareScanResult"] == "NO_THREATS_FOUND"
+        assert doc.malware_scan_result == "NO_THREATS_FOUND"
+
+    def test_threats_found_quarantines_and_does_not_enqueue(self):
+        response, doc, mock_sqs, mock_sns, mock_cw, _ = self._run(
+            make_scan_result_event(
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+        )
+
+        assert response["queued"] is False
+        assert doc.status == Status.QUARANTINED
+        mock_sqs.send_message.assert_not_called()
+        mock_sns.publish.assert_called_once()
+        assert "MalwareScanThreatsFound" in str(mock_cw.put_metric_data.call_args_list)
+
+    def test_the_alert_names_the_threat_and_the_object(self):
+        """An operator reading the alert must not have to go and find out what
+        was detected or where it is."""
+        _, _, _, mock_sns, _, _ = self._run(
+            make_scan_result_event(
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+        )
+
+        message = mock_sns.publish.call_args.kwargs["Message"]
+        assert "EICAR-Test-File (not a virus)" in message
+        assert "s3://test-input-bucket/doc.pdf" in message
+        assert "QUARANTINED" in message
+
+    def test_an_unscannable_document_is_blocked_by_default(self):
+        response, doc, mock_sqs, mock_sns, mock_cw, _ = self._run(
+            make_scan_result_event(
+                scan_status="SKIPPED",
+                result_status="UNSUPPORTED",
+                status_reasons=["PASSWORD_PROTECTED"],
+            )
+        )
+
+        assert doc.status == Status.MALWARE_SCAN_FAILED
+        assert response["malware_verdict"] == "unscannable_blocked"
+        mock_sqs.send_message.assert_not_called()
+        mock_sns.publish.assert_called_once()
+        assert "PASSWORD_PROTECTED" in mock_sns.publish.call_args.kwargs["Message"]
+        assert "MalwareScanUnscannableBlocked" in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+    def test_an_unscannable_document_is_admitted_when_allowed_and_still_alerts(self):
+        """Admitted under an explicit policy, and still worth saying out loud: an
+        unscanned document went into the pipeline."""
+        response, doc, mock_sqs, mock_sns, mock_cw, _ = self._run(
+            make_scan_result_event(
+                scan_status="SKIPPED",
+                result_status="UNSUPPORTED",
+                status_reasons=["PASSWORD_PROTECTED"],
+            ),
+            allow_unscannable=True,
+        )
+
+        assert doc.status == Status.QUEUED
+        assert response["malware_verdict"] == "unscannable_allowed"
+        mock_sqs.send_message.assert_called_once()
+        mock_sns.publish.assert_called_once()
+        assert "ADMITTED" in mock_sns.publish.call_args.kwargs["Message"]
+        assert "MalwareScanUnscannableAllowed" in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+    def test_a_verdict_for_another_bucket_is_ignored(self):
+        response, _, mock_sqs, _, _, mock_doc_service = self._run(
+            make_scan_result_event(bucket="someone-elses-bucket")
+        )
+
+        assert response["skipped"] == "other_bucket"
+        mock_sqs.send_message.assert_not_called()
+        mock_doc_service.update_document_status.assert_not_called()
+
+    def test_a_verdict_with_no_object_details_is_ignored(self):
+        import index
+
+        event = make_scan_result_event()
+        event["detail"]["s3ObjectDetails"] = {}
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "document_service") as mock_doc_service,
+        ):
+            response = index.handler(event, None)
+
+        assert response["skipped"] == "malformed_scan_result"
+        mock_doc_service.update_document_status.assert_not_called()
+
+
+@pytest.mark.unit
+class TestVerdictDeliveredMoreThanOnce:
+    """GuardDuty's at-least-once delivery, and the upload/verdict race."""
+
+    def _run_with_condition_failure(self, existing_status, key="doc.pdf"):
+        """The row exists and is no longer MALWARE_SCANNING: a duplicate verdict."""
+        import index
+
+        doc = _mock_document(key)
+        doc.status = existing_status
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            mock_doc_service.get_document.return_value = doc
+            response = index.handler(make_scan_result_event(key=key), None)
+        return response, mock_sqs, mock_sns, mock_cw
+
+    def _expect_raise(self, key="doc.pdf"):
+        """Same setup, but the row is ABSENT so the handler must raise.
+
+        A separate helper rather than a try/except in the one above: a helper
+        that returns either a response or an exception makes every caller
+        re-discover which it got, and a caller that forgot to check would assert
+        nothing.
+        """
+        import index
+
+        doc = _mock_document(key)
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            mock_doc_service.get_document.return_value = None
+            with pytest.raises(index.ScanVerdictBeforeIngestError) as caught:
+                index.handler(make_scan_result_event(key=key), None)
+        return caught.value, mock_sqs, mock_cw
+
+    def test_a_duplicate_verdict_does_not_enqueue_twice(self):
+        """The document is already QUEUED, so this delivery must do nothing."""
+        response, mock_sqs, mock_sns, mock_cw = self._run_with_condition_failure(
+            Status.QUEUED
+        )
+
+        assert response["duplicate"] is True
+        mock_sqs.send_message.assert_not_called()
+        mock_sns.publish.assert_not_called()
+        assert "MalwareScanVerdictDuplicate" in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+    def test_a_verdict_for_an_already_quarantined_document_does_nothing(self):
+        response, mock_sqs, mock_sns, _ = self._run_with_condition_failure(
+            Status.QUARANTINED
+        )
+
+        assert response["duplicate"] is True
+        mock_sqs.send_message.assert_not_called()
+        # No second alert: one detection, one notification.
+        mock_sns.publish.assert_not_called()
+
+    def test_a_verdict_arriving_before_the_upload_event_raises_for_retry(self):
+        """Creating the row here instead would race the upload path into
+        overwriting a terminal status with MALWARE_SCANNING, hanging the document
+        for good. Raising hands it to the rule's RetryPolicy."""
+        error, mock_sqs, mock_cw = self._expect_raise()
+
+        assert "before its document row existed" in str(error)
+        mock_sqs.send_message.assert_not_called()
+        assert "MalwareScanVerdictBeforeIngest" in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+    def test_a_non_condition_error_is_not_swallowed(self):
+        """Only a lost compare-and-set is interpreted. A throttle or an IAM
+        failure must surface, or a document silently never gets a verdict."""
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.update_document_status.side_effect = RuntimeError(
+                "ProvisionedThroughputExceededException"
+            )
+            with pytest.raises(RuntimeError, match="ProvisionedThroughput"):
+                index.handler(make_scan_result_event(), None)
+
+
+@pytest.mark.unit
+class TestSqsFailureAfterAdmission:
+    """The one window where a document could stall with no workflow and no
+    message: the status is already QUEUED but the send failed, so a retry takes
+    the duplicate path and never enqueues it."""
+
+    def test_the_status_is_reverted_so_the_retry_can_enqueue(self):
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_sqs.send_message.side_effect = RuntimeError("SQS unavailable")
+            with pytest.raises(RuntimeError, match="SQS unavailable"):
+                index.handler(make_scan_result_event(), None)
+
+            calls = mock_doc_service.update_document_status.call_args_list
+
+        # Two writes: the admission, then the revert.
+        assert len(calls) == 2
+        assert calls[0].args[1] == Status.QUEUED
+        assert calls[1].args[1] == Status.MALWARE_SCANNING
+        # The revert is unconditional on purpose: the compare-and-set it would
+        # otherwise use has already been consumed by the admission above.
+        assert "condition_expression" not in calls[1].kwargs
+
+
+@pytest.mark.unit
+class TestRefusedJobsApiDocument:
+    """A /Jobs API batch must not hang because one of its files was refused.
+
+    job_tracker is driven by Step Functions execution events, and a refused
+    document never starts an execution — so without this the Files map keeps the
+    file non-terminal, no results.zip is written, and GET /jobs/<id> answers
+    IN_PROGRESS indefinitely.
+    """
+
+    def _run(self, key, result_status="THREATS_FOUND"):
+        import index
+
+        doc = _mock_document(key)
+        mock_job_completion.finalize_job_file.reset_mock()
+        mock_job_completion.finalize_job_file.return_value = {
+            "found": True,
+            "files": {},
+            "job_complete": True,
+            "results_ready": True,
+        }
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(index, "job_service", MagicMock()),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = doc
+            index.handler(
+                make_scan_result_event(
+                    key=key,
+                    result_status=result_status,
+                    threats=[{"name": "EICAR-Test-File (not a virus)"}],
+                ),
+                None,
+            )
+        return mock_job_completion.finalize_job_file
+
+    def test_a_quarantined_job_file_is_marked_terminal(self):
+        finalize = self._run("jobs/job-123/scan.pdf")
+
+        finalize.assert_called_once()
+        kwargs = finalize.call_args.kwargs
+        assert kwargs["job_id"] == "job-123"
+        assert kwargs["filename"] == "scan.pdf"
+
+    def test_the_files_map_gets_FAILED_not_the_malware_status(self):
+        """Three separate copies of the terminal-status set read that map
+        (job_tracker, api_handler.compute_job_status, the job list resolver), so
+        a value none of them knows would hang the job in a new way. The precise
+        reason stays on the document row."""
+        finalize = self._run("jobs/job-123/scan.pdf")
+
+        assert finalize.call_args.kwargs["status"] == Status.FAILED
+
+    def test_an_unscannable_job_file_is_also_finalized(self):
+        finalize = self._run("jobs/job-123/locked.pdf", result_status="UNSUPPORTED")
+
+        finalize.assert_called_once()
+        assert finalize.call_args.kwargs["status"] == Status.FAILED
+
+    def test_an_ordinary_upload_does_not_touch_the_job_table(self):
+        finalize = self._run("not-a-job/doc.pdf")
+
+        finalize.assert_not_called()
+
+    def test_a_clean_job_file_is_left_to_job_tracker(self):
+        """It runs a workflow, so the execution-status-change event is what
+        finalizes it. Doing it here as well would mark it FAILED before it ran."""
+        finalize = self._run("jobs/job-123/clean.pdf", result_status="NO_THREATS_FOUND")
+
+        finalize.assert_not_called()
+
+
+@pytest.mark.unit
+class TestEventDispatch:
+    """Two event types reach this function, and a third must not be guessed at."""
+
+    def test_an_event_with_no_detail_type_is_treated_as_an_upload(self):
+        """The only event this function had for its whole life, and some callers
+        build the event by hand."""
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", False),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            index.handler(make_event("doc.pdf"), None)
+
+        mock_sqs.send_message.assert_called_once()
+
+    def test_an_unexpected_detail_type_is_reported_and_ignored(self):
+        """Raising would retry forever against an event we will never
+        understand."""
+        import index
+
+        with (
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+        ):
+            response = index.handler(
+                {"detail-type": "Object Deleted", "detail": {}}, None
+            )
+
+        assert response["skipped"] == "unexpected_detail_type"
+        mock_sqs.send_message.assert_not_called()
+        mock_doc_service.create_document.assert_not_called()
+
+
+@pytest.mark.unit
+class TestAlertOnBlockIsHonoured:
+    """`malware_scanning.alert_on_block` is a declared config setting, so it has
+    to be consulted. A setting the Visual Editor offers and the code ignores is
+    worse than no setting: it reads as control nobody has."""
+
+    def _run(self, alert_on_block, result_status="THREATS_FOUND"):
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "ALERTS_TOPIC_ARN", "arn:aws:sns:us-east-1:1:alerts"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={
+                    "allow_unscannable": result_status == "UNSUPPORTED",
+                    "alert_on_block": alert_on_block,
+                },
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = doc
+            index.handler(
+                make_scan_result_event(
+                    result_status=result_status,
+                    threats=[{"name": "EICAR-Test-File (not a virus)"}],
+                ),
+                None,
+            )
+        return mock_sns, mock_cw
+
+    def test_a_detection_alerts_when_enabled(self):
+        mock_sns, _ = self._run(alert_on_block=True)
+        mock_sns.publish.assert_called_once()
+
+    def test_a_detection_does_not_alert_when_disabled(self):
+        mock_sns, _ = self._run(alert_on_block=False)
+        mock_sns.publish.assert_not_called()
+
+    def test_the_metric_is_emitted_either_way(self):
+        """Turning alerts off must not turn off the record. The metric is what
+        the CloudWatch alarm and the dashboard widget read, and the document's own
+        status is unaffected — silencing a notification is not the same as
+        deciding nothing happened."""
+        _, mock_cw = self._run(alert_on_block=False)
+        assert "MalwareScanThreatsFound" in str(mock_cw.put_metric_data.call_args_list)
+
+    def test_an_admitted_unscannable_document_respects_it_too(self):
+        mock_sns, _ = self._run(alert_on_block=False, result_status="UNSUPPORTED")
+        mock_sns.publish.assert_not_called()
+
+
+@pytest.mark.unit
+class TestThePolicyDefaults:
+    """What the gate does when the configuration says nothing, or cannot be read."""
+
+    def test_alerting_defaults_on(self):
+        """The safe failure for a notification is an extra message, not a
+        missing one — the opposite direction from the admission question."""
+        import index
+
+        with patch.dict(
+            sys.modules,
+            {"idp_common.config": MagicMock(get_config=lambda **kw: {})},
+        ):
+            assert index.malware_policy_for()["alert_on_block"] is True
+
+    def test_an_unreadable_config_still_alerts(self):
+        import index
+
+        def boom(**kwargs):
+            raise RuntimeError("DynamoDB unavailable")
+
+        with patch.dict(sys.modules, {"idp_common.config": MagicMock(get_config=boom)}):
+            policy = index.malware_policy_for()
+
+        assert policy["alert_on_block"] is True
+        assert policy["allow_unscannable"] is False
+
+    def test_only_an_explicit_false_turns_alerting_off(self):
+        """The schema default is true, so an absent key must not read as off."""
+        import index
+
+        for value, expected in (
+            (False, False),
+            (True, True),
+            # Anything that is not the boolean False leaves alerting on, so a
+            # string "false" written by hand does not silently disable it.
+            ("false", True),
+            (None, True),
+        ):
+            with patch.dict(
+                sys.modules,
+                {
+                    "idp_common.config": MagicMock(
+                        get_config=lambda **kw: {
+                            "malware_scanning": {"alert_on_block": value}
+                        }
+                    )
+                },
+            ):
+                assert index.malware_policy_for()["alert_on_block"] is expected
+
+
+@pytest.mark.unit
+class TestTheVerdictPathUsesTheRowTheUploadWrote:
+    """It must not rebuild the document from the verdict event.
+
+    Rebuilding looks tidier and is wrong in ways that all reach the UI: the
+    verdict event's `time` is the VERDICT time, so `initial_event_time` — the
+    document list's "Submitted" column, and the basis of every duration computed
+    from it — would be minutes late; and the upload's `queued_time` and X-Ray
+    `trace_id` would be dropped from the payload handed to the pipeline.
+    """
+
+    def _run(self):
+        import index
+
+        doc = _mock_document()
+        doc.initial_event_time = "2026-10-11T09:00:00Z"
+        doc.queued_time = "2026-10-11T09:00:01Z"
+        doc.trace_id = "1-upload-trace"
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event") as mock_from_event,
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = doc
+            # The verdict event carries a LATER time than the upload, which is
+            # what makes the regression visible.
+            index.handler(make_scan_result_event(), None)
+        return doc, mock_sqs, mock_from_event, mock_doc_service
+
+    def test_the_row_is_loaded_not_rebuilt_from_the_event(self):
+        _, _, mock_from_event, mock_doc_service = self._run()
+
+        mock_doc_service.get_document.assert_called_once_with("doc.pdf")
+        mock_from_event.assert_not_called()
+
+    def test_the_upload_time_is_not_overwritten_by_the_verdict_time(self):
+        doc, _, _, _ = self._run()
+
+        assert doc.initial_event_time == "2026-10-11T09:00:00Z"
+        assert doc.malware_scan_time == "2026-10-11T00:00:00Z"
+
+    def test_the_enqueued_document_keeps_the_uploads_own_fields(self):
+        doc, mock_sqs, _, _ = self._run()
+
+        mock_sqs.send_message.assert_called_once()
+        assert doc.queued_time == "2026-10-11T09:00:01Z"
+        assert doc.trace_id == "1-upload-trace"
+
+    def test_no_second_s3_metadata_read_is_paid_for(self):
+        """The row already holds the config version, submission source, test-set
+        id and forced class, so re-reading S3 object metadata on every verdict
+        buys nothing."""
+        _, _, mock_from_event, _ = self._run()
+
+        mock_from_event.assert_not_called()
+
+
+@pytest.mark.unit
+class TestSameKeyReuploadRace:
+    """A clean verdict for one upload must not admit a different one.
+
+    The hazard, in order: `report.pdf` v1 is uploaded and the row goes
+    MALWARE_SCANNING; `report.pdf` v2 (infected) is uploaded before v1's scan
+    finishes, resetting the row to MALWARE_SCANNING; v1's CLEAN verdict arrives.
+    On a status-only condition that verdict satisfies the gate, the pipeline reads
+    the bucket's *current* version — v2, unscanned — and v2's own THREATS_FOUND
+    verdict arrives later to find the row already admitted and is discarded as a
+    duplicate.
+
+    Same-key re-upload is not hypothetical here: it is the scenario issue #719
+    exists for, so the code already assumes people do it. The window is however
+    long the scan takes.
+
+    ⚠️ **What these tests do and do not prove.** The cases below simulate
+    DynamoDB's refusal (`ConditionalCheckFailed`) rather than causing it, so they
+    pin what the handler *does* with a refused write — discard the verdict, meter
+    it as superseded, admit nothing. They do **not** prove that DynamoDB would
+    refuse it; removing the version clause from the condition leaves them green.
+    What pins the clause itself is
+    `TestVerdictHandling::test_the_condition_also_pins_the_object_version`, and
+    what proves the two work together against the real service is the integration
+    test `test_a_reupload_mid_scan_is_not_admitted_by_the_earlier_verdict`.
+    All three are needed; none is redundant.
+    """
+
+    def test_the_upload_records_which_version_it_is_waiting_on(self):
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            event = make_event("report.pdf")
+            event["detail"]["object"]["version-id"] = "v1"
+            index.handler(event, None)
+
+        assert doc.malware_scan_version_id == "v1"
+
+    def test_nothing_is_recorded_when_scanning_is_disabled(self):
+        """No gate, no discriminator — the field stays off the item so a DISABLED
+        deployment writes what it always wrote."""
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", False),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            event = make_event("report.pdf")
+            event["detail"]["object"]["version-id"] = "v1"
+            index.handler(event, None)
+
+        assert doc.malware_scan_version_id is None
+
+    def _verdict_against_stored_version(self, verdict_version, stored_version):
+        """A verdict for `verdict_version` against a row waiting on `stored_version`."""
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.MALWARE_SCANNING
+            d.malware_scan_version_id = stored_version
+            return d
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index, "job_service", MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            # A new object per call: the handler mutates the document it loaded,
+            # and DynamoDB would not hand back that mutation on a re-read.
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            # DynamoDB refuses the write: this is what the real condition does
+            # when the stored version is not the verdict's.
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            event = make_scan_result_event(key="report.pdf")
+            event["detail"]["s3ObjectDetails"]["versionId"] = verdict_version
+            response = index.handler(event, None)
+        return response, mock_sqs, mock_sns, mock_cw
+
+    def test_a_superseded_clean_verdict_does_not_admit_the_newer_upload(self):
+        """The defect this class exists for. v1 came back clean; the bucket now
+        holds v2, which nothing has scanned."""
+        response, mock_sqs, _, mock_cw = self._verdict_against_stored_version(
+            verdict_version="v1", stored_version="v2"
+        )
+
+        assert response["superseded"] is True
+        mock_sqs.send_message.assert_not_called()
+        assert "MalwareScanVerdictSuperseded" in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+    def test_a_superseded_verdict_is_not_reported_as_a_duplicate(self):
+        """They are different events and call for different responses: a
+        duplicate has already been acted on, a superseded one never will be. One
+        metric for both would make the race invisible."""
+        _, _, _, mock_cw = self._verdict_against_stored_version(
+            verdict_version="v1", stored_version="v2"
+        )
+
+        assert "MalwareScanVerdictDuplicate" not in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+    def test_a_superseded_refusal_does_not_quarantine_the_newer_upload_either(self):
+        """The mirror case, and the reason this is not just a safety property: a
+        THREATS_FOUND verdict for a version since replaced by a clean file must
+        not quarantine the clean one."""
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.MALWARE_SCANNING
+            d.malware_scan_version_id = "v2"
+            return d
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index, "job_service", MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            event = make_scan_result_event(
+                key="report.pdf",
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            response = index.handler(event, None)
+
+        assert response["superseded"] is True
+        # No alert either: nothing has been decided about this document yet.
+        mock_sns.publish.assert_not_called()
+
+    def test_a_matching_verdict_is_still_applied(self):
+        """The guard must not refuse the ordinary case. Here the row is waiting on
+        exactly the version the verdict describes, so the real DynamoDB condition
+        would hold — modelled by the write succeeding."""
+        import index
+
+        doc = _mock_document()
+        doc.status = Status.MALWARE_SCANNING
+        doc.malware_scan_version_id = "v1"
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = doc
+            event = make_scan_result_event(key="report.pdf")
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            response = index.handler(event, None)
+
+        assert response["queued"] is True
+        mock_sqs.send_message.assert_called_once()
+
+    def test_a_duplicate_is_still_reported_as_a_duplicate(self):
+        """The row has LEFT MALWARE_SCANNING, so the version clause is not what
+        failed — this must not be misread as a supersession."""
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.QUEUED
+            d.malware_scan_version_id = "v1"
+            return d
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            event = make_scan_result_event(key="report.pdf")
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            response = index.handler(event, None)
+
+        assert response["duplicate"] is True
+        assert "MalwareScanVerdictDuplicate" in str(
+            mock_cw.put_metric_data.call_args_list
+        )
+
+
+@pytest.mark.unit
+class TestTheVersionDiscriminator:
+    """`object_version_of` has to read two different event vocabularies and give
+    the same answer for the same object, or every document stalls."""
+
+    def test_it_reads_the_s3_event_spelling(self):
+        import index
+
+        assert index.object_version_of({"key": "a.pdf", "version-id": "v1"}) == "v1"
+
+    def test_it_reads_the_guardduty_spelling(self):
+        import index
+
+        assert (
+            index.object_version_of({"objectKey": "a.pdf", "versionId": "v1"}) == "v1"
+        )
+
+    def test_the_two_spellings_agree_for_one_object(self):
+        """This is the property the whole guard rests on: the upload and the
+        verdict must derive the same string, or a matching verdict looks
+        superseded and the document waits forever."""
+        import index
+
+        s3_side = {"key": "a.pdf", "version-id": "abc123", "etag": "e1"}
+        gd_side = {"objectKey": "a.pdf", "versionId": "abc123", "eTag": "e1"}
+        assert index.object_version_of(s3_side) == index.object_version_of(gd_side)
+
+    @pytest.mark.parametrize(
+        "s3_side,gd_side",
+        [
+            # No version id on either side — both fall back to the ETag, which is
+            # the only field guaranteed present.
+            ({"etag": "e1"}, {"eTag": "e1"}),
+        ],
+    )
+    def test_the_etag_fallback_is_symmetric(self, s3_side, gd_side):
+        import index
+
+        assert (
+            index.object_version_of(s3_side) == index.object_version_of(gd_side) == "e1"
+        )
+
+    def test_a_version_id_is_preferred_over_the_etag(self):
+        """An ETag is content-addressed, so re-uploading identical bytes yields the
+        same ETag and a stale verdict would match. The version id does not."""
+        import index
+
+        assert index.object_version_of({"version-id": "v2", "etag": "e1"}) == "v2"
+
+    def test_an_object_with_neither_yields_the_empty_string(self):
+        """Not an invented sentinel: a value shared by every such object would let
+        any verdict match any document. Empty compares unequal to a recorded
+        version, so the document waits and the alarm reports it."""
+        import index
+
+        assert index.object_version_of({}) == ""

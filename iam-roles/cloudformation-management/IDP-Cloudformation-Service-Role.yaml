@@ -566,6 +566,17 @@ Resources:
                   - scheduler:*
                   - ec2:*
                   - ecr:*
+                  # Optional malware scanning (`MalwareScanning: CREATE_PLAN`)
+                  # declares an AWS::GuardDuty::MalwareProtectionPlan. Granted
+                  # unconditionally because this one role serves every deploy
+                  # variant and CloudFormation revalidates nothing per
+                  # parameter — but note the asymmetry: with the default
+                  # `DISABLED`, or with `GATE_ONLY`, no GuardDuty resource is
+                  # created and this statement is never exercised. A deployer
+                  # who will never use `CREATE_PLAN` can remove this line; the
+                  # gate in scripts/sdlc/tests/ derives what is required from
+                  # the templates, so it would then fail and say so.
+                  - guardduty:*
                 Resource: '*'
               # UPGRADE-ONLY. No current template declares an AWS::AppSync::*
               # resource, so a first-time deployment of 0.6.0 or later never

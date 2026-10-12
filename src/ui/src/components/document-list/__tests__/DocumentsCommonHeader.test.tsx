@@ -178,3 +178,50 @@ describe('DocumentViewSelector', () => {
     expect(setDocumentView).not.toHaveBeenCalled();
   });
 });
+
+describe('DocumentsCommonHeader reprocess guard', () => {
+  /**
+   * Reprocess re-queues a document directly, bypassing the malware-scanning
+   * ingest gate — the refused file is still sitting in the input bucket, so
+   * reprocessing a quarantined document would push it into OCR and Bedrock.
+   * The resolver refuses it server-side; this is so a reviewer finds out before
+   * clicking rather than from an error afterwards.
+   */
+  const reprocessButton = () => screen.getByRole('button', { name: 'Reprocess' });
+
+  it('is enabled for an ordinary selection', () => {
+    render(<DocumentsCommonHeader selectedItems={[row('a.pdf')]} onReprocess={vi.fn()} />);
+    expect(reprocessButton()).not.toBeDisabled();
+  });
+
+  it.each(['QUARANTINED', 'MALWARE_SCAN_FAILED'])('is disabled for a %s document', (status) => {
+    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: status })]} onReprocess={vi.fn()} />);
+    expect(reprocessButton()).toBeDisabled();
+  });
+
+  it('is disabled when ANY selected document was refused', () => {
+    // Reprocess acts on the whole selection, so one refused document in it is
+    // enough — allowing the click would reprocess the clean ones and fail on the
+    // refused one, which reads as a partial failure rather than a refusal.
+    render(
+      <DocumentsCommonHeader
+        selectedItems={[row('clean.pdf'), row('infected.pdf', { objectStatus: 'QUARANTINED' })]}
+        onReprocess={vi.fn()}
+      />,
+    );
+    expect(reprocessButton()).toBeDisabled();
+  });
+
+  it('stays enabled while a document is still being scanned', () => {
+    // MALWARE_SCANNING is not a refusal: the verdict is still coming, and the
+    // document has not been rejected.
+    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
+    expect(reprocessButton()).not.toBeDisabled();
+  });
+
+  it('explains why, rather than just going grey', () => {
+    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: 'QUARANTINED' })]} onReprocess={vi.fn()} />);
+    const tooltip = reprocessButton().closest('span[title]');
+    expect(tooltip?.getAttribute('title')).toContain('refused by malware scanning');
+  });
+});

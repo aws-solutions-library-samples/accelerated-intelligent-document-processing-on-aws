@@ -374,6 +374,63 @@ def handler(event, context):
         raise e
 
 
+#: Statuses whose documents must never be re-admitted to the pipeline.
+#:
+#: The malware-scanning ingest gate (see ``src/lambda/queue_sender``) refuses a
+#: document *before* any workflow starts, so the file is still sitting in the
+#: input bucket. Reprocess does not go through that gate — it builds a fresh
+#: QUEUED document and puts it straight on the queue — so without this check an
+#: Admin clicking Reprocess on a quarantined document would push known malware
+#: into OCR, page rendering and Bedrock, which is the one thing the gate exists to
+#: prevent.
+#:
+#: Stated as the statuses that are REFUSED rather than the ones that are allowed,
+#: unlike ``process_changes_resolver._EDITABLE_STATUSES``, and the difference is
+#: deliberate: reprocess is legitimate from *most* statuses (that is what makes it
+#: useful on a FAILED or half-processed document), so an allow-list here would
+#: have to enumerate nearly the whole enum and would refuse every pipeline stage
+#: added later. The hazard being closed is a small, named set. A newly added
+#: refusal-worthy status is covered by
+#: ``test_every_malware_status_is_refused``, which derives the set from
+#: ``Status`` rather than restating it.
+_REPROCESS_REFUSED_STATUSES = frozenset(
+    {
+        Status.QUARANTINED.value,
+        Status.MALWARE_SCAN_FAILED.value,
+    }
+)
+
+
+def _refuse_if_refused_by_the_malware_gate(object_key):
+    """Raise if this document was refused at the malware-scanning ingest gate.
+
+    Fails **open** on a read error, matching every other best-effort read in this
+    resolver: the caller is an authenticated Admin or Reviewer and the scope
+    checks above have already run, so a DynamoDB blip should not make reprocess
+    unusable. The control that holds regardless is the gate itself — a reprocessed
+    document is re-queued, and anything uploaded afresh is scanned again.
+    """
+    try:
+        document = document_service.get_document(object_key)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Could not read {object_key}'s status before reprocessing ({e}); "
+            f"proceeding"
+        )
+        return
+    if document is None:
+        return
+    status = getattr(document.status, "value", document.status)
+    if status in _REPROCESS_REFUSED_STATUSES:
+        raise ValueError(
+            f"Document {object_key} was refused at the malware-scanning gate "
+            f"(status {status}) and cannot be reprocessed. Delete it, or — if it "
+            f"is a legitimate document GuardDuty could not read, such as a "
+            f"password-protected PDF — re-upload an unprotected copy so it is "
+            f"scanned again."
+        )
+
+
 def reprocess_document(object_key, version=None, revision=None):
     """
     Reprocess a document by creating a fresh Document object and queueing it.
@@ -391,6 +448,8 @@ def reprocess_document(object_key, version=None, revision=None):
         + (f" with version: {version}" if version else "")
         + (f" r{revision}" if revision is not None else "")
     )
+
+    _refuse_if_refused_by_the_malware_gate(object_key)
 
     # Verify file exists in S3
     try:

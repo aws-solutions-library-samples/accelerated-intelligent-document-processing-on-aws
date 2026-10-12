@@ -582,6 +582,8 @@ Key parameters that can be configured during CloudFormation deployment:
 - `PostProcessingLambdaHookFunctionArn`: Optional Lambda ARN for custom post-processing (see [post-processing-lambda-hook.md](post-processing-lambda-hook.md) for detailed implementation guidance)
 - `BedrockGuardrailId`: Optional Bedrock Guardrail ID to apply
 - `BedrockGuardrailVersion`: Version of Bedrock Guardrail to use
+- `MalwareScanning`: Hold each uploaded document at ingest until Amazon GuardDuty Malware Protection for S3 reports it clean — `DISABLED` (default), `GATE_ONLY` (gate on a plan managed elsewhere) or `CREATE_PLAN` (this stack creates the GuardDuty plan and role). See [malware-scanning.md](malware-scanning.md)
+- `AllowUnscannableDocuments`: Whether a document GuardDuty could not scan (password-protected, over its quotas, SSE-C encrypted, scan error) may still be processed (default: `false`, so such documents stop in `MALWARE_SCAN_FAILED`). This is a ceiling over the per-configuration `malware_scanning.on_unscannable` setting, which is editable from the web UI — setting that to `allow` has no effect unless this is also `true`
 
 For details on processing modes, see [architecture.md](architecture.md). For legacy pattern-specific references, see [pattern-1.md](pattern-1.md) (BDA) and [pattern-2.md](pattern-2.md) (Pipeline).
 
@@ -646,6 +648,59 @@ This applies guardrails to all Bedrock model interactions, including:
 4. **Compliance Alignment**: Ensure guardrails align with organizational compliance requirements
 
 For more information on creating and managing Guardrails, see the [Amazon Bedrock documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html).
+
+⚠️ **Guardrails do not read the uploaded file.** They inspect the text sent to and
+returned by the model, so a malicious PDF or Office document — whose payload is in
+the file's structure, not its extracted text — is invisible to them. Scanning the
+file itself is a separate, optional control: see
+[Malware Scanning](#malware-scanning) below.
+
+## Malware Scanning
+
+Uploaded documents can be held at ingest until Amazon GuardDuty Malware
+Protection for S3 reports them clean. Off by default.
+
+### What is configured where
+
+Enablement is **infrastructure** and lives in CloudFormation, because a GuardDuty
+protection plan cannot be created by editing a configuration row:
+
+- `MalwareScanning`: `DISABLED` (default) | `GATE_ONLY` | `CREATE_PLAN`
+- `AllowUnscannableDocuments`: `false` (default) | `true`
+
+Policy is **configuration** and lives in the `malware_scanning` section, editable
+in the Visual Editor and versioned with the rest of the configuration:
+
+```yaml
+malware_scanning:
+  # What to do with a document GuardDuty returned no verdict for — a
+  # password-protected file, an object over its quotas, an SSE-C encrypted
+  # object, or an internal scan error.
+  on_unscannable: block    # block (default) | allow
+  # Publish to the stack's SNS alerts topic when a document is refused.
+  alert_on_block: true
+```
+
+⚠️ **`on_unscannable: allow` needs the stack parameter too.** The configuration is
+editable by any Admin from the web UI, so `AllowUnscannableDocuments` acts as a
+ceiling over it: with that parameter `false`, setting the configuration to `allow`
+has no effect and the gate logs that it ignored it. Loosening the policy takes
+both a configuration change and a stack update.
+
+A document GuardDuty reports as **infected** is always refused. That is not
+configurable and the schema offers no field for it.
+
+### Statuses you will see
+
+| Status | Meaning |
+|---|---|
+| `MALWARE_SCANNING` | Uploaded, waiting for the verdict. No workflow has started. |
+| `QUARANTINED` | GuardDuty found malware. Not processed. |
+| `MALWARE_SCAN_FAILED` | No verdict was obtainable and the policy fails closed. Not processed. |
+
+For the design, the GuardDuty IAM and KMS prerequisites, the metrics and alarms,
+the cost and quota figures, and what the gate does **not** cover, see
+[malware-scanning.md](malware-scanning.md).
 
 ## Concurrency and Throttling Management
 

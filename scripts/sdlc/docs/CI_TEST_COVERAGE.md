@@ -878,6 +878,70 @@ Two gotchas the same technique surfaced, worth knowing before writing any hook:
 
 ---
 
+### Step 15: Malware-Scanning Ingest Gate 🔒 *Sequential*
+**What it tests**: that the optional [malware-scanning ingest
+gate](../../../docs/malware-scanning.md) refuses a known-bad upload — and, more
+importantly, that it refuses it *before* the pipeline reads it.
+- **Why it exists, and why it is on the primary stack rather than a variant
+  probe**: the primary stack now deploys with `MalwareScanning=CREATE_PLAN`, so
+  **every document every other step processes passes through the gate**. That is
+  the coverage that matters: the gate withholds the SQS message for every upload,
+  so a defect in it does not degrade one feature, it stalls ingest — and a
+  variant probe that deploys and smoke-tests could only prove the GuardDuty plan
+  and the EventBridge rule exist. The whole functional suite reaching `COMPLETED`
+  is the assertion that the gate admits correctly; this step is the assertion that
+  it also *refuses*.
+- **Verification**:
+  - the document reaches **`QUARANTINED`**
+  - **no Step Functions execution exists for it** — checked both on the tracking
+    row's `WorkflowExecutionArn` and against `list_executions`. This is the
+    property a status check alone cannot give: a document could be marked
+    QUARANTINED *after* being processed and the status would look identical
+  - the verdict is on the row (`MalwareScanResult=THREATS_FOUND` plus a threat
+    name), because the UI reads it from there and a quarantine nobody can explain
+    is not usable
+  - the object is **still in the input bucket**, tagged
+    `GuardDutyMalwareScanStatus=THREATS_FOUND` — the documented disposition, so
+    this pins it rather than a silent delete
+
+**Test Document**: an EICAR probe uploaded by the step. EICAR is the
+industry-standard harmless test signature every scanner recognises, and the one
+GuardDuty's own documentation uses in its `THREATS_FOUND` example; nothing
+malicious is involved. ⚠️ The signature is **assembled from two string fragments**
+in `codebuild_deployment.py` so this repository does not contain it intact —
+endpoint tooling on a developer machine or a CI worker quarantines a file that
+does, which would break the checkout rather than test anything.
+`scripts/sdlc/tests/test_malware_gate_step.py` asserts both that the probe is the
+real signature and that no source file holds it whole.
+
+**Duration**: typically under two minutes; budgeted at 15.
+⚠️ **This step can report success with a WARNING, and that is deliberate.**
+GuardDuty's scan latency has no SLA and is not ours to control, so a verdict that
+has not arrived inside the budget is reported as inconclusive rather than failed —
+the alternative is a suite that goes red on somebody else's queue depth, which
+gets ignored, which costs more than the coverage. A verdict that arrives and says
+the wrong thing IS a failure. When it warns, read the malware-verdict dead-letter
+queue and the QueueSender log.
+
+**Execution**: sequential, for a different reason from Step 12. Step 12 is
+sequential because it mutates stack-wide auth; this one is simply slow and bursty,
+and adding its wait to the fail-fast parallel pool's wall clock buys nothing —
+a document held at the gate is not a failure.
+
+**Implementation**: `test_step15_malware_gate` in
+`scripts/sdlc/codebuild_deployment.py`. Its own verdict logic — which is the part
+that could pass vacuously, since "no verdict yet" is a success — is unit-tested
+offline in `scripts/sdlc/tests/test_malware_gate_step.py` against a faked AWS.
+
+**Not covered here**: throughput. The gate's failure mode under concurrency is
+documents accumulating in `MALWARE_SCANNING`, which one upload cannot show.
+`scripts/malware_gate_burst.py` pushes a few hundred documents through at once
+and asserts that nothing is stuck, no benign document was quarantined and
+admission is not serialised. It is kept **out** of the nightly deliberately:
+admitting a few hundred documents starts a few hundred Step Functions executions
+and the Bedrock calls behind them, which is real money for a property that does
+not change nightly. Run it for a release check or after changing the gate.
+
 ## Additional Deployment Tests: the deployment-variant probe framework
 
 > **⚠️ Default OFF in CI (changed 2026-07).** These probes no longer run

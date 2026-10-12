@@ -349,6 +349,44 @@ Resources:
             description: Automatically optimize BDA blueprints using ground truth data during discovery to improve extraction accuracy
             default: false
             dependsOn: { field: "use_bda", value: true }
+          malware_scanning:
+            order: 2.4
+            type: object
+            collapsible: true
+            defaultExpanded: false
+            sectionLabel: Malware Scanning
+            description: >-
+              What to do with Amazon GuardDuty Malware Protection verdicts on
+              uploaded documents. Scanning itself is turned on by the
+              MalwareScanning stack parameter, not here — these settings only
+              decide how a verdict is acted on, so they have no effect on a stack
+              deployed with MalwareScanning=DISABLED. A document GuardDuty reports
+              as infected is always refused; that is not configurable.
+            properties:
+              on_unscannable:
+                type: string
+                enum: ["block", "allow"]
+                default: block
+                title: When a document cannot be scanned
+                description: >-
+                  GuardDuty returns no verdict for a password-protected file, an
+                  object over its size/archive quotas, an SSE-C encrypted object,
+                  or an internal scan error. `block` (default) stops the document
+                  with status MALWARE_SCAN_FAILED. `allow` processes it anyway,
+                  with a CloudWatch metric and an alert — and takes effect ONLY if
+                  the AllowUnscannableDocuments stack parameter is also true, so
+                  this setting cannot by itself admit a file nobody has scanned.
+                order: 0
+              alert_on_block:
+                type: boolean
+                default: true
+                title: Send an alert when a document is refused
+                description: >-
+                  Publish to the stack's SNS alerts topic when a document is
+                  quarantined or refused as unscannable. The CloudWatch metrics
+                  and the document's own status are recorded either way.
+                order: 1
+
           preprocessing:
             order: 2.5
             type: object

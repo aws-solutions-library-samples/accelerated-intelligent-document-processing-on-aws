@@ -59,6 +59,7 @@ Tampering threats involve unauthorized modification of data or code.
 | Threat | Component | Risk | Mitigations |
 |--------|-----------|------|-------------|
 | **Prompt injection via document content** — adversarial text in uploaded documents | Pipeline Processing | High | Input sanitization, prompt guardrails, output validation, Bedrock Guardrails |
+| **Malicious file upload** — a weaponized PDF/Office document whose payload is in the file structure, not its text, so Bedrock Guardrails cannot see it | Document Ingest | High | Optional ingest gate on GuardDuty Malware Protection for S3 (`MalwareScanning`); refused documents never start a workflow, so their bytes never reach OCR, page rendering or Bedrock. Off by default, and static detection only — see [malware-scanning.md](../../../docs/malware-scanning.md) |
 | **Prompt injection via chat messages** — manipulating agent behavior | Companion Chat | High | System prompt hardening, input/output tags, Bedrock Guardrails |
 | **Configuration tampering** — malicious modification of prompts/schemas | Configuration System | Critical | RBAC, config versioning, JSON Schema validation, audit logging |
 | **Few-shot example poisoning** — biased training examples | Pipeline Processing | Medium | Admin-only management, evaluation framework |

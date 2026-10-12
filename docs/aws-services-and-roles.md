@@ -59,6 +59,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **AWS X-Ray** | Distributed tracing for the Lambda functions and state machines, controlled by `EnableXRayTracing` (default `true`). Traced functions need `xray:PutTraceSegments` / `xray:PutTelemetryRecords`: SAM attaches its X-Ray managed policy to any execution role it generates, and the roles declared explicitly in the templates carry `AWSXrayWriteOnlyAccess`. Billed per trace recorded — see [monitoring.md](./monitoring.md#x-ray-tracing), which also covers what `EnableXRayTracing=false` does not reach | — | ✓ |
 | **AWS SNS** | Delivers operational alerts and notifications | ✓ | ✓ |
 | **AWS KMS** | Manages encryption keys for secure data storage | ✓ | ✓ |
+| **Amazon GuardDuty** | Optional Malware Protection for S3 on the input bucket, gating document ingest on a clean scan verdict. Only when `MalwareScanning` is not `DISABLED`; with `CREATE_PLAN` the stack creates the protection plan (needing GuardDuty permissions at deploy time), with `GATE_ONLY` it creates nothing and reads verdicts from a plan managed elsewhere. See [malware-scanning.md](./malware-scanning.md) | ✓ | ✓ |
 
 ### Analytics & Reporting
 
@@ -338,6 +339,16 @@ The solution creates various IAM roles to run different components of the system
   * `ecr:*` (push/scan container images), `cloudfront:CreateInvalidation` (UI)
   * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
   * `ec2:*` networking actions (when deploying into a VPC)
+
+* **Malware Scan Role** (optional malware scanning, `MalwareScanning: CREATE_PLAN`) — assumed by `malware-protection-plan.guardduty.<url-suffix>`, never by a Lambda:
+  * `s3:GetObject`, `s3:GetObjectVersion` on the input bucket's objects — reading what it scans.
+  * `s3:PutObjectTagging`, `GetObjectTagging`, `PutObjectVersionTagging`, `GetObjectVersionTagging` on the same — writing the `GuardDutyMalwareScanStatus` verdict onto the object.
+  * `s3:PutObject` on the single key `malware-protection-resource-validation-object`, GuardDuty's write probe — **not** the bucket, so a scanner cannot modify the documents it scans.
+  * `s3:ListBucket`, `s3:GetBucketNotification`, `s3:PutBucketNotification` on the bucket itself — ownership check, and asserting that EventBridge notifications are on.
+  * `events:PutRule`/`DeleteRule`/`PutTargets`/`RemoveTargets`/`DescribeRule`/`ListTargetsByRule`, scoped to `rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*` and conditioned on `events:ManagedBy` — GuardDuty manages its own object-notification rule.
+  * `kms:Decrypt`, `kms:GenerateDataKey` on the stack's customer-managed key, conditioned on `kms:ViaService: s3.<region>.<url-suffix>`. ⚠️ **Required, not optional:** the input bucket is SSE-KMS, so without this every scan returns `ACCESS_DENIED` and — failing closed — every document is refused.
+  * No wildcard resource in any statement, asserted by `scripts/tests/test_malware_scanning_template.py`.
+  * Accepts `PermissionsBoundaryArn` and attaches it when set.
 
 * **AgentCore Gateway Execution Role** (optional MCP integration, `EnableMCP: true`):
   * `lambda:InvokeFunction` (MCP handler)

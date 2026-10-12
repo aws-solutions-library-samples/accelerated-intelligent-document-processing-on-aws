@@ -36,6 +36,10 @@ class DocumentState(str, Enum):
     # hook is registered (so every PII Anonymization user hit it), and
     # RULE_VALIDATION_POLICY_CLASSIFICATION for every rule-validation document.
     PENDING_UPLOAD = "PENDING_UPLOAD"
+    # Held at the ingest gate awaiting a GuardDuty malware verdict. Not a pipeline
+    # stage: no workflow has started, which is why it buckets with QUEUED rather
+    # than with the in-flight states below.
+    MALWARE_SCANNING = "MALWARE_SCANNING"
     QUEUED = "QUEUED"
     STARTED = "STARTED"
     RUNNING = "RUNNING"
@@ -59,6 +63,13 @@ class DocumentState(str, Enum):
     # Listed in the monitor's terminal-state sets too, or monitoring would wait
     # forever for a document that will never reach COMPLETED.
     REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"
+    # Terminal, and refused rather than failed: the ingest malware gate did not
+    # admit the document. QUARANTINED means a threat was found; MALWARE_SCAN_FAILED
+    # means no verdict was obtainable (password-protected, over quota, scan error)
+    # and the policy fails closed. Both bucket as FAILED so a batch containing one
+    # still reaches 100% instead of waiting for a COMPLETED that never comes.
+    QUARANTINED = "QUARANTINED"
+    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"
     NOT_FOUND = "NOT_FOUND"
     UNKNOWN = "UNKNOWN"
 
@@ -106,6 +117,12 @@ FAILED_DOCUMENT_STATES = frozenset(
         DocumentState.FAILED,
         DocumentState.ABORTED,
         DocumentState.NOT_FOUND,
+        # Refused at the ingest malware gate. Not successes — the document was
+        # never processed and no output exists — so they cannot go above with
+        # REDACTED_SUPERSEDED, whose point is that the requested outcome was
+        # achieved by a different document.
+        DocumentState.QUARANTINED,
+        DocumentState.MALWARE_SCAN_FAILED,
     }
 )
 
@@ -115,6 +132,11 @@ NOT_STARTED_DOCUMENT_STATES = frozenset(
     {
         DocumentState.QUEUED,
         DocumentState.PENDING_UPLOAD,
+        # Accepted and waiting on an external verdict, with no pipeline stage
+        # running. Counting it as in-flight would report the stack as busy doing
+        # IDP work it has not started, and a monitor must keep polling it, so it
+        # cannot go in the terminal sets either.
+        DocumentState.MALWARE_SCANNING,
         DocumentState.UNKNOWN,
     }
 )

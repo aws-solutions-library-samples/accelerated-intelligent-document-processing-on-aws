@@ -2906,6 +2906,193 @@ def _find_marker_in_tracking(stack_name, outputs):
     return None
 
 
+# EICAR, assembled at runtime rather than written as one literal.
+#
+# Split so this source file does not itself contain the signature: a repository
+# checkout, a CI artifact and a developer laptop all get scanned by endpoint
+# tools, and a file carrying the intact string is quarantined by them — which
+# would break the checkout rather than test anything. The scanner under test sees
+# the joined bytes, which is all that matters.
+# ⚠️ Two NAMED fragments joined by `+`, not adjacent string literals.
+# `ruff format` folds adjacent literals into one, which silently reassembled
+# the intact signature in this file — the split has to survive the formatter,
+# and a variable reference is the only form that does.
+_EICAR_HEAD = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-"
+_EICAR_TAIL = "ANTIVIRUS-TEST-FILE!$H+H*"
+_EICAR = _EICAR_HEAD + _EICAR_TAIL
+
+
+def test_step15_malware_gate(stack_name):
+    """Step 15: the malware-scanning ingest gate refuses a known-bad upload.
+
+    Uses EICAR — the industry-standard harmless probe every scanner recognises,
+    and the one GuardDuty's own documentation uses in its THREATS_FOUND example.
+    Nothing malicious is involved: the file is an ASCII string.
+
+    What this asserts, in order of what it would catch:
+
+    1. The document reaches **QUARANTINED**. That is the gate working.
+    2. **No Step Functions execution exists for it.** This is the property the
+       whole design is for, and it is the one a status check alone would miss: a
+       document could be marked QUARANTINED *after* being processed and the
+       status would look identical.
+    3. The verdict is **recorded on the row** (threat name included), because the
+       UI reads it from there and a quarantine nobody can explain is not usable.
+    4. The object is **still in the input bucket**, carrying GuardDuty's tag.
+       Deliberate: the sample is evidence, and this pins the documented
+       disposition rather than a silent delete.
+
+    ⚠️ **This step is allowed to be slow and is allowed to be inconclusive.**
+    GuardDuty's scan latency is not under our control and has no SLA, so a
+    verdict that has not arrived within the budget is reported as a WARNING
+    rather than a failure — the alternative is a suite that goes red on
+    somebody else's queue depth. A verdict that arrives and says the wrong thing
+    IS a failure.
+    """
+    import time
+
+    print("Step 15: Testing the malware-scanning ingest gate (EICAR)...")
+
+    outputs = _stack_outputs(stack_name)
+    input_bucket = outputs.get("S3InputBucketName") or outputs.get("InputBucketName")
+    if not input_bucket:
+        cf = boto3.client("cloudformation")
+        input_bucket = cf.describe_stack_resource(
+            StackName=stack_name, LogicalResourceId="InputBucket"
+        )["StackResourceDetail"]["PhysicalResourceId"]
+
+    s3 = boto3.client("s3")
+    ddb = boto3.client("dynamodb")
+    sfn = boto3.client("stepfunctions")
+    cf = boto3.client("cloudformation")
+    table_name = cf.describe_stack_resource(
+        StackName=stack_name, LogicalResourceId="TrackingTable"
+    )["StackResourceDetail"]["PhysicalResourceId"]
+
+    key = f"malware-gate-test-{int(time.time())}.txt"
+    s3.put_object(Bucket=input_bucket, Key=key, Body=_EICAR.encode("ascii"))
+    print(f"  uploaded s3://{input_bucket}/{key}")
+
+    # Budget: GuardDuty normally returns in well under a minute, but the scan is
+    # asynchronous with no published latency guarantee.
+    # Read FIRST, then check the clock — a plain `while time.time() < deadline`
+    # does zero iterations if the budget has already gone, and would then report
+    # "no tracking row" without ever having looked. That is the one distinction
+    # this step's own error messages claim to make ("never ingested" against
+    # "verdict still coming"), so getting it backwards here would make the step
+    # lie about which it saw.
+    deadline = time.time() + 15 * 60
+    item = None
+    status = None
+    while True:
+        got = ddb.get_item(
+            TableName=table_name,
+            Key={"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}},
+        ).get("Item")
+        if got:
+            item = got
+            status = (got.get("ObjectStatus") or {}).get("S")
+            if status not in (None, "MALWARE_SCANNING"):
+                break
+        if time.time() >= deadline:
+            break
+        time.sleep(10)
+
+    if item is None:
+        return {
+            "success": False,
+            "error": (
+                f"No tracking row for {key} after upload — the gate did not even "
+                "record the document, so ingest is broken rather than the scan"
+            ),
+        }
+
+    if status == "MALWARE_SCANNING":
+        # Inconclusive, not wrong: see the docstring.
+        return {
+            "success": True,
+            "warning": (
+                f"{key} was still MALWARE_SCANNING after 15 min — no GuardDuty "
+                "verdict arrived in the budget. The gate held the document "
+                "(nothing was processed), but the verdict path is unverified. "
+                "Check the malware-verdict DLQ and the QueueSender log."
+            ),
+        }
+
+    if status != "QUARANTINED":
+        return {
+            "success": False,
+            "error": (
+                f"EICAR upload reached status {status!r}, expected QUARANTINED. "
+                "A known-bad file was not refused by the gate."
+            ),
+        }
+
+    # The property a status check cannot give us: nothing ran.
+    if (item.get("WorkflowExecutionArn") or {}).get("S"):
+        return {
+            "success": False,
+            "error": (
+                f"{key} is QUARANTINED but carries WorkflowExecutionArn="
+                f"{item['WorkflowExecutionArn']['S']!r} — a workflow ran for a "
+                "document the gate refused, so its bytes reached the pipeline"
+            ),
+        }
+    sm_arn = outputs.get("StateMachineArn")
+    if sm_arn:
+        running = sfn.list_executions(stateMachineArn=sm_arn, maxResults=100).get(
+            "executions", []
+        )
+        if any(key in (e.get("name") or "") for e in running):
+            return {
+                "success": False,
+                "error": f"a Step Functions execution exists naming {key}",
+            }
+
+    result = (item.get("MalwareScanResult") or {}).get("S")
+    threat = (item.get("MalwareScanThreat") or {}).get("S")
+    if result != "THREATS_FOUND":
+        return {
+            "success": False,
+            "error": (
+                f"{key} is QUARANTINED but MalwareScanResult={result!r}; the UI "
+                "reads the verdict from the row, so a quarantine with no recorded "
+                "reason cannot be explained to a reviewer"
+            ),
+        }
+    if not threat:
+        return {
+            "success": False,
+            "error": f"{key} records no MalwareScanThreat; expected a threat name",
+        }
+
+    # Documented disposition: the object stays, tagged, as evidence.
+    try:
+        tags = {
+            t["Key"]: t["Value"]
+            for t in s3.get_object_tagging(Bucket=input_bucket, Key=key).get(
+                "TagSet", []
+            )
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": f"quarantined object {key} is no longer readable: {e}",
+        }
+    scan_tag = tags.get("GuardDutyMalwareScanStatus")
+    if scan_tag != "THREATS_FOUND":
+        return {
+            "success": False,
+            "error": (
+                f"object tag GuardDutyMalwareScanStatus={scan_tag!r}, expected "
+                "THREATS_FOUND"
+            ),
+        }
+
+    print(f"  ✅ QUARANTINED, threat={threat!r}, no execution, object tagged")
+    return {"success": True, "detail": f"threat={threat}"}
+
+
 # Single source of truth for the smoke-test suite: (func, step, name,
 # description). The parallel runner, the success summary, and the AI
 # failure-analysis prompt are all derived from this list — add or remove a
@@ -3005,6 +3192,17 @@ SEQUENTIAL_TEST_STEPS = [
         "API RBAC",
         "API RBAC authorization tests (static scan + dynamic matrix)",
     ),
+    # Step 15 is sequential for a different reason from Step 12: it is not a
+    # stack-wide mutation, it is just slow and bursty. It waits on an external
+    # scan for up to 15 minutes, and running it alongside the parallel pool would
+    # add its wait to the pool's wall clock for no benefit — the pool is
+    # fail-fast, and a document held at the gate is not a failure.
+    (
+        test_step15_malware_gate,
+        "Step 15",
+        "Malware gate",
+        "Malware-scanning ingest gate refuses a known-bad (EICAR) upload",
+    ),
 ]
 ALL_TEST_STEPS = PARALLEL_TEST_STEPS + SEQUENTIAL_TEST_STEPS
 
@@ -3030,7 +3228,24 @@ def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     print("Step 1: Deploying stack...")
     cmd = f"idp-cli deploy --stack-name {stack_name} --template-url {template_url} --admin-email {admin_email} --wait"
     cmd += f" --role-arn {role_arn}"
-    cmd += f" --parameters PermissionsBoundaryArn={permissions_boundary_arn}"
+    # MalwareScanning on the PRIMARY stack rather than as its own variant probe,
+    # which is a deliberate choice about what gets tested.
+    #
+    # A variant probe deploys and feature-smokes; it would prove the GuardDuty
+    # plan and the EventBridge rule exist. What it could not prove is the thing
+    # the gate actually risks: that every document still reaches COMPLETED with
+    # the gate in the path. The gate withholds the SQS message for EVERY upload,
+    # so a defect in it does not degrade one feature — it stalls ingest. Putting
+    # it on the primary stack means the whole functional suite, every document it
+    # processes and every status it asserts, runs through the gate, and a stall
+    # fails those tests rather than passing a smoke check.
+    #
+    # Cost of this choice, stated: every integration document now waits for a
+    # real GuardDuty scan before processing, and the stack consumes one of the 25
+    # protected buckets allowed per account per Region. Left fail-closed
+    # (AllowUnscannableDocuments defaults false) so an unscannable sample fails
+    # the suite loudly instead of being quietly admitted.
+    cmd += f" --parameters PermissionsBoundaryArn={permissions_boundary_arn} MalwareScanning=CREATE_PLAN"
     # Full nested-stack creation can legitimately run long; don't let the default
     # test-command timeout kill a healthy in-progress deploy. check=False so a
     # rollback is captured (with cf_events) and classified rather than raising.

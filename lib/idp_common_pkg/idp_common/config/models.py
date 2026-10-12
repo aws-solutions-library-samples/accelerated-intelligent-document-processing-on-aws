@@ -808,6 +808,64 @@ class PostprocessingConfig(FlatHookConfig):
     """
 
 
+class MalwareScanningConfig(BaseModel):
+    """Top-level `malware_scanning` section.
+
+    The POLICY applied to Amazon GuardDuty Malware Protection verdicts on
+    uploaded documents. Scanning itself is enabled by the ``MalwareScanning``
+    stack parameter, not here — nothing in this section can turn it on, because a
+    GuardDuty protection plan is infrastructure and a config row that claimed to
+    create one would be lying.
+
+    ⚠️ **Declared here so it survives a model round-trip.** ``IDPConfig`` takes
+    Pydantic's default ``extra="ignore"``, so a section with no field would be
+    silently dropped the first time a configuration passed through the model —
+    an Admin's saved setting would simply vanish on the next save, with nothing
+    reporting it.
+
+    A document GuardDuty reports as *infected* is always refused; that is not
+    configurable and so has no field.
+    """
+
+    on_unscannable: str = Field(
+        default="block",
+        description=(
+            "What to do with a document GuardDuty returned no verdict for "
+            "(password-protected, over the size/archive quotas, SSE-C encrypted, "
+            "or an internal scan error). 'block' (default) stops it with status "
+            "MALWARE_SCAN_FAILED. 'allow' processes it anyway — and takes effect "
+            "ONLY if the AllowUnscannableDocuments stack parameter is also true, "
+            "so this setting cannot by itself admit an unscanned file."
+        ),
+    )
+    alert_on_block: bool = Field(
+        default=True,
+        description=(
+            "Publish to the stack's SNS alerts topic when a document is "
+            "quarantined or refused as unscannable. The CloudWatch metrics and "
+            "the document's own status are recorded either way."
+        ),
+    )
+
+    @field_validator("on_unscannable")
+    @classmethod
+    def _validate_on_unscannable(cls, value: str) -> str:
+        """Refuse anything but the two known values, lower-cased.
+
+        Fails loudly rather than falling back to 'block': a typo like 'Allow' or
+        'permit' in a security policy must not be read as the stricter setting
+        and then quietly ignored, because the author believed they had loosened
+        it and would not find out until an unscannable document was refused.
+        """
+        normalised = str(value).strip().lower()
+        if normalised not in ("block", "allow"):
+            raise ValueError(
+                f"malware_scanning.on_unscannable must be 'block' or 'allow', "
+                f"got {value!r}"
+            )
+        return normalised
+
+
 class ConfidenceConfig(BaseModel):
     """Per-field confidence configuration (v0.6).
 
@@ -3699,6 +3757,12 @@ class IDPConfig(BaseModel):
     )
 
     notes: Optional[str] = Field(default=None, description="Configuration notes")
+    malware_scanning: MalwareScanningConfig = Field(
+        default_factory=MalwareScanningConfig,
+        description="Policy applied to GuardDuty Malware Protection verdicts on "
+        "uploaded documents. Scanning is enabled by the MalwareScanning stack "
+        "parameter; this section only decides how a verdict is acted on.",
+    )
     preprocessing: PreprocessingConfig = Field(
         default_factory=PreprocessingConfig,
         description="Preprocessing configuration — home of the standalone "
