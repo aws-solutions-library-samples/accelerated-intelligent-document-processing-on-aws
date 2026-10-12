@@ -190,13 +190,13 @@ required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
 GitHub can only require job-level contexts — never individual steps — so the
-mapping from gates to contexts is decided by how the jobs are arranged. Ten of
-the twelve shared gates live in `developer-tests.yml` (four jobs) and the other two in
-`security-checks.yml` (two jobs), which is how twelve gates produce
-six requireable contexts.
+mapping from gates to contexts is decided by how the jobs are arranged.
+Ten of the twelve shared gates live in `developer-tests.yml` (four jobs)
+and the other two in `security-checks.yml` (two jobs), which is how twelve gates
+produce six requireable contexts.
 
 Splitting `developer-tests.yml` into four parallel jobs **improved** this. It used
-to be one job holding eight of the ten shared gates, which collapsed those eight
+to be one job holding every gate this workflow carries, which collapsed all of them
 into a single requireable context: they shared one red mark, so a required-check
 failure did not say which of them had failed. They are now four contexts, so a red
 mark names the half of the work that broke.

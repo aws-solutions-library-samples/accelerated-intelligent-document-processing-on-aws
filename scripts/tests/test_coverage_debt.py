@@ -1746,7 +1746,14 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
 #: about a step can reach. Measured: `branches: ["release/**"]` left every other check here
 #: green. Pinned rather than shape-checked, because `branches`, `branches-ignore`, `paths`
 #: and `types` can each narrow it and enumerating the ways is the denylist mistake again.
-GITHUB_WORKFLOW_TRIGGER = {"pull_request": {"branches": ["**"]}}
+GITHUB_WORKFLOW_TRIGGER = {
+    "pull_request": {"branches": ["**"]},
+    # Present and valueless, which is what `workflow_dispatch:` with no inputs parses to.
+    # It adds a manual trigger and narrows nothing, so it belongs in the recorded value
+    # rather than being filtered out of the comparison -- filtering a key is how the next
+    # key added goes unread.
+    "workflow_dispatch": None,
+}
 
 #: The GitHub gate job, **everything except its steps**, pinned as one mapping.
 #:
@@ -1757,10 +1764,15 @@ GITHUB_WORKFLOW_TRIGGER = {"pull_request": {"branches": ["**"]}}
 #: matrix, a `runs-on` label no runner has, and — one scope from the keys that were pinned —
 #: `defaults: run: shell:` naming a valid custom shell that swallows every step's status.
 #: `steps` is excluded because it legitimately churns and is asserted in detail elsewhere.
+#:
+#: Which job this is, is **not** written down: `_github_job_running` finds the job whose
+#: step runs the gate, and the recorded mapping is compared against that. The workflow was
+#: one job when this was written and is four now, and a hardcoded job id would have made the
+#: split read as a missing job rather than as a job that moved.
 GITHUB_GATE_JOB = {
-    "name": "Lint, Type Check, and Test",
+    "name": "Unit Tests (idp_common)",
     "runs-on": "ubuntu-latest",
-    "timeout-minutes": 120,
+    "timeout-minutes": 90,
     "permissions": {"contents": "read", "issues": "read", "checks": "write"},
     "container": {"image": "python:3.13-bookworm"},
 }
@@ -1804,9 +1816,10 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
 
     * ``continue-on-error: true`` on the **step**: it runs, prints red, job stays green.
     * ``continue-on-error: true`` on the **job**: one line, and every gate in that job is
-      neutered at once, and most of the shared gate set are steps in ``developer_tests``.
-      The count is deliberately not written here: it moves whenever a gate is added, and
-      what matters is that one line reaches all of them.
+      neutered at once -- the two coverage gates share their job with the unit suite whose
+      report they read, so one such line takes all three. No count is written here: how
+      many gates share a job moves whenever the workflow is reorganised, and what matters
+      is that one line reaches every gate in whichever job they are in.
     * ``if: false``, ``if: ${{false}}``, ``if: ${{ !always() }}``,
       ``if: ${{ github.event_name == 'never_happens' }}``: the step never runs. A denylist
       of literal spellings loses to whitespace, and then to semantics.
@@ -2146,11 +2159,18 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
         been the enumerate-today's-cases move for a third time, and the next unpinned key
         would be the next finding — so the whole mapping is pinned and any structural change
         is one diff somebody reads.
+
+        The job is located by **following the gate**, not by its id. Naming the id here
+        would make a workflow reorganisation read as a missing job — which it did: the
+        workflow was one job holding every gate when this was written and is four parallel
+        jobs now, and the gates moved into the one that writes the report they read.
         """
-        job = dict(self._github_jobs()["developer_tests"])
+        name, job, _ = self._github_job_running("make check-coverage-debt-cicd")
+        job = dict(job)
         job.pop("steps", None)
         assert job == GITHUB_GATE_JOB, (
-            "the job holding the coverage gates is structurally different from what was "
+            f"job `{name}`, which holds the coverage gates, is structurally different "
+            "from what was "
             "recorded. Keys here decide whether it runs and whether a red step reaches the "
             "merge decision at all.\n"
             f"  recorded: {GITHUB_GATE_JOB}\n  now:      {job}\n"
