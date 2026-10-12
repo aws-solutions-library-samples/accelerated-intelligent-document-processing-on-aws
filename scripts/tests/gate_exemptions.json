@@ -2722,6 +2722,17 @@
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS"
       ]
+    },
+    "scripts/tests/test_prefix_mapping_call_sites.py::SCOPE_BEARING": {
+      "kind": "enforced-universe",
+      "memberKind": "one of the four deploy artifacts that resolves a configuration prefix mapping assignment",
+      "turnsOff": "nothing. It records, per call site, WHETHER that site hands the resolver a caller scope, and the test asserts the recorded value against the AST in both directions -- so an entry saying False is what makes that omission a tested fact rather than what excuses it. A site that starts or stops passing `allowed_profiles` fails the same assertion.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_prefix_mapping_call_sites.py",
+      "reason": "Discovered through the prose route, on a comment saying `allowed_profiles` is 'deliberately NOT in SEAMS' -- which reads as an exclusion and is instead the fact being asserted. Two of the four sites must omit a caller scope and two must pass one: ingest is an EventBridge S3 event with no caller to scope, and the dry run performs its own check because it has to null individual response fields rather than refuse. A blanket requirement would therefore be wrong, but so would silence -- a flip in either direction is an authorization change, and one already happened: the dry run's local check kept a narrower subject set than the library's after the library gained a third subject, so the preview could approve a destination the upload then refused. Closure is by equality with CALL_SITES, which is itself derived from `git ls-files` rather than authored, so a fifth caller fails for being unrecorded before anyone reads this entry. There is no per-member fact to compute: whether a given Lambda has a caller identity at all is a property of its event source, which no predicate can read. What a reviewer should check is that the equality bites -- delete an `allowed_profiles=` argument and watch it fail. Registered rather than reworded, since rewording to slip past discovery is what this registry exists to prevent."
     }
   }
 }

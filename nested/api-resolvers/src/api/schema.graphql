@@ -408,8 +408,11 @@ type ConfigAssignmentPreview @aws_cognito_user_pools @aws_iam {
   # mapped one, and metadata precedence resolves to the caller's own while explaining
   # that it beat the mapping's.
   #
-  # Every other field is then null, INCLUDING `mappingPrefix` and `reason`. The
-  # prefix looks like the caller's own input and is not: they supplied a key, so
+  # Every other field naming anything is then null, INCLUDING `mappingPrefix`.
+  # `reason` is the exception and carries one fixed sentence that names nothing
+  # privileged -- it is the entire body of the upload panel's alert, so nulling it
+  # would leave the one caller who needs the explanation with an empty error.
+  # The prefix looks like the caller's own input and is not: they supplied a key, so
   # returning the mapping that governs it says where the boundary sits, and a probe
   # at a time that walks out the routing policy `listConfigPrefixMappings` is
   # Admin-only to protect. Profile names are themselves access-controlled

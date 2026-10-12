@@ -633,8 +633,9 @@ looking correct.
 The same dry run (`resolveConfigPrefixMapping`) backs the Upload Documents panel's
 preview, which an Author can reach, and there it is **scope-filtered**: for
 a destination governed by a profile outside the caller's `allowedConfigVersions`, the
-answer says only that the destination is outside their allowed configuration scope. The
-profile name, the revision, the reason **and the mapping prefix** are all withheld.
+answer says only that the destination is outside their allowed configuration scope --
+one fixed sentence, which is what the panel shows. The profile name, the revision **and
+the mapping prefix** are all withheld.
 Withholding the prefix matters because the caller supplied a *key*: answering
 `a/b/c/d/x.pdf` with the mapping that governs it would say the boundary sits at `a/b/`,
 and one probe at a time that walks out the routing policy the Admin-only mapping list

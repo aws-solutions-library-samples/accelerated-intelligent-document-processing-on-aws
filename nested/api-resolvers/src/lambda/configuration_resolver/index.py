@@ -1665,13 +1665,26 @@ def handle_resolve_prefix_mapping(manager, args, allowed_config_versions):
     # mapping's. Checking only `assignment.profile` leaves both of those naming an
     # out-of-scope profile in `reason`, one probe at a time — the oracle
     # `getConfigVersions` is scope-filtered to prevent.
+    #
+    # ⚠️ The DECLARED profile is in the subject set too, and for a different reason
+    # from the other two: it is the caller's own input, so including it discloses
+    # nothing. It is here so this answer matches the one the upload will get.
+    # `resolve_config_assignment` refuses a declared out-of-scope profile even where
+    # a mapping overrides it -- the override does not stop it being stamped on the
+    # object, and it becomes live if the mapping read fails open at ingest -- so
+    # omitting it here would have the dry run approve a destination the upload then
+    # 403s, which is the one failure mode a dry run must not have.
     matched = find_match(key, mappings)
-    disclosed = [
+    subjects = [
         p
-        for p in (assignment.profile, matched["configProfile"] if matched else None)
+        for p in (
+            assignment.profile,
+            matched["configProfile"] if matched else None,
+            args.get("metadataProfile"),
+        )
         if p
     ]
-    if any(not scope_allows(allowed_config_versions, p) for p in disclosed):
+    if any(not scope_allows(allowed_config_versions, p) for p in subjects):
         return {
             "success": True,
             "assignment": {

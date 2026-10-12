@@ -559,6 +559,60 @@ def test_no_branch_of_the_dry_run_names_an_out_of_scope_profile(
 
 
 @pytest.mark.unit
+def test_the_dry_run_refuses_a_declared_profile_outside_the_callers_scope(
+    manager, store, monkeypatch
+):
+    """The preview must answer the question the UPLOAD will answer.
+
+    `resolve_config_assignment` denies a declared out-of-scope profile even where a
+    mapping overrides it, because the override does not stop that value being
+    stamped on the object and becoming live if the mapping read fails open at
+    ingest. The dry run does its own check, so a narrower subject set here would
+    approve a destination the upload then 403s -- which is worse than having no
+    dry run at all.
+    """
+    monkeypatch.setattr(
+        index, "_get_user_allowed_config_versions", lambda email, sub="": ["tenant-a"]
+    )
+    store.list.return_value = [
+        {
+            "prefix": "tenant-a-docs/",
+            "configProfile": "tenant-a",
+            "configRevision": None,
+            "metadataPrecedence": "mapping",
+            "enabled": True,
+            "matchKind": "prefix",
+        }
+    ]
+
+    result = index.handler(
+        _event(
+            "resolveConfigPrefixMapping",
+            {
+                "objectKey": "tenant-a-docs/x.pdf",
+                # In scope as a DESTINATION; the declared profile is not.
+                "metadataProfile": "finance-prod",
+            },
+            groups=("Author",),
+            email="author@example.com",
+        ),
+        None,
+    )
+
+    assert result["success"] is True
+    assignment = result["assignment"]
+    assert assignment["outOfScope"] is True
+    # Nothing privileged survives, and `reason` carries the fixed sentence -- it is
+    # the entire body of the UI's alert, so nulling it would leave an empty error.
+    assert assignment["configProfile"] is None
+    assert assignment["configRevision"] is None
+    assert assignment["mappingPrefix"] is None
+    assert assignment["reason"]
+    assert "tenant-a" not in assignment["reason"]
+    assert "finance-prod" not in assignment["reason"]
+
+
+@pytest.mark.unit
 def test_the_dry_run_serves_an_in_scope_caller_normally(manager, store, monkeypatch):
     store.list.return_value = [{"prefix": "teamA/", "configProfile": "teamA-prod"}]
     monkeypatch.setattr(
