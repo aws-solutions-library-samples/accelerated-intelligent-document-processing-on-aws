@@ -644,11 +644,22 @@ destination is not theirs.
 
 ### Reprocessing
 
-Reprocessing a document with no explicit profile re-resolves the mappings, so moving a
-mapping and reprocessing is how you re-run a backlog under a new profile. Two things
-still take precedence: a profile chosen explicitly in the Reprocess dialog, and — for
-a user restricted by `allowedConfigVersions` — the profile the document already
-carries, which keeps a reprocess from moving their own document out of their scope.
+Reprocessing a document re-resolves the mappings, so moving a mapping and reprocessing
+is how you re-run a backlog under a new profile.
+
+⚠️ **A reprocess is not a way around a mapping.** A profile chosen explicitly in the
+Reprocess dialog is adjudicated by the same conflict mode that governs a profile named
+at upload, because it is the same kind of request: under **Mapping wins** the mapping
+overrides your choice, under **Upload metadata wins** your choice stands, and under
+**Refuse the conflict** the re-run is refused rather than accepting the conflict that
+was already refused at upload. A refusal rejects the **whole** reprocess request
+rather than skipping the offending documents, so a partly-applied routing policy
+cannot be the outcome.
+
+One thing does still take precedence over a mapping, and it is a restriction rather
+than a bypass: for a user restricted by `allowedConfigVersions`, the profile the
+document already carries, which keeps a reprocess from moving their own document out
+of their scope.
 
 A mapping that applies on reprocess supplies its **pinned revision** along with its
 profile — both, or neither. A `revision` argument is honoured only where the *profile*

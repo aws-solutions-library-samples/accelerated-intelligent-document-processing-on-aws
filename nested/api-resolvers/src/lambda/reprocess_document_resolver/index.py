@@ -13,6 +13,7 @@ from idp_common.config.prefix_mappings import (
     SOURCE_ACTIVE_PROFILE,
     SOURCE_DOCUMENT_PIN,
     SOURCE_EXPLICIT_REQUEST,
+    SOURCE_PREFIX_MAPPING,
     PrefixMappingStore,
     resolve_config_assignment,
 )
@@ -287,8 +288,19 @@ def _version_for_document(
 
     The order is a precedence chain and each step is there for a different reason:
 
-    1. **An explicit ``version`` argument wins.** It has already been scope-checked,
-       and it is a deliberate choice by an authenticated caller.
+    1. **An explicit ``version`` argument is adjudicated by the mapping, not
+       exempt from it.** It is a deliberate choice by an authenticated caller and it
+       has already been scope-checked -- but so is a profile named in upload
+       metadata, and a mapping's conflict mode is precisely the rule for what
+       happens when the two disagree. Returning the request unconditionally made
+       ``mapping`` precedence mean "the mapping wins, except on reprocess" and made
+       ``reject`` mean "refuse the upload, then accept the same conflict on a
+       re-run" -- so an operator could defeat an administrator's routing policy by
+       uploading, letting it be refused or overridden, and reprocessing with the
+       profile they wanted. The request therefore goes through
+       ``resolve_config_assignment`` as the metadata profile, which applies the same
+       three modes the upload path applies, including refusing the reprocess
+       outright under ``reject``.
     2. **A scoped caller's reprocess stays pinned to the document's own profile.**
        ``_enforce_document_scope`` has just verified that profile is in their scope.
        ⚠️ This step must come *before* the prefix mapping, and the reason is easy to
@@ -313,11 +325,63 @@ def _version_for_document(
     where ``version`` came from the caller or from the document's own pin.
     """
     if requested_version:
+        # No mapping set, or no mapping governs this key: the request stands, which
+        # is the previous behaviour and the overwhelmingly common case.
+        if not mappings:
+            return requested_version, requested_revision, SOURCE_EXPLICIT_REQUEST, None
+
+        seam_cache = {} if seam_cache is None else seam_cache
+        decided = resolve_config_assignment(
+            object_key,
+            # The caller's request takes the metadata slot, because it is the same
+            # kind of claim -- "process this under X" from whoever initiated it --
+            # and `metadataPrecedence` is the administrator's rule for adjudicating
+            # it against the prefix.
+            metadata_profile=requested_version,
+            metadata_revision=requested_revision,
+            mappings=mappings,
+            active_profile=_memo_active(manager, seam_cache),
+            published_revision=_memo_published(manager, seam_cache),
+            profile_exists=_memo_exists(manager, seam_cache),
+            allowed_profiles=list(allowed_versions) if allowed_versions else None,
+        )
+        if decided.rejected:
+            _emit("PrefixMappingRejected")
+            logger.warning("Refusing to reprocess %s: %s", object_key, decided.reason)
+            raise ValueError(decided.reason)
+        if decided.scope_denied:
+            # Reachable now that the request is adjudicated: a mapping may resolve a
+            # profile outside the caller's scope even though their own request was
+            # in scope. Refusing is the same answer the upload path gives.
+            logger.warning(
+                "Refusing to reprocess %s: the resolved Configuration Profile is "
+                "outside the caller's configuration scope",
+                object_key,
+            )
+            raise PermissionError(
+                "Unauthorized: that document's destination is governed by a "
+                "Configuration Profile outside your allowed configuration scope."
+            )
+        if decided.mapping_prefix and decided.source == SOURCE_PREFIX_MAPPING:
+            # The mapping won the contest, so it supplies profile AND revision --
+            # revision numbers are per profile, so the caller's cannot travel.
+            logger.info("Reprocess of %s: %s", object_key, decided.reason)
+            _emit("PrefixMappingApplied", {"Prefix": decided.mapping_prefix})
+            _emit("PrefixMappingConflict", {"Winner": decided.source})
+            return (
+                decided.profile,
+                decided.revision,
+                SOURCE_PREFIX_MAPPING,
+                decided.mapping_prefix,
+            )
+        if decided.conflict:
+            # `metadata` precedence: the mapping was consulted and deferred.
+            _emit("PrefixMappingConflict", {"Winner": decided.source})
         return (
             requested_version,
             requested_revision,
             SOURCE_EXPLICIT_REQUEST,
-            None,
+            decided.mapping_prefix,
         )
 
     pinned = current_versions.get(object_key) or None
@@ -584,25 +648,46 @@ def handler(event, context):
         manager = _configuration_manager()
         seam_cache: dict = {}
 
+        # Resolve EVERY document's configuration before queueing any of it.
+        #
+        # ⚠️ The loop below swallows per-document failures and returns success for
+        # the request either way, which is right for a transient SQS error -- one
+        # document missing from a batch of fifty should not fail the other
+        # forty-nine. It is wrong for a REFUSAL: a `reject` mapping that was
+        # logged, skipped and reported as success would mean an operator believes
+        # the re-run happened, which is the same outcome as the mapping not
+        # existing. Resolution is therefore a pre-pass that raises, and it raises
+        # for the batch rather than per document -- matching `_enforce_document_scope`
+        # above, which refuses a batch whole rather than part-processing it, for the
+        # same reason: a partly-applied routing policy is harder to reason about
+        # than a refused request.
+        resolutions = []
+        for object_key in object_keys:
+            resolutions.append(
+                (
+                    object_key,
+                    _version_for_document(
+                        version,
+                        revision,
+                        object_key,
+                        current_versions,
+                        allowed_versions,
+                        mappings=mappings,
+                        manager=manager,
+                        seam_cache=seam_cache,
+                    ),
+                )
+            )
+
         # Process each document
         success_count = 0
-        for object_key in object_keys:
+        for object_key, (
+            resolved_version,
+            resolved_revision,
+            config_source,
+            mapping_prefix,
+        ) in resolutions:
             try:
-                (
-                    resolved_version,
-                    resolved_revision,
-                    config_source,
-                    mapping_prefix,
-                ) = _version_for_document(
-                    version,
-                    revision,
-                    object_key,
-                    current_versions,
-                    allowed_versions,
-                    mappings=mappings,
-                    manager=manager,
-                    seam_cache=seam_cache,
-                )
                 reprocess_document(
                     object_key,
                     resolved_version,

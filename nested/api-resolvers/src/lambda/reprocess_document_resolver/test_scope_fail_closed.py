@@ -479,13 +479,87 @@ class TestConfigPrefixMappingsOnReprocess:
 
         assert calls == [("acme/statement.pdf", "tenant-a", "document-pin")]
 
-    def test_an_explicit_request_beats_the_mapping(
+    def test_a_mapping_wins_over_an_explicit_reprocess_request(
         self, users_table, document_version, monkeypatch
     ):
+        """The hole this closes: `mapping` precedence must not mean "the mapping
+        wins, except on reprocess".
+
+        An explicit request used to be returned before mappings were consulted at
+        all, so an operator could defeat an administrator's routing policy by
+        uploading, letting the mapping override them, and then reprocessing with
+        the profile they wanted. A reprocess request is the same kind of claim as a
+        profile named in upload metadata, so the same conflict mode adjudicates it.
+        """
         users_table(items=[])
         document_version("tenant-a")
         self._mappings(
-            monkeypatch, {"prefix": "acme/", "configProfile": "mapped-profile"}
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "mapping",
+            },
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == [("acme/statement.pdf", "mapped-profile", "prefix-mapping")]
+
+    def test_a_deferring_mapping_still_honours_an_explicit_request(
+        self, users_table, document_version, monkeypatch
+    ):
+        """`metadata` precedence defers, so the request stands -- which is what
+        makes the fix above an application of the administrator's rule rather than
+        a blanket override of the caller."""
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "metadata",
+            },
+        )
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == [("acme/statement.pdf", "chosen", "explicit-request")]
+
+    def test_a_refusing_mapping_refuses_the_reprocess(
+        self, users_table, document_version, monkeypatch
+    ):
+        """`reject` must not mean "refuse the upload, then accept the same conflict
+        on a re-run". Nothing is queued."""
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "reject",
+            },
+        )
+        calls = self._queued(monkeypatch)
+
+        with pytest.raises(ValueError, match="Refused"):
+            index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert calls == []
+
+    def test_an_explicit_request_stands_where_no_mapping_governs_the_key(
+        self, users_table, document_version, monkeypatch
+    ):
+        """The common case, unchanged: with no mapping over the prefix the request
+        is honoured exactly as before."""
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch, {"prefix": "elsewhere/", "configProfile": "mapped-profile"}
         )
         calls = self._queued(monkeypatch)
 

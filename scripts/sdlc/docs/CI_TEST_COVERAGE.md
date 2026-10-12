@@ -435,10 +435,10 @@ Notes:
 
 ## Test Execution Strategy
 
-### Parallel Execution (Steps 3-11, 13, 14)
-- **11 tests run concurrently** to minimize pipeline runtime (Step 13, the
-  read-only permissions-boundary check, and Step 14, the pipeline-hook test,
-  join the parallel pool)
+### Parallel Execution (Steps 3-11, 13, 14, 15)
+- **12 tests run concurrently** to minimize pipeline runtime (Step 13, the
+  read-only permissions-boundary check, Step 14, the pipeline-hook test, and
+  Step 15, the config-prefix-mapping routing check, join the parallel pool)
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
@@ -836,6 +836,40 @@ document-level backstop field — which `postprocessing`, running later, overwri
 The persisted-marker assertion therefore checks the **postprocessing** marker,
 which is correctly the final value; `preprocessing` is proven to have run by its
 own `invoked` count.
+
+### Step 15: Config Prefix Mapping Routing ⚡ *Parallel*
+**What it tests**: that a [config prefix mapping](../../../docs/configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
+actually routes a document at ingest, across all three conflict modes, with and
+without an upload tag.
+- **Why it exists**: this is the one layer the offline suites structurally cannot
+  reach. The precedence rules are exhaustively covered as a pure function with no
+  AWS, and each Lambda's wiring is covered with the resolver stubbed out — but what
+  failed in practice was the **composition**: a mapping as the API stores it,
+  against the key an upload actually creates, resolved by the real ingest Lambda.
+  A deployment whose three mappings were saved without a trailing slash resolved
+  every upload by its own tag with no mapping applied, and every layer was
+  individually correct. On the document list that is indistinguishable from "the
+  mapping deferred to the upload", so the conflict mode looked broken when it had
+  never been reached.
+- **Verification** (six combinations, three mappings):
+  - `mapping` precedence: an untagged upload **and** a tagged one both resolve to
+    the mapping's profile, with `ConfigSource: prefix-mapping`
+  - `metadata` precedence: a tagged upload resolves to the tag's profile with
+    `ConfigSource: metadata`, and the mapping prefix is **still recorded** — the
+    field that distinguishes "a mapping deferred" from "no mapping matched"
+  - `reject`: a tagged upload is written `FAILED` with a reason on the row, and no
+    workflow starts
+- **Cost**: reads the tracking row rather than waiting for extraction, since
+  resolution happens in `queue_sender` when the object lands. That is what keeps
+  it cheap enough for the parallel pool.
+- **Isolation**: creates its own run-scoped Configuration Profile and three
+  run-scoped prefixes, and removes the mappings **before** the profile in its
+  `finally` — `deleteConfigVersion` refuses while a mapping still names the
+  profile, which is a guard the feature adds and this cleanup respects rather than
+  fights. Dropping the mappings first also stops a `reject` rule catching an
+  unrelated upload while the rest of the cleanup runs.
+
+---
 
 #### Validating Step 14 without a pipeline round-trip
 
