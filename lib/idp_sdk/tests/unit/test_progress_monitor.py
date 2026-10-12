@@ -26,8 +26,10 @@ pinned here with exactly those states.
 is never asked about again, so anything the cache gets wrong is permanent for the
 life of the monitor. The tests therefore drive two consecutive polls and assert on
 what the *second* invocation asked for, which is the only way the difference
-between "re-queried" and "served from cache" is observable. That is also how the
-``NOT_FOUND`` defect below is pinned.
+between "re-queried" and "served from cache" is observable. It is also what
+``TestNotFoundGraceWindow`` turns on: keeping a document whose tracking row has
+not arrived yet out of the cache is the whole of that fix, and a summary taken
+from a single poll looks identical either way.
 
 The Lambda is exercised through ``botocore``'s ``Stubber`` against a real
 ``lambda`` client rather than a ``MagicMock``. The request parameters are the
@@ -39,12 +41,16 @@ serve this: invoking a Lambda for real needs Docker.
 
 import io
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
-from idp_sdk._core.progress_monitor import ProgressMonitor
+from idp_sdk._core.progress_monitor import (
+    NOT_FOUND_GRACE_SECONDS,
+    ProgressMonitor,
+)
 
 LOOKUP_FUNCTION = "idp-stack-LookupFunction"
 
@@ -511,24 +517,22 @@ class TestBatchStatus:
         assert second["all_complete"] is True
         assert len(invocations) == 1
 
-    def test_not_found_is_cached_so_an_early_poll_marks_a_document_failed_forever(
+    def test_not_found_with_no_submission_time_settles_at_once_and_is_cached(
         self, monitor, stubber, invocations
     ):
-        """DEFECT: ``NOT_FOUND`` is cached as terminal (progress_monitor.py:22-23).
+        """With no batch submission time, ``NOT_FOUND`` is terminal immediately.
 
-        ``NOT_FOUND`` means only that no tracking row exists *yet*. Between the S3
-        upload and the QueueSender Lambda writing the row there is a window in
-        which that is the correct answer for a document which will process
-        perfectly. Because ``NOT_FOUND`` is in ``_TERMINAL_STATES`` the first poll
-        to land in that window caches the document as finished, and
-        ``_FAILED_STATES`` then reports it as failed for the entire life of the
-        monitor — no later poll ever asks about it again.
+        This is the caller that asks about a document without saying when it was
+        submitted, and for it the old unconditional behaviour is the right one: a
+        status query against a mistyped or long-deleted document id answers at
+        once instead of holding the caller for the length of a grace window it
+        has no reason to wait out. So the document is reported failed on the
+        first poll and cached, and no second invocation is made.
 
-        This test pins the current behaviour: the second poll returns COMPLETED
-        from the Lambda's point of view, the monitor never asks, and the batch
-        reports one failure and ``all_complete`` true. A caller sees a spurious
-        failure and, if it is gating on the result, treats a good document as
-        bad. Not fixed here — the fix is production code.
+        What makes that safe is that the one caller who *does* care about the
+        race — the batch monitor polling a batch it just submitted — passes
+        ``batch_started_at`` and gets the grace window instead. See
+        ``TestNotFoundGraceWindow``.
         """
         _expect_batch(
             stubber,
@@ -547,6 +551,226 @@ class TestBatchStatus:
         assert second["completed"] == []
         assert second["all_complete"] is True
         assert len(invocations) == 1
+
+
+@pytest.mark.unit
+class TestNotFoundGraceWindow:
+    """``NOT_FOUND`` right after an upload means "not yet", not "never".
+
+    The tracking row a ``NOT_FOUND`` document is missing is written by
+    QueueSender, which S3 reaches through EventBridge asynchronously. So for the
+    first seconds of a batch's life ``NOT_FOUND`` is the correct answer for a
+    document that will process perfectly, and treating it as a settled failure
+    reports a batch as finished-and-failed before anything has started.
+
+    That is not hypothetical: it failed this project's nightly integration suite
+    repeatedly. The batch was declared 100% complete with one failure 1.6s after
+    the upload returned, ``download-results`` then found zero files, and the step
+    reported a missing-result-file assertion — with no failed Step Functions
+    execution anywhere, because no execution had started.
+
+    The window is bounded by the batch's own submission time rather than by
+    monitor state, because the monitor does not survive between polls: the CLI's
+    status call builds a fresh ``ProgressMonitor`` every time, so anything
+    remembered on the instance is gone by the next poll.
+    """
+
+    def _submitted(self, seconds_ago: float) -> datetime:
+        return datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+
+    def test_inside_the_window_a_not_found_document_is_queued_not_failed(
+        self, monitor, stubber
+    ):
+        """The bucket is what every caller reads, so it is the claim that matters."""
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "NOT_FOUND"}],
+        )
+
+        status = monitor.get_batch_status(
+            ["racing.pdf"], batch_started_at=self._submitted(1)
+        )
+
+        assert [doc["document_id"] for doc in status["queued"]] == ["racing.pdf"]
+        assert status["failed"] == []
+
+    def test_inside_the_window_the_batch_is_not_reported_complete(
+        self, monitor, stubber
+    ):
+        """``all_complete`` is the single value the CLI's polling loop exits on.
+
+        The loop has no grace period of its own — it breaks the moment this is
+        true — so if a document inside the grace window still counted towards
+        completeness, the window would change the wording of the report and
+        nothing about when the loop stopped.
+        """
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "NOT_FOUND"}],
+        )
+
+        status = monitor.get_batch_status(
+            ["racing.pdf"], batch_started_at=self._submitted(1)
+        )
+
+        assert status["all_complete"] is False
+
+    def test_inside_the_window_it_is_not_cached_so_a_later_poll_sees_it_process(
+        self, monitor, stubber, invocations
+    ):
+        """The regression test for the nightly failure, end to end.
+
+        The cache is a commitment: a cached document is never queried again. So
+        keeping ``NOT_FOUND`` out of the cache is what makes the grace window
+        mean anything beyond the first poll — otherwise poll one still decides
+        the document's fate and poll two just reads it back.
+
+        Two polls, two Lambda responses: the document is missing, then it is
+        done. The second invocation happening at all is the assertion.
+        """
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "NOT_FOUND"}],
+        )
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "COMPLETED"}],
+        )
+
+        first = monitor.get_batch_status(
+            ["racing.pdf"], batch_started_at=self._submitted(1)
+        )
+        assert first["queued"] != []
+        assert "racing.pdf" not in monitor.finished_docs
+
+        second = monitor.get_batch_status(
+            ["racing.pdf"], batch_started_at=self._submitted(2)
+        )
+
+        assert [doc["document_id"] for doc in second["completed"]] == ["racing.pdf"]
+        assert second["failed"] == []
+        assert second["all_complete"] is True
+        assert len(invocations) == 2
+        stubber.assert_no_pending_responses()
+
+    def test_past_the_window_a_not_found_document_is_failed_and_explained(
+        self, monitor, stubber
+    ):
+        """The window delays the verdict; it does not remove it.
+
+        A document whose row never arrives has to end up failed, or a genuinely
+        broken ingestion path would poll until the caller's own deadline with
+        nothing said about why.
+        """
+        _expect_batch(
+            stubber, ["lost.pdf"], [{"object_key": "lost.pdf", "status": "NOT_FOUND"}]
+        )
+
+        status = monitor.get_batch_status(
+            ["lost.pdf"], batch_started_at=self._submitted(NOT_FOUND_GRACE_SECONDS + 5)
+        )
+
+        assert [doc["document_id"] for doc in status["failed"]] == ["lost.pdf"]
+        assert status["failed"][0]["error"] == "Document not found in tracking table"
+        assert status["failed"][0]["failed_step"] == "QueueSender"
+        assert status["all_complete"] is True
+        assert "lost.pdf" in monitor.finished_docs
+
+    def test_a_document_queued_inside_the_window_carries_no_error_text(
+        self, monitor, stubber
+    ):
+        """A transient state must not be displayed, or counted, as a failure.
+
+        ``display.py`` renders whatever ``error`` it finds, so annotating a
+        document that is merely waiting would print a QueueSender failure for a
+        document QueueSender is about to pick up.
+        """
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "NOT_FOUND"}],
+        )
+
+        status = monitor.get_batch_status(
+            ["racing.pdf"], batch_started_at=self._submitted(1)
+        )
+
+        assert "error" not in status["queued"][0]
+        assert "failed_step" not in status["queued"][0]
+
+    def test_a_naive_submission_time_is_read_as_utc(self, monitor, stubber):
+        """The timestamp round-trips through JSON, so it may lose its offset.
+
+        The batch metadata is written with ``datetime.now(timezone.utc)`` and so
+        is aware, but an older batch document may not carry an offset. Rejecting
+        a naive value would reopen the race for exactly those batches, and every
+        writer in this codebase means UTC.
+        """
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "NOT_FOUND"}],
+        )
+
+        naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        status = monitor.get_batch_status(["racing.pdf"], batch_started_at=naive)
+
+        assert status["queued"] != []
+        assert status["failed"] == []
+
+    def test_a_future_dated_batch_is_treated_as_still_inside_the_window(
+        self, monitor, stubber
+    ):
+        """Clock skew must not expire a window that has not started.
+
+        A batch timestamped in the future gives a negative age. Falling on the
+        in-grace side delays a verdict, which the caller's polling deadline
+        bounds anyway; falling the other way would report a failure for a
+        document nobody had looked for yet.
+        """
+        _expect_batch(
+            stubber,
+            ["racing.pdf"],
+            [{"object_key": "racing.pdf", "status": "NOT_FOUND"}],
+        )
+
+        status = monitor.get_batch_status(
+            ["racing.pdf"], batch_started_at=self._submitted(-3600)
+        )
+
+        assert status["queued"] != []
+        assert status["failed"] == []
+
+    def test_the_window_does_not_change_any_other_failure_state(self, monitor, stubber):
+        """Only ``NOT_FOUND`` is provisional; a real failure still settles at once.
+
+        ``FAILED`` and ``ABORTED`` are reports from the pipeline about work it
+        actually did, so waiting on them would delay every genuine failure by
+        the length of the window.
+        """
+        _expect_batch(
+            stubber,
+            ["bad.pdf", "stopped.pdf"],
+            [
+                {"object_key": "bad.pdf", "status": "FAILED", "error": "boom"},
+                {"object_key": "stopped.pdf", "status": "ABORTED"},
+            ],
+        )
+
+        status = monitor.get_batch_status(
+            ["bad.pdf", "stopped.pdf"], batch_started_at=self._submitted(1)
+        )
+
+        assert sorted(doc["document_id"] for doc in status["failed"]) == [
+            "bad.pdf",
+            "stopped.pdf",
+        ]
+        assert status["queued"] == []
+        assert status["all_complete"] is True
 
 
 @pytest.mark.unit

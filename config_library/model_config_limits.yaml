@@ -109,6 +109,55 @@ model_limits:
     reference: "https://docs.anthropic.com/claude/docs/models-overview#model-comparison"
 
   # ---------------------------------------------------------------------------
+  # Anthropic Claude Haiku 5.5 (extended output, 128K) — needs its own entry
+  # ---------------------------------------------------------------------------
+  # It cannot inherit from the Claude 4.x entry below: that one caps output at
+  # 64,000 and Haiku 5.5's is 128,000, so falling through would halve the output
+  # budget. It also does not collide with any pattern above, because every one of
+  # those requires a literal '-4' or names opus/sonnet.
+  #
+  # The 1,000,000 window needs no ':1m' id and must not get one: unlike every other
+  # Claude here, 1M is this model's DEFAULT window, not an opt-in. So the value
+  # below is the plain model limit, and 200,000 would be wrong as a statement of
+  # fact — this field's documented meaning, at the top of this file, is "the
+  # model's context/input window".
+  #
+  # COST WARNING — Haiku 5.5 is billed in two prompt-length bands, and this is the
+  # second model in this file with that shape (see the GPT-6 Astra entry below,
+  # which is handled the same way for the same reasons). Input at or below 100,000
+  # tokens costs $0.11/1M (us., eu.) or $0.10/1M (global.); ANY request above
+  # 100,000 moves the WHOLE request into the long band at 5x on every one of the
+  # five token types — $0.55/1M input, $2.75/1M output, us. Threshold and
+  # multiplier are published on Anthropic's pricing page, which prices this model
+  # in two rows ("for prompts up to 100,000 tokens" and "for prompts over 100,000
+  # tokens") and states "Claude Haiku 5.5 is priced by prompt length"
+  # (platform.claude.com/docs/en/about-claude/pricing#long-context-pricing,
+  # retrieved 2026-10-08). The Bedrock model card does not state the threshold, but
+  # the AWS long band is exactly 5x on all five types at exactly the 1.1x geo
+  # multiplier over the first-party band, so it is the same band.
+  # config_library/pricing.yaml records only the short-band rates, so cost reports
+  # UNDER-REPORT by 5x for prompts that cross 100,000.
+  #
+  # Crossing it is the DEFAULT, not an edge case, because the auto-sizers derive
+  # their budgets from this very number:
+  #   * bedrock/sizing.py gives it a 578,400-token agentic shard budget (5.8x the
+  #     band boundary).
+  #   * summarization/service.py budgets 850,000 tokens (85% of the window) before
+  #     it truncates anything (8.5x the boundary).
+  # Lower this value if predictable cost matters more than window size — both
+  # budgets shrink with it. ⚠️ But do NOT lower it to 100000 to chase the band
+  # boundary: measured, that leaves a 2,000-token agentic shard budget, against
+  # 18,400 for Sonnet 5 and 63,200 for Haiku 4.5, which makes Advanced-mode
+  # extraction unusable on this model. There is no value that both keeps the model
+  # usable and keeps every request in the cheap band, which is why the window is
+  # stated truthfully here and the discrepancy is documented instead.
+  - pattern: "claude-haiku-5-5"
+    max_output_tokens: 128000
+    max_input_tokens: 1000000
+    description: "Claude Haiku 5.5 — 1M context (default, no ':1m' id), 128K max output; input above 100K bills at the 5x long-context rate"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-5-5.html"
+
+  # ---------------------------------------------------------------------------
   # Anthropic Claude Sonnet 4.6 / Opus 4.6 (extended output, 128K)
   # ---------------------------------------------------------------------------
   - pattern: "claude-sonnet-4-6"

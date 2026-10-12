@@ -235,7 +235,7 @@ def author_class_schema(
     from idp_common import bedrock
 
     client = bedrock_client or bedrock.BedrockClient(region=region)
-    model = model_id or "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    model = model_id or "us.anthropic.claude-sonnet-4-6"
     system_prompt = (
         "You are an expert in document understanding and JSON Schema design. "
         "You produce precise, well-named extraction schemas."

@@ -18,7 +18,7 @@ import threading
 import time
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from textwrap import dedent
 
 import boto3
@@ -64,6 +64,68 @@ DEFAULT_COMMAND_TIMEOUT = 3600
 # quota. MUST match the SuppressAdminInvite condition in template.yaml.
 SUPPRESS_INVITE_ADMIN_EMAIL = "citest@suppress.welcome.email"
 
+# Where this script tees its own combined output. Everything the suite emits --
+# including every subprocess, because run_command pipes child stdout/stderr and
+# re-prints it through Python -- lands here in the order this process saw it.
+#
+# This file exists because the CodeBuild log stream is NOT a reliable source for
+# the failure analysis that runs at the end of the build. CodeBuild batches
+# stdout to CloudWatch, and the suite's parallel steps interleave, so a
+# `get_log_events` walk performed mid-build can return a prefix that is missing
+# lines already written. That is not hypothetical: on one nightly run the agent
+# captured 1942 lines and stopped ~50 lines short of the three lines that
+# identified the failure, reported "root cause not fully determined", and
+# hypothesised a timeout that had not happened. The same stream read afterwards
+# held all of it.
+SUITE_TRANSCRIPT_PATH = os.environ.get(
+    "IDP_SUITE_TRANSCRIPT", "/tmp/idp-suite-transcript.log"
+)  # nosec B108 - isolated CodeBuild environment
+
+# S3 prefix under the source bucket holding one JSON evidence bundle plus the
+# suite transcript per build. Teardown destroys the stack's log groups, Step
+# Functions histories and tracking table, so anything not copied out before
+# `cleanup_stack` is unrecoverable; a bundle here survives independently of the
+# stack and of the CodeBuild log retention.
+DIAGNOSTICS_S3_PREFIX = "ci-diagnostics"
+
+# S3 prefix holding one marker object per deliberately retained stack, named for
+# the stack and carrying the UTC instant it may be reaped.
+#
+# A marker rather than a CloudFormation stack tag: tagging an existing stack
+# means `update-stack`, which would redeploy the very stack being preserved for
+# inspection. The marker is written once, read by the startup reaper, and
+# deleted when the stack is reaped.
+RETENTION_S3_PREFIX = "ci-retained"
+
+# How long a retained failed stack is kept before the startup reaper takes it.
+#
+# Bounded hard, because retention is measured in IAM roles rather than in
+# dollars: one IDP stack carries ~122 roles against an account quota of 5000,
+# and role exhaustion fails EVERY deploy in the account -- the condition the
+# stale-stack reaper was written for after ~600 leaked roles did exactly that.
+# A day of retained failures is affordable; a week is not.
+KEEP_FAILED_STACK_HOURS = float(os.environ.get("IDP_KEEP_FAILED_STACK_HOURS", "12"))
+KEEP_FAILED_STACK_MAX_HOURS = 24.0
+
+# Ceiling on stacks retained at once, whatever their TTL. The binding constraint
+# is the role quota above, so this is the number that keeps a bad night (four
+# failures in one day has happened) from consuming the headroom every other
+# pipeline in the account needs. On reaching it a failing run tears down as it
+# always did and says which markers held the slots.
+MAX_RETAINED_STACKS = int(os.environ.get("IDP_MAX_RETAINED_STACKS", "6"))
+
+# Retention is opt-OUT: every failing run keeps its stack unless this is set to
+# a falsey value. Set IDP_KEEP_FAILED_STACK=0 to restore unconditional teardown.
+KEEP_FAILED_STACK = os.environ.get(
+    "IDP_KEEP_FAILED_STACK", "1"
+).strip().lower() not in (
+    "",
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
 # Set when the test suite fails fast: newly started commands abort
 # immediately, and _kill_running_commands() terminates in-flight ones so
 # abandoned test threads cannot keep mutating the stack during cleanup.
@@ -95,6 +157,87 @@ def _kill_running_commands():
         procs = list(_RUNNING_PROCS)
     for proc in procs:
         _kill_proc_group(proc)
+
+
+class _Tee:
+    """A text stream that writes through to the real stream and to a transcript.
+
+    Installed over `sys.stdout` and `sys.stderr` so the transcript holds the
+    suite's whole output without any call site having to know about it. The
+    write-through is what keeps the CodeBuild console log unchanged.
+
+    The lock covers only the transcript. The underlying stream does its own
+    locking, and holding one lock across both writes would mean a blocked
+    console write could stall every test thread's logging.
+    """
+
+    def __init__(self, stream, sink):
+        self._stream = stream
+        self._sink = sink
+        self._lock = threading.Lock()
+
+    def write(self, data):
+        try:
+            with self._lock:
+                self._sink.write(data)
+        except Exception:  # noqa: BLE001 - diagnostics must never break output
+            pass
+        return self._stream.write(data)
+
+    def flush(self):
+        try:
+            with self._lock:
+                self._sink.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        self._stream.flush()
+
+    # Delegated so the tee is substitutable for the stream it replaces. `rich`
+    # and `subprocess` both ask about these, and a missing one surfaces as an
+    # AttributeError from inside an unrelated library.
+    def isatty(self):
+        return self._stream.isatty()
+
+    def fileno(self):
+        return self._stream.fileno()
+
+    def writable(self):
+        return True
+
+    @property
+    def encoding(self):
+        # `or` rather than a getattr default: a stream can carry the attribute
+        # set to None, and a consumer that reads it expects a usable codec name.
+        return getattr(self._stream, "encoding", None) or "utf-8"
+
+
+def install_suite_transcript(path=SUITE_TRANSCRIPT_PATH):
+    """Tee this process's stdout and stderr into `path`.
+
+    Line-buffered on purpose: the failure analysis reads this file from inside
+    the same process that is writing it, so a block-buffered transcript would be
+    missing its most recent -- and most relevant -- lines at exactly the moment
+    it is read.
+
+    Best effort. A transcript that cannot be opened costs the analysis its
+    preferred source and nothing else, since `fetch_full_build_log` still falls
+    back to the CloudWatch stream.
+
+    Args:
+        path: Transcript file to create.
+
+    Returns:
+        The path on success, or None if the transcript could not be opened.
+    """
+    try:
+        sink = open(path, "w", buffering=1, encoding="utf-8", errors="replace")  # noqa: SIM115
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  Could not open suite transcript at {path}: {e}")
+        return None
+    sys.stdout = _Tee(sys.stdout, sink)
+    sys.stderr = _Tee(sys.stderr, sink)
+    print(f"📝 Suite transcript: {path}")
+    return path
 
 
 def run_command(cmd, check=True, timeout=DEFAULT_COMMAND_TIMEOUT):
@@ -674,7 +817,7 @@ def test_step3_default_config(stack_name):
         ),
     ]
 
-    if not run_inference_test(
+    outcome = run_inference_test(
         stack_name,
         sample_file,
         batch_id,
@@ -684,8 +827,12 @@ def test_step3_default_config(stack_name):
         None,
         "samples",
         additional_checks,
-    ):
-        return {"success": False, "error": "Default config test failed"}
+    )
+    if not outcome:
+        return {
+            "success": False,
+            "error": f"Default config test failed: {inference_failure_reason(outcome)}",
+        }
 
     return {"success": True}
 
@@ -747,7 +894,7 @@ def test_step4_bda_mode(stack_name):
             ),
         ]
 
-        if not run_inference_test(
+        outcome = run_inference_test(
             stack_name,
             sample_file,
             batch_id,
@@ -757,8 +904,12 @@ def test_step4_bda_mode(stack_name):
             config_version,
             "samples",
             bda_additional_checks,
-        ):
-            return {"success": False, "error": "BDA config test failed"}
+        )
+        if not outcome:
+            return {
+                "success": False,
+                "error": f"BDA config test failed: {inference_failure_reason(outcome)}",
+            }
 
         return {"success": True}
     finally:
@@ -812,7 +963,7 @@ def test_step5_rule_validation(stack_name):
         ),
     ]
 
-    if not run_inference_test(
+    outcome = run_inference_test(
         stack_name,
         sample_file,
         batch_id,
@@ -822,8 +973,13 @@ def test_step5_rule_validation(stack_name):
         config_version,
         sample_dir,
         rule_additional_checks,
-    ):
-        return {"success": False, "error": "Rule validation test failed"}
+    )
+    if not outcome:
+        return {
+            "success": False,
+            "error": f"Rule validation test failed: "
+            f"{inference_failure_reason(outcome)}",
+        }
 
     return {"success": True}
 
@@ -3071,6 +3227,54 @@ def deploy_and_test_stack(stack_name, admin_email, template_url, progress_cb=Non
         }
 
 
+class InferenceTestOutcome:
+    """Whether an inference test passed, and if not, why.
+
+    `run_inference_test` printed its reason and returned a bare `False`, so every
+    caller could say only that the step "failed" and the step result that reached
+    the failure report carried a fixed string like "BDA config test failed". The
+    reason was in the build log, hundreds of lines above, and the report named
+    the wrong thing to go looking at: a monitor race that declared a batch failed
+    before it started reads as "no output was produced", which sends a reader to
+    Step Functions, where there is no failed execution to find because nothing
+    ever ran.
+
+    Falsy when the test failed, so the existing `if not run_inference_test(...)`
+    call sites keep their meaning, with the reason available alongside.
+    """
+
+    __slots__ = ("passed", "reason")
+
+    def __init__(self, passed, reason=""):
+        self.passed = bool(passed)
+        self.reason = reason
+
+    def __bool__(self):
+        return self.passed
+
+    def __repr__(self):
+        return f"InferenceTestOutcome(passed={self.passed!r}, reason={self.reason!r})"
+
+
+def inference_failure_reason(outcome, fallback="reason not recorded"):
+    """The reason an inference test failed, for a step's `error` field.
+
+    Tolerates an `outcome` that is a plain bool. Tests monkeypatch
+    `run_inference_test` with stubs that return one, and so may a caller written
+    before `InferenceTestOutcome` existed; a step report that loses the reason is
+    worse than one that never had it, but an `AttributeError` here would replace
+    the whole failure report with a traceback about the reporting code.
+
+    Args:
+        outcome: What `run_inference_test` returned.
+        fallback: Used when the outcome carries no reason.
+
+    Returns:
+        The failure reason, or `fallback`.
+    """
+    return getattr(outcome, "reason", "") or fallback
+
+
 def run_inference_test(
     stack_name,
     sample_file,
@@ -3082,7 +3286,7 @@ def run_inference_test(
     sample_dir="samples",
     additional_checks=None,
     region=None,
-):
+) -> InferenceTestOutcome:
     """Run inference test and verify results
 
     ``region`` is forwarded to the shelled-out ``idp-cli`` calls. Without it the
@@ -3103,6 +3307,19 @@ def run_inference_test(
         sample_dir: Directory containing sample files
         additional_checks: Optional list of (check_name, file_path, verify_func) tuples
                           where verify_func takes JSON and returns (success: bool, message: str)
+
+    Returns:
+        An `InferenceTestOutcome`: falsy when the test failed, and carrying the
+        reason so the caller's step result can say what went wrong rather than
+        only that something did.
+
+        The return type is **annotated** rather than left implicit, and that is
+        the only guard on a *new* failure path. The five existing ones each have
+        a test asserting their reason; a sixth added later has none by
+        construction, and a bare `return False` there is falsy, so every caller
+        still fails correctly and the reason silently degrades to
+        "reason not recorded" with nothing red. With the annotation it is one
+        `make typecheck` error, on both CIs.
     """
     try:
         # Run inference
@@ -3134,7 +3351,9 @@ def run_inference_test(
             print("Found result.json files:")
             print(debug_result.stdout)
             print(f"❌ No result file found at {result_location}")
-            return False
+            return InferenceTestOutcome(
+                False, f"no result file at {result_location} after download-results"
+            )
 
         # Verify content
         with open(result_file, "r") as f:
@@ -3152,7 +3371,11 @@ def run_inference_test(
                 f"❌ Text content does not contain expected string: '{verify_string}'"
             )
             print(f"Actual text starts with: '{str(text_content)[:100]}...'")
-            return False
+            return InferenceTestOutcome(
+                False,
+                f"{result_location} at {content_path} does not contain "
+                f"{verify_string!r}; starts with {str(text_content)[:100]!r}",
+            )
 
         print(f"✅ Found expected verification string: '{verify_string}'")
 
@@ -3180,18 +3403,27 @@ def run_inference_test(
                     success, message = verify_func(check_json)
                     if not success:
                         print(f"❌ {check_name} failed: {message}")
-                        return False
+                        return InferenceTestOutcome(
+                            False, f"{check_name} failed: {message}"
+                        )
 
                     print(f"✅ {check_name} passed: {message}")
                 except Exception as e:
                     print(f"❌ {check_name} error: {e}")
-                    return False
+                    return InferenceTestOutcome(
+                        False, f"{check_name} raised {type(e).__name__}: {e}"
+                    )
 
-        return True
+        return InferenceTestOutcome(True)
 
     except Exception as e:
         print(f"❌ Inference test failed: {e}")
-        return False
+        # Covers the idp-cli invocations themselves: a non-zero
+        # `run-inference --monitor` or `download-results` raises out of
+        # `run_command`, and the exception text is the only account of it.
+        return InferenceTestOutcome(
+            False, f"inference test raised {type(e).__name__}: {e}"
+        )
 
 
 def get_codebuild_logs():
@@ -3589,6 +3821,131 @@ def get_workflow_failure_details(stack_name, max_executions=5):
 
     except Exception as e:  # noqa: BLE001
         return [{"error": f"Failed to retrieve workflow failure details: {str(e)}"}]
+
+
+def _stack_output(cf, stack_name, key):
+    """Return one stack output value, or '' when absent."""
+    try:
+        for output in cf.describe_stacks(StackName=stack_name)["Stacks"][0].get(
+            "Outputs", []
+        ):
+            if output.get("OutputKey") == key:
+                return output.get("OutputValue", "")
+    except Exception:  # noqa: BLE001 - diagnostics must never raise
+        pass
+    return ""
+
+
+def snapshot_execution_inventory(stack_name, max_per_status=20):
+    """List the state machine's executions in EVERY status, not just FAILED.
+
+    `get_workflow_failure_details` answers "what crashed", by listing
+    `statusFilter="FAILED"`. When nothing crashed it correctly returns an empty
+    list, and an empty list cannot distinguish the two cases that matter most
+    once a test has failed anyway:
+
+      * executions ran and succeeded, so the test's own assertion is wrong, and
+      * no execution exists at all, so the document never entered the pipeline.
+
+    The second is what a monitor race looks like, and reading `[]` as "no
+    product crash" -- correct -- then stopping is how a nightly failure went
+    undiagnosed. Counting executions per status separates them in one call.
+
+    Args:
+        stack_name: Stack whose state machine to inventory.
+        max_per_status: Cap per status, so a large batch cannot produce an
+            unbounded bundle.
+
+    Returns:
+        Dict of status -> {"count", "executions": [...]}, or {"error": ...}.
+    """
+    try:
+        cf = boto3.client("cloudformation")
+        state_machine_arn = _stack_output(cf, stack_name, "StateMachineArn")
+        if not state_machine_arn:
+            return {"error": "stack has no StateMachineArn output"}
+
+        sfn = boto3.client("stepfunctions", config=_THROTTLE_RETRY_CONFIG)
+        inventory = {}
+        for status in ("RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"):
+            try:
+                page = sfn.list_executions(
+                    stateMachineArn=state_machine_arn,
+                    statusFilter=status,
+                    maxResults=max_per_status,
+                )
+            except Exception as e:  # noqa: BLE001
+                inventory[status] = {"error": str(e)}
+                continue
+            executions = [
+                {
+                    "name": e.get("name", ""),
+                    "started": str(e.get("startDate", "")),
+                    "stopped": str(e.get("stopDate", "")),
+                }
+                for e in page.get("executions", [])
+            ]
+            inventory[status] = {"count": len(executions), "executions": executions}
+        return inventory
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"Failed to inventory executions: {e}"}
+
+
+def snapshot_tracking_rows(stack_name, max_items=50):
+    """Copy out the tracking table rows that say where each document got to.
+
+    This is the table the batch monitor reads, and the row's absence is exactly
+    what the monitor reports as a failure. Reading it at failure time therefore
+    answers the question the monitor's own verdict cannot: whether the row was
+    missing because the document was never ingested, or because the monitor
+    looked before QueueSender wrote it and the row is there now.
+
+    The table is destroyed with the stack, so this has to happen before
+    teardown or not at all.
+
+    Args:
+        stack_name: Stack whose TrackingTable to read.
+        max_items: Cap on rows copied.
+
+    Returns:
+        Dict with the table name and the rows read, or {"error": ...}.
+    """
+    try:
+        cf = boto3.client("cloudformation")
+        table_name = cf.describe_stack_resource(
+            StackName=stack_name, LogicalResourceId="TrackingTable"
+        )["StackResourceDetail"]["PhysicalResourceId"]
+
+        ddb = boto3.client("dynamodb")
+        scanned = ddb.scan(TableName=table_name, Limit=max_items)
+        rows = []
+        for item in scanned.get("Items", []):
+            # Only the fields that locate a document in the pipeline; the full
+            # item carries large nested processing detail.
+            rows.append(
+                {
+                    key: list(value.values())[0]
+                    for key, value in item.items()
+                    if key
+                    in (
+                        "PK",
+                        "SK",
+                        "ObjectKey",
+                        "ObjectStatus",
+                        "QueuedTime",
+                        "WorkflowStartTime",
+                        "CompletionTime",
+                    )
+                }
+            )
+        return {
+            "table": table_name,
+            "row_count": len(rows),
+            "scanned_count": scanned.get("ScannedCount", 0),
+            "rows": rows,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"Failed to read tracking table: {e}"}
 
 
 def generate_publish_failure_summary(publish_error):
@@ -4257,6 +4614,17 @@ def cleanup_stack(result):
 # ---------------------------------------------------------------------------
 
 
+def _is_authorization_error(exc):
+    """True if `exc` is an IAM authorization refusal rather than a real failure.
+
+    Matched on the error code, not the message, because the message wording
+    differs per service. EC2 answers `UnauthorizedOperation`; CloudFormation,
+    IAM and Cognito answer `AccessDenied` / `AccessDeniedException`.
+    """
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+    return code in ("UnauthorizedOperation", "AccessDenied", "AccessDeniedException")
+
+
 def _force_delete_vpc_stack_enis(vpc_stack_name):
     """Delete detached Lambda ENIs that block a test VPC stack's teardown.
 
@@ -4267,9 +4635,21 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
     account's VPC quota and rolling back every later apigw hosting test. This
     reaps the orphaned (unattached) ENIs so the stack delete can proceed.
 
-    Returns the number of ENIs deleted. Best effort — never raises.
+    Returns (deleted, denied): how many ENIs went away, and whether any attempt
+    failed on authorization. The second value matters because the two outcomes
+    read identically in the log ("swept 0") but mean opposite things: nothing to
+    sweep is fine, while `UnauthorizedOperation` means this role cannot clear
+    the blocker no matter how many times the reaper runs. That silent
+    equivalence let a missing `ec2:DeleteNetworkInterface` keep one stack stuck
+    for eleven weeks while every run paid two 15-minute waiters for it.
+
+    `denied` means the ENI *delete* was refused, and only that. Nothing else may
+    set it — see the handlers below.
+
+    Best effort — never raises.
     """
     deleted = 0
+    denied = False
     try:
         cf = boto3.client("cloudformation")
         outputs = {
@@ -4280,7 +4660,7 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
         }
         vpc_id = outputs.get("VpcId", "")
         if not vpc_id:
-            return 0
+            return 0, False
         ec2 = boto3.client("ec2")
         enis = ec2.describe_network_interfaces(
             Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
@@ -4297,19 +4677,63 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
                 deleted += 1
                 print(f"[{vpc_stack_name}]   force-deleted orphaned ENI {eni_id}")
             except Exception as e:  # noqa: BLE001
+                # `denied` is set HERE and nowhere else, because this is the only
+                # call whose refusal means "this role cannot delete an ENI". The
+                # caller treats it as proof the blocker is still attached and
+                # skips the retry on that basis, so a refusal from anything else
+                # must not reach it: a missing DescribeStacks or
+                # DescribeNetworkInterfaces would otherwise skip the delete on
+                # every build forever, and send the reader to a grant that is
+                # already present.
+                if _is_authorization_error(e):
+                    denied = True
                 print(f"[{vpc_stack_name}]   ⚠️ could not delete ENI {eni_id}: {e}")
     except Exception as e:  # noqa: BLE001
-        print(f"[{vpc_stack_name}]   ⚠️ ENI sweep failed: {e}")
-    return deleted
+        # A sweep that could not be read tells us nothing about the blocker, so
+        # it is not a refusal to delete. The error text names the action that
+        # failed; the retry proceeds on the chance the stack deletes anyway.
+        print(f"[{vpc_stack_name}]   ⚠️ ENI sweep could not run: {e}")
+    return deleted, denied
+
+
+def _stack_status(cf, stack_name):
+    """Current stack status, or "" if it cannot be read."""
+    try:
+        return cf.describe_stacks(StackName=stack_name)["Stacks"][0]["StackStatus"]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def delete_apigw_test_vpc(vpc_stack_name):
     """Delete the test VPC stack, recovering from ENI-blocked DELETE_FAILED.
 
-    First attempt is a plain stack delete. If it fails (almost always because
-    orphaned Lambda ENIs hold the subnets/SG), sweep the detached ENIs and
-    retry once — this stops the VPC leak that otherwise exhausts the account's
-    VPC quota. Best effort — never raises.
+    Sweeping the orphaned ENIs is the only mechanism that actually frees the
+    VPC, so the whole function is arranged around getting to the sweep cheaply
+    and saying clearly when it could not run.
+
+    A stack found already in DELETE_FAILED does not get a plain delete first:
+    re-issuing it re-attempts the same resources and fails the same way, so the
+    waiter is spent to learn nothing. The cost of getting that wrong is
+    measured — one stack sat DELETE_FAILED for eleven weeks and the
+    plain-delete-first order paid two 15-minute waiters for it at the head of
+    nearly every pipeline run, which is the integration stage's 56→77min step
+    change.
+
+    RetainResources is not an option here, and the reason is worth stating so it
+    is not retried. Retaining the resources that failed means retaining the
+    security group and the private subnets, which are children of the VPC;
+    CloudFormation then attempts the VPC and DeleteVpc fails with
+    DependencyViolation because those children still exist. Retaining the VPC as
+    well does delete the stack record, and leaves the VPC alive with no stack —
+    invisible to every reaper here, because cleanup_stale_apigw_test_vpcs finds
+    leaks by listing stacks. A DELETE_FAILED stack is ugly and discoverable,
+    which is the better of the two states.
+
+    Returns True if the stack is gone, False if it was left stuck. The caller
+    reports those separately: a reaper that prints the same summary either way
+    is the defect this function was changed to fix, one level up.
+
+    Best effort — never raises.
     """
     print(f"[{vpc_stack_name}] Deleting test VPC...")
     cf = boto3.client("cloudformation")
@@ -4320,28 +4744,93 @@ def delete_apigw_test_vpc(vpc_stack_name):
             StackName=vpc_stack_name, WaiterConfig={"MaxAttempts": 60, "Delay": 15}
         )
 
-    try:
-        _attempt()
-        print(f"[{vpc_stack_name}] ✅ Test VPC deleted")
-        return
-    except Exception as e:  # noqa: BLE001
+    already_stuck = _stack_status(cf, vpc_stack_name) == "DELETE_FAILED"
+    if already_stuck:
         print(
-            f"[{vpc_stack_name}] ⚠️ First delete failed ({e}); sweeping ENIs and retrying"
+            f"[{vpc_stack_name}] already DELETE_FAILED — skipping the plain delete "
+            f"(it would re-attempt the same resources) and sweeping ENIs first"
+        )
+    else:
+        try:
+            _attempt()
+            print(f"[{vpc_stack_name}] ✅ Test VPC deleted")
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[{vpc_stack_name}] ⚠️ First delete failed ({e}); "
+                f"sweeping ENIs and retrying"
+            )
+        # Give the ENIs a moment to detach before sweeping.
+        time.sleep(30)
+
+    swept, denied = _force_delete_vpc_stack_enis(vpc_stack_name)
+    print(f"[{vpc_stack_name}] swept {swept} orphaned ENI(s)")
+    if swept:
+        # Deleting an ENI does not release its security-group dependency
+        # synchronously, so a delete issued immediately after the sweep can
+        # still fail on the group the sweep just freed — and that costs the full
+        # waiter, not 30 seconds. This window is the same eventual consistency
+        # case 2 below describes; settling here is what stops the stack being
+        # carried to another run.
+        time.sleep(30)
+    if denied:
+        # A permission gap, not a transient. Say so in the words that identify
+        # it, because the symptom ("swept 0") is identical to having nothing to
+        # sweep and the cause is not in this repository's code at all.
+        print(
+            f"[{vpc_stack_name}] 🔑 HARNESS PERMISSION GAP: the ENI sweep was "
+            f"refused. The CodeBuild role is missing the EC2 network-interface "
+            f"teardown grant from CodeBuildEC2VPCPolicy in "
+            f"scripts/sdlc/cfn/codepipeline-s3.yml — check that policy rather "
+            f"than the conditional one on CodeBuildRole, whose DeployInVPC "
+            f"condition is false whenever VpcId is empty. Until it is granted "
+            f"this stack cannot be cleared from here at all."
         )
 
-    # Retry path: orphaned Lambda ENIs are the usual culprit. Give them a
-    # moment to detach, sweep, then delete again.
-    time.sleep(30)
-    swept = _force_delete_vpc_stack_enis(vpc_stack_name)
-    print(f"[{vpc_stack_name}] swept {swept} orphaned ENI(s); retrying delete")
+    # Skip the retry on BOTH conjuncts below and on nothing less: the sweep was
+    # refused, AND the stack was already DELETE_FAILED when this run started.
+    # Together those mean the blocking ENIs are still attached to a stack whose
+    # delete has already been tried against them, so the attempt cannot
+    # succeed. Either one alone must still retry — a first-time DELETE_FAILED
+    # may clear on a second attempt even if the sweep was refused, and a refused
+    # sweep says nothing about a stack that was healthy a moment ago.
+    #
+    # In particular the skip must never key on the sweep having found nothing.
+    # `swept == 0` has three causes and only the first wants skipping:
+    #
+    #   1. the sweep was refused, so any blocking ENI is still attached.
+    #   2. ENIs were the blocker and an earlier run already deleted them, but
+    #      that run's own retry failed because releasing the security-group
+    #      dependency is eventually consistent. Nothing is left to sweep and the
+    #      retry is what finishes the job.
+    #   3. the stack is DELETE_FAILED for a reason that was never ENIs — a
+    #      DeleteNatGateway, ReleaseAddress or DeleteVpcEndpoints failure — where
+    #      a per-run retry eventually clears a transient.
+    #
+    # Cases 2 and 3 have nothing of this mechanism's kind to find, and skipping
+    # them would make this function a no-op on every build while the VPC stayed
+    # leaked — the outcome it exists to prevent. A per-run waiter is the right
+    # price for avoiding that.
+    if already_stuck and denied:
+        print(
+            f"[{vpc_stack_name}] ❌ the sweep was refused and the stack was "
+            f"already DELETE_FAILED, so the blocking ENIs are still there and a "
+            f"retry would re-attempt the same resources. Not spending the "
+            f"waiter; the stack stays discoverable for the next run."
+        )
+        return False
+
     try:
         _attempt()
         print(f"[{vpc_stack_name}] ✅ Test VPC deleted (after ENI sweep)")
+        return True
     except Exception as e:  # noqa: BLE001
         print(
-            f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after ENI sweep: {e}. "
-            f"Startup reaper will retry on the next run."
+            f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after ENI "
+            f"sweep: {e}. The stack stays DELETE_FAILED and discoverable; the "
+            f"startup reaper will retry on the next run."
         )
+        return False
 
 
 # Only reap *-apigw-vpc stacks older than this. A manual/local PRIVATE-VPC
@@ -4405,12 +4894,310 @@ def cleanup_stale_apigw_test_vpcs():
             )
             return
 
+        # Count the two outcomes apart. Printing "Reaped N" for everything this
+        # reaper merely *attempted* is how a stack that cannot be deleted reads
+        # as a stack that was: the summary line is the only part of this a human
+        # looks at, and it said success on every one of the eleven weeks the
+        # leak survived.
+        reaped, stuck = [], []
         for name in stale:
             print(f"[{name}] reaping stale test VPC stack...")
-            delete_apigw_test_vpc(name)
-        print(f"✅ Reaped {len(stale)} stale apigw test VPC stack(s)")
+            (reaped if delete_apigw_test_vpc(name) else stuck).append(name)
+        if reaped:
+            print(f"✅ Reaped {len(reaped)} stale apigw test VPC stack(s)")
+        if stuck:
+            print(
+                f"❌ {len(stuck)} stale apigw test VPC stack(s) left stuck: "
+                f"{', '.join(stuck)}. Each still holds a VPC against the "
+                f"account's limit of 5 and needs a human."
+            )
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Stale apigw VPC cleanup failed: {e}")
+
+
+def _diagnostics_bucket():
+    """The bucket diagnostics and retention markers live in.
+
+    The source bucket, because the build already reads its code from there and
+    so already has access to it -- and because it outlives every test stack by
+    construction, which a bucket belonging to the stack under test does not.
+    """
+    return os.environ.get("SOURCE_BUCKET", "")
+
+
+def persist_diagnostics_bundle(stack_name, bundle, transcript_path=None):
+    """Copy the failure evidence somewhere that outlives the stack.
+
+    Teardown destroys the stack's log groups, Step Functions histories and
+    tracking table within minutes of the failure, and the CodeBuild stream is
+    both batched and subject to log retention. So whatever is not copied out
+    here is gone by the time anyone reads the Slack message.
+
+    Best effort throughout: a diagnostics upload must never be the reason a
+    build's cleanup does not run.
+
+    Args:
+        stack_name: Stack the evidence belongs to.
+        bundle: JSON-serialisable evidence dict.
+        transcript_path: Suite transcript to upload alongside it, if any.
+
+    Returns:
+        The `s3://` URI of the bundle, or None if nothing could be uploaded.
+    """
+    bucket = _diagnostics_bucket()
+    if not bucket:
+        print("⚠️  SOURCE_BUCKET unset — diagnostics bundle not persisted")
+        return None
+
+    build_id = os.environ.get("CODEBUILD_BUILD_ID", "local").replace(":", "_")
+    # Keyed by build AND stack: one build deploys the primary stack plus up to
+    # four deployment-variant probe stacks, and each can fail on its own.
+    base = f"{DIAGNOSTICS_S3_PREFIX}/{build_id}/{stack_name}"
+    try:
+        s3 = boto3.client("s3")
+        key = f"{base}/evidence.json"
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(bundle, indent=2, default=str).encode(),
+            ContentType="application/json",
+        )
+        uri = f"s3://{bucket}/{key}"
+        print(f"📦 Diagnostics bundle: {uri}")
+
+        if transcript_path and os.path.exists(transcript_path):
+            # Flush first: this process is still writing the file it is reading.
+            try:
+                sys.stdout.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            transcript_key = f"{base}/suite-transcript.log"
+            s3.upload_file(transcript_path, bucket, transcript_key)
+            print(f"📦 Suite transcript: s3://{bucket}/{transcript_key}")
+        return uri
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  Could not persist diagnostics bundle: {e}")
+        return None
+
+
+def collect_failure_evidence(stack_name, result):
+    """Build the evidence bundle for a failed run, before anything is deleted.
+
+    Args:
+        stack_name: Stack that failed.
+        result: The run result dict, for its error text.
+
+    Returns:
+        A JSON-serialisable dict.
+    """
+    print(f"🔍 Collecting failure evidence for {stack_name}...")
+    return {
+        "stack_name": stack_name,
+        "build_id": os.environ.get("CODEBUILD_BUILD_ID", ""),
+        "commit": os.environ.get("CI_COMMIT_SHA", ""),
+        "collected_at": datetime.now(tz=timezone.utc).isoformat(),
+        "error": result.get("error", ""),
+        "failed_step": result.get("failed_step", ""),
+        # Both halves of the Step Functions picture: what failed, and what ran
+        # at all. The second is the one an empty first cannot stand in for.
+        "workflow_failures": result.get("workflow_failures")
+        or get_workflow_failure_details(stack_name),
+        "execution_inventory": snapshot_execution_inventory(stack_name),
+        "tracking_rows": snapshot_tracking_rows(stack_name),
+    }
+
+
+def _retention_markers(s3, bucket):
+    """Return {stack_name: keep_until_iso} for every retention marker present."""
+    markers = {}
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{RETENTION_S3_PREFIX}/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            name = key.rsplit("/", 1)[-1].removesuffix(".json")
+            if not name:
+                continue
+            try:
+                body = json.loads(
+                    s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+                )
+                markers[name] = body.get("keep_until", "")
+            except Exception:  # noqa: BLE001
+                # An unreadable marker must not protect a stack forever.
+                markers[name] = ""
+    return markers
+
+
+def retain_failed_stack(stack_name):
+    """Mark a failed stack to be kept for inspection instead of torn down now.
+
+    Retention is what makes the evidence a snapshot cannot anticipate reachable:
+    a live stack still has its Step Functions histories, its tracking table and
+    its Lambda log groups, and a snapshot only holds what it was written to
+    collect.
+
+    Two bounds, both enforced here rather than left to the TTL:
+
+      * the TTL is clamped to `KEEP_FAILED_STACK_MAX_HOURS`, and
+      * at `MAX_RETAINED_STACKS` already held, this declines and the caller
+        tears down as usual.
+
+    Both exist because the cost of retention is IAM roles (~122 per stack
+    against an account quota of 5000) and role exhaustion fails every deploy in
+    the account, which is a worse outcome than losing one stack's evidence.
+
+    Args:
+        stack_name: Stack to retain.
+
+    Returns:
+        True if the stack should be kept (caller must skip cleanup), else False.
+    """
+    if not KEEP_FAILED_STACK:
+        return False
+    bucket = _diagnostics_bucket()
+    if not bucket:
+        print("⚠️  SOURCE_BUCKET unset — cannot record retention, tearing down")
+        return False
+
+    hours = min(KEEP_FAILED_STACK_HOURS, KEEP_FAILED_STACK_MAX_HOURS)
+    try:
+        s3 = boto3.client("s3")
+        now = datetime.now(tz=timezone.utc)
+        live = {
+            name: until
+            for name, until in _retention_markers(s3, bucket).items()
+            if _keep_until_in_future(until, now)
+        }
+        if stack_name not in live and len(live) >= MAX_RETAINED_STACKS:
+            print(
+                f"⚠️  {len(live)} stack(s) already retained "
+                f"(ceiling {MAX_RETAINED_STACKS}) — tearing {stack_name} down "
+                "instead so the account's IAM role headroom is not consumed."
+            )
+            for name, until in sorted(live.items()):
+                print(f"     holding a slot: {name} until {until}")
+            return False
+
+        keep_until = now + timedelta(hours=hours)
+        s3.put_object(
+            Bucket=bucket,
+            Key=f"{RETENTION_S3_PREFIX}/{stack_name}.json",
+            Body=json.dumps(
+                {
+                    "stack_name": stack_name,
+                    "keep_until": keep_until.isoformat(),
+                    "build_id": os.environ.get("CODEBUILD_BUILD_ID", ""),
+                    "retained_at": now.isoformat(),
+                },
+                indent=2,
+            ).encode(),
+            ContentType="application/json",
+        )
+        print(
+            f"🔒 RETAINED for inspection: {stack_name}\n"
+            f"     reaped after: {keep_until.isoformat()} ({hours:g}h)\n"
+            f"     delete sooner with: idp-cli delete --stack-name {stack_name} "
+            "--force --empty-buckets --force-delete-all --wait\n"
+            f"     then: aws s3 rm s3://{bucket}/{RETENTION_S3_PREFIX}/{stack_name}.json"
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️  Could not record retention for {stack_name}: {e}")
+        return False
+
+
+def _keep_until_in_future(keep_until, now):
+    """Whether a marker's `keep_until` is a parseable instant still ahead of now.
+
+    An unparseable or empty value reads as expired. That direction is
+    deliberate: a marker that cannot be understood would otherwise protect its
+    stack indefinitely, which is precisely the leak the reaper exists to stop.
+    """
+    if not keep_until:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(keep_until).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed > now
+
+
+def _expired_retention_markers(bucket, now):
+    """Return ({stack_name: until} still protected, [names whose marker expired])."""
+    s3 = boto3.client("s3")
+    protected, expired = {}, []
+    for name, until in _retention_markers(s3, bucket).items():
+        if _keep_until_in_future(until, now):
+            protected[name] = until
+        else:
+            expired.append(name)
+    return protected, expired
+
+
+def _drop_retention_marker(bucket, stack_name):
+    """Delete a retention marker once its stack has been reaped."""
+    try:
+        boto3.client("s3").delete_object(
+            Bucket=bucket, Key=f"{RETENTION_S3_PREFIX}/{stack_name}.json"
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️ could not delete retention marker for {stack_name}: {e}")
+
+
+# How long an evidence bundle is kept. Long enough that a failure found on a
+# Monday is still diagnosable the following week, which is the window that
+# matters for a nightly run nobody reads until the next working day.
+DIAGNOSTICS_RETENTION_SECONDS = 30 * 24 * 3600  # 30d
+
+
+def cleanup_stale_ci_diagnostics():
+    """Expire evidence bundles older than DIAGNOSTICS_RETENTION_SECONDS.
+
+    Pruned here rather than by an S3 lifecycle rule because the bucket these
+    live in is not created by this repository's templates -- it is referenced by
+    name (`BucketNamePrefix`) and also holds the published templates and the
+    pipeline's source archive. A lifecycle rule would therefore have to be
+    applied by hand outside the tree, which is the kind of configuration that
+    silently stops matching the code that depends on it. A startup reaper is the
+    pattern the rest of this script already uses, and it is in version control.
+
+    Best effort -- never raises.
+    """
+    bucket = _diagnostics_bucket()
+    if not bucket:
+        return
+    print("🧹 Expiring old CI diagnostics bundles...")
+    try:
+        s3 = boto3.client("s3")
+        now = datetime.now(tz=timezone.utc)
+        stale = []
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=bucket, Prefix=f"{DIAGNOSTICS_S3_PREFIX}/"
+        ):
+            for obj in page.get("Contents", []):
+                modified = obj.get("LastModified")
+                if (
+                    modified
+                    and (now - modified).total_seconds() > DIAGNOSTICS_RETENTION_SECONDS
+                ):
+                    stale.append(obj["Key"])
+
+        if not stale:
+            print("✅ No expired diagnostics bundles")
+            return
+        deleted = 0
+        for key in stale:
+            try:
+                s3.delete_object(Bucket=bucket, Key=key)
+                deleted += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠️ could not delete {key}: {e}")
+        print(f"✅ Expired {deleted}/{len(stale)} diagnostics object(s)")
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ Diagnostics expiry failed: {e}")
 
 
 # Reap idp- test stacks (main, -iam, and probe stacks) older than this. A CI
@@ -4437,12 +5224,39 @@ def cleanup_stale_idp_stacks():
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Best effort — never raises. Skips *-apigw-vpc (owned
     by cleanup_stale_apigw_test_vpcs) and the persistent pipeline stack.
+
+    Retention markers are the one exception to the age gate, in both directions:
+    a stack a failing run deliberately kept is skipped while its marker is in
+    the future, and reaped as soon as the marker expires even if it is younger
+    than the gate. Protection is matched on the RUN PREFIX, so a retained
+    `idp-MMDD-HHMMSS` also protects its `-iam` stack -- without which the reaper
+    would delete the service role and permissions boundary out from under the
+    very stack being preserved, leaving something that can no longer be deleted
+    cleanly.
     """
     print("🧹 Cleaning up stale idp- test stacks (IAM role leak guard)...")
     try:
         cf = boto3.client("cloudformation")
         now = datetime.now(tz=timezone.utc)
         stale, skipped_young = [], 0
+        skipped_retained = 0
+
+        bucket = _diagnostics_bucket()
+        protected, expired = ({}, [])
+        if bucket:
+            try:
+                protected, expired = _expired_retention_markers(bucket, now)
+            except Exception as e:  # noqa: BLE001
+                # Failing to read markers must not stop the reaper, but it must
+                # not silently un-protect a retained stack either: with no
+                # markers read, the age gate alone decides, and a retained stack
+                # older than the gate would be reaped. Say so.
+                print(f"  ⚠️ could not read retention markers ({e}); age gate only")
+        if protected:
+            print(f"  ({len(protected)} stack(s) retained for inspection:)")
+            for name, until in sorted(protected.items()):
+                print(f"     {name} until {until}")
+
         paginator = cf.get_paginator("list_stacks")
         for page in paginator.paginate(
             StackStatusFilter=[
@@ -4465,17 +5279,36 @@ def cleanup_stale_idp_stacks():
                 # deleted by their parent, and deleting a parent cascades.
                 if s.get("RootId") or s.get("ParentId"):
                     continue
+                match = _IDP_RUN_PREFIX_RE.match(name)
+                run_prefix = match.group(1) if match else name
+                if run_prefix in protected:
+                    skipped_retained += 1
+                    continue
                 created = s.get("CreationTime")
                 age = (now - created).total_seconds() if created else None
-                if age is None or age >= IDP_STACK_STALE_AGE_SECONDS:
+                # An expired marker overrides the age gate: the run that wrote it
+                # asked for the stack to be kept until a deadline that has now
+                # passed, which is a stronger statement than "too young to be a
+                # leak" and is the only thing that frees up a retention slot.
+                if run_prefix in expired:
+                    stale.append(name)
+                elif age is None or age >= IDP_STACK_STALE_AGE_SECONDS:
                     stale.append(name)
                 else:
                     skipped_young += 1
 
+        if skipped_retained:
+            print(f"  ({skipped_retained} retained idp- stack(s) skipped)")
         if skipped_young:
             print(f"  ({skipped_young} young idp- stack(s) skipped — may be in-flight)")
         if not stale:
             print("✅ No stale idp- test stacks to reap")
+            # Still drop expired markers: a marker whose stack is already gone
+            # has nothing to reap here, and leaving it would hold one of the
+            # MAX_RETAINED_STACKS slots forever.
+            if bucket:
+                for name in expired:
+                    _drop_retention_marker(bucket, name)
             return
 
         # Delete non-iam stacks first (they reference their -iam CFServiceRole /
@@ -4493,6 +5326,14 @@ def cleanup_stale_idp_stacks():
             f"✅ Issued delete for {len(stale)} stale idp- stack(s) "
             f"({len(non_iam)} main/probe + {len(iam_stacks)} -iam)"
         )
+
+        # Drop the markers whose stacks were just reaped. A marker left behind
+        # would hold one of the MAX_RETAINED_STACKS slots for a stack that no
+        # longer exists, and enough of those would turn retention off for
+        # everyone while appearing to be on.
+        if bucket:
+            for name in expired:
+                _drop_retention_marker(bucket, name)
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Stale idp- stack cleanup failed: {e}")
 
@@ -6066,6 +6907,11 @@ def send_failure_notification(subject, summary_text):
 
 def main():
     """Main execution function"""
+    # Before anything else prints: everything after this line is also written to
+    # a local transcript, which is what the end-of-build failure analysis reads
+    # instead of racing CloudWatch for its own output.
+    transcript_path = install_suite_transcript()
+
     print("Starting CodeBuild deployment process...")
 
     # Every CI stack (primary + all probes) uses the sentinel admin email that
@@ -6106,6 +6952,9 @@ def main():
     # reaping here (CloudFormation can't delete a non-empty bucket, so they'd
     # otherwise leak — thousands accumulated this way).
     cleanup_stale_idp_buckets()
+    # Evidence bundles from runs long since diagnosed. Not reaped by an S3
+    # lifecycle rule because the bucket is not managed by this repository.
+    cleanup_stale_ci_diagnostics()
 
     # Step 1: Publish templates to S3
     try:
@@ -6216,9 +7065,34 @@ def main():
         except Exception as e:
             ai_summary = f"⚠️ Failed to generate deployment summary: {e}"
 
+        # Step 3a: Copy the evidence out while the stack still has it. Teardown
+        # destroys the Step Functions histories, the tracking table and every
+        # log group within minutes, so this is the last point at which any of it
+        # can be read. Ordered after the summary deliberately: the agent runs
+        # against the live stack and may already have put what it found into
+        # `result`, which the bundle prefers over re-querying.
+        diagnostics_uri = None
+        if not result["success"]:
+            try:
+                diagnostics_uri = persist_diagnostics_bundle(
+                    stack_name,
+                    collect_failure_evidence(stack_name, result),
+                    transcript_path,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️  Failure evidence collection failed: {e}")
+
         # Step 4: clean up the primary stack (the APIGW thread cleans up its own
-        # stack in its finally block).
-        cleanup_stack(result)
+        # stack in its finally block) -- unless this run is keeping it for
+        # inspection, in which case the startup reaper takes it once the
+        # retention marker expires.
+        if not result["success"] and retain_failed_stack(stack_name):
+            print(f"[{stack_name}] ⏸️  teardown skipped — stack retained for inspection")
+        else:
+            cleanup_stack(result)
+
+        if diagnostics_uri:
+            ai_summary = f"{ai_summary}\n\n📦 Evidence bundle: {diagnostics_uri}"
 
         # Step 4a: Upload an INTERIM summary now — BEFORE blocking on the probe
         # join below. The probes can run well past the GitLab monitor's ~45-min

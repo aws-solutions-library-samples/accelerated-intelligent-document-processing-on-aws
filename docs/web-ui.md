@@ -618,30 +618,42 @@ hand-type them. There are three entry points:
   continues in the background.
 - **Create GitHub issue (Agent Companion Chat).** The [Agent Companion Chat](agent-companion-chat.md)
   — which can also run the Error Analyzer — shows a **Create GitHub issue** button
-  under the latest agent answer, offering *Report a bug* (with the answer attached as
-  findings) or *Request a feature*.
+  under the latest agent answer, offering *Report a bug* or *Request a feature*, each
+  with the answer attached as additional context.
 - **Resources & help panel.** The side navigation **Resources** section includes a
   **Report an issue** link, and the right-side info (Help) panel on the Document List
   includes a **Feedback & support** section with the same links.
 
-**What gets pre-filled.** Every link opens the GitHub new-issue page with the
-**issue body** pre-populated — an environment summary (**Version**, **Build**,
-**Stack name**, **Region**, **Processing Mode**) sourced from the deployment's
-settings, plus context: the Troubleshoot path adds the document context and agent
-findings, and the Agent Companion Chat path adds the agent's answer. The report/copy
+**What gets pre-filled.** Every link opens the repository's **Bug report** or
+**Feature request** issue form with its fields pre-populated, so a report filed from
+the accelerator has the same structure — and the same labels and required fields — as
+one filed from GitHub's own **New issue** chooser. *Accelerator Version / Build*
+carries an environment summary (**Version**, **Build**, **Stack name**, and the stack
+pattern) sourced from the deployment's settings, and the bug form's *AWS Region* and
+*Accelerator Processing Mode* fields are filled from the same place. Context goes to
+the field that describes it: the Troubleshoot path fills *Output of the 'Troubleshoot'
+agent* with the document context and the agent's findings, and the Agent Companion
+Chat path fills *Additional context* with the agent's answer. The report/copy
 affordances appear once the agent job completes.
+
+*Accelerator Processing Mode* is left for you to fill in on a unified-pattern stack,
+which is every current deployment: the unified pattern can run either the BDA or the
+Pipeline branch and which one a document takes is decided per configuration, so the
+UI cannot answer the question. The stack's pattern is reported in the version field
+instead.
 
 > **Privacy note:** issues on the public repository are visible to everyone. Nothing
 > is submitted automatically — GitHub always shows you the pre-filled form to review
 > first. **Please review every field and redact any sensitive document data**
 > (names, account numbers, PII) before submitting.
 
-The in-app links pre-fill the issue **body** directly (via `?title=&body=&labels=`),
-so the content is embedded immediately. This intentionally bypasses the `.yml` issue
-*forms* in `.github/ISSUE_TEMPLATE/` — GitHub ignores a pre-filled `body` when a form
-template is selected — so those forms apply only when a user clicks **New issue**
-directly on GitHub. Very long findings are length-capped in the URL; use **Copy full
-details** in the Troubleshoot modal to grab the complete text.
+The in-app links select an issue form with `?template=` and fill its individual
+fields by name. A pre-filled `body` cannot be combined with that — GitHub ignores
+`body` once a form template is selected — so the fields are the mechanism, and the
+labels each form declares are applied automatically. The forms are read from the
+repository's default branch rather than from the release a deployment was built from.
+Very long findings are length-capped so the URL stays inside GitHub's limit; use
+**Copy full details** in the Troubleshoot modal to grab the complete text.
 
 ## Authentication Features
 

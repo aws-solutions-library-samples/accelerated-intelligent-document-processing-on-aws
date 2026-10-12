@@ -7,7 +7,7 @@
 # ============================================================================
 rule_translator:
   # Bedrock Model Configuration
-  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  model_id: "us.anthropic.claude-sonnet-4-6"
   temperature: 0.0  # Use 0.0 for deterministic output
   max_tokens: 4096
 

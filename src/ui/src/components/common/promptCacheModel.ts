@@ -35,7 +35,10 @@ const num = (v: unknown): number => {
 const MIN_PREFIX_TIERS: Array<[RegExp, number]> = [
   // 'opus-5' also matches 'opus-5-5', which is the published answer for Opus 5.5
   // too (512-token minimum, 4 checkpoints) rather than a coincidence.
-  [/claude-(opus-5|fable-5)/, 512],
+  // 'haiku-5-5' is its own alternative here and must stay ahead of the 'haiku-4-5'
+  // tier: the two Haikus sit at opposite ends of this table (512 vs 4096), so a
+  // shared 'haiku-' stem would report an 8x-too-high minimum for Haiku 5.5.
+  [/claude-(opus-5|fable-5|haiku-5-5)/, 512],
   [/claude-opus-4-7/, 2048],
   [/claude-(opus-4-6|opus-4-5|haiku-4-5)/, 4096],
   [/claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4|3-7-sonnet)/, 1024],

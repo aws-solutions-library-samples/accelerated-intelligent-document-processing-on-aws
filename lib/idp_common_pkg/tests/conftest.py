@@ -9,9 +9,30 @@ import importlib
 import os
 import sys
 from pathlib import Path
+from typing import Dict, Optional
 from unittest.mock import MagicMock
 
 import pytest
+
+#: The AWS credential variables this file forces to sentinels for the unit suite.
+#: Named once because three things below have to agree about the set: the
+#: snapshot, the sentinel assignment, and the integration reconciliation.
+_AWS_CREDENTIAL_VARS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SECURITY_TOKEN",
+    "AWS_SESSION_TOKEN",
+)
+
+#: Whatever real credentials the invoking environment exported, captured BEFORE
+#: the sentinels below overwrite them. The `aws_credentials` fixture assigns
+#: unconditionally (not `setdefault`), so by the time any test runs, exported
+#: real credentials are gone — and an integration test cannot get them back from
+#: the environment. Recovering them from the boto3 profile/role chain only works
+#: for a machine that HAS a profile or an instance role, which is why
+#: `AWS_PROFILE=...` worked and the exported `AWS_ACCESS_KEY_ID` form documented
+#: alongside it did not.
+_REAL_AWS_ENV = {var: os.environ.get(var) for var in _AWS_CREDENTIAL_VARS}
 
 # Set up AWS credentials and region BEFORE any imports that might use boto3
 # This must be done at module load time, not in a fixture, because fixtures
@@ -119,3 +140,223 @@ def aws_credentials():
     os.environ["AWS_REGION"] = (
         "us-east-1"  # Also set AWS_REGION for code that checks this variable
     )
+
+
+# ---------------------------------------------------------------------------
+# Integration-tier credential reconciliation
+# ---------------------------------------------------------------------------
+# This reconciliation is keyed on the ``integration`` MARKER, not on the
+# directory, and that is the whole point of it living here. It used to be an
+# autouse session fixture in ``tests/integration/conftest.py``, so it reached
+# integration tests by virtue of where their file sat. Two integration-marked
+# tests live under ``tests/unit/`` (the live-Bedrock agentic extraction pair,
+# which belong beside the agentic conftest that guards on a real ``strands``),
+# and `make test-integration` runs ``pytest -m "integration"`` over this
+# PACKAGE's tree — so those two were handed the sentinel ``testing`` key, signed
+# real Bedrock calls with it and failed with ``InvalidClientTokenId``. The marker
+# is what says "this test calls AWS"; the directory only says where someone filed
+# it. Keyed on the marker, a misplaced file inside this package is covered on
+# arrival.
+#
+# ⚠️ **The reach is this package, not the repository.** A conftest governs its own
+# directory downwards, so two other trees hold integration-marked tests outside
+# it, and they are outside it for different reasons — one reason each, because a
+# single reason covering both is false of one of them:
+#
+#   * ``lib/idp_sdk/tests/integration/`` injects no sentinel credentials at all,
+#     so there is nothing there to reconcile.
+#   * ``feature-platform/confbench-testset/`` DOES inject them — its
+#     ``conftest.py`` sets ``AWS_ACCESS_KEY_ID=testing`` and four siblings at
+#     module scope. Nothing to reconcile *yet*: its one integration-marked test
+#     (``tests/test_variants.py``, gated on ``CONFBENCH_NETWORK_TESTS=1``) calls
+#     HuggingFace and makes no AWS call. ⚠️ An AWS-calling integration test added
+#     to that tree WOULD be handed the sentinels, and would need a reconciliation
+#     of its own — this comment is where somebody would come looking.
+#
+# The repo-wide claim belongs to the parity test, not to this fixture.
+#
+# Pinned by test_integration_marked_tests_get_real_credentials in
+# tests/unit/test_suite_hygiene.py. See #1307.
+
+_SENTINEL = "testing"
+
+#: Memo for the probe below. It answers "do real credentials exist at all",
+#: which is an existence question rather than a validity one, so caching it for
+#: the session is safe even when the credentials themselves rotate.
+#: ``None`` is a real answer (nothing available), so "not yet computed" needs its
+#: own flag.
+_CREDENTIAL_OVERRIDES: Optional[Dict[str, str]] = None
+_CREDENTIAL_RESOLUTION_DONE = False
+
+
+def _resolve_credential_overrides() -> Optional[Dict[str, str]]:
+    """Return the env mapping an integration test needs, or None to skip it.
+
+    ⚠️ **An empty mapping is a real answer, and the common one.** It means the
+    sentinels merely have to be out of the way, and boto3's own chain — a
+    profile, SSO, an instance role — resolves from there *and refreshes*.
+
+    **Why ``{}`` rather than the frozen key material.** Writing a resolved
+    access key, secret and session token into ``os.environ`` pins them for the
+    session, so an SSO or instance-role token that expires mid-run fails with
+    ``ExpiredToken`` instead of refreshing — and a ``make test-integration`` run
+    is long enough to reach that. The frozen credentials are read here to answer
+    "are there credentials at all" and are deliberately discarded; signing stays
+    with the chain.
+
+    So only one case writes anything: credentials the invoking environment
+    exported itself, which the sentinel assignment at the top of this module
+    overwrote and which nothing else can give back.
+    """
+    global _CREDENTIAL_OVERRIDES, _CREDENTIAL_RESOLUTION_DONE
+    if _CREDENTIAL_RESOLUTION_DONE:
+        return _CREDENTIAL_OVERRIDES
+
+    overrides: Optional[Dict[str, str]] = None
+    exported = {
+        k: v for k, v in _REAL_AWS_ENV.items() if v is not None and v != _SENTINEL
+    }
+    if exported.get("AWS_ACCESS_KEY_ID"):
+        # Hand back exactly what the environment had, including the absence of a
+        # session token for a long-lived key.
+        overrides = exported
+    else:
+        # Hide the sentinels so boto3 falls through to the profile/role chain,
+        # then put the environment back exactly as it was. Leaving them popped
+        # here is what made the previous session-scoped version unsafe to
+        # generalise: a later moto test in the same session would then sign with
+        # whatever the chain resolved. (Popping at module scope is worse still —
+        # #988.) The fixture does the popping per test instead, and restores.
+        saved = {var: os.environ.pop(var, None) for var in _AWS_CREDENTIAL_VARS}
+        # Imported here rather than at module scope: this file runs before every
+        # test module, and the sentinel assignment above has to land before
+        # anything builds a boto3 client.
+        import boto3
+
+        try:
+            creds = boto3.Session().get_credentials()
+            frozen = creds.get_frozen_credentials() if creds else None
+        except Exception:
+            frozen = None
+        finally:
+            for var, val in saved.items():
+                if val is not None:
+                    os.environ[var] = val
+
+        if frozen is not None and frozen.access_key not in (None, _SENTINEL):
+            # Resolvable through the chain. Nothing to write — the frozen values
+            # are read only to answer "are there credentials here", and are
+            # deliberately discarded so signing keeps going through the chain.
+            overrides = {}
+
+    _CREDENTIAL_OVERRIDES = overrides
+    _CREDENTIAL_RESOLUTION_DONE = True
+    return overrides
+
+
+def reset_cached_aws_clients() -> int:
+    """Drop every module-level boto3 client/session/resource ``idp_common`` holds.
+
+    Changing the credential environment is not enough on its own, because a
+    boto3 client **freezes its credentials at construction**. Several modules
+    cache one in a process-global — ``idp_common.s3._s3_client``,
+    ``idp_common.metrics._cloudwatch_client``, the Bedrock session cache, the
+    X-Ray/DynamoDB/CloudFormation/SSM helpers — so the first construction in the
+    process wins for every test afterwards.
+
+    The construction that wins is usually one nobody intended: pytest imports
+    every test module during collection, and the sentinel credentials are in
+    force then, so a client built at import time is poisoned before a single
+    test has run. That is measurable rather than theoretical — collecting the
+    whole tree and selecting one test (``-m integration -k payslip``, 10,494
+    deselected) reproduces ``InvalidAccessKeyId`` on an S3 read, where the same
+    test alone passes. Issue #1307; the import-time-environment class is #988.
+
+    Every one of these caches is ``if _x is None: _x = boto3.client(...)``, so
+    setting it to ``None`` costs one reconstruction and nothing else. Detection
+    is by **value type** rather than by name: a hardcoded list of module globals
+    rots silently the first time somebody adds a seventh cache, and a name
+    pattern would also match unrelated caches like ``_settings_cache``.
+
+    ⚠️ **What by-value detection does not cover.** It recognises a cache whose
+    value IS a ``BaseClient``, ``Session`` or ``ServiceResource``. A cache
+    holding a *wrapper* around one — a service class, a dataclass, a closure —
+    is invisible to it, so by-value is rot-resistant for the shape these six
+    caches have and not a general guarantee. A module that grows such a cache
+    needs its own reset called from here.
+
+    Where a module publishes its own reset, that is called instead of writing the
+    attribute: ``idp_common.bedrock.session`` keeps ``_cached_region`` beside
+    ``_cached_session`` under a lock, and an attribute write would leave the
+    region populated next to a ``None`` session and bypass the lock.
+
+    Returns the number of caches cleared, so a caller can assert it did
+    something.
+    """
+    import boto3
+    from boto3.resources.base import ServiceResource
+    from botocore.client import BaseClient
+
+    frozen_credential_holders = (BaseClient, boto3.Session, ServiceResource)
+    cleared = 0
+    for module_name, module in list(sys.modules.items()):
+        if module_name != "idp_common" and not module_name.startswith("idp_common."):
+            continue
+        if module is None:
+            continue
+
+        purpose_built_reset = getattr(module, "reset_cached_session", None)
+        if callable(purpose_built_reset):
+            purpose_built_reset()
+            cleared += 1
+            continue
+
+        for attr, value in list(vars(module).items()):
+            # Module-private by convention: these caches are all `_`-prefixed,
+            # and a public boto3 client at module scope would be someone's
+            # deliberate singleton rather than a lazy cache.
+            if attr.startswith("_") and isinstance(value, frozen_credential_holders):
+                setattr(module, attr, None)
+                cleared += 1
+    return cleared
+
+
+@pytest.fixture(autouse=True)
+def real_aws_credentials_for_integration_tests(request):
+    """Give every ``integration``-marked test real credentials, and only those.
+
+    Function-scoped and restoring on teardown, so a run that spans both tiers —
+    a bare ``pytest`` with no ``-m`` — leaves the sentinels in force for the
+    moto tests either side of an integration test.
+
+    The cached-client reset happens on **both** edges, and the second one is not
+    symmetry for its own sake: without it a client built under real credentials
+    during an integration test would be inherited by the moto tests that follow
+    it, which is the same defect pointing the other way.
+    """
+    if request.node.get_closest_marker("integration") is None:
+        yield
+        return
+
+    overrides = _resolve_credential_overrides()
+    if overrides is None:
+        pytest.skip(
+            "Integration tests require real AWS credentials. Configure a profile "
+            "or export AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (and "
+            "AWS_SESSION_TOKEN if using temporary creds)."
+        )
+
+    saved = {var: os.environ.get(var) for var in _AWS_CREDENTIAL_VARS}
+    for var in _AWS_CREDENTIAL_VARS:
+        os.environ.pop(var, None)
+    # Usually empty: popping the sentinels is the whole job, and boto3's chain
+    # signs from there so a rotating credential keeps refreshing.
+    os.environ.update(overrides)
+    reset_cached_aws_clients()
+    try:
+        yield
+    finally:
+        for var in _AWS_CREDENTIAL_VARS:
+            os.environ.pop(var, None)
+        os.environ.update({k: v for k, v in saved.items() if v is not None})
+        reset_cached_aws_clients()

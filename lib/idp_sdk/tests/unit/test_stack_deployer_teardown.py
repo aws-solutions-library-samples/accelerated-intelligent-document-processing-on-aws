@@ -2094,9 +2094,25 @@ def _headers_policy(name: str, policy_id: str, policy_type: str = "custom") -> d
 def _with_headers_policies(
     monkeypatch: pytest.MonkeyPatch, policies: list[dict], deleted: list[str]
 ) -> None:
-    """moto does not implement response-headers policies at all, so the two
-    operations are supplied while the rest of CloudFront stays real."""
+    """moto does not implement response-headers policies at all, so the three
+    operations are supplied while the rest of CloudFront stays real.
+
+    ``delete_response_headers_policy`` takes ``IfMatch`` as a REQUIRED keyword and
+    rejects a falsy one, because that is what CloudFront does. The fake used to
+    accept ``(Id, **_k)``, which is looser than the API: the caller omitted
+    ``IfMatch`` entirely, every real call failed ``InvalidIfMatchVersion`` into a
+    warning, and this suite stayed green over a teardown that deleted nothing. A
+    fake that tolerates an argument the service demands cannot test the caller.
+    """
     real_client = boto3.client
+
+    def _delete(Id: str, IfMatch: str, **_k: Any) -> None:  # noqa: N803
+        if not IfMatch:
+            raise AssertionError(
+                "delete_response_headers_policy was called with an empty IfMatch; "
+                "CloudFront answers InvalidIfMatchVersion"
+            )
+        deleted.append(Id)
 
     def factory(service: str, *a: Any, **k: Any) -> Any:
         client = real_client(service, *a, **k)
@@ -2107,9 +2123,10 @@ def _with_headers_policies(
                     "list_response_headers_policies": lambda **_k: {
                         "ResponseHeadersPolicyList": {"Items": policies}
                     },
-                    "delete_response_headers_policy": lambda Id, **_k: deleted.append(
-                        Id
-                    ),  # noqa: N803
+                    "get_response_headers_policy": lambda Id, **_k: {  # noqa: N803
+                        "ETag": f"etag-for-{Id}"
+                    },
+                    "delete_response_headers_policy": _delete,
                 },
             )
         return client
@@ -2129,6 +2146,59 @@ def test_a_headers_policy_belonging_to_a_deleted_stack_is_removed(
     with mock_aws():
         StackDeployer(region=REGION)._cleanup_additional_resources("S1")
     assert deleted == ["P-GONE"]
+
+
+def test_the_delete_carries_the_policys_own_etag(
+    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
+):
+    """The ETag has to be READ, not guessed, and the read has to be per policy.
+
+    Asserted separately from the test above because that one passes on the mere fact
+    that something was deleted, which is satisfied by any ``IfMatch`` the fake will
+    accept. What made the original defect survive is that no test ever looked at the
+    value: CloudFront refuses a wrong ETag exactly as it refuses a missing one, so a
+    caller that passed a constant would fail in production and pass here.
+    """
+    seen: list[tuple[str, str]] = []
+    real_client = boto3.client
+
+    def factory(service: str, *a: Any, **k: Any) -> Any:
+        client = real_client(service, *a, **k)
+        if service == "cloudfront":
+            return PartialFake(
+                client,
+                {
+                    "list_response_headers_policies": lambda **_k: {
+                        "ResponseHeadersPolicyList": {
+                            "Items": [
+                                _headers_policy(
+                                    "AStack-security-headers-policy", "P-A"
+                                ),
+                                _headers_policy(
+                                    "BStack-security-headers-policy", "P-B"
+                                ),
+                            ]
+                        }
+                    },
+                    "get_response_headers_policy": lambda Id, **_k: {  # noqa: N803
+                        "ETag": f"etag-for-{Id}"
+                    },
+                    "delete_response_headers_policy": lambda Id, IfMatch, **_k: (
+                        seen.append(  # noqa: N803
+                            (Id, IfMatch)
+                        )
+                    ),
+                },
+            )
+        return client
+
+    monkeypatch.setattr(boto3, "client", factory)
+    with mock_aws():
+        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
+
+    # Each policy is deleted with ITS OWN ETag, so a single read hoisted out of the
+    # loop, or a constant, does not satisfy this.
+    assert sorted(seen) == [("P-A", "etag-for-P-A"), ("P-B", "etag-for-P-B")]
 
 
 def test_a_headers_policy_belonging_to_a_live_stack_is_left_alone(

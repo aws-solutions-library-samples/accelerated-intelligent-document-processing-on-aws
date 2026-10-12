@@ -748,6 +748,15 @@ Resources:
               - 'cognito-idp:AdminSetUserPassword'
               - 'cognito-idp:AdminAddUserToGroup'
               - 'cognito-idp:AdminInitiateAuth'
+              # Reads the test user's Cognito `sub`. Without it the per-user scope
+              # row carries only the email leg, so the scope suite exercises half
+              # the key it is meant to exercise and says so as a WARN.
+              - 'cognito-idp:AdminGetUser'
+              # Revokes the test user's tokens for the logout check
+              # (SEC-2.4-LOGOUT-REVOCATION). Without it that check cannot be run,
+              # and a check that could not be run is not a pass — it fails the
+              # gate, which is the whole point of that rule.
+              - 'cognito-idp:AdminUserGlobalSignOut'
               - 'cognito-idp:DescribeUserPoolClient'
               - 'cognito-idp:UpdateUserPoolClient'
             Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
@@ -766,7 +775,10 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W12
-            reason: "EC2 networking create/delete actions cannot be resource-scoped (resources are created by this policy); the test VPC is a throwaway stack torn down in the same build"
+            # One reason per member, because the first clause is false for the
+            # last action: ec2:DeleteNetworkInterface targets ENIs this policy
+            # never created.
+            reason: "EC2 networking create/delete actions cannot be resource-scoped (resources are created by this policy); the test VPC is a throwaway stack torn down in the same build; ec2:DeleteNetworkInterface is the exception to the first clause -- it targets orphaned ENIs that Lambda's VPC attachment created, in a throwaway VPC whose id is not known at template time, so neither the ENI nor its VPC can be named here"
     Properties:
       PolicyName: CodeBuildEC2VPCTest
       Roles:
@@ -808,6 +820,22 @@ Resources:
               - 'ec2:CreateTags'
               - 'ec2:DeleteTags'
               - 'ec2:Describe*'
+              # Sweeps the orphaned Lambda ENIs that hold the test VPC's subnets
+              # and security group (_force_delete_vpc_stack_enis in
+              # codebuild_deployment.py). Lambda reclaims its own ENIs using the
+              # function's execution role, so once the IDP stack and its -iam
+              # stack are gone nothing else can: the ENIs stay 'available'
+              # indefinitely, CloudFormation cannot delete the security group
+              # that depends on them, and the VPC stack stays DELETE_FAILED
+              # against a limit of five VPCs.
+              #
+              # The sweep that exists to break that was refused for eleven weeks
+              # because this action was granted only inside the
+              # !If [DeployInVPC] policy on CodeBuildRole above — a condition
+              # this account does not meet (VpcId is empty), so the grant was
+              # never created while reading as present in the template. It
+              # belongs here, where the policy is unconditional.
+              - 'ec2:DeleteNetworkInterface'
             Resource: '*'
 
   IdkInstallCodeBuild:
@@ -877,6 +905,25 @@ Resources:
           # and degrades — it does NOT silently run on this role's credentials.
           - Name: IDP_FAILURE_AGENT_ROLE_ARN
             Value: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FailureAgentRoleName}'
+          # Keep a failed stack alive for inspection instead of tearing it down
+          # immediately. A snapshot only holds what it was written to collect; a
+          # live stack still has its Step Functions histories, tracking table
+          # and Lambda log groups, all of which teardown destroys within
+          # minutes. Set to '0' to restore unconditional teardown.
+          #
+          # Bounded by IAM role headroom rather than by cost: one IDP stack
+          # carries ~122 roles against an account quota of 5000, and role
+          # exhaustion fails EVERY deploy in the account. Hence both a TTL and a
+          # ceiling on how many may be held at once — on reaching the ceiling a
+          # failing run tears down as it always did and logs which markers hold
+          # the slots. The startup reaper (cleanup_stale_idp_stacks) takes a
+          # retained stack as soon as its marker expires.
+          - Name: IDP_KEEP_FAILED_STACK
+            Value: '1'
+          - Name: IDP_KEEP_FAILED_STACK_HOURS
+            Value: '12'
+          - Name: IDP_MAX_RETAINED_STACKS
+            Value: '6'
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -947,6 +994,11 @@ Resources:
 
   CodeBuildRoleS3Policy:
     Type: 'AWS::IAM::Policy'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: "s3:ListAllMyBuckets is an account-level operation with no resource to scope to; the stale-bucket reaper cannot enumerate the account without it"
     Properties:
       PolicyName: CodeBuildS3Access
       Roles: 
@@ -965,9 +1017,47 @@ Resources:
           - Effect: Allow
             Action:
               - 's3:ListBucket'
-            Resource: 
+            Resource:
               - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
               - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+          # ⚠️ ListAllMyBuckets requires Resource '*' — it is an account-level
+          # operation with no resource to scope to, so the bucket-scoped grants
+          # above (and even an `s3:*` on a bucket ARN) cannot cover it. Without
+          # it `cleanup_stale_idp_buckets` fails on its first call every run and
+          # silently reaps nothing: the reaper logged one AccessDenied line and
+          # carried on, so the only visible symptom was `idp-` buckets
+          # accumulating for months. The reaper has to list the account to work
+          # at all — the buckets it exists to find are exactly those whose stack
+          # is already gone, so there is nothing else to enumerate them from.
+          #
+          # Listing bucket NAMES is all this grants; reading or deleting their
+          # contents still needs the bucket-scoped grants, which name only the
+          # source and artifact buckets. The reaper's own delete path operates
+          # on `idp-*` test buckets and is granted elsewhere.
+          - Effect: Allow
+            Action:
+              - 's3:ListAllMyBuckets'
+            Resource: '*'
+          # The two prefixes the harness owns and prunes itself: retention
+          # markers (deleted when their stack is reaped, so a dead marker cannot
+          # hold a retention slot) and expired diagnostics bundles.
+          #
+          # ⚠️ Whether this is the effective permission depends on a parameter.
+          # The `S3Access` policy on this same role grants `s3:*` on the
+          # hardcoded `genaiic-sdlc-sourcecode-<account>-<region>`, which AT THE
+          # DEFAULT `BucketNamePrefix` is this same bucket — so on a default
+          # deployment delete is permitted there regardless of what this says,
+          # and these two prefixes are not a confinement. Override
+          # `BucketNamePrefix` and they become the only delete grant, i.e. a
+          # real one. Either way this is the only place recording WHICH objects
+          # the harness deletes, and it is what the delete path would rely on if
+          # `S3Access` were ever narrowed from `s3:*`.
+          - Effect: Allow
+            Action:
+              - 's3:DeleteObject'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}/ci-retained/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}/ci-diagnostics/*'
 
   CodeBuildLogsPolicy:
     Type: 'AWS::IAM::Policy'

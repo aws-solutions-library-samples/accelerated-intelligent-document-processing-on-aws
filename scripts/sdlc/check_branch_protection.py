@@ -37,16 +37,22 @@ defect class this repo has hit repeatedly (see the parity gaps listed in
 A GitHub Actions status-check *context* is the job's ``name:`` if it declares
 one, otherwise the job **id**. So the mapping is per job, not per workflow and
 not per step. That matters here: eight of the ten gates asserted by
-``test_ci_gate_parity.py``'s ``SHARED_GATES`` are *steps* inside a **single**
-job — ``developer_tests`` in ``.github/workflows/developer-tests.yml`` — and
-GitHub can only require job-level contexts, never individual steps. So those
-eight collapse to exactly **one** requireable context rather than one per gate.
-The practical consequence is worth stating: because they share one
-context they also share one red mark, so a required-check failure does not say
-*which* of the eight failed — that needs the job log. The remaining two shared
-gates, the SRT scan and the dependency audit, are jobs of their own in
-``security-checks.yml`` and so carry a context each. This script prints which
-gate commands each context covers so the correspondence is at least visible.
+``test_ci_gate_parity.py``'s ``SHARED_GATES`` live in
+``.github/workflows/developer-tests.yml`` and the other two — the SRT scan and the
+dependency audit — in ``security-checks.yml``. Those workflows hold four and two
+jobs, so the ten gates produce **six** requireable contexts.
+
+⚠️ **Requiring only the lint context is weaker than requiring the whole workflow
+once was.** ``developer-tests.yml`` used to be a single job, so requiring the
+context that ran ``make lint-cicd`` happened to require the unit suites, the
+package suites and the UI tests with it. They are separate jobs now, so each is its
+own context and all six have to be required for a red test run to block a merge.
+``scripts/tests/test_check_branch_protection.py``'s ``MUST_BE_REQUIRED`` names all
+six so that regression fails rather than passing quietly. The upside of the same
+change: a red mark now names the half of the work that broke, where previously
+eight gates shared one and the job log was the only way to tell which had failed.
+This script prints which gate commands each context covers so the correspondence
+is visible either way.
 
 Check runs an action creates are **not** discoverable from job names
 --------------------------------------------------------------------

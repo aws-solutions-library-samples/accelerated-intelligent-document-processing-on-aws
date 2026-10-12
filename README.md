@@ -3,10 +3,9 @@
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-<!-- Internal GitLab pipeline badge (visible on gitlab.aws.dev, not accessible on public GitHub mirror) -->
-[![pipeline status](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/badges/develop/pipeline.svg)](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/-/commits/develop)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws)
 
-**Questions?** [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws)
+
 
 📖 **[Browse the Documentation Site](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/)** — searchable, with sidebar navigation
 
@@ -32,7 +31,7 @@ SPDX-License-Identifier: MIT-0
   - [Security](#security)
   - [Contributing](#contributing)
   - [Project Governance](#project-governance)
-  - [Security](#security)
+  - [Security](#security-1)
   - [License](#license)
 
 ## Introduction

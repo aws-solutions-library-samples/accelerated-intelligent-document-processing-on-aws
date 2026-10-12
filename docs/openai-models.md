@@ -281,7 +281,7 @@ Chat-with-Document) exposes a `reasoning_effort` config field.
 | OpenAI GPT-5.x | `minimal`, `low`, `medium`, `high` | Responses API `reasoning.effort` |
 | OpenAI GPT-6 Astra | `none`, `low`, `medium`, `high`, `xhigh`, `max` | Converse `additionalModelRequestFields.reasoning.effort` |
 | xAI Grok | `none`, `low`, `medium`, `high`, `xhigh` (**not** `max`) | Converse `additionalModelRequestFields.reasoning.effort` |
-| Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5–4.8 / Fable 5 | `low`, `medium`, `high`, `xhigh`, `max` | Bedrock Converse `output_config.effort` |
+| Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 | `low`, `medium`, `high`, `xhigh`, `max` | Bedrock Converse `output_config.effort` |
 
 The vocabularies genuinely differ — `minimal` is GPT-5.x-only, `none` is not a
 Claude value, and `max` is valid everywhere except Grok. The config UI offers the

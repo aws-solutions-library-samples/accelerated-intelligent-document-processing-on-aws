@@ -27,6 +27,17 @@ Because the ground-truth schema is byte-identical to `realkie-fcc-verified`,
 accuracy on any degraded variant is **directly comparable** to the clean
 baseline. That comparability is the whole point of the benchmark.
 
+That comparability holds between runs on one configuration. The stack-managed
+`realkie-fcc-verified` profile, which Test Studio preselects for the
+RealKIE-FCC-Verified test set, sets `classification.sectionSplitting: disabled`,
+one section per file. This extension's preset does not set that key, so its
+configuration takes the host `default` profile's section splitting each time the
+extension is installed or upgraded, which is `llm_determined` unless it has been
+changed. To compare ConfBench with RealKIE-FCC-Verified, run both test sets on
+one configuration version. Within ConfBench, Test Studio preselects this
+extension's configuration for every tier, including the undegraded
+`confbench-clean`.
+
 
 
 https://github.com/user-attachments/assets/0b164e6d-c694-4127-8be9-45ec7fd41bee

@@ -413,3 +413,54 @@ def test_abort_allows_direct_lambda_invocation(mock_env, mock_dynamodb):
     assert result["success"] is True
     assert result["abortedCount"] == 1
     assert mock_dynamodb.update_item.called
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stored", ["COMPLETED", " COMPLETED ", "completed", "DISABLED"]
+)
+def test_the_abort_wait_reads_a_status_the_way_the_run_status_reader_does(
+    mock_env, mock_dynamodb, stored
+):
+    """A padded or lower-cased status must not be read as work in progress.
+
+    This function waits for every document to settle before the abort proceeds,
+    and anything it does not recognise as terminal costs the whole 25-second
+    budget. The run-status resolver normalizes case *and* whitespace for the
+    same attribute; a difference here is invisible to the test that compares the
+    two readers, because that one compares their status *sets* rather than how
+    each reads the value — so it is pinned on this side directly.
+    """
+    import importlib.util
+    import os
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "index",
+        os.path.join(
+            os.path.dirname(__file__),
+            "../../../../nested/api-resolvers/src/lambda/abort_test_runs/index.py",
+        ),
+    )
+    index = importlib.util.module_from_spec(spec)
+    sys.modules["index"] = index
+    spec.loader.exec_module(index)
+
+    mock_dynamodb.table_name = "test-tracking-table"
+    with (
+        patch.object(
+            index,
+            "_batch_get_document_items",
+            return_value={
+                "run/a.pdf": {"ObjectStatus": "COMPLETED", "EvaluationStatus": stored}
+            },
+        ),
+        patch.object(index.time, "sleep") as slept,
+    ):
+        index._wait_for_documents_terminal_state(
+            mock_dynamodb, "run", ["run/a.pdf"], max_wait_time=25
+        )
+
+    # Returned on the first poll, rather than sleeping out the budget waiting
+    # for a document that had already finished.
+    slept.assert_not_called()

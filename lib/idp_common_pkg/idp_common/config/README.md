@@ -431,6 +431,16 @@ plus the published revision and anything labeled or pinned by a test run. A
 count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning
 runs in `ConfigRevisionStore.prune()` on write.
 
+Those exemptions are from pruning only. The Configuration bucket's one lifecycle
+rule, `DeleteAfterNDays` in `template.yaml`, has no filter, so it expires every
+revision body `DataRetentionInDays` after it was written, labeled and pinned ones
+included, and only the published revision can still be read after that, through
+the rebuild below. Every other revision stays subject to that expiry by design: a
+lifecycle filter can select a prefix but cannot exclude one, and the bucket also
+holds `config_library/` and `samples/` under the same rule, so sparing
+`config_revisions/` would mean replacing that rule with one per prefix that should
+still expire.
+
 `restore_revision()` is forward-only: it saves the chosen revision as a *new*
 revision rather than rewinding the counter, so history is never rewritten.
 
@@ -446,10 +456,107 @@ Two deliberate choices:
 
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
-  enter a comparison.
+  enter a comparison. The one exception is below.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.
+
+**The published revision survives its body expiring.** Revision bodies live in the
+Configuration bucket, whose lifecycle rule expires every object after
+`DataRetentionInDays`, while every new document is pinned to the profile's
+`PublishedRevision`. `_read_revision_body()` (behind `get_revision()`,
+`restore_revision()` and every pinned read) therefore rebuilds a missing body from
+the head. It does so only when all of these hold:
+
+- the requested revision equals both `PublishedRevision` and `LatestRevision`;
+- its index entry still exists;
+- the head is proven to hold it, by either:
+  - its `storedHash` matching the head now. Every revision a save publishes
+    records one: a hash of its configuration as the head stores it, excluding
+    metadata. Metadata includes the `Managed` attribute, which is read back into
+    the configuration as `managed`, so a head that differs from the revision only
+    in whether it is stack-managed still passes, and the configuration served
+    carries the head's flag: the flag says who maintains the profile, not how it
+    processes documents. For a revision cut from what the save wrote, that is the hash
+    `_write_record()` returns; for the pre-history backfill an unchanged first
+    save publishes, it is derived from the backfill's own body (below); or
+  - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
+    later than the revision's `createdAt`.
+
+Every other missing body still raises.
+
+`storedHash` is read with `ConfigRevisionStore.get_entry()`, which returns an index
+entry as stored. `list()`, which is what the revision-list API returns, leaves it
+out.
+
+The fingerprints are not used as the proof. They cover only `classes` and the
+confidence settings, and they cannot match a head at all when its classes carry
+numbers, because `_stringify_values` stores those numbers as strings and they come
+back as strings.
+
+An unchanged save cuts no revision but rewrites the head. Stack deployments do this
+to `default` and managed profiles, so an unchanged save refreshes the published
+entry's `storedHash` (`_refresh_published_stored_hash()`). The exception is the
+update that migrates a stack from the legacy configuration format: the
+configuration custom resource then writes those heads directly
+(`save_configuration_bypass_manager()`), so that update cuts no revision and
+refreshes no hash. The refresh is computed
+from the revision's **own body**. Once that body has expired, it is computed from
+the configuration of the head the save **replaced**, which `save_configuration()`
+keeps from the read it already makes, and only when that head passes the proof
+above: published and latest, and `_head_is_revision()`. It is never computed from
+the head the save wrote. A head changed by a writer that cut no revision is
+therefore never recorded as the published revision; for example, a Lambda without
+`CONFIGURATION_BUCKET`, where history is disabled. Nor is the head an unchanged
+save wrote when it stores something the replaced head did not: `True == 1`, so
+replacing a `true` with `1` wherever the configuration model leaves a value
+untyped, as it does inside a class, counts as unchanged, yet the head then stores
+`"1"` where the revision held `true`. The reverse is a change, because a stored
+number reads back as a string and `"1" != True`.
+
+The first save after upgrading into revision history follows the same rule. It
+cuts the configuration it replaces as a pre-history backfill, and when it changes
+nothing it publishes that backfill instead of cutting a second revision. The
+backfill's `storedHash` is derived from the backfill's own body
+(`_stored_hash_of_body()`), not taken from the head the save wrote. Where that save
+stored the configuration differently, a pinned read of the backfill therefore
+raises once its body expires, instead of being served from the head.
+
+So once a body has expired, an unchanged save keeps the revision servable when the
+head it replaces was proven and the head it writes is exactly how the current code
+stores that head's configuration. An upgrade to a release that stores the same
+configuration differently meets that condition; a save that swaps `True` for `1` as
+above does not. Where the replaced head was not proven, the save proves nothing. A
+revision cut before `storedHash` existed is the case to know. Until a save records
+its hash, the legacy rule is its only proof, and that proof is gone the first time
+anything rewrites the head. Earlier releases rewrote the head on every unchanged
+save and recorded nothing, so once the body of a revision whose head they rewrote
+has expired, nothing can prove it unless a refresh recorded its hash while the body
+still existed. A pinned read of it raises, as does a pinned read of a revision
+whose head a writer changed without cutting one.
+
+The profile then recovers only when a save that changes the configuration cuts a
+new revision. The error a pinned read raises ends with `EXPIRED_REVISION_REMEDY`,
+which says so and covers `default` and stack-managed profiles too, since the editor
+cannot save either: `default` can still be changed with Save as default or
+`idp-cli config-upload`, and a stack-managed profile gets a new revision from a
+stack update that changes it, with an editable copy to process its documents under
+until then. The test runner's refusal at submit carries the same remedy, followed
+by an instruction to resubmit the run pinned to the new revision once one exists.
+
+The legacy rule can also accept a head it should not, for one kind of revision. It
+accepts the head the revision's own save wrote, and a pre-history backfill that an
+earlier release published on an unchanged save is the one revision whose own save
+can have written a different configuration, as with the `True` and `1` above. Any
+save while the backfill's body still exists closes this: one that changes the
+configuration cuts a new revision, and an unchanged one records the backfill's own
+hash, so that head is refused once the body expires. Once the body has expired with
+neither, nothing can tell the head from the backfill, and a pinned read of the
+backfill is served from the head.
+
+The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
+so each pinned read of an expired published body is rebuilt again and logged at
+WARNING.
 
 `resolve_published_revision(profile)` returns the revision a new document should be
 pinned to, or None when the profile has no history (an older deployment, or one

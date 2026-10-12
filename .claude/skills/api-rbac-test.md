@@ -252,9 +252,11 @@ Two things follow that are easy to get wrong when adding a suite:
 - **A `known_gap` decides whether to block, not whether the check ran.** A gapped
   ERROR is a WARN *and* still carries `inconclusive: true`, so it appears in the
   report's "Could not be run" section. `GAP-SEC-INCONCLUSIVE-5XX` registers the 5xx
-  case, because ~50 resolver validation refusals still raise a bare `Exception` (which
-  the dispatcher can only map to 500) and this harness deliberately sends bogus
-  arguments. A **timeout is not registered** and is a hard failure.
+  case, because a resolver refusal raised as a bare `Exception` is all the dispatcher
+  can map to 500, and this harness deliberately sends bogus arguments. Not-found
+  refusals now answer 404 (`errorType: "ResourceNotFound"`); the gap entry in
+  `scripts/api_rbac_expectations.yaml` is where what remains at 500 is listed. A
+  **timeout is not registered** and is a hard failure.
 - **A 5xx is inconclusive for a "was it refused?" assertion and conclusive for a
   "does this body contain X?" one.** The IDOR suite is the second kind — the body is
   in hand and the marker is not in it — so it passes `treat_5xx=False`. Everything

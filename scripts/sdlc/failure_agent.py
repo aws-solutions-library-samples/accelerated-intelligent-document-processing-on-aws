@@ -203,16 +203,58 @@ def _is_noise(line: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def fetch_full_build_log() -> str:
-    """Return the ENTIRE CodeBuild log for this build.
+#: The transcript `codebuild_deployment.install_suite_transcript` tees the
+#: suite's own stdout/stderr into. Kept as a literal rather than imported
+#: because this module is also driven from tests that never import that one;
+#: the two values are asserted equal in `scripts/sdlc/tests/`.
+SUITE_TRANSCRIPT_PATH = os.environ.get(
+    "IDP_SUITE_TRANSCRIPT", "/tmp/idp-suite-transcript.log"
+)  # nosec B108 - isolated CodeBuild environment
 
-    codebuild_deployment.py's `get_codebuild_logs` makes a single
-    `get_log_events` call, which caps at ~1MB / 10K events — so on a long build
-    it silently returns only the tail. The GitLab after_script already solved
-    this by looping on `nextForwardToken` ("a single call returns only ~1MB/10K
-    events, which truncates 2h builds"); the Python path never got the same
-    treatment. This is that loop.
+
+def read_suite_transcript(path: str = "") -> str:
+    """Return the suite's own transcript of this build, or "" if there is none.
+
+    Args:
+        path: Transcript to read; defaults to `SUITE_TRANSCRIPT_PATH`.
+
+    Returns:
+        The transcript's contents, or "" when it is absent or unreadable.
     """
+    try:
+        with open(
+            path or SUITE_TRANSCRIPT_PATH, encoding="utf-8", errors="replace"
+        ) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def fetch_full_build_log() -> str:
+    """Return this build's log, preferring the suite's own transcript.
+
+    ⚠️ **The CloudWatch stream is not a reliable source for a build analysing
+    itself**, which is why the local transcript is tried first. CodeBuild batches
+    stdout to CloudWatch and the suite's parallel steps interleave, so a walk
+    performed while the build is still running can return a prefix that is
+    missing lines already written. Measured: one nightly run's analysis captured
+    1942 lines and stopped ~50 short of the three that identified the failure,
+    concluded "root cause not fully determined", and hypothesised a timeout that
+    had not occurred. Read again after the build, the same stream held all of
+    it. The transcript is written by this process, line-buffered, in the order
+    this process emitted it, so it cannot be behind.
+
+    The CloudWatch walk remains as the fallback, for the cases the transcript
+    cannot cover: a failure before the deployment script installed the tee, and
+    any caller running outside that script. It still paginates on
+    `nextForwardToken` — `get_codebuild_logs`' single `get_log_events` call caps
+    at ~1MB / 10K events and so silently returns only the tail of a long build —
+    but it keeps the race described above.
+    """
+    local = read_suite_transcript()
+    if local:
+        return local
+
     build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
     if not build_id:
         return ""

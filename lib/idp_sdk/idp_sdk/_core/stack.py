@@ -2196,8 +2196,21 @@ class StackDeployer:
                             # Only delete if from orphaned stack
                             if is_resource_orphaned(policy_stack_name):
                                 try:
+                                    # IfMatch is REQUIRED by CloudFront, and omitting it
+                                    # fails with InvalidIfMatchVersion rather than doing
+                                    # nothing quietly -- which, because the failure below
+                                    # is only warned about, is how this path deleted
+                                    # nothing at all for as long as it has existed. The
+                                    # ETag has to be read first; there is no way to derive
+                                    # it from the list response. cleanup_orphaned.py's
+                                    # equivalent has always done this.
+                                    etag = (
+                                        cloudfront_client.get_response_headers_policy(
+                                            Id=policy_id
+                                        ).get("ETag")
+                                    )
                                     cloudfront_client.delete_response_headers_policy(
-                                        Id=policy_id
+                                        Id=policy_id, IfMatch=etag
                                     )
                                     logger.info(
                                         f"Deleted orphaned CloudFront Response Headers Policy: {policy_name} (stack: {policy_stack_name})"

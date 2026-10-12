@@ -10,6 +10,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from idp_common.api_adapter import ResourceNotFound  # type: ignore
 from idp_common.config_scope import (  # type: ignore
     ScopeLookupError,
     caller_email_from_claims,
@@ -372,7 +373,7 @@ def add_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # The caller's name wins. This used to be derived from the filename
     # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
@@ -391,13 +392,13 @@ def add_test_set_from_upload(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
@@ -468,13 +469,13 @@ def add_test_set(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Generate test set ID with name format, replace spaces with dashes
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
@@ -588,11 +589,11 @@ def create_empty_test_set(args):
     document_class_type = args.get("documentClassType")
 
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = test_set_name.replace(" ", "-").lower()
     now = datetime.utcnow().isoformat() + "Z"
@@ -622,7 +623,7 @@ def create_empty_test_set(args):
         if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
             "ConditionalCheckFailed" in str(e)
         ):
-            raise Exception(f"A test set with id '{test_set_id}' already exists")
+            raise ValueError(f"A test set with id '{test_set_id}' already exists")
         raise
     # After the row: a marker without a row is a stray folder discovery ignores,
     # while a row without a marker is reaped on the next getTestSets.
@@ -658,10 +659,10 @@ def _begin_test_set_append(test_set_id):
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
@@ -860,16 +861,16 @@ def add_documents_to_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
@@ -1241,10 +1242,10 @@ def publish_test_set_version(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if (_as_int(meta.get("fileCount")) or 0) <= 0:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has no documents; add documents before "
             "publishing a version"
         )
@@ -1294,7 +1295,7 @@ def publish_test_set_version(args, event=None):
                     test_set_id, client_token, held_by_other
                 )
                 if my_claimed_at is None:
-                    raise Exception(
+                    raise ValueError(
                         f"A publish of test set '{test_set_id}' for this attempt is already "
                         "running. It may still succeed — wait for it to finish rather than "
                         "publishing again."
@@ -1303,7 +1304,7 @@ def publish_test_set_version(args, event=None):
                 # In flight, and it has produced no version yet. Publishing now would
                 # duplicate the work that attempt is about to finish, which is the whole
                 # failure this token exists to prevent.
-                raise Exception(
+                raise ValueError(
                     f"A publish of test set '{test_set_id}' for this attempt is already "
                     "running. It may still succeed — wait for it to finish rather than "
                     "publishing again."
@@ -1330,7 +1331,7 @@ def publish_test_set_version(args, event=None):
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise Exception(f"Test set '{test_set_id}' not found")
+                raise ResourceNotFound(f"Test set '{test_set_id}' not found")
             raise
         next_version = int(reserve["Attributes"]["latestVersion"])
 
@@ -1484,7 +1485,7 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
         # after the copy, so an oversize set would otherwise fail with a generic
         # error and fail identically on every retry — permanently unable to start
         # annotating, with nothing saying why.
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
             f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
             "Publishing a version of a set this large needs an asynchronous snapshot, "
@@ -1553,7 +1554,7 @@ def open_test_set_annotation_draft(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     existing_draft = _as_int(meta.get("draftVersion"))
     if existing_draft:
@@ -1895,26 +1896,26 @@ def generate_draft_labels(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     file_count = int(meta.get("fileCount", 0) or 0)
     if file_count <= 0:
-        raise Exception(f"Test set '{test_set_id}' has no documents to label")
+        raise ValueError(f"Test set '{test_set_id}' has no documents to label")
 
     already_labeled = 0
     if not object_keys:
         object_keys, already_labeled = _documents_needing_labels(test_set_id)
         if not object_keys and already_labeled:
-            raise Exception(
+            raise ValueError(
                 f"Every document in '{test_set_id}' already has ground truth "
                 f"({already_labeled} document(s)) — there is nothing to draft-label. "
                 "Run a test to score the pipeline against it instead."
@@ -2034,16 +2035,16 @@ def reextract_test_set_document(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     if document_class:
@@ -2130,9 +2131,9 @@ def _validate_regrouping(sections, previously_labelled_pages):
     entirely is exactly the defect a reviewer is here to fix.
     """
     if not sections:
-        raise Exception("A document must have at least one section")
+        raise ValueError("A document must have at least one section")
     if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
-        raise Exception(
+        raise ValueError(
             f"Too many sections ({len(sections)}); the maximum is "
             f"{MAX_SECTIONS_PER_DOCUMENT}"
         )
@@ -2146,19 +2147,19 @@ def _validate_regrouping(sections, previously_labelled_pages):
         # renumber around a group that no longer exists. The page-level checks below
         # cannot catch it: both groups' pages are legitimately accounted for.
         if section_id in section_ids:
-            raise Exception(f"Section '{section_id}' appears more than once")
+            raise ValueError(f"Section '{section_id}' appears more than once")
         section_ids.add(section_id)
         indices = section.get("pageIndices")
         if not isinstance(indices, list) or not indices:
-            raise Exception(f"Section '{section_id}' has no pages")
+            raise ValueError(f"Section '{section_id}' has no pages")
         for raw in indices:
             if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
-                raise Exception(
+                raise ValueError(
                     f"Section '{section_id}' has an invalid page index {raw!r}; "
                     "expected a non-negative integer"
                 )
             if raw in seen:
-                raise Exception(
+                raise ValueError(
                     f"Page index {raw} is in both section '{seen[raw]}' and "
                     f"section '{section_id}'"
                 )
@@ -2166,7 +2167,7 @@ def _validate_regrouping(sections, previously_labelled_pages):
 
     lost = sorted(previously_labelled_pages - set(seen))
     if lost:
-        raise Exception(
+        raise ValueError(
             f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
             "would no longer belong to any section, which would discard the ground "
             "truth for those pages"
@@ -2206,22 +2207,22 @@ def update_test_set_document_sections(args, event=None):
     incoming = input_data.get("sections") or []
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     for section in incoming:
         if not validate_document_class(section.get("documentClass")):
-            raise Exception(
+            raise ValueError(
                 f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
                 "characters of letters, digits, spaces, hyphens or underscores"
             )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
     if not existing:
-        raise Exception(
+        raise ValueError(
             f"'{object_key}' has no baseline sections to re-group. Generate draft "
             "labels for this test set first."
         )
@@ -2388,7 +2389,7 @@ def get_draft_label_job(args):
     key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
     job = db_client.get_item(key)
     if not job:
-        raise Exception(f"Labeling job '{job_id}' not found")
+        raise ResourceNotFound(f"Labeling job '{job_id}' not found")
 
     if job.get("status") in ("COMPLETED", "FAILED"):
         return _label_job_to_result(job)
@@ -2646,7 +2647,7 @@ def get_annotation_queue(args, event=None):
     include_completed = bool(args.get("includeCompleted"))
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     # Scope check precedes any read, so an unauthorized caller cannot even learn
     # whether the set exists.
@@ -2654,7 +2655,7 @@ def get_annotation_queue(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     label_job = _harvest_active_label_job(test_set_id, meta)
 
@@ -3038,13 +3039,13 @@ def estimate_review_effort(args):
     config_version = args.get("configVersion")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not (0.0 < target_accuracy <= 100.0):
-        raise Exception("targetAccuracy must be between 0 and 100")
+        raise ValueError("targetAccuracy must be between 0 and 100")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Resolve the configuration whose confidence semantics produced these labels
     # (argument > bound field > the drafting run's resolved version), so the
@@ -3769,30 +3770,30 @@ def remove_documents_from_test_set(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     file_names = args["fileNames"]
     logger.info(f"Removing {len(file_names)} document(s) from test set {test_set_id}")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
     # A harvest in progress writes a baseline for each document as its run
     # finishes; deleting a document under it leaves that baseline orphaned as
     # "Extra baseline files". A copier or extractor in flight recounts on
     # completion and would overwrite the count computed here.
     if meta.get("labelJobStatus") == "RUNNING":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is being draft-labeled; wait for the job "
             "to finish before removing documents"
         )
     if meta.get("status") in IN_FLUX_TEST_SET_STATUSES:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is busy ({meta.get('status')}); try again "
             "when it is COMPLETED"
         )
     for file_name in file_names:
         if not file_name or file_name.startswith("/") or "//" in file_name:
-            raise Exception(f"Invalid document name: {file_name!r}")
+            raise ValueError(f"Invalid document name: {file_name!r}")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -3902,11 +3903,11 @@ def clear_draft_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -4017,11 +4018,11 @@ def reset_test_set_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -4151,13 +4152,13 @@ def update_test_set(args):
 
     # Validate description if provided
     if description is not None and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Build update expression dynamically
     update_parts = []
@@ -4647,14 +4648,14 @@ def get_test_set_documents(args):
     # The id is derived from a validated name, so it must satisfy the same charset.
     # This also rejects '/' and '..', which could traverse outside the S3 prefix.
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if object_key and ".." in object_key:
-        raise Exception("Invalid object key")
+        raise ValueError("Invalid object key")
     limit = max(1, min(int(limit), 1000))
 
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     input_prefix = f"{test_set_id}/input/"

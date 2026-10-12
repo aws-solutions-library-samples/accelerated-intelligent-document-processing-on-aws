@@ -98,7 +98,7 @@ def match_catalog(
     from idp_common.synthesis.schema_author import _extract_json
 
     client = bedrock_client or bedrock.BedrockClient(region=region)
-    model = model_id or "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    model = model_id or "us.anthropic.claude-sonnet-4-6"
 
     try:
         response = client.invoke_model(
