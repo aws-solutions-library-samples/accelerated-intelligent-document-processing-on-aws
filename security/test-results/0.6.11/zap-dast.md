@@ -23,7 +23,7 @@ Every ZAP rule run against the seeded API, with its outcome. `WARN`/`FAIL` are a
 
 | Outcome | Rule | Plugin ID | Instances |
 |---------|------|-----------|----------:|
-| WARN-NEW | Cross-Domain Misconfiguration | `10098` | 12 |
+| WARN-NEW | Cross-Domain Misconfiguration | `10098` | 13 |
 
 <details><summary>All PASS rules (117)</summary>
 

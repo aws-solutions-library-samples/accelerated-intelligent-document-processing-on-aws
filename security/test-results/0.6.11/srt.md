@@ -4,9 +4,9 @@ Static analysis (Bandit, Semgrep, Checkov), dependency inventory (Syft), and the
 
 ## Summary
 
-- **Gate (open/reopened HIGH findings):** FAIL ❌ (5 open/reopened HIGH)
-- **CI-visible findings:** 34329
-- **Source:** live scan results (`.srt/issues.json`) — 11412 git-ignored finding(s) excluded to match the CI view
+- **Gate (open/reopened HIGH findings):** FAIL ❌ (7 open/reopened HIGH)
+- **CI-visible findings:** 34976
+- **Source:** live scan results (`.srt/issues.json`) — 36 git-ignored finding(s) excluded to match the CI view
 
 ## Analyzers executed
 
@@ -14,18 +14,18 @@ Each analyzer SRT ran, what it covers, and its contribution to the CI-visible fi
 
 | Analyzer | Coverage | Findings | HIGH |
 |----------|----------|---------:|-----:|
-| Bandit | Python SAST | 33979 | 7 |
+| Bandit | Python SAST | 34644 | 9 |
 | Checkov | IaC / CloudFormation misconfig | 165 | 1 |
-| Semgrep | multi-language SAST | 123 | 1 |
+| Semgrep | multi-language SAST | 105 | 1 |
 | security-matrix | AWS security-control review (SRT rules) | 62 | 54 |
 
 ## Findings by priority × status
 
 | Priority | Open | resolved | suppressed | Total |
 |----------|------:|------:|------:|------:|
-| HIGH | 5 | 6 | 52 | 63 |
-| MEDIUM | 132 | 0 | 0 | 132 |
-| LOW | 34124 | 0 | 0 | 34124 |
+| HIGH | 7 | 6 | 52 | 65 |
+| MEDIUM | 130 | 0 | 0 | 130 |
+| LOW | 34771 | 0 | 0 | 34771 |
 | INFO | 10 | 0 | 0 | 10 |
 
 ## HIGH findings by check (disposition)
@@ -34,7 +34,7 @@ Every HIGH check-ID flagged, with how many are in each status. A green gate mean
 
 | Source | Check | Open | resolved | suppressed |
 |--------|-------|--:|--:|--:|
-| Bandit | `B105` | 2 | 0 | 0 |
+| Bandit | `B105` | 4 | 0 | 0 |
 | Bandit | `B106` | 3 | 0 | 0 |
 | Bandit | `B701` | 0 | 2 | 0 |
 | Checkov | `CKV_AWS_192` | 0 | 1 | 0 |
@@ -65,6 +65,8 @@ Every HIGH check-ID flagged, with how many are in each status. A green gate mean
 | Bandit | `B105` | `lib/idp_cli_pkg/tests/test_parse_parameters.py` | 77 | Possible hardcoded password: 'YWJjZA==' |
 | Bandit | `B105` | `lib/idp_common_pkg/tests/unit/reporting/test_save_rule_validation_results.py` | 90 | Possible hardcoded password: '3' |
 | Bandit | `B106` | `lib/idp_common_pkg/tests/unit/test_delete_documents_coverage.py` | 1167 | Possible hardcoded password: 'testing' |
+| Bandit | `B105` | `lib/idp_common_pkg/tests/unit/test_suite_hygiene.py` | 326 | Possible hardcoded password: 'fake-chain-secret' |
+| Bandit | `B105` | `lib/idp_common_pkg/tests/unit/test_suite_hygiene.py` | 327 | Possible hardcoded password: 'fake-chain-token' |
 | Bandit | `B106` | `lib/idp_sdk/tests/unit/test_batch_delete_selector_failure.py` | 52 | Possible hardcoded password: 'testing' |
 
 ## Suppressed HIGH findings (accepted risk / scanner limitation)

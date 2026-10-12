@@ -7,17 +7,17 @@ Auditable, public-safe summary of this release's security tests. Environment-spe
 | Field | Value |
 |-------|-------|
 | Release version | `0.6.11` |
-| Git SHA | `3ca2dcc4d` |
-| Snapshot date | 2026-09-27 |
+| Git SHA | `64e95c7d2` |
+| Snapshot date | 2026-10-09 |
 | Curated by | `scripts/security/curate_results.py` |
 
 ## Results
 
 | Test | Gate | Detail |
 |------|------|--------|
-| [SRT — SAST & deps](./srt.md) | FAIL ❌ | 5 open/reopened HIGH of 34329 tracked |
+| [SRT — SAST & deps](./srt.md) | FAIL ❌ | 7 open/reopened HIGH of 34976 tracked |
 | [RBAC — static](./rbac-static.md) | PASS ✅ | 0 fail, 4 known-gap warn |
-| [RBAC — dynamic](./rbac-dynamic.md) | FAIL ❌ | 603 checks, 8 hard fail, 25 not run |
+| [RBAC — dynamic](./rbac-dynamic.md) | PASS ✅ | 609 checks, 0 hard fail, 0 not run |
 | [ZAP DAST](./zap-dast.md) | PASS ✅ | High=0 |
 
 See [`security/README.md`](../../README.md) for what each test covers and how to run it.
