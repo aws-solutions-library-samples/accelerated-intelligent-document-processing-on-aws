@@ -1782,6 +1782,7 @@ export type QueryGetTestSetDocumentsArgs = {
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
   objectKey?: InputMaybe<Scalars['String']['input']>;
+  search?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -2235,7 +2236,9 @@ export type TestSetDocumentSections = {
 export type TestSetDocumentsPage = {
   activeLabelJobId?: Maybe<Scalars['String']['output']>;
   documents: Array<TestSetDocument>;
+  matchCount?: Maybe<Scalars['Int']['output']>;
   nextToken?: Maybe<Scalars['String']['output']>;
+  searchTruncated?: Maybe<Scalars['Boolean']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   totalCount?: Maybe<Scalars['Int']['output']>;
 };
@@ -3161,10 +3164,11 @@ export type GetTestSetDocumentsQueryVariables = Exact<{
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
   objectKey?: InputMaybe<Scalars['String']['input']>;
+  search?: InputMaybe<Scalars['String']['input']>;
 }>;
 
 
-export type GetTestSetDocumentsQuery = { getTestSetDocuments?: { nextToken?: string | null, totalCount?: number | null, activeLabelJobId?: string | null, status?: string | null, documents: Array<{ objectKey: string, inputKey: string, size?: number | null, lastModified?: string | null, labelSource?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, fieldCount?: number | null, sections: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> }> } | null };
+export type GetTestSetDocumentsQuery = { getTestSetDocuments?: { nextToken?: string | null, totalCount?: number | null, activeLabelJobId?: string | null, status?: string | null, matchCount?: number | null, searchTruncated?: boolean | null, documents: Array<{ objectKey: string, inputKey: string, size?: number | null, lastModified?: string | null, labelSource?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, fieldCount?: number | null, sections: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> }> } | null };
 
 export type GetTestSetVersionsQueryVariables = Exact<{
   testSetId: Scalars['String']['input'];

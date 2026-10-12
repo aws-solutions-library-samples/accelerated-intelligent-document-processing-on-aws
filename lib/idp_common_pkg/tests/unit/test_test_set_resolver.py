@@ -9307,3 +9307,400 @@ class TestResolverPathsKeyLikeTheStoredCurve:
                 "idp_common.evaluation.curve_store"
             ).list_child_path
         )
+
+
+class TestDocumentSearchCoversTheWholeSet:
+    """`search` on getTestSetDocuments is answered about the set, not about a page.
+
+    The documents table is paginated server-side at 50 rows, with an opaque S3
+    continuation token, so the browser holds one page and nothing else. Its search
+    box used to filter that page, which answers a question about 50 documents in
+    the voice of a question about the set: a document two pages along came back as
+    "no results" (#1323). These tests pin the properties that distinguish the two,
+    because every one of them is satisfied by a page-scoped filter on a set that
+    happens to fit in one page — which is the only size most tests use.
+    """
+
+    def _seed(self, table, s3, names, **extra):
+        _seed_test_set(table, "ts1", fileCount=len(names), **extra)
+        for name in names:
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+
+    def test_a_match_beyond_the_first_page_is_found(self, labeling_env):
+        """The reported bug. The match sits on page 3 at this limit, so a filter
+        over the rows a caller already holds returns nothing for it."""
+        table, s3 = labeling_env
+        names = [f"doc{i:03d}.pdf" for i in range(100)] + ["needle-statement.pdf"]
+        self._seed(table, s3, names)
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "limit": 50, "search": "needle"}
+        )
+
+        assert [d["objectKey"] for d in page["documents"]] == ["needle-statement.pdf"]
+        assert page["matchCount"] == 1
+        assert page["nextToken"] is None, "one match is one page of matches"
+
+    def test_the_match_count_describes_the_set_not_the_page(self, labeling_env):
+        """The count a search box shows has to be the set's, or it reads as
+        "this is everything that matches" while meaning "this page"."""
+        table, s3 = labeling_env
+        self._seed(table, s3, [f"statement-{i:03d}.pdf" for i in range(70)])
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "limit": 50, "search": "statement"}
+        )
+
+        assert len(page["documents"]) == 50, "the page is still a page"
+        assert page["matchCount"] == 70, "but the count is the set's"
+        assert page["totalCount"] == 70, "and totalCount still means the set"
+
+    def test_paging_runs_over_the_matches_and_covers_every_one(self, labeling_env):
+        """Search precedes pagination: page 2 is matches 51-70, not documents 51-70.
+
+        Pinned by walking the pages and asserting the union is exactly the match
+        set, with no key returned twice. A continuation token would resume at a
+        1000-key LIST boundary instead and silently drop matches inside a page it
+        had already read past.
+        """
+        table, s3 = labeling_env
+        names = [f"statement-{i:03d}.pdf" for i in range(70)]
+        self._seed(table, s3, names + ["unrelated.txt"])
+
+        seen = []
+        token = None
+        for _ in range(5):  # bounded, so a looping token fails rather than hangs
+            page = test_set_index.get_test_set_documents(
+                {
+                    "testSetId": "ts1",
+                    "limit": 50,
+                    "search": "statement",
+                    "nextToken": token,
+                }
+            )
+            seen.extend(d["objectKey"] for d in page["documents"])
+            token = page["nextToken"]
+            if not token:
+                break
+
+        assert token is None, "paging terminated"
+        assert sorted(seen) == sorted(names)
+        assert len(seen) == len(set(seen)), "no document returned on two pages"
+
+    def test_the_search_is_case_insensitive_and_matches_mid_name(self, labeling_env):
+        """Same semantics the client-side filter had, so the fix does not also
+        change what counts as a match: lowercased substring, not a prefix."""
+        table, s3 = labeling_env
+        self._seed(table, s3, ["Q3-BankStatement-2024.pdf", "invoice.pdf"])
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "bankstatement"}
+        )
+
+        assert [d["objectKey"] for d in page["documents"]] == [
+            "Q3-BankStatement-2024.pdf"
+        ]
+
+    def test_a_search_matching_nothing_is_distinguishable_from_no_search(
+        self, labeling_env
+    ):
+        """`matchCount` is None without a search and 0 for a search that missed.
+
+        A caller that cannot tell these apart has to choose between captioning an
+        unsearched table "0 matching" and captioning an empty result with the set's
+        size.
+        """
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf", "b.pdf"])
+
+        missed = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "zzz"}
+        )
+        assert missed["documents"] == []
+        assert missed["matchCount"] == 0
+
+        unsearched = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert len(unsearched["documents"]) == 2
+        assert unsearched["matchCount"] is None
+        assert unsearched["searchTruncated"] is None
+
+    def test_a_blank_search_is_not_a_search(self, labeling_env):
+        """Whitespace is what the box holds between a cleared search and a new one.
+        Treating it as a match-everything search would make `matchCount` claim a
+        count the scan budget cannot promise on a large set."""
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf", "b.pdf"])
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "   "}
+        )
+
+        assert len(page["documents"]) == 2
+        assert page["matchCount"] is None
+
+    def test_an_exact_object_key_still_wins_over_a_search(self, labeling_env):
+        """objectKey is the deep-link path and the narrower of the two. It also
+        uses the S3 Prefix, so letting a search override it would turn a one-key
+        lookup into a scan of the set."""
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf", "ab.pdf"])
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "objectKey": "a.pdf", "search": "ab"}
+        )
+
+        assert [d["objectKey"] for d in page["documents"]] == ["a.pdf"]
+        assert page["matchCount"] is None
+
+    def test_sections_and_label_state_are_attached_to_a_searched_page(
+        self, labeling_env
+    ):
+        """A searched page is a page: it goes through the same hydration, so the
+        columns that need baseline reads are populated. A search path that skipped
+        it would show every matched row as unlabeled."""
+        table, s3 = labeling_env
+        self._seed(table, s3, ["statement.pdf"])
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/statement.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "labelSource": "reviewed-human",
+                    "document_class": {"type": "BankStatement"},
+                    "inference_result": {"f": "v"},
+                }
+            ).encode(),
+        )
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "statement"}
+        )
+
+        doc = page["documents"][0]
+        assert [s["sectionId"] for s in doc["sections"]] == ["1"]
+        assert doc["sections"][0]["documentClass"] == "BankStatement"
+        assert doc["labelSource"] == "reviewed-human"
+
+    def test_only_the_requested_page_is_hydrated(self, labeling_env):
+        """The expensive part of this listing is one S3 GET per section per
+        document (``_attach_label_metadata``), and a whole-set search must not make
+        it whole-set work. Counting matches is a LIST-only walk; reading them is
+        not, so the GETs stay proportional to `limit`.
+        """
+        table, s3 = labeling_env
+        names = [f"statement-{i:03d}.pdf" for i in range(60)]
+        self._seed(table, s3, names)
+        for name in names:
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/{name}/sections/1/result.json",
+                Body=json.dumps({"labelSource": "draft-machine"}).encode(),
+            )
+
+        with patch.object(
+            test_set_index,
+            "_attach_label_metadata",
+            wraps=test_set_index._attach_label_metadata,
+        ) as hydrate:
+            page = test_set_index.get_test_set_documents(
+                {"testSetId": "ts1", "limit": 10, "search": "statement"}
+            )
+
+        assert page["matchCount"] == 60, "all 60 counted"
+        hydrated = hydrate.call_args[0][1]
+        assert len(hydrated) == 10, "but only the page read"
+
+    def test_a_token_that_is_not_a_search_offset_is_refused_by_a_search(
+        self, labeling_env
+    ):
+        """A search will only page on a token a search minted.
+
+        The two kinds are not interchangeable: one is an offset into a match list,
+        the other an S3 continuation token. Anything that is not an offset is
+        refused rather than parsed hopefully, because `int()` on a continuation
+        token raises where the caller cannot see it. The reverse direction — a
+        search offset replayed with no search — is
+        `test_a_search_token_is_refused_when_the_search_is_gone`.
+        """
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf"])
+
+        with pytest.raises(Exception, match="Invalid pagination token"):
+            test_set_index.get_test_set_documents(
+                {"testSetId": "ts1", "search": "a", "nextToken": "not-an-offset"}
+            )
+
+    def test_the_scan_budget_reports_itself_rather_than_overstating_the_count(
+        self, labeling_env, monkeypatch
+    ):
+        """Past the budget the page is still right, and the count becomes a floor.
+
+        The honest failure for an unbounded scan is a Lambda timeout, which tells
+        the user nothing. `searchTruncated` is what lets the caller say "N+" and
+        ask for a narrower search instead of reporting a lower bound as a total.
+        The budget and the LIST page size are lowered here rather than seeding
+        50,000 objects.
+        """
+        table, s3 = labeling_env
+        self._seed(table, s3, [f"statement-{i:03d}.pdf" for i in range(20)])
+        monkeypatch.setattr(test_set_index, "_SEARCH_SCAN_KEY_BUDGET", 5)
+        monkeypatch.setattr(test_set_index, "_SEARCH_SCAN_PAGE_SIZE", 5)
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "limit": 50, "search": "statement"}
+        )
+
+        assert page["searchTruncated"] is True
+        assert page["matchCount"] < 20, "a floor, not the set's count"
+        assert page["nextToken"] is None, (
+            "and no next page, because the 5 matches found do not exceed this "
+            "page's end (offset 0 + limit 50) — not because the scan was cut "
+            "short. A truncated search WITH more matches than `limit` does hand "
+            "out a token, and paging it is correct: `match_count > end` is "
+            "evaluated against the matches the scan actually reached, so every "
+            "page it offers is one it can serve"
+        )
+
+    def test_reaching_the_budget_on_the_last_page_is_not_truncation(
+        self, labeling_env, monkeypatch
+    ):
+        """Spending the whole budget is not the same as leaving keys unread.
+
+        A scan that exhausts the prefix on the same page it reaches the budget is
+        complete: S3 reports `IsTruncated` false, so the count is exact rather than
+        a floor. Captioning it "20+" would state a lower bound where an exact count
+        is known, and would tell the user to narrow a search that already saw the
+        whole set. Every set small enough to list in one call takes this path.
+        """
+        table, s3 = labeling_env
+        self._seed(table, s3, [f"statement-{i:02d}.pdf" for i in range(20)])
+        monkeypatch.setattr(test_set_index, "_SEARCH_SCAN_KEY_BUDGET", 20)
+        monkeypatch.setattr(test_set_index, "_SEARCH_SCAN_PAGE_SIZE", 20)
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "limit": 50, "search": "statement"}
+        )
+
+        assert page["searchTruncated"] is False
+        assert page["matchCount"] == 20
+
+    def test_a_search_token_is_refused_when_the_search_is_gone(self, labeling_env):
+        """The other direction of the same confusion, and the reachable one.
+
+        An offset into a match list means nothing without the search that produced
+        it. Handed to S3 as a continuation token it comes back as an opaque
+        InvalidArgument, which the page renders as "Failed to load test set
+        documents" — a load error for what is really a bad request.
+        """
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf"])
+
+        with pytest.raises(Exception, match="Invalid pagination token"):
+            test_set_index.get_test_set_documents(
+                {"testSetId": "ts1", "nextToken": "match:50"}
+            )
+
+    def test_the_search_never_reaches_s3_as_a_prefix(self, labeling_env):
+        """`search` is matched in memory, so it cannot address S3.
+
+        `objectKey` is interpolated into the LIST `Prefix` and is therefore checked
+        for '..'; `search` is not, and this is what that asymmetry rests on. A
+        traversal string is an ordinary needle that matches no document name rather
+        than a path, and a leading substring is not a prefix search.
+        """
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf", "b.pdf"])
+
+        escaped = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "../../other-set/input/"}
+        )
+        assert escaped["documents"] == []
+        assert escaped["matchCount"] == 0
+
+        # And a name that genuinely contains the needle is still found, so the above
+        # is "no match" rather than "search is broken".
+        s3.put_object(
+            Bucket="test-set-bucket", Key="ts1/input/weird..name.pdf", Body=b"x"
+        )
+        found = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": ".."}
+        )
+        assert [d["objectKey"] for d in found["documents"]] == ["weird..name.pdf"]
+
+    def test_a_search_matches_a_nested_document_name(self, labeling_env):
+        """Input names can hold '/' — the listing already handles nested names, and
+        the search runs on the same relative name, not on the raw key. Matching the
+        key instead would let the set id or the 'input/' segment match."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(
+            Bucket="test-set-bucket", Key="ts1/input/sub/dir/stmt.pdf", Body=b"x"
+        )
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "sub/dir"}
+        )
+        assert [d["objectKey"] for d in page["documents"]] == ["sub/dir/stmt.pdf"]
+
+        # 'input' is in every key and in no document name, so matching it must find
+        # nothing. A search over raw keys would return the whole set here.
+        assert (
+            test_set_index.get_test_set_documents(
+                {"testSetId": "ts1", "search": "input"}
+            )["matchCount"]
+            == 0
+        )
+
+    def test_a_search_that_matches_nothing_does_not_fall_back_to_the_set(
+        self, labeling_env
+    ):
+        """The failure mode worth naming: a search box that answers "here is
+        everything" when it finds nothing is worse than one that answers "no
+        results", because the user reads the first rows as matches."""
+        table, s3 = labeling_env
+        self._seed(table, s3, [f"doc{i}.pdf" for i in range(10)])
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "no-such-document"}
+        )
+
+        assert page["documents"] == []
+        assert page["totalCount"] == 10, "the set is still reported as 10"
+
+    def test_folder_placeholder_objects_are_not_matched(self, labeling_env):
+        """A console-created prefix is a zero-byte key ending in '/'. The unsearched
+        listing skips those; the searched one has to skip them too, or a search for
+        a folder name returns a row with no document behind it."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/batch1/", Body=b"")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/batch1/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "batch1"}
+        )
+
+        assert [d["objectKey"] for d in page["documents"]] == ["batch1/a.pdf"]
+        assert page["matchCount"] == 1
+
+    def test_an_oversized_search_is_refused(self, labeling_env):
+        """The search is the one input here whose size the caller picks freely, and
+        it is echoed into the log line. A document name cannot approach this
+        length, so a longer value is not a search anybody typed."""
+        table, s3 = labeling_env
+        self._seed(table, s3, ["a.pdf"])
+
+        with pytest.raises(Exception, match="Search text is too long"):
+            test_set_index.get_test_set_documents(
+                {
+                    "testSetId": "ts1",
+                    "search": "x" * (test_set_index._SEARCH_MAX_LENGTH + 1),
+                }
+            )
+
+        # The boundary itself is accepted, so the limit is a limit rather than an
+        # off-by-one that rejects a legitimate long name.
+        at_limit = test_set_index.get_test_set_documents(
+            {"testSetId": "ts1", "search": "x" * test_set_index._SEARCH_MAX_LENGTH}
+        )
+        assert at_limit["matchCount"] == 0

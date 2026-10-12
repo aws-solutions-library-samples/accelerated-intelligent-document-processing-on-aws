@@ -142,6 +142,10 @@ class TestTheSkill:
         assert "never commit" in lowered
         assert "ask once" in lowered or "say it once" in lowered
         assert "not deployed" in lowered, "blocked-not-deployed must be a named outcome"
+        prose = " ".join(lowered.split())
+        assert "events.jsonl" in prose and "never commit the session directory" in (
+            prose
+        ), "the rule must cover the click log and the whole session, not the video"
 
     def test_hands_over_a_docs_entry_draft(self):
         text = _skill()

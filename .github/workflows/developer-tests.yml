@@ -265,6 +265,9 @@ jobs:
       # rather than merely looking right. Omitting it on the GitLab side cost a red
       # job plus four tests that SKIPPED green, which is the worse half. The answer
       # is to give the job the tool, not to let the probe skip when it is absent.
+      # Node is also needed on its own account: test_ux_recorder.py runs the
+      # recorder's cursor-overlay JavaScript under node to check that a click is
+      # never labelled by what was typed, and fails in CI when node is missing.
       # ⚠️ `cfn-lint: true` here is about PINNING, not availability. cfn-lint
       # arrives transitively either way — moto declares `cfn-lint>=0.40.0` under
       # several of its extras, and the first-party install pulls moto — so the

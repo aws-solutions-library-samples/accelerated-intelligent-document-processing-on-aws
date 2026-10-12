@@ -181,7 +181,16 @@ describe('publishing a version from the set detail page', () => {
     // Annotator, so it must not be on the page-load path.
     const open = DETAIL.slice(DETAIL.indexOf('const openPublishDialog = async'), DETAIL.indexOf('const handlePublishVersion = async'));
     expect(open).toMatch(/query: getTestSetVersions/);
-    const fetchPage = DETAIL.slice(DETAIL.indexOf('const fetchPage = useCallback('), DETAIL.indexOf('[testSetId],'));
+    const fetchPageStart = DETAIL.indexOf('const fetchPage = useCallback(');
+    // Ends at the declaration that follows, not at fetchPage's dependency array:
+    // the array's contents change (it gained `searchText` when search moved to the
+    // server for #1323), and an anchor that stops matching does not fail here — it
+    // either widens this slice until it swallows code that *does* read versions, or
+    // empties it and makes the negative assertion pass vacuously. The positive
+    // assertion is what distinguishes those from a slice that really holds the
+    // page-load fetch.
+    const fetchPage = DETAIL.slice(fetchPageStart, DETAIL.indexOf('useEffect(', fetchPageStart));
+    expect(fetchPage).toMatch(/query: getTestSetDocuments/);
     expect(fetchPage).not.toMatch(/getTestSetVersions/);
   });
 });

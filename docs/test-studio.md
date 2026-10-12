@@ -657,6 +657,16 @@ page 1 are fetched, so large packets stay cheap). Each document name links
 to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
 mirroring the app's Document List → Document Details structure.
 
+The search box above the table searches the **whole set**, not the page on screen,
+so a document several pages along is found from page 1. Pagination then runs over
+the matches, and the count beside the heading reads "50 of 73 matching" so the page
+is not mistaken for the whole result. Matching is a case-insensitive substring of
+the document name, the same rule as elsewhere in the UI. A search reads up to
+50,000 document names; past that the count is shown as a floor — `73+ matching` —
+and the table asks for a narrower search rather than overstating what it counted.
+Sorting is the one control that stays page-scoped — see
+[Confidence-guided review](#confidence-guided-review).
+
 This page is where a set is worked on end to end: **Publish version** at the top
 acts on the set as a whole, while **Add documents**, **Generate draft labels**,
 **Annotate**, **Clear draft labels** and **Remove** sit above the document list and
@@ -949,7 +959,11 @@ confidence alerts elsewhere in the app instead of using fixed cutoffs.
 
 The table defaults to **worst-first** ordering whenever confidence data is
 present, so review starts where the labels are least trustworthy. Sorting
-applies to the current page (document listing is paginated server-side).
+applies to the current page, because the document listing is paginated
+server-side and the ranking needs confidence values the page carries and the
+rest of the set does not. Search is not page-scoped — it runs over the whole
+set — and the table says which of the two is which whenever the page is not the
+whole set.
 
 Reviewing a draft label is the same **Edit Ground Truth** flow described above;
 saving flips the label to *Reviewed (human)*. Once enough of the set is

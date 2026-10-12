@@ -486,8 +486,15 @@ frames only when the screen changes, and re-paces the result for a viewer: idle
 gaps clamped, paused stretches dropped, narration spoken by Amazon Polly, every
 click drawn on the frame that was on screen when it happened. Output — `review.mp4`,
 `review.srt`, `segments.json`, `review.md` — lands under gitignored
-`scratch/ux-recordings/`. **A recording of a live stack shows real documents and
-nothing is redacted: never commit one or attach it to a pull request.** Details:
+`scratch/ux-recordings/`, in a session directory that also holds the tab's address
+and title and a click log (`events.jsonl`, `timeline.json`) that labels clicks with
+text from the page. **A recording of a live stack shows real documents and
+nothing is redacted: never commit the session directory or attach any of it to a
+pull request.** The one exception is a finished product-demo video its author chooses
+to publish: the author uploads that `demo.mp4`, and nothing else from the session, to
+get its asset URL for the demo videos page. What a click label can hold is set out under Privacy in
+[`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md#privacy).
+Details:
 [`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy).
 
 ## 7. Benchmarks

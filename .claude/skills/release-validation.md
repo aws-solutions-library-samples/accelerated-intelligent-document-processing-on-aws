@@ -332,10 +332,12 @@ the ranked usability findings; a flow that is blocked because the feature is onl
 an unmerged branch is **blocked, not broken**, and the record must say which.
 
 Optionally record it (`scripts/ux_recorder.py start … mark … stop`, then `render`) —
-useful when a finding is easier to show than to describe. The mp4 stays in gitignored
-`scratch/ux-recordings/`: it shows real documents from a live stack, so it is
-**never** committed or attached to a PR. Link nothing; describe the finding in the
-record and keep the video for the team channel.
+useful when a finding is easier to show than to describe. The session directory
+stays in gitignored `scratch/ux-recordings/`: its mp4 shows real documents from a
+live stack, and its click log labels clicks with text from the page (Privacy in
+`ux-test.md`), so none of it is **ever** committed or attached to a PR, and
+`render`'s click table stays out of the record. Link nothing; describe the finding
+in the record and keep the video for the team channel.
 
 Skill: `ux-test.md`.
 

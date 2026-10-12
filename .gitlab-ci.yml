@@ -101,8 +101,11 @@ stages:
   # Fail the build if any first-party package came from an index, not source.
   - python3 scripts/check_first_party_deps.py
 
-# Node 22.14.0, pinned. Only the jobs that need it install it — the two pytest
-# jobs do not, which is most of what keeps the split's runner-minute cost down.
+# Node 22.14.0, pinned. Only the jobs that need it install it; `unit_tests` does
+# not. `package_tests` does, for two test modules in `scripts/tests` that its script
+# block does not show: test_pyright_config.py runs basedpyright, an npm package, and
+# test_ux_recorder.py runs the recorder's cursor-overlay JavaScript under node, and
+# fails in CI rather than skipping when node is missing.
 #
 # Pick the tarball matching the runner arch: the size:2xlarge pool is arm64, and a
 # hardcoded x64 binary fails with "Syntax error: ')' unexpected".
@@ -323,7 +326,10 @@ package_tests:
     # packages, rather than trusting that the config looks right. That is the whole
     # point of the check (see the typecheck notes in CLAUDE.md), so the answer is to
     # give this job the tool, not to let the probe skip when it is absent.
-    # basedpyright ships as an npm package, hence Node.
+    # basedpyright ships as an npm package, hence Node. Node is also needed on its
+    # own account: `test_ux_recorder.py` runs the recorder's cursor-overlay
+    # JavaScript under node to check that a click is never labelled by what was
+    # typed, and fails in CI when node is missing.
     - *node_setup
     - npm install -g basedpyright
     # ⚠️ This is about PINNING, not availability. cfn-lint arrives transitively

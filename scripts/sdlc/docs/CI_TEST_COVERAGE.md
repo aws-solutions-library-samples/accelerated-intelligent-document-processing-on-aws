@@ -161,7 +161,9 @@ not need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyri
 resolve the first-party packages instead of merely looking right — so a suite whose
 name says nothing about types reaches an npm package. The fix is to give the job
 the tool, not to let the probe skip when it is missing, which is the whole reason
-that check is a live probe.
+that check is a live probe. `scripts/tests/test_ux_recorder.py` needs Node in the
+same job on its own account: it runs the recorder's cursor-overlay JavaScript under
+`node`, and fails in CI rather than skipping when `node` is missing.
 
 ### The GitHub side runs the same two security gates
 

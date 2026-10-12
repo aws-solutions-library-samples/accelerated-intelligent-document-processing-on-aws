@@ -23,11 +23,13 @@ SPDX-License-Identifier: MIT-0
 
 - **A /Jobs API batch no longer hangs forever when one of its files cannot be processed without running a workflow.** `job_tracker` is driven by Step Functions execution-status-change events, so a document that reaches a terminal state *without* an execution never reached it: the job's `Files` map kept that file non-terminal, no `results.zip` was ever written, and `GET /jobs/<id>` answered `IN_PROGRESS` indefinitely with nothing reporting a fault. Found while adding the malware gate, which is the first thing that can terminate a document before an execution starts, and fixed generally: the all-files-terminal check and the zip build moved into `idp_common.job_completion.finalize_job_file`, which both writers call. The zip builder also now follows the `list_objects_v2` continuation token, so a batch of more than 1,000 output objects is zipped completely rather than truncated silently. **Action:** none.
 
-- **A document can no longer be reprocessed out of a state that was never meant to re-enter the pipeline.** `reprocessDocument` builds a fresh `QUEUED` document and sends it straight to the queue with no status check at all, so an Admin clicking **Reprocess** on a quarantined document would have pushed the file into OCR and Bedrock — two clicks around the control that refused it. It now refuses the two malware-gate terminal statuses, with the action disabled in the UI, and the refusal explains the two legitimate next steps (delete it, or re-upload an unprotected copy of a file GuardDuty could not read). **Action:** none.
+- **A document can no longer be reprocessed out of a state that was never meant to re-enter the pipeline.** Reprocess builds a fresh `QUEUED` document and sends it straight to the queue with no status check at all, so clicking **Reprocess** on a quarantined document would have pushed the file into OCR and Bedrock — two clicks around the control that refused it. A document that is *still being scanned* was the same hole with no verdict at all yet: reprocess does not wait for one, so it would have started the workflow on a file nothing had cleared. All three malware-gate statuses are now refused, the action is disabled in the UI, and the wording differs between the two cases because the remedies do — a refusal needs the file deleted or replaced, whereas a scan in progress clears by itself. ⚠️ **Both reprocess paths are covered, and they share no code:** the web UI and the REST API go through the reprocess resolver, while `idp-cli reprocess`, `documents.reprocess()` and `batches.reprocess()` go through the SDK's rerun processor, which runs client-side under the caller's own credentials and reaches the queue itself — so guarding only the first would have left the gate bypassable from the command line, with `--batch-id` re-queueing a whole batch unattended. A second guard sits behind both: a refusing verdict that arrives to find the document already past the gate is applied anyway rather than dismissed as a repeat delivery, and raises `<stack>-malware-unapplied-refusal`. **Action:** none.
 
 - **A terminal document status is no longer stored as `WorkflowStatus: RUNNING`.** Both writers of that attribute derived it with an `if/elif/else` whose `else` answered `"RUNNING"`, so any status not named in it read as still-being-worked-on — `REDACTED_SUPERSEDED` was in exactly that position despite being terminal and successful. The mapping is now one explicit per-status table both writers share, with the in-flight set enumerated alongside it so a newly added status in neither is logged by name rather than absorbed. Fixing only `update_document_status` would have left the bug where it actually bites: `workflow_tracker` reaches DynamoDB through `update_document`, so that is the path which produces `REDACTED_SUPERSEDED` in the first place. **Action:** none; the document's own `ObjectStatus` was always correct, and this corrects the derived attribute the document list and the test-set resolvers read.
 
 - **The detail view stops polling a document that will never change again.** `DocumentPanel`'s terminal-status check named only `COMPLETED`, `FAILED` and `ABORTED`, so a `REDACTED_SUPERSEDED` document — and now a gate-refused one — was re-fetched every few seconds for as long as the page stayed open. **Action:** none.
+
+- **Test Studio's document search covers the whole test set instead of the page on screen.** The set detail table paginates on the server — 50 rows and an opaque S3 continuation token per request, with the rows replaced on every page change — so the browser holds one page and nothing else, and the search box filtered exactly that. A document that existed in the set but sat on a later page came back as "No documents matching", which made the control useful only on sets small enough not to need it. The search now runs in the resolver over every document name in the set, and pagination runs over the **matches**: page 2 is matches 51–100, not documents 51–100. The count beside the heading reports the set's matches rather than the rows on screen ("50 of 73 matching"), and the placeholder says "Find documents in this set" instead of "on this page". Match semantics are unchanged — a case-insensitive substring of the document name — so a search that worked within a page still finds the same documents. ⚠️ **The scan is LIST-only and deliberately so:** matching reads key names, and only the ≤50 documents on the requested page are hydrated with their baseline sections and label state, which is one S3 GET per section. So the GETs stay proportional to the page, while the LISTs scale with the set — one per 1000 keys, and re-spent on every page of a searched result, because the offset token re-scans from the start rather than resuming. That is the trade the 300 ms settle on the search box pays for, and it is still much the cheaper half: loading the set into the browser instead would have multiplied the per-section GETs by the set's size. A search is bounded at 50,000 keys scanned; past that the page is still correct, the count is reported as a floor ("73+ matching") and the table asks for a narrower search rather than overstating what it counted. Sorting is unchanged and still orders the current page, which the table now says in those terms rather than claiming the same of filtering. ⚠️ **Replies to a search are not guaranteed to arrive in the order they were sent, so only the newest one is rendered.** A search is one request per settled keystroke, and a broad needle is slower to answer than a narrow one, because every row it returns costs a read per baseline section — so a narrow search can be overtaken by a broader one still in flight. Each fetch therefore claims a ticket and discards its own reply if a later fetch has started, on the error path as well (a stale failure must not raise a banner over a newer success) and for the spinner (an earlier request clearing it would report "loaded" while the request whose rows will be shown is still in flight). The arrival and generation polls refetch through the current search for the same reason. **Action:** none ([#1323](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1323)).
 
 - **The first-party `PYTHONPATH` probes run on macOS instead of failing.** The six tests in `scripts/tests/test_first_party_pythonpath.py` expand a Makefile variable by injecting a probe target, and they did it with `make --eval` — an option that arrived in **GNU Make 3.82**, while macOS ships **3.81**, the last GPLv2 release. So on a stock Apple toolchain all six failed with `unrecognized option` and a usage dump, which reads as a repository fault rather than a missing tool; they passed in CI, which is Linux with make 4.x. The probe target is now appended as a second makefile (`make -f Makefile -f <probe>`), which 3.81 accepts and which measures the same expansion — so the six run everywhere, on the same `make` the recipes themselves use, with nothing to install and no `PATH` change. **Action:** none ([#1348](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1348)).
 
@@ -544,6 +546,7 @@ SPDX-License-Identifier: MIT-0
 ### Changed
 
 - **Guidance: simple mode is measured complete to ~400 rows / ~10 pages per document, not ~1,600.** The earlier figure relied on the #726 over-splitting defect, which cut large statements into 6–18 sections and so bounded each extraction call; with the defect fixed, a single 800-row / 17-page statement in simple mode returned 43 rows while reporting `COMPLETED` with no processing issue, and 25+ pages fail with *Input is too long for requested model*. Advanced mode (which shards) is the recommendation beyond that size, and `minItems` is the one signal that turns the simple-mode truncation into a warning. Also measured: the shipped confidence batch sizing pays for one truncated Nova Lite call per 100-row section — a batch of 8 removed every truncation at −29% assessment cost and −38 s per document with identical results (`docs/benchmarking/config-guidance.md` §3 and §7; scored data under `benchmarks/results/v0.6.8/`).
+
 - **⚠️ Extraction: turning on `x-aws-idp-multi-instance` requires migrating that class's evaluation baselines.** Evaluation compares a prediction against a baseline *of the same shape*, so a wrapped prediction against a flat baseline scores every field as missing-on-one-side and the class's accuracy collapses to ~0 **with no error anywhere**. Migrate in the same change as the flag: `python3 scripts/migrate_multi_instance_baselines.py --stack-name <stack> --apply` (dry run by default). It migrates shape, not content — the extra records for documents that really contain several were never in the baseline, so you must add them. Evaluation logs a warning naming the class when the two shapes disagree.
 
 - **⚠️ Extraction: `extraction.agentic.validation` moved to `extraction.validation`, and validation is now ON by default.** Simple extraction runs the same validate-and-retry path, so the setting was no longer agentic-only. Stored configurations migrate automatically on read — no action required — and `config_format_version` advances to `0.7`. ⚠️ **A profile that turned validation on but never named a `fail_action` stops escalating on upgrade**, since it was inheriting the old `escalate` default; set `fail_action` explicitly if you relied on it.
@@ -1250,6 +1253,7 @@ are migrated automatically on read — no manual edit is required.** See the
 ### Fixed
 
 - **Test Studio results error for runs stuck in evaluation (#358)** — `getTestRun` (the `test_results_resolver` Lambda) raised an unhandled `ValueError` ("Test run … processing completed, evaluating results") when a run reached a terminal state but the evaluation-aggregation step never cached `testRunResult` — e.g. when aggregation is still running, timed out, or failed silently on a large run (the reporter hit this with 3 463 documents). The exception surfaced as an opaque error and the run spun on "Loading…" forever in Test Studio. The resolver now returns a structured partial `TestRun` (true status plus file counts and metadata, metric fields omitted) instead of raising, so the UI renders the in-progress/terminal state gracefully. This also stops a single not-yet-aggregated run from failing an entire `compareTestRuns` request. (The separate question of *why* aggregation can stall on very large runs is tracked as a follow-up.)
+
 - **Configuration version list silently truncated past the first page (#354)** — `ConfigurationManager.list_config_versions()` performed a single unpaginated `table.scan()` on the ConfigurationTable. Because a DynamoDB scan returns at most 1 MB per call, deployments with many config versions (e.g. 230+) only ever saw the ~58 that fit on the first page — uploaded-via-CLI and autotune-agent configs were invisible in the UI's View/Edit Configuration page and the upload-document config-version dropdown (the configs still worked when referenced by name). The method now paginates through `LastEvaluatedKey` so every version is returned. Fixes all callers (`update_configuration`, the AppSync `configuration_resolver`, `rules_discovery`, and the SDK).
 
 - **Build Info "update available" indicator broke against the public release bucket** — The `getLatestPublishedVersion` resolver discovered the newest published version by calling `ListObjectsV2` on the public artifacts bucket and parsing `idp-main_<version>.yaml` keys. That bucket grants `GetObject` only (no listing), so the check failed on real public deployments. `idp-cli publish` now writes a small pointer object — `<prefix>/idp-main-latest.json` (`{version, templateUrl}`) — at the version-stripped prefix on every release, and the resolver reads that one known key with a single `GetObject` (unsigned, falling back to signed), with a conventional `idp-main_<version>.yaml` URL fallback if the pointer omits one. No version parsing or `ListObjectsV2`. The check stays disabled when `PUBLIC_ARTIFACTS_BUCKET` is unset.
@@ -1625,19 +1629,29 @@ Hardening response to security review - Highlights:
 - **Removed Claude Sonnet 4:1m and Sonnet 4.5:1m model variants** — The 1M context window beta for Claude Sonnet 4 (`claude-sonnet-4-20250514-v1:0:1m`) and Sonnet 4.5 (`claude-sonnet-4-5-20250929-v1:0:1m`) is being retired effective April 30, 2026. These `:1m` model variants have been removed from all enum lists, UI dropdowns, quota code mappings, pricing, and documentation. Users needing 1M context windows should migrate to Claude Sonnet 4.6 (`claude-sonnet-4-6:1m`), where the 1M context window is generally available (GA).
 
 - **Default extraction model updated** to `us.anthropic.claude-sonnet-4-6` (was `us.anthropic.claude-sonnet-4-20250514-v1:0`) in system defaults.
+
 - **Error Analyzer system prompt improvements** — Added strategy for large batches, priority ordering, and error classification guidance.
+
 - **Error Analyzer settings** — Replaced duplicate inline cache with the shared cache from the common monitoring package.
+
 - **Shared CloudWatch Logs** — Extracted log search logic from the Error Analyzer into a reusable library in the common monitoring package.
+
 - **Enhanced CI/CD Automated Testing** — Enhanced GitLab CI/CD pipeline smoke tests with parallel test execution (8 tests running concurrently with fail-fast behavior), deeper verification (extraction fields, classification results, rule statistics), and added new tests: multi-document concurrent processing (Test 4), Test Studio evaluation with metrics validation (Test 7), agentic extraction with large table validation - 532 fund items (Test 8), single-document discovery (Test 9), and multi-document discovery (Test 10).
 
 ### Fixed
 
 - **Fixed** agentic extraction crash (`TypeError: unsupported format string passed to NoneType.__format__`) when table parsing stats contain `None` values for `avg_confidence` or `parse_success_rate`.
+
 - **Fixed** agentic extraction `map_table_to_schema` producing phantom empty rows from non-matching tables (e.g. account_summary rows prepended to transaction_details), causing list item ordering to be shifted by several positions.
+
 - **Error Analyzer model selection** — The agent was using the Chat Companion's model instead of its own configured model.
+
 - **Error Analyzer log processing** — Fixed early termination that stopped searching after the first Lambda function with errors; now searches all relevant log groups.
+
 - **Error Analyzer log truncation** — Fixed handling of long log messages to trim them rather than skip them entirely.
+
 - **Reprocess from Document Details** — Fixed config version not being passed when reprocessing a document from the Document Details page (showed "N/A" instead of the selected version).
+
 - **Analytics Agent date awareness** — Injected current UTC date/time into the analytics agent system prompt so the LLM can correctly handle relative-time queries (e.g., "show me today's documents", "what was processed this week").
 
 ## Templates
@@ -1783,7 +1797,9 @@ Hardening response to security review - Highlights:
   - `idp-cli run-inference` → `idp-cli process`
   - `idp-cli rerun-inference` → `idp-cli reprocess`
 - **SDK: `stack.delete()` now waits by default** — The `wait` parameter defaults to `True` (previously fire-and-forget). Pass `wait=False` to restore the old behavior.
+
 - **MCP: Renamed `docs/mcp-integration.md` to `docs/mcp-server.md`** for clarity.
+
 - **MCP: Renamed Lambda function `agentcore_analytics_processor` to `agentcore_mcp_handler`** to better reflect its role as the MCP protocol handler (not just analytics).
   - CloudFormation resource `AgentCoreAnalyticsLambdaFunction` → `AgentCoreMCPHandlerFunction`
   - CloudFormation resource `AgentCoreAnalyticsLambdaLogGroup` → `AgentCoreMCPHandlerLogGroup`
@@ -1791,17 +1807,29 @@ Hardening response to security review - Highlights:
   - Source directory: `src/lambda/agentcore_analytics_processor/` → `src/lambda/agentcore_mcp_handler/`
 
 - **Page images broken for document IDs containing parentheses** — Fixed issue where document page thumbnails and Visual Document Editor images failed to load (showing "Image load error") when the document ID contained parentheses (e.g., `lending_package(1).pdf`). Root cause: JavaScript's `encodeURIComponent()` does not encode `(`, `)`, `!`, `'`, `*` but AWS S3 SigV4 requires them to be percent-encoded in the canonical URI, causing signature mismatches. Added S3-safe URI encoding in `generate-s3-presigned-url.ts`.
+
 - **"View Rule Validation Summary" button not appearing in real-time** — Fixed two-part bug: (1) State machine `ResultPath` for rule validation steps wrote to `$.RuleValidationOrchestrationResult` instead of `$.Result`, so downstream steps lost the `rule_validation_result`. (2) `RuleValidationResultUri` was missing from `UPDATE_DOCUMENT` and `GET_DOCUMENT` GraphQL selection sets in `mutations.py`, so AppSync subscriptions never delivered the field to the UI. Button appeared only after page refresh.
+
 - **Page images broken for document IDs containing parentheses** — Fixed issue where document page thumbnails and Visual Document Editor images failed to load (showing "Image load error") when the document ID contained parentheses (e.g., `lending_package(1).pdf`). Root cause: JavaScript's `encodeURIComponent()` does not encode `(`, `)`, `!`, `'`, `*` but AWS S3 SigV4 requires them to be percent-encoded in the canonical URI, causing signature mismatches. Added S3-safe URI encoding in `generate-s3-presigned-url.ts`.
+
 - **"View Rule Validation Summary" button not appearing in real-time** — Fixed two-part bug: (1) State machine `ResultPath` for rule validation steps wrote to `$.RuleValidationOrchestrationResult` instead of `$.Result`, so downstream steps lost the `rule_validation_result`. (2) `RuleValidationResultUri` was missing from `UPDATE_DOCUMENT` and `GET_DOCUMENT` GraphQL selection sets in `mutations.py`, so AppSync subscriptions never delivered the field to the UI. Button appeared only after page refresh.
+
 - **Fillable PDF form fields missing from rendered page images** — Fixed bug where fillable PDF form fields (text inputs, checkboxes, radio buttons, dropdowns) were not rendered in page images, causing OCR and extraction to miss user-entered data. Two-part fix: (1) `PdfDocument.init_forms()` initializes the form rendering engine so PDFium can process form fields, and (2) `page.flatten()` merges form field appearances into page content before rendering — required because many fillable PDFs (especially government forms) lack pre-generated appearance streams. Applied in both Pattern 2 (`OcrService`) and Pattern 1 (`create_pdf_page_images`) PDF rendering pipelines. ([#240](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/240))
+
 - **CLI monitoring exits prematurely before documents start processing** — Fixed bug where `idp-cli process --monitor` would exit immediately after uploading documents, showing 0% completion even though documents were still queued. Root cause: The monitoring loop checked `all_complete` which returned `True` when no documents had completed or failed yet (0 == 0). Added 60-second grace period before allowing early exit, ensuring monitoring waits for documents to be picked up by the queue and start processing.
+
 - **Discovery subscription handler dropping errorMessage and other fields** — Fixed bug where the UI subscription handler did `{ ...oldJob, status: updatedJob.status }`, discarding all fields except status from real-time subscription updates. Error messages, discovered class names, and status messages were being sent by the backend but silently dropped by the UI. Now spreads all fields: `{ ...oldJob, ...updatedJob }`.
+
 - **Discovery processor S3 race condition causing NoSuchKey failures** — The discovery upload resolver sends the SQS message before the browser finishes uploading the file to S3 via presigned POST. Previously worked around with a hardcoded `time.sleep(30)`. Replaced with `_wait_for_s3_object()` that polls S3 with exponential backoff (2s initial, 10s max, 60s timeout), proceeding as soon as the file appears.
+
 - **CLI `--parameters` parsing for comma-delimited values** — Fixed `idp-cli deploy --parameters` to handle values containing commas (e.g., `ALBSubnetIds=subnet-a,subnet-b`). Previously the naive `split(",")` broke multi-value parameters. ([#245](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/245))
+
 - **GovCloud template: fix unresolved RBAC resource dependencies** — Added `AuthorGroup`, `ViewerGroup`, `GetMyProfileResolver`, and `UpdateUserResolver` to GovCloud removal lists so they are stripped alongside the `UserPool` they depend on.
+
 - **Document status and sections not updating in real-time during processing** — Fixed regression from RBAC commit where `updateDocumentStatus` subscription events (used during Map state steps: Extraction, Assessment, Rule Validation) were silently discarded because they lacked `InitialEventTime`/`QueuedTime` fields, causing `isDocumentInActiveRange` to reject them. Also fixed: stale sections/pages not clearing immediately on full reprocess, sections appearing duplicated or out of order during parallel Map execution (null-protection merge + client-side sort by page ID).
+
 - **Fix race condition in `idp-cli generate-manifest --test-set`** — Added `.uploading` marker file protocol to prevent the test set resolver from prematurely validating test sets while the CLI is still uploading baseline files ([#193](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/193)).
+
 - **Test Fixes** — Updated CLI test mocks to align with the new `IDPClient`-based implementation, fixing broken test fixtures that referenced removed internal imports.
 
 ### Templates
@@ -1955,18 +1983,27 @@ Hardening response to security review - Highlights:
   - **GitHub Feedback Integration**: Beta feature with direct link to GitHub Issues for user feedback
   - **Documentation**: New [capacity-planning.md](docs/capacity-planning.md) with comprehensive feature guide, calculation formulas, and safety buffer explanations
 - **React UI TypeScript Migration (Phases 1–3 — Complete)** — Completed full migration of the React UI codebase from JSX/JS to TSX/TS. Phases 1–2 added TypeScript tooling and migrated contexts, hooks, constants, and utilities. Phase 3 migrated all remaining 207 components, GraphQL operations, routes, modals, and entry points across 13 incremental sub-phases (211 files changed). Removed `prop-types` dependency; all runtime prop validation replaced with TypeScript interfaces. No behavioral or visual changes. ([#187](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/187), [#188](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/188), [#191](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/191), [#198](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/198))
+
 - **Configuration Version Management Commands for CLI and SDK** — Added `config-list`, `config-activate`, and `config-delete` CLI commands and corresponding `client.config.list()`, `client.config.activate()`, `client.config.delete()` SDK operations for programmatic configuration version management. Includes safety protections (default/active version deletion prevention, confirmation prompts, existence validation), `--force` flag for automation, and Rich table output for version listing.
+
 - **Added support for Claude Opus 4.6 model and Long Context (1M) variant**
+
 - **Added support for Claude Sonnet 4.6 model and Long Context (1M) variant**
+
 - **Included MCP tools `process`, `reprocess`, `status`, `search` for document processing**
+
 - **Added `process` and `reprocess` CLI commands for batch operations via command line**
+
 - **Added external mcp client example `examples/external-mcp-client`**
+
 - **Maintained `run-inference` and `rerun-inference` CLI commands with deprecation notices**
 
 ### Fixed
 
 - **Fixed DynamoDB 400KB item size limit blocking configs with 45+ document classes** — Configuration data is now gzip-compressed before storing to DynamoDB, achieving 37-95x compression ratios. Supports 3,000+ document classes within the 400KB limit. Fully backward compatible with existing deployments. ([#200](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/200), [#201](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/201))
+
 - **Fixed Processing Flow chart using active stack config instead of the document's actual config version** for determining disabled steps (assessment, summarization, etc.)
+
 - **Fixed `idp_sdk` pip install from GitHub missing subpackages** — Non-editable pip installs of `idp_sdk` from GitHub were missing `core/`, `models/`, and `operations/` subpackages, causing `ModuleNotFoundError`. Fixed by explicitly declaring all subpackages in `pyproject.toml`. ([#196](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/196))
 
 ### Templates
@@ -2632,10 +2669,15 @@ Hardening response to security review - Highlights:
 ### Fixed
 
 - **UI: Document Schema Editor Regex Fields Not Persisting** - Fixed issue where Document Name Regex and Page Content Regex fields were not being saved in configuration or restored after page refresh. Fixes #151
+
 - **Document Schema Builder Enum Support** - Fixed enum value handling in schema builder to properly support enumeration constraints for attribute definitions
+
 - **Agentic Extraction Parameter Passing** - Fixed temperature and top_p parameters now correctly passed to agentic extraction service, enabling proper model behavior control
+
 - **Document Schema Builder UI Labels** - Enhanced field labels and formats in document schema builder for improved clarity and user experience
+
 - **Retry Mechanism Improvements** - Enhanced retry logic for more reliable error handling and recovery across document processing workflows
+
 - **Type Safety Enhancements** - Improved type annotations and fixed undefined items handling to prevent runtime errors
 
 ### Templates
@@ -2804,8 +2846,11 @@ Hardening response to security review - Highlights:
 ### Fixed
 
 - **UI Few Shot Examples Display** - Fixed issue where few shot examples were not displaying correctly from configuration in the Web UI
+
 - **Re-enabled Regex Functionality** - Restored document name and page content regex functionality for Pattern-2 classification that was temporarily missing
+
 - **Pattern-2 ECR Enhanced Scanning Support** - Added required IAM permissions (inspector2:ListCoverage, inspector2:ListFindings) to Pattern2DockerBuildRole to support AWS accounts with Amazon Inspector Enhanced Scanning enabled. Also added KMS permissions (kms:Decrypt, kms:CreateGrant) for customer-managed encryption keys. This resolves AccessDenied errors and CodeBuild timeouts when deploying Pattern-2 in accounts with enhanced scanning enabled.
+
 - **Reporting Database Data Loss After Evaluation Refactoring - Fixes #121**
   - Fixed bug where metering data and document_section data stopped being written to the reporting database after evaluation was migrated from EventBridge to Step Functions workflow
 - **IDP CLI Deploy Command Parameter Preservation Bug**
@@ -3315,7 +3360,9 @@ Hardening response to security review - Highlights:
 ### Removed
 
 - **CloudFormation Parameters**: Removed `IsSummarizationEnabled` and `IsAssessmentEnabled` parameters from all pattern templates
+
 - **Related Conditions**: Removed parameter conditions and state machine definition substitutions for both features
+
 - **Conditional Logic**: Eliminated complex conditional logic from state machine definitions for summarization and assessment steps
 
 ### ⚠️ Breaking Changes
@@ -3333,9 +3380,13 @@ Hardening response to security review - Highlights:
 ### Fixed
 
 - **Fixed B615 "Unsafe Hugging Face Hub download without revision pinning" security finding in Pattern-3 fine-tuning module** - Added revision pinning with to prevent supply chain attacks and ensure reproducible deployments
+
 - **Fixed CloudWatch Log Group Missing Retention regression**
+
 - **Security: Cross-Site Scripting (XSS) Vulnerability in FileViewer Component** - Fixed high-risk XSS vulnerability in `src/ui/src/components/document-viewer/FileViewer.jsx` where `innerHTML` was used with user-controlled data
+
 - **Add permissions boundary support to new Lambda function roles introduced in previous releases**
+
 - **Fixed OutOfMemory Errors in Pattern-2 OCR Lambda for Large High-Resolution Documents**
   - **Root Cause**: Processing large PDFs with high-resolution images (7469×9623 pixels) caused memory spikes when 20 concurrent workers each held ~101MB images simultaneously, exceeding the 4GB Lambda memory limit
   - **Optimal Solution**: Refactored image extraction to render directly at target dimensions using PyMuPDF matrix transformations, completely eliminating oversized image creation
@@ -3349,8 +3400,11 @@ Hardening response to security review - Highlights:
 ### Added
 
 - **Chat with Document** now available at the bottom of the each Document Detail page.
+
 - **Anthropic Claude Opus 4.1** model available in configuration for all document processing steps
+
 - **Browser tab icon** now features a blue background with a white "IDP"
+
 - **Experimental new classification method** - multimodalPageBoundaryClassification - for detecting section boundaries during page level classification.
 
 ### Templates
@@ -3954,13 +4008,17 @@ The `idp_common_pkg` introduces a unified Document model approach for consistent
 #### Core Classes
 
 - **Document**: Central data model that tracks document state through the entire processing pipeline
+
 - **Page**: Represents individual document pages with OCR results and classification
+
 - **Section**: Represents logical document sections with classification and extraction results
 
 #### Service Classes
 
 - **OcrService**: Processes documents with AWS Textract or Amazon Bedrock and updates the Document with OCR results
+
 - **ClassificationService**: Classifies document pages/sections using Bedrock or SageMaker backends
+
 - **ExtractionService**: Extracts structured information from document sections using Bedrock
 
 ### Pattern Implementation Updates

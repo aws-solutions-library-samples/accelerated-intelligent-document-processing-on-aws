@@ -1059,6 +1059,15 @@ type TestSetDocumentsPage @aws_cognito_user_pools @aws_iam {
   # Annotator) and repairs stale state as a side effect, so it cannot go on a page
   # load. A control that must not act on a set still being written reads this.
   status: String
+  # Documents in the whole set matching `search`, not in this page — so a table
+  # can say "50 of 73 matching" instead of counting its own rows. `null` when no
+  # search was requested, which is not the same as `0`.
+  matchCount: Int
+  # True when the search stopped before the end of the set (see
+  # ``_SEARCH_SCAN_KEY_BUDGET`` in the resolver), which makes `matchCount` a lower
+  # bound rather than a count. A caller that reports `matchCount` as exact without
+  # reading this states a number the server did not claim.
+  searchTruncated: Boolean
 }
 
 type TestSetVersion @aws_cognito_user_pools @aws_iam {
@@ -2260,7 +2269,12 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   # Annotator included so the queue can render its documents; the resolver
   # enforces per-test-set scope on top of the group check.
-  getTestSetDocuments(testSetId: String!, limit: Int, nextToken: String, objectKey: String): TestSetDocumentsPage
+  # `objectKey` is an exact match, for a deep link to one document. `search` is a
+  # case-insensitive substring over the whole set's document names, for the table's
+  # search box: the box is paginated, so filtering the page the caller already holds
+  # would answer about 50 documents while appearing to answer about the set.
+  # `objectKey` wins if both are given.
+  getTestSetDocuments(testSetId: String!, limit: Int, nextToken: String, objectKey: String, search: String): TestSetDocumentsPage
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   getTestSetVersions(testSetId: String!): [TestSetVersion]
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])

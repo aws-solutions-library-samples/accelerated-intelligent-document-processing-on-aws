@@ -964,8 +964,8 @@ export const getTestRunStatus = /* GraphQL */ `
 ` as GeneratedQuery<GetTestRunStatusQueryVariables, GetTestRunStatusQuery>;
 
 export const getTestSetDocuments = /* GraphQL */ `
-  query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, $objectKey: String) {
-    getTestSetDocuments(testSetId: $testSetId, limit: $limit, nextToken: $nextToken, objectKey: $objectKey) {
+  query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, $objectKey: String, $search: String) {
+    getTestSetDocuments(testSetId: $testSetId, limit: $limit, nextToken: $nextToken, objectKey: $objectKey, search: $search) {
       documents {
         objectKey
         inputKey
@@ -987,6 +987,8 @@ export const getTestSetDocuments = /* GraphQL */ `
       totalCount
       activeLabelJobId
       status
+      matchCount
+      searchTruncated
     }
   }
 ` as GeneratedQuery<GetTestSetDocumentsQueryVariables, GetTestSetDocumentsQuery>;

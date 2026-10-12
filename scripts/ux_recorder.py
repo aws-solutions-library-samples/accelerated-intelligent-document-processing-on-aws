@@ -60,8 +60,16 @@ Usage (from the repo root; the debug Chrome from the skill must be running):
 
 Everything lands under ``scratch/ux-recordings/<stack>-<timestamp>/`` (gitignored;
 demos under ``demo-<title>-<timestamp>/``).
-Recordings of a live stack show real data; nothing is redacted. Polly receives
-only the narration text.
+Recordings of a live stack show real data, and nothing in the frames is redacted.
+A click on a form field, an editable region, a combobox or the Monaco editor is
+logged by the field's label rather than by what was typed in it. Any other click is
+logged by the page's own text, which can repeat what was typed or chosen (see
+``ux_recorder_cdp.py``), and ``render`` prints those labels in its click table. A
+click made while paused is logged with no label and no position, only that it
+happened and whether it hit anything interactive, which is what ``status`` counts;
+``render`` leaves it out of the video and the click table. Treat the session
+directory as at least as sensitive as the video. Polly receives only the narration
+text.
 """
 
 from __future__ import annotations
@@ -269,15 +277,20 @@ class Recorder:
             return
         if not isinstance(data, dict) or data.get("kind") != "click":
             return
-        self._record(
-            "click",
-            x=data.get("x"),
-            y=data.get("y"),
-            target=data.get("target"),
-            under=data.get("under"),
-            interactive=data.get("interactive"),
-            paused=True if self.paused else None,
-        )
+        off_target = None if data.get("interactive") else True
+        with self.lock:
+            if self.paused:
+                self._record("click", paused=True, off_target=off_target)
+                return
+            self._record(
+                "click",
+                x=data.get("x"),
+                y=data.get("y"),
+                target=data.get("target"),
+                under=data.get("under"),
+                interactive=data.get("interactive"),
+                off_target=off_target,
+            )
 
     def _record(self, kind: str, **fields: Any) -> dict[str, Any]:
         with self.lock:
@@ -319,9 +332,7 @@ class Recorder:
             "marks": sum(1 for e in self.events if e["type"] == "mark"),
             "clicks": sum(1 for e in self.events if e["type"] == "click"),
             "clicks_off_target": sum(
-                1
-                for e in self.events
-                if e["type"] == "click" and not e.get("interactive")
+                1 for e in self.events if e["type"] == "click" and e.get("off_target")
             ),
             "last_mark": last_mark.get("label") if last_mark else None,
             "page_url": self.meta.get("page_url"),
