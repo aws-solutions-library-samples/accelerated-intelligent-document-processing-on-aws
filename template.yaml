@@ -8317,16 +8317,6 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
-  # The gate could not mark a refused /Jobs file terminal, or could not hand the
-  # completed batch to JobTracker for zipping. Threshold zero, because this is
-  # the ONE silent-stall route the gate adds: both call sites deliberately
-  # swallow their exception (the refusal is already persisted, and raising would
-  # re-deliver the verdict, which then takes the duplicate path and returns
-  # early), so the batch keeps reporting IN_PROGRESS from
-  # api_handler.compute_job_status with nothing else reporting a fault. Recovery
-  # depends on a duplicate GuardDuty verdict that may never arrive. Every other
-  # metric here records a decision; this one records a decision that could not be
-  # written down, which is why it cannot be left to a rate threshold.
   # A refusing verdict reached a document that had already left the gate without
   # that refusal being recorded — so the file was processed with nothing having
   # decided it was safe. Threshold zero: one occurrence is one document through
@@ -8361,6 +8351,16 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # The gate could not mark a refused /Jobs file terminal, or could not hand the
+  # completed batch to JobTracker for zipping. Threshold zero, because this is
+  # the ONE silent-stall route the gate adds: both call sites deliberately
+  # swallow their exception (the refusal is already persisted, and raising would
+  # re-deliver the verdict, which then takes the duplicate path and returns
+  # early), so the batch keeps reporting IN_PROGRESS from
+  # api_handler.compute_job_status with nothing else reporting a fault. Recovery
+  # depends on a duplicate GuardDuty verdict that may never arrive. Every other
+  # metric here records a decision; this one records a decision that could not be
+  # written down, which is why it cannot be left to a rate threshold.
   MalwareScanJobFinalizeFailedAlarm:
     Condition: MalwareScanningEnabled
     Type: AWS::CloudWatch::Alarm

@@ -213,13 +213,13 @@ describe('DocumentsCommonHeader reprocess guard', () => {
   });
 
   it('is disabled while a document is still being scanned', () => {
-    // This test asserted the opposite, on the reasoning that MALWARE_SCANNING is
-    // not a refusal — true, and not the point. A held document has no verdict,
-    // and Reprocess does not wait for one: it builds a fresh QUEUED document and
-    // starts the workflow, so the file reaches OCR and Bedrock unscanned, during
-    // exactly the window the gate exists for. The arriving verdict then finds the
-    // row no longer MALWARE_SCANNING, fails its compare-and-set, and is read as
-    // an at-least-once duplicate — so a THREATS_FOUND is dropped at INFO.
+    // MALWARE_SCANNING is not a refusal, and is still blocked here. A held
+    // document has no verdict, and Reprocess does not wait for one: it builds a
+    // fresh QUEUED document and starts the workflow, so the file would reach OCR
+    // and Bedrock unscanned, during exactly the window the gate exists for. The
+    // arriving verdict would then find the row no longer MALWARE_SCANNING, fail
+    // its compare-and-set, and be read as an at-least-once duplicate — dropping
+    // a THREATS_FOUND at INFO.
     render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
     expect(reprocessButton()).toBeDisabled();
   });

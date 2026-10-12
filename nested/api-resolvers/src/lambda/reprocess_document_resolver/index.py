@@ -762,19 +762,18 @@ def handler(event, context):
 #: into OCR, page rendering and Bedrock, which is the one thing the gate exists to
 #: prevent.
 #:
-#: ⚠️ ``MALWARE_SCANNING`` is in this set, and it is the member whose absence was
-#: a hole rather than a nuance. A document held at the gate has no verdict yet,
-#: and reprocess does not wait for one: it would start the workflow immediately,
-#: so the file reaches OCR and Bedrock *unscanned* — defeating the gate during
-#: exactly the window the gate exists for. Worse, the verdict then arrives to find
-#: the row no longer ``MALWARE_SCANNING``, so the compare-and-set fails and the
-#: classifier reads it as an at-least-once duplicate: a ``THREATS_FOUND`` verdict
-#: discarded at INFO with a metric whose name says the opposite happened. (The
-#: second half of that is fixed independently in ``queue_sender`` — see
-#: ``_handle_verdict_condition_failure`` — because this refusal must not be the
-#: only thing standing between a detection and a silent drop.)
+#: ⚠️ ``MALWARE_SCANNING`` belongs in this set even though it is not a refusal.
+#: A document held at the gate has no verdict yet, and reprocess does not wait
+#: for one: it starts the workflow immediately, so the file would reach OCR and
+#: Bedrock *unscanned* — during exactly the window the gate exists for. The
+#: verdict would then arrive to find the row no longer ``MALWARE_SCANNING``, fail
+#: its compare-and-set, and be classified as an at-least-once duplicate, so a
+#: ``THREATS_FOUND`` would be discarded at INFO under a metric whose name says
+#: the opposite. ``queue_sender._handle_verdict_condition_failure`` guards that
+#: second half independently, because this refusal must not be the only thing
+#: standing between a detection and a silent drop.
 #:
-#: The refusal for this one is worded as transient, because it is: the verdict is
+#: Its refusal is worded as transient, because it is: the verdict is
 #: seconds-to-minutes away and reprocess works normally once it lands.
 #:
 #: Stated as the statuses that are REFUSED rather than the ones that are allowed,

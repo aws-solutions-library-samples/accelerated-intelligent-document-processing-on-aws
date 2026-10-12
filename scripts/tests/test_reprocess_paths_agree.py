@@ -118,10 +118,10 @@ def test_the_sdk_guard_is_actually_called():
     about. Asserted against the source because importing the module pulls in
     boto3 clients and a stack lookup."""
     source = RERUN.read_text(encoding="utf-8")
-    # ⚠️ The needle includes the assignment. Matching bare
+    # ⚠️ The needle includes the assignment deliberately. A bare
     # `_malware_gate_refusal(document)` also matches the function DEFINITION
-    # (`def _malware_gate_refusal(document):`), so this assertion passed with the
-    # call site deleted — found by mutating it away and watching it stay green.
+    # (`def _malware_gate_refusal(document):`), so it would be satisfied by the
+    # definition alone and this check would pass with no call site at all.
     needle = "refusal = _malware_gate_refusal(document)"
     assert needle in source, (
         "the SDK's refusal table is defined but never consulted in "
