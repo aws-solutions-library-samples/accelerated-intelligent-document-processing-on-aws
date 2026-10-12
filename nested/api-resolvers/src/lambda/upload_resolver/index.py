@@ -353,9 +353,10 @@ def resolve_destination(
         # again), and selecting a profile is the remedy -- so the message has to
         # carry it, since the detail that would explain it cannot be disclosed.
         raise PermissionError(
-            "Unauthorized: that destination is governed by a Configuration Profile "
-            "outside your allowed configuration scope. Select a Configuration "
-            "Profile you have access to, or upload to a different folder."
+            "Unauthorized: this upload would use a Configuration Profile outside "
+            "your allowed configuration scope -- either the one you selected, or "
+            "the one that governs this destination. Select a Configuration Profile "
+            "you have access to, or upload to a different folder."
         )
     if assignment.rejected:
         raise ValueError(assignment.reason)

@@ -280,6 +280,16 @@ came from the upload resolver is therefore worth reviewing against the documents
 arrived in the same window, which the `ConfigSource` and `ConfigMappingPrefix` fields on
 each tracking row make answerable.
 
+The **other** direction of the same window is closed rather than monitored, and the
+reason is worth knowing because it explains an upload refusal that looks unnecessary.
+If the upload resolver's read succeeds and the queue sender's fails, the document is
+assigned from its own upload metadata instead of from the mapping — so a profile the
+caller *named* becomes the one that applies, even where a mapping would have overridden
+it. A scope-restricted caller is therefore refused for naming a profile outside their
+scope **even when a mapping was going to win**, which is why such an upload gets a 403
+rather than silently having its choice overridden. Nothing is emitted for it, because
+nothing degraded: the refusal is the control working.
+
 `PrefixMappingUnresolvable` means a mapping names a Configuration **Profile** that has
 been deleted. The document still processes — under the profile its upload named, or the
 active one — and the log line names which mapping is stale.

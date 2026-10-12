@@ -945,6 +945,78 @@ def test_a_denial_for_a_governed_prefix_is_indistinguishable_from_an_ungoverned_
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("precedence", ["mapping", "metadata", "reject"])
+def test_a_requested_profile_is_scope_checked_even_when_a_mapping_overrides_it(
+    precedence,
+):
+    """The route a guard on the RESOLVED profile alone does not cover.
+
+    Under the default `mapping` precedence the caller's requested profile never
+    reaches `assignment.profile`, so a check on that value alone never asks about
+    it -- while the upload resolver deliberately leaves the request unrewritten, so
+    it is still stamped on the object. If the mapping read then fails OPEN at
+    ingest, rule 2 applies that stamp and the document processes under a profile
+    this caller was never checked against. Reached through a transient failure
+    rather than a missing check, which is why it has to be refused up front.
+    """
+    assignment = _resolve(
+        "tenant-a-docs/x.pdf",
+        metadata_profile="finance-prod",
+        mappings=[
+            _mapping("tenant-a-docs/", "tenant-a", metadataPrecedence=precedence)
+        ],
+        allowed_profiles=["tenant-a"],
+    )
+    assert assignment.scope_denied is True, (
+        "a scope-restricted caller named a profile outside their scope and was "
+        "allowed, because a mapping to an IN-scope profile won the precedence "
+        "contest and the request itself was never checked"
+    )
+    # And nothing about the mapping leaks on the way out.
+    assert assignment.profile is None
+    assert assignment.mapping_prefix is None
+
+
+@pytest.mark.unit
+def test_naming_an_in_scope_profile_under_a_mapping_is_still_allowed():
+    """The check above must not refuse the legitimate shape it sits next to."""
+    assignment = _resolve(
+        "tenant-a-docs/x.pdf",
+        metadata_profile="tenant-a",
+        mappings=[_mapping("tenant-a-docs/", "tenant-a")],
+        allowed_profiles=["tenant-a"],
+    )
+    assert assignment.scope_denied is False
+    assert assignment.profile == "tenant-a"
+
+
+@pytest.mark.unit
+def test_a_mapping_cannot_deny_an_internal_submission():
+    """Rule 1 says mappings are not consulted for an internal producer, so a
+    mapping must not be able to refuse one either -- including through the scope
+    guard, which would otherwise deny on a mapping the document had explicitly
+    bypassed. Unreachable today (the only caller passing a submission source
+    passes no scope), but it is the precedence contract rather than an accident.
+
+    The producer's OWN profile is still checked, which is why this uses an
+    in-scope companion: the exemption is from the mapping, not from the scope.
+    """
+    assignment = _resolve(
+        "tenant-a-docs/x.pdf",
+        metadata_profile="tenant-a",
+        submission_source="pii-anonymizer",
+        mappings=[_mapping("tenant-a-docs/", "finance-prod")],
+        allowed_profiles=["tenant-a"],
+    )
+    assert assignment.scope_denied is False, (
+        "a mapping the internal-producer branch never consults was still able to "
+        "deny the submission through the scope guard"
+    )
+    assert assignment.profile == "tenant-a"
+    assert assignment.source == SOURCE_INTERNAL_PRODUCER
+
+
+@pytest.mark.unit
 def test_an_in_scope_resolution_is_allowed_and_globs_are_honoured():
     assignment = _resolve(
         "teamA/x.pdf",

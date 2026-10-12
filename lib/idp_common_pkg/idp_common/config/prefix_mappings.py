@@ -612,12 +612,36 @@ def resolve_config_assignment(
     # which contradicts this module's own precedence contract.
     if allowed_profiles is not None:
         matched = None if submission_source else find_match(object_key, mappings or [])
-        disclosed = [
+        # Three profiles, not one, and the third is the one easiest to miss.
+        #
+        # `assignment.profile` is what this request resolves to, and the matched
+        # mapping's profile is what the answer would otherwise disclose. But a
+        # caller-supplied `metadata_profile` that a mapping OVERRODE never reaches
+        # `assignment.profile`, so checking only those two never asks about it --
+        # while the upload resolver deliberately leaves the requested value
+        # unrewritten, so it is still stamped on the object as
+        # `x-amz-meta-config-version`.
+        #
+        # ⚠️ That stamp is live. If the mapping read then fails OPEN at ingest --
+        # the documented `PrefixMappingLookupFailed` path -- rule 2 applies the
+        # metadata, and the document is processed under a profile this caller's
+        # scope was never checked against: the escalation this control exists to
+        # prevent, reached through a transient failure rather than through a
+        # missing check. A scope-restricted caller therefore may not NAME a profile
+        # outside their scope even where a mapping would have won, which is the
+        # fail-closed reading and costs a legitimate caller nothing: they are
+        # naming a configuration they are not entitled to either way.
+        requested = None if submission_source else metadata_profile
+        checked = [
             p
-            for p in (assignment.profile, matched["configProfile"] if matched else None)
+            for p in (
+                assignment.profile,
+                matched["configProfile"] if matched else None,
+                requested,
+            )
             if p
         ]
-        if any(not scope_allows(allowed_profiles, p) for p in disclosed):
+        if any(not scope_allows(allowed_profiles, p) for p in checked):
             return ConfigAssignment(
                 # ⚠️ **Every field is left at its default, and that is the whole
                 # point of returning a fresh object rather than editing a copy.**
