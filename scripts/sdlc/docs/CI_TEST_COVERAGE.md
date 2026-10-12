@@ -293,6 +293,9 @@ catches it.
   - **Slack** — the `integration_tests` job posts the result and the deploy
     summary to the team channel, but only on the **scheduled** run. Needs the
     masked `SLACK_WEBHOOK_URL` CI variable; absent, it logs one line and skips.
+    Three verdicts, not two: ✅ PASSED, ❌ FAILED, and **⚠️ UNVERIFIED** when the
+    monitor handed off before the pipeline reached a terminal state — the job
+    exits 0 in that case as well, so a green job is two different claims.
   - **Email** — the *Pipeline status emails* integration sends pipeline failures
     on the default branch to the team distribution list. ⚠️ It fires for **any**
     failed `develop` pipeline, not just the nightly: GitLab cannot filter
@@ -432,10 +435,10 @@ Notes:
 
 ## Test Execution Strategy
 
-### Parallel Execution (Steps 3-11, 13, 14)
-- **11 tests run concurrently** to minimize pipeline runtime (Step 13, the
-  read-only permissions-boundary check, and Step 14, the pipeline-hook test,
-  join the parallel pool)
+### Parallel Execution (Steps 3-11, 13, 14, 15)
+- **12 tests run concurrently** to minimize pipeline runtime (Step 13, the
+  read-only permissions-boundary check, Step 14, the pipeline-hook test, and
+  Step 15, the config-prefix-mapping routing check, join the parallel pool)
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
@@ -834,6 +837,40 @@ The persisted-marker assertion therefore checks the **postprocessing** marker,
 which is correctly the final value; `preprocessing` is proven to have run by its
 own `invoked` count.
 
+### Step 15: Config Prefix Mapping Routing ⚡ *Parallel*
+**What it tests**: that a [config prefix mapping](../../../docs/configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
+actually routes a document at ingest, across all three conflict modes, with and
+without an upload tag.
+- **Why it exists**: this is the one layer the offline suites structurally cannot
+  reach. The precedence rules are exhaustively covered as a pure function with no
+  AWS, and each Lambda's wiring is covered with the resolver stubbed out — but what
+  failed in practice was the **composition**: a mapping as the API stores it,
+  against the key an upload actually creates, resolved by the real ingest Lambda.
+  A deployment whose three mappings were saved without a trailing slash resolved
+  every upload by its own tag with no mapping applied, and every layer was
+  individually correct. On the document list that is indistinguishable from "the
+  mapping deferred to the upload", so the conflict mode looked broken when it had
+  never been reached.
+- **Verification** (six combinations, three mappings):
+  - `mapping` precedence: an untagged upload **and** a tagged one both resolve to
+    the mapping's profile, with `ConfigSource: prefix-mapping`
+  - `metadata` precedence: a tagged upload resolves to the tag's profile with
+    `ConfigSource: metadata`, and the mapping prefix is **still recorded** — the
+    field that distinguishes "a mapping deferred" from "no mapping matched"
+  - `reject`: a tagged upload is written `FAILED` with a reason on the row, and no
+    workflow starts
+- **Cost**: reads the tracking row rather than waiting for extraction, since
+  resolution happens in `queue_sender` when the object lands. That is what keeps
+  it cheap enough for the parallel pool.
+- **Isolation**: creates its own run-scoped Configuration Profile and three
+  run-scoped prefixes, and removes the mappings **before** the profile in its
+  `finally` — `deleteConfigVersion` refuses while a mapping still names the
+  profile, which is a guard the feature adds and this cleanup respects rather than
+  fights. Dropping the mappings first also stops a `reject` rule catching an
+  unrelated upload while the rest of the cleanup runs.
+
+---
+
 #### Validating Step 14 without a pipeline round-trip
 
 A pipeline round-trip is ~70 minutes, so debug the hook **outside** it. Deploy the
@@ -1157,7 +1194,34 @@ time-capped. The GitLab monitor that watches it has credentials capped at 1 hour
 keep watching to ~110 min. If a run outlives that, the monitor hands off
 gracefully — the pipeline finishes on its own and the authoritative result still
 arrives via the S3 summary + SNS email. A failure detected at handoff fails the
-GitLab job (it isn't masked by a green handoff).
+GitLab job (it isn't masked by a green handoff), and a handoff with no verdict
+yet posts to Slack as **⚠️ UNVERIFIED** rather than ✅ PASSED, because the job
+exits 0 either way and "12/12 green" and "nobody watched the end" must not read
+the same.
+
+⚠️ **The 1h cap governs `after_script` too, and it cannot refresh.** The
+runner's credential vendor mints the job's credentials *before* the job starts,
+and `after_script` — which fetches the CodeBuild logs, pulls the S3 summary and
+copies out the ZAP report — runs on those, not on the monitor's refreshed
+session: that refresh rebinds this process's boto3 clients only. `after_script`
+cannot re-assume the role itself either, since `sts:AssumeRole` needs live
+credentials to call and by then it has none. So the **monitor** writes each
+session it mints to `aws_after_script_creds.env` (at startup and on every
+50-minute refresh, so the file always has ≥10 min of life left) and
+`after_script` sources it before its first `aws` call. The file is `0600`, is
+excluded from the deployment zip, is not an artifact, is gitignored, and is
+removed as the job's last step.
+
+Without that handover, whether the logs were captured at all was decided by how
+long the deploy took, and the failure was mislabelled. The 2026-10-11 nightly
+(job 30872567) went terminal `Succeeded` at 59 min with 12/12 tests passing, ran
+62.6 min wall clock, and spent all 12 `list-action-executions` attempts
+re-sending an expired token; the three nights before it ran 58.4–58.5 min and
+resolved on the first attempt. Because the loop sent stderr to `/dev/null`, both
+the artifact and the Slack post said "after 12 attempts (~60s)", which reads as
+the eventual-consistency race the retry loop exists for. The loop now keeps its
+stderr, stops immediately on a credential error instead of retrying one, and
+names which of the two failures occurred.
 
 ---
 
@@ -1615,6 +1679,14 @@ but revisit:
 - [x] **Mid-run monitor credential refresh** — the monitor refreshes its
       1h-capped credentials to watch long runs to ~110 min. *(Needs a live >1h
       run to fully validate.)*
+- [x] **`after_script` credential handover** — the monitor persists each session
+      it mints so the log/summary capture no longer depends on the job
+      finishing inside its own 1h credential window. Pinned by
+      `scripts/sdlc/tests/test_after_script_log_capture.py` and
+      `test_credential_refresh.py`. *(Needs a live >1h run to fully validate.)*
+- [x] **Credential failures are not reported as eventual consistency** — the
+      CodeBuild-id resolve loop keeps its stderr, stops rather than retrying an
+      expired token, and the artifact names which failure it was.
 
 ---
 

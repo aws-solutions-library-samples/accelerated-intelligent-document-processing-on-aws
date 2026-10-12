@@ -34,7 +34,11 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 from aws_xray_sdk.core import patch_all, xray_recorder
-
+from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.prefix_mappings import (
+    PrefixMappingStore,
+    resolve_config_assignment,
+)
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 from idp_common.job_completion import finalize_job_file, parse_job_document_id
@@ -313,78 +317,171 @@ def _publish_alert(subject: str, message: str) -> None:
         logger.error(f"Failed to publish malware alert: {e}")
 
 
-def resolve_active_config_version(config_table):
-    """Return the name of the active Configuration Profile, or None.
 
-    Reads the active-profile pointer item first — one get_item, on a path that
-    runs for EVERY document queued. The scan below remains as the fallback for a
-    stack that has not activated a profile since the pointer was introduced.
 
-    The fallback paginates. DynamoDB applies the 1MB page size to the items
-    EXAMINED, not the items matching FilterExpression, so a single scan call
-    finds the active row only when it falls within the first page.
-    ProjectionExpression keeps that page as wide as possible: without it the
-    scan reads whole config bodies (tens to hundreds of KB each), so only a few
-    profiles fit per page and the active one is easily missed. Missing it here
-    silently processes the document under the DEFAULT config rather than the
-    active one — the same filtered-scan defect as issue #599.
+# Built once per container, not once per document. This runs on the hottest
+# ingest path there is, and the clients above (sqs/s3/cloudwatch) are already
+# module-scope for the same reason: a fresh boto3 resource per invocation discards
+# the connection pool and re-reads the credential chain. Memoized on the table
+# name rather than built at import, because the environment variable is read at
+# call time and an unset one must degrade rather than raise at cold start.
+_CONFIG_CLIENTS: dict = {}
+
+
+def _config_table(table_name):
+    key = ("table", table_name)
+    if key not in _CONFIG_CLIENTS:
+        _CONFIG_CLIENTS[key] = boto3.resource("dynamodb").Table(table_name)
+    return _CONFIG_CLIENTS[key]
+
+
+def _config_manager(table_name):
+    key = ("manager", table_name)
+    if key not in _CONFIG_CLIENTS:
+        _CONFIG_CLIENTS[key] = ConfigurationManager(table_name=table_name)
+    return _CONFIG_CLIENTS[key]
+
+
+def _emit(metric_name, dimensions=None):
+    """Fire-and-forget telemetry. Never let an emit affect document ingest.
+
+    Same shape as the ``StaleOutputPurgeFailed`` emit below: wrapped in its own
+    try/except, because a CloudWatch hiccup must not turn into a dropped document.
     """
     try:
-        pointer = config_table.get_item(
-            Key={"Configuration": "Config#__active"},
-            ProjectionExpression="ActiveVersion",
+        datum = {"MetricName": metric_name, "Value": 1, "Unit": "Count"}
+        if dimensions:
+            # Truncated to CloudWatch's 255-character dimension-value limit. A
+            # mapping prefix may be up to 512 bytes -- `_MAX_PREFIX_LEN`, refused
+            # above that at validation time -- so an untruncated value can exceed
+            # the limit and make put_metric_data raise InvalidParameterValue, which
+            # the bare `except` below would swallow, losing the metric silently for
+            # exactly the long-prefix deployments most likely to need it.
+            datum["Dimensions"] = [
+                {"Name": name, "Value": str(value)[:255]}
+                for name, value in dimensions.items()
+            ]
+        cloudwatch.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=[datum])
+    except Exception:
+        pass  # telemetry must not affect document ingest
+
+
+def resolve_configuration(document, object_key):
+    """Decide the Configuration Profile and revision for one incoming document.
+
+    This replaced an ``if not document.config_version:`` fallback that only filled in
+    the active profile when the object carried no metadata. A prefix mapping in the
+    default ``mapping`` conflict mode has to be able to *overwrite* a value
+    ``Document.from_s3_event`` already read, so there is now one resolution order in
+    one place rather than two that have to be kept consistent.
+
+    No caller identity is available here — this is an EventBridge S3 event, so there
+    is nobody to scope. The scope check for a caller-chosen destination lives in the
+    upload resolver, where the caller exists; see
+    ``nested/api-resolvers/src/lambda/upload_resolver/index.py``.
+
+    Returns the ``ConfigAssignment``. A ``rejected`` assignment means the caller must
+    record the document as FAILED and not enqueue it.
+    """
+    config_table_name = os.environ.get("CONFIG_TABLE")
+    if not config_table_name:
+        # Alarmed, not just logged, on the same grounds the upload resolver uses for
+        # the same condition: the variable is wired unconditionally by the template,
+        # so reaching this means the deployment is misconfigured, and the window it
+        # opens is the one `PrefixMappingLookupFailed` is alarmed for -- every
+        # 'Refuse the conflict' mapping bypassed and every mapped prefix treated as
+        # unmapped. Here it opens for EVERY document rather than for one upload,
+        # which makes this the path where invisibility costs most. Failing open is
+        # still right and is argued in the resolver's docstring; what was wrong was
+        # that the same justification had been written twice and acted on once.
+        logger.error(
+            "CONFIG_TABLE is not set; processing %s under the default "
+            "configuration, with every prefix mapping bypassed",
+            object_key,
+        )
+        _emit("PrefixMappingLookupFailed")
+        return None
+
+    table = _config_table(config_table_name)
+
+    mappings = []
+    try:
+        mappings = PrefixMappingStore(table).list()
+    except Exception as e:
+        # Fail OPEN, deliberately: falling through to today's behaviour is better
+        # than halting ingest for the whole deployment because a routing table could
+        # not be read. The cost is that a transient error bypasses every `reject`
+        # mapping, which is why this is alarmed rather than only logged. The
+        # reasoning is written out in idp_common.config.prefix_mappings.
+        logger.error(
+            "Could not read the configuration prefix mappings for %s (%s); "
+            "falling back to the upload's own configuration",
+            object_key,
+            e,
+        )
+        _emit("PrefixMappingLookupFailed")
+
+    manager = _config_manager(config_table_name)
+
+    def profile_exists(profile):
+        """Whether a profile head item is there, without reading its body.
+
+        ``ProjectionExpression`` matters on this path: a configuration body is tens
+        to hundreds of KB gzipped into the same item, and this question is asked once
+        per mapped document.
+        """
+        item = table.get_item(
+            Key={"Configuration": f"Config#{profile}"},
+            ProjectionExpression="Configuration",
         ).get("Item")
-        if pointer and pointer.get("ActiveVersion"):
-            return str(pointer["ActiveVersion"])
-    except Exception as e:  # noqa: BLE001
+        return bool(item)
+
+    assignment = resolve_config_assignment(
+        object_key,
+        metadata_profile=document.config_version,
+        metadata_revision=document.config_revision,
+        submission_source=document.submission_source,
+        mappings=mappings,
+        # ⚠️ `manager.resolve_active_version`, NOT this module's
+        # `resolve_active_config_version`. The two differ on one state and it is a
+        # state every fresh stack is in: with no profile marked active the local
+        # function answers `None` and the manager answers `"default"`, which the
+        # manager's own docstring calls normal rather than an error. The other three
+        # call sites inject the manager, so keeping the local one here made the
+        # REFERENCE answer the divergent one -- the upload resolver and the dry run
+        # would resolve `default` and scope-check it, while ingest resolved no
+        # profile and skipped the guard, so the preview disagreed with what actually
+        # happened. It also made `_active`'s claim that the revision is pinned at
+        # ingest false on such a stack, since a `None` profile has no revision to
+        # resolve. The end state is unchanged either way, because `queue_processor`
+        # already backfills an unset version with the same call; what changes is
+        # that all four sites now answer one question the same way.
+        active_profile=manager.resolve_active_version,
+        published_revision=manager.resolve_published_revision,
+        profile_exists=profile_exists,
+    )
+
+    logger.info("Configuration for %s: %s", object_key, assignment.reason)
+    if assignment.unresolvable:
+        _emit("PrefixMappingUnresolvable")
+        logger.warning("Stale prefix mapping for %s: %s", object_key, assignment.reason)
+    if assignment.rejected:
+        _emit("PrefixMappingRejected")
+        logger.warning("Refusing %s: %s", object_key, assignment.reason)
+        return assignment
+    if assignment.mapping_prefix:
+        _emit("PrefixMappingApplied", {"Prefix": assignment.mapping_prefix})
+    if assignment.conflict:
+        _emit("PrefixMappingConflict", {"Winner": assignment.source})
         logger.warning(
-            f"Could not read the active-profile pointer ({e}); scanning instead"
+            "Configuration conflict for %s: %s", object_key, assignment.reason
         )
 
-    scan_kwargs = {
-        "FilterExpression": (
-            "begins_with(Configuration, :config_prefix) AND IsActive = :active"
-        ),
-        "ExpressionAttributeValues": {
-            ":config_prefix": "Config#",
-            ":active": True,
-        },
-        "ProjectionExpression": "Configuration",
-    }
-    while True:
-        response = config_table.scan(**scan_kwargs)
-        for item in response.get("Items", []):
-            # Extract version from Config#v1 format
-            config_key = item["Configuration"]
-            if "#" in config_key:
-                return config_key.split("#", 1)[1]
-            return None
-        last_key = response.get("LastEvaluatedKey")
-        if not last_key:
-            return None
-        scan_kwargs["ExclusiveStartKey"] = last_key
-
-
-def _resolve_config_version(document, object_key):
-    """Fill in the active Configuration Profile when the document names none."""
-    if document.config_version:
-        return
-    try:
-        config_table = boto3.resource("dynamodb").Table(os.environ["CONFIG_TABLE"])
-        document.config_version = resolve_active_config_version(config_table)
-        if document.config_version:
-            logger.info(
-                f"Using active config version {document.config_version} "
-                f"for {object_key}"
-            )
-        else:
-            logger.warning(
-                f"No active config version found for {object_key} after a "
-                "full scan; it will be processed under the default config"
-            )
-    except Exception as e:
-        logger.warning(f"Could not retrieve active config version: {e}")
-        document.config_version = None
+    document.config_version = assignment.profile
+    document.config_revision = assignment.revision
+    document.config_source = assignment.source
+    document.config_mapping_prefix = assignment.mapping_prefix
+    return assignment
 
 
 def _send_to_queue(document, object_key, event_type="DocumentQueued"):
@@ -515,26 +612,63 @@ def handle_object_created(event):
     if output_bucket == "":
         raise Exception("OUTPUT_BUCKET environment variable not set")
 
-    _purge_stale_outputs(output_bucket, object_key)
-
-    # Create document object - config version will be read from S3 metadata automatically
+    # Create document object. `from_s3_event` reads the object's `config-version` /
+    # `config-revision` / `submission-source` user metadata.
     current_time = datetime.now(timezone.utc).isoformat()
     document = Document.from_s3_event(event, output_bucket)
+    document.queued_time = current_time
+
+    # Resolve the configuration BEFORE the purge below. A prefix mapping in `reject`
+    # conflict mode refuses the document, and the purge is destructive — doing it
+    # first would delete the previous run's OCR output for this key on behalf of a
+    # document that is never going to be processed.
+    #
+    # It also runs before the malware gate's hold, for a second reason: a refused
+    # document must not be parked at MALWARE_SCANNING waiting for a verdict that
+    # will decide nothing. Config refusal is terminal, and cheap to establish.
+    try:
+        assignment = resolve_configuration(document, object_key)
+    except Exception as e:
+        # Fail open for the same reason the lookup does: a configuration-resolution
+        # fault must not drop a document. Downstream steps resolve it themselves.
+        logger.error(
+            "Could not resolve a configuration for %s (%s); continuing unpinned",
+            object_key,
+            e,
+            exc_info=True,
+        )
+        assignment = None
+
+    if assignment is not None and assignment.rejected:
+        # Record the refusal so it is visible in the UI, and stop. Deliberately NOT
+        # a silent drop: an operator cannot act on a document that never appeared,
+        # and the person who uploaded it cannot tell a refusal from a lost file.
+        document.status = Status.FAILED
+        document.config_assignment_error = assignment.reason
+        document.config_source = assignment.source
+        document.config_mapping_prefix = assignment.mapping_prefix
+        document_service.create_document(document, expires_after=_expiry_timestamp())
+        logger.warning("Refused %s at ingest: %s", object_key, assignment.reason)
+        return {
+            "statusCode": 200,
+            "detail": detail,
+            "document_id": document.id,
+            "refused": "config_prefix_mapping_conflict",
+        }
+
+    _purge_stale_outputs(output_bucket, object_key)
+
     # Held at the gate, or queued immediately when scanning is off. The two
     # branches differ only here and in whether SQS is called below, which is what
     # keeps a DISABLED deployment on exactly the path it was on before.
     document.status = (
         Status.MALWARE_SCANNING if MALWARE_SCANNING_ENABLED else Status.QUEUED
     )
-    document.queued_time = current_time
     if MALWARE_SCANNING_ENABLED:
         # Record WHICH upload the gate is now waiting on. A re-upload of the same
         # key overwrites this, so the earlier upload's verdict no longer satisfies
         # the gate's compare-and-set and cannot admit the newer bytes.
         document.malware_scan_version_id = object_version_of(detail.get("object") or {})
-
-    # If no config version found in metadata or filename, get active config version
-    _resolve_config_version(document, object_key)
 
     # Capture X-Ray trace ID for error analysis
     current_segment = xray_recorder.current_segment()
@@ -636,7 +770,7 @@ def handle_scan_result(event):
     #     the X-Ray trace id the upload captured is lost.
     #
     # So: build the document exactly as the upload path does — same loader, same
-    # S3 metadata read, same active-profile fallback — and then overlay the few
+    # S3 metadata read, same configuration resolution — and then overlay the few
     # things only the row knows.
     document = Document.from_s3_event(
         {
@@ -645,7 +779,26 @@ def handle_scan_result(event):
         },
         output_bucket,
     )
-    _resolve_config_version(document, object_key)
+    # Same resolver the upload path uses, so a prefix-mapped profile survives the
+    # gate. ⚠️ A `rejected` assignment is NOT acted on here, and that is
+    # deliberate: the upload path already refused such a document as FAILED
+    # before the gate could hold it, so a rejection reaching this point means the
+    # mapping changed while the scan was in flight. Re-refusing would overwrite
+    # the malware verdict — the stronger statement about this file — with a
+    # routing complaint, and the document is terminal either way. The admission
+    # below is what must not happen, and it cannot: a rejected assignment leaves
+    # `config_version` unpinned, not the status QUEUED.
+    try:
+        resolve_configuration(document, object_key)
+    except Exception as e:  # noqa: BLE001
+        # Fail open, matching the upload path: a configuration-resolution fault
+        # must not strand a document that already has a verdict.
+        logger.error(
+            "Could not resolve a configuration for %s (%s); continuing unpinned",
+            object_key,
+            e,
+            exc_info=True,
+        )
 
     existing = document_service.get_document(object_key)
     if existing is None:

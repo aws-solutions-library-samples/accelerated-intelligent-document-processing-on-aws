@@ -56,6 +56,9 @@ interface DocumentApiItem {
   MalwareScanThreat?: string;
   MalwareScanReasons?: string[];
   MalwareScanTime?: string;
+  ConfigSource?: string;
+  ConfigMappingPrefix?: string;
+  ConfigAssignmentError?: string;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -100,6 +103,9 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       HITLReviewURL: hitlReviewURL,
       ConfigVersion: configVersion,
       ConfigRevision: configRevision,
+      ConfigSource: configSource,
+      ConfigMappingPrefix: configMappingPrefix,
+      ConfigAssignmentError: configAssignmentError,
     } = item;
 
     // Extract HITL sections arrays
@@ -196,6 +202,9 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       malwareScanThreat: item.MalwareScanThreat,
       malwareScanReasons: item.MalwareScanReasons || [],
       malwareScanTime: item.MalwareScanTime,
+      configSource,
+      configMappingPrefix,
+      configAssignmentError,
     };
 
     return mapping;

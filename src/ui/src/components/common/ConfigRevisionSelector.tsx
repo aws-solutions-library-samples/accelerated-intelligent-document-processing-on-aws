@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { FormField, Select, SelectProps, StatusIndicator } from '@cloudscape-design/components';
 import useConfigProfileRevisions from '../../hooks/use-config-profile-revisions';
 
@@ -41,8 +41,25 @@ const ConfigRevisionSelector = ({
     if (profileName) loadRevisions(profileName);
   }, [profileName, loadRevisions]);
 
-  // Changing profile invalidates any revision chosen under the previous one.
+  /**
+   * Changing profile invalidates any revision chosen under the previous one: a
+   * revision number only means something inside one profile, so r5 of `lending`
+   * is unrelated to r5 of `claims`.
+   *
+   * ⚠️ The guard is the load-bearing part. A bare
+   * `useEffect(() => onChange(null), [profileName])` also fires on **mount**,
+   * which is not a change — and a caller that mounts this with a profile and a
+   * revision already chosen (an edit form populated from a stored record) had
+   * its stored revision wiped before the user touched anything. Where the write
+   * path is a full replace, as `putConfigPrefixMapping` is, editing an unrelated
+   * field then silently unpinned the revision. So the previous value is held in
+   * a ref seeded with the mount value, and the reset fires only on a genuine
+   * transition.
+   */
+  const previousProfile = useRef<string | null | undefined>(profileName);
   useEffect(() => {
+    if (previousProfile.current === profileName) return;
+    previousProfile.current = profileName;
     onChange(null);
   }, [profileName]);
 

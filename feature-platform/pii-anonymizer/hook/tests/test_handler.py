@@ -110,7 +110,17 @@ def test_stop_mode_halts_and_writes_copy(monkeypatch):
     assert out["companionConfigVersion"] == "base__pii_target"
     assert copies["Bucket"] == "input-bkt"
     assert copies["Key"] == "foo(REDACTED).pdf"
-    assert copies["Metadata"] == {"config-version": "base__pii_target"}
+    # `submission-source` is what exempts this copy from config prefix mappings
+    # (idp_common.config.prefix_mappings). It is asserted here, in the same place as
+    # the companion version, because the copy lands BESIDE the original: without it,
+    # a mapping on the original's prefix governs the copy too, and a mapping in
+    # `reject` mode refuses it — after which this mode's halt=true has already told
+    # the host to delete the original. That combination loses the document outright,
+    # so the exemption is a correctness property of this write and not a nicety.
+    assert copies["Metadata"] == {
+        "config-version": "base__pii_target",
+        "submission-source": "pii-anonymizer",
+    }
 
 
 def test_continue_mode_does_not_halt(monkeypatch):

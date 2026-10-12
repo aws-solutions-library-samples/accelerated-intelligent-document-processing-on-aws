@@ -1164,6 +1164,42 @@ def test_canonical_importers_carry_an_idp_common_layer():
     )
 
 
+def test_vendoring_directories_carry_no_idp_common_layer():
+    """The other direction: a committed copy must not sit beside the layer.
+
+    ``test_canonical_importers_carry_an_idp_common_layer`` above refuses an import
+    the function cannot satisfy. This refuses the opposite state — a function that
+    carries the layer *and* a committed ``log_sanitizer.py`` it imports as a bare
+    sibling. That leaves two importable modules of the same name with resolution
+    decided by ``sys.path`` order, and the sync script's own premise ("the functions
+    listed below deliberately carry no Lambda layer, so they cannot import
+    idp_common at runtime either") stops being true of that directory, so the copy
+    is being kept in step for no reason.
+
+    ``scripts/tests/test_s3_targets_vendored.py`` already calls exactly this
+    combination a defect for its own module, in
+    ``test_the_split_matches_which_functions_carry_the_layer``. **The two gates have
+    to agree.** With only one direction asserted, a function that both vendors a
+    copy *and* carries the layer satisfies the drift gate — the copy is byte
+    identical, so nothing is drifting — while which of the two modules actually
+    loads depends on ``sys.path`` order. That is the state this direction forbids,
+    and the one a function reaches the moment it is given the layer for some
+    unrelated reason and nobody notices the copy beside it.
+    """
+    layers = _layers_by_code_dir()
+    broken = []
+    for directory in _lambda_dirs():
+        if not _imports_vendored_sanitizer(directory):
+            continue
+        if layers.get(directory):
+            broken.append(_label(directory))
+    assert not broken, (
+        f"These functions carry an IDPCommon layer AND a committed {VENDORED_NAME} "
+        f"they import as a bare sibling — two importable modules of the same name. "
+        f"Import {CANONICAL_IMPORT} and delete the copy: {sorted(broken)}"
+    )
+
+
 def test_every_resolver_directory_is_found_in_a_template():
     """Every api-resolver directory maps to a declared function.
 
