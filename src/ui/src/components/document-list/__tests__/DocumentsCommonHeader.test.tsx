@@ -212,11 +212,27 @@ describe('DocumentsCommonHeader reprocess guard', () => {
     expect(reprocessButton()).toBeDisabled();
   });
 
-  it('stays enabled while a document is still being scanned', () => {
-    // MALWARE_SCANNING is not a refusal: the verdict is still coming, and the
-    // document has not been rejected.
+  it('is disabled while a document is still being scanned', () => {
+    // This test asserted the opposite, on the reasoning that MALWARE_SCANNING is
+    // not a refusal — true, and not the point. A held document has no verdict,
+    // and Reprocess does not wait for one: it builds a fresh QUEUED document and
+    // starts the workflow, so the file reaches OCR and Bedrock unscanned, during
+    // exactly the window the gate exists for. The arriving verdict then finds the
+    // row no longer MALWARE_SCANNING, fails its compare-and-set, and is read as
+    // an at-least-once duplicate — so a THREATS_FOUND is dropped at INFO.
     render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
-    expect(reprocessButton()).not.toBeDisabled();
+    expect(reprocessButton()).toBeDisabled();
+  });
+
+  it('says a scanning document is waiting, not refused', () => {
+    // The two blocked cases need different wording: this one clears by itself,
+    // whereas a refusal needs the file deleted or replaced. Telling someone to
+    // delete a file that becomes reprocessable in two minutes is how a tooltip
+    // stops being read.
+    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
+    const tooltip = reprocessButton().closest('span[title]');
+    expect(tooltip?.getAttribute('title')).toContain('still being scanned');
+    expect(tooltip?.getAttribute('title')).not.toContain('refused by malware scanning');
   });
 
   it('explains why, rather than just going grey', () => {

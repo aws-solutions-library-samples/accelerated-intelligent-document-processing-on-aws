@@ -11,13 +11,17 @@ registers is accepted by the service, rejected by DynamoDB as a
 necessarily wraps it in ``except`` to handle the condition not holding, and so
 reads a call that never ran as a condition that failed.
 
-That shipped once, on the gate's revert-after-SQS-failure path. The consequence
-was a document left ``QUEUED`` with nothing in the queue and no route back,
-because the retried verdict's own condition wants ``MALWARE_SCANNING`` and reads
-``QUEUED`` as a duplicate delivery. The unit test covering that branch asserted
-the condition *string* against a mocked ``document_service``, so it pinned the
-broken value rather than catching it — which is why this check reads the gate's
-**source** and covers every call site instead of the ones somebody remembered.
+On the revert-after-SQS-failure path the cost of that is a document left
+``QUEUED`` with nothing in the queue and no route back, because the retried
+verdict's own condition wants ``MALWARE_SCANNING`` and reads ``QUEUED`` as a
+duplicate delivery.
+
+⚠️ **Asserting the condition *string* does not catch it.** A test that compares
+the expression against an expected literal, with ``document_service`` mocked,
+passes on a condition DynamoDB would reject — it pins the text and proves nothing
+about whether the write can run. That is why this check reads the gate's
+**source** and covers every call site rather than the ones somebody remembered to
+assert on.
 
 The companion guard lives in the service itself
 (``TestAConditionCannotReferenceAnUnregisteredName`` in

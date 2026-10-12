@@ -762,6 +762,21 @@ def handler(event, context):
 #: into OCR, page rendering and Bedrock, which is the one thing the gate exists to
 #: prevent.
 #:
+#: ⚠️ ``MALWARE_SCANNING`` is in this set, and it is the member whose absence was
+#: a hole rather than a nuance. A document held at the gate has no verdict yet,
+#: and reprocess does not wait for one: it would start the workflow immediately,
+#: so the file reaches OCR and Bedrock *unscanned* — defeating the gate during
+#: exactly the window the gate exists for. Worse, the verdict then arrives to find
+#: the row no longer ``MALWARE_SCANNING``, so the compare-and-set fails and the
+#: classifier reads it as an at-least-once duplicate: a ``THREATS_FOUND`` verdict
+#: discarded at INFO with a metric whose name says the opposite happened. (The
+#: second half of that is fixed independently in ``queue_sender`` — see
+#: ``_handle_verdict_condition_failure`` — because this refusal must not be the
+#: only thing standing between a detection and a silent drop.)
+#:
+#: The refusal for this one is worded as transient, because it is: the verdict is
+#: seconds-to-minutes away and reprocess works normally once it lands.
+#:
 #: Stated as the statuses that are REFUSED rather than the ones that are allowed,
 #: unlike ``process_changes_resolver._EDITABLE_STATUSES``, and the difference is
 #: deliberate: reprocess is legitimate from *most* statuses (that is what makes it
@@ -773,6 +788,7 @@ def handler(event, context):
 #: ``Status`` rather than restating it.
 _REPROCESS_REFUSED_STATUSES = frozenset(
     {
+        Status.MALWARE_SCANNING.value,
         Status.QUARANTINED.value,
         Status.MALWARE_SCAN_FAILED.value,
     }
@@ -806,6 +822,17 @@ def _refuse_if_refused_by_the_malware_gate(object_key):
     if document is None:
         return
     status = getattr(document.status, "value", document.status)
+    if status == Status.MALWARE_SCANNING.value:
+        # Worded as a wait rather than a refusal, because that is what it is: no
+        # verdict has arrived yet, and reprocess works normally once one does.
+        # Reprocessing now would start the workflow immediately and push the file
+        # into OCR and Bedrock with nothing having decided it is safe.
+        raise ValueError(
+            f"Document {object_key} is still being scanned for malware. "
+            f"Reprocess is available once the scan verdict arrives — usually "
+            f"within a few minutes. Reprocessing now would process the file "
+            f"before anything has decided whether it is safe."
+        )
     if status in _REPROCESS_REFUSED_STATUSES:
         raise ValueError(
             f"Document {object_key} was refused at the malware-scanning gate "

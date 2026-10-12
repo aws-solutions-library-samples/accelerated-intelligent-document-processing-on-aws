@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 from aws_xray_sdk.core import patch_all, xray_recorder
+
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
     PrefixMappingStore,
@@ -125,6 +126,13 @@ METRIC_SCAN_UNSCANNABLE_ALLOWED = "MalwareScanUnscannableAllowed"
 METRIC_SCAN_VERDICT_BEFORE_INGEST = "MalwareScanVerdictBeforeIngest"
 METRIC_SCAN_VERDICT_DUPLICATE = "MalwareScanVerdictDuplicate"
 METRIC_SCAN_VERDICT_SUPERSEDED = "MalwareScanVerdictSuperseded"
+#: A refusing verdict that reached a row which had already left MALWARE_SCANNING
+#: without this refusal being recorded. Distinct from
+#: ``MalwareScanVerdictDuplicate`` on purpose: a duplicate is routine
+#: at-least-once redelivery and needs nobody's attention, whereas this means a
+#: document left the gate with no verdict and was processed unscanned. Counting
+#: the two together is what made the original bug silent.
+METRIC_SCAN_VERDICT_UNAPPLIED_REFUSAL = "MalwareScanVerdictUnappliedRefusal"
 METRIC_SCAN_JOB_FINALIZE_FAILED = "MalwareScanJobFinalizeFailed"
 
 #: The #719 stale-output purge failure. Not a malware metric, but it is emitted
@@ -170,19 +178,48 @@ def object_version_of(event_object: dict) -> str:
     should never engage in practice — but a document that cannot be
     discriminated at all would be admitted by any verdict, so there is no safe
     "unknown" value.
+
+    ⚠️ **The value carries its KIND as a prefix** (``v:`` for a version id,
+    ``e:`` for an ETag), and that is not cosmetic. The upload path reads this
+    from the S3 event and the verdict path from GuardDuty's, and the two are
+    independent producers: if one supplies a version id while the other supplies
+    only an ETag, both values are non-empty and unequal. Without the prefix that
+    is indistinguishable from a genuine same-key re-upload, so the verdict is
+    discarded as superseded and the document waits for ever — not as a race, but
+    deterministically, for *every* document, with the metric blaming re-uploads,
+    which is the one explanation that stops an operator looking. With the prefix
+    the caller can see that the two sides are not comparable and fall back to the
+    status clause alone, which is what it already does when one side is absent.
     """
 
     def _real(value):
         value = str(value or "").strip()
         return "" if value in ("", "null") else value
 
-    return (
-        _real(event_object.get("version-id"))
-        or _real(event_object.get("versionId"))
-        or _real(event_object.get("etag"))
-        or _real(event_object.get("eTag"))
-        or ""
+    version = _real(event_object.get("version-id")) or _real(
+        event_object.get("versionId")
     )
+    if version:
+        return f"v:{version}"
+    etag = _real(event_object.get("etag")) or _real(event_object.get("eTag"))
+    if etag:
+        # Quoting differs between producers; S3 wraps an ETag in literal quotes
+        # in some surfaces and not others, and that difference alone would read
+        # as a different object.
+        return f"e:{etag.strip('"')}"
+    return ""
+
+
+def version_kinds_are_comparable(left: str, right: str) -> bool:
+    """Whether two discriminators describe the same KIND of identifier.
+
+    Both empty is not comparable either — there is nothing to compare — and the
+    caller treats that the same way: drop the version clause rather than pin the
+    condition on an equality that can never hold.
+    """
+    if not left or not right:
+        return False
+    return left.split(":", 1)[0] == right.split(":", 1)[0]
 
 
 class ScanVerdictBeforeIngestError(Exception):
@@ -315,8 +352,6 @@ def _publish_alert(subject: str, message: str) -> None:
         sns.publish(TopicArn=ALERTS_TOPIC_ARN, Subject=subject[:100], Message=message)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to publish malware alert: {e}")
-
-
 
 
 # Built once per container, not once per document. This runs on the hottest
@@ -694,6 +729,22 @@ def handle_object_created(event):
             f"Holding {object_key} at the malware gate (mode={MALWARE_SCANNING_MODE})"
         )
         _put_metric(METRIC_SCAN_HELD)
+        # ⚠️ A ZERO for the counterpart series, published here and nowhere else.
+        #
+        # `MalwareScanNoVerdictsAlarm` is metric math over held-vs-applied, and
+        # `FILL` fills gaps BETWEEN datapoints — it cannot fill a series that has
+        # no datapoints at all. The state the alarm exists for is GuardDuty never
+        # answering, which is exactly when `MalwareScanVerdictApplied` is never
+        # published, so the expression would evaluate over an empty series and the
+        # alarm would sit at OK with `TreatMissingData: notBreaching`: silent in
+        # the one condition it was built for.
+        #
+        # Emitting 0 whenever a document is held makes the series exist as soon as
+        # there is anything to be held up, which is the precondition for the
+        # comparison to mean anything. It does not disturb the arithmetic — the
+        # alarm tests `applied < 1`, and a zero datapoint satisfies that just as a
+        # gap was meant to.
+        _put_metric(METRIC_SCAN_VERDICT_APPLIED, value=0.0)
         return {
             "statusCode": 200,
             "detail": detail,
@@ -888,7 +939,7 @@ def handle_scan_result(event):
     # failure to leave on the floor.
     condition = "attribute_exists(PK) AND #ObjectStatus = :scanning"
     stored_version = (existing.malware_scan_version_id or "") if existing else ""
-    if verdict_version and stored_version:
+    if version_kinds_are_comparable(verdict_version, stored_version):
         condition += " AND #MalwareScanVersionId = :verdict_version"
         extra_attributes[":verdict_version"] = verdict_version
         # SET as well as compared: an expression attribute NAME has to be
@@ -906,8 +957,11 @@ def handle_scan_result(event):
         #     on the input bucket, so it needs that to have been changed.
         #   * GATE_ONLY against an externally managed plan whose events omit both
         #     `versionId` and `eTag` from `s3ObjectDetails`.
-        #   * The ETag on one side and the version id on the other, where the two
-        #     describe the same object but are not comparable as strings.
+        #   * A KIND mismatch — a version id on one side and an ETag on the other.
+        #     `object_version_of` prefixes the kind precisely so this lands here
+        #     rather than in the superseded branch below, where it would be read
+        #     as a same-key re-upload and strand every document in the deployment
+        #     while the metric blamed users for replacing files.
         #
         # Reported rather than refused, because refusing would strand the
         # document at MALWARE_SCANNING with no verdict ever applicable, which is
@@ -1042,6 +1096,25 @@ def handle_scan_result(event):
     }
 
 
+def _verdict_attributes(document):
+    """The verdict attributes to persist, read off the document.
+
+    Only the attributes — no ``:``-prefixed condition values — because the one
+    caller writes unconditionally. Omits an unset field rather than writing an
+    empty one, matching the conditional path above.
+    """
+    attributes = {
+        "MalwareScanStatus": document.malware_scan_status,
+        "MalwareScanResult": document.malware_scan_result,
+        "MalwareScanTime": document.malware_scan_time,
+    }
+    if document.malware_scan_threat:
+        attributes["MalwareScanThreat"] = document.malware_scan_threat
+    if document.malware_scan_reasons:
+        attributes["MalwareScanReasons"] = document.malware_scan_reasons
+    return {k: v for k, v in attributes.items() if v}
+
+
 def _handle_verdict_condition_failure(
     document, object_key, new_status, reason, verdict_version
 ):
@@ -1072,7 +1145,11 @@ def _handle_verdict_condition_failure(
     # bucket, and applying it would admit or refuse the wrong ones. The document
     # keeps waiting for the verdict belonging to the version actually stored, and
     # the unapplied-verdict alarm covers the case where that never arrives.
-    if current == Status.MALWARE_SCANNING.value and stored_version != verdict_version:
+    if (
+        current == Status.MALWARE_SCANNING.value
+        and version_kinds_are_comparable(verdict_version, stored_version)
+        and stored_version != verdict_version
+    ):
         logger.warning(
             "Superseded malware verdict for %s: it describes version %r but the "
             "document is now waiting on version %r (the key was re-uploaded). "
@@ -1087,6 +1164,67 @@ def _handle_verdict_condition_failure(
             "document_id": document.id,
             "malware_verdict": reason,
             "superseded": True,
+        }
+
+    # ⚠️ UNAPPLIED REFUSAL: the row left MALWARE_SCANNING *without* this refusal
+    # having been recorded. That is not a duplicate, and reading it as one is how
+    # a THREATS_FOUND verdict gets dropped at INFO level with a metric whose name
+    # says the opposite happened.
+    #
+    # The reachable route was Reprocess during the scan window, which built a
+    # fresh QUEUED document and started the workflow; that is now refused in the
+    # reprocess resolver. This branch exists anyway, because the refusal there
+    # must not be the only thing standing between a detection and a silent drop —
+    # any future path that moves the row out of MALWARE_SCANNING would otherwise
+    # re-open it, and the three-way split above had no case for "cannot have been
+    # applied".
+    #
+    # The refusal is applied unconditionally rather than compare-and-set: the
+    # point is that the row is in an unexpected state, so there is no state to
+    # pin it to, and a detection must win over whatever moved it. A document that
+    # is genuinely mid-pipeline becomes QUARANTINED while its execution runs on;
+    # that execution's own output is then orphaned, which is the correct trade
+    # against leaving a known-infected file reported as clean.
+    refusing = new_status in (Status.QUARANTINED, Status.MALWARE_SCAN_FAILED)
+    already_refused = current in (
+        Status.QUARANTINED.value,
+        Status.MALWARE_SCAN_FAILED.value,
+    )
+    if refusing and not already_refused:
+        logger.error(
+            "Malware verdict for %s was never applied: the row is %s, not "
+            "MALWARE_SCANNING, so the compare-and-set could not land it. "
+            "Applying %s now — something moved this document out of the gate "
+            "before a verdict existed.",
+            object_key,
+            current,
+            new_status.value,
+        )
+        _put_metric(METRIC_SCAN_VERDICT_UNAPPLIED_REFUSAL)
+        try:
+            document_service.update_document_status(
+                document.input_key,
+                new_status,
+                extra_attributes=_verdict_attributes(document),
+            )
+        except Exception as e:  # noqa: BLE001
+            # Logged, metered and not raised: the metric above is the signal, and
+            # raising would re-deliver a verdict whose condition cannot succeed.
+            logger.error(
+                "Could not apply the unapplied refusal for %s: %s", object_key, e
+            )
+        _handle_refusal(
+            document,
+            os.environ.get("INPUT_BUCKET", ""),
+            object_key,
+            reason,
+            alert=True,
+        )
+        return {
+            "statusCode": 200,
+            "document_id": document.id,
+            "malware_verdict": reason,
+            "applied_late": True,
         }
 
     # DUPLICATE: the row has already left MALWARE_SCANNING, so this verdict was

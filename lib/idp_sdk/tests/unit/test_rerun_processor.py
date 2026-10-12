@@ -1070,3 +1070,93 @@ class TestGetBatchDocumentIds:
         self._store_batch(aws, "batch-empty", {"batch_id": "batch-empty"})
 
         assert processor.get_batch_document_ids("batch-empty") == []
+
+
+@pytest.mark.unit
+class TestTheMalwareGateIsNotBypassable:
+    """The gate's second reprocess door.
+
+    ``rerun_documents`` is the single chokepoint for ``idp-cli reprocess``,
+    ``documents.reprocess()`` and ``batches.reprocess()``, and it does NOT go
+    through the reprocess API resolver where the equivalent guard lives — it reads
+    the tracking row and sends to SQS itself, client-side under the caller's own
+    credentials. Guarding the resolver alone leaves the malware gate fully
+    bypassable from the CLI.
+
+    Asserted against the real queue and the real table, because the property is
+    "nothing reached SQS", and a mocked send would prove only that a branch was
+    taken.
+    """
+
+    @pytest.mark.parametrize(
+        "status,expected_in_error",
+        [
+            # Terminal refusals: GuardDuty decided, and the answer was no.
+            ("QUARANTINED", "found malware"),
+            ("MALWARE_SCAN_FAILED", "could not be malware-scanned"),
+            # Non-terminal: no verdict exists yet, so reprocessing would start the
+            # workflow on a file nothing has cleared. The worse of the three to
+            # leave open, because the document looks ordinary in the list.
+            ("MALWARE_SCANNING", "still in progress"),
+        ],
+    )
+    def test_a_gated_document_is_refused_and_never_queued(
+        self, processor, aws, idp_common_importable, status, expected_in_error
+    ):
+        item = _tracking_item()
+        item["ObjectStatus"] = {"S": status}
+        aws["ddb"].put_item(TableName=TRACKING_TABLE, Item=item)
+
+        result = processor.rerun_documents(["lending_package.pdf"], step="extraction")
+
+        assert result["documents_queued"] == 0
+        assert result["documents_failed"] == 1
+        assert expected_in_error in result["failed_documents"][0]["error"]
+        # The property that matters: the pipeline never heard about it.
+        assert _queued_messages(aws) == []
+
+    def test_the_row_is_left_alone(self, processor, aws, idp_common_importable):
+        """The refusal happens before ``_update_document_status``, so a refused
+        document keeps its malware status rather than being reset to QUEUED — which
+        would both lose the verdict and make the document look admitted in the UI.
+        """
+        item = _tracking_item()
+        item["ObjectStatus"] = {"S": "QUARANTINED"}
+        aws["ddb"].put_item(TableName=TRACKING_TABLE, Item=item)
+
+        processor.rerun_documents(["lending_package.pdf"], step="extraction")
+
+        assert _tracking_row(aws)["ObjectStatus"]["S"] == "QUARANTINED"
+
+    def test_its_clean_siblings_in_a_batch_still_run(
+        self, processor, aws, stored_document, idp_common_importable
+    ):
+        """Skipped-and-reported rather than raised, and this is why.
+
+        ``batches.reprocess(batch_id=...)`` re-queues every document in a batch
+        unattended. One refused file must not abandon the rest — and equally must
+        not ride along with them, which is what made the batch path the worse door
+        to leave open.
+        """
+        infected = _tracking_item("infected.pdf")
+        infected["ObjectStatus"] = {"S": "QUARANTINED"}
+        aws["ddb"].put_item(TableName=TRACKING_TABLE, Item=infected)
+
+        result = processor.rerun_documents(
+            [stored_document, "infected.pdf"], step="extraction"
+        )
+
+        assert result["documents_queued"] == 1
+        assert result["documents_failed"] == 1
+        queued = [message["input_key"] for message in _queued_messages(aws)]
+        assert queued == [stored_document]
+
+    def test_an_ordinary_document_is_unaffected(
+        self, processor, aws, stored_document, idp_common_importable
+    ):
+        """Non-vacuity: the guard must not refuse everything. A COMPLETED document
+        has no malware status and reprocesses normally."""
+        result = processor.rerun_documents([stored_document], step="extraction")
+
+        assert result["documents_queued"] == 1
+        assert result["documents_failed"] == 0

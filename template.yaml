@@ -8197,8 +8197,12 @@ Resources:
         list-malware-protection-plans, then get-malware-protection-plan); that
         GuardDuty is still enabled in this Region; and, in GATE_ONLY mode, that
         the centrally managed plan targets this bucket and its role can read the
-        bucket's KMS key. Setting MalwareScanning=DISABLED restores ingest without
-        scanning.
+        bucket's KMS key. Setting MalwareScanning=DISABLED restores ingest for NEW
+        uploads without scanning - but it is NOT retroactive and it removes this
+        alarm along with the rest of the gate: documents already sitting at
+        MALWARE_SCANNING stay there, the UI keeps polling them because that status
+        is not terminal, and any /Jobs batch holding one stays IN_PROGRESS. Drain
+        them first, or re-upload them afterwards; see docs/malware-scanning.md.
       Metrics:
         - Id: held
           MetricStat:
@@ -8323,6 +8327,40 @@ Resources:
   # depends on a duplicate GuardDuty verdict that may never arrive. Every other
   # metric here records a decision; this one records a decision that could not be
   # written down, which is why it cannot be left to a rate threshold.
+  # A refusing verdict reached a document that had already left the gate without
+  # that refusal being recorded — so the file was processed with nothing having
+  # decided it was safe. Threshold zero: one occurrence is one document through
+  # the pipeline unscanned, which is the single thing this feature exists to
+  # prevent. Deliberately NOT folded into the verdicts-unapplied alarm, whose
+  # members (superseded, before-ingest) are routine and thresholded at 4; this
+  # one is never routine.
+  MalwareScanUnappliedRefusalAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-unapplied-refusal"
+      AlarmDescription: >-
+        A malware verdict REFUSED a document that had already left the
+        malware-scanning gate, so the refusal could not be applied where it was
+        expected and was applied late instead. This means something moved the
+        document out of MALWARE_SCANNING before a verdict existed and it was
+        processed unscanned - its OCR output and any Bedrock calls happened before
+        the file was known to be infected. The document has now been set to
+        QUARANTINED or MALWARE_SCAN_FAILED and an alert published. Investigate how
+        it left the gate: Reprocess refuses that status, so reaching this means a
+        new path does not. Check the QueueSender log group for 'was never
+        applied', which names the document and the status the row was in.
+      Namespace: !Ref AWS::StackName
+      MetricName: MalwareScanVerdictUnappliedRefusal
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   MalwareScanJobFinalizeFailedAlarm:
     Condition: MalwareScanningEnabled
     Type: AWS::CloudWatch::Alarm
@@ -10233,6 +10271,14 @@ Resources:
                       {
                         "stat": "Sum",
                         "label": "Jobs-API finalize failed"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictUnappliedRefusal",
+                      {
+                        "stat": "Sum",
+                        "label": "Refusal applied late (processed unscanned)"
                       }
                     ]
                   ],

@@ -474,17 +474,19 @@ def _mock_document(key="doc.pdf"):
     return doc
 
 
-def _row_double(status=Status.MALWARE_SCANNING, version_id="vid"):
+def _row_double(status=Status.MALWARE_SCANNING, version_id="v:vid"):
     """A document as the TRACKING TABLE really returns it.
 
     ⚠️ Deliberately missing `input_bucket`, `output_bucket`, `config_version` and
     `forced_document_class`, because `_document_to_create_item` does not persist
     them — it writes the key, the status, the timestamps, the submission source
-    and the test-set id, and nothing else. The first version of these tests
-    returned a fully populated `_mock_document()` here, so every assertion passed
-    while the real verdict path handed the pipeline `input_bucket=None`; OCR read
-    `s3://None/<key>` and failed the first live document. A double richer than
-    the thing it doubles is the blind spot.
+    and the test-set id, and nothing else.
+
+    Returning a fully populated `_mock_document()` here instead would let every
+    assertion pass while a row-built verdict path handed the pipeline
+    `input_bucket=None` — OCR reading `s3://None/<key>` and failing the document.
+    A double richer than the thing it doubles is the blind spot, so this one is
+    kept as poor as the real thing.
     """
     doc = MagicMock()
     doc.id = "doc.pdf"
@@ -876,11 +878,11 @@ class TestVerdictHandling:
             "#MalwareScanVersionId = :verdict_version" in kwargs["condition_expression"]
         )
         # "vid" is what make_scan_result_event puts in s3ObjectDetails.versionId.
-        assert kwargs["extra_attributes"][":verdict_version"] == "vid"
+        assert kwargs["extra_attributes"][":verdict_version"] == "v:vid"
         # SET as well as compared, because an expression attribute NAME has to be
         # registered by the SET clause; referencing it only in the condition makes
         # DynamoDB reject the request as malformed.
-        assert kwargs["extra_attributes"]["MalwareScanVersionId"] == "vid"
+        assert kwargs["extra_attributes"]["MalwareScanVersionId"] == "v:vid"
 
     def test_the_verdict_and_the_status_land_in_one_write(self):
         """Two writes would leave a window where the UI shows QUARANTINED with no
@@ -1559,7 +1561,7 @@ class TestSameKeyReuploadRace:
             event["detail"]["object"]["version-id"] = "v1"
             index.handler(event, None)
 
-        assert doc.malware_scan_version_id == "v1"
+        assert doc.malware_scan_version_id == "v:v1"
 
     def test_nothing_is_recorded_when_scanning_is_disabled(self):
         """No gate, no discriminator — the field stays off the item so a DISABLED
@@ -1625,7 +1627,7 @@ class TestSameKeyReuploadRace:
         """The defect this class exists for. v1 came back clean; the bucket now
         holds v2, which nothing has scanned."""
         response, mock_sqs, _, mock_cw = self._verdict_against_stored_version(
-            verdict_version="v1", stored_version="v2"
+            verdict_version="v1", stored_version="v:v2"
         )
 
         assert response["superseded"] is True
@@ -1639,7 +1641,7 @@ class TestSameKeyReuploadRace:
         duplicate has already been acted on, a superseded one never will be. One
         metric for both would make the race invisible."""
         _, _, _, mock_cw = self._verdict_against_stored_version(
-            verdict_version="v1", stored_version="v2"
+            verdict_version="v1", stored_version="v:v2"
         )
 
         assert "MalwareScanVerdictDuplicate" not in str(
@@ -1655,7 +1657,7 @@ class TestSameKeyReuploadRace:
         def fresh():
             d = _mock_document()
             d.status = Status.MALWARE_SCANNING
-            d.malware_scan_version_id = "v2"
+            d.malware_scan_version_id = "v:v2"
             return d
 
         with (
@@ -1698,7 +1700,7 @@ class TestSameKeyReuploadRace:
 
         doc = _mock_document()
         doc.status = Status.MALWARE_SCANNING
-        doc.malware_scan_version_id = "v1"
+        doc.malware_scan_version_id = "v:v1"
 
         with (
             patch.object(index, "MALWARE_SCANNING_ENABLED", True),
@@ -1731,7 +1733,7 @@ class TestSameKeyReuploadRace:
         def fresh():
             d = _mock_document()
             d.status = Status.QUEUED
-            d.malware_scan_version_id = "v1"
+            d.malware_scan_version_id = "v:v1"
             return d
 
         with (
@@ -1762,6 +1764,171 @@ class TestSameKeyReuploadRace:
             mock_cw.put_metric_data.call_args_list
         )
 
+    def test_a_refusing_verdict_on_a_row_that_left_the_gate_is_applied_not_dropped(
+        self,
+    ):
+        """The defect this closes, and it was reachable by two UI clicks.
+
+        Reprocess during the scan window built a fresh QUEUED document and started
+        the workflow, so the file was already in OCR and Bedrock. The verdict then
+        found the row no longer MALWARE_SCANNING, its compare-and-set failed, and
+        the classifier had only three cases — before-ingest, superseded,
+        duplicate — so a THREATS_FOUND landed in the duplicate branch: logged at
+        INFO, counted as at-least-once redelivery, and discarded. The document
+        never became QUARANTINED and `alert_on_block` never fired.
+
+        Reprocess now refuses that status, but this branch is the backstop: the
+        refusal must not be the only thing between a detection and a silent drop.
+        """
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.OCR  # mid-pipeline: it left the gate unscanned
+            d.malware_scan_version_id = "v:v1"
+            return d
+
+        applied = []
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+
+            calls = {"n": 0}
+
+            def update(*args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ConditionalCheckFailed()
+                applied.append((args, kwargs))
+
+            mock_doc_service.update_document_status.side_effect = update
+            event = make_scan_result_event(
+                key="report.pdf",
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            response = index.handler(event, None)
+
+        assert response.get("applied_late") is True, response
+        assert not response.get("duplicate")
+        # The refusal reached the row.
+        assert applied, "the refusal was not written"
+        assert applied[0][0][1] == Status.QUARANTINED
+        # Its own metric, NOT the duplicate one: counting them together is what
+        # made the original defect invisible.
+        emitted = str(mock_cw.put_metric_data.call_args_list)
+        assert "MalwareScanVerdictUnappliedRefusal" in emitted
+        assert "MalwareScanVerdictDuplicate" not in emitted
+
+    def test_the_verdict_attributes_go_with_the_late_refusal(self):
+        """A QUARANTINED row with no threat name is not actionable, and this path
+        writes unconditionally so it cannot reuse the main path's attributes."""
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.OCR
+            d.malware_scan_version_id = "v:v1"
+            return d
+
+        applied = []
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            calls = {"n": 0}
+
+            def update(*args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ConditionalCheckFailed()
+                applied.append(kwargs)
+
+            mock_doc_service.update_document_status.side_effect = update
+            event = make_scan_result_event(
+                key="report.pdf",
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            index.handler(event, None)
+
+        attrs = applied[0]["extra_attributes"]
+        assert attrs["MalwareScanResult"] == "THREATS_FOUND"
+        assert attrs["MalwareScanThreat"] == "EICAR-Test-File (not a virus)"
+        # No condition values on an unconditional write.
+        assert not [k for k in attrs if k.startswith(":")]
+
+    def test_an_already_refused_row_is_still_a_duplicate(self):
+        """The redelivery case the new branch must not swallow: the row already
+        carries this refusal, so re-applying it and re-alerting would turn every
+        at-least-once redelivery into a second alert."""
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.QUARANTINED
+            d.malware_scan_version_id = "v:v1"
+            return d
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            event = make_scan_result_event(
+                key="report.pdf",
+                result_status="THREATS_FOUND",
+                threats=[{"name": "EICAR-Test-File (not a virus)"}],
+            )
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            response = index.handler(event, None)
+
+        assert response["duplicate"] is True
+        emitted = str(mock_cw.put_metric_data.call_args_list)
+        assert "MalwareScanVerdictDuplicate" in emitted
+        assert "MalwareScanVerdictUnappliedRefusal" not in emitted
+
 
 @pytest.mark.unit
 class TestTheVersionDiscriminator:
@@ -1771,13 +1938,13 @@ class TestTheVersionDiscriminator:
     def test_it_reads_the_s3_event_spelling(self):
         import index
 
-        assert index.object_version_of({"key": "a.pdf", "version-id": "v1"}) == "v1"
+        assert index.object_version_of({"key": "a.pdf", "version-id": "v1"}) == "v:v1"
 
     def test_it_reads_the_guardduty_spelling(self):
         import index
 
         assert (
-            index.object_version_of({"objectKey": "a.pdf", "versionId": "v1"}) == "v1"
+            index.object_version_of({"objectKey": "a.pdf", "versionId": "v1"}) == "v:v1"
         )
 
     def test_the_two_spellings_agree_for_one_object(self):
@@ -1802,7 +1969,9 @@ class TestTheVersionDiscriminator:
         import index
 
         assert (
-            index.object_version_of(s3_side) == index.object_version_of(gd_side) == "e1"
+            index.object_version_of(s3_side)
+            == index.object_version_of(gd_side)
+            == "e:e1"
         )
 
     def test_a_version_id_is_preferred_over_the_etag(self):
@@ -1810,7 +1979,54 @@ class TestTheVersionDiscriminator:
         same ETag and a stale verdict would match. The version id does not."""
         import index
 
-        assert index.object_version_of({"version-id": "v2", "etag": "e1"}) == "v2"
+        assert index.object_version_of({"version-id": "v2", "etag": "e1"}) == "v:v2"
+
+    def test_the_value_carries_its_kind(self):
+        """A version id and an ETag must not be comparable as bare strings.
+
+        The two sides are independent producers. If one supplies a version id and
+        the other only an ETag, both values are non-empty and unequal — which
+        without the kind prefix is indistinguishable from a same-key re-upload, so
+        the verdict is discarded as superseded. That would happen for EVERY
+        document in the deployment, not as a race, with `MalwareScanVerdictSuperseded`
+        blaming users for replacing files.
+        """
+        import index
+
+        assert index.object_version_of({"version-id": "x"}).startswith("v:")
+        assert index.object_version_of({"etag": "x"}).startswith("e:")
+        assert index.object_version_of({"version-id": "x"}) != index.object_version_of(
+            {"etag": "x"}
+        )
+
+    def test_etag_quoting_does_not_change_the_value(self):
+        """S3 wraps an ETag in literal quotes on some surfaces and not others, and
+        that difference alone would read as a different object."""
+        import index
+
+        assert index.object_version_of({"etag": '"abc"'}) == index.object_version_of(
+            {"eTag": "abc"}
+        )
+
+    def test_a_kind_mismatch_is_not_comparable(self):
+        """The predicate the caller keys on. A mismatch must route to the same
+        fallback as a missing value — drop the version clause — rather than to the
+        superseded branch."""
+        import index
+
+        assert not index.version_kinds_are_comparable("v:abc", "e:abc")
+        assert index.version_kinds_are_comparable("v:abc", "v:def")
+        assert index.version_kinds_are_comparable("e:abc", "e:abc")
+
+    def test_an_absent_side_is_not_comparable_either(self):
+        """Both-empty must not pin the condition on empty-equals-empty: the
+        service only writes the attribute under a truthiness guard, so the stored
+        value is absent and such a condition can never hold."""
+        import index
+
+        assert not index.version_kinds_are_comparable("", "v:abc")
+        assert not index.version_kinds_are_comparable("v:abc", "")
+        assert not index.version_kinds_are_comparable("", "")
 
     def test_an_object_with_neither_yields_the_empty_string(self):
         """Not an invented sentinel: a value shared by every such object would let
@@ -1832,6 +2048,42 @@ class TestTheStallSignal:
     the source: a presence check cannot see ONE branch losing the emit, and the
     refusal branch losing it would make the alarm fire on a refusal-heavy stack.
     """
+
+    def test_holding_also_publishes_a_zero_for_the_applied_series(self):
+        """What makes the no-verdicts alarm able to fire at all.
+
+        That alarm is metric math over held-vs-applied, and ``FILL`` fills gaps
+        BETWEEN datapoints — it cannot fill a series with no datapoints. The state
+        the alarm exists for is GuardDuty never answering, which is precisely when
+        ``MalwareScanVerdictApplied`` is never published; the expression would then
+        evaluate over an empty series and the alarm would sit at OK with
+        ``TreatMissingData: notBreaching``. Publishing 0 on every hold makes the
+        series exist as soon as there is anything to be held up.
+        """
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            index.handler(make_event("doc.pdf"), None)
+
+            published = {}
+            for call in mock_cw.put_metric_data.call_args_list:
+                for datum in call.kwargs.get("MetricData", []):
+                    published[datum["MetricName"]] = datum["Value"]
+
+        assert published.get(index.METRIC_SCAN_HELD) == 1
+        # Present AND zero: a 1 here would make the alarm think a verdict landed.
+        assert index.METRIC_SCAN_VERDICT_APPLIED in published, published
+        assert published[index.METRIC_SCAN_VERDICT_APPLIED] == 0
 
     def test_holding_a_document_is_counted(self):
         import index
@@ -1877,7 +2129,7 @@ class TestTheStallSignal:
 
         doc = _mock_document()
         doc.status = Status.MALWARE_SCANNING
-        doc.malware_scan_version_id = "vid"
+        doc.malware_scan_version_id = "v:vid"
         with (
             patch.object(index, "MALWARE_SCANNING_ENABLED", True),
             patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
@@ -1934,7 +2186,7 @@ class TestTheStallSignal:
         def fresh():
             d = _mock_document()
             d.status = Status.MALWARE_SCANNING
-            d.malware_scan_version_id = "v2"
+            d.malware_scan_version_id = "v:v2"
             return d
 
         with (
@@ -1970,16 +2222,19 @@ class TestTheStallSignal:
 class TestTheEnqueuedDocumentMatchesTheUngatedPath:
     """The gate must not change the document the pipeline receives.
 
-    This is the class that would have caught the first live failure, and the one
-    that did not exist when it happened. An earlier version of the verdict path
-    built the document from the tracking row alone, which looked tidier and was
-    wrong: the row persists the key, the status, the timestamps, the submission
-    source and the test-set id, and **not** the buckets, the config version or
-    the forced class. So OCR received `input_bucket=None`, read
-    `s3://None/<key>` and failed the first document put through a deployed stack
-    — with 88 unit tests green, because the double returned by `get_document`
-    was a fully populated `_mock_document()`. A double richer than the thing it
-    doubles is the blind spot.
+    ⚠️ **Building it from the tracking row alone looks tidier and does not work.**
+    The row persists the key, the status, the timestamps, the submission source
+    and the test-set id, and **not** the buckets, the config version or the
+    forced class. A row-built document therefore reaches OCR with
+    `input_bucket=None`, which reads `s3://None/<key>` and fails the document;
+    a pinned config version is silently replaced by the active one, which is
+    worse because nothing fails.
+
+    ⚠️ **Unit tests do not catch that on their own.** `get_document` is doubled by
+    a fully populated `_mock_document()`, so a row-built document looks complete
+    in every test while being incomplete in production. A double richer than the
+    thing it doubles is the blind spot, which is why the row double here is
+    shaped like what `_dynamodb_item_to_document` really returns, buckets unset.
 
     Both halves are asserted here, because neither source is sufficient: what the
     S3 object knows (buckets, metadata) and what only the row knows (when the
@@ -2113,7 +2368,7 @@ class TestTheEmptyDiscriminatorPath:
 
     def test_both_discriminators_present_pins_the_version(self):
         """The normal case — the condition includes the version clause."""
-        mock_doc_service, _ = self._run(verdict_version="v1", stored_version="v1")
+        mock_doc_service, _ = self._run(verdict_version="v1", stored_version="v:v1")
 
         condition = mock_doc_service.update_document_status.call_args.kwargs[
             "condition_expression"
@@ -2135,9 +2390,9 @@ class TestTheEmptyDiscriminatorPath:
         mock_sqs.send_message.assert_called_once()
 
     def test_one_side_empty_is_logged_but_admitted(self, caplog):
-        """A row written before version pinning, or an event missing both
-        version id and ETag. The condition still has the status clause; the
-        mismatch is logged so a sustained rate is attributable."""
+        """An event carrying neither a version id nor an ETag on one side. The
+        condition keeps its status clause; the mismatch is logged so a sustained
+        rate is attributable rather than looking like normal operation."""
         with caplog.at_level("WARNING"):
             mock_doc_service, _ = self._run(verdict_version="v1", stored_version="")
 
@@ -2158,12 +2413,12 @@ class TestTheNullVersionIdFallback:
     def test_null_falls_through_to_the_etag(self):
         import index
 
-        assert index.object_version_of({"version-id": "null", "etag": "e1"}) == "e1"
+        assert index.object_version_of({"version-id": "null", "etag": "e1"}) == "e:e1"
 
     def test_null_on_the_guardduty_side_too(self):
         import index
 
-        assert index.object_version_of({"versionId": "null", "eTag": "e1"}) == "e1"
+        assert index.object_version_of({"versionId": "null", "eTag": "e1"}) == "e:e1"
 
     def test_two_distinct_objects_do_not_collide_as_null(self):
         """The property this is about. Without the fallback, both would yield
@@ -2173,6 +2428,8 @@ class TestTheNullVersionIdFallback:
         a = index.object_version_of({"versionId": "null", "eTag": "abc"})
         b = index.object_version_of({"versionId": "null", "eTag": "def"})
         assert a != b
+
+
 @pytest.mark.unit
 class TestConfigPrefixMappings:
     """What this Lambda asks the resolver for, and what it does with the answer.

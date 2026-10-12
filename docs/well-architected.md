@@ -94,13 +94,13 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 28 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 29 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. 27 of the twenty-eight alarms publish to
-the `AlertsTopic` SNS topic; the twenty-eighth, `BedrockServiceOutageAlarm`, publishes to
+through them — the nested stacks declare none. 28 of the twenty-nine alarms publish to
+the `AlertsTopic` SNS topic; the twenty-ninth, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`.
-Seven are conditional, so a default deployment has twenty-one:
-`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the six
+Eight are conditional, so a default deployment has twenty-one:
+`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
 malware-scanning alarms only when `MalwareScanning` is not `DISABLED`. The other
 twenty-one are unconditional. They fall into eight groups:
 
@@ -113,7 +113,7 @@ twenty-one are unconditional. They fall into eight groups:
 | `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the first of several alarms here that watch a *successful* outcome — the row below and the agent-transcript row are the others — and the reason it has to exist: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
 | `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a Configuration Profile that no longer exists, or is persistently refusing documents. The first two watch a successful outcome, like the row above: the documents succeed, so nothing else on this list moves, while the extraction reflects a configuration nobody chose. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. ⚠️ A mapping's *pinned revision* going missing is **not** among the conditions detected: the ingest-time existence check is on the profile only, and such a document fails downstream when the configuration is loaded instead. The third alarm is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
 | `AgentTranscriptMessageDroppedAlarm`, `AgentTranscriptDrainIncompleteAlarm` | Ten or more agent conversation messages, in fifteen minutes, either dropped from the stored transcript or left behind by the bounded drain at an agent's close. Like the row above, both watch an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is at risk is an entry in the transcript the analytics UI replays. They are two alarms because they license different conclusions: a dropped message is gone (contention beyond what the bounded retry absorbs, or reads that keep failing), whereas an unfinished drain leaves a write that was never cancelled and often commits when the execution environment is next thawed |
-| the six `<stack>-malware-*` alarms | Amazon GuardDuty found malware; a run of documents could not be scanned; a verdict was undeliverable; verdicts arrived and were not applied; a refused `/Jobs` file could not be recorded as terminal, which leaves its batch reporting `IN_PROGRESS` with that metric as the only signal; or — the one the others are blind to — documents are held with **no** verdict applied at all, meaning ingest has stopped. All conditional on `MalwareScanning`, so absent from a default deployment. The detection and job-finalize alarms fire on a single event, because one infected upload is an incident rather than a rate and one unrecorded refusal is one permanently stalled batch; the rest have thresholds or long windows, because a password-protected file and a re-uploaded filename are ordinary occurrences and only a sustained pattern is a signal. See [malware-scanning.md](./malware-scanning.md) |
+| the seven `<stack>-malware-*` alarms | Amazon GuardDuty found malware; a run of documents could not be scanned; a verdict was undeliverable; verdicts arrived and were not applied; a refused `/Jobs` file could not be recorded as terminal, which leaves its batch reporting `IN_PROGRESS` with that metric as the only signal; or — the one the others are blind to — documents are held with **no** verdict applied at all, meaning ingest has stopped. All conditional on `MalwareScanning`, so absent from a default deployment. The detection and job-finalize alarms fire on a single event, because one infected upload is an incident rather than a rate and one unrecorded refusal is one permanently stalled batch; the rest have thresholds or long windows, because a password-protected file and a re-uploaded filename are ordinary occurrences and only a sustained pattern is a signal. See [malware-scanning.md](./malware-scanning.md) |
 | `DataMartMigrationStateMachineFailureAlarm`, `DataMartRollupAbsenceAlarm` | A data-mart migration state-machine execution ended in `FAILED`/`TIMED_OUT`/`ABORTED` — the migration did not complete cleanly and the SSM marker will not have advanced to `state=completed`, so scheduled rollups defer until an operator investigates; and, separately, four consecutive one-hour windows with zero rollup Lambda invocations — the class of failure where a redeploy dropped the EventBridge schedule from the stack, which the DLQ alarm cannot see because that fires on failures, not absences |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
@@ -452,7 +452,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 341 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 342 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

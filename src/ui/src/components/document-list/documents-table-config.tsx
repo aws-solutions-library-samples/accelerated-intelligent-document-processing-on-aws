@@ -19,7 +19,7 @@ import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
-import { MALWARE_REFUSED_STATUSES } from '../common/malware-scan';
+import { MALWARE_REFUSED_STATUSES, MALWARE_SCANNING_STATUS } from '../common/malware-scan';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
@@ -541,10 +541,17 @@ export const DocumentsCommonHeader = ({
   // before clicking rather than from an error. ANY refused document in the
   // selection disables it, because reprocess acts on the whole selection.
   const refusedSelection = selectedItems.filter((item) => MALWARE_REFUSED_STATUSES.includes((item.objectStatus || '').toUpperCase()));
+  // Held at the gate, awaiting a verdict. Blocked for a different reason than a
+  // refusal and so worded differently: this one clears by itself in a minute or
+  // two, whereas a refusal needs the file deleted or replaced. Reprocessing one
+  // of these would run it through OCR and Bedrock with no verdict.
+  const scanningSelection = selectedItems.filter((item) => (item.objectStatus || '').toUpperCase() === MALWARE_SCANNING_STATUS);
   const reprocessDisabledReason =
     refusedSelection.length > 0
       ? `${refusedSelection.length} selected document(s) were refused by malware scanning and cannot be reprocessed. Delete them, or re-upload an unprotected copy of a file GuardDuty could not read.`
-      : null;
+      : scanningSelection.length > 0
+        ? `${scanningSelection.length} selected document(s) are still being scanned for malware. Reprocess is available once the scan verdict arrives.`
+        : null;
 
   const downloadMenuItems = buildDownloadMenuItems(
     selectedItems,
