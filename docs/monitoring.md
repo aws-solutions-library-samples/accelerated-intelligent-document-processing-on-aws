@@ -36,20 +36,31 @@ The solution automatically creates an integrated dashboard that displays:
 ### Malware Scanning (ingest gate)
 
 Present on every deployment, and flat unless `MalwareScanning` is enabled — the
-metrics are only emitted by the ingest gate. All six are in the stack's own
-namespace (`<StackName>`):
+metrics are only emitted by the ingest gate. All are in the stack's own namespace
+(`<StackName>`). No count is quoted here: the number is what went stale last
+time, and `scripts/tests/test_malware_scanning_template.py` derives the set from
+the gate's own `_put_metric` call sites and fails if any of them is missing from
+the dashboard widget.
 
-- **`MalwareScanClean`**: admitted after a clean GuardDuty scan
-- **`MalwareScanThreatsFound`**: a detection; the document was quarantined and
-  never processed
-- **`MalwareScanUnscannableBlocked`**: refused because no verdict was obtainable
-- **`MalwareScanUnscannableAllowed`**: admitted *without* a verdict, under the
-  configured policy — worth watching, because these documents were not scanned
-- **`MalwareScanVerdictBeforeIngest`**: a verdict arrived ahead of the upload
-  event and the delivery was retried. A few are normal; a sustained rate means
-  verdicts are outrunning EventBridge
-- **`MalwareScanVerdictDuplicate`**: GuardDuty re-delivered a verdict already
-  applied. Expected — delivery is at-least-once — and harmless
+| Metric | Meaning |
+|---|---|
+| `MalwareScanHeld` | A document was parked at the gate awaiting a verdict |
+| `MalwareScanVerdictApplied` | A verdict was acted on, whichever way it went |
+| `MalwareScanClean` | Admitted after a clean GuardDuty scan |
+| `MalwareScanThreatsFound` | A detection; the document was quarantined and never processed |
+| `MalwareScanUnscannableBlocked` | Refused because no verdict was obtainable |
+| `MalwareScanUnscannableAllowed` | Admitted *without* a verdict, under the configured policy — worth watching, because these documents were not scanned |
+| `MalwareScanVerdictSuperseded` | The key was re-uploaded mid-scan, so the verdict described bytes no longer in the bucket and was discarded. Self-healing: the newer upload's own verdict decides |
+| `MalwareScanVerdictBeforeIngest` | A verdict outran the upload event and the delivery was retried. A few are normal; a sustained rate means verdicts are beating EventBridge |
+| `MalwareScanVerdictDuplicate` | GuardDuty re-delivered a verdict already applied. Expected — delivery is at-least-once — and harmless |
+| `MalwareScanJobFinalizeFailed` | A refused `/Jobs` API document could not be marked terminal in its job, so that batch may hang |
+
+The first two exist for the one failure the rest are blind to. Every other metric
+is published when something is *decided*, so if GuardDuty never answers at all —
+plan deleted, `GATE_ONLY` pointed at a plan that does not cover this bucket,
+GuardDuty disabled in the Region — ingest halts while all of them read zero.
+Comparing held against applied turns that into a value rather than an absence,
+which is what `<stack>-malware-no-verdicts` alarms on.
 
 See [malware-scanning.md](./malware-scanning.md) for what each outcome means and
 what to do about it.
@@ -670,8 +681,8 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 
 Most of them send no recovery notification — the majority set only
 `AlarmActions`, so returning to `OK` is silent. The ones that *do* notify on
-recovery are the four DLQ-depth alarms plus the reporting-rollup and
-circuit-breaker alarms, where "it is draining again" or "Bedrock is healthy
+recovery are the DLQ-depth alarms plus the reporting-rollup, circuit-breaker and
+malware-no-verdicts alarms, where "it is draining again" or "Bedrock is healthy
 again" is itself the information an operator is waiting for. For a count-of-events
 alarm there is no such moment: recovery just means the five-minute window moved
 on.
@@ -696,6 +707,9 @@ on.
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `<stack>-malware-threats-found` | Amazon GuardDuty found malware in any uploaded document within 5 min. Created only when `MalwareScanning` is not `DISABLED` | `AlertsTopic` | Threshold is fixed at ≥ 1 — one infected upload is an incident |
 | `<stack>-malware-unscannable-documents` | More than four documents refused for want of a scan verdict within 15 min. Created only when `MalwareScanning` is not `DISABLED` | `AlertsTopic` | Threshold is fixed at > 4 |
+| `<stack>-malware-verdict-dlq-depth` | Any verdict EventBridge could not deliver after every retry. The document it describes is stuck with nothing having decided it is safe | `AlertsTopic` | Threshold is fixed at > 0 |
+| `<stack>-malware-verdicts-unapplied` | More than four verdicts reached the gate and were not applied within 15 min — superseded, or outran their ingest event | `AlertsTopic` | Threshold is fixed at > 4 |
+| `<stack>-malware-no-verdicts` | Documents held at the gate with **no** verdict applied for an hour: ingest has stopped. The only signal for GuardDuty not answering at all | `AlertsTopic` | Threshold is fixed at > 0 |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
 `AlertsTopic` carries the display name **Workflow Alerts**.

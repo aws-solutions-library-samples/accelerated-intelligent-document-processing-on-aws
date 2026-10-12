@@ -113,6 +113,26 @@ METRIC_SCAN_UNSCANNABLE_ALLOWED = "MalwareScanUnscannableAllowed"
 METRIC_SCAN_VERDICT_BEFORE_INGEST = "MalwareScanVerdictBeforeIngest"
 METRIC_SCAN_VERDICT_DUPLICATE = "MalwareScanVerdictDuplicate"
 METRIC_SCAN_VERDICT_SUPERSEDED = "MalwareScanVerdictSuperseded"
+METRIC_SCAN_JOB_FINALIZE_FAILED = "MalwareScanJobFinalizeFailed"
+#: Published when a document is HELD at the gate, and the counterpart published
+#: when any verdict is applied.
+#:
+#: These two exist for the one stall nothing else can see. Every other metric
+#: here is published when something is *decided*, so the failure where GuardDuty
+#: never answers at all — a plan deleted, a GATE_ONLY stack pointed at a plan
+#: that does not cover this bucket, GuardDuty disabled in the Region, the plan's
+#: role broken — halts ingest completely while every one of them reads zero. On a
+#: gate that fails closed that is the loudest possible failure and it was the
+#: quietest signal: uploads arriving with nothing being decided is only visible
+#: as the *absence* of the others, and you cannot alarm on an absence without a
+#: series to compare it against.
+#: The #719 stale-output purge failure. Not a malware metric, but it is emitted
+#: through the same helper, so it gets a constant for the same reason the others
+#: do: an inline literal is invisible to the gate that checks metrics are
+#: dashboarded.
+METRIC_STALE_OUTPUT_PURGE_FAILED = "StaleOutputPurgeFailed"
+METRIC_SCAN_HELD = "MalwareScanHeld"
+METRIC_SCAN_VERDICT_APPLIED = "MalwareScanVerdictApplied"
 
 
 def object_version_of(event_object: dict) -> str:
@@ -417,7 +437,7 @@ def _purge_stale_outputs(output_bucket, object_key):
         # so retries/DLQ behavior is EventBridge's async-invoke semantics,
         # not an SQS DLQ on the source.
         logger.error(f"Failed to purge previous output data for {object_key}: {e}")
-        _put_metric("StaleOutputPurgeFailed")
+        _put_metric(METRIC_STALE_OUTPUT_PURGE_FAILED)
 
 
 def _expiry_timestamp():
@@ -518,6 +538,7 @@ def handle_object_created(event):
         logger.info(
             f"Holding {object_key} at the malware gate (mode={MALWARE_SCANNING_MODE})"
         )
+        _put_metric(METRIC_SCAN_HELD)
         return {
             "statusCode": 200,
             "detail": detail,
@@ -577,17 +598,36 @@ def handle_scan_result(event):
     if output_bucket == "":
         raise Exception("OUTPUT_BUCKET environment variable not set")
 
-    # Load the row the upload path wrote, rather than rebuilding the document from
-    # the verdict event.
+    # The document handed to the pipeline must be the one the un-gated path would
+    # have handed it. Neither source alone can produce that, and getting this
+    # wrong is not subtle — it broke OCR on the first live document:
     #
-    # Rebuilding looks tidier and is wrong in three ways, all of which reach the
-    # UI: `initial_event_time` would become the VERDICT time, so the document's
-    # "Submitted" column and every duration computed from it would be minutes
-    # late; `queued_time` and the X-Ray `trace_id` the upload captured would be
-    # dropped from the payload handed to the pipeline; and it costs a second
-    # `head_object` per verdict to re-read S3 metadata the row already holds.
-    document = document_service.get_document(object_key)
-    if document is None:
+    #   * The TRACKING ROW does not persist the buckets, the config version or
+    #     the forced class. `_document_to_create_item` writes the key, the
+    #     status, the timestamps, the submission source and the test-set id, and
+    #     nothing else. A row-loaded document therefore carries
+    #     `input_bucket=None`, so OCR reads `s3://None/<key>` and fails the
+    #     document — and `config_version=None`, so a document uploaded with a
+    #     pinned configuration silently processes under the active one instead.
+    #   * The VERDICT EVENT has no upload timestamp. Rebuilding from it alone
+    #     sets `initial_event_time` to the verdict time, so the document list's
+    #     "Submitted" column and every duration from it read minutes late, and
+    #     the X-Ray trace id the upload captured is lost.
+    #
+    # So: build the document exactly as the upload path does — same loader, same
+    # S3 metadata read, same active-profile fallback — and then overlay the few
+    # things only the row knows.
+    document = Document.from_s3_event(
+        {
+            "detail": {"bucket": {"name": bucket}, "object": {"key": object_key}},
+            "time": verdict_time,
+        },
+        output_bucket,
+    )
+    _resolve_config_version(document, object_key)
+
+    existing = document_service.get_document(object_key)
+    if existing is None:
         # The verdict beat the upload event. Handled the same way as a lost
         # compare-and-set below, and for the same reason: creating the row here
         # would race the upload path into overwriting a terminal status with
@@ -597,6 +637,14 @@ def handle_scan_result(event):
             f"Malware verdict for {object_key} arrived before its document row "
             f"existed; relying on the EventBridge rule's RetryPolicy to re-deliver"
         )
+    # `or` rather than unconditional assignment: the row is authoritative for
+    # these, but a row written by an older release may not carry them, and a
+    # None would be worse than the verdict-derived value.
+    document.initial_event_time = existing.initial_event_time or document.initial_event_time
+    document.queued_time = existing.queued_time or document.queued_time
+    document.trace_id = existing.trace_id or document.trace_id
+    document.submission_source = existing.submission_source or document.submission_source
+    document.test_set_id = existing.test_set_id or document.test_set_id
 
     document.malware_scan_status = scan_status
     document.malware_scan_result = result_status
@@ -697,6 +745,7 @@ def handle_scan_result(event):
                     revert_error,
                 )
             raise
+        _put_metric(METRIC_SCAN_VERDICT_APPLIED)
         _put_metric(
             METRIC_SCAN_UNSCANNABLE_ALLOWED
             if reason == "unscannable_allowed"
@@ -835,6 +884,7 @@ def _refusal_message(document, bucket, object_key, admitted=False):
 
 def _handle_refusal(document, bucket, object_key, reason, alert=True):
     """Record and announce a refusal, and stop any /Jobs batch from hanging."""
+    _put_metric(METRIC_SCAN_VERDICT_APPLIED)
     _put_metric(
         METRIC_SCAN_THREATS_FOUND
         if reason == "threats_found"
@@ -895,4 +945,4 @@ def _finalize_job_file_if_job_document(object_key, status):
         # would take the duplicate path. Logged at ERROR and metered so a hung
         # batch is attributable instead of mysterious.
         logger.error(f"Failed to finalize job file {job_id}/{filename}: {e}")
-        _put_metric("MalwareScanJobFinalizeFailed")
+        _put_metric(METRIC_SCAN_JOB_FINALIZE_FAILED)

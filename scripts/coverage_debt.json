@@ -246,7 +246,8 @@
         "idp_common/utils/settings_helper.py": 80.95,
         "idp_common/utils/strands_agent_tools/__init__.py": 100.0,
         "idp_common/utils/strands_agent_tools/todo_list.py": 32.35,
-        "idp_common/utils/transient_errors.py": 100.0
+        "idp_common/utils/transient_errors.py": 100.0,
+        "idp_common/job_completion.py": 100.0
       }
     },
     "scripts": {

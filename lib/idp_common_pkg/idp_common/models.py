@@ -717,8 +717,9 @@ class Document:
     # ingest gate for EVERY scanned document — the clean ones included. "The scan
     # ran and found nothing" is the observation an auditor needs, and leaving it
     # unrecorded makes an absent verdict ambiguous between "clean" and "never
-    # scanned". All five stay `None` when the MalwareScanning stack parameter is
-    # DISABLED, so an existing deployment's documents are unchanged.
+    # scanned". Every one of them is unset when the MalwareScanning stack
+    # parameter is DISABLED — `None`, except `malware_scan_reasons`, which is an
+    # empty list — so an existing deployment's documents are unchanged.
     #
     # These are document-level rather than `ProcessingIssue`s on purpose: a
     # quarantined document never reached classification, so it has no sections to

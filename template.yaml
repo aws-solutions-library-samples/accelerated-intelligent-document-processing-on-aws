@@ -7575,9 +7575,12 @@ Resources:
           - ShouldUseDocumentKnowledgeBase
           - True
           - False
-        # Lets the web UI state plainly whether uploads are malware-scanned.
-        # Without it, "this document has no scan verdict" is ambiguous between
-        # scanning being off and the verdict not having arrived.
+        # Published for an operator reading the settings parameter, and for a
+        # future UI surface. ⚠️ Nothing in src/ui/ consumes it today: the UI
+        # resolves "is this document scanned?" from the document's own verdict
+        # fields, rendering nothing when there are none, so it needs no
+        # stack-level flag to disambiguate. Do not read the presence of this key
+        # as evidence that the UI is reading it.
         MalwareScanning: !Ref MalwareScanning
         # Runtime-resolved values for APIRESOLVERSTACK decoupling
         # CloudWatch log groups moved here to decouple Agent Lambda functions from Pattern stacks
@@ -8128,6 +8131,72 @@ Resources:
       EvaluationPeriods: 1
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # ⚠️ The one stall nothing else here can see.
+  #
+  # Every other malware alarm fires on something being DECIDED. The failure where
+  # GuardDuty never answers at all produces no decision and therefore no metric:
+  # a plan deleted, a GATE_ONLY stack pointed at a plan that does not cover this
+  # bucket, GuardDuty disabled in the Region, or the plan's IAM role broken at the
+  # other end. In that state every upload stops in MALWARE_SCANNING, ingest halts
+  # completely, and the verdict/threat/unscannable series all read zero — on a
+  # gate that fails closed, the loudest possible failure with the quietest signal.
+  #
+  # Detected by comparing two series rather than watching one: documents HELD at
+  # the gate against verdicts APPLIED. Both are published by the gate itself, so
+  # "uploads are arriving and nothing is being decided" becomes a value instead of
+  # an absence. IF() rather than a subtraction threshold because the two do not
+  # balance inside any window — a document held near the end of one is applied in
+  # the next — so what is asserted is the categorical case: held > 0 with applied
+  # at zero for a whole hour.
+  MalwareScanNoVerdictsAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-no-verdicts"
+      AlarmDescription: >-
+        Documents are being held at the malware-scanning gate and NO GuardDuty
+        verdict has been applied for an hour, so document ingest has stopped. The
+        gate fails closed, so nothing is being processed and nothing is failing
+        either. Check that the Malware Protection plan still exists and is ACTIVE
+        and still covers this stack's input bucket (aws guardduty
+        list-malware-protection-plans, then get-malware-protection-plan); that
+        GuardDuty is still enabled in this Region; and, in GATE_ONLY mode, that
+        the centrally managed plan targets this bucket and its role can read the
+        bucket's KMS key. Setting MalwareScanning=DISABLED restores ingest without
+        scanning.
+      Metrics:
+        - Id: held
+          MetricStat:
+            Metric:
+              Namespace: !Ref AWS::StackName
+              MetricName: MalwareScanHeld
+            Period: 3600
+            Stat: Sum
+          ReturnData: false
+        - Id: applied
+          MetricStat:
+            Metric:
+              Namespace: !Ref AWS::StackName
+              MetricName: MalwareScanVerdictApplied
+            Period: 3600
+            Stat: Sum
+          ReturnData: false
+        - Id: stalled
+          Expression: "IF(FILL(applied, 0) < 1 AND FILL(held, 0) > 0, 1, 0)"
+          Label: Uploads held with no verdict applied
+          ReturnData: true
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # notBreaching so an idle stack reads OK rather than INSUFFICIENT_DATA —
+      # consistent with every other alarm in this template, and here it is also
+      # correct: no uploads means nothing is being held.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -10004,6 +10073,22 @@ Resources:
                       {
                         "stat": "Sum",
                         "label": "Superseded verdict (key re-uploaded)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanHeld",
+                      {
+                        "stat": "Sum",
+                        "label": "Held at the gate"
+                      }
+                    ],
+                    [
+                      ".",
+                      "MalwareScanVerdictApplied",
+                      {
+                        "stat": "Sum",
+                        "label": "Verdicts applied"
                       }
                     ],
                     [

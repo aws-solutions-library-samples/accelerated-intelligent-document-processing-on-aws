@@ -185,7 +185,12 @@ class TestFinalizeJobFile:
         assert result["job_complete"] is True
         assert result["results_ready"] is False
         s3.put_object.assert_not_called()
-        svc.mark_results_ready.assert_called_once_with("j1", True)
+        # False, not True: `api_handler` holds a job at IN_PROGRESS while it is
+        # SUCCEEDED/PARTIALLY_SUCCEEDED and not ResultsReady, so claiming ready
+        # with no zip would hand a client a results URL that 404s. The job still
+        # reports terminal, because every-file-refused scores FAILED and that
+        # status is not gated on the flag.
+        svc.mark_results_ready.assert_called_once_with("j1", False)
 
     def test_it_is_idempotent_under_a_repeated_call(self):
         """The malware gate re-attempts this on a duplicate GuardDuty verdict,

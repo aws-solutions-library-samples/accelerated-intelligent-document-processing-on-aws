@@ -576,6 +576,21 @@ Resources:
                   # who will never use `CREATE_PLAN` can remove this line; the
                   # gate in scripts/sdlc/tests/ derives what is required from
                   # the templates, so it would then fail and say so.
+                  #
+                  # ⚠️ The verb set this feature actually needs is small and
+                  # closed (Create/Get/Update/Delete/ListMalwareProtectionPlans
+                  # plus Tag/UntagResource), and narrowing to it would keep this
+                  # role out of GuardDuty's detector, findings and member-account
+                  # surface. It is NOT narrowed, and the reason is measured
+                  # rather than assumed: `validate_service_role_permissions.py`
+                  # derives one required `<service>:*` per resource type a
+                  # template declares and compares against the role's collapsed
+                  # service set, so a verb list reports `guardduty:*` as missing
+                  # and `test_shipped_service_role_satisfies_the_main_stack`
+                  # fails. Narrowing any one service here therefore means
+                  # changing that validator for all of them, which is a separate
+                  # change with its own blast radius — not something to smuggle
+                  # in behind a new feature.
                   - guardduty:*
                 Resource: '*'
               # UPGRADE-ONLY. No current template declares an AWS::AppSync::*

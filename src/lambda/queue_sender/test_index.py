@@ -417,6 +417,36 @@ def _mock_document(key="doc.pdf"):
     return doc
 
 
+def _row_double(status=Status.MALWARE_SCANNING, version_id="vid"):
+    """A document as the TRACKING TABLE really returns it.
+
+    ⚠️ Deliberately missing `input_bucket`, `output_bucket`, `config_version` and
+    `forced_document_class`, because `_document_to_create_item` does not persist
+    them — it writes the key, the status, the timestamps, the submission source
+    and the test-set id, and nothing else. The first version of these tests
+    returned a fully populated `_mock_document()` here, so every assertion passed
+    while the real verdict path handed the pipeline `input_bucket=None`; OCR read
+    `s3://None/<key>` and failed the first live document. A double richer than
+    the thing it doubles is the blind spot.
+    """
+    doc = MagicMock()
+    doc.id = "doc.pdf"
+    doc.input_key = "doc.pdf"
+    doc.input_bucket = None
+    doc.output_bucket = None
+    doc.config_version = None
+    doc.config_revision = None
+    doc.forced_document_class = None
+    doc.status = status
+    doc.malware_scan_version_id = version_id
+    doc.initial_event_time = "2026-10-11T09:00:00Z"
+    doc.queued_time = "2026-10-11T09:00:01Z"
+    doc.trace_id = "1-upload-trace"
+    doc.submission_source = None
+    doc.test_set_id = None
+    return doc
+
+
 @pytest.mark.unit
 class TestGateIsOffByDefault:
     """With MalwareScanning DISABLED nothing about ingest changes.
@@ -747,9 +777,11 @@ class TestVerdictHandling:
                     "alert_on_block": True,
                 },
             ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "_resolve_config_version"),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
-            mock_doc_service.get_document.return_value = doc
+            mock_doc_service.get_document.return_value = _row_double()
             response = index.handler(event, None)
         return response, doc, mock_sqs, mock_sns, mock_cw, mock_doc_service
 
@@ -1330,75 +1362,6 @@ class TestThePolicyDefaults:
 
 
 @pytest.mark.unit
-class TestTheVerdictPathUsesTheRowTheUploadWrote:
-    """It must not rebuild the document from the verdict event.
-
-    Rebuilding looks tidier and is wrong in ways that all reach the UI: the
-    verdict event's `time` is the VERDICT time, so `initial_event_time` — the
-    document list's "Submitted" column, and the basis of every duration computed
-    from it — would be minutes late; and the upload's `queued_time` and X-Ray
-    `trace_id` would be dropped from the payload handed to the pipeline.
-    """
-
-    def _run(self):
-        import index
-
-        doc = _mock_document()
-        doc.initial_event_time = "2026-10-11T09:00:00Z"
-        doc.queued_time = "2026-10-11T09:00:01Z"
-        doc.trace_id = "1-upload-trace"
-
-        with (
-            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
-            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
-            patch.object(index, "sqs") as mock_sqs,
-            patch.object(index, "sns"),
-            patch.object(index, "cloudwatch"),
-            patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
-            patch.object(
-                index,
-                "malware_policy_for",
-                return_value={"allow_unscannable": False, "alert_on_block": True},
-            ),
-            patch.object(index.Document, "from_s3_event") as mock_from_event,
-            patch.object(index.xray_recorder, "current_segment", return_value=None),
-        ):
-            mock_doc_service.get_document.return_value = doc
-            # The verdict event carries a LATER time than the upload, which is
-            # what makes the regression visible.
-            index.handler(make_scan_result_event(), None)
-        return doc, mock_sqs, mock_from_event, mock_doc_service
-
-    def test_the_row_is_loaded_not_rebuilt_from_the_event(self):
-        _, _, mock_from_event, mock_doc_service = self._run()
-
-        mock_doc_service.get_document.assert_called_once_with("doc.pdf")
-        mock_from_event.assert_not_called()
-
-    def test_the_upload_time_is_not_overwritten_by_the_verdict_time(self):
-        doc, _, _, _ = self._run()
-
-        assert doc.initial_event_time == "2026-10-11T09:00:00Z"
-        assert doc.malware_scan_time == "2026-10-11T00:00:00Z"
-
-    def test_the_enqueued_document_keeps_the_uploads_own_fields(self):
-        doc, mock_sqs, _, _ = self._run()
-
-        mock_sqs.send_message.assert_called_once()
-        assert doc.queued_time == "2026-10-11T09:00:01Z"
-        assert doc.trace_id == "1-upload-trace"
-
-    def test_no_second_s3_metadata_read_is_paid_for(self):
-        """The row already holds the config version, submission source, test-set
-        id and forced class, so re-reading S3 object metadata on every verdict
-        buys nothing."""
-        _, _, mock_from_event, _ = self._run()
-
-        mock_from_event.assert_not_called()
-
-
-@pytest.mark.unit
 class TestSameKeyReuploadRace:
     """A clean verdict for one upload must not admit a different one.
 
@@ -1703,3 +1666,244 @@ class TestTheVersionDiscriminator:
         import index
 
         assert index.object_version_of({}) == ""
+
+
+@pytest.mark.unit
+class TestTheStallSignal:
+    """`MalwareScanHeld` and `MalwareScanVerdictApplied` are what the
+    no-verdict-stall alarm compares, and they are the only signal for the one
+    failure every other metric is blind to: GuardDuty never answering at all. If
+    either series is wrong the alarm is wrong in a way nothing else reports.
+
+    Asserted behaviourally, per path, rather than by checking the names appear in
+    the source: a presence check cannot see ONE branch losing the emit, and the
+    refusal branch losing it would make the alarm fire on a refusal-heavy stack.
+    """
+
+    def test_holding_a_document_is_counted(self):
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            index.handler(make_event("doc.pdf"), None)
+
+        assert "MalwareScanHeld" in str(mock_cw.put_metric_data.call_args_list)
+
+    def test_nothing_is_counted_as_held_when_the_gate_is_off(self):
+        """Otherwise a DISABLED stack would publish a held series with no applied
+        series to balance it, and the alarm would fire on a stack that has no
+        gate at all."""
+        import index
+
+        doc = _mock_document()
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", False),
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "s3"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            index.handler(make_event("doc.pdf"), None)
+
+        assert "MalwareScanHeld" not in str(mock_cw.put_metric_data.call_args_list)
+
+    def _applied_metrics(self, result_status, allow_unscannable=False):
+        import index
+
+        doc = _mock_document()
+        doc.status = Status.MALWARE_SCANNING
+        doc.malware_scan_version_id = "vid"
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={
+                    "allow_unscannable": allow_unscannable,
+                    "alert_on_block": True,
+                },
+            ),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = doc
+            index.handler(
+                make_scan_result_event(
+                    result_status=result_status,
+                    scan_status="COMPLETED"
+                    if result_status in ("NO_THREATS_FOUND", "THREATS_FOUND")
+                    else "SKIPPED",
+                    threats=[{"name": "EICAR"}],
+                ),
+                None,
+            )
+        return str(mock_cw.put_metric_data.call_args_list)
+
+    @pytest.mark.parametrize(
+        "result_status,allow",
+        [
+            ("NO_THREATS_FOUND", False),  # admitted clean
+            ("THREATS_FOUND", False),  # refused: threat
+            ("UNSUPPORTED", False),  # refused: unscannable
+            ("UNSUPPORTED", True),  # admitted unscanned
+        ],
+    )
+    def test_every_applied_verdict_is_counted(self, result_status, allow):
+        """All four outcomes, because the alarm compares held against applied: a
+        path that decides a document without counting it leaves the alarm
+        believing nothing was decided."""
+        assert "MalwareScanVerdictApplied" in self._applied_metrics(
+            result_status, allow
+        )
+
+    def test_an_unapplied_verdict_is_not_counted_as_applied(self):
+        """The whole comparison rests on this: a superseded verdict decided
+        nothing, so counting it would mask the stall it is a symptom of."""
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.MALWARE_SCANNING
+            d.malware_scan_version_id = "v2"
+            return d
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index, "job_service", MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            mock_doc_service.update_document_status.side_effect = (
+                ConditionalCheckFailed()
+            )
+            event = make_scan_result_event()
+            event["detail"]["s3ObjectDetails"]["versionId"] = "v1"
+            index.handler(event, None)
+
+        emitted = str(mock_cw.put_metric_data.call_args_list)
+        assert "MalwareScanVerdictSuperseded" in emitted
+        assert "MalwareScanVerdictApplied" not in emitted
+
+
+@pytest.mark.unit
+class TestTheEnqueuedDocumentMatchesTheUngatedPath:
+    """The gate must not change the document the pipeline receives.
+
+    This is the class that would have caught the first live failure, and the one
+    that did not exist when it happened. An earlier version of the verdict path
+    built the document from the tracking row alone, which looked tidier and was
+    wrong: the row persists the key, the status, the timestamps, the submission
+    source and the test-set id, and **not** the buckets, the config version or
+    the forced class. So OCR received `input_bucket=None`, read
+    `s3://None/<key>` and failed the first document put through a deployed stack
+    — with 88 unit tests green, because the double returned by `get_document`
+    was a fully populated `_mock_document()`. A double richer than the thing it
+    doubles is the blind spot.
+
+    Both halves are asserted here, because neither source is sufficient: what the
+    S3 object knows (buckets, metadata) and what only the row knows (when the
+    upload happened, and under which trace).
+    """
+
+    def _run(self):
+        import index
+
+        # Shaped like the upload path's own document: what
+        # `Document.from_s3_event` returns, buckets included.
+        from_event = _mock_document()
+        from_event.input_bucket = "test-input-bucket"
+        from_event.output_bucket = "test-output-bucket"
+        from_event.config_version = "pinned-v7"
+        from_event.config_revision = 3
+        # from_s3_event reads the VERDICT event, so its time is the verdict's.
+        from_event.initial_event_time = "2026-10-11T00:00:00Z"
+        from_event.queued_time = None
+        from_event.trace_id = None
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=from_event),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = _row_double()
+            index.handler(make_scan_result_event(), None)
+        return from_event, mock_sqs
+
+    def test_the_enqueued_document_knows_which_bucket_to_read(self):
+        """The defect, stated as a test. `input_bucket=None` is not a degraded
+        document — OCR reads `s3://None/<key>` and the document fails."""
+        doc, mock_sqs = self._run()
+
+        mock_sqs.send_message.assert_called_once()
+        assert doc.input_bucket == "test-input-bucket"
+        assert doc.output_bucket == "test-output-bucket"
+
+    def test_a_pinned_configuration_version_survives_the_gate(self):
+        """The second half of the same defect, and the quieter one: the row does
+        not persist ConfigVersion, so a document uploaded with a pinned profile
+        would silently process under the ACTIVE one — no failure, just the wrong
+        configuration."""
+        doc, _ = self._run()
+
+        assert doc.config_version == "pinned-v7"
+        assert doc.config_revision == 3
+
+    def test_the_upload_time_is_not_overwritten_by_the_verdict_time(self):
+        """What only the row knows. `initial_event_time` is the document list's
+        "Submitted" column and the basis of every duration computed from it, so
+        taking it from the verdict event reads minutes late."""
+        doc, _ = self._run()
+
+        assert doc.initial_event_time == "2026-10-11T09:00:00Z"
+        assert doc.queued_time == "2026-10-11T09:00:01Z"
+
+    def test_the_uploads_xray_trace_is_carried_through(self):
+        doc, _ = self._run()
+
+        assert doc.trace_id == "1-upload-trace"
+
+    def test_the_verdict_is_on_the_document_handed_to_the_pipeline(self):
+        doc, _ = self._run()
+
+        assert doc.malware_scan_result == "NO_THREATS_FOUND"
+        assert doc.status == Status.QUEUED

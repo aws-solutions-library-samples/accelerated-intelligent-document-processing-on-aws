@@ -124,10 +124,19 @@ def finalize_job_file(
 
     logger.info("All files terminal for job %s, creating results zip", job_id)
     wrote_zip = create_results_zip(job_id, s3_client, output_bucket)
-    # Marked ready only after the upload succeeds. The API gates
-    # SUCCEEDED/PARTIALLY_SUCCEEDED on this flag so a client cannot race into a
-    # 404 on download.
-    job_service.mark_results_ready(job_id, True)
+    # Marked ready only if a zip was actually written, and `wrote_zip` rather than
+    # a literal `True` is the whole point: `api_handler` holds a job at
+    # IN_PROGRESS while SUCCEEDED/PARTIALLY_SUCCEEDED and not ResultsReady, so
+    # claiming ready with no zip hands a client a results URL that 404s.
+    #
+    # This does NOT reintroduce the hang this module exists to fix. The only job
+    # that completes with no outputs is one whose every file was refused, and
+    # `compute_job_status` scores that **FAILED** — a status the ResultsReady gate
+    # does not apply to, so it still reports terminal. A mixed batch has outputs
+    # from its successful files, so the zip exists and the flag is true. What is
+    # withheld is only the genuinely anomalous case: a job that succeeded and
+    # produced nothing.
+    job_service.mark_results_ready(job_id, wrote_zip)
     return {
         "found": True,
         "files": files,
