@@ -223,7 +223,10 @@ migration preserves parity as follows:
   member — defense-in-depth that mirrors the directive.
 - **The dispatcher maps errors to HTTP status the way AppSync did.** A resolver
   `PermissionError` becomes **403** with `errorType: "Unauthorized"` (which the
-  UI keys on); `ValueError`/`KeyError` become **400 BadRequest**. Unauthenticated
+  UI keys on); `ValueError`/`KeyError` become **400 BadRequest**; `ResourceNotFound`
+  becomes **404** with `errorType: "ResourceNotFound"`, kept distinct from the
+  `"NotFound"` the dispatcher returns for an operation this deployment does not
+  route. Unauthenticated
   requests are rejected with **401** by the authorizer before reaching any code.
   Anything the dispatcher does not recognise becomes **500 `InternalError`**, and
   that fallback is load-bearing in a way worth knowing: a resolver runs in a
@@ -233,8 +236,9 @@ migration preserves parity as follows:
   the `Unauthorized` token off the front where the anchored prefix match cannot
   see it — and the refusal arrives as a 500. Beyond confusing whoever is debugging
   it, that puts deliberate policy denials into the monitored 5xx rate, where they
-  mask real faults. Raise `PermissionError` for an authorization refusal and
-  `ValueError` for a bad argument, and do not re-wrap either. See the refusal-status
+  mask real faults. Raise `PermissionError` for an authorization refusal,
+  `ValueError` for a bad argument, and `ResourceNotFound` for an object that does
+  not exist, and do not re-wrap any of them. See the refusal-status
   section of [rbac.md](rbac.md).
 - **IAM-only operations stay backend-only.** Fields that were IAM-authorized in
   AppSync (backend writers such as `updateAgentJobStatus`,

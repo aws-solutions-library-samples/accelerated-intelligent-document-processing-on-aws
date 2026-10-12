@@ -118,7 +118,12 @@ def test_missing_feature_id(monkeypatch, load_lambda, installed_features_table):
 def test_missing_product_code_marketplace_mode_raises(
     monkeypatch, load_lambda, installed_features_table
 ):
-    """In marketplace mode, a feature whose install row has no productCode raises."""
+    """A row that EXISTS without a productCode is a misconfiguration -> 500.
+
+    The companion of test_a_feature_that_is_not_installed_is_not_found below: the
+    two conditions used to share this one error, which answered 500 for both and
+    told an admin to republish a feature that was never installed.
+    """
     _seed_row(installed_features_table, "docs-by-status")  # no productCode
     mod = _preload(
         monkeypatch,
@@ -135,6 +140,59 @@ def test_missing_product_code_marketplace_mode_raises(
             ),
             None,
         )
+
+
+def test_a_feature_that_is_not_installed_is_not_found(
+    monkeypatch, load_lambda, installed_features_table
+):
+    """No install row at all -> ResourceNotFound, which the dispatcher maps to 404.
+
+    Nothing to unsubscribe from and no manifest to republish, so the
+    "set marketplace.productCode and reinstall" remedy does not apply.
+    """
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=installed_features_table,
+        source_tag="marketplace",
+    )
+    with pytest.raises(mod.ResourceNotFound, match="not installed"):
+        mod.handler(
+            make_appsync_event(
+                "unsubscribeFeature",
+                {"featureId": "never-installed"},
+                groups=["Admin"],
+            ),
+            None,
+        )
+
+
+def test_an_unreadable_install_table_is_not_reported_as_a_missing_feature(
+    monkeypatch, load_lambda, installed_features_table
+):
+    """A failed read keeps its 500 instead of becoming a 404.
+
+    This is the direction that matters: answering "no such feature" for a
+    DynamoDB fault sends an admin to look for a feature when the fault is the
+    table, and a 404 would also be invisible to the 5xx error-rate alarm.
+    """
+    mod = _preload(
+        monkeypatch,
+        load_lambda,
+        table_name=installed_features_table,
+        source_tag="marketplace",
+    )
+    with patch.object(mod, "_dynamodb") as fake_ddb:
+        fake_ddb.Table.return_value.get_item.side_effect = RuntimeError("ddb down")
+        with pytest.raises(mod.UnsubscribeError, match="productCode"):
+            mod.handler(
+                make_appsync_event(
+                    "unsubscribeFeature",
+                    {"featureId": "docs-by-status"},
+                    groups=["Admin"],
+                ),
+                None,
+            )
 
 
 def test_missing_product_code_simulator_mode_synthesizes(

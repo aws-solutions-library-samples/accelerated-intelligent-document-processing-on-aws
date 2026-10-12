@@ -2046,6 +2046,7 @@ export type TestRun = {
   context?: Maybe<Scalars['String']['output']>;
   costBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  evaluationDisabled?: Maybe<Scalars['Boolean']['output']>;
   excludedDocumentCount?: Maybe<Scalars['Int']['output']>;
   failedFiles?: Maybe<Scalars['Int']['output']>;
   fieldMetrics?: Maybe<Scalars['AWSJSON']['output']>;
@@ -3043,7 +3044,7 @@ export type GetTestRunQueryVariables = Exact<{
 }>;
 
 
-export type GetTestRunQuery = { getTestRun?: { testRunId: string, testSetId?: string | null, testSetName?: string | null, status: string, filesCount: number, completedFiles?: number | null, failedFiles?: number | null, overallAccuracy?: number | null, weightedOverallScores?: string | null, excludedDocumentCount?: number | null, averageConfidence?: number | null, confidenceMetrics?: string | null, accuracyBreakdown?: string | null, confusionMatrix?: string | null, fieldMetrics?: string | null, splitClassificationMetrics?: string | null, gradedPacketMetrics?: string | null, classificationErrors?: string | null, totalCost?: number | null, costBreakdown?: string | null, createdAt?: string | null, completedAt?: string | null, context?: string | null, isDraftLabeling?: boolean | null, configVersion?: string | null, configRevision?: number | null, testSetVersion?: number | null, testSetDraftVersion?: number | null, config?: string | null } | null };
+export type GetTestRunQuery = { getTestRun?: { testRunId: string, testSetId?: string | null, testSetName?: string | null, status: string, filesCount: number, completedFiles?: number | null, failedFiles?: number | null, overallAccuracy?: number | null, weightedOverallScores?: string | null, excludedDocumentCount?: number | null, averageConfidence?: number | null, confidenceMetrics?: string | null, accuracyBreakdown?: string | null, confusionMatrix?: string | null, fieldMetrics?: string | null, splitClassificationMetrics?: string | null, gradedPacketMetrics?: string | null, classificationErrors?: string | null, totalCost?: number | null, costBreakdown?: string | null, createdAt?: string | null, completedAt?: string | null, context?: string | null, isDraftLabeling?: boolean | null, evaluationDisabled?: boolean | null, configVersion?: string | null, configRevision?: number | null, testSetVersion?: number | null, testSetDraftVersion?: number | null, config?: string | null } | null };
 
 export type GetTestRunStatusQueryVariables = Exact<{
   testRunId: Scalars['String']['input'];

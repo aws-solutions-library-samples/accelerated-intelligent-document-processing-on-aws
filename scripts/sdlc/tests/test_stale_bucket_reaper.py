@@ -9,10 +9,14 @@ the age gate, always empty versions before deleting, and only touch idp- names.
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.unit
+
+#: The SDLC pipeline template carrying the CodeBuild role's grants.
+PIPELINE_TEMPLATE = Path(__file__).resolve().parents[1] / "cfn" / "codepipeline-s3.yml"
 
 
 class _FakeStackPaginator:
@@ -199,3 +203,201 @@ def test_never_raises_on_api_error(cbd, monkeypatch):
     monkeypatch.setattr(cbd.boto3, "client", lambda name, *a, **k: _Boom())
     monkeypatch.setattr(cbd.boto3, "resource", lambda name, *a, **k: object())
     cbd.cleanup_stale_idp_buckets()  # must swallow, not raise
+
+
+# ---------------------------------------------------------------------------
+# The permission the reaper cannot work without
+#
+# ⚠️ `cleanup_stale_idp_buckets` calls `list_buckets` FIRST, and if that is
+# denied the reaper logs one line and returns having reaped nothing. Every test
+# above mocks boto3, so all of them pass against a role that cannot make the
+# call at all — which is exactly what happened: the grant was missing, the
+# reaper did nothing on every run for months, and the only symptom was `idp-`
+# buckets accumulating (14 of them, the oldest three months old, when this was
+# finally measured).
+#
+# `s3:ListAllMyBuckets` is an account-level operation with no resource to scope
+# to, so it needs `Resource: '*'`. The role's other S3 grants are bucket-scoped
+# — including an `s3:*` — and a bucket-scoped wildcard cannot cover it. Pinning
+# the grant is the only offline check that the reaper is able to run.
+# ---------------------------------------------------------------------------
+
+#: The role the CodeBuild project runs as, and so the only one whose grants
+#: decide whether the reaper can make its call. That is a premise about
+#: `ServiceRole` on the project, not about this constant, so the test asserts it
+#: rather than assuming it -- repointing `ServiceRole` at the supplied-role
+#: parameter denies the reaper again while every grant named here is untouched.
+REAPER_ROLE = "CodeBuildRole"
+REAPER_ACTION = "s3:ListAllMyBuckets"
+
+#: Accepted in place of the specific action: a consolidated `s3:*` still grants
+#: it. Without this, narrowing *or widening* the statement both fail, and the
+#: widening case would report "no longer granted s3:ListAllMyBuckets" about a
+#: policy that grants it — sending the reader after the wrong thing.
+REAPER_ACTION_EQUIVALENTS = frozenset({REAPER_ACTION, "s3:*"})
+
+
+def _as_list(value):
+    """CloudFormation accepts a scalar wherever it accepts a list of them."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _statements_for_role(template: dict, role: str) -> list[dict]:
+    """Every IAM statement attached to `role`, by either of the two shapes.
+
+    A grant can reach a role inline (`AWS::IAM::Role.Properties.Policies`) or by
+    a separate `AWS::IAM::Policy` naming it in `Roles`, and this template uses
+    both for the same role. Collecting the two together is the whole point: the
+    question is what the role can do, not where somebody wrote it down.
+    """
+    resources = template.get("Resources") or {}
+    statements: list[dict] = []
+
+    role_body = resources.get(role) or {}
+    for policy in _as_list((role_body.get("Properties") or {}).get("Policies")):
+        statements.extend(
+            _as_list((policy.get("PolicyDocument") or {}).get("Statement"))
+        )
+
+    for body in resources.values():
+        if body.get("Type") != "AWS::IAM::Policy":
+            continue
+        props = body.get("Properties") or {}
+        # `Roles: [!Ref CodeBuildRole]` parses to [{'Ref': 'CodeBuildRole'}].
+        attached = {
+            entry.get("Ref")
+            for entry in _as_list(props.get("Roles"))
+            if isinstance(entry, dict)
+        }
+        if role in attached:
+            statements.extend(
+                _as_list((props.get("PolicyDocument") or {}).get("Statement"))
+            )
+
+    return statements
+
+
+#: Routes to a role this collector deliberately does not model:
+#:
+#:   * `Roles: [!Sub '${CodeBuildRole}']` rather than `!Ref` (same value),
+#:   * a statement or policy wrapped in `Fn::If`,
+#:   * an `AWS::IAM::ManagedPolicy` attached to the role,
+#:   * `AWS::IAM::RolePolicy`.
+#:
+#: Each makes the grant *invisible* here, so the test fails rather than passing
+#: -- the safe direction, loud and wrong-way-correct. Written down because the
+#: reach of a collector is the thing a reader cannot infer from reading it, and
+#: a false failure that names nothing costs an afternoon.
+_UNMODELLED_ATTACHMENT_ROUTES = (
+    "Fn::If-wrapped policies, !Sub role references, "
+    "AWS::IAM::ManagedPolicy, AWS::IAM::RolePolicy"
+)
+
+
+def _referenced_logical_ids(node) -> set[str]:
+    """Every logical id a value refers to, through `Ref` or `Fn::GetAtt`.
+
+    ⚠️ **Exact ids, not a substring search.** `ServiceRole` here is an `Fn::If`
+    choosing between `!GetAtt CodeBuildRole.Arn` and `!Ref CodeBuildRoleArn`, and
+    `CodeBuildRole` is a *prefix* of `CodeBuildRoleArn` -- so asking whether the
+    role's name appears anywhere in the stringified value answers yes even when
+    the project has been repointed at the supplied-role parameter, which is
+    precisely the case this exists to detect. Walking the structure and taking
+    the ids whole is the only way to tell those two apart.
+    """
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "Ref" and isinstance(value, str):
+                found.add(value)
+            elif key == "Fn::GetAtt":
+                parts = value if isinstance(value, list) else str(value).split(".")
+                if parts:
+                    found.add(str(parts[0]))
+            else:
+                found |= _referenced_logical_ids(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _referenced_logical_ids(item)
+    return found
+
+
+def _runs_as_role(template: dict, role: str) -> bool:
+    """Whether any CodeBuild project in `template` runs as `role`.
+
+    The premise behind pinning one role's grants. `Fn::If` is not evaluated --
+    a project that runs as this role on *either* branch counts, because the
+    question is whether the role is still in play at all.
+    """
+    return any(
+        role
+        in _referenced_logical_ids((body.get("Properties") or {}).get("ServiceRole"))
+        for body in (template.get("Resources") or {}).values()
+        if body.get("Type") == "AWS::CodeBuild::Project"
+    )
+
+
+def test_the_codebuild_role_can_list_the_accounts_buckets():
+    """The reaper's first call must be permitted *to its own role*, on `Resource: '*'`.
+
+    Parsed rather than matched against the template text, and both halves of
+    that matter. A text match cannot tell which role carries a statement, so it
+    reports success with the grant sitting on a different role while the reaper's
+    role has lost it -- which would make the only protection for this fix a gate
+    with exactly the defect the fix exists to remove. And a text match pins YAML
+    *formatting*: reordering `Action` and `Resource`, or adding a second action
+    to the statement, changes no permission and must not fail.
+
+    `load_template` comes from the sibling module in this directory, which
+    `conftest.py` puts on `sys.path` for this purpose; it converts the CFN
+    short-form tags, so `!Ref`/`!Sub` arrive as plain dicts.
+    """
+    from test_iam_trust_policy_partitions import load_template
+
+    template = load_template(PIPELINE_TEMPLATE)
+
+    # The premise first: pinning this role's grants says nothing unless the
+    # CodeBuild project still runs as it. Repointing `ServiceRole` at the
+    # supplied-role parameter denies the reaper while leaving every grant below
+    # exactly as it is, so without this the test passes and the reaper is broken.
+    assert REAPER_ROLE in (template.get("Resources") or {}), (
+        f"{PIPELINE_TEMPLATE.name} declares no {REAPER_ROLE} resource. Everything "
+        f"below is keyed on that logical id, and the grants would still be found "
+        f"through a dangling `!Ref` in a policy, so this is checked first."
+    )
+    assert _runs_as_role(template, REAPER_ROLE), (
+        f"no AWS::CodeBuild::Project in {PIPELINE_TEMPLATE.name} runs as "
+        f"{REAPER_ROLE}, so pinning that role's grants says nothing about whether "
+        f"the reaper can list the account"
+    )
+
+    statements = _statements_for_role(template, REAPER_ROLE)
+    assert statements, (
+        f"no IAM statements found for {REAPER_ROLE} in {PIPELINE_TEMPLATE.name} — "
+        f"the role was renamed or the template restructured, and every assertion "
+        f"below would pass vacuously"
+    )
+
+    granting = [
+        statement
+        for statement in statements
+        if statement.get("Effect") == "Allow"
+        and REAPER_ACTION_EQUIVALENTS & set(_as_list(statement.get("Action")))
+    ]
+    assert granting, (
+        f"{REAPER_ROLE} is no longer granted {REAPER_ACTION} (or `s3:*`) in "
+        f"{PIPELINE_TEMPLATE.name}. cleanup_stale_idp_buckets calls list_buckets "
+        f"as its first action and swallows the AccessDenied, so removing this "
+        f"makes the bucket reaper a no-op that still reports success. If the "
+        f"grant IS there, check how it reaches the role: this collector reads "
+        f"inline `Policies` and an `AWS::IAM::Policy` naming the role via `!Ref`, "
+        f"and does not model {_UNMODELLED_ATTACHMENT_ROUTES}."
+    )
+
+    assert any("*" in _as_list(statement.get("Resource")) for statement in granting), (
+        f"{REAPER_ACTION} is granted to {REAPER_ROLE} but not on `Resource: '*'`. "
+        f"It is an account-level operation with no resource to scope to, so any "
+        f"ARN — even an `s3:*` on a bucket — evaluates to implicitDeny."
+    )

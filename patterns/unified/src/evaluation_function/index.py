@@ -31,21 +31,42 @@ SAVE_REPORTING_FUNCTION_NAME = os.environ.get(
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-# Create document service
-document_service = create_document_service()
+_document_service = None
+
+
+def _get_document_service():
+    global _document_service
+    if _document_service is None:
+        _document_service = create_document_service()
+    return _document_service
 
 
 # Define evaluation status constants
+#
+# Every member here is read by Test Studio's run-status aggregation
+# (nested/api-resolvers/src/lambda/test_results_resolver/index.py), which
+# classifies each of a run's documents as completed, failed or still
+# evaluating. Its default for a status it does not recognise is "still
+# evaluating", and a run holding one such document never reaches a terminal
+# status — so ADDING A MEMBER HERE WITHOUT CLASSIFYING IT THERE pins every run
+# containing it at EVALUATING indefinitely. It has happened twice: TIMED_OUT,
+# until a run that could not be aborted exposed it, and DISABLED, which was
+# never written at all (#1330). The classification there is now closed over this
+# enum and tested, so a member added here without one fails a test.
 class EvaluationStatus(Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     NO_BASELINE = "NO_BASELINE"
     TIMED_OUT = "TIMED_OUT"
+    # Evaluation was switched off in the configuration this document was
+    # processed with, so no comparison was attempted. A terminal, non-failure
+    # outcome: the document is as finished as it is ever going to be.
+    DISABLED = "DISABLED"
 
 
 def update_document_evaluation_status(
-    document: Document, status: EvaluationStatus
+    document: Document, status: EvaluationStatus, mark_evaluating: bool = True
 ) -> Document:
     """
     Update document evaluation status via document service
@@ -53,6 +74,14 @@ def update_document_evaluation_status(
     Args:
         document: The Document object to update
         status: The evaluation status
+        mark_evaluating: Also move the document's own ``ObjectStatus`` to
+            EVALUATING. True for the statuses written while this function owns
+            the document, which is every outcome reached by actually running an
+            evaluation. Pass False for an outcome recorded without one —
+            ``DISABLED`` — because a document whose evaluation was skipped was
+            never evaluating, and the workflow tracker only resolves
+            ObjectStatus when the execution ends, so the claim would be visible
+            in the UI until then.
 
     Returns:
         The updated Document object
@@ -60,12 +89,13 @@ def update_document_evaluation_status(
     Raises:
         DocumentServiceError: If the operation fails
     """
-    document.status = Status.EVALUATING
+    if mark_evaluating:
+        document.status = Status.EVALUATING
     document.evaluation_status = status.value
     logger.info(
         f"Updating document via document service: {document.input_key} with status: {status.value}"
     )
-    return document_service.update_document(document)
+    return _get_document_service().update_document(document)
 
 
 def extract_document_from_event(event: Dict[str, Any]) -> Optional[Document]:
@@ -316,7 +346,32 @@ def handler(event, context):
 
         if not config.evaluation.enabled:
             logger.info("Evaluation is disabled in configuration, skipping evaluation")
-            # Return document unchanged
+            # Record the outcome rather than returning silently. Everything
+            # reading a document's evaluation state has to distinguish "no
+            # result yet" from "there will never be a result", and the only
+            # signal is this attribute: leaving it unwritten made the two
+            # indistinguishable, so Test Studio counted such a document as
+            # still evaluating and its run never left the EVALUATING badge
+            # however long you waited (#1330). The document itself is still
+            # returned unchanged.
+            #
+            # Best-effort, and deliberately so. Nothing failed here — the
+            # document is fully processed and evaluation was never asked for —
+            # so a tracking-table write that cannot be made must not turn into
+            # an evaluation failure, which is what letting this raise would do:
+            # the handler's outer except stamps FAILED and the run reports a
+            # failed file. The reader has a fallback for a document with no
+            # recorded status (it consults the run's captured configuration),
+            # so the honest outcome here is to log and carry on.
+            try:
+                update_document_evaluation_status(
+                    actual_document, EvaluationStatus.DISABLED, mark_evaluating=False
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Could not record EvaluationStatus=DISABLED for "
+                    f"{actual_document.input_key}: {e}"
+                )
             return {
                 "document": actual_document.serialize_document(
                     working_bucket, "evaluation"
@@ -325,7 +380,7 @@ def handler(event, context):
 
         # Set document status to EVALUATING before processing
         actual_document.status = Status.EVALUATING
-        document_service.update_document(actual_document)
+        _get_document_service().update_document(actual_document)
 
         # Update document evaluation status to RUNNING
         update_document_evaluation_status(actual_document, EvaluationStatus.RUNNING)

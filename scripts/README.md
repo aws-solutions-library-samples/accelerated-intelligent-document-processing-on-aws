@@ -107,7 +107,7 @@ python scripts/discover_model_limits.py
 
 # Test specific models only
 python scripts/discover_model_limits.py \
-    --models "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    --models "us.anthropic.claude-sonnet-4-6"
 
 # Verbose mode
 python scripts/discover_model_limits.py --verbose

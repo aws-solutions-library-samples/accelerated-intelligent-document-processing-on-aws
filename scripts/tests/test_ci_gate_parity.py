@@ -16,8 +16,15 @@ Nothing detected any of those; each was found by hand, months later. This test i
 the detector. It deliberately asserts on the *config files*, because the failure
 mode is a config edit, not a code change.
 
-Integration tests are excluded on purpose: they need AWS credentials and stay
-GitLab-only. See ``scripts/sdlc/docs/CI_TEST_COVERAGE.md``.
+⚠️ **Two different things are called "integration" here, and only one of them is
+GitLab-only.** The GitLab ``integration_tests`` *stage* deploys a stack through
+CodePipeline and is deliberately GitLab-only, because it needs AWS credentials.
+The pytest ``integration`` *marker tier* — ``make test-integration`` — is a
+different suite that stage never invokes, and it runs in **no** CI at all. The
+two were conflated in this very docstring, which is how the tier came to be
+uncovered while an exemption cited the stage as its coverage (#1307). See
+:func:`test_the_integration_pytest_tier_runs_in_no_ci`, which measures the
+absence, and ``scripts/sdlc/docs/CI_TEST_COVERAGE.md``.
 
 **The structural weakness of a hardcoded list, and what is done about it.** The
 first two incidents in that list — SRT and the dependency audit — were the ones
@@ -67,6 +74,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GITLAB = REPO_ROOT / ".gitlab-ci.yml"
 GITHUB_TESTS = REPO_ROOT / ".github/workflows/developer-tests.yml"
 GITHUB_SECURITY = REPO_ROOT / ".github/workflows/security-checks.yml"
+#: Composite actions are part of the CI configuration — see :func:`_github_ci_text`.
+GITHUB_ACTIONS_DIR = REPO_ROOT / ".github/actions"
 MAKEFILE = REPO_ROOT / "Makefile"
 
 # Gates that MUST run in both CIs. Each is a static, no-AWS check.
@@ -267,9 +276,17 @@ GATES_DELIBERATELY_OUT_OF_CI = {
     ),
     # --- needs credentials, network, or a human -------------------------------
     "test-integration-all": (
-        "Runs the integration-marked suites, which call live AWS. GitLab's "
-        "`integration_tests` stage is the one deliberate CI asymmetry in this "
-        "repo; test_integration_tests_stay_gitlab_only below pins it."
+        "Runs the integration-marked suites, which call live AWS. NO CI runs "
+        "them — not GitLab either. GitLab's `integration_tests` stage is a "
+        "different thing with a similar name: it triggers a CodePipeline stack "
+        "deploy (scripts/sdlc/integration_test_deployment.py) and never invokes "
+        "`pytest -m integration`. So the only thing that runs this tier is a "
+        "person typing the target, which is how 14 of its 23 tests came to be "
+        "failing for tooling reasons with nothing reporting it (#1307). That is "
+        "a genuine residual, not a duplicate; it stays out of CI because it "
+        "needs credentials GitHub has no OIDC role for, and because it bills "
+        "Bedrock per run. `test_the_integration_pytest_tier_runs_in_no_ci` "
+        "below measures the claim rather than asserting the stage name."
     ),
     "check-retired-models": (
         "Asks Bedrock whether a model this repo offers has been retired. Needs AWS "
@@ -326,7 +343,35 @@ CHECK_ONLY_EQUIVALENTS = {
 
 
 def _github_ci_text() -> str:
-    return GITHUB_TESTS.read_text() + GITHUB_SECURITY.read_text()
+    """Everything that makes up GitHub's CI configuration, as one blob.
+
+    The **composite actions** are part of it, not a detail of it. GitHub Actions
+    does not support YAML anchors, so when ``developer-tests.yml`` became four
+    parallel jobs the shared setup had to move into
+    ``.github/actions/*/action.yml`` — and that setup is where the ``ruff`` and
+    ``cfn-lint`` pins now live. Reading only the workflow files reported both pins
+    as missing from GitHub while they were present and working, which is the
+    false-alarm direction: a parity guard that cries wolf gets muted.
+
+    Globbed rather than listed so a second composite action is covered the day it
+    is added.
+    """
+    parts = [GITHUB_TESTS.read_text(), GITHUB_SECURITY.read_text()]
+    parts += [p.read_text() for p in sorted(GITHUB_ACTIONS_DIR.glob("*/action.yml"))]
+    return "".join(parts)
+
+
+def _pinned_tool_sources() -> list[tuple[str, str]]:
+    """``(label, text)`` for each side's config, for the tool-pin assertions.
+
+    The GitHub side is a BLOB rather than a single file for the reason
+    :func:`_github_ci_text` gives: the pins live in a composite action now, so a
+    per-file assertion reports a present, working pin as missing.
+    """
+    return [
+        (GITLAB.name, GITLAB.read_text()),
+        (".github/ (workflows + composite actions)", _github_ci_text()),
+    ]
 
 
 def _uncommented(text: str) -> str:
@@ -919,10 +964,9 @@ def test_cfn_lint_is_pinned_consistently() -> None:
     assert marker in makefile, "CFN_LINT_VERSION is no longer declared in the Makefile"
     version = makefile.split(marker, 1)[1].split("\n", 1)[0].strip()
 
-    for path in (GITLAB, GITHUB_TESTS):
-        text = path.read_text()
+    for label, text in _pinned_tool_sources():
         assert f"cfn-lint=={version}" in text, (
-            f"{path.name} does not pin cfn-lint=={version} (the Makefile's "
+            f"{label} does not pin cfn-lint=={version} (the Makefile's "
             f"CFN_LINT_VERSION). CI would then run a different linter than "
             f"`make cfn-lint` does locally."
         )
@@ -941,11 +985,11 @@ def test_ruff_is_pinned_consistently() -> None:
     running different linters by construction.
     """
     pins = {}
-    for path in (GITLAB, GITHUB_TESTS):
-        found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", path.read_text())
-        assert found, f"{path.name} no longer pins a ruff version"
-        assert len(set(found)) == 1, f"{path.name} pins several ruff versions: {found}"
-        pins[path.name] = found[0]
+    for label, text in _pinned_tool_sources():
+        found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", text)
+        assert found, f"{label} no longer pins a ruff version"
+        assert len(set(found)) == 1, f"{label} pins several ruff versions: {found}"
+        pins[label] = found[0]
 
     assert len(set(pins.values())) == 1, (
         f"the two CI configs pin different ruff versions: {pins}. `ruff check` and "
@@ -966,9 +1010,111 @@ def test_ruff_is_pinned_consistently() -> None:
 
 @pytest.mark.unit
 def test_integration_tests_stay_gitlab_only() -> None:
-    """Documents the ONE deliberate asymmetry, so it cannot drift unnoticed."""
+    """Documents the ONE deliberate asymmetry, so it cannot drift unnoticed.
+
+    ⚠️ This is about the GitLab **stage** of that name — a CodePipeline stack
+    deploy — and nothing more. It does NOT say the pytest ``integration`` marker
+    tier runs there; see the test below, which is the one that measures that.
+    Reading this assertion as coverage of that tier is the mistake that let
+    #1307 sit: a `test-integration-all` exemption cited this test as its ratchet,
+    and a string check over a stage name cannot carry that claim.
+    """
     assert "integration_tests" in GITLAB.read_text()
     assert "integration_tests" not in _github_ci_text(), (
         "integration_tests appeared in GitHub CI. It needs AWS credentials; if "
         "that is now intended, update this test and CI_TEST_COVERAGE.md."
+    )
+
+
+@pytest.mark.unit
+def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
+    """The ``-m integration`` tier is run by no CI, and that must stay measured.
+
+    The reason this is worth a test rather than a comment: the two things are
+    easy to conflate by name. GitLab's `integration_tests` stage runs
+    `scripts/sdlc/integration_test_deployment.py`, which deploys a stack through
+    CodePipeline — it never invokes `pytest -m integration`, so the pytest tier
+    was covered nowhere while the exemption for it said GitLab had it. 14 of its
+    23 tests were failing on tooling faults, and the first thing to notice was a
+    release validation months later (#1307).
+
+    So: assert the absence directly, over every CI configuration and every
+    buildspec. If a CI starts running the tier, this test fails and the
+    `test-integration-all` exemption above must be rewritten — which is the
+    point. It is an inverted ratchet: the exemption is only honest while this
+    holds.
+
+    ⚠️ **The universe is derived, not listed.** An absence measured over a
+    hardcoded inventory is the failure mode the rest of this file exists to
+    avoid: a workflow added later, or a buildspec outside the directory someone
+    happened to glob, would invoke the tier and leave this green. Every
+    `.github/workflows/*.y*ml` and every tracked `buildspec*.yml` is read,
+    discovered at run time, so a workflow or buildspec added later is covered
+    without being named.
+
+    The glob is `*.y*ml` rather than `*.yml` because GitHub Actions reads both
+    extensions, so a workflow added as `.yaml` would otherwise sit outside a
+    universe this calls closed — and the non-vacuity guard below would not
+    notice, because the other four files would still be found.
+    """
+    workflows = sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
+    buildspecs = sorted(
+        REPO_ROOT / line
+        for line in subprocess.run(
+            ["git", "ls-files", "*buildspec*.yml"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+    runners = [
+        GITLAB,
+        *workflows,
+        REPO_ROOT / "scripts" / "sdlc" / "integration_test_deployment.py",
+        *buildspecs,
+    ]
+    # Discovery returning nothing would make the assertion below vacuous, which
+    # is how an absence check quietly stops checking anything.
+    assert workflows, "no GitHub workflow discovered"
+    assert buildspecs, "no buildspec discovered"
+    for named in (GITHUB_TESTS, GITHUB_SECURITY):
+        assert named in workflows, (
+            f"{named.name} is not in the discovered workflow set, so discovery "
+            "has stopped reaching the files this suite reads elsewhere"
+        )
+
+    present = [p for p in runners if p.exists()]
+    assert len(present) == len(runners), (
+        f"expected to read all of {[p.name for p in runners]}; missing "
+        f"{[p.name for p in runners if not p.exists()]} — this test cannot "
+        "report an absence it never looked for"
+    )
+
+    # Every spelling that starts the tier, not just the `make` one. The whole-tree
+    # runner takes `--integration` (root Makefile's `test-integration-all` is
+    # `run_all_tests.py --integration`), and a buildspec calling that script
+    # directly is the natural way to run the tier from CI — it would have left this
+    # check green while running every test the check is about. The marker selector
+    # is listed in all three quotings because a shell or YAML author picks freely
+    # between them and an unlisted one is an invisible hole, not a near miss.
+    invocations = (
+        "test-integration",
+        "--integration",
+        "-m integration",
+        '-m "integration"',
+        "-m 'integration'",
+    )
+    found = {
+        p.relative_to(REPO_ROOT).as_posix(): [
+            needle for needle in invocations if needle in _uncommented(p.read_text())
+        ]
+        for p in present
+    }
+    offenders = {path: hits for path, hits in found.items() if hits}
+    assert not offenders, (
+        "the pytest `integration` tier is now invoked from CI "
+        f"({offenders}). That is a real improvement, but the "
+        "`test-integration-all` entry in GATES_DELIBERATELY_OUT_OF_CI says the "
+        "opposite — rewrite it, and delete this test or invert it."
     )

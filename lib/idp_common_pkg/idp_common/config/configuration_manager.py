@@ -6,12 +6,15 @@ from __future__ import annotations
 import boto3
 import datetime
 import gzip
+import hashlib
 import json
 import os
 from typing import Dict, Any, Optional, Union, List
 from botocore.exceptions import ClientError
 import logging
 from boto3.dynamodb.types import Binary
+
+from idp_common.ddb_numbers import coerce_int
 
 from .models import (
     IDPConfig,
@@ -83,6 +86,17 @@ _DYNAMODB_ITEM_SIZE_WARNING = 350 * 1024  # Warn at 350KB
 # Minimum number of top-level keys expected in a full IDP config
 _MIN_FULL_CONFIG_KEYS = 4
 
+EXPIRED_REVISION_REMEDY = (
+    "If it is the profile's current revision and its body has expired, saving a "
+    "change to the profile's configuration in the editor or with idp-cli "
+    "config-upload cuts a new revision with a fresh body, and new documents are "
+    "pinned to it. 'default' and stack-managed profiles cannot be saved in the "
+    "editor: an administrator can change 'default' with Save as default from "
+    "another profile or with idp-cli config-upload, and a stack-managed profile "
+    "gets a new revision from a stack update that changes its configuration, so "
+    "process its documents under an editable copy of it until then."
+)
+
 
 def _is_full_config(raw_dict: Dict[str, Any]) -> bool:
     """
@@ -113,6 +127,26 @@ def _is_full_config(raw_dict: Dict[str, Any]) -> bool:
     }
     present = config_sections.intersection(raw_dict.keys())
     return len(present) >= _MIN_FULL_CONFIG_KEYS
+
+
+def _stored_content_hash(item: Dict[str, Any]) -> str:
+    """Hash of a profile head item's stored configuration, excluding its metadata."""
+    content = {k: v for k, v in item.items() if k not in _DYNAMODB_METADATA_FIELDS}
+    canonical = json.dumps(content, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime.datetime]:
+    """Parse the ISO-8601 timestamps written on head items and revision entries."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
 
 
 class ConfigurationManager:
@@ -500,7 +534,12 @@ class ConfigurationManager:
             timestamp = datetime.datetime.utcnow().isoformat() + "Z"
 
             # Get existing record to preserve metadata
-            existing_record = self._read_record(CONFIG_TYPE_CONFIG, version)
+            existing_item = self._read_item(CONFIG_TYPE_CONFIG, version)
+            existing_record = (
+                ConfigurationRecord.from_dynamodb_item(existing_item)
+                if existing_item is not None
+                else None
+            )
             is_active_status = existing_record.is_active if existing_record else False
 
             if existing_record:
@@ -536,7 +575,7 @@ class ConfigurationManager:
             record = ConfigurationRecord(configuration_type=config_type, config=config)
 
         # Write to DynamoDB (adds full config marker automatically)
-        self._write_record(record)
+        stored_hash = self._write_record(record)
 
         if config_type == CONFIG_TYPE_CONFIG and version and cut_revision:
             # History is best-effort by design: a configuration save must never
@@ -549,6 +588,8 @@ class ConfigurationManager:
                     config=config,
                     created_by=created_by,
                     notes=revision_notes,
+                    stored_hash=stored_hash,
+                    previous_head=existing_item,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -562,6 +603,8 @@ class ConfigurationManager:
         config: Union[SchemaConfig, IDPConfig, PricingConfig, ModelConfigLimitsConfig],
         created_by: Optional[str] = None,
         notes: Optional[str] = None,
+        stored_hash: Optional[str] = None,
+        previous_head: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """
         Cut the revision(s) for a just-completed profile save.
@@ -569,13 +612,21 @@ class ConfigurationManager:
         On the first save after upgrading to a release with revision history, the
         configuration that was there *before* this save is cut as a revision
         first, so the pre-history state is not lost by the very change that
-        introduced history.
+        introduced history. When that save changes nothing, the backfill is
+        published, with the stored-content hash its own body implies rather than
+        the hash of the head the save wrote: `True == 1`, so a save that swaps one
+        for the other wherever the configuration model leaves a value untyped, as
+        it does inside a class, counts as unchanged although the head it writes
+        stores the configuration differently from the backfill.
 
-        A save that does not change the configuration records nothing. Every
+        Any other save that does not change the configuration cuts no revision. Every
         stack deployment re-saves `default` and each managed profile whether or
         not the shipped configuration moved, so without this a handful of no-op
         upgrades would fill the retention window with identical revisions and
-        push a user's real history out of it.
+        push a user's real history out of it. Such a save still refreshes the
+        published revision's stored-content hash, from the revision's body or
+        from `previous_head`, the decompressed head this save replaced (see
+        `_refresh_published_stored_hash`).
         """
         if not self.revisions.enabled:
             return None
@@ -602,6 +653,9 @@ class ConfigurationManager:
                     created_by="system",
                     notes="Configuration as it stood before revision history was enabled",
                     publish=unchanged,
+                    stored_hash=self._stored_hash_of_body(profile, previous_dict)
+                    if unchanged
+                    else None,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -609,8 +663,8 @@ class ConfigurationManager:
                 )
             else:
                 if unchanged:
-                    # The backfill already records exactly this configuration —
-                    # publishing it there avoids an identical second revision.
+                    # The save changed nothing `==` can see, so the backfill is
+                    # published instead of a second, equal revision.
                     logger.info(
                         f"Profile '{profile}' is unchanged by this save; its pre-history "
                         f"snapshot r{backfilled} is the current revision"
@@ -621,6 +675,7 @@ class ConfigurationManager:
                 f"Profile '{profile}' saved with no configuration change; "
                 f"not recording a revision"
             )
+            self._refresh_published_stored_hash(profile, previous_head)
             return None
 
         return self.revisions.cut(
@@ -628,6 +683,7 @@ class ConfigurationManager:
             new_dict,
             created_by=created_by,
             notes=notes,
+            stored_hash=stored_hash,
         )
 
     @staticmethod
@@ -663,7 +719,136 @@ class ConfigurationManager:
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
         """Full configuration recorded in one revision, or None if not retained."""
-        return self.revisions.get_body(profile, revision)
+        return self._read_revision_body(profile, revision)
+
+    def _read_revision_body(
+        self, profile: str, revision: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        A revision's body, rebuilt from the profile head if it is the published
+        revision and its object has expired.
+
+        Revision bodies live in the Configuration bucket, whose lifecycle rule
+        expires every object after DataRetentionInDays, while every new document is
+        pinned to its profile's PublishedRevision. Without this, a profile whose
+        published revision was cut more than DataRetentionInDays ago stops
+        processing new documents. The head stands in only when it is provably that
+        revision (`_head_is_revision`); any other missing body stays missing.
+        """
+        body = self.revisions.get_body(profile, revision)
+        if body is not None or not self.revisions.enabled:
+            return body
+        return self._published_body_from_head(profile, int(revision))
+
+    def _published_body_from_head(
+        self, profile: str, revision: int
+    ) -> Optional[Dict[str, Any]]:
+        """The head's configuration as `revision`'s body, or None if unproven."""
+        item = self.table.get_item(
+            Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"}
+        ).get("Item")
+        if not item or not self._is_published_and_latest(item, revision):
+            return None
+        entry = self.revisions.get_entry(profile, revision)
+        if entry is None:
+            return None
+        head = self._decompress_item(item)
+        if not self._head_is_revision(head, entry):
+            logger.warning(
+                f"Revision r{revision} of configuration profile '{profile}' has no "
+                f"stored body, and the profile head cannot be shown to be that "
+                f"revision. {EXPIRED_REVISION_REMEDY}"
+            )
+            return None
+        body = self._config_of_head(head)
+        logger.warning(
+            f"Revision r{revision} of configuration profile '{profile}' has no stored "
+            f"body (expired under the Configuration bucket's DataRetentionInDays "
+            f"lifecycle rule); using the profile head, which is that revision"
+        )
+        return body
+
+    @staticmethod
+    def _is_published_and_latest(item: Dict[str, Any], revision: int) -> bool:
+        """Whether a head item names `revision` as both its published and newest."""
+        return (
+            coerce_int(item.get("PublishedRevision")) == revision
+            and coerce_int(item.get("LatestRevision")) == revision
+        )
+
+    @classmethod
+    def _config_of_head(cls, head: Dict[str, Any]) -> Dict[str, Any]:
+        """The configuration a decompressed head item serves, shaped as a body."""
+        return cls._config_to_dict(ConfigurationRecord.from_dynamodb_item(head).config)
+
+    @staticmethod
+    def _head_is_revision(head: Dict[str, Any], entry: Dict[str, Any]) -> bool:
+        """
+        Whether a decompressed head item holds exactly the revision `entry` records.
+
+        Proven by the stored-content hash the revision recorded, or, for revisions
+        cut before that hash existed, by the head not having been written since the
+        revision was cut. The second rule accepts the head the revision's own save
+        wrote, so it accepts it for a pre-history backfill an earlier release
+        published on an unchanged save too, although that save may have stored the
+        configuration differently from the backfill (`True` swapped for `1` where
+        the configuration model leaves a value untyped, as in a class).
+        """
+        recorded = entry.get("storedHash")
+        if recorded:
+            return recorded == _stored_content_hash(head)
+        written_at = _parse_timestamp(head.get("UpdatedAt"))
+        cut_at = _parse_timestamp(entry.get("createdAt"))
+        return written_at is not None and cut_at is not None and written_at <= cut_at
+
+    def _stored_hash_of_body(self, profile: str, body: Dict[str, Any]) -> str:
+        """The stored-content hash a head holding `body` would have."""
+        config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
+        config_dict.pop("config_type", None)
+        item = ConfigurationRecord(
+            configuration_type=CONFIG_TYPE_CONFIG,
+            version=profile,
+            config=IDPConfig(**config_dict),
+        ).to_dynamodb_item()
+        item[_FULL_CONFIG_MARKER] = _FULL_CONFIG_VALUE
+        return _stored_content_hash(item)
+
+    def _refresh_published_stored_hash(
+        self, profile: str, previous_head: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Record the stored-content hash a head holding the published revision has
+        under the current code.
+
+        Computed from the revision's own body or, once that has expired, from the
+        configuration in `previous_head`, the decompressed head the save replaced,
+        provided that head passes the proof a pinned read applies. Never computed
+        from the head the save wrote, so a head changed by a writer that cut no
+        revision is never recorded as the published revision. Best effort: a save
+        never fails because this could not be recorded.
+        """
+        try:
+            published = self.resolve_published_revision(profile)
+            if published is None:
+                return
+            entry = self.revisions.get_entry(profile, published)
+            if entry is None:
+                return
+            body = self.revisions.get_body(profile, published)
+            if body is None:
+                if previous_head is None or not (
+                    self._is_published_and_latest(previous_head, published)
+                    and self._head_is_revision(previous_head, entry)
+                ):
+                    return
+                body = self._config_of_head(previous_head)
+            stored_hash = self._stored_hash_of_body(profile, body)
+            if entry.get("storedHash") != stored_hash:
+                self.revisions.update_entry(profile, published, storedHash=stored_hash)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not refresh the stored-content hash of '{profile}': {e}"
+            )
 
     def _load_revision_config(self, profile: str, revision: int) -> IDPConfig:
         """
@@ -672,13 +857,16 @@ class ConfigurationManager:
         Raises rather than falling back to the profile head: a document or test run
         pinned to r5 must never be silently processed under r9. A wrong-config run
         that looks successful is worse than a failed one, because its numbers go
-        into a comparison.
+        into a comparison. The head is used only when it provably *is* r5 and r5's
+        body has expired (`_read_revision_body`).
         """
-        body = self.revisions.get_body(profile, revision)
+        body = self._read_revision_body(profile, revision)
         if body is None:
             raise ValueError(
                 f"Revision r{revision} of configuration profile '{profile}' is not "
-                f"available (deleted, pruned, or history is disabled)"
+                f"available (deleted, pruned, expired under the Configuration "
+                f"bucket's DataRetentionInDays lifecycle rule, or history is "
+                f"disabled). {EXPIRED_REVISION_REMEDY}"
             )
         config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
         config_dict.pop("config_type", None)
@@ -729,7 +917,7 @@ class ConfigurationManager:
         Raises:
             ValueError: If the revision is not retained or is unreadable
         """
-        body = self.revisions.get_body(profile, revision)
+        body = self._read_revision_body(profile, revision)
         if body is None:
             raise ValueError(
                 f"Revision r{revision} of profile '{profile}' is no longer available"
@@ -1632,6 +1820,15 @@ class ConfigurationManager:
         Returns:
             ConfigurationRecord or None if not found
         """
+        item = self._read_item(configuration_type, version)
+        if item is None:
+            return None
+        return ConfigurationRecord.from_dynamodb_item(item)
+
+    def _read_item(
+        self, configuration_type: str, version: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """The decompressed DynamoDB item `_read_record` parses, or None if absent."""
         response = self.table.get_item(
             Key={
                 "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"
@@ -1645,15 +1842,15 @@ class ConfigurationManager:
             return None
 
         # Decompress if stored in compressed format
-        item = self._decompress_item(item)
-
-        return ConfigurationRecord.from_dynamodb_item(item)
+        return self._decompress_item(item)
 
     def _write_record(
         self, record: ConfigurationRecord, identifier: Optional[str] = None
-    ) -> None:
+    ) -> str:
         """
         Write ConfigurationRecord to DynamoDB using single key.
+
+        Returns the stored-content hash of what was written.
 
         Uses gzip compression to store config data as a Binary attribute,
         keeping only metadata fields as top-level DynamoDB attributes. This
@@ -1706,6 +1903,7 @@ class ConfigurationManager:
             log_id = record.configuration_type
 
         logger.info(f"Saved configuration: {log_id}")
+        return _stored_content_hash(item)
 
     # ===== Compression Helpers =====
 

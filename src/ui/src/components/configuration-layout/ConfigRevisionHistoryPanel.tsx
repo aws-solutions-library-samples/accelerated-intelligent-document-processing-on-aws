@@ -32,8 +32,8 @@ interface ConfigRevisionHistoryPanelProps {
 
 const BADGE_TOOLTIPS = {
   current: 'Current: the configuration this profile is running now.',
-  pinned: 'Pinned by a test run — kept regardless of the retention limit so the run stays comparable.',
-  labeled: 'Labeled — kept regardless of the retention limit.',
+  pinned: 'Pinned by a test run — exempt from the revision limit, but its stored configuration still expires after DataRetentionInDays.',
+  labeled: 'Labeled — exempt from the revision limit, but its stored configuration still expires after DataRetentionInDays.',
 };
 
 const formatSize = (bytes?: number | null): string => {
@@ -174,7 +174,7 @@ const ConfigRevisionHistoryPanel = ({
             <Header
               variant="h3"
               counter={revisions.length ? `(${revisions.length})` : undefined}
-              description="Every save records an immutable revision. Compare any two, restore an earlier one, or label a revision to keep it beyond the retention limit."
+              description="Every save records an immutable revision. Compare any two, restore an earlier one, or label a revision to keep it beyond the revision limit (a label does not stop it expiring after DataRetentionInDays)."
               actions={
                 <SpaceBetween direction="horizontal" size="xs">
                   <Button iconName="refresh" onClick={() => loadRevisions(profileName)} loading={loading}>
@@ -369,7 +369,9 @@ const ConfigRevisionHistoryPanel = ({
         }
       >
         <SpaceBetween size="m">
-          <Alert type="info">A labeled revision is kept regardless of the retention limit.</Alert>
+          <Alert type="info">
+            A labeled revision is exempt from the revision limit, but its stored configuration still expires after DataRetentionInDays.
+          </Alert>
           <FormField label="Label" description="Short marker shown in the history, e.g. “known good”.">
             <Input value={labelValue} onChange={({ detail }) => setLabelValue(detail.value)} placeholder="known good" />
           </FormField>

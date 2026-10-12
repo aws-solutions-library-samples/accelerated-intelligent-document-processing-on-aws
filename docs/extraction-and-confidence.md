@@ -107,14 +107,17 @@ extraction:
 > `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
+> (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
 > (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
-> Ignored by Nova, Sonnet 4.5, and Haiku 4.5.
+> Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
+> Haiku 5.5 is the first Haiku that accepts effort, and its own default is
+> `medium` rather than `high`.
 
 ### Advanced (agentic) extraction
 
@@ -143,7 +146,7 @@ per shard.
 extraction:
   agentic:
     enabled: true             # Advanced mode
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: us.anthropic.claude-sonnet-5
 ```
 
 #### Supported models for agentic extraction
@@ -151,9 +154,12 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
-  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
-- **Anthropic Claude Opus** models (for highest accuracy requirements)
+  - `us.anthropic.claude-sonnet-5` — the shipped extraction default
+  - `us.anthropic.claude-sonnet-4-6` — best balance of speed and cost
+  - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — still selectable, but an AWS
+    Health notice puts it in legacy with end of life on 2027-04-08
+- **Anthropic Claude Opus** models (for highest accuracy requirements), e.g.
+  `us.anthropic.claude-opus-5`
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
@@ -200,7 +206,7 @@ Agentic extraction requires models with tool-use support:
 > |---|---|---|
 > | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
 > | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
-> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
+> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5, Haiku 5.5) | none — `` `top_k` is deprecated for this model `` | — |
 > | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
 > | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
 >
@@ -546,7 +552,7 @@ classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     $id: complex-financial-form
     x-aws-idp-document-type: complex-financial-form
-    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-4-20250514-v1:0  # Override!
+    x-aws-idp-extraction-model: us.anthropic.claude-sonnet-5  # Override!
     type: object
     properties:
       account_number:
@@ -1423,7 +1429,7 @@ extraction:
 >    extraction:
 >      confidence:
 >        escalation_enabled: true
->        escalation_model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+>        escalation_model: "us.anthropic.claude-sonnet-5:1m"
 >        max_escalation_rounds: 2
 >    ```
 >
@@ -1996,6 +2002,7 @@ extraction:
 **Supported models** include:
 
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`

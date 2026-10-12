@@ -1467,7 +1467,7 @@ Pattern 2 supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR back
 ```yaml
 ocr:
   backend: "bedrock"  # Options: "textract", "bedrock", "none"
-  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  model_id: "us.anthropic.claude-sonnet-4-6"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
   
@@ -1480,71 +1480,23 @@ ocr:
 
 #### Supported Vision-Capable Models
 
-Configure from these supported models:
+The authoritative list is the **Model** dropdown under OCR in the configuration
+editor, which is generated from the `ocr.model_id` enum in
+`patterns/unified/template.yaml`. It spans the `us.`, `eu.` and `global.`
+Claude and Nova families plus `qwen.qwen3-vl-235b-a22b`, Grok and the OpenAI
+models, and includes the `:priority` and `:flex` Nova tiers. It is not
+reproduced here, because a copy of a picklist goes stale silently — which is
+what had happened to the list this paragraph replaced.
 
-- `us.amazon.nova-lite-v1:0`
-- `us.amazon.nova-pro-v1:0`
-- `us.amazon.nova-2-lite-v1:0`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-20250514-v1:0`
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `us.anthropic.claude-sonnet-4-6`
-- `us.anthropic.claude-sonnet-4-6:1m`
-- `us.anthropic.claude-opus-4-5-20251101-v1:0`
-- `us.anthropic.claude-opus-4-1-20250805-v1:0`
-- `us.anthropic.claude-opus-4-5-20251101-v1:0`
-- `us.anthropic.claude-opus-4-6-v1`
-- `us.anthropic.claude-opus-4-6-v1:1m`
-- `us.anthropic.claude-opus-4-7`
-- `us.anthropic.claude-opus-4-7:1m`
-- `us.anthropic.claude-opus-4-8`
-- `us.anthropic.claude-opus-4-8:1m`
-- `us.anthropic.claude-opus-5`
-- `us.anthropic.claude-opus-5:1m`
-- `us.anthropic.claude-opus-5-5`
-- `us.anthropic.claude-opus-5-5:1m`
-- `eu.amazon.nova-lite-v1:0`
-- `eu.amazon.nova-pro-v1:0`
-- `eu.amazon.nova-2-lite-v1:0`
-- `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-20250514-v1:0`
-- `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `eu.anthropic.claude-sonnet-4-6`
-- `eu.anthropic.claude-sonnet-4-6:1m`
-- `eu.anthropic.claude-opus-4-5-20251101-v1:0`
-- `eu.anthropic.claude-opus-4-6-v1`
-- `eu.anthropic.claude-opus-4-6-v1:1m`
-- `eu.anthropic.claude-opus-4-7`
-- `eu.anthropic.claude-opus-4-7:1m`
-- `eu.anthropic.claude-opus-4-8`
-- `eu.anthropic.claude-opus-4-8:1m`
-- `eu.anthropic.claude-opus-5`
-- `eu.anthropic.claude-opus-5:1m`
-- `eu.anthropic.claude-opus-5-5`
-- `eu.anthropic.claude-opus-5-5:1m`
-- `qwen.qwen3-vl-235b-a22b`
-- `global.amazon.nova-2-lite-v1:0`
-- `global.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- `global.anthropic.claude-sonnet-4-6`
-- `global.anthropic.claude-sonnet-4-6:1m`
-- `global.anthropic.claude-opus-4-5-20251101-v1:0`
-- `global.anthropic.claude-opus-4-6-v1`
-- `global.anthropic.claude-opus-4-6-v1:1m`
-- `global.anthropic.claude-opus-4-7`
-- `global.anthropic.claude-opus-4-7:1m`
-- `global.anthropic.claude-opus-4-8`
-- `global.anthropic.claude-opus-4-8:1m`
-- `global.anthropic.claude-opus-5`
-- `global.anthropic.claude-opus-5:1m`
-- `global.anthropic.claude-opus-5-5`
-- `global.anthropic.claude-opus-5-5:1m`
+Commonly used choices:
+
+- `us.amazon.nova-lite-v1:0` — cheapest; adequate for clean, text-heavy scans
+- `us.amazon.nova-pro-v1:0` — better on mixed layouts
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` — fast Claude option
+- `us.anthropic.claude-sonnet-4-6` — strongest on handwriting and dense tables
+- `qwen.qwen3-vl-235b-a22b` — vision-language alternative
+
+Select `LambdaHook` instead of a model to route OCR to your own Lambda function.
 
 #### When to Configure Bedrock OCR
 

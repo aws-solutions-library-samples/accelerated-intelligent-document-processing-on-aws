@@ -352,10 +352,35 @@ Two failure shapes to distinguish:
   can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
-  selectable, because they work for accounts that have used them recently — if
-  you hit this error, either pick a current model or request access again in the
-  Bedrock console.
+  Such models stay selectable, because they work for accounts that have used
+  them recently — if you hit this error, either pick a current model or request
+  access again in the Bedrock console.
+
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0` is the selectable model closest
+  to this state: an AWS Health notice puts it in legacy from 2026-10-08 with end
+  of life on 2027-04-08, which `list-foundation-models` had not yet reflected
+  when this page was written. `us.anthropic.claude-opus-4-1-20250805-v1:0` is
+  the model the API does report as `LEGACY` (end of life 2027-01-08), and it is
+  no longer in any picklist here, so you will meet it only in a configuration
+  stored before it was removed. Read the state yourself rather than from this
+  page:
+
+  ```bash
+  aws bedrock list-foundation-models --by-provider anthropic \
+    --query 'modelSummaries[].{id:modelId,lifecycle:modelLifecycle}'
+  ```
+
+  A legacy model also receives no further Service Quota increases, so it is a
+  poor choice for new work even while it answers. No default in the commercial
+  partition names one. **GovCloud is the exception.** That partition offers
+  three models — `us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+  `amazon.nova-pro-v1:0` and `amazon.nova-lite-v1:0` — and the
+  `lending-package-sample-govcloud` preset names the Sonnet for extraction,
+  summarization, LLM evaluation and confidence escalation, so a GovCloud
+  deployment runs the legacy Sonnet for those stages until that partition offers
+  a successor. (The `--govcloud` template transform defaults the knowledge-base
+  model to `amazon.nova-pro-v1:0`; it reaches the Sonnet only by selecting that
+  preset.)
 
 A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the
@@ -949,7 +974,7 @@ Pattern-2 and Pattern-3 support configurable strategies for how classified pages
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire document as a single section with the first detected class. Simplest approach for single-document processing.
+- **`disabled`**: Treats the entire document as a single section. With page-level classification the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); with holistic classification it takes the first segment's class. Simplest approach for single-document processing.
   
 - **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   
@@ -1040,15 +1065,20 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Opus 5.5, Fable 5 | 512 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5** | 512 tokens |
 | Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
 | Amazon Nova | ≤ 355 tokens (below any shipped class) |
 
 Measured across the shipped presets, 25% of classes never cache on the 1,024-token
-tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
-gets no caching at all and, until now, no indication of it.
+tier and **none** do on Haiku 4.5 — choosing Haiku 4.5 to save money on extraction
+gets you no caching at all, with no indication of it in the response.
+
+Note the two Haikus sit at opposite ends of this table, so "Haiku" is not a tier.
+Haiku 5.5's minimum is 512 tokens — the lowest here, 8x below Haiku 4.5's — which
+makes it the one cheap model where caching is worth configuring rather than written
+off: a class that never cached on Haiku 4.5 may well cache on it.
 
 `idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up

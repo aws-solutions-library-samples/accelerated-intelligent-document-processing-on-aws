@@ -345,11 +345,56 @@ def _command_lines() -> list[str]:
     return _runnable(_recipe_body())
 
 
+def _make_variable_defaults() -> dict[str, str]:
+    """``NAME``→value for the simple variable assignments in the root ``Makefile``.
+
+    Only needed for variables that appear INSIDE a recipe's pytest arguments, which
+    today is ``$(PYTEST_XDIST)``. Resolving them rather than ignoring them is what
+    keeps :func:`_target_paths` honest: an unexpanded ``$(NAME)`` does not start
+    with ``-``, so it would be collected as a test path and probed as one, and a
+    variable whose value genuinely did name a path would be silently skipped if the
+    token were merely dropped instead.
+    """
+    pattern = re.compile(r"^([A-Z][A-Z0-9_]*)\s*(?:\?=|:=|=)\s*(.*)$")
+    defaults: dict[str, str] = {}
+    for line in MAKEFILE.read_text(encoding="utf-8").splitlines():
+        match = pattern.match(line)
+        if match:
+            defaults.setdefault(match.group(1), match.group(2).strip())
+    return defaults
+
+
+def _expand_make_vars(text: str) -> str:
+    """Substitute ``$(NAME)`` for its root-``Makefile`` default, except the wrapper.
+
+    ``$(PYTEST_HERMETIC)`` is deliberately left alone: it is the marker
+    :func:`_pytest_invocations` splits on, and this test supplies the wrapper and
+    interpreter itself rather than reading them from the recipe.
+    """
+    defaults = _make_variable_defaults()
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name == PYTEST_VAR:
+            return match.group(0)
+        assert name in defaults, (
+            f"recipe line references $({name}), which is not assigned in "
+            f"{MAKEFILE.relative_to(REPO_ROOT)}. Either it is a typo, or it is "
+            "defined somewhere this parser does not read — in which case the "
+            "pytest arguments below cannot be read correctly."
+        )
+        return defaults[name]
+
+    return re.sub(r"\$\(([A-Z][A-Z0-9_]*)\)", replace, text)
+
+
 def _pytest_invocations() -> list[tuple[str, list[str]]]:
     """Every pytest run in the recipe, as (directory relative to the repo root, args).
 
     ``$(PYTEST_HERMETIC)`` expands to the wrapper plus ``python -m pytest``; this
-    test supplies those itself, so only the arguments after it are extracted.
+    test supplies those itself, so only the arguments after it are extracted. Any
+    OTHER make variable in the argument list is expanded first — see
+    :func:`_expand_make_vars`.
     """
     invocations: list[tuple[str, list[str]]] = []
     for line in _command_lines():
@@ -362,7 +407,7 @@ def _pytest_invocations() -> list[tuple[str, list[str]]]:
             workdir = head[len("cd ") :].strip()
             command = tail.strip()
         _, _, args = command.partition(f"$({PYTEST_VAR})")
-        invocations.append((workdir, shlex.split(args)))
+        invocations.append((workdir, shlex.split(_expand_make_vars(args))))
     return invocations
 
 
