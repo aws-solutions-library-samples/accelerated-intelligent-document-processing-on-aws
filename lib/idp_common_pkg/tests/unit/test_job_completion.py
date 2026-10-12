@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from idp_common.job_completion import (
+    JOB_KEY_PREFIX,
     TERMINAL_FILE_STATUSES,
     complete_job_results,
     create_results_zip,
@@ -493,3 +494,62 @@ class TestDeferredResults:
             deferred_svc.update_file_status.call_args
             == direct_svc.update_file_status.call_args
         )
+
+
+@pytest.mark.unit
+class TestTheZipPrefixIsBoundedToOneJob:
+    """``list_objects_v2`` matches a string prefix, not a path component.
+
+    So ``jobs/12`` also matches every key under ``jobs/123/``, and job 12's
+    ``results.zip`` would carry job 123's extracted documents — handed out
+    through a presigned URL, so a cross-job disclosure rather than a wrong file
+    count. Job ids are UUIDs in practice, so no id is a prefix of another and
+    this had never been observed; the trailing slash is what makes that a
+    property of the code rather than of the id format.
+    """
+
+    def _s3(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"Contents": [{"Key": "jobs/12/a.json"}]}
+        s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"{}")}
+        return s3
+
+    def test_the_listing_prefix_ends_with_a_slash(self):
+        s3 = self._s3()
+        create_results_zip("12", s3, "out")
+        assert s3.list_objects_v2.call_args.kwargs["Prefix"] == "jobs/12/"
+
+    def test_a_job_whose_id_prefixes_another_lists_only_its_own(self):
+        """The failure this prevents, stated as the scenario rather than the
+        string: with no trailing slash, S3 would return both jobs' keys here and
+        every one of them would be zipped."""
+        s3 = MagicMock()
+        s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"{}")}
+
+        returned = {}
+
+        def listing(**kwargs):
+            returned["prefix"] = kwargs["Prefix"]
+            # What S3 really does: prefix match, so "jobs/12" would match both.
+            keys = ["jobs/12/own.json", "jobs/123/other-job.json"]
+            return {
+                "Contents": [{"Key": k} for k in keys if k.startswith(kwargs["Prefix"])]
+            }
+
+        s3.list_objects_v2.side_effect = listing
+        create_results_zip("12", s3, "out")
+
+        zipped = [call.kwargs["Key"] for call in s3.get_object.call_args_list]
+        assert zipped == ["jobs/12/own.json"], (
+            f"job 12's zip must not contain job 123's objects; prefix was "
+            f"{returned.get('prefix')!r} and it zipped {zipped}"
+        )
+
+    def test_it_is_built_from_the_shared_constant(self):
+        """``JOB_KEY_PREFIX`` sits directly above this function and is what
+        ``parse_job_document_id`` keys on, so the listing and the parsing cannot
+        disagree about where a job's keys live."""
+        s3 = self._s3()
+        create_results_zip("abc", s3, "out")
+        prefix = s3.list_objects_v2.call_args.kwargs["Prefix"]
+        assert prefix.startswith(JOB_KEY_PREFIX)

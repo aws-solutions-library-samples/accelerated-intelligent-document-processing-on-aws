@@ -221,7 +221,14 @@ def create_results_zip(job_id: str, s3_client: Any, output_bucket: str) -> bool:
     test misses a configuration, which is the most expensive shape a test
     failure has.
     """
-    prefix = f"jobs/{job_id}"
+    # ⚠️ The trailing slash is load-bearing. `list_objects_v2` matches on a
+    # string prefix, so "jobs/12" also matches every key under "jobs/123/", and
+    # job 12's results.zip would carry job 123's extracted documents — a
+    # cross-job disclosure through a presigned URL, not merely a wrong file
+    # count. Pre-existing in `job_tracker` before this module was extracted; job
+    # ids are UUIDs in practice, so one is not a prefix of another, which is why
+    # it had never been seen.
+    prefix = f"{JOB_KEY_PREFIX}{job_id}/"
     keys: list = []
     continuation: Optional[str] = None
     while True:

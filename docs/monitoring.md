@@ -710,6 +710,7 @@ on.
 | `<stack>-malware-verdict-dlq-depth` | Any verdict EventBridge could not deliver after every retry. The document it describes is stuck with nothing having decided it is safe | `AlertsTopic` | Threshold is fixed at > 0 |
 | `<stack>-malware-verdicts-unapplied` | More than four verdicts reached the gate and were not applied within 15 min — superseded, or outran their ingest event | `AlertsTopic` | Threshold is fixed at > 4 |
 | `<stack>-malware-no-verdicts` | Documents held at the gate with **no** verdict applied for an hour: ingest has stopped. The only signal for GuardDuty not answering at all | `AlertsTopic` | Threshold is fixed at > 0 |
+| `<stack>-malware-job-finalize-failed` | A refused document belonged to a `/Jobs` batch and the gate could not mark it terminal, or could not hand the finished batch on to be zipped. The batch answers `IN_PROGRESS` indefinitely | `AlertsTopic` | Threshold is fixed at ≥ 1 — the gate swallows this error by design, so the metric is the only signal and one occurrence is one permanently stalled batch |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
 `AlertsTopic` carries the display name **Workflow Alerts**.

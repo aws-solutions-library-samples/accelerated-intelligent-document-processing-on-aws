@@ -8306,6 +8306,43 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # The gate could not mark a refused /Jobs file terminal, or could not hand the
+  # completed batch to JobTracker for zipping. Threshold zero, because this is
+  # the ONE silent-stall route the gate adds: both call sites deliberately
+  # swallow their exception (the refusal is already persisted, and raising would
+  # re-deliver the verdict, which then takes the duplicate path and returns
+  # early), so the batch keeps reporting IN_PROGRESS from
+  # api_handler.compute_job_status with nothing else reporting a fault. Recovery
+  # depends on a duplicate GuardDuty verdict that may never arrive. Every other
+  # metric here records a decision; this one records a decision that could not be
+  # written down, which is why it cannot be left to a rate threshold.
+  MalwareScanJobFinalizeFailedAlarm:
+    Condition: MalwareScanningEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-malware-job-finalize-failed"
+      AlarmDescription: >-
+        A document refused by the malware gate belonged to a /Jobs API batch, and
+        the gate could not record it as terminal or could not hand the finished
+        batch to JobTracker to build results.zip. The refusal itself held - the
+        file was NOT processed - but GET /jobs/<id> will answer IN_PROGRESS
+        indefinitely for that batch, because the job tracker only hears about
+        documents that ran a workflow. Check the QueueSender log group for
+        'Failed to finalize job file' or 'Could not delegate results for job',
+        which name the job id. If JOB_TRACKER_FUNCTION_NAME is unset the stack
+        was deployed without the Jobs API, which is a misconfiguration when
+        jobs/ documents exist.
+      Namespace: !Ref AWS::StackName
+      MetricName: MalwareScanJobFinalizeFailed
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   QueueProcessor:
     Type: AWS::Serverless::Function
     Metadata:
@@ -10036,8 +10073,8 @@ Resources:
               {
                 "type": "metric",
                 "x": 0,
-                "y": 12,
-                "width": 8,
+                "y": 48,
+                "width": 12,
                 "height": 6,
                 "properties": {
                   "metrics": [
@@ -10123,7 +10160,7 @@ Resources:
                     ]
                   ],
                   "region": "${AWS::Region}",
-                  "title": "Malware Scanning (ingest gate)",
+                  "title": "Malware Scanning (ingest gate) - empty unless the MalwareScanning parameter is set; it is DISABLED by default",
                   "view": "timeSeries",
                   "stacked": false,
                   "period": 300,
@@ -10136,9 +10173,9 @@ Resources:
               },
               {
                 "type": "log",
-                "x": 8,
+                "x": 0,
                 "y": 12,
-                "width": 16,
+                "width": 24,
                 "height": 6,
                 "properties": {
                   "query": "SOURCE '${StateMachineLogGroup}' | fields @timestamp, @message | filter @message like /ExecutionFailed/ or @message like /TimedOut/ | parse @message /execution: (?<execution_arn>[^ ]*)/ | parse @message /error: (?<error>[^\"]*)/| sort @timestamp desc | limit 20",

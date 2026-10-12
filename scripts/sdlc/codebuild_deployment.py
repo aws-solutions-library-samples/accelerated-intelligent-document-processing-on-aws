@@ -2953,6 +2953,23 @@ def test_step15_malware_gate(stack_name):
 
     print("Step 15: Testing the malware-scanning ingest gate (EICAR)...")
 
+    # The deploy's mode is overridable (IDP_INTEGRATION_MALWARE_MODE), so this
+    # step has to agree with it rather than assume CREATE_PLAN. Reported as a
+    # skip, not a pass: with the gate off the upload below would be processed
+    # normally, and asserting QUARANTINED against a stack that is not gating
+    # would fail for a reason that is not a defect.
+    malware_mode = os.environ.get("IDP_INTEGRATION_MALWARE_MODE", "CREATE_PLAN")
+    if malware_mode == "DISABLED":
+        print(
+            "  ⏭️  SKIPPED: the stack was deployed with MalwareScanning=DISABLED, "
+            "so there is no gate to exercise."
+        )
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "MalwareScanning=DISABLED for this deploy",
+        }
+
     outputs = _stack_outputs(stack_name)
     input_bucket = outputs.get("S3InputBucketName") or outputs.get("InputBucketName")
     if not input_bucket:
@@ -3207,6 +3224,40 @@ SEQUENTIAL_TEST_STEPS = [
 ALL_TEST_STEPS = PARALLEL_TEST_STEPS + SEQUENTIAL_TEST_STEPS
 
 
+#: The malware-scanning modes the integration deploy accepts.
+_INTEGRATION_MALWARE_MODES = ("CREATE_PLAN", "GATE_ONLY", "DISABLED")
+
+
+def _integration_malware_mode():
+    """The ``MalwareScanning`` mode for the primary integration deploy.
+
+    Separate from the deploy function, and pure, so it is testable without
+    reaching an AWS call: the validation has to run before the deploy, and a
+    test that drove the deploy to reach it would make real IAM calls.
+
+    Defaults to ``CREATE_PLAN`` so the nightly suite exercises the gate. The
+    override exists because the two ways `CREATE_PLAN` fails are both outside
+    this template and both fail the WHOLE suite rather than step 15: the
+    deployment role needs `guardduty:*` applied out of band, and the account
+    needs a free slot against the 25-plan-per-Region quota. Either missing gives
+    a stack ``CREATE_FAILED`` before any test runs, and with the mode hardcoded
+    there was no way to get a pipeline green again without a code change.
+    """
+    mode = os.environ.get("IDP_INTEGRATION_MALWARE_MODE", "CREATE_PLAN")
+    if mode not in _INTEGRATION_MALWARE_MODES:
+        raise ValueError(
+            f"IDP_INTEGRATION_MALWARE_MODE must be one of "
+            f"{', '.join(_INTEGRATION_MALWARE_MODES)}, got {mode!r}"
+        )
+    if mode != "CREATE_PLAN":
+        print(
+            f"⚠️  MalwareScanning={mode} (from IDP_INTEGRATION_MALWARE_MODE). "
+            f"The malware gate step will report a skip rather than exercising "
+            f"GuardDuty."
+        )
+    return mode
+
+
 def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     """One deploy+health-check attempt for the primary shared stack.
 
@@ -3255,7 +3306,23 @@ def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     # cleanup; if the quota needs an immediate workaround, deleting leftover
     # test stacks (or switching one run to `GATE_ONLY` against a plan the
     # account already has) frees a slot.
-    cmd += f" --parameters PermissionsBoundaryArn={permissions_boundary_arn} MalwareScanning=CREATE_PLAN"
+    #
+    # ⚠️ **Overridable from the environment, because the two ways this fails are
+    # both outside the template and both fail the WHOLE suite rather than step
+    # 15.** `CREATE_PLAN` needs `guardduty:*` on the deployment role — the
+    # `IDP-Cloudformation-Service-Role` change in this repository has to have
+    # been applied to the CI account out of band — and it needs a free slot
+    # against the 25-plan quota. Either missing gives a stack `CREATE_FAILED`
+    # before any test runs, and with the mode hardcoded there is no way to get a
+    # pipeline green again without a code change. `IDP_INTEGRATION_MALWARE_MODE`
+    # lets an operator drop to `GATE_ONLY` or `DISABLED` for a run; the default
+    # stays `CREATE_PLAN` so the gate is exercised unless somebody decides
+    # otherwise.
+    malware_mode = _integration_malware_mode()
+    cmd += (
+        f" --parameters PermissionsBoundaryArn={permissions_boundary_arn}"
+        f" MalwareScanning={malware_mode}"
+    )
     # Full nested-stack creation can legitimately run long; don't let the default
     # test-command timeout kill a healthy in-progress deploy. check=False so a
     # rollback is captured (with cf_events) and classified rather than raising.

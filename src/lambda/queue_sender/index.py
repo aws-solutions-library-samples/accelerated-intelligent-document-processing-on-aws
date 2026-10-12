@@ -743,12 +743,25 @@ def handle_scan_result(event):
         # write is a no-op by construction when the condition holds.
         extra_attributes["MalwareScanVersionId"] = verdict_version
     elif verdict_version or stored_version:
-        # One side has a discriminator and the other does not: GuardDuty omitted
-        # the version from the event, or the bucket is unversioned and the ETag
-        # was absent too. Report it so the mismatch is attributable, and fall
-        # back to the status clause alone — that preserves the at-least-once
-        # guard the condition exists for, and the "stored equals verdict" compare
-        # in `_handle_verdict_condition_failure` still routes a true duplicate to
+        # One side has a discriminator and the other does not, which drops the
+        # re-upload guard for this verdict. Three conditions produce it, none of
+        # them reachable on a stack deployed from this template unmodified:
+        #
+        #   * The bucket has versioning Suspended, so `version-id` is the literal
+        #     "null" (excluded by `object_version_of`) AND the event carried no
+        #     ETag either. This template sets `VersioningConfiguration: Enabled`
+        #     on the input bucket, so it needs that to have been changed.
+        #   * GATE_ONLY against an externally managed plan whose events omit both
+        #     `versionId` and `eTag` from `s3ObjectDetails`.
+        #   * The ETag on one side and the version id on the other, where the two
+        #     describe the same object but are not comparable as strings.
+        #
+        # Reported rather than refused, because refusing would strand the
+        # document at MALWARE_SCANNING with no verdict ever applicable, which is
+        # worse than admitting it with the weaker check. Falling back to the
+        # status clause alone preserves the at-least-once guard the condition
+        # mainly exists for, and the "stored equals verdict" compare in
+        # `_handle_verdict_condition_failure` still routes a true duplicate to
         # the duplicate path.
         logger.warning(
             "Verdict version mismatch for %s: event=%r stored=%r — falling back "
