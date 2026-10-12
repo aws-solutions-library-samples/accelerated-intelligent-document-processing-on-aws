@@ -23,6 +23,10 @@ on:
   pull_request:
     branches:
       - "**" # Any PR, matching developer-tests.yml
+  # A manual re-run path, for the dropped-`pull_request`-event case written up in
+  # developer-tests.yml. Both gate workflows need it or a re-run covers half the
+  # gate set, which is worse than knowing you have none.
+  workflow_dispatch:
 
 # Least-privilege default for the GITHUB_TOKEN — see the note in
 # developer-tests.yml. Every job here also declares its own block.

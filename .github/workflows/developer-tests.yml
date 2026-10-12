@@ -7,6 +7,21 @@ on:
   pull_request:
     branches:
       - "**" # Run on PR open, update, or synchronize (i.e., any push to PR branch)
+  # ⚠️ A manual re-run path, because the `pull_request` event is not guaranteed
+  # to arrive. Observed on this repository: a push updated the PR head (the ref
+  # and the API's `headRefOid` both advanced, the PR was open and not a draft,
+  # and every workflow read `state: active`), and GitHub dispatched nothing for
+  # that SHA — zero workflow runs and zero check-runs, while a `schedule` run
+  # fired normally minutes later. `reopened` is in the default `types:` and
+  # closing and reopening the PR did not fix it either.
+  #
+  # With no `workflow_dispatch` there was no way to get the gates onto that
+  # commit at all, and the symptom is the dangerous one: `gh pr checks` reports
+  # "no checks reported", which a reviewer cannot tell apart from checks that
+  # have not started yet. Running this against the branch produces branch checks
+  # rather than PR checks, so they will not appear in the PR's own list — read
+  # the run directly (`gh run list --branch <branch>`).
+  workflow_dispatch:
 
 # Least-privilege default for the GITHUB_TOKEN. Without this, any job that
 # omits its own `permissions:` block inherits the repository default, which can
