@@ -524,7 +524,12 @@ def _handle_upload_document(event):
             ExpiresIn=900,  # 15 minutes
         )
 
-        logger.info(f"Generated presigned POST data: {json.dumps(presigned_post)}")
+        # The URL and key only. The full response carries the POST policy and its
+        # signature, and anyone who can read this log group could replay an upload
+        # to that key with them for as long as the 15-minute expiry lasts. Nothing
+        # here needs the credential to be greppable, and the key is what a support
+        # question is ever about.
+        logger.info("Generated presigned POST data for %s", object_key)
 
         # Return the presigned POST data and object key.
         # usePostMethod is a STRING ("true") per the schema (PresignedUploadUrl.

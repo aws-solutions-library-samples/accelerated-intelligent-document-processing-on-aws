@@ -123,11 +123,12 @@ def _emit(metric_name, dimensions=None):
     try:
         datum = {"MetricName": metric_name, "Value": 1, "Unit": "Count"}
         if dimensions:
-            # Truncated to CloudWatch's 255-character dimension-value limit. S3 keys
-            # reach 1024 bytes and nothing caps a mapping prefix's length, so an
-            # untruncated prefix makes put_metric_data raise InvalidParameterValue --
-            # which the bare `except` below would swallow, losing the metric silently
-            # for exactly the long-prefix deployments most likely to need it.
+            # Truncated to CloudWatch's 255-character dimension-value limit. A
+            # mapping prefix may be up to 512 bytes -- `_MAX_PREFIX_LEN`, refused
+            # above that at validation time -- so an untruncated value can exceed
+            # the limit and make put_metric_data raise InvalidParameterValue, which
+            # the bare `except` below would swallow, losing the metric silently for
+            # exactly the long-prefix deployments most likely to need it.
             datum["Dimensions"] = [
                 {"Name": name, "Value": str(value)[:255]}
                 for name, value in dimensions.items()

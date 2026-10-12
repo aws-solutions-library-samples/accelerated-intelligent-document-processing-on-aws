@@ -513,7 +513,13 @@ class TestConfigPrefixMappingsOnReprocess:
 
         index.handler(_event(_author_claims(), version=None), None)
 
-        assert calls == [("acme/statement.pdf", None, None)]
+        # No profile pinned -- but `active-profile` as the SOURCE, not an empty
+        # one: a blank ConfigSource cannot be told apart from a document written
+        # before the field existed. The scope denial is recorded in the log and
+        # deliberately NOT in the source, because the source travels onto the
+        # document and a value meaning "a mapping was refused here" would tell a
+        # scoped user that a mapping governs a prefix they cannot see.
+        assert calls == [("acme/statement.pdf", None, "active-profile")]
 
     def test_no_mapping_leaves_the_reprocess_unpinned_as_before(
         self, users_table, document_version, monkeypatch
@@ -525,7 +531,10 @@ class TestConfigPrefixMappingsOnReprocess:
 
         index.handler(_event(_author_claims(), version=None), None)
 
-        assert calls == [("acme/statement.pdf", None, None)]
+        # Unpinned, as before mappings existed -- but the provenance is recorded.
+        # This is the ordinary case, so an empty source here would leave the
+        # commonest reprocess unable to answer the question ConfigSource exists for.
+        assert calls == [("acme/statement.pdf", None, "active-profile")]
 
     def test_an_unreadable_mapping_table_does_not_refuse_the_reprocess(
         self, monkeypatch

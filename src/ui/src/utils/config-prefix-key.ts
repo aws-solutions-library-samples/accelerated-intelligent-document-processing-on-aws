@@ -99,9 +99,9 @@ export const storedPrefix = (prefix: string, mode: MatchMode): string => {
  * same shared table that holds `canonicalKey` to `canonical_key`: its
  * `rejections` array records, per prefix, WHICH rule fires rather than the exact
  * prose, so the two sides may word a refusal differently but may not disagree
- * about whether a prefix is refused or about which rule refused it. Two server
- * rules are deliberately absent here and named in that table's
- * `serverOnlyRules`; see `scripts/tests/test_config_prefix_key_mirror.py`.
+ * about whether a prefix is refused or about which rule refused it. The server
+ * rules deliberately absent here are named in that table's `serverOnlyRules`; see
+ * `scripts/tests/test_config_prefix_key_mirror.py`.
  */
 export const prefixError = (prefix: string): string | null => {
   if (!prefix) return null;

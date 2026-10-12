@@ -10,6 +10,7 @@ import boto3
 
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
+    SOURCE_ACTIVE_PROFILE,
     SOURCE_DOCUMENT_PIN,
     SOURCE_EXPLICIT_REQUEST,
     PrefixMappingStore,
@@ -316,7 +317,13 @@ def _version_for_document(
         return pinned, requested_revision, SOURCE_DOCUMENT_PIN, None
 
     if not mappings:
-        return None, requested_revision, None, None
+        # `active-profile`, not an empty source. The profile is left None so the
+        # queue processor resolves whatever is active when the document is picked
+        # up, but the PROVENANCE is known now and is the whole point of the field:
+        # a blank ConfigSource is indistinguishable from a document written before
+        # the field existed, so "why did this reprocess under lending r7?" stops
+        # being answerable from the tracking row for exactly the ordinary case.
+        return None, requested_revision, SOURCE_ACTIVE_PROFILE, None
 
     seam_cache = {} if seam_cache is None else seam_cache
     assignment = resolve_config_assignment(
@@ -343,7 +350,14 @@ def _version_for_document(
                 "profile is outside the caller's configuration scope",
                 object_key,
             )
-        return None, requested_revision, None, None
+        # Also `active-profile`: no mapping applied, so the document reprocesses
+        # the way it would have with none configured. The scope denial is recorded
+        # in the log above rather than in the source, deliberately -- the source
+        # travels onto the document and is read back by anyone who can see it, so
+        # a value meaning "a mapping was refused here" would tell a scoped user
+        # that a mapping governs a prefix they cannot see, which is the disclosure
+        # `resolve_config_assignment` strips for the same reason.
+        return None, requested_revision, SOURCE_ACTIVE_PROFILE, None
 
     logger.info("Reprocess of %s: %s", object_key, assignment.reason)
     _emit("PrefixMappingApplied", {"Prefix": assignment.mapping_prefix})
