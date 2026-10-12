@@ -141,6 +141,10 @@ const shadowedBy = (mapping: ConfigPrefixMapping, all: ConfigPrefixMapping[]): s
     .filter(
       (other) =>
         other.prefix !== mapping.prefix &&
+        // A DISABLED mapping never matches, so it shadows nothing. Warning about
+        // one describes an interception that cannot happen, and the remedy it
+        // implies -- reordering or narrowing a prefix -- would be work against a
+        // rule that is not in force.
         other.enabled !== false &&
         mapping.prefix.endsWith('/') &&
         other.prefix.startsWith(mapping.prefix),

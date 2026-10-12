@@ -1231,6 +1231,49 @@ def test_profiles_in_use_backs_the_delete_a_profile_guard():
 
 @pytest.mark.unit
 @mock_aws
+def test_delete_answers_about_the_winning_pass_not_the_first_one():
+    """`delete` returns "no such mapping remains", not "this call removed it".
+
+    `_rewrite` calls the mutation once per attempt and retries under optimistic
+    concurrency, so a concurrent delete of the same prefix can win between two
+    attempts. The flag therefore has to reflect the LAST attempt: latched on the
+    first, this reports a removal the caller did not perform. The end state is the
+    same either way, which is exactly why the wrong answer would never be noticed
+    in practice -- so it is asserted over the mutation itself rather than left to a
+    race that is hard to provoke.
+    """
+    store = PrefixMappingStore(_make_table())
+    attempts = []
+
+    def two_attempts(mutate):
+        """Attempt one sees the entry; by the retry somebody else removed it."""
+        attempts.append(mutate([{"prefix": "a/", "configProfile": "lending"}]))
+        attempts.append(mutate([]))
+        return True
+
+    store._rewrite = two_attempts
+    assert store.delete("a/") is False, (
+        "delete reported that it removed a mapping the winning attempt found "
+        "already gone"
+    )
+    # The mutation itself behaved correctly on both attempts: it removed the entry
+    # on the first and declined to write on the second.
+    assert attempts[0] == []
+    assert attempts[1] is None
+
+
+@pytest.mark.unit
+@mock_aws
+def test_delete_still_reports_an_ordinary_removal():
+    """The common path, so the test above cannot pass by breaking it."""
+    store = PrefixMappingStore(_make_table())
+    store.put("a/", "lending")
+    assert store.delete("a/") is True
+    assert store.delete("a/") is False
+
+
+@pytest.mark.unit
+@mock_aws
 def test_a_read_failure_must_not_turn_a_put_into_a_wipe():
     """The defect this store exists to avoid inheriting from ConfigRevisionStore.
 

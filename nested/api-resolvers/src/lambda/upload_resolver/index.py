@@ -449,7 +449,28 @@ def _handle_upload_document(event):
         # prefix with one check -- see resolve_destination. Only for the Input
         # bucket: the other four write targets (ground-truth baselines, page images,
         # exports) are not documents and no mapping governs them.
-        if bucket_name == os.environ.get("INPUT_BUCKET"):
+        #
+        # ⚠️ The gate is an equality against an environment variable, so an UNSET
+        # `INPUT_BUCKET` makes it false and would skip the check rather than apply
+        # it -- the opposite of what an unset `CONFIGURATION_TABLE_NAME` does a few
+        # frames down, which refuses. It cannot be reached that way today, because
+        # `ALLOWED_BUCKETS` is derived from the same variables and
+        # `assert_write_target_allowed` above has already refused a bucket that no
+        # variable names. That makes the two controls defence in depth rather than
+        # one control, and relying on the other one silently is how a later change
+        # to either turns this off with nothing to show for it -- so the invariant
+        # is asserted here instead of inferred.
+        input_bucket = os.environ.get("INPUT_BUCKET")
+        if not input_bucket and bucket_name not in ALLOWED_BUCKETS:
+            logger.error(
+                "INPUT_BUCKET is not configured, so an upload cannot be "
+                "scope-checked against the configuration it would process under"
+            )
+            raise PermissionError(
+                "Unauthorized: this deployment is not configured to accept "
+                "document uploads."
+            )
+        if bucket_name == input_bucket:
             resolve_destination(event, object_key, version, revision)
             # Note what this deliberately does NOT do: it does not rewrite `version`
             # to the resolved profile. The metadata keeps recording what was

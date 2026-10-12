@@ -704,9 +704,13 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
     def test_the_active_profile_route_is_scope_checked(self, resolver):
         """The widest upload shape there is: no `version`, no mapping match.
 
-        This was allowed because the resolver was not given `active_profile`, so the
-        resolved profile was None and a None profile skips the scope guard. The
-        route the control exists for was the one it did not cover.
+        The upload path performs no configuration-scope check before this change --
+        it bounded the caller's Cognito group and the target bucket and nothing
+        else -- so this is the shape the new control most needs to cover: the
+        profile comes from neither the request nor a mapping but from whatever is
+        active. It is also the shape most easily left uncovered, because the guard
+        is skipped for a `None` profile and the resolver only resolves one if it is
+        handed `active_profile`. That is what this pins.
         """
         index, _ = resolver
         self._activate("finance-prod")

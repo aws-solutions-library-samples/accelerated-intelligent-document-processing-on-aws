@@ -359,8 +359,6 @@ def handler(event, context):
         except Exception:
             pass  # telemetry must not affect document ingest
 
-    # The document and its configuration were resolved above, before the purge.
-
     # Capture X-Ray trace ID for error analysis
     current_segment = xray_recorder.current_segment()
     if current_segment:

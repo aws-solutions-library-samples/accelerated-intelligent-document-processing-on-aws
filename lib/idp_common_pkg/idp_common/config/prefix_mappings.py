@@ -1094,6 +1094,14 @@ class PrefixMappingStore:
     def delete(self, prefix: str) -> bool:
         """Remove the mapping for ``prefix``. Returns whether one was there.
 
+        ⚠️ The answer is **"no such mapping remains"**, not "this call removed it".
+        ``_rewrite`` may make several passes under optimistic concurrency, and a
+        concurrent delete of the same prefix can win in between; the flag is taken
+        from the LAST pass for that reason, so a losing race reports ``False``
+        rather than claiming a removal it did not perform. The caller's remedy is
+        the same either way -- ``handle_delete_prefix_mapping`` turns ``False`` into
+        "no configuration prefix mapping for '<prefix>'", which is true.
+
         Deliberately does **not** unpin a revision this mapping pinned. A test run may
         have pinned the same revision, and nothing records which referent set the
         flag, so unpinning here could delete a configuration another feature still
@@ -1104,6 +1112,9 @@ class PrefixMappingStore:
         def mutate(entries: List[Dict[str, Any]]):
             remaining = [e for e in entries if e["prefix"] != prefix]
             if len(remaining) == len(entries):
+                # Re-set, not left latched from an earlier pass: the entry is gone
+                # as of the pass that won, which is the state this returns.
+                found["value"] = False
                 return None
             found["value"] = True
             return remaining
