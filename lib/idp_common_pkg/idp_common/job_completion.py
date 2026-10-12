@@ -159,9 +159,10 @@ def create_results_zip(job_id: str, s3_client: Any, output_bucket: str) -> bool:
     ⚠️ **The loop advances on the continuation token, never on ``IsTruncated``.**
     Those look interchangeable and are not: the token is the only field whose
     *absence* can terminate the loop, whereas a truthy non-boolean ``IsTruncated``
-    spins forever. That is not hypothetical — it is what an unconfigured
-    ``MagicMock`` returns, so the first version of this hung the job_tracker
-    suite rather than failing it, which is the most expensive shape a test
+    spins forever. The property to rely on is the *type* of the token (a string),
+    not its truthiness — a bare ``MagicMock`` returns a truthy object for every
+    field, so a loop guarded on truthiness alone becomes a hang the moment a
+    test misses a configuration, which is the most expensive shape a test
     failure has.
     """
     prefix = f"jobs/{job_id}"

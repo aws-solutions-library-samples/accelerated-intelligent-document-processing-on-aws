@@ -88,17 +88,29 @@ interface StepFunctionFlowViewerProps {
 /** The leading synthetic step, built from the document's own verdict. */
 const MALWARE_SCAN_STEP_NAME = 'Malware Scan';
 
-const buildMalwareScanStep = (scan?: MalwareScanFields | null): Step | null => {
+export const buildMalwareScanStep = (scan?: MalwareScanFields | null): Step | null => {
   if (!scan) return null;
   const view = getMalwareScanView(scan);
   if (view.outcome === 'none') return null;
 
   // Mapped to the vocabulary the real steps use, so every status-driven branch
   // in this component and in FlowDiagram treats it like any other step.
+  //
+  // ⚠️ **Only two of the four outcomes are reachable here**, and that is on
+  // purpose. The viewer renders only when `executionArn` is set (see
+  // `DocumentPanel.tsx`), and a document reaches this view only once a workflow
+  // has run — so a `QUARANTINED` or `MALWARE_SCANNING` document never opens the
+  // viewer at all. The two reachable cases are `clean` and the admitted
+  // unscannable path (the config allows it under policy), and both are
+  // successful first steps: the document went through. The `label` already
+  // conveys the "admitted unscanned" caveat, so a red step would read as a
+  // failure the document plainly did not have.
   const status = {
     clean: 'SUCCEEDED',
+    unscannable: 'SUCCEEDED',
+    // Not reachable, but mapped for completeness. The gate's refusal path is
+    // surfaced by the detail-panel banner and the status badge, not here.
     threat: 'FAILED',
-    unscannable: 'FAILED',
     pending: 'RUNNING',
   }[view.outcome];
 

@@ -3245,6 +3245,16 @@ def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     # protected buckets allowed per account per Region. Left fail-closed
     # (AllowUnscannableDocuments defaults false) so an unscannable sample fails
     # the suite loudly instead of being quietly admitted.
+    #
+    # ⚠️ **Each run consumes one of the 25 Malware Protection plans allowed per
+    # account per Region.** Deletion is tied to the stack delete, so the normal
+    # teardown path releases the slot — but an orphaned stack from a cancelled
+    # run keeps its plan. If the quota is reached, the symptom is a deploy
+    # failing with `MalwareProtectionPlanLimitExceeded` on the
+    # `MalwareProtectionPlan` resource. The failed-stack reaper handles the
+    # cleanup; if the quota needs an immediate workaround, deleting leftover
+    # test stacks (or switching one run to `GATE_ONLY` against a plan the
+    # account already has) frees a slot.
     cmd += f" --parameters PermissionsBoundaryArn={permissions_boundary_arn} MalwareScanning=CREATE_PLAN"
     # Full nested-stack creation can legitimately run long; don't let the default
     # test-command timeout kill a healthy in-progress deploy. check=False so a

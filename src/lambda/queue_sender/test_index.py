@@ -1117,9 +1117,18 @@ class TestSqsFailureAfterAdmission:
         assert len(calls) == 2
         assert calls[0].args[1] == Status.QUEUED
         assert calls[1].args[1] == Status.MALWARE_SCANNING
-        # The revert is unconditional on purpose: the compare-and-set it would
-        # otherwise use has already been consumed by the admission above.
-        assert "condition_expression" not in calls[1].kwargs
+        # ⚠️ The revert is CONDITIONAL on the row still being this invocation's
+        # admission (status QUEUED, scan time this verdict's). If the SQS send
+        # actually reached the service and only the response was lost, a retry
+        # re-admits and sends a second message — an unconditional revert would
+        # then re-open the gate with a message already in flight, so the
+        # admission would be delivered twice. The condition's refusal is the
+        # signal to leave the row alone and let the retry's own compare-and-set
+        # decide.
+        revert_condition = calls[1].kwargs["condition_expression"]
+        assert "#ObjectStatus = :queued" in revert_condition
+        assert "#MalwareScanTime = :verdict_time" in revert_condition
+        assert calls[1].kwargs["extra_attributes"][":queued"] == "QUEUED"
 
 
 @pytest.mark.unit
@@ -1907,3 +1916,116 @@ class TestTheEnqueuedDocumentMatchesTheUngatedPath:
 
         assert doc.malware_scan_result == "NO_THREATS_FOUND"
         assert doc.status == Status.QUEUED
+
+
+@pytest.mark.unit
+class TestTheEmptyDiscriminatorPath:
+    """A silent stall for an unlikely but real failure shape.
+
+    The condition pins the stored version against the verdict's. If either side
+    is empty — a versioning-disabled bucket plus a missing ETag — pinning
+    empty-equals-empty is unsatisfiable: the service only writes
+    ``MalwareScanVersionId`` under a truthiness guard, so the stored value is
+    absent, the compare-and-set never holds, and the handler would take the
+    "stored equals verdict" duplicate path and silently drop the verdict. The
+    document would then sit at MALWARE_SCANNING until the no-verdicts alarm
+    fired an hour later — a success-looking failure, which is the worst shape.
+    """
+
+    def _run(self, verdict_version, stored_version):
+        import index
+
+        def fresh():
+            d = _mock_document()
+            d.status = Status.MALWARE_SCANNING
+            d.malware_scan_version_id = stored_version
+            return d
+
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(
+                index.Document, "from_s3_event", return_value=_mock_document()
+            ),
+            patch.object(index, "_resolve_config_version"),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
+            event = make_scan_result_event()
+            event["detail"]["s3ObjectDetails"]["versionId"] = verdict_version
+            event["detail"]["s3ObjectDetails"]["eTag"] = ""
+            index.handler(event, None)
+            return mock_doc_service, mock_sqs
+
+    def test_both_discriminators_present_pins_the_version(self):
+        """The normal case — the condition includes the version clause."""
+        mock_doc_service, _ = self._run(verdict_version="v1", stored_version="v1")
+
+        condition = mock_doc_service.update_document_status.call_args.kwargs[
+            "condition_expression"
+        ]
+        assert "#MalwareScanVersionId = :verdict_version" in condition
+
+    def test_both_empty_drops_the_version_clause(self):
+        """The failure shape the fix was for. Both sides empty would compare
+        equal and quietly admit the document on an unsatisfiable condition — the
+        handler now drops the clause instead."""
+        mock_doc_service, mock_sqs = self._run(verdict_version="", stored_version="")
+
+        condition = mock_doc_service.update_document_status.call_args.kwargs[
+            "condition_expression"
+        ]
+        assert "#MalwareScanVersionId" not in condition
+        # The at-least-once guard on status survives, and the document is
+        # admitted on it (write succeeds in this unit test).
+        mock_sqs.send_message.assert_called_once()
+
+    def test_one_side_empty_is_logged_but_admitted(self, caplog):
+        """A row written before version pinning, or an event missing both
+        version id and ETag. The condition still has the status clause; the
+        mismatch is logged so a sustained rate is attributable."""
+        with caplog.at_level("WARNING"):
+            mock_doc_service, _ = self._run(verdict_version="v1", stored_version="")
+
+        condition = mock_doc_service.update_document_status.call_args.kwargs[
+            "condition_expression"
+        ]
+        assert "#MalwareScanVersionId" not in condition
+        assert "version mismatch" in caplog.text
+
+
+@pytest.mark.unit
+class TestTheNullVersionIdFallback:
+    """A suspended-versioning bucket reports ``version-id="null"`` for every
+    object. That string is truthy, so a plain ``or`` chain would short-circuit
+    on it and the ETag — which actually discriminates — would never be read.
+    """
+
+    def test_null_falls_through_to_the_etag(self):
+        import index
+
+        assert index.object_version_of({"version-id": "null", "etag": "e1"}) == "e1"
+
+    def test_null_on_the_guardduty_side_too(self):
+        import index
+
+        assert index.object_version_of({"versionId": "null", "eTag": "e1"}) == "e1"
+
+    def test_two_distinct_objects_do_not_collide_as_null(self):
+        """The property this is about. Without the fallback, both would yield
+        ``'null'`` and look identical."""
+        import index
+
+        a = index.object_version_of({"versionId": "null", "eTag": "abc"})
+        b = index.object_version_of({"versionId": "null", "eTag": "def"})
+        assert a != b

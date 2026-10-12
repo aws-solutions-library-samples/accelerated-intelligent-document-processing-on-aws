@@ -404,20 +404,27 @@ _REPROCESS_REFUSED_STATUSES = frozenset(
 def _refuse_if_refused_by_the_malware_gate(object_key):
     """Raise if this document was refused at the malware-scanning ingest gate.
 
-    Fails **open** on a read error, matching every other best-effort read in this
-    resolver: the caller is an authenticated Admin or Reviewer and the scope
-    checks above have already run, so a DynamoDB blip should not make reprocess
-    unusable. The control that holds regardless is the gate itself — a reprocessed
-    document is re-queued, and anything uploaded afresh is scanned again.
+    Fails **closed** on a read error, matching the "both directions fail closed"
+    posture this file's own header states for its scope checks. The reasoning is
+    narrower than for the other best-effort reads here: those protect against
+    stale state after the pipeline has already seen a document, whereas this one
+    is the ONLY backstop for a known-infected or unscannable file. Reprocess does
+    not go back through the ingest gate — it builds a fresh QUEUED document and
+    hands it to SQS, so a DynamoDB blip that admits a possibly-quarantined file
+    cannot be recovered by "the gate will see it again". A retry is cheap; a
+    reprocessed infected document is not.
     """
     try:
         document = document_service.get_document(object_key)
     except Exception as e:  # noqa: BLE001
-        logger.warning(
+        logger.error(
             f"Could not read {object_key}'s status before reprocessing ({e}); "
-            f"proceeding"
+            f"refusing until the status can be read"
         )
-        return
+        raise ValueError(
+            f"Could not verify {object_key}'s status before reprocessing. "
+            f"This is temporary — retry the request. ({e})"
+        ) from e
     if document is None:
         return
     status = getattr(document.status, "value", document.status)

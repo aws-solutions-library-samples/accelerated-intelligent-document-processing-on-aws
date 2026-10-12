@@ -27,18 +27,20 @@ active-profile fallback, the X-Ray annotation and the TTL calculation — none o
 which should exist twice.
 """
 
-import boto3
-import os
 import json
-from datetime import datetime, timezone, timedelta
 import logging
-from idp_common.models import Document, Status
+import os
+from datetime import datetime, timedelta, timezone
+
+import boto3
+from aws_xray_sdk.core import patch_all, xray_recorder
+
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 from idp_common.job_completion import finalize_job_file, parse_job_document_id
 from idp_common.job_service import create_job_service
+from idp_common.models import Document, Status
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-from aws_xray_sdk.core import xray_recorder, patch_all
 
 # Patch AWS SDK calls for X-Ray tracing
 patch_all()
@@ -75,7 +77,9 @@ MALWARE_SCANNING_ENABLED = MALWARE_SCANNING_MODE.upper() != "DISABLED"
 #: Stack-level ceiling on the config policy. A deployer who has not opted in here
 #: cannot have unscannable documents admitted by a config edit alone — the config
 #: knob is Admin-editable in the web UI, this is not.
-ALLOW_UNSCANNABLE_CEILING = os.environ.get("ALLOW_UNSCANNABLE", "false").strip().lower() in (
+ALLOW_UNSCANNABLE_CEILING = os.environ.get(
+    "ALLOW_UNSCANNABLE", "false"
+).strip().lower() in (
     "1",
     "true",
     "yes",
@@ -114,23 +118,25 @@ METRIC_SCAN_VERDICT_BEFORE_INGEST = "MalwareScanVerdictBeforeIngest"
 METRIC_SCAN_VERDICT_DUPLICATE = "MalwareScanVerdictDuplicate"
 METRIC_SCAN_VERDICT_SUPERSEDED = "MalwareScanVerdictSuperseded"
 METRIC_SCAN_JOB_FINALIZE_FAILED = "MalwareScanJobFinalizeFailed"
-#: Published when a document is HELD at the gate, and the counterpart published
-#: when any verdict is applied.
-#:
-#: These two exist for the one stall nothing else can see. Every other metric
-#: here is published when something is *decided*, so the failure where GuardDuty
-#: never answers at all — a plan deleted, a GATE_ONLY stack pointed at a plan
-#: that does not cover this bucket, GuardDuty disabled in the Region, the plan's
-#: role broken — halts ingest completely while every one of them reads zero. On a
-#: gate that fails closed that is the loudest possible failure and it was the
-#: quietest signal: uploads arriving with nothing being decided is only visible
-#: as the *absence* of the others, and you cannot alarm on an absence without a
-#: series to compare it against.
+
 #: The #719 stale-output purge failure. Not a malware metric, but it is emitted
 #: through the same helper, so it gets a constant for the same reason the others
 #: do: an inline literal is invisible to the gate that checks metrics are
 #: dashboarded.
 METRIC_STALE_OUTPUT_PURGE_FAILED = "StaleOutputPurgeFailed"
+
+#: Published when a document is HELD at the gate (`MalwareScanHeld`), and when
+#: any verdict is applied (`MalwareScanVerdictApplied`).
+#:
+#: These two exist for the one stall nothing else can see. Every other metric
+#: here is published when something is *decided*, so the failure where GuardDuty
+#: never answers at all — a plan deleted, a GATE_ONLY stack pointed at a plan
+#: that does not cover this bucket, GuardDuty disabled in the Region, the plan's
+#: role broken — halts ingest completely while every one of them reads zero. On
+#: a gate that fails closed that is the loudest possible failure and the
+#: quietest signal: uploads arriving with nothing being decided is only visible
+#: as the *absence* of the others, and you cannot alarm on an absence without a
+#: series to compare it against.
 METRIC_SCAN_HELD = "MalwareScanHeld"
 METRIC_SCAN_VERDICT_APPLIED = "MalwareScanVerdictApplied"
 
@@ -145,18 +151,28 @@ def object_version_of(event_object: dict) -> str:
     (``version-id``/``etag`` against ``versionId``/``eTag``), so both spellings
     are accepted on each side rather than assumed per caller.
 
-    The ETag fallback matters because it is the only field guaranteed present: a
-    bucket with versioning *suspended* gets the literal string ``"null"`` as a
-    version id for every object, which would make every upload look like the same
-    version. This repository's input bucket has versioning Enabled, so the
-    fallback should never engage — but a document that cannot be discriminated at
-    all would be admitted by any verdict, so there is no safe "unknown" value.
+    The ETag fallback matters because it is the only field guaranteed present,
+    and ``"null"`` is specifically excluded from the version-id side on purpose:
+    a bucket with versioning *suspended* reports ``version-id="null"`` for every
+    object, which would make every upload look like the same version, and
+    ``"null"`` is truthy so a plain ``or`` chain would short-circuit on it. The
+    ETag is specific to the object's bytes, so falling through to it when the
+    version id is ``"null"`` restores discrimination between distinct files.
+    This repository's input bucket has versioning Enabled, so the fallback
+    should never engage in practice — but a document that cannot be
+    discriminated at all would be admitted by any verdict, so there is no safe
+    "unknown" value.
     """
-    return str(
-        event_object.get("version-id")
-        or event_object.get("versionId")
-        or event_object.get("etag")
-        or event_object.get("eTag")
+
+    def _real(value):
+        value = str(value or "").strip()
+        return "" if value in ("", "null") else value
+
+    return (
+        _real(event_object.get("version-id"))
+        or _real(event_object.get("versionId"))
+        or _real(event_object.get("etag"))
+        or _real(event_object.get("eTag"))
         or ""
     )
 
@@ -316,7 +332,9 @@ def resolve_active_config_version(config_table):
         if pointer and pointer.get("ActiveVersion"):
             return str(pointer["ActiveVersion"])
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"Could not read the active-profile pointer ({e}); scanning instead")
+        logger.warning(
+            f"Could not read the active-profile pointer ({e}); scanning instead"
+        )
 
     scan_kwargs = {
         "FilterExpression": (
@@ -441,9 +459,7 @@ def _purge_stale_outputs(output_bucket, object_key):
 
 
 def _expiry_timestamp():
-    return int(
-        (datetime.now(timezone.utc) + timedelta(days=retentionDays)).timestamp()
-    )
+    return int((datetime.now(timezone.utc) + timedelta(days=retentionDays)).timestamp())
 
 
 @xray_recorder.capture("queue_sender")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
@@ -599,8 +615,8 @@ def handle_scan_result(event):
         raise Exception("OUTPUT_BUCKET environment variable not set")
 
     # The document handed to the pipeline must be the one the un-gated path would
-    # have handed it. Neither source alone can produce that, and getting this
-    # wrong is not subtle — it broke OCR on the first live document:
+    # have handed it. Neither source alone can produce that, and the invariant is
+    # worth stating because the two slips are not obvious:
     #
     #   * The TRACKING ROW does not persist the buckets, the config version or
     #     the forced class. `_document_to_create_item` writes the key, the
@@ -640,10 +656,14 @@ def handle_scan_result(event):
     # `or` rather than unconditional assignment: the row is authoritative for
     # these, but a row written by an older release may not carry them, and a
     # None would be worse than the verdict-derived value.
-    document.initial_event_time = existing.initial_event_time or document.initial_event_time
+    document.initial_event_time = (
+        existing.initial_event_time or document.initial_event_time
+    )
     document.queued_time = existing.queued_time or document.queued_time
     document.trace_id = existing.trace_id or document.trace_id
-    document.submission_source = existing.submission_source or document.submission_source
+    document.submission_source = (
+        existing.submission_source or document.submission_source
+    )
     document.test_set_id = existing.test_set_id or document.test_set_id
 
     document.malware_scan_status = scan_status
@@ -681,36 +701,64 @@ def handle_scan_result(event):
         "MalwareScanStatus": scan_status,
         "MalwareScanResult": result_status,
         "MalwareScanTime": verdict_time,
-        # SET as well as compared, and the write is a no-op by construction: the
-        # condition below only holds when the stored value already equals this
-        # one. It is here because an expression attribute NAME has to be
-        # registered by something, and the SET clause is what registers it —
-        # referencing `#MalwareScanVersionId` in the condition alone would make
-        # DynamoDB reject the whole request as malformed.
-        "MalwareScanVersionId": verdict_version,
         ":scanning": Status.MALWARE_SCANNING.value,
-        ":verdict_version": verdict_version,
     }
     if threat_name:
         extra_attributes["MalwareScanThreat"] = threat_name
     if reasons:
         extra_attributes["MalwareScanReasons"] = reasons
 
-    # The version clause is the half that stops a clean verdict for one upload
-    # admitting a different one. Re-uploading the same key while a scan is in
-    # flight gives both uploads one document row (it is keyed on the object key),
-    # so on the status clause alone v1's clean verdict would admit an unscanned
-    # v2 — and v2's own verdict would then be discarded as a duplicate. A
-    # superseded verdict now fails the condition and the document keeps waiting
-    # for the verdict that belongs to the bytes actually in the bucket.
+    # The version clause is what stops a clean verdict for one upload admitting a
+    # different one: re-uploading the same key while a scan is in flight gives
+    # both uploads one document row, so on the status clause alone v1's clean
+    # verdict would admit an unscanned v2 — and v2's own verdict would then be
+    # discarded as a duplicate. A superseded verdict now fails the condition and
+    # the document keeps waiting for the verdict that belongs to the bytes
+    # actually in the bucket.
+    #
+    # ⚠️ Only added when BOTH sides have a discriminator, which is the usual
+    # case here (the input bucket has versioning Enabled, and the ETag fallback
+    # covers an object a plan reports without a version id). If either is empty,
+    # pinning the condition on empty-equals-empty would be unsatisfiable — the
+    # service only writes `MalwareScanVersionId` under a truthiness guard, so
+    # the stored value is absent, the compare-and-set never holds, the handler
+    # takes the "stored equals verdict" duplicate path and silently drops the
+    # verdict. The document would then sit at MALWARE_SCANNING until the
+    # no-verdicts alarm fired an hour later. Reaching this needs a
+    # versioning-disabled bucket AND a missing ETag, which should not happen,
+    # but a silent hour-long stall reported as a 200 is the wrong shape of
+    # failure to leave on the floor.
+    condition = "attribute_exists(PK) AND #ObjectStatus = :scanning"
+    stored_version = (existing.malware_scan_version_id or "") if existing else ""
+    if verdict_version and stored_version:
+        condition += " AND #MalwareScanVersionId = :verdict_version"
+        extra_attributes[":verdict_version"] = verdict_version
+        # SET as well as compared: an expression attribute NAME has to be
+        # registered by something, and the SET clause is what registers it. The
+        # write is a no-op by construction when the condition holds.
+        extra_attributes["MalwareScanVersionId"] = verdict_version
+    elif verdict_version or stored_version:
+        # One side has a discriminator and the other does not. Report it so the
+        # mismatch is attributable (a row written before version pinning, or an
+        # event missing both version id and ETag), and keep going on the status
+        # clause alone — that preserves the at-least-once guard the condition
+        # exists for, and the "stored equals verdict" compare in
+        # `_handle_verdict_condition_failure` still falls through to the
+        # duplicate path for a true duplicate.
+        logger.warning(
+            "Verdict version mismatch for %s: event=%r stored=%r — admitting on "
+            "the status clause alone. If this is sustained, something upstream "
+            "is not supplying the object version.",
+            object_key,
+            verdict_version,
+            stored_version,
+        )
+
     try:
         document_service.update_document_status(
             document.input_key,
             new_status,
-            condition_expression=(
-                "attribute_exists(PK) AND #ObjectStatus = :scanning "
-                "AND #MalwareScanVersionId = :verdict_version"
-            ),
+            condition_expression=condition,
             extra_attributes=extra_attributes,
         )
     except Exception as e:  # noqa: BLE001
@@ -730,20 +778,51 @@ def handle_scan_result(event):
             # duplicate path, and the document sits in QUEUED with no workflow
             # and no SQS message — the silent-stall shape this whole function
             # exists to avoid.
+            #
+            # ⚠️ The revert is CONDITIONAL on the row still being the admission
+            # this invocation wrote (status QUEUED, scan time this verdict's).
+            # If the send actually reached SQS and only the response was lost,
+            # a retry re-admits and sends a second message; an unconditional
+            # revert would then re-open the gate with a message already in
+            # flight, so the admission would be delivered twice with the row
+            # back in a pre-admission state. Letting the condition fail is the
+            # safer answer: nobody else moved the row, so the retry's own
+            # compare-and-set will find it where it was left and proceed.
             logger.error(
                 "SQS send failed after admitting %s; reverting to MALWARE_SCANNING",
                 object_key,
             )
             try:
                 document_service.update_document_status(
-                    document.input_key, Status.MALWARE_SCANNING
+                    document.input_key,
+                    Status.MALWARE_SCANNING,
+                    condition_expression=(
+                        "#ObjectStatus = :queued AND #MalwareScanTime = :verdict_time"
+                    ),
+                    extra_attributes={
+                        ":queued": Status.QUEUED.value,
+                        ":verdict_time": verdict_time,
+                    },
                 )
             except Exception as revert_error:  # noqa: BLE001
-                logger.error(
-                    "Could not revert %s to MALWARE_SCANNING: %s",
-                    object_key,
-                    revert_error,
-                )
+                # A condition failure here is the "actually succeeded" case:
+                # another delivery (or the SQS message's own workflow) already
+                # moved the row. Logged but not re-raised, because we are about
+                # to re-raise the original send error for EventBridge to retry.
+                code = getattr(revert_error, "error_code", "")
+                if code == "ConditionalCheckFailedException":
+                    logger.warning(
+                        "Not reverting %s: the row is no longer the admission "
+                        "this invocation wrote (the SQS send may have reached "
+                        "the service despite the error).",
+                        object_key,
+                    )
+                else:
+                    logger.error(
+                        "Could not revert %s to MALWARE_SCANNING: %s",
+                        object_key,
+                        revert_error,
+                    )
             raise
         _put_metric(METRIC_SCAN_VERDICT_APPLIED)
         _put_metric(
@@ -814,7 +893,7 @@ def _handle_verdict_condition_failure(
             object_key,
             verdict_version,
             stored_version,
-            )
+        )
         _put_metric(METRIC_SCAN_VERDICT_SUPERSEDED)
         return {
             "statusCode": 200,
@@ -851,9 +930,11 @@ def _handle_verdict_condition_failure(
 
 def _refusal_message(document, bucket, object_key, admitted=False):
     lines = [
-        ("An unscannable document was ADMITTED to the pipeline."
-         if admitted
-         else "A document was refused at the malware-scanning ingest gate."),
+        (
+            "An unscannable document was ADMITTED to the pipeline."
+            if admitted
+            else "A document was refused at the malware-scanning ingest gate."
+        ),
         "",
         f"Document:        s3://{bucket}/{object_key}",
         f"Status:          {getattr(document.status, 'value', document.status)}",
