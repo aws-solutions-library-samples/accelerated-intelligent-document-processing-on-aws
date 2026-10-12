@@ -366,6 +366,37 @@ class TestTheAllowListFailsClosed:
                     _event("uploadDocument", {"fileName": "x.pdf", "bucket": "b"})
                 )
 
+    def test_an_unset_input_bucket_refuses_even_a_wired_other_bucket(
+        self, monkeypatch
+    ):
+        """The case a guard written as `and bucket_name not in ALLOWED_BUCKETS`
+        cannot catch, because the allow-list check above has already refused
+        anything outside it -- so that conjunct is unreachable and the guard is
+        inoperative.
+
+        With INPUT_BUCKET unset there is nothing left to recognise the document
+        destination by, so the scope check cannot be applied to anything and the
+        refusal is total. A deployment in that state is misconfigured: the Input
+        bucket is created by the parent stack and wired unconditionally.
+        """
+        monkeypatch.delenv("INPUT_BUCKET", raising=False)
+        monkeypatch.setenv("OUTPUT_BUCKET", "output-bucket")
+        with mock_aws():
+            import index
+
+            importlib.reload(index)
+            # The other bucket IS wired, so the allow-list lets it through and this
+            # reaches the guard under test rather than being refused earlier.
+            assert "output-bucket" in index.ALLOWED_BUCKETS
+
+            with pytest.raises(PermissionError, match="not configured to accept"):
+                index.handler(
+                    _event(
+                        "uploadDocument",
+                        {"fileName": "x.pdf", "bucket": "output-bucket"},
+                    )
+                )
+
 
 @pytest.mark.unit
 class TestTheDestinationsConfigurationScopeIsEnforced:

@@ -550,7 +550,13 @@ draining across a revision promotion runs entirely on the revision published whe
 document arrived instead of splitting across both. And **a mapping is not a security
 boundary on ingest**: a principal holding `s3:PutObject` on the Input bucket chooses
 its own prefix, and therefore its own profile, with no API call for anything to check.
-See [RBAC](rbac.md) for what the API layer does and does not enforce.
+It can also set `x-amz-meta-submission-source`, which is the stronger of the two
+levers — an object carrying it is exempt from mappings **entirely**, so a refusing
+mapping does not refuse it. Neither is reachable through the web UI: the presigned
+POST it mints lists the fields the browser may send, and S3 rejects any other, so a
+UI upload cannot claim to be an internal producer. Bound direct writers with IAM on
+whatever writes there, and see [RBAC](rbac.md) for what the API layer does and does
+not enforce.
 
 ### When the upload also names a profile
 
