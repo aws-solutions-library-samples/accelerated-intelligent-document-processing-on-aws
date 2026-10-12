@@ -3,6 +3,7 @@
 
 """Unit tests for the queue_sender Lambda function."""
 
+import json
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -1141,7 +1142,13 @@ class TestRefusedJobsApiDocument:
     IN_PROGRESS indefinitely.
     """
 
-    def _run(self, key, result_status="THREATS_FOUND"):
+    def _run(
+        self,
+        key,
+        result_status="THREATS_FOUND",
+        job_complete=True,
+        job_tracker_name="idp-JobTracker",
+    ):
         import index
 
         doc = _mock_document(key)
@@ -1149,9 +1156,11 @@ class TestRefusedJobsApiDocument:
         mock_job_completion.finalize_job_file.return_value = {
             "found": True,
             "files": {},
-            "job_complete": True,
-            "results_ready": True,
+            "job_complete": job_complete,
+            "results_ready": False,
+            "results_deferred": job_complete,
         }
+        self.lambda_client = MagicMock()
         with (
             patch.object(index, "MALWARE_SCANNING_ENABLED", True),
             patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
@@ -1161,6 +1170,12 @@ class TestRefusedJobsApiDocument:
             patch.object(index, "document_service") as mock_doc_service,
             patch.object(index, "s3"),
             patch.object(index, "job_service", MagicMock()),
+            patch.object(index, "lambda_client", self.lambda_client),
+            patch.dict(
+                index.os.environ,
+                {"JOB_TRACKER_FUNCTION_NAME": job_tracker_name},
+                clear=False,
+            ),
             patch.object(
                 index,
                 "malware_policy_for",
@@ -1215,6 +1230,79 @@ class TestRefusedJobsApiDocument:
         finalize = self._run("jobs/job-123/clean.pdf", result_status="NO_THREATS_FOUND")
 
         finalize.assert_not_called()
+
+    def test_the_gate_does_not_build_the_results_zip_itself(self):
+        """The IAM and the sizing both say it cannot.
+
+        `QueueSender` is 128 MB with a 30 s timeout and holds no get/put on the
+        output bucket — only ListBucket and DeleteObject for the #719 purge —
+        while `create_results_zip` reads every output object and writes the zip.
+        Calling it here returned AccessDenied, which the caller swallows, so the
+        job never got `ResultsReady` and `GET /jobs/<id>` answered IN_PROGRESS
+        for ever: the exact hang this path exists to prevent.
+        """
+        finalize = self._run("jobs/job-123/scan.pdf")
+
+        assert finalize.call_args.kwargs["build_results"] is False
+
+    def test_a_refusal_that_completes_the_batch_delegates_the_zip(self):
+        """The ordering that hangs, and the only one that needs this.
+
+        `job_tracker` fires on Step Functions state changes, so when the refused
+        file is the LAST to go terminal there is no further event and nothing
+        would ever build the zip. The gate therefore hands the job to the one
+        function that is resourced and granted for it.
+        """
+        self._run("jobs/job-123/scan.pdf", job_complete=True)
+
+        self.lambda_client.invoke.assert_called_once()
+        kwargs = self.lambda_client.invoke.call_args.kwargs
+        assert kwargs["FunctionName"] == "idp-JobTracker"
+        # Asynchronous: the gate must not wait on a 900 s zip inside its own 30 s
+        # timeout, and it has nothing to do with the answer.
+        assert kwargs["InvocationType"] == "Event"
+        assert json.loads(kwargs["Payload"]) == {
+            "idpJobCompletion": {"jobId": "job-123"}
+        }
+
+    def test_a_refusal_that_leaves_the_batch_running_delegates_nothing(self):
+        """Other files are still in flight, so one of their execution-status
+        events will complete the job by the normal route. Delegating here would
+        zip a partial result and mark it ready."""
+        self._run("jobs/job-123/scan.pdf", job_complete=False)
+
+        self.lambda_client.invoke.assert_not_called()
+
+    def test_a_missing_job_tracker_name_is_reported_not_crashed(self):
+        """Expected only on a misconfiguration: the variable is conditional on
+        the same `DeployApiGateway` as `JobTracker`, and without the Jobs API a
+        `jobs/` document cannot exist. The document's own status is already
+        written, so the refusal still held — what is lost is the job's zip, and
+        it is metered rather than raised."""
+        self._run("jobs/job-123/scan.pdf", job_tracker_name="")
+
+        self.lambda_client.invoke.assert_not_called()
+
+    def test_a_failed_delegation_does_not_break_the_refusal(self):
+        """The refusal is the security-relevant half and is already persisted.
+        Raising here would re-run the verdict handler, which would take the
+        duplicate path and not retry this, so it would cost an invocation and
+        change nothing."""
+        import index
+
+        self.lambda_client = MagicMock()
+        self.lambda_client.invoke.side_effect = RuntimeError("TooManyRequests")
+        with (
+            patch.object(index, "lambda_client", self.lambda_client),
+            patch.object(index, "cloudwatch"),
+            patch.dict(
+                index.os.environ,
+                {"JOB_TRACKER_FUNCTION_NAME": "idp-JobTracker"},
+                clear=False,
+            ),
+        ):
+            # Returns None rather than raising; that is the whole assertion.
+            assert index._delegate_job_results("job-123") is None
 
 
 @pytest.mark.unit

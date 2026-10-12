@@ -69,6 +69,7 @@ def finalize_job_file(
     job_service: Any,
     s3_client: Any,
     output_bucket: str,
+    build_results: bool = True,
 ) -> Dict[str, Any]:
     """Record one job file's terminal status and build the zip if that was the last.
 
@@ -80,10 +81,21 @@ def finalize_job_file(
         job_service: A ``JobDynamoDBService``.
         s3_client: boto3 S3 client used to read outputs and write the zip.
         output_bucket: Bucket holding ``jobs/<job_id>/`` outputs.
+        build_results: Whether to build ``results.zip`` and set ``ResultsReady``
+            when this call completes the job. ``False`` is for a caller that is
+            not resourced to do it — the ingest malware gate runs in
+            ``queue_sender``, a 128 MB/30 s function invoked once per upload,
+            whereas zipping a job's outputs is why ``job_tracker`` carries
+            3008 MB, a 900 s timeout and 5 GB of ephemeral storage. Such a
+            caller must act on ``job_complete`` in the result and delegate, or
+            the job stays at ``IN_PROGRESS``: ``api_handler`` holds a
+            SUCCEEDED/PARTIALLY_SUCCEEDED job there until ``ResultsReady``.
 
     Returns:
         ``{"found": bool, "files": dict | None, "job_complete": bool,
-        "results_ready": bool}``. ``found`` is False when the job row is gone
+        "results_ready": bool}``, plus ``"results_deferred": True`` when
+        ``build_results`` was False and this call completed the job.
+        ``found`` is False when the job row is gone
         (expired by TTL, or deleted) — not an error for the caller, which has
         already recorded the document's own status.
 
@@ -122,6 +134,24 @@ def finalize_job_file(
             "results_ready": False,
         }
 
+    if not build_results:
+        # The caller is not resourced to build the zip and will delegate. Said
+        # plainly because the two return shapes differ in a way that matters:
+        # `job_complete` is True and `results_ready` is False, and a caller that
+        # ignores the first leaves the job at IN_PROGRESS for ever.
+        logger.info(
+            "All files terminal for job %s; leaving the results zip to the "
+            "delegate, as this caller cannot build it",
+            job_id,
+        )
+        return {
+            "found": True,
+            "files": files,
+            "job_complete": True,
+            "results_ready": False,
+            "results_deferred": True,
+        }
+
     logger.info("All files terminal for job %s, creating results zip", job_id)
     wrote_zip = create_results_zip(job_id, s3_client, output_bucket)
     # Marked ready only if a zip was actually written, and `wrote_zip` rather than
@@ -143,6 +173,31 @@ def finalize_job_file(
         "job_complete": True,
         "results_ready": wrote_zip,
     }
+
+
+def complete_job_results(
+    job_id: str, job_service: Any, s3_client: Any, output_bucket: str
+) -> Dict[str, Any]:
+    """Build ``results.zip`` for an already-all-terminal job and mark it ready.
+
+    The second half of a ``finalize_job_file(..., build_results=False)`` call,
+    run by whoever is resourced for it. Idempotent in the way that matters: the
+    zip is rebuilt from whatever is under ``jobs/<job_id>/`` and the flag is
+    rewritten, so a duplicate delivery costs one wasted zip rather than a wrong
+    answer.
+
+    Deliberately does **not** re-check that every file is terminal. The caller
+    that delegated here already established that, and re-reading the job row to
+    confirm it would make a lost delegation indistinguishable from a job that
+    went non-terminal again — which cannot happen, since the ``Files`` map only
+    moves toward terminal.
+    """
+    wrote_zip = create_results_zip(job_id, s3_client, output_bucket)
+    job_service.mark_results_ready(job_id, wrote_zip)
+    logger.info(
+        "Completed deferred results for job %s (zip written: %s)", job_id, wrote_zip
+    )
+    return {"job_id": job_id, "results_ready": wrote_zip}
 
 
 def create_results_zip(job_id: str, s3_client: Any, output_bucket: str) -> bool:

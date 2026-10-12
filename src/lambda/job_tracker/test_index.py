@@ -214,3 +214,87 @@ class TestCreateResultsZip:
         assert create_results_zip("uuid", mock_s3, index.OUTPUT_BUCKET) is False
 
         mock_s3.put_object.assert_not_called()
+
+
+class TestTheDelegatedCompletionEvent:
+    """The second event shape this handler answers.
+
+    The ingest malware gate refuses a document without starting an execution, so
+    when its refusal is the LAST file in a /Jobs batch to go terminal no
+    execution-status event follows and nothing would ever build the zip. The gate
+    marks the file terminal, then sends this event here — the one function in the
+    stack with the memory, timeout, ephemeral storage and output-bucket grants
+    that zipping needs.
+    """
+
+    def _completion_event(self, job_id="test-uuid"):
+        return {"idpJobCompletion": {"jobId": job_id}}
+
+    def test_it_builds_the_zip_and_marks_the_job_ready(self, mock_s3, job_svc):
+        from index import handler
+
+        mock_s3.list_objects_v2.return_value = {
+            "Contents": [{"Key": "jobs/test-uuid/doc.json"}]
+        }
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"{}")}
+
+        response = handler(self._completion_event(), None)
+
+        assert response["statusCode"] == 200
+        assert mock_s3.put_object.call_args[1]["Key"] == "jobs/test-uuid/results.zip"
+        job_svc.mark_results_ready.assert_called_once_with("test-uuid", True)
+
+    def test_a_job_with_no_outputs_is_marked_not_ready(self, mock_s3, job_svc):
+        """Every file in the batch was refused. `compute_job_status` scores that
+        FAILED, which the ResultsReady gate does not apply to, so the job still
+        reports terminal — but claiming a zip exists would send a client to a
+        404."""
+        from index import handler
+
+        mock_s3.list_objects_v2.return_value = {}
+
+        handler(self._completion_event(), None)
+
+        mock_s3.put_object.assert_not_called()
+        job_svc.mark_results_ready.assert_called_once_with("test-uuid", False)
+
+    def test_it_does_not_touch_the_files_map(self, mock_s3, job_svc):
+        """The delegating caller already wrote the file's terminal status. Writing
+        one here would need a filename this event does not carry, and re-deriving
+        it would be guessing."""
+        from index import handler
+
+        mock_s3.list_objects_v2.return_value = {}
+
+        handler(self._completion_event(), None)
+
+        job_svc.update_file_status.assert_not_called()
+
+    def test_a_completion_event_without_a_job_id_is_a_client_error(
+        self, mock_s3, job_svc
+    ):
+        """Reported rather than guessed at: there is no safe default job to
+        complete, and silently returning 200 would make a malformed delegation
+        indistinguishable from a successful one."""
+        from index import handler
+
+        response = handler({"idpJobCompletion": {}}, None)
+
+        assert response["statusCode"] == 400
+        job_svc.mark_results_ready.assert_not_called()
+        mock_s3.put_object.assert_not_called()
+
+    def test_an_ordinary_step_functions_event_is_unaffected(self, mock_s3, job_svc):
+        """The branch is keyed on a field no Step Functions event carries, so the
+        path that handles every other job file is untouched."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = {
+            "doc.pdf": "COMPLETED",
+            "other.pdf": "EXTRACTING",
+        }
+
+        response = handler(make_event("jobs/test-uuid/doc.pdf", "SUCCEEDED"), None)
+
+        assert response["statusCode"] == 200
+        job_svc.update_file_status.assert_called_once()

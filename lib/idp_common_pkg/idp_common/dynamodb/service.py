@@ -516,15 +516,13 @@ class DocumentDynamoDBService:
             expression_names["#ConfigRevision"] = "ConfigRevision"
             expression_values[":ConfigRevision"] = int(document.config_revision)
 
-        # Set workflow status based on document status
-        if document.status == Status.FAILED:
-            workflow_status = "FAILED"
-        elif document.status == Status.COMPLETED:
-            workflow_status = "SUCCEEDED"
-        elif document.status == Status.ABORTED:
-            workflow_status = "ABORTED"
-        else:
-            workflow_status = "RUNNING"
+        # Both writers of this attribute go through the one mapping. This branch
+        # is the one that matters most for a terminal-but-not-failed status:
+        # `workflow_tracker` reaches DynamoDB through `update_document`, not
+        # `update_document_status`, so it is the path that actually produces
+        # REDACTED_SUPERSEDED — and while this read `else: "RUNNING"` the SDK
+        # classified that status as terminal while the row said it was running.
+        workflow_status = _workflow_status_for(document.status)
 
         set_expressions.append("#WorkflowStatus = :WorkflowStatus")
         expression_names["#WorkflowStatus"] = "WorkflowStatus"

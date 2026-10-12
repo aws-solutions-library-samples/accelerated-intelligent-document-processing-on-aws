@@ -58,6 +58,10 @@ sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
 sns = boto3.client("sns")
 cloudwatch = boto3.client("cloudwatch")
+# Used only to hand a completed /Jobs batch to `job_tracker` for zipping — see
+# `_delegate_job_results`. Created at import like the rest so the client is
+# reused across invocations rather than built on a rare path.
+lambda_client = boto3.client("lambda")
 document_service = create_document_service()
 job_service = create_job_service()
 queue_url = os.environ["QUEUE_URL"]
@@ -1006,6 +1010,12 @@ def _finalize_job_file_if_job_document(object_key, status):
     job_id, filename = parsed
     output_bucket = os.environ.get("OUTPUT_BUCKET", "")
     try:
+        # build_results=False: this function is the ingest gate — 128 MB, a 30 s
+        # timeout, and no get/put on the output bucket, because it is invoked
+        # once per upload and has never needed them. Zipping a job's outputs is
+        # what `job_tracker` carries 3008 MB, 900 s and 5 GB of ephemeral storage
+        # for. Granting those here would size the hot ingest path for a job it
+        # almost never has to finish.
         result = finalize_job_file(
             job_id=job_id,
             filename=filename,
@@ -1013,6 +1023,7 @@ def _finalize_job_file_if_job_document(object_key, status):
             job_service=job_service,
             s3_client=s3,
             output_bucket=output_bucket,
+            build_results=False,
         )
         logger.info(
             "Finalized job file %s/%s after %s: %s",
@@ -1021,9 +1032,60 @@ def _finalize_job_file_if_job_document(object_key, status):
             getattr(status, "value", status),
             result,
         )
+        if result.get("job_complete"):
+            # This refusal was the last file to go terminal, so nothing else is
+            # coming: `job_tracker` fires on Step Functions state changes and a
+            # refused document starts no execution. Without this the job sits at
+            # IN_PROGRESS for ever — the exact hang the gate's job handling
+            # exists to prevent, just moved one step along.
+            _delegate_job_results(job_id)
     except Exception as e:  # noqa: BLE001
         # Not raised: the document's own status is already persisted, and a retry
         # would take the duplicate path. Logged at ERROR and metered so a hung
         # batch is attributable instead of mysterious.
         logger.error(f"Failed to finalize job file {job_id}/{filename}: {e}")
+        _put_metric(METRIC_SCAN_JOB_FINALIZE_FAILED)
+
+
+def _delegate_job_results(job_id):
+    """Ask ``job_tracker`` to build the results zip for a job this gate completed.
+
+    An asynchronous (``Event``) invoke of the one function in the stack that is
+    already resourced and granted for the job: 3008 MB, a 900 s timeout, 5 GB of
+    ephemeral storage and ``S3CrudPolicy`` on the output bucket. The gate has
+    none of those and should not acquire them for a path it rarely takes.
+
+    ⚠️ **Failures here are logged and metered, never raised.** Raising would
+    re-run the verdict handler, which would take the duplicate path and not
+    retry this, so the retry would cost an invocation and change nothing. The
+    cost of a failure is bounded: the job's file statuses are already correct, so
+    the worst case is the IN_PROGRESS stall that existed before this path, now
+    attributable to one named metric instead of being silent. ``job_tracker``
+    also still finishes the job by its normal route whenever any *other* file in
+    the batch is the last to go terminal, which is the common ordering.
+    """
+    function_name = os.environ.get("JOB_TRACKER_FUNCTION_NAME", "")
+    if not function_name:
+        # Expected on a deployment without the Jobs API: `JobTracker` is
+        # conditional on DeployApiGateway, and so is this variable. A `jobs/`
+        # document cannot exist there, so reaching this is a real
+        # misconfiguration and is logged as one.
+        logger.error(
+            "Cannot delegate results for job %s: JOB_TRACKER_FUNCTION_NAME is "
+            "unset, so the job will stay IN_PROGRESS",
+            job_id,
+        )
+        _put_metric(METRIC_SCAN_JOB_FINALIZE_FAILED)
+        return
+    try:
+        lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="Event",
+            Payload=json.dumps({"idpJobCompletion": {"jobId": job_id}}).encode("utf-8"),
+        )
+        logger.info(
+            "Delegated results-zip creation for job %s to %s", job_id, function_name
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("Could not delegate results for job %s: %s", job_id, e)
         _put_metric(METRIC_SCAN_JOB_FINALIZE_FAILED)

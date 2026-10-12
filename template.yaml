@@ -7773,6 +7773,15 @@ Resources:
           # neighbouring plan in the same account.
           INPUT_BUCKET: !Ref InputBucket
           ALERTS_TOPIC_ARN: !Ref AlertsTopic
+          # A refusal that is the LAST file in a /Jobs batch to go terminal has
+          # to produce results.zip, and this function cannot: it is 128 MB with
+          # a 30 s timeout and no get/put on the output bucket, because it is
+          # invoked once per upload. JobTracker carries 3008 MB, 900 s, 5 GB of
+          # ephemeral storage and S3CrudPolicy for exactly this, so the gate
+          # hands the job to it asynchronously instead. Conditional because
+          # JobTracker is: with no Jobs API there are no jobs/ documents.
+          JOB_TRACKER_FUNCTION_NAME:
+            !If [DeployApiGateway, !Ref JobTracker, ""]
       Policies:
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
@@ -7829,6 +7838,17 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # Hand a /Jobs batch this gate completed to JobTracker for zipping. One
+        # function, one action — deliberately NOT the output-bucket get/put that
+        # would let this function build the zip itself, which is the grant that
+        # would also require sizing the per-upload ingest path at 3008 MB/900 s.
+        - !If
+          - DeployApiGateway
+          - Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt JobTracker.Arn
+          - !Ref AWS::NoValue
       Events:
         S3Event:
           Type: CloudWatchEvent

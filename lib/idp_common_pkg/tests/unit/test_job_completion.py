@@ -19,6 +19,7 @@ import pytest
 
 from idp_common.job_completion import (
     TERMINAL_FILE_STATUSES,
+    complete_job_results,
     create_results_zip,
     finalize_job_file,
     parse_job_document_id,
@@ -302,3 +303,193 @@ class TestCreateResultsZip:
         s3 = MagicMock()
         assert create_results_zip("j1", s3, "out") is False
         assert s3.list_objects_v2.call_count == 1
+
+
+@pytest.mark.unit
+class TestDeferredResults:
+    """``build_results=False`` and the ``complete_job_results`` half that pairs
+    with it.
+
+    The ingest malware gate runs in ``queue_sender``: 128 MB, a 30 s timeout, and
+    no object read or write on the output bucket, because it is invoked once per
+    upload. ``create_results_zip`` reads every output object and writes one back,
+    which is what ``job_tracker``'s 3008 MB, 900 s and 5 GB of ephemeral storage
+    are for. So the gate records the file's terminal status and delegates the
+    zip; these tests pin that the split cannot silently drop the second half.
+    """
+
+    def _job_service(self, files):
+        svc = MagicMock()
+        svc.update_file_status.return_value = files
+        return svc
+
+    def _s3(self, keys=("jobs/j1/a.json",)):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"Contents": [{"Key": k} for k in keys]}
+        s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"{}")}
+        return s3
+
+    def test_it_writes_no_zip_and_sets_no_flag(self):
+        svc = self._job_service({"a.pdf": "FAILED"})
+        s3 = self._s3()
+
+        result = finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.FAILED,
+            job_service=svc,
+            s3_client=s3,
+            output_bucket="out",
+            build_results=False,
+        )
+
+        s3.put_object.assert_not_called()
+        svc.mark_results_ready.assert_not_called()
+        assert result["results_ready"] is False
+
+    def test_it_still_reports_that_the_job_is_complete(self):
+        """The field the delegating caller must act on. If it were False the
+        caller would delegate nothing and the job would stall at IN_PROGRESS —
+        the original defect, reintroduced one layer down."""
+        svc = self._job_service({"a.pdf": "FAILED"})
+
+        result = finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.FAILED,
+            job_service=svc,
+            s3_client=self._s3(),
+            output_bucket="out",
+            build_results=False,
+        )
+
+        assert result["job_complete"] is True
+        assert result["results_deferred"] is True
+
+    def test_a_job_still_running_is_reported_as_such(self):
+        """Nothing to delegate: another file's execution-status event will
+        complete the batch by the normal route."""
+        svc = self._job_service({"a.pdf": "FAILED", "b.pdf": "EXTRACTING"})
+
+        result = finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.FAILED,
+            job_service=svc,
+            s3_client=self._s3(),
+            output_bucket="out",
+            build_results=False,
+        )
+
+        assert result["job_complete"] is False
+        assert not result.get("results_deferred")
+
+    def test_the_file_status_is_written_either_way(self):
+        """Deferring the zip must not defer the thing the job's own status is
+        computed from."""
+        svc = self._job_service({"a.pdf": "FAILED"})
+
+        finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.FAILED,
+            job_service=svc,
+            s3_client=self._s3(),
+            output_bucket="out",
+            build_results=False,
+        )
+
+        svc.update_file_status.assert_called_once_with("j1", "a.pdf", Status.FAILED)
+
+    def test_the_default_still_builds_the_zip(self):
+        """`job_tracker` passes nothing, so the default must stay the complete
+        behaviour — a flipped default would stall every job in the stack."""
+        svc = self._job_service({"a.pdf": "COMPLETED"})
+        s3 = self._s3()
+
+        result = finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.COMPLETED,
+            job_service=svc,
+            s3_client=s3,
+            output_bucket="out",
+        )
+
+        s3.put_object.assert_called_once()
+        svc.mark_results_ready.assert_called_once_with("j1", True)
+        assert result["results_ready"] is True
+
+    def test_complete_job_results_writes_the_zip_and_marks_ready(self):
+        svc = MagicMock()
+        s3 = self._s3(keys=("jobs/j1/a.json", "jobs/j1/b.json"))
+
+        result = complete_job_results(
+            job_id="j1", job_service=svc, s3_client=s3, output_bucket="out"
+        )
+
+        assert s3.put_object.call_args.kwargs["Key"] == "jobs/j1/results.zip"
+        svc.mark_results_ready.assert_called_once_with("j1", True)
+        assert result["results_ready"] is True
+
+    def test_complete_job_results_reports_a_job_with_no_outputs(self):
+        """Every file refused. `compute_job_status` scores that FAILED, which the
+        ResultsReady gate does not apply to, so the job still reads terminal —
+        but claiming a zip exists would send a client to a 404."""
+        svc = MagicMock()
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {}
+
+        result = complete_job_results(
+            job_id="j1", job_service=svc, s3_client=s3, output_bucket="out"
+        )
+
+        s3.put_object.assert_not_called()
+        svc.mark_results_ready.assert_called_once_with("j1", False)
+        assert result["results_ready"] is False
+
+    def test_the_two_halves_compose_into_the_undeferred_behaviour(self):
+        """The property that makes the split safe: deferring and then completing
+        leaves the same job state as not deferring at all. Derived by running
+        both arrangements rather than asserted from the code."""
+        deferred_svc = self._job_service({"a.pdf": "FAILED"})
+        deferred_s3 = self._s3()
+        finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.FAILED,
+            job_service=deferred_svc,
+            s3_client=deferred_s3,
+            output_bucket="out",
+            build_results=False,
+        )
+        complete_job_results(
+            job_id="j1",
+            job_service=deferred_svc,
+            s3_client=deferred_s3,
+            output_bucket="out",
+        )
+
+        direct_svc = self._job_service({"a.pdf": "FAILED"})
+        direct_s3 = self._s3()
+        finalize_job_file(
+            job_id="j1",
+            filename="a.pdf",
+            status=Status.FAILED,
+            job_service=direct_svc,
+            s3_client=direct_s3,
+            output_bucket="out",
+        )
+
+        assert (
+            deferred_svc.mark_results_ready.call_args
+            == direct_svc.mark_results_ready.call_args
+        )
+        assert (
+            deferred_s3.put_object.call_args.kwargs["Key"]
+            == direct_s3.put_object.call_args.kwargs["Key"]
+        )
+        assert (
+            deferred_svc.update_file_status.call_args
+            == direct_svc.update_file_status.call_args
+        )
