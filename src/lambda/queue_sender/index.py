@@ -41,54 +41,6 @@ retentionDays = int(os.environ["DATA_RETENTION_IN_DAYS"])
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 
 
-def resolve_active_config_version(config_table):
-    """Return the name of the active Configuration Profile, or None.
-
-    Reads the active-profile pointer item first — one get_item, on a path that
-    runs for EVERY document queued. The scan below remains as the fallback for a
-    stack that has not activated a profile since the pointer was introduced.
-
-    The fallback paginates. DynamoDB applies the 1MB page size to the items
-    EXAMINED, not the items matching FilterExpression, so a single scan call
-    finds the active row only when it falls within the first page.
-    ProjectionExpression keeps that page as wide as possible: without it the
-    scan reads whole config bodies (tens to hundreds of KB each), so only a few
-    profiles fit per page and the active one is easily missed. Missing it here
-    silently processes the document under the DEFAULT config rather than the
-    active one — the same filtered-scan defect as issue #599.
-    """
-    try:
-        pointer = config_table.get_item(
-            Key={"Configuration": "Config#__active"},
-            ProjectionExpression="ActiveVersion",
-        ).get("Item")
-        if pointer and pointer.get("ActiveVersion"):
-            return str(pointer["ActiveVersion"])
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Could not read the active-profile pointer ({e}); scanning instead")
-
-    scan_kwargs = {
-        "FilterExpression": (
-            "begins_with(Configuration, :config_prefix) AND IsActive = :active"
-        ),
-        "ExpressionAttributeValues": {
-            ":config_prefix": "Config#",
-            ":active": True,
-        },
-        "ProjectionExpression": "Configuration",
-    }
-    while True:
-        response = config_table.scan(**scan_kwargs)
-        for item in response.get("Items", []):
-            # Extract version from Config#v1 format
-            config_key = item["Configuration"]
-            if "#" in config_key:
-                return config_key.split("#", 1)[1]
-            return None
-        last_key = response.get("LastEvaluatedKey")
-        if not last_key:
-            return None
-        scan_kwargs["ExclusiveStartKey"] = last_key
 
 
 # Built once per container, not once per document. This runs on the hottest
@@ -214,7 +166,21 @@ def resolve_configuration(document, object_key):
         metadata_revision=document.config_revision,
         submission_source=document.submission_source,
         mappings=mappings,
-        active_profile=lambda: resolve_active_config_version(table),
+        # ⚠️ `manager.resolve_active_version`, NOT this module's
+        # `resolve_active_config_version`. The two differ on one state and it is a
+        # state every fresh stack is in: with no profile marked active the local
+        # function answers `None` and the manager answers `"default"`, which the
+        # manager's own docstring calls normal rather than an error. The other three
+        # call sites inject the manager, so keeping the local one here made the
+        # REFERENCE answer the divergent one -- the upload resolver and the dry run
+        # would resolve `default` and scope-check it, while ingest resolved no
+        # profile and skipped the guard, so the preview disagreed with what actually
+        # happened. It also made `_active`'s claim that the revision is pinned at
+        # ingest false on such a stack, since a `None` profile has no revision to
+        # resolve. The end state is unchanged either way, because `queue_processor`
+        # already backfills an unset version with the same call; what changes is
+        # that all four sites now answer one question the same way.
+        active_profile=manager.resolve_active_version,
         published_revision=manager.resolve_published_revision,
         profile_exists=profile_exists,
     )

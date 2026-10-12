@@ -46,11 +46,23 @@ are load-bearing:
   path; the comment in ``src/lambda/queue_sender/index.py`` is the write-up of issue
   #599, where a scan that missed its target silently processed documents under the
   wrong configuration. A single-item read has no such failure mode.
-* **``ConsistentRead=True``, and no in-container cache.** A cache saves little against
-  one small item and produces the worst possible admin experience: a mapping that
-  looks saved but does not apply, for an interval nothing in the UI explains. Without
-  the consistent read, "takes effect immediately" is simply not true. Do not add a
-  cache here without arguing against this paragraph.
+* **``ConsistentRead=True``, and no in-container cache.** A cache produces the worst
+  admin experience available: a mapping that looks saved but does not apply, for an
+  interval nothing in the UI explains. Without the consistent read, "takes effect
+  immediately" is simply not true.
+
+  What that costs is worth stating rather than waving at, because it scales with the
+  mapping count and the common case is not the cap. A handful of mappings is well
+  under 4 KB, so one strongly-consistent read is ~1 RCU per document. At
+  ``MAX_MAPPINGS`` the arithmetic beside the constants puts the item near 368 KB,
+  which is ~92 RCU per document, on one partition key — cost and single-partition
+  heat rather than throttling, since the table is ``PAY_PER_REQUEST``, but it is not
+  "one small item" at that end of the range. A deployment running hundreds of
+  documents a second against hundreds of mappings is the case to revisit, and the
+  mitigation to reach for is a short TTL on the *ingest* path only: the dry run and
+  the admin page are where "takes effect immediately" is a promise to a person
+  watching, and ingest is where the volume is. Do not add a cache on all four
+  callers without arguing against this paragraph.
 
 ``MAX_MAPPINGS`` is enforced at write time rather than left to DynamoDB.
 ``revisions.py`` needs no such guard because ``DEFAULT_REVISION_CAP`` bounds its list;
