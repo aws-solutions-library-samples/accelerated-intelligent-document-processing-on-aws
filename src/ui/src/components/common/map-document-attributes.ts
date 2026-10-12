@@ -39,6 +39,9 @@ interface DocumentApiItem {
   ProcessingIssueCount?: number;
   ConfigVersion?: string;
   ConfigRevision?: number | null;
+  ConfigSource?: string;
+  ConfigMappingPrefix?: string;
+  ConfigAssignmentError?: string;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -83,6 +86,9 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       HITLReviewURL: hitlReviewURL,
       ConfigVersion: configVersion,
       ConfigRevision: configRevision,
+      ConfigSource: configSource,
+      ConfigMappingPrefix: configMappingPrefix,
+      ConfigAssignmentError: configAssignmentError,
     } = item;
 
     // Extract HITL sections arrays
@@ -174,6 +180,9 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       hitlReviewHistory,
       configVersion,
       configRevision,
+      configSource,
+      configMappingPrefix,
+      configAssignmentError,
     };
 
     return mapping;

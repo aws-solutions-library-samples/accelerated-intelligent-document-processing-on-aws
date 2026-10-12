@@ -1,0 +1,37 @@
+mutation PutConfigPrefixMapping(
+  $prefix: String!
+  $configProfile: String!
+  $configRevision: Int
+  $metadataPrecedence: String
+  $enabled: Boolean
+  $description: String
+) {
+  putConfigPrefixMapping(
+    prefix: $prefix
+    configProfile: $configProfile
+    configRevision: $configRevision
+    metadataPrecedence: $metadataPrecedence
+    enabled: $enabled
+    description: $description
+  ) {
+    success
+    message
+    mapping {
+      prefix
+      matchKind
+      configProfile
+      configRevision
+      metadataPrecedence
+      enabled
+      description
+      createdAt
+      createdBy
+      updatedAt
+      updatedBy
+    }
+    error {
+      type
+      message
+    }
+  }
+}

@@ -118,9 +118,6 @@
     "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py": {
       "I001": 1
     },
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": {
-      "I001": 1
-    },
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
       "F841": 1,
       "I001": 1
@@ -389,14 +386,12 @@
     "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py",
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
     "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
-    "nested/api-resolvers/src/lambda/upload_resolver/index.py",
     "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
@@ -539,8 +534,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 84,
-    "lintFindings": 192,
-    "formatDebtFiles": 175
+    "lintDebtFiles": 83,
+    "lintFindings": 191,
+    "formatDebtFiles": 173
   }
 }

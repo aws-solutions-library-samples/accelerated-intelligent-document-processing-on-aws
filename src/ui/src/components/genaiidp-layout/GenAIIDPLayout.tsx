@@ -22,6 +22,7 @@ import UploadDocumentPanel from '../upload-document';
 import DiscoveryPage from '../discovery/DiscoveryPage';
 import DiscoveryJobDetails from '../discovery/DiscoveryJobDetails';
 import UserManagementLayout from '../user-management/UserManagementLayout';
+import ConfigPrefixMappingsLayout from '../config-prefix-mappings/ConfigPrefixMappingsLayout';
 import { appLayoutLabels } from '../common/labels';
 
 import Navigation from './navigation';
@@ -133,6 +134,8 @@ const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Ele
               <Route path="discovery" element={<DiscoveryPage />} />
               <Route path="discovery/job/:jobId" element={<DiscoveryJobDetails />} />
               <Route path="users" element={<UserManagementLayout />} />
+              {/* Above the path="*" catch-all below, or it never matches. */}
+              <Route path="prefix-mappings" element={<ConfigPrefixMappingsLayout />} />
               <Route path="*" element={<DocumentDetails />} />
             </Routes>
           )

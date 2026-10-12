@@ -1,23 +1,27 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Active-config-version resolution in the queue sender and the test runner.
+"""Active-config-version resolution in the test runner.
 
-Both Lambdas locate the active configuration version with a FILTERED `Scan` over
-the ConfigurationTable. DynamoDB applies its 1MB page size (and any `Limit`) to
-the items it EXAMINES, not to the items that pass `FilterExpression`, so a
-single scan call reports "no active version" whenever the active row sorts
-beyond the first page. Neither call paginated, and neither projected — so each
-page was spent reading whole config bodies, fitting only a handful of versions.
+A Lambda that locates the active configuration version with a FILTERED `Scan`
+over the ConfigurationTable has a silent failure mode: DynamoDB applies its 1MB
+page size (and any `Limit`) to the items it EXAMINES, not to the items that pass
+`FilterExpression`, so a single scan call reports "no active version" whenever
+the active row sorts beyond the first page. An unpaginated, unprojected call
+spends each page reading whole config bodies, so only a handful of versions fit.
 
-The consequences differ by caller but are silent in both cases:
+`test_runner` captures the configuration into a test run's metadata, so losing
+it scores the run's comparisons against a config the documents were not
+processed under. It resolves on its own and is covered here.
 
-- `queue_sender` stamps `config_version` on every inbound document. Losing it
-  processes the document under the DEFAULT configuration rather than the active
-  one — different classes, prompts and models, with no error anywhere.
-- `test_runner` captures the configuration into a test run's metadata. Losing it
-  scores the run's comparisons against a config the documents were not
-  processed under.
+⚠️ **`queue_sender` is no longer one of these sites** and is deliberately absent:
+it resolves through `ConfigurationManager.resolve_active_version`, which reads
+the active-profile pointer and falls back to the paginated
+`list_config_versions`. The same property is pinned there, by
+`test_configuration_manager.py::test_list_config_versions_paginates` and by
+`resolve_active_version`'s own tests beside it, which is where it belongs now
+that four call sites share one resolver -- a per-site copy is how they came to
+disagree about what "nothing active" means.
 
 Same root cause as the pipeline-hooks dispatcher failure in issue #599; see
 tests/unit/lambdas/test_pipeline_hooks_dispatcher.py for that site.
@@ -95,66 +99,6 @@ def _config_rows(active_at, total=35):
         }
         for i in range(total)
     ]
-
-
-# ---------------------------------------------------------------------------
-# queue_sender
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def queue_sender():
-    return _load(
-        "queue_sender_index",
-        "src/lambda/queue_sender/index.py",
-        {
-            "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/q",
-            "DATA_RETENTION_IN_DAYS": "30",
-            "CONFIG_TABLE": "test-config-table",
-            # create_document_service() runs at import time and needs a table.
-            "TRACKING_TABLE": "test-tracking-table",
-            "AWS_REGION": "us-east-1",
-        },
-    )
-
-
-@pytest.mark.unit
-class TestQueueSenderActiveVersion:
-    def test_resolves_active_version_beyond_the_first_scan_page(self, queue_sender):
-        """The regression: active row at position 33 of 35. Unpaginated, this
-        returned None and the document was processed under the default config."""
-        table = _PagedScanTable(_config_rows(active_at=33, total=35))
-        assert queue_sender.resolve_active_config_version(table) == "v33"
-        assert table.scan_calls > 1, "must page rather than trust one scan call"
-
-    def test_resolves_active_version_on_the_last_page(self, queue_sender):
-        table = _PagedScanTable(_config_rows(active_at=34, total=35))
-        assert queue_sender.resolve_active_config_version(table) == "v34"
-
-    def test_stops_at_the_first_match(self, queue_sender):
-        """Runs per document, so it must not walk the whole table needlessly."""
-        table = _PagedScanTable(_config_rows(active_at=0, total=500))
-        assert queue_sender.resolve_active_config_version(table) == "v0"
-        assert table.scan_calls == 1
-
-    def test_projects_only_the_key(self, queue_sender):
-        """Without a projection the scan reads whole config bodies, so far fewer
-        versions fit in each 1MB page — the projection is what keeps the
-        examine window wide."""
-        table = _PagedScanTable(_config_rows(active_at=5))
-        queue_sender.resolve_active_config_version(table)
-        assert table.projections == ["Configuration"]
-
-    def test_returns_none_when_nothing_is_active(self, queue_sender):
-        rows = [{"Configuration": f"Config#v{i}", "IsActive": False} for i in range(35)]
-        assert queue_sender.resolve_active_config_version(_PagedScanTable(rows)) is None
-
-    def test_returns_none_for_a_malformed_key(self, queue_sender):
-        rows = [{"Configuration": "NoHashHere", "IsActive": True}]
-        assert queue_sender.resolve_active_config_version(_PagedScanTable(rows)) is None
-
-    def test_empty_table_returns_none(self, queue_sender):
-        assert queue_sender.resolve_active_config_version(_PagedScanTable([])) is None
 
 
 # ---------------------------------------------------------------------------

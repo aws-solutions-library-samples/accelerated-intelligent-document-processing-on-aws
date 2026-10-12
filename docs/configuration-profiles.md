@@ -487,6 +487,254 @@ still works):
 `--config-revision` travels the same way, as `config-revision` object metadata. Omit
 it and the queue processor pins the profile's current revision instead.
 
+## Prefix Mappings: assigning a profile by where a document lands
+
+A profile can also be assigned by **destination** rather than by the submitter. An
+admin declares a **config prefix mapping** — an S3 prefix in the Input bucket to a
+Configuration Profile, optionally pinned to a revision — and every document arriving
+under that prefix is processed under it.
+
+This exists because the submitter is often not someone an admin controls. Specifying
+a profile at upload time requires setting S3 object metadata
+(`x-amz-meta-config-version`), which the web UI, the CLI and the SDK all do; an S3
+replication rule, a partner's `aws s3 cp`, or a scanner appliance writing straight
+into the bucket does not. Without a mapping every one of those documents is processed
+under the single globally active profile. With one, a bucket laid out by business
+unit, tenant or feed routes itself.
+
+Manage them at **Configuration → Prefix Mappings** in the web UI. The page is
+**Admin-only**, and that is an access-control decision rather than a convenience one:
+a document's profile is the document-visibility partition for any user restricted by
+`allowedConfigVersions`, so whoever writes a mapping decides which users can see the
+documents landing under that prefix.
+
+A deployment holds at most **200** mappings, and each mapping's optional description is
+capped at **500 bytes** — in bytes rather than characters, so accented or non-Latin text
+fits fewer than 500 characters, and the form field says so. The ceilings are enforced
+when you save rather than left to DynamoDB: the whole mapping set is one item that
+*every* queued document reads, so letting it grow past DynamoDB's 400 KB item limit
+would be an ingest outage rather than a failed admin write. A description over the limit
+is **refused** with a message naming it, not silently shortened, so a mapping that saves
+is the mapping you entered.
+
+### How a mapping is chosen
+
+| Rule | Detail |
+|---|---|
+| **Most specific wins** | The longest matching prefix, so a sub-folder mapping beats the parent it sits under — see the worked example below |
+| Exact keys outrank prefixes | An entry with no trailing `/` matches that one object key, and wins over any prefix entry however long |
+| The trailing `/` selects the mode | `acme/invoices/` is a folder prefix; `acme/invoices/jan.pdf` is one object. You pick which in the form — **What this mapping matches** — and the slash is added or removed to match that choice, so the stored value is shown before you save |
+| Matching is case-sensitive | S3 keys are, so `Invoices/` and `invoices/` are different folders and only one of them can be mapped |
+| A disabled mapping never matches | It is kept, so you can turn one off without losing who created it and why |
+| No root mapping | An empty prefix is refused: it would change every unmapped upload in the deployment, which is what the active profile already means |
+
+**Most specific wins, which is what makes per-sub-folder overrides work.** Set a
+broad mapping on a parent folder and narrower ones beneath it, as deep as you like;
+each document is governed by the longest prefix that matches its key. Given these four:
+
+| Mapping | Profile |
+|---|---|
+| `bob/` | `P-bob` |
+| `bob/a/` | `P-a` |
+| `bob/b/` | `P-b` |
+| `bob/a/deep/` | `P-deep` |
+
+| Upload | Governed by | Profile |
+|---|---|---|
+| `bob/a/x.pdf` | `bob/a/` | `P-a` |
+| `bob/b/x.pdf` | `bob/b/` | `P-b` |
+| `bob/a/deep/x.pdf` | `bob/a/deep/` | `P-deep` |
+| `bob/c/x.pdf` | `bob/` | `P-bob` |
+| `bob/x.pdf` | `bob/` | `P-bob` |
+
+Three things that follow. A **sibling never captures another sibling** — `bob/a/` has
+no bearing on `bob/b/x.pdf`. A **grandchild beats its parent**, so nesting is not
+limited to one level. And a sub-folder with no mapping of its own falls back to the
+nearest mapped ancestor rather than to no mapping at all, which is why `bob/c/x.pdf`
+gets `P-bob` — a broad mapping on a parent governs everything beneath it that nothing
+more specific claims. The order you create the mappings in has no effect.
+
+The admin table lists mappings **most-specific-first**, which is the order resolution
+evaluates them in, and flags any mapping that is shadowed by a longer one beneath it.
+Shadowing is the one thing a longest-prefix rule makes genuinely hard to eyeball, and
+the **Test a key** box resolves any key against the live set without uploading, which
+is the quickest way to confirm a nested arrangement does what you intend.
+
+⚠️ **A folder mapping must be stored with its trailing slash, and that is why the
+form asks which you mean rather than reading the slash you typed.** The two modes are
+one character apart and the failure is silent and total: `bob1` is an *exact object
+key*, so it governs an object literally named `bob1` and governs nothing under
+`bob1/`. Uploads land at `bob1/<filename>`, so such a mapping is stored, listed, and
+never matches anything — every document is processed under the profile its own upload
+named, with no mapping recorded against it. On the document list that is
+indistinguishable from "the mapping deferred to the upload", so the conflict mode
+reads as broken when in fact it was never reached. The **Config source** column is
+what tells the two apart: a mapping that applied shows `Prefix mapping` and names the
+prefix, and a mapping that never matched shows `Upload metadata` with no prefix at
+all.
+
+Two things the table does not make obvious. **An empty prefix set does not change
+which profile a document gets** — with no mapping matching, it is processed under the
+profile its upload named, or under the active profile, as before. The revision is the
+one thing that moved: for an upload that names no profile it is now fixed when the
+document arrives rather than when it is picked up for processing, so a backlog
+draining across a revision promotion runs entirely on the revision published when each
+document arrived instead of splitting across both. And **a mapping is not a security
+boundary on ingest**: a principal holding `s3:PutObject` on the Input bucket chooses
+its own prefix, and therefore its own profile, with no API call for anything to check.
+It can also set `x-amz-meta-submission-source`, which is the stronger of the two
+levers — an object carrying it is exempt from mappings **entirely**, so a refusing
+mapping does not refuse it. Neither is reachable through the web UI: the presigned
+POST it mints lists the fields the browser may send, and S3 rejects any other, so a
+UI upload cannot claim to be an internal producer. Bound direct writers with IAM on
+whatever writes there, and see [RBAC](rbac.md) for what the API layer does and does
+not enforce.
+
+### When the upload also names a profile
+
+Each mapping states what happens when the object carries upload metadata naming a
+*different* profile. Set it per mapping, in the create/edit form:
+
+| Mode | Behaviour |
+|---|---|
+| **Mapping wins** (default) | The mapping decides. The upload's choice is ignored, and the override is recorded on the document so it is visible afterwards |
+| **Upload metadata wins** | A profile named by the uploader takes precedence; the mapping applies only when none was named |
+| **Refuse the conflict** | The document is refused at ingest and recorded as **Failed**, with the reason shown on the document. For prefixes where processing under the wrong configuration is worse than not processing at all |
+
+Metadata that **agrees** with the mapping is not a conflict, so "Refuse the conflict"
+does not fail documents the SDK or the UI stamped with the configuration the mapping
+assigns. Agreement means the same profile **and the same effective revision** — an
+upload naming no revision is compared against the profile's published revision, so it
+agrees with an unpinned mapping and with one pinned to whatever is currently published,
+and conflicts with one pinned to an older revision.
+
+The web UI tells you what will happen before you upload: choose a prefix in the
+**Upload Documents** panel and it states which profile will apply, warns when your
+profile selection is about to be ignored, and disables the Upload button for a prefix
+whose mapping would refuse the upload or that your configuration scope does not cover.
+
+### Revisions
+
+Leave the revision as **Published** and the mapping follows promotions, exactly as the
+active profile does — promoting a revision moves every unpinned mapping with it,
+through the existing publish/rollback control. Pinning a specific revision freezes
+what that prefix runs until you change the mapping.
+
+Pinning marks the revision **exempt from history pruning**, using the same mechanism a
+Test Studio run uses, so later saves never push it out of the profile's history.
+Deleting the mapping does not release that exemption: a test run may have pinned the
+same revision, and nothing records which one asked for it. Release it with an explicit
+revision delete.
+
+⚠️ **That exemption is narrower than "the mapping cannot outlive its configuration",
+and nothing at ingest tells you when it has.** Pruning is the only one of the three
+ways a revision can go that the pin covers, which leaves two it does not: its stored
+body still expires `DataRetentionInDays` after the revision
+was cut (see [Retention](#retention)), and an Admin can still delete it outright, since
+`deleteConfigProfileRevision` refuses only a profile's *current* revision. In either
+case the mapping keeps resolving at ingest — the profile-existence check does not
+look for the revision — and the document fails later, when the configuration is loaded.
+A long-lived mapping pinned to an old revision is therefore worth re-checking against
+the profile's revision history; a mapping left on **Published** has none of this to
+worry about.
+
+### Documents this deployment submits itself are exempt
+
+Some documents are written into the Input bucket by the solution itself, with a
+profile it chose on purpose, and a mapping never overrides those. They are identified
+by a `submission-source` marker on the object:
+
+- **Test Studio runs** carry the profile and revision the run is defined by.
+  Overriding it would not fail the run — it would produce accuracy and confidence
+  numbers describing a configuration other than the one recorded.
+- **PII-redacted copies** carry a companion profile that has no preprocessing hook,
+  which is what stops a redacted document being redacted again.
+
+The **Jobs/batch API** is *not* exempt, which is intended: it stamps metadata only
+when its caller chose a profile, so a job with a choice is adjudicated by the conflict
+mode like any other upload, and a job without one is mapped.
+
+### Checking a mapping before trusting it
+
+The page has a **Test a key** box: give it an object key and it reports which profile
+and revision would apply, which mapping matched, and why. Use it — a client-generated
+prefix is often not the one you would guess. The SDK's batch upload, for instance,
+writes to `<name>-<timestamp>/`, so a mapping on `my-batch/` matches nothing while
+looking correct.
+
+The same dry run (`resolveConfigPrefixMapping`) backs the Upload Documents panel's
+preview, which an Author can reach, and there it is **scope-filtered**: for
+a destination governed by a profile outside the caller's `allowedConfigVersions`, the
+answer says only that the destination is outside their allowed configuration scope --
+one fixed sentence, which is what the panel shows. The profile name, the revision **and
+the mapping prefix** are all withheld.
+Withholding the prefix matters because the caller supplied a *key*: answering
+`a/b/c/d/x.pdf` with the mapping that governs it would say the boundary sits at `a/b/`,
+and one probe at a time that walks out the routing policy the Admin-only mapping list
+exists to protect. The caller still learns the actionable part, which is that the
+destination is not theirs.
+
+### Reprocessing
+
+Reprocessing a document re-resolves the mappings, so moving a mapping and reprocessing
+is how you re-run a backlog under a new profile.
+
+⚠️ **A reprocess is not a way around a mapping.** A profile chosen explicitly in the
+Reprocess dialog is adjudicated by the same conflict mode that governs a profile named
+at upload, because it is the same kind of request: under **Mapping wins** the mapping
+overrides your choice, under **Upload metadata wins** your choice stands, and under
+**Refuse the conflict** the re-run is refused rather than accepting the conflict that
+was already refused at upload. A refusal rejects the **whole** reprocess request
+rather than skipping the offending documents, so a partly-applied routing policy
+cannot be the outcome.
+
+One thing does still take precedence over a mapping, and it is a restriction rather
+than a bypass: for a user restricted by `allowedConfigVersions`, the profile the
+document already carries, which keeps a reprocess from moving their own document out
+of their scope.
+
+A mapping that applies on reprocess supplies its **pinned revision** along with its
+profile — both, or neither. A `revision` argument is honoured only where the *profile*
+came from the caller or from the document's own pin; it is never applied on top of a
+mapping-supplied profile, because revision numbers are per profile and `r7` carried
+onto a different profile reads a configuration nobody asked for.
+
+### Monitoring
+
+Five CloudWatch metrics in the stack's namespace. They do **not** all come from one
+place: three have more than one emitter, so an alarm on them can fire for a datum the
+queue sender never published. [Monitoring](monitoring.md) has the per-metric list; the
+short form is the queue sender at ingest, the reprocess resolver on a re-run, and the
+upload resolver when it mints a presigned POST.
+
+| Metric | Meaning |
+|---|---|
+| `PrefixMappingApplied` | A mapping **matched** this key. Read it as "a mapping was consulted", not "the mapping decided": it is also published when the conflict mode handed the decision to the upload's own metadata, and when the mapped profile turned out to be missing |
+| `PrefixMappingConflict` | A mapping and upload metadata disagreed and one of them won; the dimension names which. A **refusal** is not counted here — it publishes `PrefixMappingRejected` and nothing else |
+| `PrefixMappingRejected` | A "Refuse the conflict" mapping failed a document |
+| `PrefixMappingLookupFailed` | The mapping set could not be read, so documents fell back to previous behaviour |
+| `PrefixMappingUnresolvable` | A mapping named a Configuration Profile that no longer exists. A missing **revision** is not detected — see below |
+
+**Three of the five are alarmed.** `PrefixMappingLookupFailed` and
+`PrefixMappingUnresolvable` fire on the *first* occurrence, because both mean documents
+are being processed under something other than what was configured and neither is
+otherwise visible. `PrefixMappingRejected` alarms on volume instead — more than five
+refusals in each of two consecutive five-minute periods — because one refusal is the
+mapping working as configured; a sustained stream of them means a producer is
+submitting to a prefix whose mapping it does not satisfy. A read failure is deliberately
+**non-fatal**: halting ingest for the whole deployment because a routing table could
+not be read is worse than processing under the active profile, which is what every one
+of those documents did before mappings existed.
+
+⚠️ **`PrefixMappingUnresolvable` checks the profile, not the revision.** Ingest confirms
+the mapped profile still exists; it does not look for a revision the mapping pins. A
+mapping whose pinned revision has gone therefore passes ingest with no metric at all —
+the document is stamped with that revision number and then **fails** later, when the
+configuration is loaded, rather than being quietly processed under something else. The
+two ways a pinned revision goes missing, and why pinning does not prevent them, are
+under [Revisions](#revisions) above. Do not read a quiet
+`PrefixMappingUnresolvable` as "every mapping still resolves".
+
 ## Profile Tracking in Document Processing
 
 ### How Version Is Tracked
@@ -495,7 +743,27 @@ When a document is processed, the configuration version used is recorded:
 
 1. **S3 Metadata**: The config version is stored as object metadata on the document in S3
 2. **DynamoDB**: The `ConfigVersion` attribute is saved with the document tracking record
-3. **UI Display**: The config version appears in the Document List table, Document Details panel, and all export formats
+3. **Provenance**: `ConfigSource` records *where* that profile came from, because the
+   profile name alone does not answer "why this one?" It takes one of seven values:
+
+   | `ConfigSource` | Shown as | Meaning |
+   |---|---|---|
+   | `metadata` | Specified at upload | The object's own `x-amz-meta-config-version` named it |
+   | `prefix-mapping` | Assigned by prefix mapping | A mapping decided it; `ConfigMappingPrefix` names which one |
+   | `active-profile` | Active profile | Nothing named a profile, so the globally active one applied |
+   | `document-pin` | Kept from the previous run | A reprocess with no explicit profile reused what the document already carried |
+   | `explicit-request` | Chosen when reprocessing | A profile named in the Reprocess dialog |
+   | `internal-producer` | Pinned by the submitting feature | A `submission-source` producer (Test Studio, the PII anonymizer) pinned its own |
+   | `rejected` | Refused at ingest | A "Refuse the conflict" mapping failed the document, and no configuration was applied to it. The row still shows the profile the **upload** declared — that is deliberate, since a document with no profile is invisible to every scope-restricted user, including the one whose upload was refused |
+
+4. **UI Display**: The config version appears in the Document List table; the version,
+   its source, and the mapping prefix when one applied appear in the Document Details
+   panel and in all export formats
+
+   The Document List table carries the profile name only. Reading provenance is a
+   per-document question — the list exists for scanning many documents at once, and a
+   column repeating "Active profile" on every row buys nothing against the horizontal
+   space it costs.
 
 ### Version Selector in Processing UIs
 
@@ -541,6 +809,7 @@ Configuration versions are stored in the `ConfigurationTable` DynamoDB table:
 | `Config#lending` | User-created profile named "lending" |
 | `ConfigRevIndex#lending` | Revision metadata index for the `lending` profile |
 | `Config#__active` | Sentinel pointing at the active profile (reserved; not a profile) |
+| `ConfigPrefixMap#__index` | Every config prefix mapping, in one item (reserved; not a profile) |
 
 The `Config#__active` sentinel exists so resolving the active profile at document-queue
 time is a single `get_item` rather than a scan of every profile. `__active` is a
@@ -608,6 +877,8 @@ If you have existing configurations from before this feature:
 | `getConfigVersion` | `versionName: String!` | Returns the full configuration for a specific profile |
 | `listConfigProfileRevisions` | `profileName: String!` | Returns the profile's revision history, newest first |
 | `getConfigProfileRevision` | `profileName: String!`, `revision: Int!` | Returns the full configuration recorded in one revision |
+| `listConfigPrefixMappings` | *(none)* | Every prefix mapping, most-specific first. **Admin only**, and deliberately *not* scope-filtered: a partially-hidden view of a longest-prefix rule cannot tell you which mapping wins |
+| `resolveConfigPrefixMapping` | `objectKey: String!`, `metadataProfile: String`, `metadataRevision: Int` | Dry run — which profile and revision a key would process under, which mapping matched, and why. The two metadata arguments declare what the caller intends to send, since there is no object yet to read metadata from. Admin and Author (the dry run serves the upload form, and a Viewer cannot upload), and **scope-filtered**: an out-of-scope destination returns `outOfScope: true` with every naming field null, including `mappingPrefix` |
 
 ### Mutations
 
@@ -619,6 +890,8 @@ If you have existing configurations from before this feature:
 | `restoreConfigProfileRevision` | `profileName: String!`, `revision: Int!` | Save an earlier revision as the profile's current configuration (as a new revision) |
 | `labelConfigProfileRevision` | `profileName: String!`, `revision: Int!`, `label: String`, `notes: String` | Label a revision (also exempts it from pruning) |
 | `deleteConfigProfileRevision` | `profileName: String!`, `revision: Int!` | Delete one revision (Admin only; cannot delete the current one) |
+| `putConfigPrefixMapping` | `prefix: String!`, `configProfile: String!`, `configRevision: Int`, `metadataPrecedence: String`, `enabled: Boolean`, `description: String` | Create or replace the mapping for `prefix`, which is its identity. Admin only. Omit `configRevision` to follow the profile's published revision; `metadataPrecedence` is `mapping`, `metadata` or `reject` |
+| `deleteConfigPrefixMapping` | `prefix: String!` | Remove one mapping. Admin only. Does **not** release a revision pin the mapping made |
 
 All revision operations are scope-checked at the **profile**: a revision is content
 inside a profile, never its own access-control object. See [RBAC](rbac.md).

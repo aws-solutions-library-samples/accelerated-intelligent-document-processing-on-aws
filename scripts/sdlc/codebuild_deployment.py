@@ -1736,6 +1736,231 @@ def test_step13_permission_boundaries(stack_name):
         return {"success": False, "error": f"Permission-boundary check failed: {e}"}
 
 
+def test_step15_config_prefix_mappings(stack_name):
+    """Verify a config prefix mapping actually routes a document at ingest.
+
+    This is the one layer the offline suites structurally cannot reach. The
+    precedence rules are exhaustively covered as a pure function, and each Lambda's
+    wiring is covered with the resolver stubbed -- but the thing that failed in
+    practice was the COMPOSITION: a mapping as the API stores it, against the key an
+    upload actually creates, resolved by the real ingest Lambda. A deployment whose
+    three mappings were all saved without a trailing slash resolved every upload by
+    its own tag with no mapping applied, and every layer was individually correct.
+
+    What this asserts, per conflict mode, with and without an upload tag:
+
+      bob1/ (mapping)  untagged -> the mapping's profile
+                       tagged   -> the mapping's profile, tag overridden
+      bob2/ (metadata) tagged   -> the tag's profile, mapping deferred
+      bob3/ (reject)   tagged   -> the document is FAILED, with a reason
+
+    Reads the tracking row rather than waiting for extraction: resolution happens in
+    `queue_sender` when the object lands, so the provenance fields are the thing
+    under test and they are written seconds after upload. That keeps this step cheap
+    enough for the parallel pool while still exercising a real S3 event, a real
+    DynamoDB mapping item and the real resolver.
+
+    Mappings are written through `PrefixMappingStore` -- the same code path
+    `putConfigPrefixMapping` uses -- so this needs no Cognito token. Cleans up its
+    mappings, objects and tracking rows on the way out, including on failure, so a
+    reject mapping cannot be left behind to fail an unrelated step.
+    """
+    print("Step 15: Testing config prefix mappings end to end...")
+
+    from idp_common.config.prefix_mappings import PrefixMappingStore
+
+    outputs = _stack_outputs(stack_name)
+    input_bucket = outputs.get("S3InputBucketName")
+    tracking_table = outputs.get("TrackingTableName")
+    if not input_bucket or not tracking_table:
+        return {
+            "success": False,
+            "error": "stack outputs lack S3InputBucketName or TrackingTableName",
+        }
+
+    cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+    config_table = None
+    for page in cf.get_paginator("list_stack_resources").paginate(StackName=stack_name):
+        for r in page.get("StackResourceSummaries", []):
+            if (
+                r.get("ResourceType") == "AWS::DynamoDB::Table"
+                and r.get("LogicalResourceId") == "ConfigurationTable"
+            ):
+                config_table = r.get("PhysicalResourceId")
+    if not config_table:
+        return {"success": False, "error": "could not locate the ConfigurationTable"}
+
+    s3 = boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    ddb = boto3.client("dynamodb", config=_THROTTLE_RETRY_CONFIG)
+    store = PrefixMappingStore(
+        boto3.resource("dynamodb", config=_THROTTLE_RETRY_CONFIG).Table(config_table)
+    )
+
+    run = f"cpm-{int(time.time())}"
+    # ⚠️ The two profiles must DIFFER, and the mapping's must EXIST.
+    #
+    # If they were the same name the resolver would see agreement rather than a
+    # conflict -- deliberately not a conflict -- so `metadata` precedence would
+    # resolve to `prefix-mapping` and this step would assert its way to a false
+    # pass. And if the MAPPING's profile did not exist the resolver would flag it
+    # unresolvable and fall through, which looks the same from the tracking row as
+    # a mapping that never matched: the exact confusion this step exists to detect.
+    #
+    # So the mapping gets a per-run profile created here, and the tag gets
+    # `default`, which every deployment has. The tag's profile is not existence-
+    # checked by the resolver (only the mapping's is), but using a real one keeps
+    # the `metadata`-precedence document processable rather than leaving a
+    # deliberately-broken workflow behind on a shared stack.
+    mapped_profile = f"{run}-mapped"
+    tagged_profile = "default"
+    prefixes = {}
+    uploaded = []
+    created_profile = False
+
+    def _row(key, attempts=30):
+        """The tracking row for one key, once ingest has written it."""
+        for _ in range(attempts):
+            item = ddb.get_item(
+                TableName=tracking_table,
+                Key={"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}},
+            ).get("Item")
+            if item and ("ConfigSource" in item or "ObjectStatus" in item):
+                return item
+            time.sleep(4)
+        return None
+
+    try:
+        sample = os.path.join("samples", "lending_package.pdf")
+        if not os.path.exists(sample):
+            return {"success": False, "error": f"missing sample document {sample}"}
+        with open(sample, "rb") as fh:
+            body = fh.read()
+
+        # A real second profile, through the product's own path.
+        cmd = (
+            f"idp-cli config-upload --stack-name {stack_name} "
+            f"--config-file config_library/unified/lending-package-sample/config.yaml "
+            f"--config-version {mapped_profile}"
+        )
+        run_command(cmd)
+        created_profile = True
+        print(f"  created profile {mapped_profile}")
+
+        for n, mode in enumerate(["mapping", "metadata", "reject"], start=1):
+            prefix = f"{run}-bob{n}/"
+            prefixes[prefix] = mode
+            store.put(
+                prefix,
+                mapped_profile,
+                metadata_precedence=mode,
+                description=f"integration step 15 ({mode})",
+                actor="codebuild@integration",
+            )
+        print(f"  created 3 mappings under {run}-bob1..3/")
+
+        # One untagged and one tagged upload per prefix.
+        for prefix, mode in prefixes.items():
+            for name, metadata in (
+                ("untagged.pdf", {}),
+                ("tagged.pdf", {"config-version": tagged_profile}),
+            ):
+                key = f"{prefix}{name}"
+                kwargs = {"Bucket": input_bucket, "Key": key, "Body": body}
+                if metadata:
+                    kwargs["Metadata"] = metadata
+                s3.put_object(**kwargs)
+                uploaded.append(key)
+        print(f"  uploaded {len(uploaded)} documents")
+
+        failures = []
+        for prefix, mode in prefixes.items():
+            for name in ("untagged.pdf", "tagged.pdf"):
+                key = f"{prefix}{name}"
+                item = _row(key)
+                if not item:
+                    failures.append(f"{key}: no tracking row appeared")
+                    continue
+                source = (item.get("ConfigSource") or {}).get("S")
+                recorded_prefix = (item.get("ConfigMappingPrefix") or {}).get("S")
+                status = (item.get("ObjectStatus") or {}).get("S")
+                reason = (item.get("ConfigAssignmentError") or {}).get("S")
+
+                tagged = name == "tagged.pdf"
+                if mode == "reject" and tagged:
+                    # The one combination that must NOT process.
+                    if source != "rejected" or status != "FAILED" or not reason:
+                        failures.append(
+                            f"{key}: a reject mapping should fail the document with "
+                            f"a reason, got source={source!r} status={status!r} "
+                            f"reason={reason!r}"
+                        )
+                elif mode == "metadata" and tagged:
+                    if source != "metadata":
+                        failures.append(
+                            f"{key}: the mapping should have deferred to the "
+                            f"upload's tag, got source={source!r}"
+                        )
+                    elif recorded_prefix != prefix:
+                        failures.append(
+                            f"{key}: the mapping prefix must be recorded even when "
+                            f"the mapping LOSES, got {recorded_prefix!r}"
+                        )
+                else:
+                    # Every other combination: the mapping decided.
+                    if source != "prefix-mapping":
+                        failures.append(
+                            f"{key}: expected the mapping to apply "
+                            f"({mode}, tagged={tagged}), got source={source!r} "
+                            f"prefix={recorded_prefix!r} -- a mapping saved without "
+                            f"its trailing slash matches nothing and looks like this"
+                        )
+                    elif recorded_prefix != prefix:
+                        failures.append(
+                            f"{key}: wrong mapping recorded, {recorded_prefix!r}"
+                        )
+
+        if failures:
+            return {
+                "success": False,
+                "error": "config prefix mapping routing is wrong: "
+                + "; ".join(failures),
+            }
+
+        print("  ✓ all 6 combinations routed as configured")
+        return {"success": True}
+
+    except Exception as e:
+        return {"success": False, "error": f"Config prefix mapping check failed: {e}"}
+    finally:
+        # Order matters: drop the mappings FIRST so a reject rule cannot catch an
+        # unrelated upload while the rest of the cleanup runs.
+        for prefix in prefixes:
+            try:
+                store.delete(prefix)
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠️  could not delete mapping {prefix}: {e}")
+        for key in uploaded:
+            try:
+                s3.delete_object(Bucket=input_bucket, Key=key)
+                ddb.delete_item(
+                    TableName=tracking_table,
+                    Key={"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}},
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠️  could not clean up {key}: {e}")
+        # Last, and only after the mappings are gone: `deleteConfigVersion` refuses
+        # while a mapping still names the profile, which is a guard this feature
+        # adds and which this cleanup order respects rather than fights.
+        if created_profile:
+            try:
+                ddb.delete_item(
+                    TableName=config_table,
+                    Key={"Configuration": {"S": f"Config#{mapped_profile}"}},
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠️  could not delete profile {mapped_profile}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Step 14: pipeline hooks (preprocessing / postprocessing)
 # ---------------------------------------------------------------------------
@@ -2982,6 +3207,18 @@ PARALLEL_TEST_STEPS = [
         "Step 13",
         "Permission boundaries",
         "IAM permissions boundaries attached to deployed roles",
+    ),
+    # Step 15: the composition no offline suite can see -- a mapping as the API
+    # stores it, against the key an upload creates, resolved by the real ingest
+    # Lambda. Reads tracking-row provenance rather than waiting for extraction, so
+    # it is cheap enough for the parallel pool; creates and deletes its own
+    # profile, mappings and documents, so it does not mutate shared stack state
+    # other steps depend on.
+    (
+        test_step15_config_prefix_mappings,
+        "Step 15",
+        "Config prefix mappings",
+        "Config prefix mapping routing at ingest (all three conflict modes)",
     ),
     # Step 14: pipeline hooks. Safe in the parallel pool — it registers its hook
     # in its OWN config version and never activates it, so the other steps
