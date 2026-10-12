@@ -190,6 +190,38 @@ def test_the_longest_prefix_wins():
 
 
 @pytest.mark.unit
+def test_a_parent_and_its_children_each_govern_their_own_subtree():
+    """The shape an administrator actually builds: one broad folder plus
+    per-sub-folder overrides, several levels deep.
+
+    `test_the_longest_prefix_wins` covers two levels and one override. This covers
+    what that generalises to -- siblings that must not capture each other, a
+    grandchild that must beat its parent, and an unlisted sibling that must fall
+    back to the broad mapping rather than to nothing. Each is a different way the
+    comparison could be wrong (shortest-first, first-registered, sibling bleed),
+    and none is visible from the two-level case.
+    """
+    mappings = [
+        _mapping("bob/", "P-bob"),
+        _mapping("bob/a/", "P-a"),
+        _mapping("bob/b/", "P-b"),
+        _mapping("bob/a/deep/", "P-deep"),
+    ]
+    assert find_match("bob/a/x.pdf", mappings)["configProfile"] == "P-a"
+    assert find_match("bob/b/x.pdf", mappings)["configProfile"] == "P-b"
+    # A grandchild beats its parent, which beats the root of the subtree.
+    assert find_match("bob/a/deep/x.pdf", mappings)["configProfile"] == "P-deep"
+    # An unlisted sibling falls back to the broad mapping, not to no mapping.
+    assert find_match("bob/c/x.pdf", mappings)["configProfile"] == "P-bob"
+    assert find_match("bob/x.pdf", mappings)["configProfile"] == "P-bob"
+    # Registration order must not decide anything.
+    assert (
+        find_match("bob/a/deep/x.pdf", list(reversed(mappings)))["configProfile"]
+        == "P-deep"
+    )
+
+
+@pytest.mark.unit
 def test_a_prefix_only_matches_at_a_segment_boundary_the_admin_declared():
     """`acme/inv/` must not capture `acme/invoices/`, and `acme/inv` is exact."""
     assert find_match("acme/invoices/x.pdf", [_mapping("acme/inv/", "p")]) is None

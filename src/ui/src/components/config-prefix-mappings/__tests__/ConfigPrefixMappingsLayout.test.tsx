@@ -310,6 +310,25 @@ describe('ConfigPrefixMappingsLayout', () => {
     // reaches the wire is asserted on the edit path below, which has a profile.
   });
 
+  it('states the most-specific-wins rule on the folder field', async () => {
+    // The question administrators ask about nested folders. The table's
+    // most-specific-first ordering only conveys the rule to someone who already
+    // knows it, so the form says it where the decision is made.
+    render(<ConfigPrefixMappingsLayout />);
+    await screen.findByText('acme/invoices/');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create mapping' }));
+    await screen.findByPlaceholderText('acme/invoices');
+
+    expect(screen.getByText(/most specific mapping wins/i)).toBeInTheDocument();
+    expect(screen.getByText(/overrides one on its parent/i)).toBeInTheDocument();
+
+    // And the exact-key mode says the opposite thing, since it governs nothing
+    // beneath it.
+    fireEvent.click(screen.getByRole('radio', { name: /One exact object key/ }));
+    expect(await screen.findByText(/Matches this one object only/i)).toBeInTheDocument();
+  });
+
   it('saves an exact object key without a trailing slash when that mode is chosen', async () => {
     // Exact mode stays fully expressible -- that is why the slash is derived from
     // an explicit choice rather than always appended.

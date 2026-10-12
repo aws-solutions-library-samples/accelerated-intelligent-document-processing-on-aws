@@ -566,7 +566,14 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
 
             <FormField
               label={form.matchMode === 'prefix' ? 'Folder path' : 'Object key'}
-              description="Relative to the Input bucket root. The trailing '/' is added or removed to match your choice above."
+              description={
+                form.matchMode === 'prefix'
+                  ? // Spelled out here because "most specific wins" is the question
+                    // administrators ask about nested folders, and the table's
+                    // ordering only shows it to someone who already knows the rule.
+                    "Relative to the Input bucket root; the trailing '/' is added for you. The most specific mapping wins, so a mapping on a sub-folder overrides one on its parent — with bob/ and bob/a/, a document at bob/a/x.pdf is governed by bob/a/, and bob/c/x.pdf falls back to bob/. Nesting is not limited to one level, and siblings never affect each other."
+                  : "Relative to the Input bucket root; a trailing '/' is removed for you. Matches this one object only — documents inside a folder of the same name are not covered."
+              }
               constraintText={describePrefix(form.prefix, form.matchMode)}
               errorText={formPrefixError ?? undefined}
             >

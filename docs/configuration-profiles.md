@@ -521,12 +521,44 @@ is the mapping you entered.
 
 | Rule | Detail |
 |---|---|
-| Longest match wins | `acme/invoices/` beats `acme/` for `acme/invoices/jan.pdf` |
+| **Most specific wins** | The longest matching prefix, so a sub-folder mapping beats the parent it sits under — see the worked example below |
 | Exact keys outrank prefixes | An entry with no trailing `/` matches that one object key, and wins over any prefix entry however long |
 | The trailing `/` selects the mode | `acme/invoices/` is a folder prefix; `acme/invoices/jan.pdf` is one object. You pick which in the form — **What this mapping matches** — and the slash is added or removed to match that choice, so the stored value is shown before you save |
 | Matching is case-sensitive | S3 keys are, so `Invoices/` and `invoices/` are different folders and only one of them can be mapped |
 | A disabled mapping never matches | It is kept, so you can turn one off without losing who created it and why |
 | No root mapping | An empty prefix is refused: it would change every unmapped upload in the deployment, which is what the active profile already means |
+
+**Most specific wins, which is what makes per-sub-folder overrides work.** Set a
+broad mapping on a parent folder and narrower ones beneath it, as deep as you like;
+each document is governed by the longest prefix that matches its key. Given these four:
+
+| Mapping | Profile |
+|---|---|
+| `bob/` | `P-bob` |
+| `bob/a/` | `P-a` |
+| `bob/b/` | `P-b` |
+| `bob/a/deep/` | `P-deep` |
+
+| Upload | Governed by | Profile |
+|---|---|---|
+| `bob/a/x.pdf` | `bob/a/` | `P-a` |
+| `bob/b/x.pdf` | `bob/b/` | `P-b` |
+| `bob/a/deep/x.pdf` | `bob/a/deep/` | `P-deep` |
+| `bob/c/x.pdf` | `bob/` | `P-bob` |
+| `bob/x.pdf` | `bob/` | `P-bob` |
+
+Three things that follow. A **sibling never captures another sibling** — `bob/a/` has
+no bearing on `bob/b/x.pdf`. A **grandchild beats its parent**, so nesting is not
+limited to one level. And a sub-folder with no mapping of its own falls back to the
+nearest mapped ancestor rather than to no mapping at all, which is why `bob/c/x.pdf`
+gets `P-bob` — a broad mapping on a parent governs everything beneath it that nothing
+more specific claims. The order you create the mappings in has no effect.
+
+The admin table lists mappings **most-specific-first**, which is the order resolution
+evaluates them in, and flags any mapping that is shadowed by a longer one beneath it.
+Shadowing is the one thing a longest-prefix rule makes genuinely hard to eyeball, and
+the **Test a key** box resolves any key against the live set without uploading, which
+is the quickest way to confirm a nested arrangement does what you intend.
 
 ⚠️ **A folder mapping must be stored with its trailing slash, and that is why the
 form asks which you mean rather than reading the slash you typed.** The two modes are
