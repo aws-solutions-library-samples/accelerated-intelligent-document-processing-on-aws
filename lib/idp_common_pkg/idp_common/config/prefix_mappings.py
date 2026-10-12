@@ -907,7 +907,19 @@ def _decide(
         elif precedence == PRECEDENCE_METADATA:
             assignment = ConfigAssignment(
                 profile=metadata_profile,
-                revision=metadata_effective_revision,
+                # The RAW revision, not the effective one. The effective value
+                # exists for the agreement comparison above and must not escape
+                # into the assignment: this branch resolves to the upload's own
+                # profile, and `_from_metadata` passes an absent revision through
+                # unpinned for the reason `_active` states -- pinning one the
+                # uploader did not name is choosing for them. Using the effective
+                # value here would mean the same request (a profile, no revision)
+                # got pinned or not depending on whether a mapping it BEAT happened
+                # to cover the prefix, which is visible on the tracking row and in
+                # the dry run.
+                revision=coerce_int(metadata_revision)
+                if metadata_revision is not None
+                else None,
                 source=SOURCE_METADATA,
                 # The prefix is recorded even though the mapping lost, because "a
                 # mapping was consulted and deferred" is a different fact from "no

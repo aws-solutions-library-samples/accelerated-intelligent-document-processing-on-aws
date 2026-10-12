@@ -651,6 +651,47 @@ def test_an_agreeing_revision_is_not_a_conflict_either():
 
 
 @pytest.mark.unit
+def test_a_deferring_mapping_does_not_pin_a_revision_the_uploader_did_not_name():
+    """One request, one pinning behaviour, whether or not a mapping it BEAT exists.
+
+    The metadata-precedence branch resolves to the upload's own profile, so it
+    follows the same rule `_from_metadata` does: an absent revision stays absent,
+    because pinning one the uploader did not name is choosing for them. The
+    effective revision exists for the agreement comparison and must not escape
+    into the assignment -- otherwise the same request gets pinned or not depending
+    on whether a mapping that lost the conflict happened to cover the prefix, which
+    is visible on the tracking row and in the dry run.
+    """
+    mappings = [_mapping("acme/", "mapped", metadataPrecedence="metadata")]
+    deferred = _resolve(
+        "acme/x.pdf",
+        metadata_profile="chosen",
+        mappings=mappings,
+        published_revision=lambda _p: 9,
+    )
+    unmapped = _resolve(
+        "elsewhere/x.pdf",
+        metadata_profile="chosen",
+        mappings=mappings,
+        published_revision=lambda _p: 9,
+    )
+    assert deferred.source == SOURCE_METADATA
+    assert deferred.revision == unmapped.revision is None, (
+        "a mapping that deferred to the upload still pinned a revision the upload "
+        "never named, which the same request does not get without the mapping"
+    )
+    # An explicitly named revision is still carried through.
+    pinned = _resolve(
+        "acme/x.pdf",
+        metadata_profile="chosen",
+        metadata_revision=3,
+        mappings=mappings,
+        published_revision=lambda _p: 9,
+    )
+    assert pinned.revision == 3
+
+
+@pytest.mark.unit
 def test_an_unpinned_mapping_agrees_with_metadata_naming_the_published_revision():
     mappings = [_mapping("acme/", "lending", metadataPrecedence="reject")]
     assignment = _resolve(

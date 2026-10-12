@@ -157,10 +157,21 @@ def resolve_configuration(document, object_key):
     """
     config_table_name = os.environ.get("CONFIG_TABLE")
     if not config_table_name:
-        logger.warning(
-            "CONFIG_TABLE is not set; processing %s under the default configuration",
+        # Alarmed, not just logged, on the same grounds the upload resolver uses for
+        # the same condition: the variable is wired unconditionally by the template,
+        # so reaching this means the deployment is misconfigured, and the window it
+        # opens is the one `PrefixMappingLookupFailed` is alarmed for -- every
+        # 'Refuse the conflict' mapping bypassed and every mapped prefix treated as
+        # unmapped. Here it opens for EVERY document rather than for one upload,
+        # which makes this the path where invisibility costs most. Failing open is
+        # still right and is argued in the resolver's docstring; what was wrong was
+        # that the same justification had been written twice and acted on once.
+        logger.error(
+            "CONFIG_TABLE is not set; processing %s under the default "
+            "configuration, with every prefix mapping bypassed",
             object_key,
         )
+        _emit("PrefixMappingLookupFailed")
         return None
 
     table = _config_table(config_table_name)

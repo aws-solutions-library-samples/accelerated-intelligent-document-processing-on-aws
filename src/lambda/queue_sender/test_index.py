@@ -581,6 +581,46 @@ class TestConfigPrefixMappings:
         # fallback "today's behaviour" rather than "no configuration at all".
         assert mock_resolve.call_args.kwargs["mappings"] == []
 
+    def test_an_unset_config_table_is_alarmed_like_a_read_failure(self):
+        """The same window, on the path where invisibility costs most.
+
+        An unset CONFIG_TABLE bypasses every mapping for EVERY document, not for
+        one upload, which is the condition `PrefixMappingLookupFailed` is alarmed
+        for. Failing open is still right -- halting ingest because a routing table
+        is unreadable is worse -- but the window has to be visible, and the sibling
+        resolvers already treat this exact branch that way.
+        """
+        import index
+
+        document = MagicMock()
+        document.id = "k"
+        document.input_key = "k"
+        document.config_version = None
+        document.config_revision = None
+        document.submission_source = None
+        document.to_json.return_value = "{}"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service"),
+            patch.object(index, "delete_current_output_objects"),
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index.Document, "from_s3_event", return_value=document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            os.environ.pop("CONFIG_TABLE", None)
+            index.handler(make_event("k"), None)
+
+        metrics = [
+            datum["MetricName"]
+            for call in mock_cw.put_metric_data.call_args_list
+            for datum in call.kwargs.get("MetricData", [])
+        ]
+        assert "PrefixMappingLookupFailed" in metrics
+        # Still enqueued: the fail-open is the point, the silence was not.
+        assert mock_sqs.send_message.called is True
+
     def test_a_resolution_fault_does_not_drop_the_document(self):
         import index
 
