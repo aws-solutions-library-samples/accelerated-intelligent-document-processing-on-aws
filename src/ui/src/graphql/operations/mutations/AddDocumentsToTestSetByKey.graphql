@@ -1,0 +1,11 @@
+mutation AddDocumentsToTestSetByKey($testSetId: String!, $objectKeys: [String!]!) {
+  addDocumentsToTestSetByKey(testSetId: $testSetId, objectKeys: $objectKeys) {
+    id
+    name
+    description
+    filePattern
+    fileCount
+    status
+    createdAt
+  }
+}

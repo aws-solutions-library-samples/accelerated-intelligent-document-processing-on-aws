@@ -113,6 +113,35 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] Integration tests tagged with `@pytest.mark.integration`
 - [ ] Config library validation tests pass: `make test-config-library`
 
+### A green test says nothing until you have seen it red
+
+Every check above is about a test's *shape*. None of them asks whether the
+assertion can fail, and a test written alongside the fix it covers is written to
+pass — so this is the part a passing suite cannot tell you, and the part only the
+author is placed to do. The procedure, with the `__pycache__` staleness trap that
+makes a mutation silently lie about its own result, is in
+[testing-qa.md](testing-qa.md#proving-a-test-is-load-bearing-break-the-code-and-watch-it-go-red).
+
+- [ ] **For every line of non-test code this PR changes, mutate it and confirm a
+      *named* test goes red.** Then record the observed pre-fix value in the PR
+      body — "4,189 bytes before, 7,792 after", not "verified". A number from the
+      broken state is the one claim here that cannot be made up.
+- [ ] **Re-run that after every later commit on the branch.** A one-time
+      verification does not survive iteration: a mutation check that passed, then
+      a second commit that moved the code it was about, is how a gate came to read
+      past the loop it existed to protect while its own test stayed green.
+- [ ] **Assert the mechanism, not only the outcome.** Where a change makes a code
+      path take effect, assert the path — the outcome is usually reachable another
+      way, and then the test passes on both. `metadata["extraction_method"] ==
+      "agentic"` is the model: without it every value assertion in that test held
+      on the traditional path too. The same applies to a one-sided bound: "under
+      the limit" was satisfied by a URL using 54% of its budget.
+- [ ] **For a non-vacuity probe, check it fails for the right reason.** Breaking
+      *everything* often trips an assertion the defect would not have — a probe
+      that failed every image build exited non-zero on the unfixed loop as well,
+      because the last iteration failed too, and so certified a fix while
+      measuring nothing.
+
 ## Git Workflow
 - [ ] Branch from `develop` using prefix: `feature/`, `fix/`, `docs/`
 - [ ] Focused, single-issue changes

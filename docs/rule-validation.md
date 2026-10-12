@@ -199,7 +199,7 @@ rule_validation:
   
   # Step 1: Fact Extraction Configuration
   fact_extraction:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     temperature: 0.0
     top_k: 20
     top_p: 0.01
@@ -214,7 +214,7 @@ rule_validation:
   
   # Step 2: Orchestrator Configuration
   rule_validation_orchestrator:
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     temperature: 0.0
     top_k: 20
     top_p: 0.01

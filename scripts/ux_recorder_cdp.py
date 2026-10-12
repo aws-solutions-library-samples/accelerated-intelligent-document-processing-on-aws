@@ -33,6 +33,62 @@ possible downstream, but it also means a ``mark`` on a quiet screen would have n
 frame of its own. Every boundary therefore also takes a ``Page.captureScreenshot``,
 recorded as a forced frame, so each segment starts on a crisp frame at exactly the
 moment the agent said it did.
+
+Why a click on a field is named by its label rather than by what it holds
+-------------------------------------------------------------------------
+Each click the overlay reports is written to the session's ``events.jsonl`` and
+``timeline.json``, and ``render`` prints its labels in the click table and quotes
+them in its warnings, so a label must not carry what a person entered. A click made
+while the recorder is paused is written with no labels at all (``ux_recorder.py``).
+
+A field is what can hold what was entered: an ``input`` other than a ``submit``,
+``reset``, ``button`` or ``image`` button, a ``textarea`` or ``select``, an editable
+region (``contenteditable`` other than ``"false"``, or ``role="textbox"``,
+``"searchbox"`` or ``"spinbutton"``), an element with ``role="combobox"`` (each role
+in any letter case), the Monaco code editor (``.monaco-editor``), and every element
+of a ``designMode`` document. A ``combobox`` shows its value, typed or chosen, as its
+own text, so it is named the way a ``select`` is. Monaco is named outright because
+it draws its lines as plain ``span`` elements beside its input element rather than
+inside it, so no other rule reaches them.
+
+A field, and anything inside one, is named by what labels it: its ``aria-label``,
+the text its ``aria-labelledby`` points at, its ``<label>``, then its placeholder,
+``name``, type or role. Text inside a field is never read, even through
+``aria-labelledby``: an id that points inside the field contributes nothing, and
+the next of those names it, or the label is empty. Monaco gives its root element
+``role="code"`` and puts its ``ariaLabel`` option on its input element rather than
+on the root, so a click on the code it draws is logged as ``code`` whatever
+``ariaLabel`` the page passes; only a label on the root itself would change that. No
+``value`` property is read, which also covers a custom element that keeps typed
+text in one. A button-like ``input`` holds nothing typed and is named by its
+caption, the ``value`` attribute the page set (``alt`` for an image).
+
+Any other element keeps its ``aria-label`` or its text, leaving out the text of
+every field inside it, so a click on a panel that holds a filled textarea does not
+read the textarea. That text is gathered node by node. The walk stops once it has
+the label's 60 characters or has visited 2,000 nodes, and it queues no more of an
+element's children than it has visits left, because a child past that point could
+never be reached. So a click on a large chart or table reads a bounded part of it
+inside the mousedown listener rather than the whole subtree.
+
+Page text is logged as it appears, and it can repeat what was typed or chosen word
+for word: a dropdown trigger that is a plain button, as Cloudscape's ``Select``
+trigger is, shows the current choice, a date picker's calendar button names the
+selected date in its ``aria-label``, and an autosuggest offers
+``Use: "<the typed value>"`` as an option. Two kinds of editor are not recognised:
+an element made editable by the ``-webkit-user-modify`` style, which accepts typing
+in Chrome while its ``isContentEditable`` stays false, and a code editor other than
+Monaco that draws its text as ordinary elements. Text typed into either is page
+text.
+
+A click into any field counts as interactive, so ``INTERACTIVE`` contains
+``FIELD``. It also names every role it accepts, because ``closest()`` compares
+attribute strings and knows nothing of the ARIA role hierarchy.
+``menuitemcheckbox`` and ``menuitemradio`` descend from ``menuitem``, and without
+them a click on a checkable item in a Cloudscape ``ButtonDropdown`` reads as hitting
+nothing interactive. ``treeitem`` is left out: a Cloudscape ``TreeView`` item does
+nothing when its text is clicked, only its expand toggle does, so a click there
+earns the warning.
 """
 
 from __future__ import annotations
@@ -517,19 +573,55 @@ CURSOR_OVERLAY_JS = r"""
     document.body.appendChild(r);
     setTimeout(() => r.remove(), 600);
   };
-  const INTERACTIVE = 'a,button,input,select,textarea,summary,[role="button"],[role="link"],[role="option"],' +
-    '[role="radio"],[role="checkbox"],[role="tab"],[role="menuitem"],[role="switch"],[contenteditable="true"]';
+  const FIELD = 'input:not([type="submit" i]):not([type="reset" i]):not([type="button" i]):not([type="image" i]),' +
+    'textarea,select,[contenteditable]:not([contenteditable="false" i]),[role="textbox" i],[role="searchbox" i],' +
+    '[role="spinbutton" i],[role="combobox" i],.monaco-editor';
+  const INTERACTIVE = FIELD + ',a,button,input,summary,[role="button"],[role="link"],[role="option"],' +
+    '[role="radio"],[role="checkbox"],[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],' +
+    '[role="menuitemradio"],[role="switch"]';
+  const LABEL_LENGTH = 60;
+  const WALK_LIMIT = 2000;
+  const attr = (el, name) => (el.getAttribute && el.getAttribute(name)) || '';
+  const fieldOf = (el) => el.closest(FIELD) || (document.designMode === 'on' ? document.documentElement : null);
+  const textOf = (root) => {
+    if (fieldOf(root)) { return ''; }
+    let text = '';
+    let budget = WALK_LIMIT;
+    const pending = [root];
+    while (pending.length && budget > 0 && text.trim().length < LABEL_LENGTH) {
+      const node = pending.pop();
+      budget -= 1;
+      if (node.nodeType === 3) {
+        text = (text + node.nodeValue).replace(/\s+/g, ' ');
+      } else if (node.nodeType === 1 && !node.matches(FIELD)) {
+        for (let i = Math.min(node.childNodes.length, budget) - 1; i >= 0; i -= 1) { pending.push(node.childNodes[i]); }
+      }
+    }
+    return text.trimStart().slice(0, LABEL_LENGTH);
+  };
+  const caption = (el) => {
+    const type = el.localName === 'input' ? attr(el, 'type').toLowerCase() : '';
+    return /^(submit|reset|button|image)$/.test(type) ? attr(el, type === 'image' ? 'alt' : 'value') || type : '';
+  };
+  const fieldName = (field) => {
+    const textsOf = (els) => els.filter(Boolean).map(textOf).join(' ').trim();
+    const labelledBy = attr(field, 'aria-labelledby').split(/\s+/).filter(Boolean);
+    return attr(field, 'aria-label') || textsOf(labelledBy.map((id) => document.getElementById(id))) ||
+      textsOf(Array.from(field.labels || [])) || attr(field, 'placeholder') || attr(field, 'name') ||
+      (typeof field.type === 'string' ? field.type : '') || attr(field, 'role');
+  };
   const describe = (el) => {
-    if (!el || !el.tagName) { return null; }
-    const label = (el.getAttribute && el.getAttribute('aria-label')) || el.textContent || el.value || '';
+    if (!el || !el.tagName || !el.closest) { return null; }
+    const field = fieldOf(el);
+    const label = field ? fieldName(field) : attr(el, 'aria-label') || textOf(el) || caption(el);
     return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + ' "' +
-      String(label).replace(/\s+/g, ' ').trim().slice(0, 60) + '"';
+      String(label).replace(/\s+/g, ' ').trim().slice(0, LABEL_LENGTH) + '"';
   };
   const report = (e) => {
     if (typeof window.__uxRecorderEvent !== 'function') { return; }
     try {
       const under = document.elementFromPoint(e.clientX, e.clientY);
-      const hit = under && under.closest ? under.closest(INTERACTIVE) : null;
+      const hit = under && under.closest ? under.closest(INTERACTIVE) || fieldOf(under) : null;
       window.__uxRecorderEvent(JSON.stringify({
         kind: 'click', x: e.clientX, y: e.clientY, button: e.button,
         target: describe(e.target), under: describe(under), interactive: describe(hit),

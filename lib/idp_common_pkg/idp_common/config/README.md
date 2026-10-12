@@ -431,6 +431,16 @@ plus the published revision and anything labeled or pinned by a test run. A
 count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning
 runs in `ConfigRevisionStore.prune()` on write.
 
+Those exemptions are from pruning only. The Configuration bucket's one lifecycle
+rule, `DeleteAfterNDays` in `template.yaml`, has no filter, so it expires every
+revision body `DataRetentionInDays` after it was written, labeled and pinned ones
+included, and only the published revision can still be read after that, through
+the rebuild below. Every other revision stays subject to that expiry by design: a
+lifecycle filter can select a prefix but cannot exclude one, and the bucket also
+holds `config_library/` and `samples/` under the same rule, so sparing
+`config_revisions/` would mean replacing that rule with one per prefix that should
+still expire.
+
 `restore_revision()` is forward-only: it saves the chosen revision as a *new*
 revision rather than rewinding the counter, so history is never rewritten.
 
@@ -446,10 +456,107 @@ Two deliberate choices:
 
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
-  enter a comparison.
+  enter a comparison. The one exception is below.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.
+
+**The published revision survives its body expiring.** Revision bodies live in the
+Configuration bucket, whose lifecycle rule expires every object after
+`DataRetentionInDays`, while every new document is pinned to the profile's
+`PublishedRevision`. `_read_revision_body()` (behind `get_revision()`,
+`restore_revision()` and every pinned read) therefore rebuilds a missing body from
+the head. It does so only when all of these hold:
+
+- the requested revision equals both `PublishedRevision` and `LatestRevision`;
+- its index entry still exists;
+- the head is proven to hold it, by either:
+  - its `storedHash` matching the head now. Every revision a save publishes
+    records one: a hash of its configuration as the head stores it, excluding
+    metadata. Metadata includes the `Managed` attribute, which is read back into
+    the configuration as `managed`, so a head that differs from the revision only
+    in whether it is stack-managed still passes, and the configuration served
+    carries the head's flag: the flag says who maintains the profile, not how it
+    processes documents. For a revision cut from what the save wrote, that is the hash
+    `_write_record()` returns; for the pre-history backfill an unchanged first
+    save publishes, it is derived from the backfill's own body (below); or
+  - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
+    later than the revision's `createdAt`.
+
+Every other missing body still raises.
+
+`storedHash` is read with `ConfigRevisionStore.get_entry()`, which returns an index
+entry as stored. `list()`, which is what the revision-list API returns, leaves it
+out.
+
+The fingerprints are not used as the proof. They cover only `classes` and the
+confidence settings, and they cannot match a head at all when its classes carry
+numbers, because `_stringify_values` stores those numbers as strings and they come
+back as strings.
+
+An unchanged save cuts no revision but rewrites the head. Stack deployments do this
+to `default` and managed profiles, so an unchanged save refreshes the published
+entry's `storedHash` (`_refresh_published_stored_hash()`). The exception is the
+update that migrates a stack from the legacy configuration format: the
+configuration custom resource then writes those heads directly
+(`save_configuration_bypass_manager()`), so that update cuts no revision and
+refreshes no hash. The refresh is computed
+from the revision's **own body**. Once that body has expired, it is computed from
+the configuration of the head the save **replaced**, which `save_configuration()`
+keeps from the read it already makes, and only when that head passes the proof
+above: published and latest, and `_head_is_revision()`. It is never computed from
+the head the save wrote. A head changed by a writer that cut no revision is
+therefore never recorded as the published revision; for example, a Lambda without
+`CONFIGURATION_BUCKET`, where history is disabled. Nor is the head an unchanged
+save wrote when it stores something the replaced head did not: `True == 1`, so
+replacing a `true` with `1` wherever the configuration model leaves a value
+untyped, as it does inside a class, counts as unchanged, yet the head then stores
+`"1"` where the revision held `true`. The reverse is a change, because a stored
+number reads back as a string and `"1" != True`.
+
+The first save after upgrading into revision history follows the same rule. It
+cuts the configuration it replaces as a pre-history backfill, and when it changes
+nothing it publishes that backfill instead of cutting a second revision. The
+backfill's `storedHash` is derived from the backfill's own body
+(`_stored_hash_of_body()`), not taken from the head the save wrote. Where that save
+stored the configuration differently, a pinned read of the backfill therefore
+raises once its body expires, instead of being served from the head.
+
+So once a body has expired, an unchanged save keeps the revision servable when the
+head it replaces was proven and the head it writes is exactly how the current code
+stores that head's configuration. An upgrade to a release that stores the same
+configuration differently meets that condition; a save that swaps `True` for `1` as
+above does not. Where the replaced head was not proven, the save proves nothing. A
+revision cut before `storedHash` existed is the case to know. Until a save records
+its hash, the legacy rule is its only proof, and that proof is gone the first time
+anything rewrites the head. Earlier releases rewrote the head on every unchanged
+save and recorded nothing, so once the body of a revision whose head they rewrote
+has expired, nothing can prove it unless a refresh recorded its hash while the body
+still existed. A pinned read of it raises, as does a pinned read of a revision
+whose head a writer changed without cutting one.
+
+The profile then recovers only when a save that changes the configuration cuts a
+new revision. The error a pinned read raises ends with `EXPIRED_REVISION_REMEDY`,
+which says so and covers `default` and stack-managed profiles too, since the editor
+cannot save either: `default` can still be changed with Save as default or
+`idp-cli config-upload`, and a stack-managed profile gets a new revision from a
+stack update that changes it, with an editable copy to process its documents under
+until then. The test runner's refusal at submit carries the same remedy, followed
+by an instruction to resubmit the run pinned to the new revision once one exists.
+
+The legacy rule can also accept a head it should not, for one kind of revision. It
+accepts the head the revision's own save wrote, and a pre-history backfill that an
+earlier release published on an unchanged save is the one revision whose own save
+can have written a different configuration, as with the `True` and `1` above. Any
+save while the backfill's body still exists closes this: one that changes the
+configuration cuts a new revision, and an unchanged one records the backfill's own
+hash, so that head is refused once the body expires. Once the body has expired with
+neither, nothing can tell the head from the backfill, and a pinned read of the
+backfill is served from the head.
+
+The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
+so each pinned read of an expired published body is rebuilt again and logged at
+WARNING.
 
 `resolve_published_revision(profile)` returns the revision a new document should be
 pinned to, or None when the profile has no history (an older deployment, or one
@@ -477,6 +584,131 @@ from the value the same configuration hashes to now. The curve keys are unaffect
 (they are recomputed from the captured body, never read from the index), but
 anything that compares *stored* index fingerprints must treat a mismatch on a
 pre-normalization revision as "unknown" rather than "changed".
+
+## Config prefix mappings — `prefix_mappings.py`
+
+An S3 prefix in the Input bucket to a Configuration Profile, so the *destination*
+decides the configuration rather than every producer having to stamp
+`x-amz-meta-config-version`. User-facing guide:
+[docs/configuration-profiles.md](../../../../docs/configuration-profiles.md).
+
+Two halves, deliberately separate, and the split is what makes the rule testable:
+
+| Half | What it is |
+|---|---|
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
+
+Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
+in four separate deploy artifacts (`queue_sender`, the reprocess resolver, the upload
+resolver, the configuration resolver's dry run), and a resolution rule that drifts
+between call sites is the defect that module's docstring was written about.
+
+### Four properties to preserve
+
+**One `GetItem`, strongly consistent, no cache.** The mapping set is read for *every
+document queued*. A filtered `Scan` on that path is how issue #599 silently processed
+documents under the wrong configuration — see the comment in
+`src/lambda/queue_sender/index.py`. `ConsistentRead=True` is what makes "an admin
+change takes effect immediately" true rather than aspirational; a TTL cache saves
+almost nothing against one small item and buys the worst admin experience available
+(a mapping that looks saved and does not apply, for an interval nothing explains).
+
+**`MAX_MAPPINGS` (200) is enforced at write time**, and so is a length bound on every
+per-entry field. All of them are in **UTF-8 bytes**, which is the unit the item-size
+arithmetic beside the constants is in: counting characters would let a 500-character CJK
+description occupy 2000 bytes, so each bound would read as satisfied while the aggregate
+item went over. The three fields an admin types — `prefix`, `configProfile`,
+`description` — are **refused** with a message naming the field and its limit
+(`description_rejection_reason`); the two actor strings are **truncated**
+(`_truncate_bytes` in `normalize_entry`), because they are claims from the caller's token
+rather than typed input and refusing a write over the length of an identity the caller
+did not choose would be unactionable. `normalize_entry` also runs on *read*, so the
+truncation covers entries written before the refusal existed or by a direct table write.
+`revisions.py` needs no such guard because
+`DEFAULT_REVISION_CAP` bounds its list. Nothing bounds this one, and the aggregate item
+is on the ingest path, so overflowing DynamoDB's 400 KB item limit would be an ingest
+outage rather than a failed admin write — a `ValidationException` at entry 201 would
+land on every queued document, not on the admin who caused it.
+
+⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
+`unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
+revision as given, with no lookup. So a mapping whose profile has been deleted falls
+back and is reported, while a mapping whose pinned *revision* has been deleted or has
+expired resolves cleanly at ingest and raises in
+`ConfigurationManager._load_revision_config` downstream. That is the intended trade —
+the per-document cost of a second lookup against a failure that surfaces loudly anyway —
+but it means `PrefixMappingUnresolvable` cannot be read as "the mapping still resolves".
+
+⚠️ **`_read_item` re-raises a `ClientError`, and must keep doing so.** This is the one
+place the store must *not* copy `ConfigRevisionStore._read_index_item`, which logs and
+returns `{}`. That is harmless there because every mutation it feeds returns `None`
+when its target revision is absent, so nothing is written. Here a `put` appends
+unconditionally — so swallowing a throttle would turn one admin's write into "the
+mapping list is now exactly this one entry", silently deleting every other mapping,
+and report success. Read failures are handled by the **caller**, which knows whether
+it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+⚠️ **A revision carried across a profile change reads a configuration nobody asked
+for.** Revision numbers are per profile, so when the resolved profile differs from the
+one the metadata named, the revision must come from the mapping or be cleared — never
+inherited. `queue_processor` will not correct it either, because its backfill only
+fires when the revision is absent.
+
+### Where it fails open, and why that is a deliberate departure
+
+If the mapping index cannot be read, resolution falls through to previous behaviour and
+the caller emits `PrefixMappingLookupFailed`. `config_scope` argues that "cannot
+evaluate" must never read as "allow" on a visibility boundary, and that argument does
+apply — failing open means a transient DynamoDB error bypasses every `reject` mapping
+in the deployment. It is still the right call, because the alternative is halting
+document ingest for the whole deployment when a *routing* table is unreadable, and
+every one of those objects processed under the active profile before this feature
+existed. The metric is alarmed so the window is visible rather than silent.
+
+Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
+read fails closed. They answer different questions — an unreadable mapping means a
+destination is unmapped, an unresolvable scope means the caller cannot be placed.
+
+### Scope
+
+`resolve_config_assignment` takes `allowed_profiles` and reports `scope_denied`; it
+does not refuse, because what a refusal should look like differs between a presigned
+POST and a reprocess. Pass `None` from `queue_sender`, which handles an S3 event and
+has no caller to scope.
+
+The check is on the **resolved** profile, and that is the only form that works: there
+are two routes to choosing a profile — naming one in upload metadata, and choosing a
+prefix a mapping governs — and checking the request covers one of them.
+
+⚠️ **The subject is every profile the answer could *disclose*, not the one it
+selected.** Two outcomes name a profile while `assignment.profile` is something else
+entirely: a **rejection** resolves to no profile at all, yet its `reason` names the
+mapped profile and its pinned revision; and **metadata precedence** resolves to the
+caller's own profile, in scope by construction, while its `reason` explains that it beat
+the mapping's — naming it. A guard predicated on `assignment.profile` skips both, and
+each hands a scoped caller the name of a profile outside their scope one key at a time,
+through an operation Author and Viewer can both call. So `scope_denied` is decided over
+the union of the resolved profile and the *matched* mapping's profile.
+
+**On denial, nothing that could describe a profile survives — including
+`mapping_prefix`.** Not the profile, not the revision (a pinned number is an attribute
+of a profile the caller cannot see), not `reason`, and not the prefix. The prefix is the
+one that looks like the caller's own input and is not: the caller supplied a **key**, and
+the prefix is the mapping that governs it, so answering `a/b/c/d/x.pdf` with `a/b/`
+discloses where the boundary sits — a refinement of the input, and one probe at a time it
+walks out the routing policy `listConfigPrefixMappings` is Admin-only to protect. What
+survives is the actionable part: the destination is not theirs.
+
+### The revision travels with the profile it belongs to
+
+A caller-supplied `revision` means nothing against a profile the caller did not name, so
+a mapping supplies **both or neither** — the reprocess resolver honours a `revision`
+argument only where the *profile* came from the caller (`SOURCE_EXPLICIT_REQUEST`) or
+from the document's own pin (`SOURCE_DOCUMENT_PIN`), and never carries one onto a
+mapping-supplied profile. That is the same hazard `resolve_config_assignment` guards
+internally when it clears the metadata's revision on a profile change, and passing one
+through at the call site would reintroduce it there.
 
 ## Rollback-safe DynamoDB serialization
 

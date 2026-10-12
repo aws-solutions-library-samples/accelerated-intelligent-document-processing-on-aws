@@ -56,20 +56,50 @@ export interface SplitClassificationMetrics {
   };
 }
 
-/** One section whose classification disagreed with the ground truth. */
+/** A predicted section over the pages of an unmatched ground-truth section. */
+export interface PredictedSectionSummary {
+  class?: string | null;
+  /** Its pages as sorted, inclusive 0-based `[first, last]` runs. */
+  page_ranges?: number[][];
+}
+
+/** One ground-truth section no predicted section the evaluation recorded reproduces. */
 export interface ClassificationError {
   doc_key?: string;
   section_id?: string | number | null;
   /**
    * `class` — wrong document class, so extraction ran the wrong schema.
-   * `unmatched` — a ground-truth section no predicted section matched (a
-   * splitting difference). `order` — right class and pages, wrong page order.
+   * `unmatched` — no recorded predicted section holds exactly the section's
+   * pages: a splitting difference, unless `predicted_sections_incomplete` is
+   * set. `order` — right class and pages, wrong page order.
    */
   kind?: 'class' | 'unmatched' | 'order';
   expected_class?: string | null;
   predicted_class?: string | null;
   expected_pages?: number[];
   predicted_pages?: number[];
+  /**
+   * `unmatched` only: the predicted sections sharing a page with the expected
+   * pages, in page order, capped by the aggregation Lambda
+   * (MAX_PREDICTED_SECTIONS_PER_ERROR). `predicted_section_count` is the
+   * uncapped number. Absent on runs aggregated by an earlier release, which
+   * report an unmatched section as kind `class` with predicted class
+   * "No Match" instead.
+   */
+  predicted_sections?: PredictedSectionSummary[];
+  predicted_section_count?: number;
+  /**
+   * `unmatched` only, and present only when true: some of the expected pages
+   * are on no predicted section the evaluation recorded, in a document whose
+   * record is known to be incomplete, so a predicted section over them may
+   * have gone unrecorded. The record is known to be incomplete when it holds a
+   * predicted section without pages, which is how a section of a class
+   * excluded from processing is recorded, or notes a section whose result
+   * failed to load. The aggregation does not tell which side that section was
+   * on, so a baseline section that failed to load sets this too. Also true when
+   * the ground-truth section was itself recorded without pages.
+   */
+  predicted_sections_incomplete?: boolean;
 }
 
 /**
@@ -77,8 +107,9 @@ export interface ClassificationError {
  *
  * `errors` is capped by the aggregation Lambda because the whole run result is
  * one DynamoDB attribute; `total` is the uncapped count, so a truncated list can
- * still say how much it is not showing. `{}` on runs aggregated via the Athena
- * fallback, which has the percentages but not the per-section detail.
+ * still say how much it is not showing. `{}` when the aggregation Lambda supplied
+ * none (it is not configured, failed or predates this field); a
+ * classification-only run keeps its detail on the Athena fallback.
  */
 export interface ClassificationErrors {
   errors?: ClassificationError[];

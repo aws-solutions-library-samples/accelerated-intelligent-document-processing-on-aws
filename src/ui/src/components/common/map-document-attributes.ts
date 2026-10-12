@@ -39,6 +39,26 @@ interface DocumentApiItem {
   ProcessingIssueCount?: number;
   ConfigVersion?: string;
   ConfigRevision?: number | null;
+  // Malware-scan verdict, written by the ingest gate for every scanned document.
+  // Absent on every document from a stack with malware scanning disabled, and on
+  // documents uploaded before it was enabled — `getMalwareScanView` reads that
+  // absence as "say nothing", so the UI surfaces appear only when the feature is
+  // on rather than showing a column of N/A.
+  //
+  // ⚠️ These reach the browser WITHOUT being named in a `.graphql` operation
+  // document. The REST client parses only the field name out of the query string
+  // (`src/ui/src/api/rest-client.ts`) and the dispatcher's `getDocument` returns
+  // the raw tracking-table item, so the selection set is not a filter. They are
+  // declared here because this mapper is where the API shape is written down,
+  // not because the codegen knows about them.
+  MalwareScanStatus?: string;
+  MalwareScanResult?: string;
+  MalwareScanThreat?: string;
+  MalwareScanReasons?: string[];
+  MalwareScanTime?: string;
+  ConfigSource?: string;
+  ConfigMappingPrefix?: string;
+  ConfigAssignmentError?: string;
 }
 
 // Helper function to determine Review Status without nested ternaries
@@ -83,6 +103,9 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       HITLReviewURL: hitlReviewURL,
       ConfigVersion: configVersion,
       ConfigRevision: configRevision,
+      ConfigSource: configSource,
+      ConfigMappingPrefix: configMappingPrefix,
+      ConfigAssignmentError: configAssignmentError,
     } = item;
 
     // Extract HITL sections arrays
@@ -174,6 +197,14 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       hitlReviewHistory,
       configVersion,
       configRevision,
+      malwareScanStatus: item.MalwareScanStatus,
+      malwareScanResult: item.MalwareScanResult,
+      malwareScanThreat: item.MalwareScanThreat,
+      malwareScanReasons: item.MalwareScanReasons || [],
+      malwareScanTime: item.MalwareScanTime,
+      configSource,
+      configMappingPrefix,
+      configAssignmentError,
     };
 
     return mapping;

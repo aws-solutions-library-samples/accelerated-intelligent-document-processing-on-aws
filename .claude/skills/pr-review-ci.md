@@ -14,8 +14,8 @@ where the unattended run **differs**, and on those points it wins.
 ### 1. The inputs are files, not API calls
 
 `pr-review.md` Step 1 fetches metadata with `glab` / `gh`. Do not do that here:
-those CLIs are not installed and the review process holds no GitLab token by
-design (see §5). The orchestrator has already fetched everything and written it
+those CLIs are not installed and the review process holds no forge token at all
+by design (see §5) — on either platform. The orchestrator has already fetched everything and written it
 into the working directory:
 
 | Path | Contents |
@@ -60,7 +60,8 @@ rather than scanning it.
 `pr-review.md` ground rule 1 and Step 4 say never to comment without being
 asked. Running this job **is** being asked, once, for every MR it sweeps. So:
 
-- Your entire response is posted verbatim as an MR note. Emit **only** the
+- Your entire response is posted verbatim as a comment on the merge or pull
+  request — the same job runs on GitLab and on GitHub. Emit **only** the
   Step 3 markdown, starting at the `## PR/MR Review:` heading. No preamble, no
   "I reviewed this and found…", no closing offer to help.
 - The orchestrator does the posting and appends a footer saying a machine wrote
@@ -88,12 +89,18 @@ unattended one does not, so it is called out rather than left implicit.
 
 ### 5. Your output is submitted with a credential, so keep it inert
 
-Your review is posted as an MR note through the API, and **GitLab executes quick
-actions in a note body**: a line whose first character is `/` — `/approve`,
-`/merge`, `/close`, `/assign` — is run as a command with the posting token's
-permissions. The orchestrator escapes every such line before posting, so this is
-belt and braces rather than your responsibility, but write with it in mind: when
-you quote author-supplied text that begins with `/`, put it inside backticks.
+Your review is posted through the API with a write credential, and **GitLab
+executes quick actions in a note body**: a line whose first character is `/` —
+`/approve`, `/merge`, `/close`, `/assign` — is run as a command with the posting
+token's permissions. The orchestrator escapes every such line before posting, so
+this is belt and braces rather than your responsibility, but write with it in
+mind: when you quote author-supplied text that begins with `/`, put it inside
+backticks.
+
+GitHub has no quick-action syntax, so that particular route does not exist
+there — but the escaping is applied on both platforms and the underlying point
+is the platform-independent one: your output is data in a request made with a
+credential, and you do not know which forge is posting it.
 
 The same applies to any other text that acts on the reader's behalf rather than
 informing them. Your output is data in a request made with a credential.

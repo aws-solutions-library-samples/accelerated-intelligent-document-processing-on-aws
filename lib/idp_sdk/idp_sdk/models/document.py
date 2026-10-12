@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import DocumentState, RerunStep
+from .base import DocumentBucket, DocumentState, RerunStep
 
 
 class DocumentStatus(BaseModel):
@@ -30,6 +30,24 @@ class DocumentStatus(BaseModel):
         default=None, description="Number of extracted sections"
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    #: The progress bucket the producer sorted this document into, when the
+    #: producer knows something `status` alone does not say.
+    #:
+    #: `classify_document_state` is total over `DocumentState`, so for almost
+    #: every document a consumer can derive the bucket from `status` and get the
+    #: same answer. `NOT_FOUND` is the exception: within
+    #: `NOT_FOUND_GRACE_SECONDS` of a batch's submission it means "the
+    #: QueueSender row has not landed yet", which is `QUEUED`, and past that
+    #: window it means "there will never be a row", which is `FAILED`. Only a
+    #: producer holding the batch's submission time can tell those apart, so it
+    #: records its verdict here rather than leaving each consumer to re-derive a
+    #: bucket from a status that cannot express the difference.
+    #:
+    #: `None` means the producer expressed no opinion; derive the bucket from
+    #: `status` in that case.
+    bucket: Optional[DocumentBucket] = Field(
+        default=None, description="Progress bucket assigned by the producer"
+    )
 
 
 class DocumentUploadResult(BaseModel):

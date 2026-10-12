@@ -63,7 +63,8 @@ clamped, paused stretches dropped, each mark's frame held while the voice starts
 speed-ups capped at 3×, a settle before the next chapter), adds title and end
 cards, and encodes one mp4 plus `review.srt`, `segments.json` and a chapter table
 in `review.md`. Every click is logged with its coordinates and the element under
-the pointer; `render` draws each click as a ring on the last frame before it and
+the pointer, except one made while paused, which is logged with neither and is
+never drawn or listed; `render` draws each click as a ring on the last frame before it and
 holds that frame briefly (the page changes too fast for a live marker to be seen
 on the right screen), prints the click table, and flags clicks that hit nothing
 interactive, which is how a mis-aimed automation click is told apart from a UI bug.
@@ -89,8 +90,12 @@ Everything else — marks, pauses, click markers, pacing, captions — is shared
 
 Output lives under `scratch/ux-recordings/<stack>-<timestamp>/` (demos:
 `demo-<title>-<timestamp>/`; gitignored):
-recordings of a live stack show real documents and are never committed. Polly
-receives only the narration text. Stdlib plus boto3/Pillow at render time; the
+recordings of a live stack show real documents and are never committed. Nor is
+anything else in the session directory: it also holds the tab's address and title,
+and a click log (`events.jsonl`, `timeline.json`) that labels clicks with text from
+the page, as the Privacy section of
+[`ux-test.md`](../.claude/skills/ux-test.md#privacy) describes. Polly receives only
+the narration text. Stdlib plus boto3/Pillow at render time; the
 WebSocket client is vendored in `ux_recorder_cdp.py` rather than adding a
 dependency. Unit tests: `scripts/tests/test_ux_recorder.py`.
 
@@ -107,7 +112,7 @@ python scripts/discover_model_limits.py
 
 # Test specific models only
 python scripts/discover_model_limits.py \
-    --models "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    --models "us.anthropic.claude-sonnet-4-6"
 
 # Verbose mode
 python scripts/discover_model_limits.py --verbose

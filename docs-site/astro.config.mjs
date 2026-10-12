@@ -258,6 +258,7 @@ export default defineConfig({
           label: "Planning & Security",
           items: [
             { label: "Threat Model", slug: "threat-model" },
+            { label: "Malware Scanning", slug: "malware-scanning" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",
@@ -322,6 +323,7 @@ export default defineConfig({
         {
           label: "New & Uncategorized",
           items: [
+            { label: "Data Mart Migration Runbook", slug: "data-mart-migration-runbook" },
             { label: "Rule Validation Z3", slug: "rule-validation-z3" },
           ],
         },

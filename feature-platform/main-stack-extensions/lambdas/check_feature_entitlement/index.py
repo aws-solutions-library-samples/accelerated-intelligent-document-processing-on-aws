@@ -608,10 +608,16 @@ def _config_s3():
 def _read_catalog_entry(feature_id: str) -> Optional[Dict[str, Any]]:
     """Return the catalog.json entry for `feature_id`, or None if absent.
 
-    Single GetObject against ConfigurationBucket — never lists. Mirrors
-    `_read_catalog_entry` in get_feature_launch_url so the two resolvers agree on
-    which features are open-source (install-direct, no entitlement) and on each
-    feature's Marketplace identity.
+    Single GetObject against ConfigurationBucket — never lists. The sibling
+    `_read_catalog_entry` in get_feature_launch_url reads the same object for the
+    same reasons (which features are open-source — install-direct, no entitlement —
+    and each feature's Marketplace identity), but since #1304 it returns
+    `(entry, read_ok)` so that resolver can tell an absent feature from an
+    unreadable catalog and answer 404 only for the first. This one returns the
+    entry alone, which is sufficient here because the handler requires an explicit
+    `source == "oss"` match before treating a feature as open-source, so a `None`
+    from either cause is never mistaken for OSS. Giving this one the same tuple
+    shape is the natural next change if it ever needs that distinction.
     """
     if not _CONFIGURATION_BUCKET:
         return None

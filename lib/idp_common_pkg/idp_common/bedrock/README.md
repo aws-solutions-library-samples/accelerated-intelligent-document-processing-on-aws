@@ -119,10 +119,11 @@ Prompt caching is a powerful feature in Amazon Bedrock that significantly reduce
 
 CachePoint functionality is only available for specific Bedrock model IDs.
 `CACHEPOINT_SUPPORTED_MODELS` in `client.py` is the authoritative list; it
-currently covers the Claude Haiku 4.5 / Sonnet 4.x-5 / Opus 4.x-5 / Opus 5.5
-families (including the `:1m` variants) and the Nova models — for example:
+currently covers the Claude Haiku 4.5 / Haiku 5.5 / Sonnet 4.x-5 / Opus 4.x-5 /
+Opus 5.5 families (including the `:1m` variants) and the Nova models — for example:
 
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-5`
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
@@ -604,6 +605,13 @@ resolve to one entry.) This one **does** need an allow-list, because of one mode
 |---|---|
 | Claude Opus 5.5 (`anthropic.claude-opus-5-5`) | carries a `toolConfig` and answers `toolChoice: auto` with a `toolUse` block, but rejects `{"any": {}}` and `{"tool": {...}}`: `tool_choice: type "tool" and "any" are not supported for this model.` |
 
+It is a one-model list, and the model most likely to be added to it by assumption is
+**Claude Haiku 5.5** — it shares Opus 5.5's sampling-parameter rejections and its
+effort control, so "another 5.5" is the natural guess. It accepts both forcing modes
+and emits the `toolUse` block (verified live on Converse,
+`us.anthropic.claude-haiku-5-5`, us-west-2, 2026-10-08), so it is deliberately
+absent.
+
 Consult the forcing gate whenever you pass `tool_choice`; `auto` never needs it.
 `extraction.forced_tool` already does, and falls back to the prose schema with the
 reason in its audit metadata.
@@ -751,11 +759,17 @@ Different Bedrock models implement these parameters with varying defaults, namin
   - Parameters use snake_case: `temperature`, `top_p`, `top_k`
   - Implementation: `top_k` is placed in `additionalModelRequestFields`
   - **Reasoning effort** (Sonnet 5, Sonnet 4.6, Opus 4.5–4.8, Opus 5, Opus 5.5,
-    Fable 5 — see `is_claude_effort_model()`): `reasoning_effort`
+    Fable 5, Haiku 5.5 — see `is_claude_effort_model()`, which is the authority;
+    every list of this set in the tree is a copy of it): `reasoning_effort`
     (`low`/`medium`/`high`/`xhigh`/`max`) maps to
     `additionalModelRequestFields.output_config.effort`.
     Ignored for Sonnet 4.5 / Haiku 4.5 (they 400 on it). `budget_tokens` is
     rejected — use effort. Verified live: effort changes output-token spend.
+    **Haiku 5.5 is the first Haiku that takes effort**, so the Haiku family is
+    split across the two sentences above: 4.5 rejects it, 5.5 accepts it (default
+    `medium`, like Opus 5.5). Unlike Opus 5.5, thinking can still be disabled on
+    it — and the model card adds a constraint this client does not model: with
+    thinking disabled the effort level is capped at `high`.
     On **Opus 5.5** effort is the *only* thinking control: `thinking: {"type":
     "disabled"}` is rejected at every effort level (`"thinking.type.disabled" is
     not supported for this model`), so lowering effort is how you reduce thinking

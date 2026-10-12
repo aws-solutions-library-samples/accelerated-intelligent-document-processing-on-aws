@@ -122,5 +122,26 @@ mkdir -p "$SCRIPT_DIR/public"
 ln -s "../../images" "$SCRIPT_DIR/public/images"
 echo "   ✅ Linked images directory for public serving"
 
+# Step 3: Symlink docs/analyst-reports/ into public/ so the third-party analyst
+# report PDFs are served as static assets at
+# <base>/analyst-reports/<file>.pdf — the browser's built-in PDF viewer renders
+# them in place. These are NOT pages: the remark link-rewrite plugin only
+# rewrites ".md" targets, so a relative link to a PDF from a published page
+# resolves in the repository and 404s on the site. docs/references.md therefore
+# links them by absolute URL, which works from both renderers.
+#
+# The directory is linked rather than each file, so a report added to
+# docs/analyst-reports/ is served without editing this script. The guard keeps
+# the step a no-op in a checkout that has no such directory — including the
+# throwaway one scripts/tests/test_markdown_links.py runs this script in.
+if [ -d "$PROJECT_ROOT/docs/analyst-reports" ]; then
+    echo ""
+    echo "📄 Setting up analyst report symlink..."
+    [ -L "$SCRIPT_DIR/public/analyst-reports" ] && rm "$SCRIPT_DIR/public/analyst-reports"
+    # Path: docs-site/public/ → 2 levels up to project root
+    ln -s "../../docs/analyst-reports" "$SCRIPT_DIR/public/analyst-reports"
+    echo "   ✅ Linked analyst-reports directory for public serving"
+fi
+
 echo ""
 echo "✨ Setup complete! Run 'npm install && npm run dev' to start the dev server."

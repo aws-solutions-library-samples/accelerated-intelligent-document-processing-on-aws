@@ -364,9 +364,34 @@ check-retired-services: ## Fail if documentation presents a retired service (App
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
 
-validate-buildspec: ## Validate AWS CodeBuild buildspec files
+# Discovered from `git ls-files` rather than listed. The previous
+# `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
+# and of the three it skipped, two (`buildspec-bda.yml`, `buildspec-pipeline.yml`)
+# carried the #1310 defect while `feature-platform/idp-data-generator/buildspec.yml`
+# has no loop at all. Note the glob DID read the file #1310 was filed against, so
+# widening discovery is not the diagnosis for #1310 -- the absence of a rule was.
+# What it buys is that the next buildspec is covered without being listed.
+#
+# ⚠️ Discovery is by FILENAME, where `check-arn-partitions` and `cfn-lint` share a
+# CONTENT-based discovery (anything declaring `AWSTemplateFormatVersion`). A
+# buildspec does have an equivalent marker -- a top-level `version: 0.1|0.2` plus
+# `phases:`, the pair `validate_buildspec.py` itself requires -- so this is a
+# weaker rule than those two by choice of expedience, not for want of a marker. A
+# `ui-buildspec.yml`, or a `BuildSpec` property pointed at some other filename,
+# would not be read. `test_every_tracked_buildspec_is_handed_to_the_gate` derives
+# the universe by content and fails if the two definitions ever disagree, so the
+# gap is measured rather than assumed. What IS shared with those two gates is the
+# empty-set contract below: a discovery that stops working is a red gate rather
+# than a green one.
+BUILDSPEC_FILES = $(shell git ls-files | grep -E '(^|/)buildspec[^/]*\.ya?ml$$')
+
+validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, discovered)
 	@echo "Validating buildspec files..."
-	@$(PYTHON) scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml || \
+	@if [ -z "$(BUILDSPEC_FILES)" ]; then \
+		echo -e "$(RED)ERROR: buildspec discovery found no files — the gate would pass vacuously$(NC)"; \
+		exit 1; \
+	fi
+	@$(PYTHON) scripts/sdlc/validate_buildspec.py $(BUILDSPEC_FILES) || \
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
@@ -390,13 +415,26 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files
 #   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
 #     trust a named role in the commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
-#     would render an ARN naming a GovCloud account that is not the one meant. This
-#     is the only line in these templates that cannot be parameterised.
+#     would render an ARN naming a GovCloud account that is not the one meant.
+#
+#   scripts/sdlc/cfn/github-oidc-review-role.yml:sts.amazon — two lines carry the
+#     literal `sts.amazonaws.com`: the OIDC provider's ClientIdList and the `aud`
+#     condition on the role's trust policy, which must agree. That string is an
+#     OpenID Connect AUDIENCE CLAIM, not an endpoint — nothing resolves it as a
+#     hostname, GitHub mints the token with it as an opaque value, and
+#     `aws-actions/configure-aws-credentials` requests it verbatim in every
+#     partition. `${AWS::URLSuffix}` would render an audience GitHub never issues,
+#     so the gate's suggested fix is the one thing that breaks it.
+#     ⚠️ The pattern is spelled `sts.amazon` rather than `sts.amazonaws.com`
+#     because test_no_exemption_hides_more_lines_than_a_reason_can_cover rejects a
+#     line pattern that CONTAINS the gate's own `.amazonaws.com` needle — such a
+#     pattern would hide every finding in the file, which is the thing that ratchet
+#     exists to stop. `sts.amazon` matches the two intended lines and no needle.
 #
 # scripts/tests/test_discover_templates.py checks the shape, requires a reason, and
 # fails if an entry hides nothing — a dead exemption is a standing licence for
 # whatever next occupies the path.
-ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod scripts/sdlc/cfn/github-oidc-review-role.yml:sts.amazon
 
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
@@ -662,6 +700,39 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 # `test-cicd -C lib/idp_common_pkg`, and registering a root above buys nothing on
 # a pull request until it is named in one of those two. That is what
 # scripts/tests/test_src_lambda_tests_in_ci.py enforces, over the whole tree.
+
+# Distribute the LARGE suites in `test-packages-cicd` across cores. Same variable
+# name and same default as lib/idp_common_pkg/Makefile, for the same reason —
+# `pytest-xdist` is a declared `[test]` dependency and nothing here passed `-n`,
+# so every invocation below ran serial on a 16-vCPU runner.
+#
+# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
+# target:
+#
+#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
+#     lib/idp_sdk        2663 tests, serial  441s
+#
+# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
+# near-perfectly parallel and the win is close to the core count.
+#
+# ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
+# spinning up N workers costs a second or two before the first test runs, which is
+# longer than most of these invocations take — a majority finish in under a second.
+# The rule is **above 20s measured in CI**, which selects the nine that carry
+# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
+# `src/lambda/complete_section_review` takes 7x longer for 115.
+#
+# ⚠️ Count the `$(PYTEST_HERMETIC)` lines, not the `@echo` headers, if you need to
+# know how many invocations this recipe has. There are far more invocations than
+# echoes — most echoes introduce a GROUP, because suites that each define a module
+# named `index` need one invocation apiece — and a count taken off the echoes is
+# wrong by more than a factor of two.
+#
+# `PYTEST_XDIST=` restores serial execution everywhere, for a debugging run where
+# interleaved worker output breaks `-s`, `--pdb` and live logging.
+PYTEST_XDIST ?= -n auto
+
 test: ## Run every non-integration test suite (auto-discovered; see scripts/run_all_tests.py)
 	$(PYTHON) scripts/run_all_tests.py
 
@@ -673,13 +744,13 @@ test-list: ## List the discovered test roots (run vs quarantined) without runnin
 
 test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
 	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) -m "not integration" -q -p no:cacheprovider
+	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
 	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
@@ -692,17 +763,21 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
 	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
-	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor \
 	    src/lambda/workflow_tracker
-	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
-	@# Both suites import their own ``index`` module; run each in its
-	@# own directory to prevent the sys.path collision that fails a
-	@# combined pytest invocation.
-	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) test_index.py -q -p no:cacheprovider
+	@echo "Running queue_sender Lambda tests (folder-skip, #719 re-upload cleanup, config prefix mappings)..."
+	@# Each Lambda suite imports its own ``index`` module; run each in its own
+	@# directory to prevent the sys.path collision that fails a combined pytest
+	@# invocation across directories. Within one directory that collision does not
+	@# arise, so this names the DIRECTORY rather than ``test_index.py``: a named
+	@# file covers only itself, so a second test module added beside it would reach
+	@# neither CI, and test_src_lambda_tests_in_ci.py cannot see that gap because it
+	@# records a file target as its parent directory.
+	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) . -q -p no:cacheprovider
 	@# reprocess_document_resolver's suite is run below with the other five
 	@# config-version-scope resolvers, as a whole directory rather than one named
 	@# file — a named file covers only itself, which is how a second test module
@@ -728,12 +803,19 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# the wrapper takes the region away rather than handing one over. See #988.
 	cd src/lambda/api_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/batch_pre_processor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# DockerBuildRun's ECR image verification: the bounded scan wait (#1336) and
+	@# the presence poll (#1310). `crhelper` is a Lambda-layer dependency and not a
+	@# test dependency here, so the suite stubs it in sys.modules before importing
+	@# index.py -- which also means this needs no region pin, as every boto3 client
+	@# is a MagicMock.
+	cd src/lambda/start_codebuild && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
@@ -826,9 +908,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) scripts/sdlc/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
 	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) scripts/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
 	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
 	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
 	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
@@ -1362,14 +1444,17 @@ dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no rege
 	@$(PYTHON) scripts/security/dep_audit.py --no-generate
 
 ##@ Automated review (advisory — reviews an MR, gates nothing)
-# Runs Claude Code over open GitLab MRs with .claude/skills/pr-review.md and
-# posts the review as an MR note. Deliberately NOT a gate and deliberately NOT
-# check-shaped in name or section: a model's opinion must not decide whether
-# code merges, and scripts/tests/test_ci_gate_parity.py derives its universe of
-# gates from the Makefile's sections and target names. The CI job that runs this
-# is allow_failure: true for the same reason. Needs GITLAB_REVIEW_TOKEN (api
-# scope) plus AWS credentials with bedrock:InvokeModel.
+# Runs Claude Code over open GitLab MRs or GitHub PRs with
+# .claude/skills/pr-review.md and posts the review as a comment. Deliberately
+# NOT a gate and deliberately NOT check-shaped in name or section: a model's
+# opinion must not decide whether code merges, and
+# scripts/tests/test_ci_gate_parity.py derives its universe of gates from the
+# Makefile's sections and target names. Both CI jobs that run this are advisory
+# for the same reason — `allow_failure: true` on GitLab, and a context pinned as
+# must-stay-advisory on GitHub. Needs AWS credentials with bedrock:InvokeModel,
+# plus GITLAB_REVIEW_TOKEN (api scope) or GITHUB_TOKEN (pull-requests: write).
 .PHONY: ai-mr-review ai-mr-review-dry ai-mr-review-local
+.PHONY: ai-pr-review ai-pr-review-dry
 
 ai-mr-review: ## Review every open non-Draft MR -> develop and post the reviews (MR=<iid> for one)
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
@@ -1386,6 +1471,34 @@ ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 ai-mr-review-local: ## Dry-run one MR with NO token, from git over SSH (MR=<iid> required)
 	@$(if $(MR),,$(error set MR=<iid>, e.g. make ai-mr-review-local MR=786))
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py --mr $(MR) --no-api $(EXTRA_ARGS)
+
+# The GitHub side. `--forge github` is stated rather than detected, so these two
+# targets are the local equivalents of .github/workflows/ai-pr-review.yml. A fork
+# PR's head is fetchable from this repository, so a fork PR can be reviewed from
+# here as well as by the workflow's scheduled run.
+#
+# Three things the workflow gets from its environment and a laptop does not, each
+# of which turns into a skip or a failure rather than a review if it is left out:
+#   GITHUB_TOKEN       the workflow maps it from secrets; here it comes from
+#                      `gh auth token`, and the script reads only this variable.
+#   GITHUB_REPOSITORY  set by Actions; passed as --repo here.
+#   --remote github    ⚠️ `origin` is the GITLAB remote in this checkout, and the
+#                      head ref is fetched from whatever remote is named. Without
+#                      this, --forge github asks GitLab for a refs/pull/ ref that
+#                      cannot exist there and fails at the fetch.
+# Override any of them through EXTRA_ARGS or the environment.
+GH_REVIEW_REPO ?= aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
+GH_REVIEW_REMOTE ?= github
+
+ai-pr-review: ## Review every open non-draft GitHub PR -> develop and post them (PR=<n> for one)
+	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
+		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
+		$(if $(PR),--mr $(PR),--all-open) $(EXTRA_ARGS)
+
+ai-pr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting them
+	@GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" $(PYTHON) scripts/sdlc/ai_mr_review.py \
+		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
+		$(if $(PR),--mr $(PR),--all-open) --dry-run $(EXTRA_ARGS)
 
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common

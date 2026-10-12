@@ -73,7 +73,7 @@ Add these to the `rule_validation` section to customize Z3 behavior:
 rule_validation:
   z3_timeout_ms: 5000          # Solver timeout (1–300000 ms, default 5000)
   z3_rule_translator:          # LLM for rule → SMT-LIB translation
-    model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    model: us.anthropic.claude-sonnet-4-6
     temperature: 0
     max_tokens: 4096
     system_prompt: "..."

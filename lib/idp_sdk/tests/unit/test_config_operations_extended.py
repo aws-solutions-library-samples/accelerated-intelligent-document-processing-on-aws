@@ -1000,20 +1000,20 @@ class TestDownload:
     def test_with_no_active_profile_the_default_name_is_used(
         self, aws_credentials, config_env, tmp_path
     ):
-        """A stack where nothing has been activated falls back to `default`.
+        """A stack where nothing has been activated falls back to `default`, and
+        `default` not existing is now a refusal rather than a null document (#1230).
 
-        There is no `Config#default` here, so the profile that does exist must
-        *not* be returned — a "pick any" fallback would hand back a configuration
-        the stack is not running, under a filename that says nothing about which
-        one it is.
+        Two guarantees in one test, and they pull in opposite directions. The profile
+        that *does* exist must not be substituted — a "pick any" fallback would hand
+        back a configuration the stack is not running, under a filename saying nothing
+        about which one it is. And the absent `default` must not be reported as an
+        empty configuration, which is what used to happen: `config` came back `{}`
+        because the model coerces with `config_data or {}`, while `yaml_content` was
+        dumped *before* that coercion and was the string `"null\\n...\\n"`, so the
+        written file's entire content was `null` from a call that reported no error.
 
-        What comes back instead is a result whose two representations of the same
-        thing disagree, and that is worth pinning: `config` is `{}` because the
-        model coerces the missing configuration with `config_data or {}`, while
-        `yaml_content` was dumped *before* that coercion and is the string
-        `"null\\n...\\n"`. Writing that to `output` produces a YAML file whose
-        entire content is `null`, from a call that reported no error at all
-        (`operations/config.py:372-398`).
+        The file is asserted absent, not just the raise: a refusal that had already
+        written would leave the next step reading an empty configuration.
         """
         _create_stack(aws_credentials)
         operation = _client(aws_credentials).config
@@ -1024,13 +1024,14 @@ class TestDownload:
         )
         output = tmp_path / "downloaded.yaml"
 
-        result = operation.download(output=str(output))
+        with pytest.raises(IDPResourceNotFoundError) as raised:
+            operation.download(output=str(output))
 
-        assert result.config == {}, "the absent profile is not substituted"
-        assert result.yaml_content.strip() == "null\n...", (
-            "yaml_content still carries the un-coerced None"
+        assert "default" in str(raised.value), "it names the profile it looked for"
+        assert "only" not in str(raised.value), (
+            "and it does not offer the profile that happens to exist"
         )
-        assert yaml.safe_load(output.read_text(encoding="utf-8")) is None
+        assert not output.exists(), "no null document is left on disk"
 
     @mock_aws
     def test_the_written_file_carries_the_stack_and_format_provenance(

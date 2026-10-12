@@ -808,6 +808,64 @@ class PostprocessingConfig(FlatHookConfig):
     """
 
 
+class MalwareScanningConfig(BaseModel):
+    """Top-level `malware_scanning` section.
+
+    The POLICY applied to Amazon GuardDuty Malware Protection verdicts on
+    uploaded documents. Scanning itself is enabled by the ``MalwareScanning``
+    stack parameter, not here — nothing in this section can turn it on, because a
+    GuardDuty protection plan is infrastructure and a config row that claimed to
+    create one would be lying.
+
+    ⚠️ **Declared here so it survives a model round-trip.** ``IDPConfig`` takes
+    Pydantic's default ``extra="ignore"``, so a section with no field would be
+    silently dropped the first time a configuration passed through the model —
+    an Admin's saved setting would simply vanish on the next save, with nothing
+    reporting it.
+
+    A document GuardDuty reports as *infected* is always refused; that is not
+    configurable and so has no field.
+    """
+
+    on_unscannable: str = Field(
+        default="block",
+        description=(
+            "What to do with a document GuardDuty returned no verdict for "
+            "(password-protected, over the size/archive quotas, SSE-C encrypted, "
+            "or an internal scan error). 'block' (default) stops it with status "
+            "MALWARE_SCAN_FAILED. 'allow' processes it anyway — and takes effect "
+            "ONLY if the AllowUnscannableDocuments stack parameter is also true, "
+            "so this setting cannot by itself admit an unscanned file."
+        ),
+    )
+    alert_on_block: bool = Field(
+        default=True,
+        description=(
+            "Publish to the stack's SNS alerts topic when a document is "
+            "quarantined or refused as unscannable. The CloudWatch metrics and "
+            "the document's own status are recorded either way."
+        ),
+    )
+
+    @field_validator("on_unscannable")
+    @classmethod
+    def _validate_on_unscannable(cls, value: str) -> str:
+        """Refuse anything but the two known values, lower-cased.
+
+        Fails loudly rather than falling back to 'block': a typo like 'Allow' or
+        'permit' in a security policy must not be read as the stricter setting
+        and then quietly ignored, because the author believed they had loosened
+        it and would not find out until an unscannable document was refused.
+        """
+        normalised = str(value).strip().lower()
+        if normalised not in ("block", "allow"):
+            raise ValueError(
+                f"malware_scanning.on_unscannable must be 'block' or 'allow', "
+                f"got {value!r}"
+            )
+        return normalised
+
+
 class ConfidenceConfig(BaseModel):
     """Per-field confidence configuration (v0.6).
 
@@ -2624,13 +2682,16 @@ class ModelConfigLimitsConfig(BaseModel):
 class FactExtractionConfig(BaseModel):
     """Fact extraction configuration for rule validation"""
 
-    # Claude Sonnet 4.5, not Claude 3.5 Sonnet (20240620). That model has reached
-    # end of life — Bedrock's GetFoundationModel answers ResourceNotFoundException
-    # for it — and it is in no model enum, so it could not be selected in the UI
-    # either. No config preset under config_library/ sets this field, so the
-    # default is what rule validation actually ran on.
+    # No config preset under config_library/ sets this field, so this default is
+    # what rule validation actually runs on — which makes it worth keeping on a
+    # model AWS has not deprecated. Claude Sonnet 4.5 moved to LEGACY on
+    # 2026-10-08 (EOL 2027-04-08, recorded in LEGACY_EXAMPLES in
+    # scripts/tests/test_model_surface_consistency.py), and a LEGACY model takes
+    # no further Service Quota increases, so it is a poor thing to inherit by
+    # default. Sonnet 4.6 is Active and is the Sonnet-class default elsewhere in
+    # system_defaults/.
     model: str = Field(
-        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         description="Bedrock model ID for fact extraction",
     )
     system_prompt: str = Field(
@@ -2663,10 +2724,10 @@ class FactExtractionConfig(BaseModel):
 class RuleValidationOrchestratorConfig(BaseModel):
     """Rule validation summarization configuration"""
 
-    # See FactExtractionConfig.model above: Claude 3.5 Sonnet (20240620) is
-    # end-of-life and absent from every enum.
+    # See FactExtractionConfig.model above for why this default tracks the
+    # Active Sonnet rather than a LEGACY one.
     model: str = Field(
-        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         description="Bedrock model ID for rule validation summarization",
     )
     system_prompt: str = Field(
@@ -2700,7 +2761,7 @@ class Z3RuleTranslatorConfig(BaseModel):
     """Z3 engine: translates natural language rules to SMT-LIB RuleJSON"""
 
     model: str = Field(
-        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default="us.anthropic.claude-sonnet-4-6",
         max_length=256,
         description="Bedrock model ID for rule translation",
     )
@@ -3696,6 +3757,12 @@ class IDPConfig(BaseModel):
     )
 
     notes: Optional[str] = Field(default=None, description="Configuration notes")
+    malware_scanning: MalwareScanningConfig = Field(
+        default_factory=MalwareScanningConfig,
+        description="Policy applied to GuardDuty Malware Protection verdicts on "
+        "uploaded documents. Scanning is enabled by the MalwareScanning stack "
+        "parameter; this section only decides how a verdict is acted on.",
+    )
     preprocessing: PreprocessingConfig = Field(
         default_factory=PreprocessingConfig,
         description="Preprocessing configuration — home of the standalone "

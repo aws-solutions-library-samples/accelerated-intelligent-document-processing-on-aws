@@ -6,8 +6,10 @@
 A sharded extraction runs one shard per Lambda invocation, capped at 900 seconds —
 Lambda's maximum, so the budget cannot be widened. Several independent settings
 spend it, and each is only meaningful relative to the others, so they are defined
-here rather than at the call sites that use them (#1014). The inequality they all
-serve::
+here rather than at the call sites that use them (#1014).
+
+⚠️ **The constants are sized for the work, and the LADDER is what is bounded.** The
+first version of this module took the other route: it required
 
     BOTOCORE_TOTAL_MAX_ATTEMPTS * (AGENT_READ_TIMEOUT_SECONDS
                                    + CONFIDENCE_READ_TIMEOUT_SECONDS)
@@ -15,15 +17,55 @@ serve::
         + <room for the work itself>
     <= LAMBDA_MAX_TIMEOUT_SECONDS
 
-A shard invocation can stall on **two** different Bedrock clients, and the worst
-case is one stall on each plus the whole backoff allowance. Every term is needed:
+and solved it by cutting the agentic read timeout from 600s to 180s. That number is
+not free to choose: it is the longest gap a streamed generation may leave BETWEEN
+events, and a real one exceeded it. The Nuveen agentic extraction (532 table rows,
+17 page images, a ~52k-token cached prefix) reliably goes quiet for longer than 180s
+at one point in its agent loop. Every attempt therefore ended in
+``ReadTimeoutError``; the ladder resumed the same conversation, which stalled
+identically; five attempts filled the 900s invocation, and it died on the wall clock
+with ``Sandbox.Timedout`` — the one classification Step Functions does NOT retry
+(``MaxAttempts: 1`` since #917) — so ``ExtractionShardMap`` discarded the sibling
+shards too. That is the same loss #1014 set out to prevent, reached by shrinking the
+timeout instead of by the stall it was aimed at (#1310). Measured: the identical
+document and configuration passed at 600s and has failed every CI run since the cut.
+
+So ``AGENT_READ_TIMEOUT_SECONDS`` is back at a value the work fits inside, and the
+invariant that keeps the invocation safe lives in the retry ladder instead:
+``utils.bedrock_utils._attempt_cannot_finish`` refuses to BEGIN an attempt the size
+of the one that just failed when the remaining invocation cannot hold it, and raises
+the underlying error. The handlers wrap that as ``TransientError``, which
+``ExtractionStep``/``ShardExtractionStep`` retry eight times against a state-machine
+budget of 21,600s. The bound is on elapsed time rather than on a sum of constants,
+and it is self-calibrating: it needs no estimate of how long a request may take,
+because it measures.
+
+What the arithmetic still has to hold is weaker and is asserted in
+``tests/unit/extraction/test_shard_timeout_budget.py``: ONE stall on the streamed
+agentic client plus the whole backoff allowance must leave the invocation room to
+return an error rather than be killed::
+
+    AGENT_READ_TIMEOUT_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS
+        + <room to return>
+    <= LAMBDA_MAX_TIMEOUT_SECONDS
+
+A shard invocation can stall on **two** different Bedrock clients. Every term below
+is still needed, because each is a real way to spend the invocation: what changed is
+that their sum is no longer required to fit inside it.
 
 * ``AGENT_READ_TIMEOUT_SECONDS`` — the STREAMED agentic call. Strands'
   ``BedrockModel`` streams by default and nothing here disables it, so this bounds
   a socket read BETWEEN events (time to first event, then each inter-event gap)
-  rather than total generation time. A healthy long generation emits deltas
-  continuously and never approaches it; what trips it is three minutes with no
-  traffic at all, which is a stall by definition.
+  rather than total generation time.
+
+  ⚠️ **Do not reason about this number from "a healthy generation streams
+  continuously".** That was the stated basis for 180s and it is wrong for an agent
+  loop: a gap here is not only the model falling silent mid-sentence, it is also the
+  whole turn between one tool result being submitted and the first event of the
+  model's reply, on a request carrying a large cached prefix and a dozen-plus page
+  images. Measured on ``samples/Nuveen.pdf``, that gap exceeds 180s reproducibly and
+  fits inside 600s. Lower it only against a measurement of that gap, not against the
+  arithmetic — see the warning at the top.
 * ``CONFIDENCE_READ_TIMEOUT_SECONDS`` — the NON-streamed ``converse`` in
   ``bedrock/client.py``, which bounds the whole response rather than a gap and so
   is legitimately larger. It runs inside the same shard invocation whenever
@@ -52,15 +94,8 @@ case is one stall on each plus the whole backoff allowance. Every term is needed
 * ``AGENT_MAX_TOTAL_BACKOFF_SECONDS`` — time the retry ladder may spend ASLEEP. It
   is the cheapest term to shrink, since sleeping makes no progress, and long waits
   belong to the state machine (whose execution budget is 21,600 s) rather than
-  inside a 900 s invocation. It is sized as the largest value that keeps the
-  inequality true with room for one complete call of the slowest kind.
-
-At the original read timeout of 600 s the two-term version of this sum was exactly
-900 and left nothing: a shard died on the wall clock, Step Functions read the
-resulting ``Sandbox.Timedout`` as DETERMINISTIC (one attempt, by design — #917), so
-the transient blip a retry would have cleared became the one failure not retried,
-and ``ExtractionShardMap`` — which tolerates no shard failures — discarded the
-sibling shards that had already succeeded along with it.
+  inside a 900 s invocation. It is sized so that one agentic stall plus the whole
+  allowance still leaves the invocation room to return.
 
 **Why this module imports nothing.** ``extraction.runtime`` takes its ``read_timeout``
 defaults from here, and a default argument is evaluated when the module is imported,
@@ -86,7 +121,7 @@ if either of its numbers moves.
 from __future__ import annotations
 
 LAMBDA_MAX_TIMEOUT_SECONDS = 900.0
-AGENT_READ_TIMEOUT_SECONDS = 180.0
+AGENT_READ_TIMEOUT_SECONDS = 600.0
 CONFIDENCE_READ_TIMEOUT_SECONDS = 300.0
 AGENT_MAX_BACKOFF_SECONDS = 60.0
 AGENT_MAX_TOTAL_BACKOFF_SECONDS = 90.0

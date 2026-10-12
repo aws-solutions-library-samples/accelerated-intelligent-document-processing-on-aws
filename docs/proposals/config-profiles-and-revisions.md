@@ -322,6 +322,15 @@ Phases 0, 1 and 2 are implemented. Three deliberate departures in Phases 0–1:
    hook registration (`register_feature_hooks`) — so converting it needs its own
    migration story rather than riding along here. Tracked as follow-up work.
 
+One more departure, from §7: a label or a test-run pin does not let a revision
+outlive `DataRetentionInDays`. Pruning spares those revisions, but the Configuration
+bucket's `DeleteAfterNDays` lifecycle rule has no filter, so it expires every
+revision body `DataRetentionInDays` after it is written. Only a profile's published
+revision can be read past that, rebuilt from the profile head when the head is
+proven to hold it (see `lib/idp_common_pkg/idp_common/config/README.md`). The rule
+stays as it is: a lifecycle filter cannot exclude a prefix, and the bucket holds
+`config_library/` and `samples/` under the same rule.
+
 Also landed alongside, as authorized side fixes:
 
 - The document-list and document-chat scope filters now **fail closed** on a

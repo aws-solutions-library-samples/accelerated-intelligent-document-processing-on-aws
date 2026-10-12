@@ -118,9 +118,6 @@
     "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py": {
       "I001": 1
     },
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": {
-      "I001": 1
-    },
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
       "F841": 1,
       "I001": 1
@@ -132,8 +129,7 @@
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
-      "E722": 1,
-      "F841": 1
+      "E722": 1
     },
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py": {
       "I001": 1
@@ -319,9 +315,6 @@
       "F541": 1,
       "I001": 1
     },
-    "src/lambda/queue_sender/index.py": {
-      "I001": 1
-    },
     "src/lambda/save_reporting_data/index.py": {
       "F401": 3,
       "I001": 1
@@ -390,16 +383,12 @@
     "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
-    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py",
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
-    "nested/api-resolvers/src/lambda/test_runner/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
-    "nested/api-resolvers/src/lambda/test_runner/test_revision_pinning.py",
     "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
-    "nested/api-resolvers/src/lambda/upload_resolver/index.py",
     "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
@@ -441,7 +430,6 @@
     "scripts/sdlc/tests/test_resolver_layer_coverage.py",
     "scripts/sdlc/tests/test_retired_services_not_documented.py",
     "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
-    "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
     "scripts/sdlc/tests/test_stale_stack_reaper.py",
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
     "scripts/sdlc/validate_buildspec.py",
@@ -527,7 +515,6 @@
     "src/lambda/queue_processor/test_reconcile_counter.py",
     "src/lambda/queue_processor/test_slot_ownership.py",
     "src/lambda/queue_sender/conftest.py",
-    "src/lambda/queue_sender/index.py",
     "src/lambda/save_reporting_data/index.py",
     "src/lambda/start_codebuild/index.py",
     "src/lambda/test_file_copier/test_index.py",
@@ -543,8 +530,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 84,
-    "lintFindings": 193,
-    "formatDebtFiles": 178
+    "lintDebtFiles": 82,
+    "lintFindings": 190,
+    "formatDebtFiles": 172
   }
 }

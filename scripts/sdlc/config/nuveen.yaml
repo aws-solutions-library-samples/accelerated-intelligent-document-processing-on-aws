@@ -276,7 +276,7 @@ rule_validation:
   rule_validation_orchestrator: null
 agents:
   error_analyzer:
-    model_id: us.anthropic.claude-sonnet-4-20250514-v1:0
+    model_id: us.anthropic.claude-sonnet-4-6
     error_patterns:
     - ERROR
     - CRITICAL

@@ -11,8 +11,7 @@ hours and then hard-failed, discarding its already-completed OCR, extraction,
 assessment and summarization output. A batch of such documents stopped the stack
 accepting any new work.
 
-Pure JSON parsing on purpose — no imports from the Lambda source, which builds AWS
-clients at module scope.
+Pure JSON parsing on purpose — no imports from the Lambda source.
 """
 
 import json

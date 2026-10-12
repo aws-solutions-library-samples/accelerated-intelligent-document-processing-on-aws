@@ -161,7 +161,7 @@ class LLMComparator(BaseComparator):
             return int(val) if isinstance(val, str) else val
 
         self.llm_config = {
-            "model": model or "us.anthropic.claude-3-sonnet-20240229-v1:0",
+            "model": model or "us.anthropic.claude-haiku-4-5-20251001-v1:0",
             "temperature": to_float(temperature if temperature is not None else 0.0),
             "top_k": to_int(top_k if top_k is not None else 5),
         }
@@ -319,7 +319,7 @@ def create_llm_comparator_from_config(config: dict) -> LLMComparator:
         Configured LLMComparator instance
     """
     return LLMComparator(
-        model=config.get("model", "us.anthropic.claude-3-sonnet-20240229-v1:0"),
+        model=config.get("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
         temperature=config.get("temperature", 0.0),
         top_k=config.get("top_k", 5),
         top_p=config.get("top_p"),
@@ -371,7 +371,7 @@ def compare_llm(
 
         # Default LLM configuration if not provided
         config = llm_config or {}
-        model = config.get("model", "us.anthropic.claude-3-sonnet-20240229-v1:0")
+        model = config.get("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
         temperature = config.get("temperature", 0.0)
         top_k = config.get("top_k", 5)
         reasoning_effort = config.get("reasoning_effort")

@@ -137,13 +137,21 @@ other**, so they are defined together rather than at the call sites that use the
 | Constant | Value | Bounds |
 |---|---|---|
 | `LAMBDA_MAX_TIMEOUT_SECONDS` | 900 | The shard function's `Timeout`, which is also Lambda's maximum |
-| `AGENT_READ_TIMEOUT_SECONDS` | 180 | One socket read on the **streamed** agentic call — time to first event, then each inter-event gap |
+| `AGENT_READ_TIMEOUT_SECONDS` | 600 | One socket read on the **streamed** agentic call — time to first event, then each inter-event gap |
 | `CONFIDENCE_READ_TIMEOUT_SECONDS` | 300 | One **non-streamed** `converse` in `bedrock/client.py`, which bounds the whole response |
 | `BOTOCORE_TOTAL_MAX_ATTEMPTS` | 1 | How many times botocore may attempt a call, and therefore the multiplier on both timeouts above |
 | `AGENT_MAX_TOTAL_BACKOFF_SECONDS` | 90 | Total sleep the retry ladder may spend across all attempts |
 | `AGENT_MAX_BACKOFF_SECONDS` | 60 | A single sleep |
 
-The invariant is
+A shard invocation can stall on **two** Bedrock clients, not one. The streamed agentic
+call is always there; the non-streamed one runs inside the same invocation whenever
+confidence is in `separate` mode, because `ExtractionService._build_assess_runner` hands
+`extract_one_shard` a closure over `AssessmentService.assess_results`. (In `integrated`
+mode the extraction agent emits confidence inline, so only the streamed term applies.)
+
+⚠️ **The constants are sized for the work; the LADDER is what is bounded.** It is
+tempting to require the terms above to sum to less than 900, and that was the first
+form of this invariant:
 
 ```
 BOTOCORE_TOTAL_MAX_ATTEMPTS * (AGENT_READ_TIMEOUT_SECONDS + CONFIDENCE_READ_TIMEOUT_SECONDS)
@@ -152,23 +160,45 @@ BOTOCORE_TOTAL_MAX_ATTEMPTS * (AGENT_READ_TIMEOUT_SECONDS + CONFIDENCE_READ_TIME
 <= LAMBDA_MAX_TIMEOUT_SECONDS
 ```
 
-A shard invocation can stall on **two** Bedrock clients, not one. The streamed agentic
-call is always there; the non-streamed one runs inside the same invocation whenever
-confidence is in `separate` mode, because `ExtractionService._build_assess_runner` hands
-`extract_one_shard` a closure over `AssessmentService.assess_results`. (In `integrated`
-mode the extraction agent emits confidence inline, so only the streamed term applies —
-but the budget has to hold for both.) 180 + 300 + 90 = 570 leaves 330 s for the work,
-which is the floor the test enforces: enough for one complete call of the slowest kind.
+The only way to satisfy it was to cut `AGENT_READ_TIMEOUT_SECONDS` from 600 to 180, and
+that number is not free to choose: it is the longest gap a streamed **agent turn** may
+leave between events, which includes the whole wait between submitting a tool result and
+the first event of the model's reply. Measured on `samples/Nuveen.pdf` (532 table rows,
+17 page images, a ~52k-token cached prefix) that gap exceeds 180 s reproducibly. Every
+attempt then ended in `ReadTimeoutError`, the ladder resumed the same conversation and
+stalled identically, five attempts filled the invocation, and the shard died on the wall
+clock — reaching the #1014 outcome through the other door
+([#1310](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1310)).
 
-When the inequality fails, the shard is killed by the Lambda timeout instead of
-returning, Step Functions reports `Sandbox.Timedout`, and that is classified
-**deterministic** with one attempt — so the transient failure a retry would have
-cleared becomes the one that is not retried, and `ExtractionShardMap`, which tolerates
-no shard failures, discards the sibling shards that had already succeeded
+So the bound lives in the ladder instead. `_attempt_cannot_finish` refuses to **begin**
+an attempt the size of the one that just failed when the remaining invocation cannot hold
+it, and raises the underlying error. It measures rather than estimating, so it needs no
+constant, and it covers whatever an attempt actually spends — a stalled stream, the
+in-shard confidence call, or both. What still has to hold arithmetically is only that one
+agentic stall plus the whole backoff allowance leaves room to **return**:
+
+```
+AGENT_READ_TIMEOUT_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS + <room to return>
+<= LAMBDA_MAX_TIMEOUT_SECONDS
+```
+
+600 + 90 = 690 leaves 210 s to unwind, persist the shard's failure and raise.
+
+Why returning matters more than one more attempt: when the shard is killed by the Lambda
+timeout, Step Functions reports `Sandbox.Timedout`, which is classified **deterministic**
+with one attempt — so the transient failure a retry would have cleared becomes the one
+that is not retried, and `ExtractionShardMap`, which tolerates no shard failures,
+discards the sibling shards that had already succeeded
 ([#1014](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1014)).
-This is the same shape as the `max_delay=1800`-inside-a-900-second-function error the
-comments in that module describe, one layer down: in the boto3 client config rather
-than the retry decorator.
+A raised transient error is wrapped as `TransientError` and retried eight times against a
+state-machine budget of 21,600 s.
+
+⚠️ **A stall on both clients can still exceed the invocation** — 600 + 300 + 90 is over
+900 — and that residual is deliberate rather than denied: the confidence client's own
+ladder is not deadline-aware (see below), so no arithmetic here can close it.
+`test_the_confidence_client_can_still_overrun_and_that_is_recorded_not_hidden` asserts
+the residual is still real, so if the numbers ever do fit, this paragraph is stale and
+should go rather than understate what holds.
 
 ⚠️ **`total_max_attempts`, never `max_attempts`.** In *client config* botocore's
 `max_attempts` means max **retries** and is normalised to `total_max_attempts =

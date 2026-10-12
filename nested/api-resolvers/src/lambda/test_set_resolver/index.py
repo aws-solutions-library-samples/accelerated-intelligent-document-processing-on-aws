@@ -10,6 +10,14 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from idp_common.api_adapter import ResourceNotFound  # type: ignore
+from idp_common.config_scope import (  # type: ignore
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.dynamodb.client import DynamoDBError  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
@@ -294,6 +302,8 @@ def handler(event, context):
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
         return add_documents_to_test_set(event["arguments"])
+    elif field_name == "addDocumentsToTestSetByKey":
+        return add_documents_to_test_set_by_key(event["arguments"], event)
     elif field_name == "addDocumentsToTestSetFromUpload":
         return add_documents_to_test_set_from_upload(event["arguments"])
     elif field_name == "updateTestSet":
@@ -363,7 +373,7 @@ def add_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # The caller's name wins. This used to be derived from the filename
     # unconditionally, so a user who typed "my-test-set" in the wizard and uploaded
@@ -382,13 +392,13 @@ def add_test_set_from_upload(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
@@ -459,13 +469,13 @@ def add_test_set(args):
 
     # Validate test set name
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
 
     # Validate description
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Generate test set ID with name format, replace spaces with dashes
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
@@ -579,11 +589,11 @@ def create_empty_test_set(args):
     document_class_type = args.get("documentClassType")
 
     if not validate_test_set_name(test_set_name):
-        raise Exception(
+        raise ValueError(
             "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
         )
     if description and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     test_set_id = test_set_name.replace(" ", "-").lower()
     now = datetime.utcnow().isoformat() + "Z"
@@ -613,7 +623,7 @@ def create_empty_test_set(args):
         if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
             "ConditionalCheckFailed" in str(e)
         ):
-            raise Exception(f"A test set with id '{test_set_id}' already exists")
+            raise ValueError(f"A test set with id '{test_set_id}' already exists")
         raise
     # After the row: a marker without a row is a stray folder discovery ignores,
     # while a row without a marker is reaped on the next getTestSets.
@@ -636,28 +646,26 @@ def create_empty_test_set(args):
     return result
 
 
-def add_documents_to_test_set(args):
-    logger.info(f"Adding documents to existing test set: {args}")
+MAX_KEYS_PER_ADD = 500
 
-    test_set_id = args["testSetId"]
-    file_pattern = args["filePattern"]
-    bucket_type = args["bucketType"]
-    file_count = args["fileCount"]
 
-    # Look up existing test set
+def _begin_test_set_append(test_set_id):
+    """Look up a COMPLETED test set and mark it UPDATING for an append job.
+
+    statusUpdatedAt is what makes the job reapable: without it a set whose copier
+    dies sits in UPDATING forever, because _reap_abandoned_test_sets has no way to
+    tell a slow copy from an abandoned one.
+    """
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
-    # it a set whose copier dies sits in UPDATING forever, because
-    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
@@ -671,27 +679,18 @@ def add_documents_to_test_set(args):
             ":now": datetime.utcnow().isoformat() + "Z",
         },
     )
+    return item, tracking_table
 
-    # Send file copying job to SQS queue
+
+def _queue_test_set_copy(message_body):
     sqs = boto3.client("sqs")
-    queue_url = os.environ["TEST_SET_COPY_QUEUE_URL"]
-
-    message_body = {
-        "testSetId": test_set_id,
-        "filePattern": file_pattern,
-        "bucketType": bucket_type,
-        "trackingTable": tracking_table,
-        "mode": "append",
-    }
-    if args.get("modifiedAfter"):
-        message_body["modifiedAfter"] = args["modifiedAfter"]
-
-    sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
-
-    logger.info(
-        f"Queued append job for test set {test_set_id} with pattern '{file_pattern}'"
+    sqs.send_message(
+        QueueUrl=os.environ["TEST_SET_COPY_QUEUE_URL"],
+        MessageBody=json.dumps(message_body),
     )
 
+
+def _updating_test_set_summary(test_set_id, item):
     return {
         "id": test_set_id,
         "name": item["name"],
@@ -703,6 +702,156 @@ def add_documents_to_test_set(args):
     }
 
 
+def add_documents_to_test_set(args):
+    logger.info(f"Adding documents to existing test set: {args}")
+
+    test_set_id = args["testSetId"]
+    file_pattern = args["filePattern"]
+    bucket_type = args["bucketType"]
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
+
+    message_body = {
+        "testSetId": test_set_id,
+        "filePattern": file_pattern,
+        "bucketType": bucket_type,
+        "trackingTable": tracking_table,
+        "mode": "append",
+    }
+    if args.get("modifiedAfter"):
+        message_body["modifiedAfter"] = args["modifiedAfter"]
+
+    _queue_test_set_copy(message_body)
+
+    logger.info(
+        f"Queued append job for test set {test_set_id} with pattern '{file_pattern}'"
+    )
+
+    return _updating_test_set_summary(test_set_id, item)
+
+
+def _normalize_object_keys(raw_keys):
+    if not isinstance(raw_keys, list) or not raw_keys:
+        raise ValueError("objectKeys must be a non-empty list of document keys")
+    seen = set()
+    keys = []
+    for key in raw_keys:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("objectKeys must contain only non-empty strings")
+        key = key.strip()
+        if key.startswith("/") or key.endswith("/") or "/../" in f"/{key}/":
+            raise ValueError(f"Invalid document key: {key}")
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    if len(keys) > MAX_KEYS_PER_ADD:
+        raise ValueError(
+            f"At most {MAX_KEYS_PER_ADD} documents can be added in one request "
+            f"({len(keys)} selected)"
+        )
+    return keys
+
+
+_SELECTION_REFUSED = (
+    "Access denied: one or more of the selected documents cannot be added to a "
+    "test set. Only documents that finished processing, under a configuration "
+    "profile you can access, can be added."
+)
+_BATCH_GET_LIMIT = 100
+
+
+def _caller_config_scope(event):
+    """The caller's ``allowedConfigVersions``, or None when unrestricted.
+
+    Admins and direct IAM invocations (no ``identity``) are unrestricted and never
+    looked up. For everyone else the lookup fails CLOSED: a scope that cannot be
+    evaluated is refused, not treated as unrestricted.
+    """
+    identity = event.get("identity") if event else None
+    if identity is None or _caller_in_groups(event, ("Admin",)):
+        return None
+    claims = identity.get("claims") or {}
+    try:
+        return resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=boto3.resource("dynamodb"),
+        )
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying addDocumentsToTestSetByKey: configuration scope could not be "
+            "resolved: %s",
+            e,
+        )
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _document_rows(object_keys):
+    rows = {}
+    keys = [{"PK": f"doc#{k}", "SK": "none"} for k in object_keys]
+    for start in range(0, len(keys), _BATCH_GET_LIMIT):
+        for row in db_client.batch_get_items(keys[start : start + _BATCH_GET_LIMIT]):
+            key = row.get("ObjectKey") or str(row.get("PK", "")).removeprefix("doc#")
+            rows[key] = row
+    return rows
+
+
+def _enforce_selection_scope(event, object_keys):
+    """Refuse the whole selection unless every document may be added.
+
+    A document may be added when it has a tracking row, finished processing, and
+    was processed under a profile the caller's ``allowedConfigVersions`` admits
+    (checked with ``scope_allows``, which denies a missing profile name whenever a
+    scope is set). The refusal names no document and no reason, so a scoped caller
+    cannot use it to learn which keys exist or where they sit.
+    """
+    allowed_config_versions = _caller_config_scope(event)
+    rows = _document_rows(object_keys)
+    for key in object_keys:
+        row = rows.get(key)
+        if (
+            row is None
+            or row.get("ObjectStatus") != "COMPLETED"
+            or not scope_allows(allowed_config_versions, row.get("ConfigVersion"))
+        ):
+            logger.warning(
+                "Rejecting addDocumentsToTestSetByKey: a selected document is "
+                "missing, unfinished, or outside the caller's scope"
+            )
+            raise PermissionError(_SELECTION_REFUSED)
+
+
+def add_documents_to_test_set_by_key(args, event=None):
+    test_set_id = args["testSetId"]
+    object_keys = _normalize_object_keys(args.get("objectKeys"))
+    logger.info(
+        f"Adding {len(object_keys)} selected document(s) to test set {test_set_id}"
+    )
+
+    _enforce_selection_scope(event, object_keys)
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
+
+    _queue_test_set_copy(
+        {
+            "testSetId": test_set_id,
+            "objectKeys": object_keys,
+            "bucketType": "input",
+            "trackingTable": tracking_table,
+            "mode": "append",
+        }
+    )
+
+    logger.info(
+        f"Queued append job for test set {test_set_id} with {len(object_keys)} key(s)"
+    )
+
+    return _updating_test_set_summary(test_set_id, item)
+
+
 def add_documents_to_test_set_from_upload(args):
     logger.info(f"Adding documents to test set from zip upload: {args}")
 
@@ -712,16 +861,16 @@ def add_documents_to_test_set_from_upload(args):
 
     # Validate zip file extension
     if not zip_filename.lower().endswith(".zip"):
-        raise Exception("File must be a zip file")
+        raise ValueError("File must be a zip file")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if item.get("status") != "COMPLETED":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
@@ -1093,10 +1242,10 @@ def publish_test_set_version(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     if (_as_int(meta.get("fileCount")) or 0) <= 0:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has no documents; add documents before "
             "publishing a version"
         )
@@ -1146,7 +1295,7 @@ def publish_test_set_version(args, event=None):
                     test_set_id, client_token, held_by_other
                 )
                 if my_claimed_at is None:
-                    raise Exception(
+                    raise ValueError(
                         f"A publish of test set '{test_set_id}' for this attempt is already "
                         "running. It may still succeed — wait for it to finish rather than "
                         "publishing again."
@@ -1155,7 +1304,7 @@ def publish_test_set_version(args, event=None):
                 # In flight, and it has produced no version yet. Publishing now would
                 # duplicate the work that attempt is about to finish, which is the whole
                 # failure this token exists to prevent.
-                raise Exception(
+                raise ValueError(
                     f"A publish of test set '{test_set_id}' for this attempt is already "
                     "running. It may still succeed — wait for it to finish rather than "
                     "publishing again."
@@ -1182,7 +1331,7 @@ def publish_test_set_version(args, event=None):
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise Exception(f"Test set '{test_set_id}' not found")
+                raise ResourceNotFound(f"Test set '{test_set_id}' not found")
             raise
         next_version = int(reserve["Attributes"]["latestVersion"])
 
@@ -1336,7 +1485,7 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
         # after the copy, so an oversize set would otherwise fail with a generic
         # error and fail identically on every retry — permanently unable to start
         # annotating, with nothing saying why.
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' has {len(keys)} baseline objects, more than "
             f"the {_SNAPSHOT_MAX_OBJECTS} that can be snapshotted within one request. "
             "Publishing a version of a set this large needs an asynchronous snapshot, "
@@ -1405,7 +1554,7 @@ def open_test_set_annotation_draft(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     existing_draft = _as_int(meta.get("draftVersion"))
     if existing_draft:
@@ -1747,26 +1896,26 @@ def generate_draft_labels(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     file_count = int(meta.get("fileCount", 0) or 0)
     if file_count <= 0:
-        raise Exception(f"Test set '{test_set_id}' has no documents to label")
+        raise ValueError(f"Test set '{test_set_id}' has no documents to label")
 
     already_labeled = 0
     if not object_keys:
         object_keys, already_labeled = _documents_needing_labels(test_set_id)
         if not object_keys and already_labeled:
-            raise Exception(
+            raise ValueError(
                 f"Every document in '{test_set_id}' already has ground truth "
                 f"({already_labeled} document(s)) — there is nothing to draft-label. "
                 "Run a test to score the pipeline against it instead."
@@ -1886,16 +2035,16 @@ def reextract_test_set_document(args, event=None):
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not validate_document_class(document_class):
-        raise Exception(
+        raise ValueError(
             f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     if document_class:
@@ -1982,9 +2131,9 @@ def _validate_regrouping(sections, previously_labelled_pages):
     entirely is exactly the defect a reviewer is here to fix.
     """
     if not sections:
-        raise Exception("A document must have at least one section")
+        raise ValueError("A document must have at least one section")
     if len(sections) > MAX_SECTIONS_PER_DOCUMENT:
-        raise Exception(
+        raise ValueError(
             f"Too many sections ({len(sections)}); the maximum is "
             f"{MAX_SECTIONS_PER_DOCUMENT}"
         )
@@ -1998,19 +2147,19 @@ def _validate_regrouping(sections, previously_labelled_pages):
         # renumber around a group that no longer exists. The page-level checks below
         # cannot catch it: both groups' pages are legitimately accounted for.
         if section_id in section_ids:
-            raise Exception(f"Section '{section_id}' appears more than once")
+            raise ValueError(f"Section '{section_id}' appears more than once")
         section_ids.add(section_id)
         indices = section.get("pageIndices")
         if not isinstance(indices, list) or not indices:
-            raise Exception(f"Section '{section_id}' has no pages")
+            raise ValueError(f"Section '{section_id}' has no pages")
         for raw in indices:
             if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
-                raise Exception(
+                raise ValueError(
                     f"Section '{section_id}' has an invalid page index {raw!r}; "
                     "expected a non-negative integer"
                 )
             if raw in seen:
-                raise Exception(
+                raise ValueError(
                     f"Page index {raw} is in both section '{seen[raw]}' and "
                     f"section '{section_id}'"
                 )
@@ -2018,7 +2167,7 @@ def _validate_regrouping(sections, previously_labelled_pages):
 
     lost = sorted(previously_labelled_pages - set(seen))
     if lost:
-        raise Exception(
+        raise ValueError(
             f"Page index{'es' if len(lost) > 1 else ''} {', '.join(map(str, lost))} "
             "would no longer belong to any section, which would discard the ground "
             "truth for those pages"
@@ -2058,22 +2207,22 @@ def update_test_set_document_sections(args, event=None):
     incoming = input_data.get("sections") or []
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     for section in incoming:
         if not validate_document_class(section.get("documentClass")):
-            raise Exception(
+            raise ValueError(
                 f"Invalid document class: expected up to {_DOCUMENT_CLASS_MAX_LEN} "
                 "characters of letters, digits, spaces, hyphens or underscores"
             )
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
     if not existing:
-        raise Exception(
+        raise ValueError(
             f"'{object_key}' has no baseline sections to re-group. Generate draft "
             "labels for this test set first."
         )
@@ -2240,7 +2389,7 @@ def get_draft_label_job(args):
     key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
     job = db_client.get_item(key)
     if not job:
-        raise Exception(f"Labeling job '{job_id}' not found")
+        raise ResourceNotFound(f"Labeling job '{job_id}' not found")
 
     if job.get("status") in ("COMPLETED", "FAILED"):
         return _label_job_to_result(job)
@@ -2498,7 +2647,7 @@ def get_annotation_queue(args, event=None):
     include_completed = bool(args.get("includeCompleted"))
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     # Scope check precedes any read, so an unauthorized caller cannot even learn
     # whether the set exists.
@@ -2506,7 +2655,7 @@ def get_annotation_queue(args, event=None):
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     label_job = _harvest_active_label_job(test_set_id, meta)
 
@@ -2890,13 +3039,13 @@ def estimate_review_effort(args):
     config_version = args.get("configVersion")
 
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if not (0.0 < target_accuracy <= 100.0):
-        raise Exception("targetAccuracy must be between 0 and 100")
+        raise ValueError("targetAccuracy must be between 0 and 100")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Resolve the configuration whose confidence semantics produced these labels
     # (argument > bound field > the drafting run's resolved version), so the
@@ -3621,30 +3770,30 @@ def remove_documents_from_test_set(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     file_names = args["fileNames"]
     logger.info(f"Removing {len(file_names)} document(s) from test set {test_set_id}")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
     # A harvest in progress writes a baseline for each document as its run
     # finishes; deleting a document under it leaves that baseline orphaned as
     # "Extra baseline files". A copier or extractor in flight recounts on
     # completion and would overwrite the count computed here.
     if meta.get("labelJobStatus") == "RUNNING":
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is being draft-labeled; wait for the job "
             "to finish before removing documents"
         )
     if meta.get("status") in IN_FLUX_TEST_SET_STATUSES:
-        raise Exception(
+        raise ValueError(
             f"Test set '{test_set_id}' is busy ({meta.get('status')}); try again "
             "when it is COMPLETED"
         )
     for file_name in file_names:
         if not file_name or file_name.startswith("/") or "//" in file_name:
-            raise Exception(f"Invalid document name: {file_name!r}")
+            raise ValueError(f"Invalid document name: {file_name!r}")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -3754,11 +3903,11 @@ def clear_draft_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -3869,11 +4018,11 @@ def reset_test_set_labels(args):
     """
     test_set_id = args["testSetId"]
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -4003,13 +4152,13 @@ def update_test_set(args):
 
     # Validate description if provided
     if description is not None and not validate_description(description):
-        raise Exception("Description cannot exceed 500 characters")
+        raise ValueError("Description cannot exceed 500 characters")
 
     # Look up existing test set
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     # Build update expression dynamically
     update_parts = []
@@ -4488,6 +4637,11 @@ def get_test_set_documents(args):
     whole `baseline/` prefix is listed once (bulk) and section result.json
     keys are matched to their document in memory — one extra LIST per page
     regardless of page size, and it handles nested input file names.
+
+    `search` is matched against every document in the set rather than against the
+    page, because the page is the thing the caller cannot see past: a table that
+    filtered its own 50 rows reported "no results" for documents that were in the
+    set two pages along. See ``_search_test_set_documents``.
     """
     test_set_id = args["testSetId"]
     limit = args.get("limit") or 100
@@ -4495,49 +4649,70 @@ def get_test_set_documents(args):
     # Optional exact-match filter, so a deep-linked document detail page does not
     # page through the whole set.
     object_key = args.get("objectKey")
+    # Optional case-insensitive substring over the set's document names, for a
+    # search box. Ignored when `objectKey` is given, which is already the narrower
+    # of the two.
+    search = (args.get("search") or "").strip()
 
     # The id is derived from a validated name, so it must satisfy the same charset.
     # This also rejects '/' and '..', which could traverse outside the S3 prefix.
     if not validate_test_set_name(test_set_id):
-        raise Exception("Invalid test set id")
+        raise ValueError("Invalid test set id")
     if object_key and ".." in object_key:
-        raise Exception("Invalid object key")
+        raise ValueError("Invalid object key")
+    # No document name approaches this, so a longer search is not a search. Bounded
+    # because the value is echoed into the log line below, and because an
+    # unbounded one is the only input here whose size a caller chooses freely.
+    #
+    # ValueError, not Exception: an over-long search is a malformed request, and
+    # #1304 made that distinction load-bearing — a bare Exception is answered as a
+    # 500, which reports a caller's bad input as a server fault.
+    if len(search) > _SEARCH_MAX_LENGTH:
+        raise ValueError("Search text is too long")
     limit = max(1, min(int(limit), 1000))
 
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not item:
-        raise Exception(f"Test set '{test_set_id}' not found")
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     input_prefix = f"{test_set_id}/input/"
 
-    list_kwargs = {
-        "Bucket": test_set_bucket,
-        # The objectKey equality check below drops same-prefix siblings.
-        "Prefix": f"{input_prefix}{object_key}" if object_key else input_prefix,
-        "MaxKeys": limit,
-    }
-    if next_token:
-        list_kwargs["ContinuationToken"] = next_token
-    response = s3_client.list_objects_v2(**list_kwargs)
-
-    documents = []
-    for obj in response.get("Contents", []):
-        key = obj["Key"]
-        if key.endswith("/"):
-            continue  # skip folder placeholder objects
-        relative_name = key[len(input_prefix) :]
-        if object_key and relative_name != object_key:
-            continue
-        documents.append(
-            {
-                "objectKey": relative_name,
-                "inputKey": key,
-                "size": obj.get("Size"),
-                "lastModified": obj["LastModified"].isoformat(),
-                "sections": [],
-            }
+    match_count = None
+    search_truncated = None
+    if search and not object_key:
+        documents, response_next_token, match_count, search_truncated = (
+            _search_test_set_documents(
+                test_set_bucket, input_prefix, search, limit, next_token
+            )
         )
+    else:
+        # A token minted under a search is an offset into *that* search's matches
+        # and means nothing without it. Refused here rather than handed to S3,
+        # which would reject it as an opaque InvalidArgument and surface as
+        # "Failed to load test set documents" with no indication of why.
+        if next_token and next_token.startswith(_SEARCH_OFFSET_PREFIX):
+            raise ValueError("Invalid pagination token without a search")
+        list_kwargs = {
+            "Bucket": test_set_bucket,
+            # The objectKey equality check below drops same-prefix siblings.
+            "Prefix": f"{input_prefix}{object_key}" if object_key else input_prefix,
+            "MaxKeys": limit,
+        }
+        if next_token:
+            list_kwargs["ContinuationToken"] = next_token
+        response = s3_client.list_objects_v2(**list_kwargs)
+
+        documents = []
+        for obj in response.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # skip folder placeholder objects
+            relative_name = key[len(input_prefix) :]
+            if object_key and relative_name != object_key:
+                continue
+            documents.append(_document_row(obj, relative_name))
+        response_next_token = response.get("NextContinuationToken")
 
     if documents:
         # Bulk-list baseline section files once and match to this page's docs.
@@ -4576,7 +4751,7 @@ def get_test_set_documents(args):
 
     result = {
         "documents": documents,
-        "nextToken": response.get("NextContinuationToken"),
+        "nextToken": response_next_token,
         # The set's whole size, not this page's. A paginated response that reports
         # only what it returned leaves the caller counting the page and calling it
         # the total: the UI showed "Documents (50)" and offered to "Label 50
@@ -4591,6 +4766,10 @@ def get_test_set_documents(args):
         # (publishing a version) has nothing else to read. Free here — the metadata
         # row is already in hand.
         "status": item.get("status"),
+        # Both `None` unless a search ran, so a caller can tell "no search" from
+        # "a search that matched nothing".
+        "matchCount": match_count,
+        "searchTruncated": search_truncated,
     }
 
     # Surfaced so a page load resumes polling an in-flight job. Labels are harvested
@@ -4601,9 +4780,138 @@ def get_test_set_documents(args):
 
     logger.info(
         f"getTestSetDocuments({test_set_id}): {len(documents)} documents"
+        # !r rather than the bare value: this is caller-supplied text, and repr
+        # escapes the newlines that would otherwise let it forge log lines.
+        f"{f' matching {search!r} ({match_count} in the set)' if match_count is not None else ''}"
         f"{' (more available)' if result['nextToken'] else ''}"
     )
     return result
+
+
+def _document_row(obj, relative_name):
+    """One listing row for an S3 input object, before sections are attached."""
+    return {
+        "objectKey": relative_name,
+        "inputKey": obj["Key"],
+        "size": obj.get("Size"),
+        "lastModified": obj["LastModified"].isoformat(),
+        "sections": [],
+    }
+
+
+# How many S3 keys one search will read before it stops and says so. At the page
+# size below that is 50 **sequential** LIST calls at the worst case — not free, and
+# the reason there is a budget at all rather than an unbounded walk; the bound is
+# well above any test set this has been built for, so the worst case is not the
+# ordinary one. Past it the returned page is still correct; `matchCount` becomes a
+# lower bound and `searchTruncated` says that it is.
+#
+# Note which direction the cost runs: a broad needle is *slower* to answer than a
+# narrow one, because every row the page returns costs one S3 GET per baseline
+# section in ``_attach_label_metadata`` while matching itself only reads key names.
+# If that is ever reported as a bug, this is why.
+_SEARCH_SCAN_KEY_BUDGET = 50_000
+
+# Keys per LIST call: S3's maximum, and the paginator's default. Named because the
+# budget above can only be honoured at this granularity, so the two belong
+# together rather than one of them being whatever default happens to be in force.
+_SEARCH_SCAN_PAGE_SIZE = 1000
+
+# Longest accepted `search`. S3 keys cap at 1024 bytes and a document name is a
+# fraction of that, so this is well clear of any real search while keeping the
+# value a bounded quantity.
+_SEARCH_MAX_LENGTH = 256
+
+# Search pages are an offset into the matches, not an S3 continuation token, and
+# the prefix is what keeps the two kinds of `nextToken` from being replayed as
+# each other. A continuation token resumes at a LIST page boundary: a 1000-key
+# page holding more than `limit` matches would lose every match after the first
+# `limit`, silently, which is the same class of bug as filtering one page.
+#
+# Named OFFSET rather than TOKEN, and it has to stay that way: Bandit's B105
+# matches an identifier's *name* against a password wordlist, which `TOKEN` is in,
+# so a module-level string assigned to such a name is a finding. SRT promotes
+# B105 to HIGH unconditionally and the test-code scope decision does not reach
+# this file — it is a Lambda deployment artifact — so the name alone blocks the
+# security gate, for a six-character constant that is not a credential.
+_SEARCH_OFFSET_PREFIX = "match:"
+
+
+def _search_test_set_documents(bucket, input_prefix, search, limit, next_token):
+    """Find the documents in a set whose name contains `search`, at any page depth.
+
+    Returns ``(documents, next_token, match_count, truncated)``.
+
+    S3 has no substring match, so the set's `input/` prefix is listed in full and
+    matched here. Only key *names* are read — no GET per document — so a search
+    costs one LIST per 1000 keys and hands back a page of at most `limit`
+    documents, which is what keeps the expensive part of this listing (the
+    per-section reads in ``_attach_label_metadata``) proportional to the page
+    rather than to the set.
+
+    `search` is never used as an S3 `Prefix`, so it needs no path validation: a
+    caller cannot reach outside `input_prefix` through it, and a leading-substring
+    search is not a prefix search.
+
+    A malformed token raises `ValueError`, not `Exception`, following #1304: the
+    dispatcher picks the HTTP status from the exception's class name, so a bare
+    `Exception` would answer 500 for what is plainly a bad request. The gate added
+    with #1304 cannot catch this direction — it matches not-found wording only, and
+    says so — which is why it is stated here.
+
+    Only the rows for the requested page are held, while every match is counted,
+    so memory is proportional to `limit` and the count is still the set's.
+    """
+    needle = search.lower()
+    offset = 0
+    if next_token:
+        if not next_token.startswith(_SEARCH_OFFSET_PREFIX):
+            raise ValueError("Invalid pagination token for a search")
+        try:
+            offset = max(0, int(next_token[len(_SEARCH_OFFSET_PREFIX) :]))
+        except ValueError as exc:
+            raise ValueError("Invalid pagination token for a search") from exc
+    end = offset + limit
+
+    documents = []
+    match_count = 0
+    scanned = 0
+    truncated = False
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(
+        Bucket=bucket,
+        Prefix=input_prefix,
+        PaginationConfig={"PageSize": _SEARCH_SCAN_PAGE_SIZE},
+    ):
+        for obj in page.get("Contents", []):
+            scanned += 1
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # skip folder placeholder objects
+            relative_name = key[len(input_prefix) :]
+            if needle not in relative_name.lower():
+                continue
+            if offset <= match_count < end:
+                documents.append(_document_row(obj, relative_name))
+            match_count += 1
+        if scanned >= _SEARCH_SCAN_KEY_BUDGET:
+            # Truncated only if S3 says keys remain. Reaching the budget on the
+            # last page means the scan finished, and reporting that as truncated
+            # would caption an exact count as a lower bound and ask the user to
+            # narrow a search that already saw the whole set.
+            truncated = bool(page.get("IsTruncated"))
+            break
+
+    # Only matches this scan actually reached are offered as a next page. Offset
+    # paging re-scans from the start and stops at the same budget, so a token past
+    # what was scanned would return the same rows forever; a truncated search says
+    # so instead, and the caller's remedy is a narrower search.
+    return (
+        documents,
+        f"{_SEARCH_OFFSET_PREFIX}{end}" if match_count > end else None,
+        match_count,
+        truncated,
+    )
 
 
 def _attach_label_metadata(test_set_bucket, documents):

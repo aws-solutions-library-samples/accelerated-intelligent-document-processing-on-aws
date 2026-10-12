@@ -41,8 +41,10 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 from rich.console import Console
 
 from idp_cli import cli as cli_module
@@ -111,7 +113,14 @@ def doc(
     num_pages: Optional[int] = None,
     num_sections: Optional[int] = None,
     error: Optional[str] = None,
+    bucket: Optional[DocumentBucket] = None,
 ) -> DocumentStatus:
+    """One `DocumentStatus` as `batch.get_status` would return it.
+
+    `bucket` defaults to `None`, which is the producer saying nothing and leaves
+    the mapper to derive the bucket from `status` — the path every state but
+    `NOT_FOUND` takes, and the one the derivation tests below need.
+    """
     return DocumentStatus(
         document_id=document_id,
         status=status,  # type: ignore[arg-type]
@@ -121,6 +130,7 @@ def doc(
         num_pages=num_pages,
         num_sections=num_sections,
         error=error,
+        bucket=bucket,
     )
 
 
@@ -157,12 +167,25 @@ def monitored_client(statuses: list[BatchStatus]) -> tuple[IDPClient, list[str]]
     Real so that `_monitor_progress`'s `isinstance` check takes the modern branch.
     The last entry repeats if the loop asks for more, so a test that miscounts polls
     fails on the poll count rather than on an `IndexError`.
+
+    The poll ceiling is what makes a mistake in the replay list diagnosable. The
+    loop runs on a fake clock and exits only on `all_complete`, so a final entry
+    that leaves it `False` spins forever at full speed rather than failing — the
+    test would hang until the suite timed out, naming nothing. Raising instead
+    says which list is wrong.
     """
     client = IDPClient(stack_name="my-stack", region="us-east-1")
     asked: list[str] = []
+    ceiling = max(50, len(statuses) * 2)
 
     def get_status(batch_id: str) -> BatchStatus:
         asked.append(batch_id)
+        if len(asked) > ceiling:
+            raise AssertionError(
+                f"_monitor_progress polled {len(asked)} times without finishing; "
+                f"the last of the {len(statuses)} replayed status(es) probably "
+                "leaves all_complete False, which never ends the loop"
+            )
         return statuses[min(len(asked) - 1, len(statuses) - 1)]
 
     client.batch.get_status = get_status  # type: ignore[method-assign]
@@ -331,6 +354,76 @@ class TestDisplayDictMapping:
         assert stats[expected.value] == 1
         # Exactly one bucket, so nothing is counted twice or dropped.
         assert sum(stats[b.value] for b in DocumentBucket) == 1
+
+    def test_a_not_found_document_the_sdk_called_queued_is_displayed_as_queued(self):
+        """The grace window has to survive the display layer too.
+
+        `NOT_FOUND` is the one state whose bucket is not a function of the
+        status: within `NOT_FOUND_GRACE_SECONDS` of the batch's submission the
+        SDK reports it as queued, because the tracking row QueueSender writes
+        may still be in flight, and past the window it is a failure. The status
+        string is `NOT_FOUND` either way, so a mapper that re-derives the bucket
+        reports both as failures — which put a just-submitted batch on screen as
+        `Failed 1 / 100.0%`, with no error message because a provisional
+        `NOT_FOUND` carries none, while `all_complete` came from the SDK and
+        correctly kept the loop polling. The mapper takes the producer's verdict
+        instead.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [doc("batch-1/racing.pdf", "NOT_FOUND", bucket=DocumentBucket.QUEUED)],
+                all_complete=False,
+            )
+        )
+
+        assert [d["document_id"] for d in status_data["queued"]] == [
+            "batch-1/racing.pdf"
+        ]
+        assert status_data["failed"] == []
+        assert stats["queued"] == 1
+        assert stats["failed"] == 0
+        # The number a human reads first. A document that has not started is 0%
+        # done, and this read 100% for the length of the window.
+        assert stats["completion_percentage"] == 0.0
+
+    def test_a_not_found_document_the_sdk_called_failed_is_displayed_as_failed(self):
+        """Past the window the identical status is the failure it always was.
+
+        Same `status`, opposite bucket, which is why the bucket travels on the
+        document instead of being derived from the status at each consumer.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc(
+                        "batch-1/lost.pdf",
+                        "NOT_FOUND",
+                        bucket=DocumentBucket.FAILED,
+                        error="Document not found in tracking table",
+                    )
+                ],
+                all_complete=True,
+            )
+        )
+
+        assert [d["document_id"] for d in status_data["failed"]] == ["batch-1/lost.pdf"]
+        assert status_data["queued"] == []
+        assert stats["failed"] == 1
+        assert stats["completion_percentage"] == 100.0
+
+    def test_a_document_carrying_no_bucket_is_still_bucketed_from_its_status(self):
+        """`bucket` is optional, so every other producer keeps working.
+
+        `DocumentStatus` is a public model and `batch.get_status` is not its only
+        producer. One that records no bucket must get the derivation it got
+        before the field existed, rather than falling into a default bucket.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/d.pdf", "OCR", bucket=None)], all_complete=False)
+        )
+
+        assert [d["document_id"] for d in status_data["running"]] == ["batch-1/d.pdf"]
+        assert stats["running"] == 1
 
     def test_a_document_being_preprocessed_is_running_not_queued(self):
         """`PREPROCESSING` is set for *every* document when a hook is registered.
@@ -639,7 +732,7 @@ class TestMonitorProgress:
             cli_module._monitor_progress(
                 client=client, batch_id="batch-1", refresh_interval=7
             )
-            is None
+            == 0
         )
 
         assert asked == ["batch-1", "batch-1", "batch-1"]
@@ -751,17 +844,21 @@ class TestMonitorProgress:
         assert "b.pdf" in out
         assert "Bedrock throttled" in out
 
-    def test_it_returns_none_even_for_a_batch_that_finished_with_failures(
+    def test_it_returns_a_failing_code_for_a_batch_that_finished_with_failures(
         self, monkeypatch
     ):
-        """DEFECT, pinned as it behaves today (`cli.py:3465-3468`).
+        """The guarantee: the batch's outcome is a value the caller can propagate.
 
-        The function ends by printing a summary and falling off the end; it has no
-        return value and raises nothing, so a caller cannot tell a clean batch from
-        one where every document failed. `status --wait` is the case that matters:
-        the same batch reported without `--wait` exits 1, and with `--wait` exits 0.
-        See `test_results_commands.py::test_wait_exits_zero_even_when_documents_failed`
-        for that consequence at the command level.
+        The function used to print a summary and fall off the end, returning nothing,
+        so a caller could not tell a clean batch from one in which every document
+        failed. `status --wait` was the consequence that mattered — the same batch
+        exited 1 when polled and 0 when waited on, and `--wait` is the form a
+        pipeline uses (#1230). See
+        `test_results_commands.py::test_wait_exits_non_zero_when_documents_failed`
+        for that at the command level.
+
+        Both directions are asserted in one test on purpose: a return of a constant
+        would satisfy either half alone.
         """
         clock = Clock()
         monkeypatch.setattr(cli_module, "time", clock)
@@ -789,41 +886,143 @@ class TestMonitorProgress:
             cli_module._monitor_progress(
                 client=failed_only, batch_id="batch-1", refresh_interval=5
             )
-            is None
+            == 1
         )
         assert (
             cli_module._monitor_progress(
                 client=clean, batch_id="batch-1", refresh_interval=5
             )
-            is None
+            == 0
         )
 
-    def test_a_complete_batch_with_nothing_terminal_waits_out_the_grace_period(
+    def test_a_queued_document_keeps_the_loop_polling_until_it_settles(
         self, monkeypatch
     ):
-        """`all_complete` alone does not end the loop while everything is still queued.
+        """A document still waiting on the queue keeps the loop running.
 
-        The SDK reports `all_complete=True` for a batch whose documents have not
-        reached the tracking table yet — no document is in a non-terminal state
-        because there are no documents — and exiting there would declare a batch
-        finished seconds after submitting it. The loop therefore also requires either
-        one completed/failed document or 60 seconds elapsed. Here nothing ever
-        becomes terminal, so it is the 60-second floor that ends it: at a 5-second
-        interval that is 13 polls (the first at elapsed 0, then 12 sleeps to reach
-        exactly 60). A regression that dropped the grace period would stop at 1.
+        This is the case the loop has to get right when a batch has just been
+        submitted: the upload has returned but QueueSender has not written the
+        tracking row yet, so the document is not terminal and the batch is not
+        finished. `all_complete` carries that on its own — it is
+        `completed + failed == total`, so a single queued document makes it
+        `False` — and the loop's only job is to believe it.
+
+        There used to be a second grace period at this spot in the loop
+        (`MIN_WAIT_BEFORE_COMPLETE = 60`) that re-derived the same conclusion
+        from the counts, and it could not fire: it was guarded by
+        `has_terminal_docs or waited_long_enough`, and for any non-empty batch
+        `all_complete` already implies `has_terminal_docs`. The test that
+        covered it had to hand the loop a state the SDK cannot produce — a
+        `QUEUED` document together with `all_complete=True` — so it pinned the
+        branch rather than the behaviour. Waiting for the queue now happens in
+        the monitor, against the batch's submission time; see
+        `NOT_FOUND_GRACE_SECONDS`.
         """
         clock = Clock()
         monkeypatch.setattr(cli_module, "time", clock)
         client, asked = monitored_client(
-            [batch([doc("a.pdf", "QUEUED")], all_complete=True)]
+            [
+                batch([doc("a.pdf", "QUEUED")]),
+                batch([doc("a.pdf", "OCR")]),
+                batch(
+                    [doc("a.pdf", "COMPLETED", duration_seconds=2.0)],
+                    all_complete=True,
+                ),
+            ]
         )
 
         cli_module._monitor_progress(
             client=client, batch_id="batch-1", refresh_interval=5
         )
 
-        assert len(asked) == 13
-        assert sum(clock.slept) == 60
+        assert len(asked) == 3
+        assert clock.slept == [5, 5]
+
+    def test_a_not_found_document_in_its_grace_window_is_never_shown_as_failed(
+        self, monkeypatch
+    ):
+        """End to end through the loop, for the sequence the issue reported.
+
+        First poll: the upload has returned, no tracking row exists yet, the SDK
+        says queued and not complete. Later polls: the row lands, the document
+        processes, the batch finishes. What this asserts is every *frame* the
+        loop rendered, because the counts on screen are the half that was wrong
+        after the monitor was fixed — the loop kept polling, correctly, while
+        the first frame told the user `Failed 1` at `100.0%`. Someone reading
+        that has every reason to stop the run.
+
+        The per-poll tuple is `(completed, running, queued, failed, percentage)`.
+        """
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        rendered = []
+        real = display_module.create_live_display
+
+        def recording(*, batch_id, status_data, stats, elapsed_time):
+            rendered.append(
+                (
+                    stats["completed"],
+                    stats["running"],
+                    stats["queued"],
+                    stats["failed"],
+                    stats["completion_percentage"],
+                )
+            )
+            return real(
+                batch_id=batch_id,
+                status_data=status_data,
+                stats=stats,
+                elapsed_time=elapsed_time,
+            )
+
+        monkeypatch.setattr(display_module, "create_live_display", recording)
+        client, asked = monitored_client(
+            [
+                batch([doc("a.pdf", "NOT_FOUND", bucket=DocumentBucket.QUEUED)]),
+                batch([doc("a.pdf", "OCR")]),
+                batch(
+                    [doc("a.pdf", "COMPLETED", duration_seconds=2.0)],
+                    all_complete=True,
+                ),
+            ]
+        )
+
+        exit_code = cli_module._monitor_progress(
+            client=client, batch_id="batch-1", refresh_interval=5
+        )
+
+        assert rendered == [
+            (0, 0, 1, 0, 0.0),
+            (0, 1, 0, 0, 0.0),
+            (1, 0, 0, 0, 100.0),
+        ]
+        assert len(asked) == 3
+        assert clock.slept == [5, 5]
+        assert exit_code == 0
+
+    def test_the_loop_does_not_re_derive_completeness_from_the_counts(
+        self, monkeypatch
+    ):
+        """`all_complete` is the whole exit condition, even with nothing completed.
+
+        A batch whose every document failed reports `completed == 0`, and the
+        removed grace period would have been consulted for exactly that shape.
+        The loop must exit on the first poll: the documents are terminal, so
+        there is nothing left to wait for, and sleeping 60s before saying so was
+        never the intent.
+        """
+        clock = Clock()
+        monkeypatch.setattr(cli_module, "time", clock)
+        client, asked = monitored_client(
+            [batch([doc("a.pdf", "FAILED", error="boom")], all_complete=True)]
+        )
+
+        cli_module._monitor_progress(
+            client=client, batch_id="batch-1", refresh_interval=5
+        )
+
+        assert len(asked) == 1
+        assert clock.slept == []
 
     def test_one_terminal_document_ends_the_loop_immediately(self, monkeypatch):
         """The other half of the grace period: a real completion needs no wait."""
@@ -872,7 +1071,9 @@ class TestMonitorProgress:
             )
         out = captured.get()
 
-        assert result is None
+        # 2, not 0: the watch ended without establishing what the batch did, and 2 is
+        # this CLI's code for that. 0 would report a success nothing measured.
+        assert result == 2
         assert len(asked) == 1
         assert "Monitoring stopped. Processing continues in background." in out
         assert "idp-cli status --stack-name my-stack --batch-id batch-1" in out
@@ -881,15 +1082,18 @@ class TestMonitorProgress:
     def test_a_monitoring_failure_is_reported_and_swallowed(
         self, monkeypatch, pinned_console
     ):
-        """Any other exception ends the watch without re-raising and without an exit code.
+        """Any other exception ends the watch without re-raising, and answers 2.
 
-        Worth knowing rather than admiring: a batch whose status cannot be read at
-        all is indistinguishable, in exit code, from one that completed cleanly —
-        `process --monitor` still exits 0. The instructions printed afterwards are
-        also wrong: `_sn = stack_name or batch_id` on this path, and `stack_name` is
-        `None` for every modern caller, so the suggested command reads
-        `--stack-name batch-1`, naming the batch where a stack belongs. Copy-pasting
-        it fails against a stack that does not exist.
+        A batch whose status cannot be read at all is not a batch that succeeded, so
+        the code is 2 — outcome not established — and `status --wait` exits on it.
+        `process --monitor` still exits 0 whatever this returns, deliberately: its
+        work is the submission, and the batch's verdict is a separate query.
+
+        The instructions printed afterwards are wrong, and that is a separate defect:
+        `_sn = stack_name or batch_id` on this path, and `stack_name` is `None` for
+        every modern caller, so the suggested command reads `--stack-name batch-1`,
+        naming the batch where a stack belongs. Copy-pasting it fails against a stack
+        that does not exist.
         """
         clock = Clock()
         monkeypatch.setattr(cli_module, "time", clock)
@@ -906,7 +1110,7 @@ class TestMonitorProgress:
             )
         out = captured.get()
 
-        assert result is None
+        assert result == 2
         assert "Monitoring error: DynamoDB is unavailable" in out
         assert "idp-cli status --stack-name batch-1 --batch-id batch-1" in out
 
@@ -933,5 +1137,84 @@ class TestMonitorProgress:
         with pinned_console.capture() as captured:
             result = cli_module._monitor_progress("my-stack", "batch-1", 5)
 
-        assert result is None
+        assert result == 0
         assert "Batch Processing Complete" in captured.get()
+
+
+@pytest.mark.unit
+class TestTheMonitorCallersThatDiscardTheCode:
+    """`process --monitor` and `rerun --monitor` exit 0 whatever the batch did.
+
+    That is a deliberate narrowing of #1230 and it lived only in a code comment, which
+    is not a place a decision survives. The argument: these commands' work is the
+    *submission*, which succeeded; `--monitor` is a view of what happens afterwards.
+    Exiting non-zero because 1 of 100 documents failed would stop
+    `process --monitor && download-results` from collecting the 99 that worked. The
+    batch's verdict is a separate question and `idp-cli status --batch-id` answers it.
+
+    `status --wait`, by contrast, *is* that question, which is why it exits on the code.
+
+    Pinned here so that "make the helper's return value consistent across its callers"
+    is a decision someone has to revisit rather than a tidy-up they can do by
+    inspection.
+    """
+
+    def _run(self, args, monitor_code):
+        client = MagicMock()
+        client.batch.process.return_value = SimpleNamespace(
+            batch_id="batch-1",
+            documents_queued=2,
+            documents_uploaded=2,
+            documents_failed=0,
+        )
+        client.batch.reprocess.return_value = SimpleNamespace(
+            documents_queued=2,
+            documents_failed=0,
+            failed_documents=[],
+        )
+        with (
+            patch("idp_sdk.IDPClient", return_value=client),
+            patch("idp_cli.cli.IDPClient", return_value=client),
+            patch(
+                "idp_cli.cli._monitor_progress", return_value=monitor_code
+            ) as monitor,
+        ):
+            run = CliRunner().invoke(cli_module.cli, args)
+        return run, monitor
+
+    def test_process_monitor_exits_zero_on_a_batch_that_failed(self, tmp_path):
+        document = tmp_path / "a.pdf"
+        document.write_bytes(b"%PDF-1.4\n")
+        run, monitor = self._run(
+            [
+                "process",
+                "--stack-name",
+                "my-stack",
+                "--dir",
+                str(tmp_path),
+                "--monitor",
+            ],
+            monitor_code=1,
+        )
+
+        monitor.assert_called_once()
+        assert run.exit_code == 0, run.output
+
+    def test_reprocess_monitor_exits_zero_on_a_batch_that_failed(self):
+        run, monitor = self._run(
+            [
+                "reprocess",
+                "--stack-name",
+                "my-stack",
+                "--batch-id",
+                "batch-1",
+                "--step",
+                "extraction",
+                "--force",
+                "--monitor",
+            ],
+            monitor_code=1,
+        )
+
+        monitor.assert_called_once()
+        assert run.exit_code == 0, run.output

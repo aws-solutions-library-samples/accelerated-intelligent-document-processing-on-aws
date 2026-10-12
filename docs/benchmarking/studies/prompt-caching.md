@@ -57,6 +57,15 @@ appears in a prompt template, with no length check.** That is correct behaviour 
 there is nothing better to do at that layer — but it means a document class whose
 prompt prefix is short simply never caches, permanently and silently.
 
+⚠️ **There is no count check either, and Bedrock permits at most four
+`cache_control` blocks per request.** It counts them additively across the system
+prompt, the tool configuration and the message content, and rejects a fifth outright
+with `ValidationException: A maximum of 4 blocks with cache_control may be provided.`
+— which fails the section rather than degrading. No shipped preset in
+`config_library/` carries more than two markers, so this is a ceiling on
+customisation rather than a live problem: a hand-written prompt with five
+`<<CACHEPOINT>>` markers does not cache less, it fails.
+
 ### Nova is different, and much more forgiving
 
 `us.amazon.nova-2-lite-v1:0`, same sweep: **every** prefix tested cached, including

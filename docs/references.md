@@ -8,9 +8,10 @@ SPDX-License-Identifier: MIT-0
 # Blogs, Customer Stories & Research
 
 External publications about the GenAI Intelligent Document Processing (GenAIIDP)
-Accelerator — AWS blog deep-dives into the solution's features, customer
-references that share real-world results and metrics, and peer-reviewed research
-that underpins the accelerator's approach.
+Accelerator — AWS blog deep-dives into the solution's features, independent
+industry-analyst assessments, customer references that share real-world results
+and metrics, and peer-reviewed research that underpins the accelerator's
+approach.
 
 ## Feature Deep-Dives
 
@@ -57,6 +58,29 @@ its capabilities.
   extracted fields to an Excel workbook in S3. See also
   [MCP Server](./mcp-server.md) and [Human-in-the-Loop Review](./human-review.md).
 
+## Analyst Reports
+
+Independent assessments by industry analyst firms. These are the publishers'
+copyrighted work, hosted here with their permission and unmodified — see
+[PROVENANCE.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/analyst-reports/PROVENANCE.md)
+for each report's rights grant.
+
+- **[Deep Analysis — *Vendor Analysis: AWS GenAI IDP Accelerator*](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/analyst-reports/deep-analysis-aws-genai-idp-accelerator-2026-08.pdf)**
+  *(Aug 2026, 9 pages)* — A follow-up to the firm's November 2025 review, which
+  had judged the accelerator "a capable developers-only offering" with a steep
+  learning curve. Nine months on it finds the progress "striking," crediting
+  quick-start agents, AI-driven auto-configuration, managed configuration
+  versions, and the Agent Companion with moving the platform within reach of a
+  business analyst "without dumbing down the deep configurability underneath."
+  Singles out the empirical cost-and-accuracy work — [Test Studio](./test-studio.md),
+  [confidence calibration](./assessment.md), and the
+  [Auto Optimizer](./extensions/auto-optimizer.md) — as ahead of the commercial
+  field, and the Auto Optimizer as "the most comprehensive answer" it has seen to
+  continuous re-optimization against model churn. Also walks the inference-hook
+  escape hatch, agentic extraction with sharding and cost-aware tool selection,
+  OCR as an optional pipeline step, and the extensions catalog; closes with
+  advice to buyers and a SOAR analysis.
+
 ## Customer Stories
 
 Reference deployments showing measurable accuracy, cost, and throughput results.
@@ -85,6 +109,14 @@ Reference deployments showing measurable accuracy, cost, and throughput results.
   GenAIIC and AND Digital, built a reusable solution that classifies, extracts,
   and reasons over 250+ document types — collapsing 3–9 day workflows to minutes,
   with plans to scale to 20M documents/month at 95%+ confidence.
+
+- **[How WellRithms achieved 30 times faster bill processing with AWS](https://aws.amazon.com/blogs/industries/how-wellrithms-achieved-30-times-faster-bill-processing-with-aws/)**
+  *(Oct 2026)* — WellRithms, a healthcare payment-integrity provider, adapted the
+  accelerator as a reference architecture for itemized medical bill review, using a
+  tiered OCR / LLM / vision-language strategy on Amazon Bedrock. Across a
+  2,820-page validation set it extracted 98,377 line items at 70.1 seconds per bill
+  (3.1 s/page), reducing roughly 8 hours of manual work per bill to 15–20 minutes
+  of expert review and turnaround from 5 business days to 1.
 
 ## Research Papers
 

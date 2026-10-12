@@ -112,9 +112,23 @@ DOCUMENTS_STATING_THE_GRANT = (
     "docs/planning/identity-pool-group-scoping-plan.md",
 )
 
-# Read, and compared, but not required to carry a *current* claim: this document's only
-# enumeration of the grant is in the historical ledger excluded below.
-DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY = ("security/threat-modeling/README.md",)
+# Read, and compared, but not required to carry a *current* claim. One reason per member,
+# because "historical" is true of each for a different reason and the distinction decides
+# what to do when one of them fails.
+DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY = (
+    # Its only enumeration of the grant is inside the historical ledger excluded below,
+    # so the reader finds no claim here at all — hence (0, 0) in EXPECTED_CLAIM_COUNTS.
+    "security/threat-modeling/README.md",
+    # A release note describing the grant as it shipped. It is compared, and agrees with
+    # the template today. It is NOT required to keep stating the grant, because a
+    # changelog entry is append-only history rather than a maintained statement of
+    # current fact — the wording belongs to the release it documents. ⚠️ If the grant is
+    # later narrowed, this entry stays as written (CLAUDE.md: product-behaviour history
+    # in CHANGELOG.md is legitimate and is not rewritten), and the correct fix is an
+    # EXCLUDED_HISTORICAL_LEDGER_SECTIONS entry bounding that one release's section, not
+    # an edit to the entry.
+    "CHANGELOG.md",
+)
 
 # Sections whose prose describes the past and is not a statement of current fact.
 # `<path>: <markdown heading>` — bounded to ONE section: the region removed runs from
@@ -459,6 +473,7 @@ EXPECTED_CLAIM_COUNTS = {
     "security/threat-modeling/feature-threats/reporting-analytics.md": (1, 0),
     "docs/planning/identity-pool-group-scoping-plan.md": (1, 1),
     "security/threat-modeling/README.md": (0, 0),
+    "CHANGELOG.md": (1, 1),
 }
 
 

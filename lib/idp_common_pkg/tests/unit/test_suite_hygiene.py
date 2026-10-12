@@ -31,8 +31,10 @@ breaking everything else.
 from __future__ import annotations
 
 import ast
+import importlib
 import os
 
+import boto3
 import pytest
 
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -232,6 +234,186 @@ def test_only_one_pytest_ini_governs_this_package():
     )
     assert os.path.exists(os.path.join(pkg, "pytest.ini")), (
         "the package-level pytest.ini is missing"
+    )
+
+
+def _root_conftest_fixture(name):
+    """Return the ``ast.FunctionDef`` for a fixture in ``tests/conftest.py``."""
+    path = os.path.join(TESTS_DIR, "conftest.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    return None
+
+
+@pytest.mark.unit
+def test_integration_marked_tests_get_real_credentials(request):
+    """The credential reconciliation must reach every directory, not one.
+
+    ``tests/conftest.py`` forces sentinel credentials
+    (``AWS_ACCESS_KEY_ID=testing``) so unit tests cannot reach AWS. Undoing that
+    for the tests that DO need AWS used to live in
+    ``tests/integration/conftest.py``, so it reached integration tests by virtue
+    of the directory their file sat in. ``make test-integration`` runs
+    ``pytest -m "integration"`` over the whole tree, and two integration-marked
+    tests live under ``tests/unit/`` — the live-Bedrock agentic pair, which need
+    the ``strands`` guard in the agentic conftest — so those two signed real
+    Bedrock calls with the sentinel key and failed with ``InvalidClientTokenId``
+    (#1307).
+
+    This test is itself under ``tests/unit/``, so its own fixture closure is the
+    evidence: the reconciliation is visible here, which it could not have been
+    while it lived one directory over.
+    """
+    assert "real_aws_credentials_for_integration_tests" in request.fixturenames, (
+        "the integration credential reconciliation is not in scope for tests "
+        "under tests/unit/. If it moved back into a subdirectory conftest, the "
+        "integration-marked tests outside that subdirectory lose it again."
+    )
+
+
+@pytest.mark.unit
+def test_the_credential_reconciliation_is_keyed_on_the_marker():
+    """It must gate on the ``integration`` marker and restore on teardown.
+
+    Gating is what makes a suite-wide autouse fixture safe: without it, the
+    session-scoped skip it replaced would skip all ~10,500 tests on a machine
+    with no AWS credentials. Restoring is what makes a mixed run safe — a bare
+    ``pytest`` with no ``-m`` interleaves both tiers, and the previous version
+    popped the sentinels and left them popped, so every moto test after an
+    integration test would sign with whatever the credential chain resolved.
+    (Doing it at module scope is worse again — #988.)
+    """
+    fixture = _root_conftest_fixture("real_aws_credentials_for_integration_tests")
+    assert fixture is not None, (
+        "tests/conftest.py no longer defines the reconciliation fixture"
+    )
+    # `ast.unparse` normalizes string literals to single quotes, so match on
+    # that spelling rather than on however the source happens to quote it.
+    src = ast.unparse(fixture)
+    assert "get_closest_marker('integration')" in src, (
+        "the fixture is autouse over the whole suite but no longer gates on the "
+        "`integration` marker, so it applies to every unit test too"
+    )
+    assert any(isinstance(node, ast.Try) for node in ast.walk(fixture)), (
+        "the fixture no longer restores the credential environment on teardown; "
+        "a bare `pytest` run would leave real credentials in force for the moto "
+        "tests that follow an integration test"
+    )
+
+
+@pytest.mark.unit
+def test_chain_resolved_credentials_are_not_frozen_into_the_environment():
+    """Credentials reachable through boto3's chain must stay with the chain.
+
+    Writing the frozen access key, secret and session token into ``os.environ``
+    pins a token for the session. Under an SSO or assume-role profile a long
+    ``make test-integration`` run can outlive that snapshot and start failing
+    with ``ExpiredToken`` partway through, where the live chain would have
+    renewed it. So the resolver reads the frozen values only to answer "are
+    there credentials here" and must then discard them, returning an empty
+    mapping: popping the sentinels is the whole job.
+
+    Driven through the real resolver with a fake chain, because the distinction
+    is one line and invisible in a passing integration run with a long-lived key.
+    """
+    conftest = importlib.import_module("tests.conftest")
+
+    class _FakeFrozen:
+        access_key = "AKIAFAKECHAINKEY"  # pragma: allowlist secret
+        secret_key = "fake-chain-secret"  # pragma: allowlist secret
+        token = "fake-chain-token"  # noqa: S105 # pragma: allowlist secret
+
+    class _FakeCreds:
+        def get_frozen_credentials(self):
+            return _FakeFrozen()
+
+    class _FakeSession:
+        def get_credentials(self):
+            return _FakeCreds()
+
+    saved_env = conftest._REAL_AWS_ENV.copy()
+    saved_memo = (conftest._CREDENTIAL_OVERRIDES, conftest._CREDENTIAL_RESOLUTION_DONE)
+    saved_session = boto3.Session
+    try:
+        # No exported credentials, so the resolver must consult the chain.
+        conftest._REAL_AWS_ENV.update(
+            dict.fromkeys(conftest._AWS_CREDENTIAL_VARS, None)
+        )
+        conftest._CREDENTIAL_OVERRIDES = None
+        conftest._CREDENTIAL_RESOLUTION_DONE = False
+        boto3.Session = _FakeSession
+
+        overrides = conftest._resolve_credential_overrides()
+    finally:
+        boto3.Session = saved_session
+        conftest._REAL_AWS_ENV.clear()
+        conftest._REAL_AWS_ENV.update(saved_env)
+        conftest._CREDENTIAL_OVERRIDES, conftest._CREDENTIAL_RESOLUTION_DONE = (
+            saved_memo
+        )
+
+    assert overrides == {}, (
+        "chain-resolved credentials were written into the environment "
+        f"({sorted(overrides or {})}), which pins a token for the session. The "
+        "frozen values are for the existence check only."
+    )
+
+
+@pytest.mark.unit
+def test_the_reconciliation_drops_cached_boto3_clients():
+    """Swapping the credential environment does not reach an existing client.
+
+    boto3 freezes credentials at construction, and `idp_common.s3`,
+    `idp_common.metrics` and four other modules cache one in a process-global.
+    Collection imports every test module while the sentinels are in force, so a
+    client built at import time is poisoned before any test runs — measured as
+    `InvalidAccessKeyId` on an S3 read in `-m integration -k payslip` with the
+    whole tree collected, where the same test alone passes (#1307, and the
+    import-time-environment class is #988).
+
+    Driven here against a real cached client rather than against the source, so
+    the detection is what is tested: a `boto3.client` needs no network to build.
+    """
+    from idp_common import s3 as idp_s3
+
+    conftest = importlib.import_module("tests.conftest")
+
+    saved = idp_s3._s3_client
+    try:
+        idp_s3._s3_client = boto3.client("s3", region_name="us-east-1")
+        cleared = conftest.reset_cached_aws_clients()
+        assert cleared >= 1, (
+            "the reset found no cached boto3 client to clear, so its detection "
+            "has stopped matching the caches it is for"
+        )
+        assert idp_s3._s3_client is None, (
+            "idp_common.s3 still holds a client built under the previous "
+            "credentials; an integration test would inherit it"
+        )
+    finally:
+        idp_s3._s3_client = saved
+
+    fixture = _root_conftest_fixture("real_aws_credentials_for_integration_tests")
+    assert fixture is not None
+    body = ast.unparse(fixture)
+    assert body.count("reset_cached_aws_clients()") == 2, (
+        "the fixture must drop cached clients on BOTH edges: entering, so a "
+        "client built under the sentinels is not reused with real credentials, "
+        "and leaving, so a client built under real credentials is not inherited "
+        "by the moto tests that follow"
+    )
+
+
+@pytest.mark.unit
+def test_unit_tests_still_run_under_sentinel_credentials():
+    """The live negative for the two above: this test is not integration-marked,
+    so the reconciliation must have left the sentinels alone."""
+    assert os.environ.get("AWS_ACCESS_KEY_ID") == "testing", (
+        "a non-integration test is running with non-sentinel AWS credentials "
+        f"({os.environ.get('AWS_ACCESS_KEY_ID')!r}); moto tests could reach AWS"
     )
 
 

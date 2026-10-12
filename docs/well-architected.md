@@ -57,7 +57,7 @@ created when you enable the Bedrock circuit breaker); two CloudWatch dashboards;
 X-Ray tracing on the document-processing Lambda functions and both state machines, which
 `EnableXRayTracing` turns off in one place if you do not want it; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
-encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 32 TLS-only
+encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 33 TLS-only
 resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
 Cognito authentication with a REST API authorizer; concurrency admission control; and
 per-invocation token and cost metering written to a queryable ledger.
@@ -94,14 +94,15 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 19 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 29 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. Eighteen of the nineteen alarms publish to
-the `AlertsTopic` SNS topic; the nineteenth, `BedrockServiceOutageAlarm`, publishes to
-`CircuitBreakerTopic`
-and is the only conditional one, so it exists only when you enable the circuit breaker.
-The other eighteen are unconditional, which is why a default deployment has exactly
-eighteen. They fall into seven groups:
+through them — the nested stacks declare none. 28 of the twenty-nine alarms publish to
+the `AlertsTopic` SNS topic; the twenty-ninth, `BedrockServiceOutageAlarm`, publishes to
+`CircuitBreakerTopic`.
+Eight are conditional, so a default deployment has twenty-one:
+`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
+malware-scanning alarms only when `MalwareScanning` is not `DISABLED`. The other
+twenty-one are unconditional. They fall into eight groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -109,8 +110,10 @@ eighteen. They fall into seven groups:
 | `DocumentQueueDLQAlarm`, `WorkflowTrackerDLQAlarm`, `QueueSenderDLQAlarm`, `DataMartRollupDLQAlarm` | Any visible message on a dead-letter queue |
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
-| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the first of several alarms here that watch a *successful* outcome — the row below and the agent-transcript row are the others — and the reason it has to exist: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
+| `PrefixMappingLookupFailedAlarm`, `PrefixMappingUnresolvableAlarm`, `PrefixMappingRejectedAlarm` | A config prefix mapping — which assigns a Configuration Profile to everything arriving under an S3 prefix — either could not be read, names a Configuration Profile that no longer exists, or is persistently refusing documents. The first two watch a successful outcome, like the row above: the documents succeed, so nothing else on this list moves, while the extraction reflects a configuration nobody chose. Resolution deliberately fails open rather than halting ingest for the whole deployment, which is precisely why the metric needs an alarm. ⚠️ A mapping's *pinned revision* going missing is **not** among the conditions detected: the ingest-time existence check is on the profile only, and such a document fails downstream when the configuration is loaded instead. The third alarm is the feature working unless it is sustained, so it alarms on volume rather than on the first occurrence |
 | `AgentTranscriptMessageDroppedAlarm`, `AgentTranscriptDrainIncompleteAlarm` | Ten or more agent conversation messages, in fifteen minutes, either dropped from the stored transcript or left behind by the bounded drain at an agent's close. Like the row above, both watch an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is at risk is an entry in the transcript the analytics UI replays. They are two alarms because they license different conclusions: a dropped message is gone (contention beyond what the bounded retry absorbs, or reads that keep failing), whereas an unfinished drain leaves a write that was never cancelled and often commits when the execution environment is next thawed |
+| the seven `<stack>-malware-*` alarms | Amazon GuardDuty found malware; a run of documents could not be scanned; a verdict was undeliverable; verdicts arrived and were not applied; a refused `/Jobs` file could not be recorded as terminal, which leaves its batch reporting `IN_PROGRESS` with that metric as the only signal; or — the one the others are blind to — documents are held with **no** verdict applied at all, meaning ingest has stopped. All conditional on `MalwareScanning`, so absent from a default deployment. The detection and job-finalize alarms fire on a single event, because one infected upload is an incident rather than a rate and one unrecorded refusal is one permanently stalled batch; the rest have thresholds or long windows, because a password-protected file and a re-uploaded filename are ordinary occurrences and only a sustained pattern is a signal. See [malware-scanning.md](./malware-scanning.md) |
 | `DataMartMigrationStateMachineFailureAlarm`, `DataMartRollupAbsenceAlarm` | A data-mart migration state-machine execution ended in `FAILED`/`TIMED_OUT`/`ABORTED` — the migration did not complete cleanly and the SSM marker will not have advanced to `state=completed`, so scheduled rollups defer until an operator investigates; and, separately, four consecutive one-hour windows with zero rollup Lambda invocations — the class of failure where a redeploy dropped the EventBridge schedule from the stack, which the DLQ alarm cannot see because that fires on failures, not absences |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
@@ -202,12 +205,26 @@ tables, the S3 buckets via SSE-KMS, the SNS topics and the CloudWatch log groups
 referenced from the parent template and passed into the nested stacks, so there is one
 key to audit and one key policy to review.
 
-**Data protection in transit.** 32 resource policies deny requests where
-`aws:SecureTransport` is false, and there is now no exception: in `template.yaml`, all
-thirteen S3 bucket policies and all sixteen SQS queue policies carry the deny, plus one
+**Untrusted input at the ingest boundary.** Every document comes from outside the
+solution, and two different controls cover two different parts of that. Bedrock
+Guardrails (`BedrockGuardrailId`) inspect the text sent to and returned by a
+model, which is where prompt injection lives. They do not read the uploaded file,
+so a weaponized PDF or Office document — payload in the file structure, not the
+extracted text — is invisible to them. The optional `MalwareScanning` parameter
+covers that second part by gating ingest on an Amazon GuardDuty Malware
+Protection verdict, before any execution starts; it is `DISABLED` by default, and
+its detection is signature, YARA and ML based with no behavioural analysis. See
+[malware-scanning.md](./malware-scanning.md).
+
+**Data protection in transit.** 33 resource policies deny requests where
+`aws:SecureTransport` is false, and there is no exception: in `template.yaml`, all
+thirteen S3 bucket policies and all seventeen SQS queue policies carry the deny, plus one
 further queue policy in `patterns/unified/template.yaml` and two in the optional
-`feature-platform/idp-data-generator/` extension. If you deploy without that extension
-the count you should see is 30. All thirteen buckets also set
+`feature-platform/idp-data-generator/` extension. Those are *declared* policies; three of
+the seventeen are conditional, so the number a given stack actually has is lower — a
+default deployment without the data-generator extension has 28, gaining the malware
+verdict DLQ's policy when `MalwareScanning` is enabled, and the job-tracker and
+post-processing DLQ policies with their own features. All thirteen buckets also set
 `PublicAccessBlockConfiguration`, and twelve send server access logs to the logging
 bucket.
 
@@ -241,7 +258,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-118 operations. 108 of them require Cognito group membership and 2
+123 operations. 113 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 18 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -325,12 +342,12 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 127 IAM policy statements are written against `Resource: "*"` — 53 in
+extensions, 128 IAM policy statements are written against `Resource: "*"` — 53 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
-API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 28
-of the 127, and the X-Ray read actions, `textract:DetectDocumentText` and
+API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 29
+of the 128, and the X-Ray read actions, `textract:DetectDocumentText` and
 `textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
 audited statement by statement, so treat the number as a surface to review rather than as a
 count of findings. A permissions boundary is the practical lever for narrowing whatever you
@@ -369,6 +386,7 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
 | Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |
 | Have you created a Bedrock Guardrail and set `BedrockGuardrailId` / `BedrockGuardrailVersion`, or accepted running without content policy enforcement? | | | |
+| Are uploaded files scanned for malware before the pipeline reads them? `MalwareScanning` defaults to `DISABLED`, so by default any file in the input bucket is fetched by OCR, rendered to images and sent to Bedrock. Note that Bedrock Guardrails do **not** cover this — they inspect model text, not the file. If you enable it, have you decided what happens to a document GuardDuty cannot scan (`AllowUnscannableDocuments`, default fail-closed), and do you accept that the detection is signature/heuristic-based with no behavioural analysis? See [malware-scanning.md](./malware-scanning.md) | | | |
 | Have you reviewed the `CustomerManagedEncryptionKey` key policy, and do you need a key you manage outside the stack instead? | | | |
 | Is CloudTrail enabled in this account and region, and where does the trail go? No template creates one | | | |
 | Is the deployment path a delegated CloudFormation service role from `iam-roles/cloudformation-management/`? If so, who has reviewed its permissions and who can assume it? | | | |
@@ -434,7 +452,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 326 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 342 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

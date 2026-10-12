@@ -209,7 +209,13 @@ The evaluation service stores confidence scores from extraction results alongsid
    - Evaluation runs as the final step in the Step Functions workflow (after summarization)
    - Executes **before** the workflow marks documents as COMPLETE, eliminating race conditions
    - When `evaluation.enabled: true` in configuration, evaluates against baseline data if available
-   - When `evaluation.enabled: false` in configuration, step executes but skips processing
+   - When `evaluation.enabled: false` in configuration, the step executes, skips the
+     comparison, and records `EvaluationStatus=DISABLED` on the document — so a
+     document that was deliberately not scored is distinguishable from one whose
+     evaluation has not finished. A Test Studio run of such documents completes and
+     reports its cost and timing, with no accuracy figures and an explanation on the
+     results page in place of them. Note the status is written over by promoting a
+     document to an evaluation baseline, which uses the same attribute
    - Generates detailed markdown reports using AI analysis
 
 3. **Evaluation Reports**
@@ -1655,7 +1661,10 @@ Two things changed to make that true:
 
 If you see `TIMED_OUT`, the document's extraction results are intact — only its
 score is missing. Re-run evaluation for that document after reducing the
-comparison work (see the warning about `LLM` methods inside lists, above).
+comparison work (see the warning about `LLM` methods inside lists, above). In a
+Test Studio run the document counts as a failed file, the same as `FAILED`, so
+the run finishes `PARTIAL_COMPLETE` with metrics over the documents that were
+scored.
 
 ## Troubleshooting Evaluation Issues
 
@@ -1699,3 +1708,11 @@ Common issues and resolutions:
    - Create explicit configuration for production document classes
    - Review generated schema structure in logs
    - Test explicit config before disabling auto-generation
+
+8. **A test run completed with no accuracy figures**
+   - Check whether `evaluation.enabled` is `false` in the configuration profile
+     the run used. Its documents carry `EvaluationStatus=DISABLED`, the run
+     completes, and its cost and timing are reported, but nothing was scored —
+     turn evaluation on and run the test set again
+   - Otherwise the test set had no published ground truth to score against,
+     which the results page says instead

@@ -352,10 +352,35 @@ Two failure shapes to distinguish:
   can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
-  selectable, because they work for accounts that have used them recently — if
-  you hit this error, either pick a current model or request access again in the
-  Bedrock console.
+  Such models stay selectable, because they work for accounts that have used
+  them recently — if you hit this error, either pick a current model or request
+  access again in the Bedrock console.
+
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0` is the selectable model closest
+  to this state: an AWS Health notice puts it in legacy from 2026-10-08 with end
+  of life on 2027-04-08, which `list-foundation-models` had not yet reflected
+  when this page was written. `us.anthropic.claude-opus-4-1-20250805-v1:0` is
+  the model the API does report as `LEGACY` (end of life 2027-01-08), and it is
+  no longer in any picklist here, so you will meet it only in a configuration
+  stored before it was removed. Read the state yourself rather than from this
+  page:
+
+  ```bash
+  aws bedrock list-foundation-models --by-provider anthropic \
+    --query 'modelSummaries[].{id:modelId,lifecycle:modelLifecycle}'
+  ```
+
+  A legacy model also receives no further Service Quota increases, so it is a
+  poor choice for new work even while it answers. No default in the commercial
+  partition names one. **GovCloud is the exception.** That partition offers
+  three models — `us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+  `amazon.nova-pro-v1:0` and `amazon.nova-lite-v1:0` — and the
+  `lending-package-sample-govcloud` preset names the Sonnet for extraction,
+  summarization, LLM evaluation and confidence escalation, so a GovCloud
+  deployment runs the legacy Sonnet for those stages until that partition offers
+  a successor. (The `--govcloud` template transform defaults the knowledge-base
+  model to `amazon.nova-pro-v1:0`; it reaches the Sonnet only by selecting that
+  preset.)
 
 A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the
@@ -557,6 +582,8 @@ Key parameters that can be configured during CloudFormation deployment:
 - `PostProcessingLambdaHookFunctionArn`: Optional Lambda ARN for custom post-processing (see [post-processing-lambda-hook.md](post-processing-lambda-hook.md) for detailed implementation guidance)
 - `BedrockGuardrailId`: Optional Bedrock Guardrail ID to apply
 - `BedrockGuardrailVersion`: Version of Bedrock Guardrail to use
+- `MalwareScanning`: Hold each uploaded document at ingest until Amazon GuardDuty Malware Protection for S3 reports it clean — `DISABLED` (default), `GATE_ONLY` (gate on a plan managed elsewhere) or `CREATE_PLAN` (this stack creates the GuardDuty plan and role). See [malware-scanning.md](malware-scanning.md)
+- `AllowUnscannableDocuments`: Whether a document GuardDuty could not scan (password-protected, over its quotas, SSE-C encrypted, scan error) may still be processed (default: `false`, so such documents stop in `MALWARE_SCAN_FAILED`). This is a ceiling over the per-configuration `malware_scanning.on_unscannable` setting, which is editable from the web UI — setting that to `allow` has no effect unless this is also `true`
 
 For details on processing modes, see [architecture.md](architecture.md). For legacy pattern-specific references, see [pattern-1.md](pattern-1.md) (BDA) and [pattern-2.md](pattern-2.md) (Pipeline).
 
@@ -621,6 +648,59 @@ This applies guardrails to all Bedrock model interactions, including:
 4. **Compliance Alignment**: Ensure guardrails align with organizational compliance requirements
 
 For more information on creating and managing Guardrails, see the [Amazon Bedrock documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html).
+
+⚠️ **Guardrails do not read the uploaded file.** They inspect the text sent to and
+returned by the model, so a malicious PDF or Office document — whose payload is in
+the file's structure, not its extracted text — is invisible to them. Scanning the
+file itself is a separate, optional control: see
+[Malware Scanning](#malware-scanning) below.
+
+## Malware Scanning
+
+Uploaded documents can be held at ingest until Amazon GuardDuty Malware
+Protection for S3 reports them clean. Off by default.
+
+### What is configured where
+
+Enablement is **infrastructure** and lives in CloudFormation, because a GuardDuty
+protection plan cannot be created by editing a configuration row:
+
+- `MalwareScanning`: `DISABLED` (default) | `GATE_ONLY` | `CREATE_PLAN`
+- `AllowUnscannableDocuments`: `false` (default) | `true`
+
+Policy is **configuration** and lives in the `malware_scanning` section, editable
+in the Visual Editor and versioned with the rest of the configuration:
+
+```yaml
+malware_scanning:
+  # What to do with a document GuardDuty returned no verdict for — a
+  # password-protected file, an object over its quotas, an SSE-C encrypted
+  # object, or an internal scan error.
+  on_unscannable: block    # block (default) | allow
+  # Publish to the stack's SNS alerts topic when a document is refused.
+  alert_on_block: true
+```
+
+⚠️ **`on_unscannable: allow` needs the stack parameter too.** The configuration is
+editable by any Admin from the web UI, so `AllowUnscannableDocuments` acts as a
+ceiling over it: with that parameter `false`, setting the configuration to `allow`
+has no effect and the gate logs that it ignored it. Loosening the policy takes
+both a configuration change and a stack update.
+
+A document GuardDuty reports as **infected** is always refused. That is not
+configurable and the schema offers no field for it.
+
+### Statuses you will see
+
+| Status | Meaning |
+|---|---|
+| `MALWARE_SCANNING` | Uploaded, waiting for the verdict. No workflow has started. |
+| `QUARANTINED` | GuardDuty found malware. Not processed. |
+| `MALWARE_SCAN_FAILED` | No verdict was obtainable and the policy fails closed. Not processed. |
+
+For the design, the GuardDuty IAM and KMS prerequisites, the metrics and alarms,
+the cost and quota figures, and what the gate does **not** cover, see
+[malware-scanning.md](malware-scanning.md).
 
 ## Concurrency and Throttling Management
 
@@ -788,38 +868,43 @@ rather than on the parent execution. The catcher names that one error rather tha
 `States.ALL`, because the Map's other failure modes (`States.DataLimitExceeded`,
 `States.Runtime`) already report a specific and differently-actionable condition.
 
-Inside one shard, several durations draw on the same invocation and only add up if
-they are chosen together:
+Inside one shard, several durations draw on the same invocation:
 
 | | Value | What it bounds |
 |---|---|---|
-| Agentic `read_timeout` | 180 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
+| Agentic `read_timeout` | 600 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
 | Confidence `read_timeout` | 300 s | One **non-streamed** `converse`, which bounds the whole response rather than a gap, so it is legitimately larger. Inside the shard invocation whenever confidence runs in `separate` mode |
 | botocore attempts per call | 1 | botocore retries a read timeout *itself*, multiplying either timeout above inside a single call, where no deadline check can see it |
 | Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
 | Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
 
-The worst case is a stall on **each** client plus the whole backoff allowance —
-180 + 300 + 90 = 570 s — which leaves 330 s for the work itself. A stall then surfaces
-as a `ReadTimeoutError` with most of the invocation still available, the ladder retries
-inside the same invocation, and the shard returns a result. The alternative is that the
-invocation is killed at 900 s: Step Functions reports that as `Sandbox.Timedout`, which
-is deterministic and retried once (see above), so the transient blip a retry would have
-cleared becomes the failure that is not retried.
+What keeps a shard inside its invocation is **not** that these numbers sum to less than
+900 — they do not. It is that the retry ladder refuses to *begin* an attempt the size of
+the one that just failed when the remaining invocation cannot hold it, and raises the
+underlying error instead. That surfaces as a `ReadTimeoutError` the shard handler wraps
+as `TransientError`, which `ShardExtractionStep` retries eight times against a
+state-machine budget of 21,600 s. The alternative is that the invocation is killed at
+900 s: Step Functions reports that as `Sandbox.Timedout`, which is deterministic and
+retried once (see above), so the transient blip a retry would have cleared becomes the
+failure that is not retried.
 
-**Why `read_timeout` can be this short.** The agentic path streams, so 180 s is not a
-cap on how long a generation may take — it is how long the socket may go completely
-silent. A healthy long generation emits deltas continuously and never approaches it;
-three minutes of no traffic at all is a stall by definition. Observed per-call latency
-is far below the ceiling in any case: a 3,200-row document completes in about 408 s
-spread over many calls. The confidence call is **not** streamed, which is exactly why
-its timeout is larger and why it has to be counted separately.
+⚠️ **Do not lower the agentic `read_timeout` to make the table add up.** That is what
+600 s → 180 s did, and it broke the largest-table extraction in this repository's own
+integration suite for a week. The reasoning behind the cut — "the path streams, so a
+healthy generation emits deltas continuously and three minutes of silence is a stall by
+definition" — is wrong for an agent loop: a gap here also covers the whole wait between
+submitting a tool result and the first event of the model's reply, on a request carrying
+a large cached prefix and a dozen-plus page images. Measured on `samples/Nuveen.pdf`
+(532 table rows, 17 pages) that gap exceeds 180 s reproducibly and fits inside 600 s.
+Change the value only against a measurement of that gap
+([#1310](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1310)).
 
 The numbers live together in `idp_common.timeout_budget`, and
 `lib/idp_common_pkg/tests/unit/extraction/test_shard_timeout_budget.py` asserts the
-whole inequality — reading the resolved client configurations, not the source, so
-botocore's own attempt count is inside the bound — along with the Map's `Retry`,
-`Catch` and zero tolerance.
+remaining arithmetic — one agentic stall plus all the backoff leaves room to return —
+reading the resolved client configurations rather than the source, so botocore's own
+attempt count is inside the bound, along with the ladder's stop behaviour and the Map's
+`Retry`, `Catch` and zero tolerance.
 
 ⚠️ **One exposure the arithmetic above does not close.** The `BedrockClient` used for
 the non-streamed call has its own retry ladder (7 attempts, backing off 2 s doubling to
@@ -944,7 +1029,7 @@ Pattern-2 and Pattern-3 support configurable strategies for how classified pages
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire document as a single section with the first detected class. Simplest approach for single-document processing.
+- **`disabled`**: Treats the entire document as a single section. With page-level classification the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); with holistic classification it takes the first segment's class. Simplest approach for single-document processing.
   
 - **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   
@@ -1035,15 +1120,20 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Opus 5.5, Fable 5 | 512 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5** | 512 tokens |
 | Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
 | Amazon Nova | ≤ 355 tokens (below any shipped class) |
 
 Measured across the shipped presets, 25% of classes never cache on the 1,024-token
-tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
-gets no caching at all and, until now, no indication of it.
+tier and **none** do on Haiku 4.5 — choosing Haiku 4.5 to save money on extraction
+gets you no caching at all, with no indication of it in the response.
+
+Note the two Haikus sit at opposite ends of this table, so "Haiku" is not a tier.
+Haiku 5.5's minimum is 512 tokens — the lowest here, 8x below Haiku 4.5's — which
+makes it the one cheap model where caching is worth configuring rather than written
+off: a class that never cached on Haiku 4.5 may well cache on it.
 
 `idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up

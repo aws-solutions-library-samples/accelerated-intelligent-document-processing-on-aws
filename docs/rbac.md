@@ -460,7 +460,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 90 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 95 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 18 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -650,6 +650,8 @@ enforcement itself is Layer 2.
 | `deleteConfigVersion` | Admin |
 | `deleteConfigProfileRevision` | Admin |
 | `restoreConfigProfileRevision`, `labelConfigProfileRevision` | Admin, Author |
+| `listConfigPrefixMappings`, `putConfigPrefixMapping`, `deleteConfigPrefixMapping` | Admin. A prefix mapping *assigns* a Configuration Profile to everything arriving under an S3 prefix, so writing one decides which scoped users can see those documents — the same side of the line as minting a profile, not the same side as editing one's content |
+| `resolveConfigPrefixMapping` | Admin, Author. A read-only dry run ("what would this key process under?") serving the upload form, so Author is the lowest role that can use it — a Viewer cannot upload. **Scope-filtered**: a caller outside the resolved profile's scope is told the destination is out of scope and nothing else — not the profile's name, not the revision, and not the **mapping prefix**. The `reason` field is returned, carrying one fixed sentence that names none of those, because it is what the upload panel renders as the whole body of its alert. The prefix is withheld because the caller supplied a *key*, so returning the mapping that governs it reveals where the boundary sits, and a probe at a time that reconstructs the routing policy `listConfigPrefixMappings` is Admin-only to protect. The subject of the check is every profile the answer could *disclose*, not the one it selected — a refusal names the mapped profile in its reason while resolving to no profile at all, and metadata precedence resolves to the caller's own in-scope profile while explaining that it beat the mapping's |
 | `createUser`, `updateUser`, `deleteUser` | Admin |
 | `updatePricing`, `restoreDefaultPricing` | Admin |
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
@@ -657,7 +659,7 @@ enforcement itself is Layer 2.
 | `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author |
 | `addTestSet`, `addDocumentsToTestSet`, `listBucketFiles` (import by file pattern searches a whole bucket, so it is not offered to Authors) | Admin |
 | `startTestRun`, `addTestSetFromUpload`, `createEmptyTestSet`, `deleteTests`, `deleteTestSets` | Admin, Author |
-| `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
+| `addDocumentsToTestSetFromUpload`, `addDocumentsToTestSetByKey` (exact document keys, each checked against the caller's configuration-profile scope before anything is copied; not a bucket search), `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
 | `syncBdaIdp`, `uploadDiscoveryDocument`, `deleteDiscoveryJob`, `autoDetectSections` | Admin, Author |
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
@@ -703,7 +705,14 @@ The dispatcher runs each resolver in a separate Lambda, so only two things survi
 the invoke: the exception's **class name** and its message. It picks a status from
 those — `PermissionError`/`AuthorizationError`, or a message beginning
 `Unauthorized`/`Forbidden`, becomes **403 `Unauthorized`**; `ValueError`/`KeyError`
-becomes **400 `BadRequest`**; anything else becomes **500 `InternalError`**.
+becomes **400 `BadRequest`**; `ResourceNotFound` becomes **404 `ResourceNotFound`**;
+anything else becomes **500 `InternalError`**.
+
+The 404's errorType is deliberately `ResourceNotFound` and not the `NotFound` the
+dispatcher already returns for an operation this deployment does not route: the live
+RBAC harness reads a bare `NotFound` from a feature probe as "this feature is
+disabled, skip this operation", so collapsing the two would turn authorization
+assertions into silent skips rather than passes.
 
 That makes the status sensitive to how a resolver re-raises. A resolver that catches
 its own exceptions and re-raises them wrapped loses both signals at once — the class
@@ -718,8 +727,11 @@ server faults is masked by them, and a caller probing for reachable resources
 inflates the fault signal instead of the authorization-denial signal. Refusals and
 faults have to be separable to be alarmable.
 
-So, for any refusal you add: raise `PermissionError` for an authorization refusal
-and `ValueError` for a bad argument, and do not let a catch-all re-wrap either.
+So, for any refusal you add: raise `PermissionError` for an authorization refusal,
+`ValueError` for a bad argument, and `ResourceNotFound` for an object that does not
+exist — a not-found raised as a `ValueError` answers 400, which is the inverse of
+the convention and is not caught by the reintroduction guard (it matches only a bare
+`Exception`). Do not let a catch-all re-wrap any of the three.
 Log a denial at **WARNING** with a "Denied"/"Forbidden"/"Rejecting" verb and no
 stack trace, and reserve `logger.error(..., exc_info=True)` for a real fault — a
 denial logged as `Unexpected error` with a traceback is indistinguishable from a
@@ -857,4 +869,5 @@ To add a new role:
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.
 - **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before config-version stamping; reprocessing them under a profile in that user's scope restores visibility.
 - **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via the "Create Config Version" modal), the config-version scope IS enforced — the Author can only target versions within their scope.
+- **A principal with `s3:PutObject` on the Input bucket chooses its own Configuration Profile.** `uploadDocument` and `uploadSampleDocument` now scope-check the **resolved** profile — covering both the `version` argument and the destination prefix once [prefix mappings](configuration-profiles.md) are in use — but that check lives in the API layer, and a write that does not go through the API never reaches it. An S3 replication rule, a partner role, an appliance, or the SDK running with its own credentials picks its own prefix and its own `x-amz-meta-config-version`, and nothing in this product sees the request. Bound this with the IAM policy on whatever writes to that bucket; the admin UI's mapping table is a routing policy, not an ingest boundary.
 - These limitations are tracked for Phase 3 implementation.

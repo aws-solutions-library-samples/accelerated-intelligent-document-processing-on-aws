@@ -161,11 +161,18 @@ def derive_shared_gate_total() -> int:
 
 
 def derive_gates_in_developer_tests() -> int:
-    """How many of them are steps in GitHub's single ``developer_tests`` job.
+    """How many of them ``developer-tests.yml`` carries, across all of its jobs.
 
-    This is the number the requireable-context argument rests on, so it is counted
-    from the workflow rather than assumed to be "all of them" — which is what the
-    documentation said until the two security gates joined the list.
+    Counted from the workflow rather than assumed to be "all of them", which is what
+    the documentation said until the two security gates joined the list.
+
+    ⚠️ This is the share of the gate set that **one workflow** holds, and it is no
+    longer the same quantity as the number of requireable contexts — that is
+    :func:`derive_requireable_contexts_with_a_shared_gate`. The two were equal in
+    effect while this workflow was a single job, which made "eight gates collapse to
+    one required check" true; the workflow is four parallel jobs now, so they do not
+    collapse, and reading this figure as a context count understates how many checks
+    branch protection has to require.
     """
     parity = _parity_module()
     workflow = parity._uncommented(DEVELOPER_TESTS_WORKFLOW.read_text())
@@ -247,15 +254,15 @@ DOCUMENTED_COUNTS = (
         ),
     ),
     DocumentedCount(
-        name="shared gates that are steps in the developer_tests job",
+        name="shared gates reached by developer-tests.yml",
         derive=derive_gates_in_developer_tests,
         patterns=(
             rf"\b{_NUMBER} of the (?:\w+|\d+) shared gates\b",
             rf"\b{_NUMBER} of the (?:\w+|\d+) gates asserted by\b",
         ),
         probes=(
-            "{n} of the many shared gates are *steps* in one job",
-            "{n} of the many gates asserted by ``SHARED_GATES`` are *steps*",
+            "{n} of the many shared gates live in developer-tests.yml",
+            "{n} of the many gates asserted by ``SHARED_GATES`` live in",
         ),
         documents=(
             "CLAUDE.md",
@@ -264,8 +271,8 @@ DOCUMENTED_COUNTS = (
             "scripts/sdlc/check_branch_protection.py",
         ),
         why=(
-            "counted from .github/workflows/developer-tests.yml; it is the basis of "
-            "the claim that these gates collapse to one requireable check"
+            "counted from .github/workflows/developer-tests.yml, which is the share "
+            "of the gate set that workflow carries"
         ),
     ),
     DocumentedCount(

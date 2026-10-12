@@ -62,11 +62,24 @@ import lib  # noqa: E402
 CACHE_MINIMUMS = {
     # "claude-opus-5" matches "claude-opus-5-5" too, and because this dict is
     # scanned in insertion order the longer id resolves here first — to 512, which
-    # is the published Opus 5.5 answer as well. Intended, not a lucky match; the
-    # same note is on the two other copies of this table
-    # (idp_common/bedrock/prompt_cache.py and src/ui/.../promptCacheModel.ts).
+    # is the published Opus 5.5 answer as well. Intended, not a lucky match.
+    #
+    # ⚠️ There are FIVE copies of this table, not three: here,
+    # idp_common/bedrock/prompt_cache.py, src/ui/.../promptCacheModel.ts,
+    # cache_prefix_survey.py's TIERS and cache_threshold_probe.py's docstring. This
+    # comment used to name two, and when Haiku 5.5 was added those two were exactly
+    # the ones updated — the comment was read as the completeness list and was
+    # itself incomplete, which is how three copies went stale at once.
+    # tests/test_cache_minimum_parity.py now derives the set and compares all of
+    # them, so the list above is a pointer rather than the control.
     "claude-opus-5": 512,
     "claude-fable-5": 512,
+    # Haiku 5.5 MUST precede "claude-haiku-4-5": this dict is scanned in insertion
+    # order and the two Haikus bracket the table (512 against 4,096), so family
+    # order decides the answer. Measured live rather than taken from the table:
+    # a 500-token prefix does not cache and a 520-token one does
+    # (us.anthropic.claude-haiku-5-5, us-west-2, 2026-10-08).
+    "claude-haiku-5-5": 512,
     "claude-opus-4-8": 1024,
     "claude-sonnet-5": 1024,
     "claude-sonnet-4-6": 1024,

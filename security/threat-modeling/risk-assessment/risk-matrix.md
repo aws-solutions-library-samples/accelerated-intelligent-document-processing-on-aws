@@ -60,7 +60,7 @@
 | HOOK.T02 | Data Exfiltration via Post-Processing Hook | **8** | Lambda Hooks | Partially Mitigated |
 | MCP.T01 | Data Exfiltration via MCP Tools | **8** | MCP Integration | Partially Mitigated |
 | PM.T06 | Configuration Tampering | **8** | Pipeline Mode | Mitigated |
-| SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | **8** | SDK/CLI | **Open** (fix pending, #927) |
+| SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | **8** | SDK/CLI | **Partially Mitigated** — a permissions boundary now bounds the role (#927 closed); its `iam:*` grant is unchanged |
 | SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | **8** | Seller Entitlement Service | Mitigated |
 
 ### High Risk (Score 6–7)
@@ -78,7 +78,7 @@
 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Open** (fix pending, #920) |
 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | **6** | Feature Platform | Partially Mitigated |
 | HOOK.T06 | Preprocessing Hook Operates on the Raw Source Document and Can Halt or Replace It | **6** | Lambda Hooks | Mitigated |
-| HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | **6** | Lambda Hooks | **Open** (fix pending, #919) |
+| HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | **6** | Lambda Hooks | **Mitigated** — terminal at all seven hook points (#919 closed) |
 | JOB.T01 | Jobs API Clients Bypass the Cognito Group RBAC Model | **6** | Jobs API | Mitigated |
 | KB.T01 | Knowledge Base Poisoning | **6** | Knowledge Base | Mitigated |
 | KB.T02 | RAG Context Injection | **6** | Knowledge Base | Partially Mitigated |
@@ -133,7 +133,7 @@
 | BDA.T03 | BDA Project Configuration Tampering | **3** | BDA Mode | Mitigated |
 | CHAT.T02 | Conversation Session Hijacking | **3** | Companion Chat | Mitigated |
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
-| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Open** (fix pending, #920) |
+| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Open** — #920 closed, but the body value is still the effective identity on the deployed transport |
 | FEAT.T04 | Stale or Downgraded Feature Bundle Served to Users | **3** | Feature Platform | Partially Mitigated |
 | HOOK.T03 | Inference Hook Result Tampering | **3** | Lambda Hooks | Mitigated |
 | HOOK.T05 | Privilege Escalation via Hook IAM Role | **3** | Lambda Hooks | Mitigated |
@@ -217,9 +217,9 @@ than the threat total.
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 62 | Controls implemented and verified |
-| **Partially Mitigated** | 27 | Some controls in place, additional measures recommended |
-| **Open** | 6 | **Real gap with no effective control today — see the open-items list below** |
+| **Mitigated** | 63 | Controls implemented and verified |
+| **Partially Mitigated** | 28 | Some controls in place, additional measures recommended |
+| **Open** | 4 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
 #### Open items (no effective control today)
@@ -245,14 +245,14 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 1 | CHAT.T01 | Prompt Injection via Chat Messages | 9 | Mitigated |
 | 2 | PM.T01 | Prompt Injection via Document Content | 9 | Mitigated |
 | 3 | SELL.T02 | Spoofed Buyer Identity in the Request Body | 9 | Mitigated |
-| 4 | SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | 8 | **Open** (fix pending, #927) |
+| 4 | SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | 8 | **Partially Mitigated** (boundary attached, #927 closed; `iam:*` unchanged) |
 | 5 | FEAT.T01 | Feature UI Bundle Executes Unsandboxed in the Host Origin | 8 | Partially Mitigated |
 | 6 | HOOK.T02 | Data Exfiltration via Post-Processing Hook | 8 | Partially Mitigated |
 | 7 | MCP.T01 | Data Exfiltration via MCP Tools | 8 | Partially Mitigated |
 | 8 | PM.T06 | Configuration Tampering | 8 | Mitigated |
 | 9 | SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | 8 | Mitigated |
 | 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
-| 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Open** (fix pending, #919) |
+| 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Mitigated** (#919 closed) |
 | 12 | UI.T06 | Object Reads Are Not Scoped Per Document | 6 | **Open** (fix pending, #1033) |
 | 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
 | 14 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
