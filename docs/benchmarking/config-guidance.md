@@ -707,13 +707,13 @@ and ran `simplegrid` instead, so they are reported separately below and never av
 Note the grid's documents run to **400 rows**; the 800-row and larger sizes where models
 diverge most are §3's territory, not this table's.
 
-⚠️ **Read the two right-hand groups as separate questions. Accuracy is computed over the
-116 (cell, document) pairs that *every* arm completed; reliability is the `fail` column.**
-Averaging an arm over only its own completed runs rewards the arm that failed the most,
-because the runs it dropped are exactly the documents it could not handle — done that way,
-Opus 5.5 tops the recall column (1.000) while being the only arm to lose 13 runs, and
-Sonnet 5 comes last (0.939) having lost none. On the common subset the ordering is sane and
-the spread collapses to about two points. Neither view is publishable alone.
+**Accuracy and reliability are separate columns here, and both matter.** Accuracy is
+computed over the **116 (cell, document) pairs every arm completed**, so no model is
+advantaged by the documents it could not finish; reliability is the `fail` column. An
+accuracy figure averaged over each arm's own completed runs would rank Opus 5.5 first
+(recall 1.000, having dropped 13 runs) and Sonnet 5 last (0.939, having dropped none),
+because the dropped runs are the hardest documents. On the common subset the arms sit within
+about two points of each other.
 
 | extraction model | runs | fails | recall | scalar acc | cell acc | cost/doc | wall/doc | cells compared |
 |---|---|---|---|---|---|---|---|---|
@@ -991,16 +991,15 @@ Re-measured in full on v0.6.11 — the whole 19-cell grid this time, 133 runs pe
 | Nova 2 Lite | 133 | 4 | 0.998 | 1.000 | 0.998 | **0.00%** | 1.0000 | $0.595 | 123 s |
 | Sonnet 5 | 133 | 4 | 0.997 | 0.999 | **0.975** | **24.02%** | 1.0000 | **$1.347** | 129 s |
 
-⚠️ **Confidence *discrimination* cannot be measured on this corpus, and the AUROC column
-that would normally decide this section is therefore omitted rather than quoted.** The
-extraction is too accurate for it: across ~75,000 calibration observations per arm there
-are only **60–72 errors — an error rate of 0.08–0.10%** — and the harness marks
-`calibration_reliable` **false on 104 of 129 runs in every arm**. Computed anyway, both Nova
-models return AUROC exactly **0.5000**, the degenerate value, and Sonnet 5 returns 0.7129 on
-the strength of ~72 errors. Reading that as "Sonnet 5's confidence is informative and the
-default's is worthless" is the trap; the honest statement is that **this corpus cannot tell
-these models apart on discrimination**, so the choice rests on cost, coverage and threshold
-behaviour. Measuring it needs a corpus with a materially higher error rate.
+⚠️ **Confidence *discrimination* cannot be measured on this corpus, so the AUROC column is
+omitted rather than quoted.** The extraction is too accurate for it: across ~75,000
+calibration observations per arm there are only **60–72 errors — an error rate of
+0.08–0.10%** — and `calibration_reliable` is **false on 104 of 129 runs in every arm**.
+Computed regardless, both Nova models return AUROC exactly **0.5000** (the degenerate value
+when there is nothing to rank) and Sonnet 5 returns 0.7129 on the strength of ~72 errors.
+Neither figure supports a conclusion about confidence quality. **On this corpus the choice
+rests on cost, coverage and threshold behaviour**; establishing discrimination needs a
+corpus with a materially higher error rate.
 
 **Guidance: keep Nova Lite.** It is the cheapest of the three at $0.559/doc total, its
 coverage is 0.9999, and nothing measurable here distinguishes its confidence quality from
@@ -1180,18 +1179,16 @@ priced only when validation fails, and on a clean corpus it never does.
 ### `extraction.forced_tool.enabled` (`forcing`) — honoured, neutral, still not a default
 
 ⚠️ **Claude Opus 5.5 rejects a forced `toolChoice`, so this axis has no measurement for
-it** — and v0.6.11 upgraded that from a model-card claim to an observed API refusal. Its
-`force-on` cells reach `COMPLETED`, which is exactly why the completion count must not be
-read as a result: the harness records `forced_tool_attempted = 0`,
-`forced_tool_honored_rate = None`, and the reason verbatim in `forced_tool_skips` —
-`tool_choice: type "tool" and "any" are not supported for this model. Use toolChoice auto
-and steer from the prompt`. The cells ran with `toolChoice: auto`, so they are a **vacuous
-pass of this axis**, not a flat result on it.
+it.** Bedrock returns `tool_choice: type "tool" and "any" are not supported for this model.
+Use toolChoice auto and steer from the prompt`. Its `force-on` cells still reach
+`COMPLETED` — they run with `toolChoice: auto` — so the completion count is not a result on
+this axis; the harness records `forced_tool_attempted = 0` and
+`forced_tool_honored_rate = None` for them.
 
-Every other arm measured on v0.6.11 **honoured forcing at rate 1.00** — `core` at 224/224
-attempts across 138 cells, and all eleven `coresynth` sweep arms at 7/7 or 8/8. That
-identity is what makes the neutrality finding below meaningful: without it, "no effect"
-would be indistinguishable from "never applied".
+Every other arm **honoured forcing at rate 1.00**: `core` at 224/224 attempts across 138
+cells, and all eleven sweep arms at 7/7 or 8/8. That is what makes the neutrality finding
+below a measurement rather than an absence — without a confirmed honour rate, "no effect"
+and "never applied" produce the same numbers.
 
 | arm | corpus | n | honoured | recall | cell acc | typed acc | valid rate | cost/doc |
 |---|---|---|---|---|---|---|---|---|
