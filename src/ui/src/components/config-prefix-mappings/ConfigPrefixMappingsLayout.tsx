@@ -308,10 +308,11 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
 
   // "I could not find out what your groups are" is a different statement from
   // "you have none", and only one of them is the reader's problem to act on.
-  // Without this branch a failed session read fell through to the message below
-  // and told an entitled Admin to go and ask an administrator for access —
+  // Without this branch a failed session read would fall through to the message
+  // below, telling an entitled Admin to go and ask an administrator for access —
   // sending them to someone with nothing to fix, over a condition that usually
-  // clears on a retry.
+  // clears on a retry. `UserManagementLayout` still has that shape, handling only
+  // `roleLoading` and `isAdmin`.
   if (sessionError) {
     return (
       <Container>

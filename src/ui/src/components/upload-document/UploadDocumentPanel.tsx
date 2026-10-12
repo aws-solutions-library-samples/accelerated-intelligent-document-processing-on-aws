@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 // src/components/upload-document/UploadDocumentPanel.jsx
+import { ConsoleLogger } from 'aws-amplify/utils';
 import React, { useState, useEffect } from 'react';
 import {
   Button,
@@ -30,6 +31,8 @@ import useSampleDocuments, { type SampleDocument } from '../../hooks/use-sample-
 import useConfigurationLibrary from '../../hooks/use-configuration-library';
 import useConfigPrefixMappings, { type ConfigAssignmentPreview } from '../../hooks/use-config-prefix-mappings';
 import { canonicalKey, sanitizeFileName } from '../../utils/config-prefix-key';
+
+const logger = new ConsoleLogger('UploadDocumentPanel');
 
 import useSettingsContext from '../../contexts/settings';
 import { SUPPORTED_UPLOAD_EXTENSIONS } from '../common/constants';
@@ -113,7 +116,22 @@ const UploadDocumentPanel = (): React.JSX.Element => {
    * them, and one object's worth of warning is better than none.
    */
   const probePrefix = canonicalKey(prefix).replace(/\/+$/, '');
-  const probeFileName = sanitizeFileName(selectedFiles[0]?.name ?? '__probe__');
+  // In SAMPLE mode the real destination filename is known before anything is
+  // chosen on disk: `uploadSampleDocument` copies to `<prefix>/<basename(s3Key)>`,
+  // and it does NOT sanitize that name the way the file-upload path does -- so the
+  // probe must not either, or an exact mapping written against the real key is
+  // previewed against a different one. A batch sample expands server-side from an
+  // S3 listing the browser does not have, so it keeps the placeholder; a prefix
+  // mapping resolves the same for every filename under it, which leaves only an
+  // exact mapping unpreviewable there.
+  const sampleBaseName =
+    uploadSourceType === 'sample' && selectedSample
+      ? samples
+          .find((s) => s.id === selectedSample.value && s.kind !== 'batch')
+          ?.s3Key?.split('/')
+          .pop()
+      : undefined;
+  const probeFileName = sampleBaseName ?? sanitizeFileName(selectedFiles[0]?.name ?? '__probe__');
   const probeKey = probePrefix ? `${probePrefix}/${probeFileName}` : probeFileName;
 
   /**
@@ -251,8 +269,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
 
         try {
           // Step 1: Get presigned URL data
-          console.log(`Getting upload credentials for ${file.name}...`);
-          console.log(`Using prefix: ${prefix || 'none'}`);
+          logger.debug(`Getting upload credentials for ${file.name}, prefix: ${prefix || 'none'}`);
 
           const response = await client.graphql({
             query: uploadDocument,
@@ -273,14 +290,14 @@ const UploadDocumentPanel = (): React.JSX.Element => {
             throw new Error('Server returned PUT method which is not supported. Please update your backend code.');
           }
 
-          console.log('Received presigned POST data for:', objectKey);
+          logger.debug('Received presigned POST data for:', objectKey);
 
           // Parse the presigned post data
           const presignedPostData = JSON.parse(presignedUrl);
-          console.log('Parsed presigned POST data:', presignedPostData);
+          logger.debug('Parsed presigned POST data for:', objectKey);
 
           // Step 2: Upload file using FormData and POST
-          console.log(`Uploading ${file.name} to S3 using POST method...`);
+          logger.debug(`Uploading ${file.name} to S3 using POST method...`);
 
           const formData = new FormData();
 
@@ -298,7 +315,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
             body: formData,
           });
 
-          console.log(`Upload response status: ${uploadResponse.status}`);
+          logger.debug(`Upload response status: ${uploadResponse.status}`);
 
           if (!uploadResponse.ok) {
             console.error(`Upload failed with status: ${uploadResponse.status}`);
@@ -308,7 +325,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
             throw new Error(`HTTP error! status: ${uploadResponse.status}`);
           }
 
-          console.log(`Successfully uploaded ${file.name}`);
+          logger.info(`Successfully uploaded ${file.name}`);
           newUploadStatus.push({
             file: file.name,
             status: 'success',
