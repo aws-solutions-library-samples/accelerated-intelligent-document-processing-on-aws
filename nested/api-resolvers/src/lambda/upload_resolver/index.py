@@ -161,6 +161,18 @@ def _prefix_mappings():
     """
     table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
     if not table_name:
+        # Logged and alarmed on the same footing as a read failure, because the
+        # window it opens is identical and this one would otherwise be the only
+        # branch that opens it with no signal at all. The variable is wired
+        # unconditionally by the nested template, so reaching this means the
+        # deployment is misconfigured -- which is exactly when an operator needs to
+        # be told rather than left with uploads that are quietly unscoped against
+        # whatever mapping governs the destination.
+        logger.error(
+            "CONFIGURATION_TABLE_NAME is not set, so this destination is treated "
+            "as unmapped and cannot be scope-checked against any mapping"
+        )
+        _emit("PrefixMappingLookupFailed")
         return []
     try:
         return PrefixMappingStore(_dynamodb.Table(table_name)).list()

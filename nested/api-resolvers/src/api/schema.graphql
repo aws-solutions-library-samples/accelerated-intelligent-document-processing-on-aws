@@ -2172,7 +2172,8 @@ type Query @aws_cognito_user_pools @aws_iam {
   # The DRY RUN is readable by the two roles that can UPLOAD, because "what will
   # happen to this key?" is the question that makes a longest-prefix rule checkable
   # before it goes live -- and it is only actionable for someone who is about to
-  # put an object there. Reviewer and Viewer cannot upload and are not granted it. Scope-filtered rather than Admin-only: a caller outside the
+  # put an object there. Reviewer and Viewer cannot upload and are not granted
+  # it. Scope-filtered rather than Admin-only: a caller outside the
   # scope of any profile the answer would disclose is told the destination is out of
   # scope and nothing else -- not the profile, not the revision, not the mapping
   # prefix. `metadataProfile`/`metadataRevision` declare what the caller intends to

@@ -199,6 +199,16 @@ def _prefix_mappings():
     """
     table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
     if not table_name:
+        # Same signal as a read failure, for the same reason: the two branches
+        # produce the identical outcome (no mapping applies) and only one of them
+        # was visible. Lower stakes than the upload path, since a reprocess resolves
+        # no presigned POST, but an unexplained "mappings stopped applying on
+        # re-runs" is the kind of report that costs a day.
+        logger.error(
+            "CONFIGURATION_TABLE_NAME is not set, so no prefix mapping can be "
+            "applied on reprocess"
+        )
+        _emit("PrefixMappingLookupFailed")
         return []
     try:
         return PrefixMappingStore(_dynamodb.Table(table_name)).list()

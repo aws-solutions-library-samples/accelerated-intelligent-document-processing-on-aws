@@ -10,6 +10,7 @@ InputBucket, including config-version metadata and batch expansion).
 
 import importlib
 import json
+import os
 
 import boto3
 import pytest
@@ -704,6 +705,37 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         # `PrefixMappingLookupFailedAlarm` declares no Dimensions, so a dimensioned
         # datum is a different time series and the alarm would never see it.
         assert "Dimensions" not in datum
+
+    def test_an_unset_configuration_table_is_reported_like_a_read_failure(
+        self, resolver
+    ):
+        """The two branches produce the same window; only one used to say so.
+
+        No table name means every destination reads as unmapped, so an upload is
+        scope-checked against nothing and can still be assigned a mapping's profile
+        at ingest. That is the same exposure a read failure opens, so it carries
+        the same alarmed metric rather than being the one silent path.
+        """
+        index, _ = resolver
+        published = []
+
+        class Recorder:
+            def put_metric_data(self, **kwargs):
+                published.append(kwargs)
+
+        original_cw = index._cloudwatch
+        original_env = os.environ.pop("CONFIGURATION_TABLE_NAME", None)
+        try:
+            index._emit.__globals__["_cloudwatch"] = Recorder()
+            assert index._prefix_mappings() == []
+        finally:
+            index._emit.__globals__["_cloudwatch"] = original_cw
+            if original_env is not None:
+                os.environ["CONFIGURATION_TABLE_NAME"] = original_env
+
+        assert [d["MetricData"][0]["MetricName"] for d in published] == [
+            "PrefixMappingLookupFailed"
+        ]
 
     def test_telemetry_failure_does_not_fail_the_upload(self, resolver):
         """A metric that cannot be published must not turn into a 500.
