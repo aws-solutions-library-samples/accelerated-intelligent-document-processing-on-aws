@@ -546,10 +546,17 @@ class TestConfigPrefixMappingsOnReprocess:
         )
         calls = self._queued(monkeypatch)
 
-        with pytest.raises(ValueError, match="Refused"):
+        # The message must describe a REPROCESS, not upload metadata: the
+        # conflicting profile came from this request, not from the object, and the
+        # resolver's own reason says otherwise because it is written for ingest.
+        with pytest.raises(ValueError, match="Refused") as excinfo:
             index.handler(_event(_author_claims(), version="chosen"), None)
 
         assert calls == []
+        message = str(excinfo.value)
+        assert "acme/" in message, "the refusal must name the mapping to edit"
+        assert "upload metadata" not in message
+        assert "Reprocess without naming a profile" in message
 
     def test_an_explicit_request_stands_where_no_mapping_governs_the_key(
         self, users_table, document_version, monkeypatch

@@ -348,7 +348,23 @@ def _version_for_document(
         if decided.rejected:
             _emit("PrefixMappingRejected")
             logger.warning("Refusing to reprocess %s: %s", object_key, decided.reason)
-            raise ValueError(decided.reason)
+            # Reworded rather than passed through. The resolver's own reason is
+            # written for the ingest path and says the object "carries conflicting
+            # upload METADATA" -- true there, and wrong here, where the conflicting
+            # profile came from this request rather than from the object. An
+            # operator reading it would go looking at the object's metadata for a
+            # value that is not on it.
+            #
+            # The PREFIX, not the profile: a rejected assignment deliberately
+            # carries no profile, and the prefix is both available and the
+            # actionable half -- it is what the admin edits to change the rule.
+            raise ValueError(
+                f"Refused: {object_key!r} is governed by the configuration prefix "
+                f"mapping for {decided.mapping_prefix!r}, which is set to refuse a "
+                f"conflicting profile rather than choose between them. Reprocess "
+                f"without naming a profile to use the mapping's own, or change that "
+                f"mapping's conflict mode."
+            )
         if decided.scope_denied:
             # Reachable now that the request is adjudicated: a mapping may resolve a
             # profile outside the caller's scope even though their own request was
