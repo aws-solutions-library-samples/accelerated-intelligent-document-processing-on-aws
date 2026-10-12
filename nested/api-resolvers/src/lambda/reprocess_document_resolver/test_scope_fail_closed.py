@@ -558,6 +558,111 @@ class TestConfigPrefixMappingsOnReprocess:
         assert "upload metadata" not in message
         assert "Reprocess without naming a profile" in message
 
+    def _metrics(self, monkeypatch):
+        """Every metric datum this resolver publishes, as (name, dimensions)."""
+        published = []
+
+        class Recorder:
+            def put_metric_data(self, **kwargs):
+                for datum in kwargs.get("MetricData", []):
+                    dims = {
+                        d["Name"]: d["Value"] for d in datum.get("Dimensions", [])
+                    }
+                    published.append((datum["MetricName"], dims))
+
+        monkeypatch.setattr(index, "cloudwatch", Recorder())
+        return published
+
+    def test_agreement_on_reprocess_is_not_published_as_a_conflict(
+        self, users_table, document_version, monkeypatch
+    ):
+        """Naming the profile the mapping already assigns is agreement.
+
+        The resolver treats it as agreement deliberately -- that is what stops
+        `reject` failing correctly-named requests -- so publishing
+        `PrefixMappingConflict` for it would make the conflict metric fire on the
+        harmless case and misreport how often the two actually disagree.
+        """
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "mapping",
+            },
+        )
+        self._queued(monkeypatch)
+        published = self._metrics(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="mapped-profile"), None)
+
+        names = [name for name, _ in published]
+        assert "PrefixMappingApplied" in names
+        assert "PrefixMappingConflict" not in names, (
+            "the request named the profile the mapping assigns, which is agreement "
+            f"rather than a conflict; published {names}"
+        )
+
+    def test_applied_means_matched_here_as_it_does_at_ingest(
+        self, users_table, document_version, monkeypatch
+    ):
+        """One metric, one meaning across both emitters.
+
+        `queue_sender` publishes `Applied` whenever a mapping MATCHED the key,
+        whoever won the precedence contest, and the CHANGELOG states that as the
+        definition. Both emitters feed one dashboard SEARCH expression, so a
+        narrower meaning here would make a `metadata`-precedence prefix show ingest
+        hits and no reprocess hits -- read as "unused on reprocess" rather than as
+        two definitions of one name.
+        """
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                # The mapping DEFERS, so it loses -- and must still count as
+                # matched.
+                "metadataPrecedence": "metadata",
+            },
+        )
+        self._queued(monkeypatch)
+        published = self._metrics(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="chosen"), None)
+
+        applied = [dims for name, dims in published if name == "PrefixMappingApplied"]
+        assert applied == [{"Prefix": "acme/"}], (
+            "a mapping that matched but lost must still publish Applied, with the "
+            f"prefix dimension the dashboard filters on; published {published}"
+        )
+        # And this one IS a conflict, with the winner recorded.
+        assert ("PrefixMappingConflict", {"Winner": "metadata"}) in published
+
+    def test_a_refused_reprocess_publishes_rejected(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        self._mappings(
+            monkeypatch,
+            {
+                "prefix": "acme/",
+                "configProfile": "mapped-profile",
+                "metadataPrecedence": "reject",
+            },
+        )
+        self._queued(monkeypatch)
+        published = self._metrics(monkeypatch)
+
+        with pytest.raises(ValueError):
+            index.handler(_event(_author_claims(), version="chosen"), None)
+
+        assert "PrefixMappingRejected" in [name for name, _ in published]
+
     def test_an_explicit_request_stands_where_no_mapping_governs_the_key(
         self, users_table, document_version, monkeypatch
     ):

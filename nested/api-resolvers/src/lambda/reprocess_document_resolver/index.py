@@ -378,21 +378,45 @@ def _version_for_document(
                 "Unauthorized: that document's destination is governed by a "
                 "Configuration Profile outside your allowed configuration scope."
             )
-        if decided.mapping_prefix and decided.source == SOURCE_PREFIX_MAPPING:
-            # The mapping won the contest, so it supplies profile AND revision --
-            # revision numbers are per profile, so the caller's cannot travel.
-            logger.info("Reprocess of %s: %s", object_key, decided.reason)
+        # ⚠️ Emission conditions are `queue_sender`'s, verbatim, and must stay
+        # that way. Both emitters feed one dashboard expression
+        # (`SEARCH('{<ns>,Prefix} ...')`), so a metric that means "matched the key"
+        # at ingest and "won the contest" here makes a prefix under `metadata`
+        # precedence show ingest hits and no reprocess hits -- which reads as "that
+        # prefix is not used on the reprocess path" rather than as two definitions.
+        # The CHANGELOG states the ingest meaning as the definition.
+        #
+        # `Applied` therefore fires whenever a mapping MATCHED, whoever won, and
+        # `Conflict` only on an actual disagreement -- an explicit request naming
+        # the profile the mapping assigns is agreement, not a conflict, which is
+        # the whole point of the resolver's agreement rule and would otherwise make
+        # this metric fire on the harmless case.
+        if decided.unresolvable:
+            # Same marker string the other two emitters log, because
+            # PrefixMappingUnresolvableAlarm sends an operator looking for it and
+            # this path would otherwise be a hole in the alarm's claim.
+            logger.warning(
+                "Stale prefix mapping for %s: %s", object_key, decided.reason
+            )
+            _emit("PrefixMappingUnresolvable")
+        if decided.mapping_prefix:
             _emit("PrefixMappingApplied", {"Prefix": decided.mapping_prefix})
+        if decided.conflict:
             _emit("PrefixMappingConflict", {"Winner": decided.source})
+            logger.warning(
+                "Configuration conflict for %s: %s", object_key, decided.reason
+            )
+
+        if decided.mapping_prefix and decided.source == SOURCE_PREFIX_MAPPING:
+            # The mapping won, so it supplies profile AND revision -- revision
+            # numbers are per profile, so the caller's cannot travel.
+            logger.info("Reprocess of %s: %s", object_key, decided.reason)
             return (
                 decided.profile,
                 decided.revision,
                 SOURCE_PREFIX_MAPPING,
                 decided.mapping_prefix,
             )
-        if decided.conflict:
-            # `metadata` precedence: the mapping was consulted and deferred.
-            _emit("PrefixMappingConflict", {"Winner": decided.source})
         return (
             requested_version,
             requested_revision,
