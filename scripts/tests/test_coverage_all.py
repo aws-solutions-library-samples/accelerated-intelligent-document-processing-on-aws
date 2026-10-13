@@ -482,6 +482,36 @@ class TestTreesAreMeasuredConcurrently:
         assert state["peak"] == 1, state
         assert state["order"] == ["a", "b", "c", "d"]
 
+    def test_a_tree_that_raises_is_not_swallowed_by_the_pool(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The one way the concurrency can report success over a tree it never measured.
+
+        ``ThreadPoolExecutor.map`` submits every item eagerly and returns a lazy iterator,
+        so dropping the ``list()`` around it still runs all the trees — and that is exactly
+        what makes it dangerous rather than obviously broken. The exception from a tree that
+        raised is held in a future nobody reads, the ``with`` block waits and exits cleanly,
+        and the producer returns 0 having written one report fewer than it printed.
+        Measured on the bare construct: consumed, the error propagates; unconsumed, five
+        items run and nothing is raised.
+
+        A producer that exits 0 with a report missing is this issue's own defect one layer
+        up, so it is asserted rather than left to the ratchet — which would catch it, by
+        name, and only on the next step of the job.
+        """
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+
+        def run(cmd, cwd=None, **kwargs):
+            if Path(cwd).name == "c":
+                raise OSError("the interpreter for this tree is not executable")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "4"])
+        with pytest.raises(OSError):
+            cov_all.main()
+        capsys.readouterr()
+
     def test_the_default_is_concurrent(self, monkeypatch, tmp_path, capsys):
         """With no flag at all. CI passes `--jobs`, but a default of 1 would mean the
         local target and the CI target measure the same trees at wildly different cost,
