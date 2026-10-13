@@ -359,6 +359,36 @@ def create_live_display(
     return layout
 
 
+#: The four progress buckets of a `status_data` dict, in the order a
+#: single-document verdict reads them. Same four names as
+#: `idp_sdk.models.DocumentBucket`, and the same precedence `derive_exit_code`
+#: uses: a completed document outranks a failed one, and either outranks work
+#: still in flight. Spelled here rather than imported because this module depends
+#: on nothing but `rich` and the dict `cli.py` hands it; `test_display_module.py`
+#: asserts the two spellings and the two precedences agree.
+_BUCKETS_IN_PRECEDENCE_ORDER = ("completed", "failed", "running", "queued")
+
+
+def _single_document(status_data: Dict) -> tuple[Dict | None, str | None]:
+    """The document a `total == 1` result is about, and the bucket holding it.
+
+    The bucket is the producer's verdict. `idp_sdk`'s progress monitor chooses it,
+    and for `NOT_FOUND` it is the *only* authority: within
+    `NOT_FOUND_GRACE_SECONDS` of a batch's submission that status means the
+    tracking row is still in flight (queued) and past the window it means there
+    will never be one (failed), and only the SDK holds the submission time that
+    separates them. So nothing here re-derives a verdict from the status string.
+
+    Returns `(None, None)` when no bucket holds anything, which is a
+    single-document lookup that found nothing (#1230).
+    """
+    for bucket in _BUCKETS_IN_PRECEDENCE_ORDER:
+        docs = status_data.get(bucket)
+        if docs:
+            return docs[0], bucket
+    return None, None
+
+
 def format_status_json(status_data: Dict, stats: Dict) -> str:
     """
     Format status data as JSON for programmatic use
@@ -372,15 +402,7 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
     """
     # For single document, return simplified format
     if stats["total"] == 1:
-        doc = None
-        if status_data["completed"]:
-            doc = status_data["completed"][0]
-        elif status_data["running"]:
-            doc = status_data["running"][0]
-        elif status_data["failed"]:
-            doc = status_data["failed"][0]
-        elif status_data["queued"]:
-            doc = status_data["queued"][0]
+        doc, bucket = _single_document(status_data)
 
         if doc:
             result = {
@@ -391,32 +413,30 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
                 "end_time": doc.get("end_time", ""),
             }
 
-            # Add status-specific fields
-            if doc.get("status") == "COMPLETED":
+            # Bucket-specific fields. Keyed off the bucket, not off `status`: a
+            # list of status literals here is a second verdict, and it disagreed
+            # with the bucket for every status the list did not name -- a settled
+            # `NOT_FOUND` is in the `failed` bucket and carries the error saying
+            # the document has no tracking row, and that error used to be dropped
+            # from the payload because `NOT_FOUND` is not spelled "FAILED"
+            # (#1344).
+            if bucket == "completed":
                 result["num_sections"] = doc.get("num_sections", 0)
-            elif doc.get("status") in ["FAILED", "ABORTED"]:
+            elif bucket == "failed":
                 result["error"] = doc.get("error", "Unknown error")
                 result["failed_step"] = doc.get("failed_step", "Unknown")
-            elif doc.get("status") in [
-                "RUNNING",
-                "CLASSIFYING",
-                "EXTRACTING",
-                "ASSESSING",
-                "RULE_VALIDATION",
-                "RULE_VALIDATION_ORCHESTRATOR",
-                "SUMMARIZING",
-                "HITL_IN_PROGRESS",
-                "EVALUATING",
-            ]:
+            elif bucket == "running":
                 result["current_step"] = doc.get("current_step", doc.get("status"))
 
-            # Determine exit code
-            if doc.get("status") == "COMPLETED":
-                result["exit_code"] = 0
-            elif doc.get("status") in ["FAILED", "ABORTED"]:
-                result["exit_code"] = 1
-            else:
-                result["exit_code"] = 2
+            # One authority for the code, shared with the table output, so
+            # `--format json` and the default output cannot disagree about the
+            # same document. Deriving it again from status literals is what made
+            # them disagree, for a document whose bucket is terminal while its
+            # status string is not one of the three the derivation named:
+            # `REDACTED_SUPERSEDED` in `completed`, and a settled `NOT_FOUND`,
+            # `QUARANTINED` or `MALWARE_SCAN_FAILED` in `failed`, all exited 2
+            # here -- "keep polling" -- while the table output answered 0 or 1.
+            result["exit_code"] = derive_exit_code(status_data, stats)
 
             return json.dumps(result, indent=2)
 
@@ -427,12 +447,18 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
         # succeeded (#1230). `show_final_status_summary` has no such fall-through and
         # answers UNKNOWN / 2 for the same input; 2 is this CLI's code for "outcome
         # not established", so the two paths now agree.
+        #
+        # The code is asked for rather than written as a 2, like every other
+        # exit-code site in this module. It is a 2 for every input that reaches
+        # here -- no bucket holds a document, so the resolver finds none -- and a
+        # fourth site agreeing today with a rule it restates is the shape the other
+        # three were in.
         return json.dumps(
             {
                 "document_id": None,
                 "status": "UNKNOWN",
                 "error": "No document found matching the search criteria",
-                "exit_code": 2,
+                "exit_code": derive_exit_code(status_data, stats),
             },
             indent=2,
         )
@@ -450,14 +476,11 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
         "all_complete": stats["all_complete"],
     }
 
-    # Determine exit code for batch
-    if stats["all_complete"]:
-        if stats["failed"] > 0:
-            result["exit_code"] = 1  # Some failures
-        else:
-            result["exit_code"] = 0  # All succeeded
-    else:
-        result["exit_code"] = 2  # Still processing
+    # Same single authority as the single-document arm above. This arm used to
+    # restate the rule inline, which happened to agree -- measured identical over
+    # every batch shape -- but a second statement of a rule agreeing today is the
+    # state both #1230 and #1344 started from.
+    result["exit_code"] = derive_exit_code(status_data, stats)
 
     return json.dumps(result, indent=2)
 
@@ -475,14 +498,22 @@ def derive_exit_code(status_data: Dict, stats: Dict) -> int:
     "Exit Code: 1" from there would state an exit code that contradicts `$?` for
     `process --monitor` and `rerun --monitor`.
 
-    The rule lives here once. Two implementations of it is how the polled and waited
-    forms of `status` came to disagree in the first place (#1230).
+    The rule lives here once, and both arms of `format_status_json` now ask for it
+    rather than restating it. Two implementations of it is how the polled and waited
+    forms of `status` came to disagree in the first place (#1230), and how the JSON
+    and table outputs came to disagree again about four document statuses -- a
+    settled `NOT_FOUND`, `QUARANTINED`, `MALWARE_SCAN_FAILED` and
+    `REDACTED_SUPERSEDED` (#1344). The single-document arm reads the bucket through
+    `_single_document`, the same resolver `format_status_json` and
+    `show_final_status_summary` read, rather than walking the buckets a third time
+    in a third order.
 
     """
     if stats["total"] == 1:
-        if status_data["completed"]:
+        _, bucket = _single_document(status_data)
+        if bucket == "completed":
             return 0
-        if status_data["failed"]:
+        if bucket == "failed":
             return 1
         return 2
 
@@ -511,19 +542,17 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
 
     # For single document
     if stats["total"] == 1:
-        doc = None
-        if status_data["completed"]:
-            doc = status_data["completed"][0]
+        # Same resolver as `format_status_json` and `derive_exit_code`, so the
+        # label printed here, the payload the JSON path returns and the code both
+        # exit with are all about the same document.
+        doc, bucket = _single_document(status_data)
+        if bucket == "completed":
             status = "COMPLETED"
-        elif status_data["failed"]:
-            doc = status_data["failed"][0]
+        elif bucket == "failed":
             status = "FAILED"
         else:
-            # Running or queued
-            if status_data["running"]:
-                doc = status_data["running"][0]
-            elif status_data["queued"]:
-                doc = status_data["queued"][0]
+            # Running, queued, or nothing found at all. The bucket does not name
+            # the stage, so the document's own status does.
             status = doc.get("status", "UNKNOWN") if doc else "UNKNOWN"
 
         duration = doc.get("duration", 0) if doc else 0

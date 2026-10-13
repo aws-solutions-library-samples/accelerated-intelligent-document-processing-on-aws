@@ -1222,11 +1222,18 @@ The command returns exit codes for scripting:
 - `1` - Document(s) failed
 - `2` - Document(s) still processing, or the outcome could not be established
 
-⚠️ **`--wait` and the polled table form now derive their code from the same place.** A
+⚠️ **`--wait`, the polled table form and `--format json` all derive their code from the
+same place.** A
 batch that finished with failures exits `1` whether you polled it or waited on it; it
-used to exit `0` when waited on. (`--format json` is a third implementation of the rule
-and still disagrees with both on two document states — see the `CHANGELOG` entry for
-#1230.) Before this change `--wait` exited `0` on
+used to exit `0` when waited on. For a single document the code comes from the progress
+bucket the SDK put it in, so the three forms cannot disagree about it. They did for four
+document statuses — a redacted-and-superseded original, a document with no tracking row
+past the window in which one could still arrive, and the two the malware gate refuses —
+because `--format json` matched the status *string* against `COMPLETED`, `FAILED` and
+`ABORTED` and answered `2` for anything else. Those four are terminal, and `2` is this
+CLI's code for "still processing", so a script waiting for the code to stop being `2`
+waited forever. Before this change
+`--wait` exited `0` on
 that batch while the poll exited `1`, which meant `idp-cli status --wait && deploy`
 proceeded after a batch in which every document failed. If you have a script that
 relied on `--wait` always exiting `0`, it will now stop on a failed batch — that is
@@ -1283,19 +1290,31 @@ fi
 
 ```bash
 #!/bin/bash
-# Poll document status in script
+# Poll document status in script.
+#
+# Branch on `.exit_code`, not on `.status`. The code is 0 done, 1 failed, 2 not
+# established yet, and it is decided from the progress bucket — so it covers every
+# way a document can finish, including the terminal ones whose status string is
+# neither COMPLETED nor FAILED (a redacted copy superseding the original, a refusal
+# at the malware gate, a document that never acquired a tracking row). A loop
+# comparing `.status` against those two literals never exits on any of them.
 while true; do
   status=$(idp-cli status --stack-name prod --document-id batch-001/invoice.pdf --format json)
-  state=$(echo "$status" | jq -r '.status')
-  
-  if [ "$state" = "COMPLETED" ]; then
+  code=$(echo "$status" | jq -r '.exit_code')
+
+  if [ "$code" = "0" ]; then
     echo "Processing complete!"
     break
-  elif [ "$state" = "FAILED" ]; then
-    echo "Processing failed!"
+  elif [ "$code" = "1" ]; then
+    # `error` is always present on a failure but can be an empty string: the
+    # reason is the pipeline's, and some terminal states record none. jq's `//`
+    # falls back on null and false only, so test for emptiness in the shell.
+    reason=$(echo "$status" | jq -r '.error // ""')
+    [ -n "$reason" ] || reason="no reason recorded"
+    echo "Processing failed: $(echo "$status" | jq -r '.status') — $reason"
     exit 1
   fi
-  
+
   sleep 5
 done
 ```
