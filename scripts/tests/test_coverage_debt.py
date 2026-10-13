@@ -2115,8 +2115,8 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
             f"make said:\n{(out.stdout + out.stderr)[-500:]}"
         )
 
-    def test_the_ratchet_target_exits_exactly_as_its_command_does(self):
-        """RUN the target and its command with **no override**, and require equal statuses.
+    def test_the_ratchet_target_succeeds_exactly_when_its_command_does(self):
+        """RUN the target and its command with **no override**, and compare the verdicts.
 
         The forced-failure test above supplies an argument CI does not, and anything
         observable can be branched on: appending ``|| [ -z "$(CHECK_COVERAGE_DEBT_ARGS)" ]``
@@ -2125,6 +2125,17 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
         uses, so there is nothing about the probe left to branch on, and it subsumes every
         swallow: `-`/`@-` prefixes, `|| true`, `.IGNORE:`, `MAKEFLAGS += -i`,
         `.SHELLFLAGS`, a trailing pipe.
+
+        ⚠️ **What is compared is zero-versus-non-zero, not the number**, and the difference
+        is the whole correctness of this test. GNU make does not propagate a recipe's exit
+        status: it exits **2** for any failing recipe and 0 otherwise — measured on GNU Make
+        4.3 with recipes exiting 1 and 3, both of which make reported as 2. An equality
+        assertion is therefore satisfiable *only* when both statuses are 0, so it proves
+        nothing on the tree it is normally run against, and it goes red the first time this
+        ratchet legitimately finds a coverage fall: the script exits 1, make exits 2, and
+        the gate's own true verdict reads as a broken test. Measured here by removing one
+        recorded file from the baseline: script 1, make 2. Non-zero-ness is the property
+        make does carry, and it is the one that decides a merge.
 
         Only this target, and deliberately: `coverage-all-cicd`'s command measures eight
         trees and takes minutes, so running it here is not affordable. The mechanisms that
@@ -2142,10 +2153,12 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
             capture_output=True,
             text=True,
         )
-        assert through_make.returncode == direct.returncode, (
+        assert bool(through_make.returncode) == bool(direct.returncode), (
             f"`make check-coverage-debt-cicd` exited {through_make.returncode} while "
-            f"`{' '.join(command)}` exited {direct.returncode}. The target must carry its "
-            f"command's status or this gate blocks nothing.\n"
+            f"`{' '.join(command)}` exited {direct.returncode}. One of them calls this a "
+            f"pass and the other a failure, so the target does not carry its command's "
+            f"verdict and this gate blocks nothing. (The two numbers need not match: make "
+            f"reports every failing recipe as 2. Zero-versus-non-zero is the comparison.)\n"
             f"make said:\n{(through_make.stdout + through_make.stderr)[-500:]}"
         )
 
