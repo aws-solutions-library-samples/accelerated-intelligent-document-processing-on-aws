@@ -2244,16 +2244,27 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
 #: deleted. Every path here has the same cause — **no suite imports it**, so no coverage
 #: report mentions it, so there is no figure to record; `write_baseline` records what a report
 #: contains intersected with what git tracks, which is why these are absent rather than at 0.
-#: Three groups, and the reason is per group rather than one sentence over all three:
+#: Two groups, and the reason is per group rather than one sentence over both:
 #:
 #: * `scripts` — standalone operator scripts (`model_finetuning/`, `examples/`,
 #:   `security/live_checks/`, the PyPI name-placeholder packages) that no test imports.
-#: * `main_stack_extensions` — seven copies of `log_sanitizer.py`, one vendored into each
-#:   Lambda directory.
 #: * `pii_anonymizer_hook` — the vendored `vendor/pii_anonymizer/` tree, whose scope decision
 #:   is already recorded against `ruff.toml`'s `extend-exclude`.
 #:
-#: Six trees are **empty**, and that is the half that does the work: a new module in any of
+#: `main_stack_extensions` held a third group — seven of the eight copies of
+#: `log_sanitizer.py`, one vendored into each Lambda directory — and it is empty now because
+#: those copies were never unimported, only unmeasured. Each lambda's tests load its `index`
+#: by putting its own directory on `sys.path`, and the loader evicted `index` from
+#: `sys.modules` and nothing else, so the first lambda a worker process loaded left *its*
+#: copy installed under the bare name `log_sanitizer` and every lambda after it in that
+#: process ran that copy. How many copies a run measured was therefore a function of the
+#: xdist worker count: `-n 16` reached a copy that `-n 1`, `-n 2`, `-n 4` and `-n 8` all
+#: missed. That is unusable as a ratchet input now that both CI configurations measure this
+#: tree, and the two would not even agree with each other, since the worker share follows
+#: the runner's CPU count. The loader evicts the shared flat helpers too, all eight copies
+#: are measured at every width, and seven residual entries became none.
+#:
+#: Seven trees are **empty**, and that is the half that does the work: a new module in any of
 #: them is a finding here the moment it is committed, with nothing measured.
 UNRECORDED_TRACKED_FILES: dict[str, list[str]] = {
     "idp_common": [],
@@ -2267,7 +2278,6 @@ UNRECORDED_TRACKED_FILES: dict[str, list[str]] = {
         "scripts/pypi-placeholders/idp-feature-sdk/idp_feature_sdk/__init__.py",
         "scripts/pypi-placeholders/idp-mcp-connector/idp_mcp_connector/__init__.py",
         "scripts/sdlc/generate_api_validation_spec.py",
-        "scripts/sdlc/validate_buildspec.py",
         "scripts/security/live_checks/cognito_groups.py",
         "scripts/security/live_checks/oidc_provider/deploy.py",
         "scripts/security/live_checks/verify_execution_scope.py",
@@ -2277,15 +2287,7 @@ UNRECORDED_TRACKED_FILES: dict[str, list[str]] = {
         "scripts/srt/prune_stale_scans.py",
     ],
     "idp_sdk": [],
-    "main_stack_extensions": [
-        "lambdas/get_feature_launch_url/log_sanitizer.py",
-        "lambdas/list_catalog_features/log_sanitizer.py",
-        "lambdas/list_installed_features/log_sanitizer.py",
-        "lambdas/register_feature/log_sanitizer.py",
-        "lambdas/register_feature_hooks/log_sanitizer.py",
-        "lambdas/subscribe_feature/log_sanitizer.py",
-        "lambdas/unsubscribe_feature/log_sanitizer.py",
-    ],
+    "main_stack_extensions": [],
     "idp_cli": [],
     "idp_feature_sdk": [],
     "seller_entitlement": [],
@@ -2381,8 +2383,16 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
             )
             + "\nRecord them: measure that tree and run `check_coverage_debt.py --write`. If "
             "a file genuinely cannot be measured, add it to NOT_MEASURED with the reason, "
-            "which is the only sanctioned way for a file to be out of scope. Do not add it "
-            "here to make this pass — this list is the residual, not a suppression list."
+            "which is the only sanctioned way for a file to be out of scope.\n\n"
+            "⚠️  Recording is a two-step for a file under `scripts/`, and the order is not "
+            "optional. `--write` refuses every report from a run that recorded a failure, "
+            "and THIS test is one — it lives in the `scripts` tree, so its own failure makes "
+            "that tree's report unrecordable and the remedy above cannot run. Add the path "
+            "to this list for one commit, record, then take it out: the `resolved` assertion "
+            "below fails the moment the file is recorded, so the entry cannot stay. That is "
+            "the only use of this list for a measurable file. A file you intend to leave "
+            "unmeasured belongs in NOT_MEASURED, and parking one here instead is a "
+            "suppression, which this list is not."
         )
         assert not resolved, (
             "these files are now recorded, which is progress that has to be banked or the "

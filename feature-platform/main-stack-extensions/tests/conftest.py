@@ -38,19 +38,47 @@ if (_GATE_DIR / "first_party_provenance.py").is_file():
         sys.path.pop(0)
 
 
+#: Flat sibling modules a lambda's `index.py` imports by bare name.
+#:
+#: Each lambda directory carries its **own** copy of these, because the functions are
+#: deployed without a layer. They therefore collide in `sys.modules` exactly the way
+#: `index` does, and evicting `index` alone is not enough: the first lambda a worker
+#: process loads leaves its copy installed under the bare name, and every lambda loaded
+#: after it in that process runs *that* copy instead of its own.
+#:
+#: The visible symptom was a coverage figure that depended on the xdist worker count —
+#: one copy of `log_sanitizer.py` measured per worker process, so eight copies produced
+#: between one and eight measured files depending on how the 234 tests happened to be
+#: sharded. Measured on this tree: `-n 16` reached `get_feature_launch_url`'s copy and
+#: `-n 1`, `-n 2`, `-n 4` and `-n 8` all did not. That is unusable as a ratchet input now
+#: that both CI configurations measure this tree, and they would not even agree with each
+#: other, since the worker share is a function of the runner's CPU count.
+#:
+#: Derived from the tree rather than listed: any bare-name `.py` sitting beside an
+#: `index.py` is one of these, so a new shared helper is covered without being named here.
+_SHARED_FLAT_MODULES = frozenset(
+    path.stem
+    for path in _LAMBDAS_DIR.glob("*/*.py")
+    if path.name != "index.py" and not path.name.startswith("_")
+)
+
+
 def _load_module(module_dir: Path, module_alias: str):
     """Load `<module_dir>/index.py` as `module_alias`, forcing a fresh import.
 
     Each lambda is written as a flat `index.py`, so we add its directory to
     `sys.path` just long enough to import, then remove it again. Using
-    `module_alias` keeps the 4 modules from colliding on `index`.
+    `module_alias` keeps the modules from colliding on `index`.
+
+    The sibling helpers each lambda carries its own copy of are evicted too — see
+    :data:`_SHARED_FLAT_MODULES` for why, and for what it cost not to.
     """
     sys.path.insert(0, str(module_dir))
     try:
         if module_alias in sys.modules:
             del sys.modules[module_alias]
-        if "index" in sys.modules:
-            del sys.modules["index"]
+        for name in ("index", *_SHARED_FLAT_MODULES):
+            sys.modules.pop(name, None)
         mod = importlib.import_module("index")
         sys.modules[module_alias] = mod
         return mod
