@@ -386,12 +386,65 @@ def _try_exact_list_deletion(
     return False
 
 
+def list_entry_names_document(entry: Dict[str, Any], object_key: str) -> bool:
+    """Does this shard row belong to the document at ``object_key``?
+
+    Two shapes exist in the table and both have to match, which is why this is an OR.
+    The ``ObjectKey`` attribute is the primary route and is what the pipeline's own
+    writer sets (``idp_common.dynamodb.service`` puts the queued time in **both**
+    halves of the sort key, so its rows carry the document key only as an attribute).
+    Some rows instead encode the key in the sort key as
+    ``ts#<timestamp>#id#<object_key>``, which is the only route to a row whose
+    ``ObjectKey`` attribute was never written. Matching one shape alone leaves the
+    other orphaned in the document list.
+
+    ⚠️ **The sort-key arm parses the key out and compares it whole; every looser test
+    is wrong here because this feeds a delete.** A substring test
+    (``f"#id#{object_key}" in sort_key``) matched a *different* document whose key
+    merely starts with this one — deleting ``invoices/report.pdf`` selected the rows
+    for ``invoices/report.pdf.bak`` and ``invoices/report.pdf (1).pdf``, both ordinary
+    names. Anchoring at the end fixes those two and still matched a document whose own
+    key *contains* ``#id#`` and ends with the target, which ``#`` being legal in an S3
+    key makes reachable by upload. Every row this returns is deleted by key, so the
+    sibling vanished from the document list while its tracking record and its S3 bytes
+    survived: the orphan shape that #1238 exists to prevent. It is the same hazard
+    ``_is_document_output`` carries a warning about on the S3 side — a prefix is not a
+    path segment — arriving through the sort key instead of through an S3 ``Prefix``.
+
+    Splitting on the **first** ``#id#`` and comparing the remainder whole is what this
+    repository's own reader of the same sort key already does
+    (``list_documents_range_resolver``), so a key containing the delimiter round-trips:
+    ``ts#…#id#a#id#b`` yields ``a#id#b``, which equals that document's key and no
+    other's.
+
+    ⚠️ **This is a client-side predicate, and it has to be: the sort-key half cannot
+    be a ``FilterExpression``.** DynamoDB refuses a key attribute in a ``Query``
+    filter — "A ``FilterExpression`` does not allow key attributes. You cannot define
+    a filter expression based on a partition key or a sort key" — so
+    ``contains(SK, :obj_id)`` made the shard query raise ``ValidationException`` on
+    every call, and no list entry was ever found (#1366). Nothing is lost by moving
+    it here: a ``FilterExpression`` is applied *after* the items are read and
+    consumes no extra read capacity, so the server-side form never saved anything
+    but response bytes, and the enclosing query asks for only the three attributes
+    this predicate and the delete need.
+
+    Note the asymmetry with ``Scan``, which *does* permit key attributes in a filter
+    — so a filtered scan elsewhere in this repository naming ``PK`` or ``SK`` is not
+    the same defect.
+    """
+    if entry.get("ObjectKey") == object_key:
+        return True
+    sort_key = entry.get("SK")
+    if not isinstance(sort_key, str) or "#id#" not in sort_key:
+        return False
+    return sort_key.split("#id#", 1)[1] == object_key
+
+
 def _query_shard_for_object_key(
     tracking_table, list_pk: str, object_key: str
 ) -> List[Dict[str, Any]]:
     """
-    Query a shard for any list entries containing the specified object key.
-    Uses DynamoDB filter expressions for efficiency.
+    Query a shard for any list entries naming the specified object key.
 
     Args:
         tracking_table: DynamoDB table resource
@@ -399,8 +452,9 @@ def _query_shard_for_object_key(
         object_key: Document object key to search for
 
     Returns:
-        List[Dict]: the matching DynamoDB items. An empty list means the shard holds
-        no entry for this document, and nothing else.
+        List[Dict]: the matching DynamoDB items, each carrying ``PK``, ``SK`` and
+        (where it exists) ``ObjectKey``. An empty list means the shard holds no entry
+        for this document, and nothing else.
 
     Raises:
         botocore.exceptions.ClientError: the query was rejected, or was still throttled
@@ -413,6 +467,11 @@ def _query_shard_for_object_key(
     to the user as a **successful delete** while the row stayed in the document list,
     with nothing anywhere saying so (#1238). A raise is the only outcome the caller can
     tell apart from absence, and it cannot widen the delete: no rows are selected.
+
+    The selection itself is :func:`list_entry_names_document`, evaluated here rather
+    than by DynamoDB — see that function for why the sort-key half cannot be a
+    ``FilterExpression``. ``ProjectionExpression`` keeps the response to the three
+    attributes that are actually read.
     """
     logger.debug(f"Querying shard {list_pk} for ObjectKey: {object_key}")
 
@@ -420,13 +479,8 @@ def _query_shard_for_object_key(
     exclusive_start_key = None
     while True:
         query_kwargs: Dict[str, Any] = {
-            # Use a filter expression to return only matching items
             "KeyConditionExpression": Key("PK").eq(list_pk),
-            "FilterExpression": "ObjectKey = :obj_key OR contains(SK, :obj_id)",
-            "ExpressionAttributeValues": {
-                ":obj_key": object_key,
-                ":obj_id": f"#id#{object_key}",
-            },
+            "ProjectionExpression": "PK, SK, ObjectKey",
         }
         if exclusive_start_key:
             query_kwargs["ExclusiveStartKey"] = exclusive_start_key
@@ -435,7 +489,11 @@ def _query_shard_for_object_key(
             tracking_table.query,
             **query_kwargs,
         )
-        matching_items.extend(response.get("Items", []))
+        matching_items.extend(
+            item
+            for item in response.get("Items", [])
+            if list_entry_names_document(item, object_key)
+        )
         # ⚠️ Membership, not ``.get()``, and the reason is the test doubles rather than
         # DynamoDB: ``MagicMock().get("LastEvaluatedKey")`` auto-creates a **truthy**
         # attribute, so a paginating loop written the other way never terminates against
@@ -788,9 +846,10 @@ def delete_single_document(
     # object versions. A versionless delete_object would only add delete markers
     # and leak those pinned bytes forever, so on a full document delete we purge
     # ALL versions (and any delete markers) under the prefix to reclaim storage.
+    deleted_output_count = 0
+    purge_failures: List[Dict[str, Any]] = []
     try:
         paginator = s3_client.get_paginator("list_object_versions")
-        deleted_output_count = 0
 
         for page in paginator.paginate(Bucket=output_bucket, Prefix=object_key):
             entries = page.get("Versions", []) + page.get("DeleteMarkers", [])
@@ -802,20 +861,81 @@ def delete_single_document(
             # delete_objects accepts up to 1000 keys per call
             for i in range(0, len(objects), 1000):
                 batch = objects[i : i + 1000]
-                _call_with_retry(
+                response = _call_with_retry(
                     f"output version purge for {object_key}",
                     s3_client.delete_objects,
                     Bucket=output_bucket,
                     Delete={"Objects": batch, "Quiet": True},
                 )
-                deleted_output_count += len(batch)
+                # ⚠️ **``DeleteObjects`` answers 200 even when every key in the batch
+                # was refused.** Per-key outcomes come back in ``Errors``, and the S3
+                # service model declares *no* exception for them — so nothing raises
+                # and ``_call_with_retry`` returns normally. Counting ``len(batch)``
+                # here reported a wholly denied purge as a completed one, which is how
+                # a missing ``s3:DeleteObjectVersion`` (SAM's ``S3CrudPolicy`` grants
+                # ``s3:DeleteObject`` and not the versioned form) could delist a
+                # document while leaving every byte of its output in the bucket, and
+                # report success (#1366).
+                # Membership rather than ``.get()``, the same way the pagination loops
+                # in this module read ``LastEvaluatedKey`` and for the same reason:
+                # ``MagicMock().get("Errors")`` auto-creates a **truthy** value, so the
+                # other form reports a refusal against every bare test double and
+                # ``len()`` of it is meaningless. S3 omits ``Errors`` when nothing was
+                # refused, so absence is the ordinary case.
+                failures = response["Errors"] if "Errors" in response else []
+                # Counted by key identity rather than by length. ``len(batch) - len(
+                # failures)`` reported a **negative** count when the ``Errors`` array
+                # did not correspond one-to-one with the batch — a malformed or
+                # duplicated entry is enough — and a negative number of deleted objects
+                # is a report nobody can act on.
+                refused_keys = {(f.get("Key"), f.get("VersionId")) for f in failures}
+                deleted_output_count += sum(
+                    1
+                    for obj in batch
+                    if (obj["Key"], obj["VersionId"]) not in refused_keys
+                )
+                # ⚠️ **Accumulated, not raised here.** Raising inside the loop abandoned
+                # every version after the refused batch — measured: one refused key in
+                # the first 1000-key batch of 1,510 versions left 510 never attempted,
+                # where the previous code purged all of them. The refusal is almost
+                # always a missing permission, which is identical for every remaining
+                # key, so stopping reclaims less and reports no more. Purge everything
+                # purgeable, then report, which is what ``document_versions.py`` does
+                # for the same operation.
+                purge_failures.extend(failures)
 
-        result["deleted"]["output_files"] = deleted_output_count
+        if purge_failures:
+            codes = ", ".join(sorted({f.get("Code") or "?" for f in purge_failures}))
+            sample = ", ".join(
+                f"{f.get('Key') or '?'}({f.get('Code') or '?'})"
+                for f in purge_failures[:5]
+            )
+            raise RuntimeError(
+                f"{len(purge_failures)} output object version(s) were refused "
+                f"({codes}); {deleted_output_count} were deleted. Sample: {sample}"
+            )
         logger.debug(f"Deleted {deleted_output_count} output object versions")
     except Exception as e:
-        error_msg = f"Error deleting from output bucket: {str(e)}"
+        # ⚠️ **Carry the refusals accrued so far into the message.** Anything can fail
+        # after a batch was partly refused — the next listing page most obviously — and
+        # reporting only that last fault discards the refusal entirely: the user is told
+        # the listing broke and never learns that some versions were denied. The
+        # immediate-raise form this replaced could not lose them because it never got
+        # that far; accumulating is what makes losing them possible.
+        refused = (
+            f" ({len(purge_failures)} version(s) already refused: "
+            + ", ".join(sorted({f.get("Code") or "?" for f in purge_failures}))
+            + ")"
+            if purge_failures
+            else ""
+        )
+        error_msg = f"Error deleting from output bucket: {str(e)}{refused}"
         logger.error(error_msg)
         result["errors"].append(error_msg)
+    finally:
+        # Recorded whatever happened: a purge that failed part-way still deleted the
+        # batches before it, and the caller's report should say how many.
+        result["deleted"]["output_files"] = deleted_output_count
 
     # Delete list entries
     list_entries_failed = False

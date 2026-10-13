@@ -33,6 +33,8 @@ This README provides a high-level overview of the package. For detailed document
 - **API adapter**: `idp_common.api_adapter`, which normalizes an API Gateway request into the resolver event shape for the UI's REST dispatcher
 - **Reporting**: Analytics data storage
 - **Discovery**: Automated document class schema generation using LLMs
+- **Document deletion**: `idp_common.delete_documents`, the one implementation the Web
+  UI resolver, the CLI and the SDK all delete through ([notes below](#document-deletion))
 
 ### AWS Service Clients
 
@@ -160,6 +162,58 @@ response = {
 ```
 
 See the [Core Data Models documentation](idp_common/README.md) for more details on document compression features.
+
+## Document deletion
+
+`idp_common.delete_documents` is the one implementation behind the Web UI's
+`deleteDocument` resolver, `idp-cli` and the SDK. `delete_single_document` removes a
+document's input object, all versions of its output objects, its list-index row, its
+run (version) records and its tracking record.
+
+Three things about it are worth knowing before you call it or extend it.
+
+**Every step records its own failure and the remaining steps still run, so `success` is
+`len(errors) == 0` rather than "the function returned".** A caller must read `success`;
+a call that returns is not a call that worked. The reason the steps are independent is
+that the cleanup spans S3 and DynamoDB and so cannot be one transaction — abandoning the
+rest of the cleanup after one fault leaves more behind than it removes.
+
+**One ordering rule is load bearing: the tracking record is kept when list-entry cleanup
+failed.** Every strategy for finding the list-index row is reached through that record's
+queued timestamp, so deleting it after a failed cleanup leaves the orphaned row
+unreachable — and the retry the reported failure asks for then finds no metadata, runs no
+strategy, and reports success with the row still listed.
+
+Note the bound: **only** a list-entry failure holds the record back. An S3 failure —
+either bucket — does not, so those cases delist the document while leaving objects
+behind. Calling `delete_single_document` again on the same key still completes the purge,
+because it re-lists the prefix and the surviving versions are found; what is gone is the
+route *from the web UI*, which has no row left to select. That asymmetry is why the purge
+accumulates its per-key refusals across every batch and reports after the last one rather
+than stopping at the first: a delete that reports a failure should not also have reclaimed
+less than one that said nothing.
+
+**A fault must not come back as a value a caller cannot distinguish from absence.** `[]`
+from the shard query means "this shard holds no entry for this document" and `False` from
+the cascade means "there was no entry to delete", so neither can also mean "the query
+failed" — those raise. The same applies at the S3 boundary and less obviously, because
+`DeleteObjects` answers HTTP 200 for a batch it refused entirely: per-key outcomes arrive
+in an `Errors` array and the service model declares no exception for them, so that array
+has to be read or a denied purge counts as a completed one.
+
+Two consequences for the deployment side. The output bucket is versioning-enabled, so the
+purge enumerates versions (`s3:ListBucketVersions`) and deletes them by version id
+(`s3:DeleteObjectVersion`) — **neither action is in SAM's `S3CrudPolicy`**, which grants
+the unversioned `s3:ListBucket` and `s3:DeleteObject`, so a role for this path needs them
+granted explicitly. And a sort key cannot appear in a `Query` `FilterExpression`:
+DynamoDB refuses it, so the selection of list rows belonging to a document is the
+client-side predicate `list_entry_names_document` rather than a server-side filter. That
+costs nothing a filter was saving, since a `FilterExpression` is applied after the items
+are read and consumes no extra read capacity. Note the asymmetry — `Scan` *does* permit
+key attributes in a filter, so a filtered scan naming `PK` or `SK` elsewhere is not the
+same mistake. `scripts/tests/test_dynamodb_query_filter_keys.py` guards the query form
+tree-wide, at source, because the expression is rejected by the service rather than by
+any library: neither a mock nor `moto` refuses it.
 
 ## ⚙️ Configuration
 

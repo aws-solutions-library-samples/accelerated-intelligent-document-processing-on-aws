@@ -57,6 +57,43 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
 
+### Deleting documents
+
+Select one or more rows and use **Delete**. The confirmation modal applies to the whole
+selection, and deleting a document removes its input object, every version of its output
+objects, its tracking record and its version history. It is not reversible.
+
+**A delete that does not finish is reported as an error naming the documents it could not
+remove and why.** That matters because the cleanup spans S3 and DynamoDB, which cannot be
+made one transaction, so a step can fail on its own — and the two failures seen in
+practice are deployment-level rather than per-document: a permission the execution role
+is missing, or a request the service refuses. Both affect every document in the selection
+identically, so the banner names the cause rather than only a count.
+
+**What is left behind depends on which step failed, and the error reports what each step
+did remove.** Only one of the three cases leaves the document in the list, so it is worth
+reading which one you have:
+
+- **The list-index cleanup failed.** The document's **tracking record is deliberately
+  kept**: that record's queued timestamp is the only route to its row in the list index,
+  so discarding it would leave that row orphaned with nothing able to find it again. The
+  document stays in the list, and retrying the delete from the UI once the underlying
+  cause is fixed completes the job.
+- **The output-object purge failed.** That does not hold the tracking record back, so the
+  document *is* removed from the list and some or all of its output objects remain in the
+  bucket. The UI has no row left to select, so finishing the job means `idp-cli` against
+  the key, or deleting the prefix directly. Those objects are noncurrent versions, so the
+  bucket's lifecycle rule expires them eventually; the cost of leaving them is storage
+  until it does.
+- **The input-object delete failed.** The document is likewise removed from the list, and
+  **the originally uploaded file is still in the input bucket**. This is the case worth
+  acting on if the reason for deleting was that the document should not be held — the
+  remedy is the same `idp-cli` delete, or removing that one object.
+
+A selection where some documents were removed and others were not reports the failure for
+the whole call and names each document it could not finish; the ones that were removed are
+gone.
+
 > **Note:** documents processed before v0.6.5 carry no provenance metadata. The `ItemType` backfill run at upgrade retypes them where it can prove they came from a test run; any it cannot prove remain in the Production view. See the 0.6.5 upgrade note in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Upload Documents

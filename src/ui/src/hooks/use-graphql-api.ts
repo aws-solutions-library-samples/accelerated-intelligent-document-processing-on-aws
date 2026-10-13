@@ -421,13 +421,25 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
 
   // ── Mutations ──────────────────────────────────────────────────────────
 
+  // A delete that did not finish has to reach the banner, and it has to say why.
+  // `deleteDocument` answers a bare `Boolean!`, the result was only logged at debug
+  // level, and the catch arm replaced whatever the server said with "please try again
+  // later" — advice that can never work for the shapes this actually fails with, which
+  // are deployment faults (a missing permission, a rejected expression) rather than
+  // anything a retry clears (#1366). The resolver now raises on a failed delete, so
+  // `describeApiError` has a real cause to interpolate; the `=== false` arm below keeps
+  // a falsy answer visible too rather than relying on that contract.
   const deleteDocuments = async (objectKeys: string[]): Promise<unknown> => {
     try {
       const result = await client.graphql({ query: deleteDocument, variables: { objectKeys } });
       setIsDocumentsListLoading(true);
+      if (result.data.deleteDocument === false) {
+        setErrorMessage('Failed to delete document(s) - the server reported the delete did not complete');
+        logger.error('deleteDocument reported failure', objectKeys);
+      }
       return result.data.deleteDocument;
     } catch (error) {
-      setErrorMessage('Failed to delete document(s) - please try again later');
+      setErrorMessage(describeApiError(error, 'delete document(s)'));
       logger.error('Error deleting documents', error);
       return false;
     }

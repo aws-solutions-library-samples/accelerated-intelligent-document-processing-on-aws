@@ -2779,6 +2779,20 @@
         1256
       ],
       "reason": "Registered because this is an exemption surface in substance and was reachable only by its name: the constant was called UNRECORDED_TRACKED_FILES, which holds no fragment of NAME_VOCABULARY and no phrase of EXEMPTION_PROSE, so discovery found none of its 47 members. The `KNOWN_` prefix is what makes the name the reliable route CLAUDE.md says it should be, and the rename is the whole of the fix -- membership is unchanged. Every member has the same cause: no suite imports the file, so no coverage report mentions it, so `write_baseline` -- which records what a report contains intersected with what git tracks -- has no figure to record, and the file is absent from the baseline rather than present at 0. Two groups, each with its own reason rather than one sentence over both: `scripts` holds standalone operator scripts (model_finetuning/, examples/, security/live_checks/, the PyPI name-placeholder packages) that no test imports, and `pii_anonymizer_hook` holds the vendored vendor/pii_anonymizer/ tree, whose scope decision is already recorded against ruff.toml's extend-exclude. JUDGEMENT rather than a computed premise for the same reason the NOT_MEASURED entry gives: the fact is 'no coverage report mentions this path', which is a property of a report the owning gate already reads, and a predicate would re-derive it from somewhere less authoritative. The ratchet is a genuine closure rather than a tolerance: tracked minus recorded minus NOT_MEASURED is derived per tree from `git ls-files`, a path in none of the three fails by name, a tree missing from this dict fails by name, each tree's derived universe is asserted non-empty so a tree cannot pass vacuously, and -- the half that keeps the list from pre-approving a loss -- a member that HAS since been recorded fails too, demanding its removal. Seven of the nine trees are empty, which is where the closure does its work: a new module in any of them is a finding the moment it is committed, with nothing measured. The residual this entry does carry is that the two groups' reasons are unchecked prose; what is mechanical is the membership in both directions."
+    },
+    "scripts/tests/test_dynamodb_query_filter_keys.py::GUARDED_CALLS": {
+      "kind": "exemption",
+      "memberKind": "a boto3 DynamoDB Table method name whose FilterExpression argument this gate reads -- `query` today, and `scan` is the operation left out",
+      "turnsOff": "the key-attribute-in-a-FilterExpression check, for every DynamoDB operation not named in the tuple. In practice that is `scan`: a filtered scan naming `PK` or `SK` is not reported, while the same expression on a `query` is.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_dynamodb_query_filter_keys.py",
+      "issues": [
+        1366
+      ],
+      "reason": "Not computable from this tree: it is a property of the DynamoDB API, which documents the two operations oppositely. Query -- 'A FilterExpression does not allow key attributes. You cannot define a filter expression based on a partition key or a sort key' -- so the call is refused with ValidationException on every attempt. Scan -- 'With Scan, you can specify any attributes in a filter expression, including partition key and sort key attributes' -- so it is correct there. Guarding both would mean an exemption for every legitimate filtered scan in the repository, and the first thing a reviewer would learn is to add one. Measured: lifting the exclusion reports 11 sites, all of them scans, including nested/api-resolvers/src/lambda/test_results_resolver/index.py:1677, which was mistaken for a fourth instance of #1366 and is not one. test_the_scan_exclusion_is_not_shielding_nothing asserts the exclusion still shields at least one such site, so it cannot go dead and pre-approve whatever next occupies the name. The count is reported rather than pinned to equality: writing a new legitimate filtered scan is a correct thing to do and must not turn this gate red."
     }
   }
 }

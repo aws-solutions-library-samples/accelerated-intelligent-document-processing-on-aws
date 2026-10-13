@@ -1068,6 +1068,30 @@ Resources:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
             BucketName: !Ref OutputBucketName
+        # Purge ALL object versions under a deleted document's prefix. The output
+        # bucket is versioning-enabled and document version history pins prior runs'
+        # bytes as noncurrent versions, so delete_single_document enumerates them with
+        # a list_object_versions paginator and deletes them by VersionId. Neither
+        # action is in SAM's S3CrudPolicy above, which grants s3:ListBucket and
+        # s3:DeleteObject — the unversioned forms. Mirrors the grant on
+        # DocumentVersionsResolverFunction, which walks the same bucket for the same
+        # reason.
+        - Statement:
+            - Effect: Allow
+              Action:
+                # ListBucketVersions: ListObjectVersions enumerates the noncurrent
+                # versions and delete markers to purge. Without it the enumeration is
+                # refused and no output bytes are reclaimed.
+                - s3:ListBucketVersions
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}"
+            - Effect: Allow
+              Action:
+                # DeleteObjectVersion: deleting a specific VersionId needs this, not
+                # s3:DeleteObject. DeleteObjects reports a refusal per key in its
+                # Errors array with an HTTP 200, so without this the purge is denied
+                # silently rather than raising.
+                - s3:DeleteObjectVersion
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
         - Statement:
             - Effect: Allow
               Action:
