@@ -520,6 +520,9 @@ skipped them — the same class of gap as the SRT/dep-audit note below. Now on b
 `make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
 `check-arn-partitions`, filtered-scan and data-plane-tag checks),
 `make typecheck`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
+`make coverage-all-cicd` and `make check-coverage-debt-cicd` (the per-tree coverage
+producer and the ratchet that requires every registry tree by name — the ratchet
+used to read one report of nine and pass on the other eight),
 `make test-packages-cicd`, the UI vitest suite,
 `scripts/check_first_party_deps.py`,
 `scripts/sdlc/validate_service_role_permissions.py`, `make srt-scan` and

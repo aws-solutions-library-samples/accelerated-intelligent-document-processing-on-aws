@@ -46,13 +46,19 @@ if (_GATE_DIR / "first_party_provenance.py").is_file():
 #: process loads leaves its copy installed under the bare name, and every lambda loaded
 #: after it in that process runs *that* copy instead of its own.
 #:
-#: The visible symptom was a coverage figure that depended on the xdist worker count —
-#: one copy of `log_sanitizer.py` measured per worker process, so eight copies produced
-#: between one and eight measured files depending on how the 234 tests happened to be
-#: sharded. Measured on this tree: `-n 16` reached `get_feature_launch_url`'s copy and
-#: `-n 1`, `-n 2`, `-n 4` and `-n 8` all did not. That is unusable as a ratchet input now
-#: that both CI configurations measure this tree, and they would not even agree with each
-#: other, since the worker share is a function of the runner's CPU count.
+#: The visible symptom was a coverage figure nothing about the code could predict: at most
+#: one copy of `log_sanitizer.py` per worker process, so which of the eight were measured
+#: followed how the 234 tests happened to be distributed. Measured across serial, `-n 2`,
+#: `-n 4`, `-n 8` and `-n 16` with repeats: between **one and three** of the eight, and the
+#: tree total moving over 95.93 / 95.64 / 95.36.
+#:
+#: ⚠️ Read that as **non-deterministic, not as a worker-count threshold.** xdist's default
+#: `--dist load` hands the next test to whichever worker is free, so the same width gives
+#: different answers on different runs — `-n 4` reached `get_feature_launch_url`'s copy on
+#: one run of three. A ratchet input of that shape is unusable, and the two CI
+#: configurations would not even have agreed with each other, since the worker share
+#: follows the runner's CPU count. After this eviction: eight of eight at every width, and
+#: the tree total 93.71 on all of them.
 #:
 #: Derived from the tree rather than listed: any bare-name `.py` sitting beside an
 #: `index.py` is one of these, so a new shared helper is covered without being named here.

@@ -1674,6 +1674,18 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
         hardcoded today's nine names, which is the failure mode this flag exists to avoid.
         So the registry is given a tree that did not exist when the flag was written, and
         the flag has to require it.
+
+        ⚠️ **What is asserted is the refusal line, not the tree's name appearing anywhere
+        in the output**, and the difference is the whole value of this test. `_install`
+        replaces `TREES_BY_NAME` as well as `TREES`, so under the mutation this test exists
+        to catch — the required set frozen to today's nine names — all nine are *unknown*
+        here, `main()` returns 2 down the misspelled-name path, and its error prints
+        `Known trees: measured, a_tree_invented_by_this_test`. Exit 2 plus the bare name
+        were therefore both satisfied by the mutation, measured: this test alone passed over
+        it. The mutation was still caught, by two other tests in this class, so the
+        guarantee held — but the one assertion naming the derivation proved nothing about
+        it. The refusal text can only come from the required set containing a name nobody
+        wrote down.
         """
         measured = _fake_tree(tmp_path, "measured")
         newcomer = _fake_tree(tmp_path, "a_tree_invented_by_this_test")
@@ -1689,7 +1701,12 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
             sys, "argv", ["check_coverage_debt.py", "--require-all-trees"]
         )
         assert ccd.main() == 2
-        assert "a_tree_invented_by_this_test" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "--require-tree=a_tree_invented_by_this_test" in out, out
+        assert "do not exist" not in out, (
+            "the gate refused the required set as misspelled rather than requiring this "
+            f"tree, so the derivation is not reading TREES:\n{out}"
+        )
 
     def test_it_is_refused_in_a_mode_that_checks_nothing(
         self, monkeypatch, tmp_path, capsys
@@ -2264,22 +2281,27 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
 #: * `pii_anonymizer_hook` — the vendored `vendor/pii_anonymizer/` tree, whose scope decision
 #:   is already recorded against `ruff.toml`'s `extend-exclude`.
 #:
-#: `main_stack_extensions` held a third group — seven of the eight copies of
+#: `main_stack_extensions` held a third group — six of the eight copies of
 #: `log_sanitizer.py`, one vendored into each Lambda directory — and it is empty now because
 #: those copies were never unimported, only unmeasured. Each lambda's tests load its `index`
 #: by putting its own directory on `sys.path`, and the loader evicted `index` from
 #: `sys.modules` and nothing else, so the first lambda a worker process loaded left *its*
 #: copy installed under the bare name `log_sanitizer` and every lambda after it in that
-#: process ran that copy. How many copies a run measured was therefore a function of the
-#: xdist worker count: `-n 16` reached a copy that `-n 1`, `-n 2`, `-n 4` and `-n 8` all
-#: missed. That is unusable as a ratchet input now that both CI configurations measure this
-#: tree, and the two would not even agree with each other, since the worker share follows
-#: the runner's CPU count. The loader evicts the shared flat helpers too, all eight copies
-#: are measured at every width, and seven residual entries became none.
+#: process ran that copy. Which copies a run measured therefore followed how pytest-xdist
+#: happened to distribute 234 tests — measured across serial, `-n 2`, `-n 4`, `-n 8` and
+#: `-n 16` with repeats, between one and three of the eight, varying **run to run at a
+#: fixed width** as well as between widths, because `--dist load` hands the next test to
+#: whichever worker is free. That is unusable as a ratchet input now that both CI
+#: configurations measure this tree, and the two would not even have agreed with each
+#: other, since the worker share follows the runner's CPU count. The loader evicts the
+#: shared flat helpers too, all eight copies are measured at every width, and six residual
+#: entries became none. `tests/test_lambda_module_loader.py` in that tree is what holds it:
+#: both of its assertions go red on an eviction set that omits a duplicated helper, where
+#: the tree's other 234 tests stay green.
 #:
 #: Seven trees are **empty**, and that is the half that does the work: a new module in any of
 #: them is a finding here the moment it is committed, with nothing measured.
-UNRECORDED_TRACKED_FILES: dict[str, list[str]] = {
+KNOWN_UNRECORDED_TRACKED_FILES: dict[str, list[str]] = {
     "idp_common": [],
     "scripts": [
         "scripts/examples/dynamodb_service_example.py",
@@ -2354,8 +2376,15 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
     `git ls-files` against the committed baseline, so it fires at commit time on the pull
     request that adds the module.
 
-    It is a **count** rather than a closure because the closure is not satisfiable today;
-    see :data:`UNRECORDED_TRACKED_FILES` for the residual and why each part of it exists.
+    It is a **set** rather than a count, and the closure it asserts is this: every tracked
+    source file of every registered tree is either recorded in the baseline, or prefixed by
+    a `check_coverage_debt.NOT_MEASURED` entry, or named in
+    :data:`KNOWN_UNRECORDED_TRACKED_FILES` — and a file in **neither** of the three is a
+    named failure. So nothing a tree tracks goes unaccounted for, in either direction: a
+    path that leaves the residual has to be removed from it, which is what stops the
+    residual pre-approving the loss of coverage it has just gained. See that constant for
+    why each part of the residual exists; it is registered in
+    `scripts/tests/gate_exemptions.json` as the exemption surface it is.
     """
 
     def test_no_tree_gains_an_unrecorded_tracked_source_file(self):
@@ -2376,9 +2405,9 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
                 for path in tracked - recorded
                 if not any(path.startswith(k) for k in ccd.NOT_MEASURED)
             }
-            expected = UNRECORDED_TRACKED_FILES.get(tree.name)
+            expected = KNOWN_UNRECORDED_TRACKED_FILES.get(tree.name)
             assert expected is not None, (
-                f"tree `{tree.name}` is in TREES and not in UNRECORDED_TRACKED_FILES, so "
+                f"tree `{tree.name}` is in TREES and not in KNOWN_UNRECORDED_TRACKED_FILES, so "
                 f"nothing records which of its files are outside the baseline. Add it with "
                 f"what it measures — an empty list if its baseline is complete, which is "
                 f"the answer for six of the nine."
@@ -2413,7 +2442,7 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
             + "\n".join(
                 f"  {name}: {', '.join(paths)}" for name, paths in resolved.items()
             )
-            + "\nRemove them from UNRECORDED_TRACKED_FILES."
+            + "\nRemove them from KNOWN_UNRECORDED_TRACKED_FILES."
         )
 
 
@@ -2421,7 +2450,7 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
 #:
 #: Its own reason says the list is "deliberately short, and meant to stay short", and until
 #: now nothing evaluated that. It became load-bearing for a second gate when
-#: :data:`UNRECORDED_TRACKED_FILES` started deriving its universe as tracked minus recorded
+#: :data:`KNOWN_UNRECORDED_TRACKED_FILES` started deriving its universe as tracked minus recorded
 #: minus `NOT_MEASURED`: from that point a one-line entry here makes a brand-new tracked
 #: source file invisible to the closure check as well as to the runtime one. Measured: a new
 #: file plus a new entry passed both suites with 1328 tests green.
