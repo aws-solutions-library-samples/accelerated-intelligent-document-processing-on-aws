@@ -70,6 +70,7 @@ from idp_common.extraction.validation import (
     validate_extraction,
 )
 from idp_common.models import Document, Section
+from idp_common.utils.bedrock_utils import is_output_token_truncation
 from idp_common.utils.few_shot_example_builder import (
     build_few_shot_extraction_examples_content,
 )
@@ -2317,6 +2318,14 @@ class ExtractionService:
     #: builder and the ``_save_results`` tail cannot drift apart.
     ROW_SHORTFALL_CODE = "extraction_rows_below_ocr_estimate"
 
+    #: The ``ProcessingIssue.code`` for a response the model did not finish —
+    #: certain evidence, as opposed to ``ROW_SHORTFALL_CODE``'s OCR estimate.
+    #: ``warning`` severity, always: the row-shortfall code is the one
+    #: ``extraction.row_shortfall_action`` governs, and widening that knob to cover
+    #: this code too would fail runs that complete today on a deployment that has
+    #: already opted into ``fail``.
+    OUTPUT_TRUNCATED_CODE = "extraction_output_truncated"
+
     def _row_shortfall_action(self) -> str:
         """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
 
@@ -3674,6 +3683,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           deterministic table parser is built for exactly this.
         - **Below-threshold population** (``extraction_sparse``, info): reuses the
           existing ``population_check`` heuristic when present.
+        - **A response the model did not finish** (``extraction_output_truncated``,
+          warning): ``metadata["output_truncated"]``, set from the response's own
+          ``stopReason`` or from the JSON repair reader. The only certain signal
+          here; the others are estimates.
 
         Best-effort and advisory: a genuinely empty section (no such data in the
         document) will also flag, so these are warning/info, never hard errors.
@@ -3729,7 +3742,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
         ]
         if empty_lists:
-            fields_str = ", ".join(empty_lists)
+            # `map(str, ...)` because these names come from the class SCHEMA, not
+            # from the response: a schema read straight from YAML can carry a bare
+            # numeric key, which arrives as an `int`, and this function runs with
+            # no enclosing `try` (`_save_results` calls it directly), so a
+            # `TypeError` out of the join would cost the section its whole
+            # processing-issue list and fail the save. Same reason as the
+            # equivalent join in the truncation block below; fixed in both rather
+            # than in the one that happened to be new.
+            fields_str = ", ".join(str(name) for name in empty_lists)
             rec = (
                 " This document has large/tabular fields; Advanced (agentic) "
                 "extraction with table parsing is recommended for it."
@@ -3756,6 +3777,146 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     ),
                     section_id=section_id,
                     details={"empty_list_fields": empty_lists, "agentic": is_agentic},
+                )
+            )
+
+        # 1b) The model's output was cut off mid-answer.
+        #
+        # This is the one signal here that is not a heuristic: either the response
+        # carried a ``stopReason`` saying the output ceiling was reached, or the
+        # text did not parse and the repair reader found an unterminated structure.
+        # Both mean the answer stops in the middle, so every list in it is a prefix
+        # of what the model was producing.
+        #
+        # It was ALREADY detected and then went nowhere: ``output_truncated`` was
+        # recorded in the section's metadata and read by no report, no status path
+        # and no UI, so a run whose output was demonstrably cut off completed with
+        # zero processing issues (#1361). Reporting it here is what makes the loss
+        # visible.
+        #
+        # Deliberately independent of ``extraction_rows_below_ocr_estimate``, and
+        # both can fire on one section. That check needs OCR that emits Markdown
+        # tables (Textract ``TABLES`` or BDA) and a table whose width matches the
+        # list item, and it is silent above its half ratio; this one needs neither
+        # OCR nor a list. Where they overlap they say different things — this names
+        # the cause, that one counts the rows — and suppressing either would remove
+        # evidence from a report that has room for both.
+        if metadata.get("output_truncated"):
+            # Top-level declared arrays that came back holding rows. NOT "the lists
+            # that were truncated", and the name says so: a response is cut at ONE
+            # point, so every list emitted before the cut is complete and nothing
+            # here can tell a reader which one was interrupted. `extracted_fields`
+            # insertion order would, but `_filter_extracted_to_schema` and
+            # `_apply_missing_field_handling` rewrite the dict in between, so that
+            # order is not safe to lean on. Naming the wrong field is worse than
+            # naming none, so this reports presence and leaves the inference to the
+            # reader. `isinstance` rather than truthiness, so a declared array that
+            # came back as a string is not reported as a list.
+            #
+            # No `str(name)` here, unlike the empty-list join above, and the
+            # asymmetry is the point rather than an oversight — but be precise about
+            # WHY, because the obvious reason is the wrong one. A non-string schema
+            # property name (a bare `2024` read straight from YAML) reaching this
+            # join would raise `TypeError`, and this function has no enclosing
+            # `try`. Two things together keep it from arriving, and it is the second
+            # that is load-bearing:
+            #
+            # 1. The RESPONSE cannot supply such a key. `extracted_fields` comes
+            #    from `json.loads` or from a forced-tool payload, both string-keyed,
+            #    and `ExtractionResult.extracted_fields` is typed `dict[str, Any]`.
+            # 2. One path DOES key by schema name, so (1) alone is not enough:
+            #    `_apply_missing_field_handling` — whose output is what
+            #    `_save_results` passes here, not `result.extracted_fields` — does
+            #    `fields_out[prop_name] = None` or pops the key. So a non-string
+            #    name can be present, and what excludes it is the
+            #    `isinstance(..., list)` test below: the value is `None`, never a
+            #    list.
+            #
+            # So this list is **unreachable** with a non-string name rather than
+            # safe against one, and the `isinstance` guard is what makes the
+            # coercion unnecessary. A `str()` here would be dead defence, and the
+            # test written to cover it could not: it set an `int` schema key and a
+            # `str` response key, so `present` was empty and the mutation survived.
+            # `empty_lists` above is the opposite case — a schema-only name lands
+            # there by construction — which is why that join keeps its coercion.
+            present = [
+                name
+                for name in array_fields
+                if isinstance(extracted_fields.get(name), list)
+                and extracted_fields.get(name)
+            ]
+            # Advanced mode does not exist for the OpenAI Responses families:
+            # `_invoke_extraction_model` raises `ValueError` for `agentic.enabled`
+            # with one of those models. Recommending it to a deployment that cannot
+            # select it is advice that breaks the run — and `incomplete`, the stop
+            # reason those models report, is exactly the one that brings a reader
+            # here.
+            # No `str(... or "")` wrapper: `is_openai_responses_model` returns False
+            # for a falsy id, so the wrapper was unreachable defence — and a
+            # random-sample mutation of its fallback was semantically EQUIVALENT
+            # (no input could distinguish `""` from any other non-OpenAI string),
+            # which no test can catch. Deleting the line is the honest fix.
+            can_use_agentic = not is_openai_responses_model(
+                self._pending_extraction_model or self.config.extraction.model
+            )
+            if is_agentic:
+                rec = (
+                    " Reduce the rows a single shard is asked for "
+                    "(extraction.agentic max_pages_per_shard) or split the document."
+                )
+            else:
+                rec = (
+                    " Simple extraction returns one response per section, so a "
+                    "section whose answer does not fit in one response loses the "
+                    "tail; "
+                )
+                rec += (
+                    "use Advanced (agentic) extraction, which shards the section "
+                    "across requests, or split the document."
+                    if can_use_agentic
+                    else "split the document, or process it with a model that "
+                    "supports Advanced (agentic) extraction, which shards the "
+                    "section across requests."
+                )
+            lists_clause = (
+                f" List field(s) in the partial result: {', '.join(present)}."
+                if present
+                else ""
+            )
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code=self.OUTPUT_TRUNCATED_CODE,
+                    message=(
+                        "The model's extraction response was cut off before it "
+                        "finished, so the result holds only the part that was "
+                        f"emitted.{lists_clause} Scalar fields and the rows that "
+                        "did arrive can still be perfectly correct, so no accuracy "
+                        f"or confidence signal flags this.{rec}"
+                    ),
+                    root_cause=(
+                        f"{'agentic' if is_agentic else 'traditional'} extraction "
+                        f"with model "
+                        f"{self._pending_extraction_model or self.config.extraction.model}; "
+                        f"response truncated before completion"
+                        + (
+                            f"; repaired by {metadata.get('repair_method')}"
+                            if metadata.get("output_repaired")
+                            else ""
+                        )
+                    ),
+                    section_id=section_id,
+                    details={
+                        # Present, not truncated — see the comment above the
+                        # comprehension. A key named for the stronger claim would
+                        # be read as the stronger claim.
+                        "list_fields_present": present,
+                        "output_repaired": bool(metadata.get("output_repaired")),
+                        "repair_method": metadata.get("repair_method"),
+                        "agentic": is_agentic,
+                        "advanced_mode_available": can_use_agentic,
+                    },
                 )
             )
 
@@ -6194,7 +6355,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Parse response into JSON
             extracted_fields = {}
             parsing_succeeded = True
-            output_truncated = False
+            # Did the model stop because it ran out of OUTPUT budget? Read from the
+            # response's own ``stopReason`` BEFORE parsing, because a ceiling can be
+            # hit at a point where the text still parses — a complete JSON object
+            # followed by commentary that was cut off, or a repair that succeeds —
+            # and the parse-failure branch below is then never reached. The two
+            # sources are ORed rather than assigned: whichever notices first wins.
+            output_truncated = is_output_token_truncation(response_with_metering)
+            if output_truncated:
+                raw_response = response_with_metering.get("response")
+                logger.warning(
+                    "Extraction response for %s stopped at the model's output token "
+                    "ceiling (stopReason=%s) — the result is truncated and any list "
+                    "in it is incomplete. Section result: %s",
+                    section_info.class_label,
+                    raw_response.get("stopReason")
+                    if isinstance(raw_response, dict)
+                    else None,
+                    section_info.output_uri,
+                )
             output_repaired = False
             repair_method = None
             instance_count = 0
@@ -6252,7 +6431,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
                     # Attempt to repair truncated JSON
                     repaired_data, repair_info = repair_truncated_json(extracted_text)
-                    output_truncated = repair_info.get("was_truncated", False)
+                    # OR, never assign: the stopReason read above is the stronger
+                    # evidence of the two (the model said so), and the repair
+                    # heuristic answering False must not erase it.
+                    output_truncated = output_truncated or repair_info.get(
+                        "was_truncated", False
+                    )
 
                     if repaired_data:
                         # Repair succeeded

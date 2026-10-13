@@ -700,11 +700,14 @@ class RulesDiscovery:
 
         Recognizes the Bedrock Converse signal (``stopReason == "max_tokens"``)
         and the OpenAI Responses adapter's mapped status, so the check holds
-        across model families.
+        across model families. One matcher
+        (``utils.bedrock_utils.is_output_token_truncation``) for the three callers
+        that ask this question, so the set of stop reasons cannot drift between
+        them.
         """
-        raw = response.get("response", response) if isinstance(response, dict) else None
-        stop_reason = raw.get("stopReason") if isinstance(raw, dict) else None
-        return stop_reason in ("max_tokens", "max_output_tokens", "incomplete")
+        from idp_common.utils.bedrock_utils import is_output_token_truncation
+
+        return is_output_token_truncation(response)
 
     def _safe_parse_rules(self, content_text: str) -> List[Dict[str, Any]]:
         """Best-effort parse of a possibly-truncated response, for reporting only.

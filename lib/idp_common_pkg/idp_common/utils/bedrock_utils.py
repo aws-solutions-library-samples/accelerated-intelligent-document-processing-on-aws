@@ -421,6 +421,62 @@ def is_input_token_overflow(error: BaseException) -> bool:
     return False
 
 
+#: ``stopReason`` values that mean the model stopped because it ran out of OUTPUT
+#: budget rather than because it finished answering.
+#:
+#: Two of the three are reachable today and the third is defensive; be precise
+#: about which, because the set decides what counts as data loss:
+#:
+#: * ``max_tokens`` — Bedrock Converse.
+#: * ``incomplete`` — what ``bedrock.openai_responses.translate_response`` puts in
+#:   ``stopReason``, which is the Responses API's ``status`` verbatim.
+#: * ``max_output_tokens`` — the Responses API's own ``incomplete_details.reason``
+#:   spelling for the same condition. **Nothing in this repository writes it into
+#:   ``stopReason``**: the adapter maps ``status``, and the reason is read
+#:   separately by ``_incomplete_reason``. It is kept so a response that surfaces
+#:   the reason directly is matched rather than read as a clean stop, which is the
+#:   safe direction for a completeness signal — but it is not evidence that the
+#:   adapter maps it, and no test can drive it end to end.
+OUTPUT_TRUNCATION_STOP_REASONS = ("max_tokens", "max_output_tokens", "incomplete")
+
+
+def is_output_token_truncation(response: object) -> bool:
+    """True if ``response`` says the model hit its OUTPUT token ceiling.
+
+    The opposite direction from :func:`is_input_token_overflow`, which reads an
+    *exception*: this reads a **successful** response that is nonetheless short.
+    That is the dangerous shape, because nothing raises — the call returns 200, the
+    text is well formed as far as it goes, and a list that stopped in the middle is
+    indistinguishable from a list that was always that long.
+
+    Accepts either the metering-wrapped envelope ``idp_common.bedrock.invoke_model``
+    returns (``{"response": ..., "metering": ...}``) or the bare Converse response,
+    because callers hold one or the other and a matcher that silently answers
+    ``False`` for the wrong shape is worse than no matcher.
+
+    Against the three inline copies this replaced it is a **strict widening**, not
+    an exact equivalent, on one shape: ``{"response": None, "stopReason": ...}``
+    answered ``False`` there (the ``isinstance`` guard rejected ``None`` and the
+    comparison never reached the envelope) and answers ``True`` here. ``invoke_model``
+    does not produce that shape, so nothing changes in practice; it is called a
+    widening rather than a no-op because the direction matters — the new answer is
+    the one that reports a truncation.
+
+    ⚠️ A ``False`` here is **not** evidence that the output is complete. A model
+    that abbreviates a long list on its own stops with ``end_turn`` and a
+    syntactically complete answer; measured on a 17-page, 800-row statement, the
+    short runs used ~2.3k output tokens where the complete runs on the same model
+    used ~38.5k, so no ceiling was involved (#1361). Row-level completeness is
+    judged separately — see ``ExtractionService._build_extraction_issues``.
+    """
+    if not isinstance(response, dict):
+        return False
+    raw = response.get("response", response)
+    if not isinstance(raw, dict):
+        raw = response
+    return raw.get("stopReason") in OUTPUT_TRUNCATION_STOP_REASONS
+
+
 # Default retryable error codes (matched against ClientError codes and exception
 # messages).
 #
