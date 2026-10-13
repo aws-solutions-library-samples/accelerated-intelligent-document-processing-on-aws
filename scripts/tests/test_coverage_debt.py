@@ -2003,6 +2003,92 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
                     line
                 )
 
+    #: Suites the producer runs that need a toolchain beyond Python, with why.
+    #:
+    #: Keyed by the file whose tests need it, so a reviewer reading a failure is pointed
+    #: at the suite rather than at a job. Both are in the `scripts` tree, which the
+    #: producer measures.
+    TOOLCHAIN_DEPENDENT_SUITES = {
+        "scripts/tests/test_ux_recorder.py": (
+            "runs the recorder's cursor-overlay JavaScript under node, and FAILS "
+            "rather than skipping when node is absent"
+        ),
+        "scripts/tests/test_pyright_config.py": (
+            "runs basedpyright live, which ships as an npm package"
+        ),
+    }
+
+    def test_the_producers_job_carries_the_toolchain_its_measured_suites_need(self):
+        """A job's suite list is not what its own steps say — a gate can import suites.
+
+        ``make coverage-all-cicd`` re-runs the `scripts` and `idp_sdk` suites in order to
+        measure them, so those trees' toolchain requirements became requirements of
+        whichever job holds the producer. That job needed neither Node nor a pinned
+        cfn-lint before. Measured consequence of not noticing: 22 minutes of producer on
+        GitHub's runner, then a red step, with the ratchet step **skipped** behind it — so
+        the gate this change exists to wire did not run at all, from a job whose own steps
+        mention no JavaScript anywhere.
+
+        This is the second instance of the class (`package_tests` was written without Node
+        and went red on the same `scripts/tests` modules), and reading the `script:` block
+        is what missed it both times. So it is asserted rather than written down.
+
+        What is asserted is deliberately narrow — that the job provides Node — rather than
+        a general "every suite's dependencies are present", which nothing here can compute.
+        """
+        for path, why in self.TOOLCHAIN_DEPENDENT_SUITES.items():
+            assert (REPO_ROOT / path).is_file(), (
+                f"{path} is gone, so this check is stale: it demands a toolchain for a "
+                f"suite that no longer exists. Drop the entry if the need went with it."
+            )
+
+        name, job, _ = self._github_job_running("make coverage-all-cicd")
+        setup = [
+            step
+            for step in job["steps"]
+            if str(step.get("uses", "")).endswith(".github/actions/python-env")
+        ]
+        assert len(setup) == 1, (
+            f"job `{name}` runs the coverage producer and does not set up the Python "
+            f"environment through the shared composite action, so what toolchain it has "
+            f"cannot be read here: {[s.get('uses') or s.get('name') for s in job['steps']]}"
+        )
+        node = str((setup[0].get("with") or {}).get("node", "")).strip().lower()
+        assert node == "true", (
+            f"GitHub job `{name}` runs `make coverage-all-cicd` with node={node!r}. The "
+            f"producer re-runs suites that need node:\n"
+            + "\n".join(
+                f"  {p} — {w}" for p, w in self.TOOLCHAIN_DEPENDENT_SUITES.items()
+            )
+            + "\nThose FAIL rather than skip, so the producer goes red and the ratchet "
+            "step behind it is skipped — this change's whole gate, not run."
+        )
+
+        doc = yaml.safe_load((REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+        gitlab = [
+            (key, value)
+            for key, value in doc.items()
+            if isinstance(value, dict)
+            and any(
+                "make coverage-all-cicd" in str(line)
+                for line in (value.get("script") or [])
+            )
+        ]
+        assert len(gitlab) == 1, (
+            f"expected one GitLab job to run the producer: {gitlab}"
+        )
+        gl_name, gl_job = gitlab[0]
+        # The anchor expands into the job's own `before_script`, so the installed
+        # commands are readable from the parsed document without re-parsing the anchor.
+        before = " ".join(str(line) for line in (gl_job.get("before_script") or []))
+        assert "node-v" in before and "basedpyright" in before, (
+            f"GitLab job `{gl_name}` runs `make coverage-all-cicd` and its "
+            f"`before_script` installs neither node nor basedpyright. Same suites, same "
+            f"consequence as on GitHub; the two jobs have to carry the same toolchain or "
+            f"the gate is green on one platform and red on the other.\n"
+            f"before_script was: {before[:300]}"
+        )
+
     def test_the_github_workflow_still_triggers_on_every_pull_request(self):
         """The escape that is nowhere near either step: narrow the workflow's own trigger.
 

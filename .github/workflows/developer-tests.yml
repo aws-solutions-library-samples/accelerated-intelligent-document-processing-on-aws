@@ -164,9 +164,22 @@ jobs:
       - name: Set up Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # No Node: nothing in this job needs it.
+      # ⚠️ Node and the pinned cfn-lint are load-bearing here, and neither is visible
+      # from any `run:` line below. This job used to need neither; the coverage
+      # producer two steps down re-runs the `scripts` and `idp_sdk` suites to measure
+      # them, which drags their toolchain requirements into this job wholesale —
+      # `scripts/tests/test_ux_recorder.py` runs the recorder's cursor-overlay
+      # JavaScript under node and FAILS rather than skipping without it (measured: 22
+      # minutes of producer, then red, and the ratchet step skipped behind it), and
+      # `scripts/tests/test_pyright_config.py` runs basedpyright live. cfn-lint is
+      # about PINNING rather than availability, for the ~10 cfn-lint-gated assertions
+      # in `lib/idp_sdk/tests/unit/` — see `package_tests` below, which carries the
+      # same two inputs for the same two reasons. Read the suites, not the steps.
       - name: Set up the Python environment
         uses: ./.github/actions/python-env
+        with:
+          node: "true"
+          cfn-lint: "true"
 
       - name: Run tests
         id: run-tests

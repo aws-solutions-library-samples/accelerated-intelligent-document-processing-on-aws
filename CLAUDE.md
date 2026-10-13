@@ -507,6 +507,16 @@ like**: `package_tests` was written without Node and went red, because
 `scripts/tests/test_pyright_config.py` runs basedpyright live. Read the *suites*, not
 the `script:` block.
 
+⚠️ **And a job's suite list is not fixed by its `script:` block either — a gate can
+import another job's suites.** `make coverage-all-cicd` in `unit_tests` re-runs the
+`scripts` and `idp_sdk` suites in order to *measure* them, so those two trees'
+toolchain requirements are `unit_tests` requirements now, and the job that needed
+neither Node nor a pinned cfn-lint needs both. That cost 22 minutes of producer
+followed by a red step and a skipped ratchet behind it, from a job whose own steps
+mention no JavaScript anywhere. `test_the_producers_job_carries_the_toolchain_its_measured_suites_need`
+in `scripts/tests/test_coverage_debt.py` asserts it on both platforms, because this
+is the second instance of the class and reading was what missed it both times.
+
 `unit_tests` is the critical path, and ⚠️ **more workers will not shorten it**: the
 slowest test in that 10,500-test suite is 2.2s and the top 20 are ~35s of a
 10-minute run, so the cost is per-test fixture setup spread flat, at 62% CPU.
