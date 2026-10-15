@@ -1619,20 +1619,23 @@ def test_an_exception_that_is_not_a_client_error_also_protects_the_prefix(
     )
 
 
-def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch):
+@pytest.mark.parametrize("name", ["idp-weird", "idp-weird_x-y"])
+def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch, name):
     """A name that carries no `idp-MMDD-HHMMSS` prefix has no stack to ask about.
 
     No liveness question is asked for it, so nothing could have established that
     its run is over, and the same rule applies: no answer, no delete. The
     direction matters because this one is not even reported — it is skipped
     silently — so if it were reaped it would be reaped with no check at all.
+    The second name has three hyphen-separated parts only past an underscore,
+    which no stack name can contain, so it names no run either.
     """
     aws = _install(
         cbd,
         monkeypatch,
         "cleanup_stale_bda_blueprints",
         with_target=True,
-        contents=_bda_contents("idp-weird"),
+        contents=_bda_contents(name),
     )
 
     findings = cbd.cleanup_stale_bda_blueprints()
@@ -1640,6 +1643,54 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch):
     assert aws.described == [], "a prefixless name should ask nothing of CloudFormation"
     assert aws.deleted == [], f"a name with no run prefix was reaped: {aws.deleted}"
     assert findings == []
+
+
+def test_a_live_runs_ocr_project_is_asked_about_under_the_runs_own_stack(
+    cbd, monkeypatch
+):
+    """`<stack>_OCR_StdOutput` belongs to `<stack>`, and stands while it does.
+
+    Every stack in the commercial partition creates that project, named with an
+    underscore that a BDA name may carry and a stack name may not. Split on
+    hyphens alone, a run's project name reads as the stack
+    `idp-MMDD-HHMMSS_OCR_StdOutput`, which `DescribeStacks` answers does not
+    exist, so a concurrent run's sweep would delete an in-flight run's project
+    while that run's stack is up. The dead run's project beside it is still
+    reaped, and neither underscore name is asked about.
+    """
+    from idp_common.bda.bda_ocr import sanitize_ocr_project_name
+
+    live = "idp-1015-120000"
+    ocr = {run: sanitize_ocr_project_name(run) for run in (live, DEAD_RUN)}
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents={
+            "list_blueprints": [{"blueprints": []}],
+            "projects": [
+                {"projectName": name, "projectArn": f"arn:fake:project/{name}"}
+                for name in ocr.values()
+            ],
+        },
+        stack_statuses={live: "CREATE_COMPLETE"},
+        stack_errors={
+            DEAD_RUN: STACK_GONE,
+            **{
+                name: ("ValidationError", f"Stack with id {name} does not exist")
+                for name in ocr.values()
+            },
+        },
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert findings == [], findings
+    assert sorted(aws.described) == sorted([live, DEAD_RUN]), aws.described
+    assert aws.deleted == [f"arn:fake:project/{ocr[DEAD_RUN]}"], (
+        f"expected only the dead run's BDA-as-OCR project to go, got {aws.deleted}"
+    )
 
 
 # ---------------------------------------------------------------------------

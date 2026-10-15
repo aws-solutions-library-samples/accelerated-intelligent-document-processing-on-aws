@@ -625,6 +625,26 @@ def _run_stack_liveness(cf_client, stack_name, active_statuses):
     return stacks[0].get("StackStatus", "") in active_statuses, ""
 
 
+def _bda_run_stack_name(name: str) -> str | None:
+    """The stack a BDA blueprint or project is named for, or None if it names none.
+
+    The first three hyphen-separated parts of the name, read only up to its first
+    `_`. A BDA name may contain `_` and a CloudFormation stack name cannot, so
+    nothing from the first `_` on belongs to a stack name. Every stack in the
+    commercial partition creates a BDA-as-OCR project named
+    `<stack>_OCR_StdOutput`; split on `-` alone, a run's third part is
+    `HHMMSS_OCR_StdOutput`, so the three parts spell no stack, `DescribeStacks`
+    answers that it does not exist, and the project reads as left over from a
+    run that is over while that run's stack is still up. A name with fewer than
+    three parts before its first `_` names no run, so it is neither asked about
+    nor reaped, like a name with fewer than three parts at all.
+    """
+    parts = name.split("_", 1)[0].split("-")
+    if len(parts) < 3:
+        return None
+    return "-".join(parts[:3])
+
+
 def cleanup_stale_bda_blueprints():
     """Delete BDA projects, blueprint versions, and blueprints whose stacks are no longer active.
 
@@ -699,16 +719,12 @@ def cleanup_stale_bda_blueprints():
         stack_cache = {}
         liveness_unanswered = {}
         for name, _ in blueprints + projects:
-            parts = name.split("-")
-            if len(parts) >= 3:
-                prefix = f"{parts[0]}-{parts[1]}-{parts[2]}"
-                if prefix not in stack_cache:
-                    active, detail = _run_stack_liveness(
-                        cf_client, prefix, active_statuses
-                    )
-                    stack_cache[prefix] = active
-                    if active is None:
-                        liveness_unanswered[prefix] = detail
+            prefix = _bda_run_stack_name(name)
+            if prefix is not None and prefix not in stack_cache:
+                active, detail = _run_stack_liveness(cf_client, prefix, active_statuses)
+                stack_cache[prefix] = active
+                if active is None:
+                    liveness_unanswered[prefix] = detail
 
         def _is_stale(name):
             """Stale only where the run's stack is POSITIVELY established gone.
@@ -717,12 +733,13 @@ def cleanup_stale_bda_blueprints():
             for a prefix whose liveness could not be read, `not None` is True,
             and that hands an unanswerable question the one answer that deletes
             an in-flight run's blueprints (#1440). A prefix missing from the
-            cache answers None here too, for the same reason.
+            cache answers None here too, for the same reason. The prefix is
+            the one `_bda_run_stack_name` reads off the name, as above.
             """
-            parts = name.split("-")
-            if len(parts) < 3:
+            prefix = _bda_run_stack_name(name)
+            if prefix is None:
                 return False
-            return stack_cache.get(f"{parts[0]}-{parts[1]}-{parts[2]}") is False
+            return stack_cache.get(prefix) is False
 
         # Step 1: Delete projects first (blueprints are referenced by projects)
         deleted_projects = 0
