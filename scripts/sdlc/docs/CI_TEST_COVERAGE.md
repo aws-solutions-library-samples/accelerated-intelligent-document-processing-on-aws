@@ -1386,15 +1386,25 @@ Three routes can still take part of that stack:
   reaper's age gate. Nothing creates one for that stack.
 - Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
   disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
-  so that stack's distribution survives only while it stays enabled.
+  so that stack's distribution survives only while it stays enabled. The same
+  teardown tries to delete `idp-ux-nightly-security-headers-policy` whenever
+  that stack reads as failed (`UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`, or a
+  creation that failed or rolled back), which CloudFront refuses only while a
+  distribution still uses the policy.
 - The set protects names, not dependencies. A run's `-iam` service role and
   permissions boundary go at that run's teardown, which deletes every `idp-`
   role that names the boundary before the boundary itself, so a stack deployed
-  under a run's boundary loses its own roles when that run ends. The
-  `idp-cli-config-*` bucket that `idp-cli deploy --custom-config <local file>`
-  uploads to goes once it is older than the bucket reaper's age gate. So deploy
-  the stack through its own `idp-ux-nightly-iam` pre-stack and boundary, or the
-  shared boundary, and keep any custom configuration outside an `idp-*` bucket.
+  under a run's boundary loses its own roles when that run ends. The region's
+  API Gateway logging role is an account setting naming the
+  `ApiGatewayCloudWatchRole` of the last stack to create one at `INFO` or
+  `DEBUG`. A run's teardown and the IAM-role reaper both delete a run's copy,
+  so if the setting names one, a stack running at `INFO` or `DEBUG` stops
+  getting API Gateway logs once that copy is gone. CI deploys at `WARN`, which
+  creates neither. The `idp-cli-config-*` bucket that
+  `idp-cli deploy --custom-config <local file>` uploads to goes once it is older
+  than the bucket reaper's age gate. So deploy the stack through its own
+  `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and keep
+  any custom configuration outside an `idp-*` bucket.
 
 Two consequences follow: nothing reaps what that stack leaks itself, so a
 leftover of its own is removed by hand; and naming another stack here means
