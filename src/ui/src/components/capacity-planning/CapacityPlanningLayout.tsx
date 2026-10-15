@@ -188,8 +188,9 @@ const CapacityPlanningLayout = () => {
   } = useConfigurationVersions();
   const { allowedConfigVersions, loading: roleLoading } = useUserRole();
   const callerScope = { allowedConfigVersions, loading: roleLoading };
+  const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
   const { mergedConfig: configurationUntyped, fetchConfiguration } = useConfiguration(
-    isProfileReadable('default', versions, callerScope) ? 'default' : null,
+    !selectedConfigVersion && isProfileReadable('default', versions, callerScope) ? 'default' : null,
   );
   const configuration = configurationUntyped as Configuration | null;
   const openingProfile = chooseOpeningProfile(
@@ -207,7 +208,6 @@ const CapacityPlanningLayout = () => {
     setCustomDateRange,
   } = useDocumentsContext();
 
-  const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
   const [manualPattern, setManualPattern] = useState<string | null>(null);
 
   // Log documents availability for debugging
@@ -246,7 +246,6 @@ const CapacityPlanningLayout = () => {
   }, [versions, selectedConfigVersion]); // getVersionOptions is not memoized
 
   // Fetch configuration when selected version changes
-  // Note: useConfiguration hook already fetches 'default' on mount, so this will fetch the active version after it's determined
   useEffect(() => {
     if (selectedConfigVersion) {
       console.log('Fetching configuration for version:', selectedConfigVersion.value);

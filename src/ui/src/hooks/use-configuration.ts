@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { generateClient } from '../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getConfigVersion, updateConfiguration as updateConfigurationOp } from '../graphql/generated';
@@ -229,6 +229,11 @@ const _getDiff = (oldConfig: Record<string, unknown>, newConfig: Record<string, 
  * `versionName` is fetched on mount and whenever it changes. Pass null while the
  * profile is not yet known to be one the caller may read: nothing is fetched and
  * `loading` stays true.
+ *
+ * Only the most recent request is applied, whether `versionName` or a call to
+ * `fetchConfiguration` made it. An earlier request that answers later is
+ * discarded, configuration and error alike, and `loading` and `refreshing` both
+ * clear when the most recent request settles.
  */
 const useConfiguration = (versionName: string | null): UseConfigurationReturn => {
   const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
@@ -238,8 +243,12 @@ const useConfiguration = (versionName: string | null): UseConfigurationReturn =>
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const latestRequest = useRef(0);
 
   const fetchConfiguration = async (fetchVersionName: string, silent: boolean = false): Promise<void> => {
+    latestRequest.current += 1;
+    const request = latestRequest.current;
+    const isLatest = (): boolean => request === latestRequest.current;
     // Use different loading states for initial load vs background refresh
     if (silent) {
       setRefreshing(true);
@@ -254,6 +263,10 @@ const useConfiguration = (versionName: string | null): UseConfigurationReturn =>
         variables: { versionName: fetchVersionName },
       });
       logger.debug('API response version', fetchVersionName, result);
+      if (!isLatest()) {
+        logger.debug('Discarding the answer to a superseded request for', fetchVersionName);
+        return;
+      }
 
       const response = result.data.getConfigVersion;
 
@@ -336,6 +349,10 @@ const useConfiguration = (versionName: string | null): UseConfigurationReturn =>
       }
       setMergedConfig(activeConfig);
     } catch (err: unknown) {
+      if (!isLatest()) {
+        logger.debug('Discarding the failure of a superseded request for', fetchVersionName, err);
+        return;
+      }
       logger.error('Error fetching configuration', err);
       // Extract meaningful error message from various error shapes:
       // - Error instances: use .message
@@ -354,10 +371,9 @@ const useConfiguration = (versionName: string | null): UseConfigurationReturn =>
       }
       setError(`Failed to load configuration: ${errorMsg}`);
     } finally {
-      if (silent) {
-        setRefreshing(false);
-      } else {
+      if (isLatest()) {
         setLoading(false);
+        setRefreshing(false);
       }
     }
   };

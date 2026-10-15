@@ -10,6 +10,10 @@
  * `default` the way the server refuses it to a scoped caller and leaves every
  * other profile pending, so the page under test either asks for a profile it may
  * not read and shows the refusal, or does not.
+ *
+ * The last block holds every request until the test answers it, so it can make
+ * an earlier request answer after a later one and assert what the editor is
+ * given.
  */
 
 import React from 'react';
@@ -28,6 +32,7 @@ const state = vi.hoisted(() => ({
   role: { allowedConfigVersions: null as string[] | null, loading: false },
   refused: new Set<string>(),
   fetchVersions: vi.fn(),
+  builder: [] as { currentVersionName: string; mergedConfig: unknown }[],
 }));
 
 vi.mock('../../../api/client-shim', () => ({
@@ -59,7 +64,12 @@ vi.mock('../../../hooks/use-configuration-library', () => ({
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setSuccessMessage: vi.fn() }) }));
 
-vi.mock('../ConfigBuilder', () => ({ default: () => null }));
+vi.mock('../ConfigBuilder', () => ({
+  default: ({ currentVersionName, mergedConfig }: { currentVersionName: string; mergedConfig: unknown }) => {
+    state.builder.push({ currentVersionName, mergedConfig });
+    return null;
+  },
+}));
 vi.mock('../ConfigurationVersionsTable', () => ({ default: () => null }));
 vi.mock('../ConfigRevisionHistoryPanel', () => ({ default: () => null }));
 vi.mock('../ConfigurationComparison', () => ({ default: () => null }));
@@ -96,6 +106,38 @@ const settle = () =>
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+const answer = (name: string) => ({
+  data: {
+    getConfigVersion: {
+      success: true,
+      Schema: JSON.stringify({ type: 'object', properties: {} }),
+      Default: JSON.stringify({ profile: name }),
+      Custom: JSON.stringify({}),
+    },
+  },
+});
+
+const refusal = (name: string) => ({
+  data: {
+    getConfigVersion: {
+      success: false,
+      error: { type: 'Unauthorized', message: `Access denied: version '${name}' is not in your allowed scope` },
+    },
+  },
+});
+
+const holdEveryRequest = () => {
+  const held = new Map<string, (value: unknown) => void>();
+  state.graphql.mockImplementation(
+    ({ variables }: { variables: { versionName: string } }) => new Promise((resolve) => held.set(variables.versionName, resolve)),
+  );
+  return (name: string, value: unknown) =>
+    act(async () => {
+      held.get(name)!(value);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+};
+
 beforeEach(() => {
   state.graphql.mockReset();
   state.graphql.mockImplementation(({ variables }: { variables?: { versionName?: string } }) => {
@@ -113,6 +155,7 @@ beforeEach(() => {
     return new Promise(() => {});
   });
   state.fetchVersions.mockReset();
+  state.builder = [];
   window.location.hash = '#/documents/config';
   listLoading();
   scopedTo(null);
@@ -220,5 +263,42 @@ describe('ConfigurationLayout — an unscoped caller', () => {
 
     expect(requestedProfiles()).toEqual([]);
     expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
+  });
+});
+
+describe('ConfigurationLayout — answers that arrive out of order', () => {
+  it('gives the editor the active profile when default, asked for first, answers last', async () => {
+    const release = holdEveryRequest();
+    state.role = { allowedConfigVersions: null, loading: true };
+    const { rerender } = render(page());
+    await settle();
+    state.role = { allowedConfigVersions: null, loading: false };
+    rerender(page());
+    await settle();
+    listAnswered([{ versionName: 'default' }, { versionName: 'lending', isActive: true }]);
+    rerender(page());
+    await settle();
+    expect(requestedProfiles()).toEqual(['default', 'lending']);
+
+    await release('lending', answer('lending'));
+    await release('default', answer('default'));
+
+    expect(state.builder.at(-1)).toEqual({ currentVersionName: 'lending', mergedConfig: { profile: 'lending' } });
+  });
+
+  it('does not report a refusal of default that lands after the in-scope profile was asked for', async () => {
+    const release = holdEveryRequest();
+    const { rerender } = render(page());
+    await settle();
+    listAnswered(IN_SCOPE);
+    rerender(page());
+    await settle();
+    expect(requestedProfiles()).toEqual(['default', 'tenant-a_dev']);
+
+    await release('default', refusal('default'));
+    await release('tenant-a_dev', answer('tenant-a_dev'));
+
+    expect(screen.queryByText('Error loading configuration')).not.toBeInTheDocument();
+    expect(state.builder.at(-1)).toEqual({ currentVersionName: 'tenant-a_dev', mergedConfig: { profile: 'tenant-a_dev' } });
   });
 });

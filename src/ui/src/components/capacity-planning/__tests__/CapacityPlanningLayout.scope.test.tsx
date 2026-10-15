@@ -9,6 +9,10 @@
  * boundary; `useConfiguration` runs for real over a mocked transport that refuses
  * `default` to a scoped caller and leaves every other profile pending, so the
  * assertions are on the profiles the page actually asks the API for.
+ *
+ * The last block holds every request until the test answers it, so it can make
+ * an earlier request answer after a later one and assert which profile's
+ * configuration the page then uses.
  */
 
 import React from 'react';
@@ -82,6 +86,29 @@ const settle = () =>
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+const answer = (name: string) => ({
+  data: {
+    getConfigVersion: {
+      success: true,
+      Schema: JSON.stringify({ type: 'object', properties: {} }),
+      Default: JSON.stringify({ classification: { model: `${name}-classifier` } }),
+      Custom: JSON.stringify({}),
+    },
+  },
+});
+
+const holdEveryRequest = () => {
+  const held = new Map<string, (value: unknown) => void>();
+  state.graphql.mockImplementation(
+    ({ variables }: { variables: { versionName: string } }) => new Promise((resolve) => held.set(variables.versionName, resolve)),
+  );
+  return (name: string, value: unknown) =>
+    act(async () => {
+      held.get(name)!(value);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+};
+
 beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   state.graphql.mockReset();
@@ -141,5 +168,47 @@ describe('CapacityPlanningLayout — an unscoped caller', () => {
 
     expect(requestedProfiles()).toEqual(['default', 'lending']);
     expect(screen.queryByText('No configuration profiles in your scope')).not.toBeInTheDocument();
+  });
+});
+
+describe('CapacityPlanningLayout — answers that arrive out of order', () => {
+  it('uses the selected profile when default, asked for first, answers last', async () => {
+    const release = holdEveryRequest();
+    state.role = { allowedConfigVersions: null, loading: true };
+    const { rerender } = render(<CapacityPlanningLayout />);
+    await settle();
+    listAnswered([{ versionName: 'default' }, { versionName: 'lending', isActive: true }]);
+    rerender(<CapacityPlanningLayout />);
+    await settle();
+    state.role = { allowedConfigVersions: null, loading: false };
+    rerender(<CapacityPlanningLayout />);
+    await settle();
+    expect(requestedProfiles()).toEqual(['default', 'lending']);
+
+    await release('lending', answer('lending'));
+    await release('default', answer('default'));
+
+    expect(screen.getByText('Model: lending-classifier')).toBeInTheDocument();
+    expect(screen.queryByText('Model: default-classifier')).not.toBeInTheDocument();
+  });
+
+  it('does not read default once it has selected a profile, even when the scope then reads as unrestricted', async () => {
+    const release = holdEveryRequest();
+    state.role = { allowedConfigVersions: null, loading: true };
+    const { rerender } = render(<CapacityPlanningLayout />);
+    await settle();
+    listAnswered([{ versionName: 'tenant-a_dev', isActive: true }]);
+    rerender(<CapacityPlanningLayout />);
+    await settle();
+    expect(requestedProfiles()).toEqual(['tenant-a_dev']);
+
+    state.role = { allowedConfigVersions: null, loading: false };
+    rerender(<CapacityPlanningLayout />);
+    await settle();
+    await release('tenant-a_dev', answer('tenant-a_dev'));
+
+    expect(requestedProfiles()).toEqual(['tenant-a_dev']);
+    expect(screen.getByText('Model: tenant-a_dev-classifier')).toBeInTheDocument();
+    expect(screen.queryByText(/Configuration not loaded/)).not.toBeInTheDocument();
   });
 });
