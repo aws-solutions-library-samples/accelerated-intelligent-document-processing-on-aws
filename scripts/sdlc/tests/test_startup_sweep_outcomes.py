@@ -1644,7 +1644,7 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The long-lived stack four of the sweeps leave standing
+# The long-lived stack five of the sweeps leave standing
 #
 # `idp-ux-nightly` outlives every run, and each sweep would take it its own way.
 # The stack sweep reaps it and its `-iam` pre-stack once they are older than its
@@ -1655,9 +1655,14 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch):
 # parts spell, which for `idp-ux-nightly-<x>` is this one, so it takes those
 # while the stack sits in a status outside the active set; it takes the stack's
 # BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`, at any status, because
-# those parts of that name spell no stack at all. The policy sweep only deletes
-# run-prefixed names, so it never matched this stack's policies, and consults
-# the set anyway so that does not rest on the pattern.
+# those parts of that name spell no stack at all. The role and policy sweeps
+# only delete run-prefixed names, so they never matched this stack's roles or
+# policies, and consult the set anyway so that does not rest on the pattern.
+#
+# Each sweep with an age gate asks the set before it. The gates fail closed
+# (#1445), so an item a listing did not date is kept and named as one whose age
+# could not be established; the long-lived stack's resources are counted as its
+# instead.
 #
 # Every case lists the long-lived stack's resources BESIDE another stack's and
 # asserts that other stack is still reaped: a sweep that stopped reaping
@@ -1678,10 +1683,11 @@ OCR_PROJECT_SUFFIX = "_OCR_StdOutput"
 
 
 def _long_lived_sweeps():
-    """The four sweeps that consult the set, by name."""
+    """The five sweeps that consult the set, by name."""
     return [
         "cleanup_stale_idp_stacks",
         "cleanup_stale_idp_buckets",
+        "cleanup_stale_idp_roles",
         "cleanup_stale_idp_policies",
         "cleanup_stale_bda_blueprints",
     ]
@@ -1690,15 +1696,23 @@ def _long_lived_sweeps():
 def _resources_of(sweep, owner):
     """What `sweep` deletes of a stack named `owner`, as `aws.deleted` records it.
 
-    Stacks and buckets are deleted by name; managed policies, BDA projects and
-    blueprints by ARN, and `_listing` reads their names off the ARN's last part.
-    The BDA projects are a versioned one, named `<stack>-<version>`, and the
+    Stacks, buckets and roles are deleted by name; managed policies, BDA
+    projects and blueprints by ARN, and `_listing` reads their names off the
+    ARN's last part. The roles are the `-iam` pre-stack's service role and the
+    two `DeletionPolicy: Retain` leaves behind in the knowledge-base stack. The
+    BDA projects are a versioned one, named `<stack>-<version>`, and the
     BDA-as-OCR one, named `<stack>_OCR_StdOutput`.
     """
     if sweep == "cleanup_stale_idp_stacks":
         return [owner, f"{owner}-iam"]
     if sweep == "cleanup_stale_idp_buckets":
         return [f"{owner}-inputbucket-abc"]
+    if sweep == "cleanup_stale_idp_roles":
+        return [
+            f"{owner}-iam-CFServiceRole",
+            f"{owner}-DOCUMENTK-StartIngestionJobFunction-abc",
+            f"{owner}-DOCUMENTKB--DataSourceSchedulerRole-xyz",
+        ]
     if sweep == "cleanup_stale_idp_policies":
         return [
             f"arn:fake:policy/{owner}-PermissionsBoundary",
@@ -1717,10 +1731,10 @@ def _listing(sweep, owners):
     """Account contents holding what `sweep` reaps of each stack in `owners`.
 
     The long-lived stack is up, so it and its `-iam` pre-stack are in the
-    `list_stacks` the bucket and policy sweeps read their live-stack protection
-    from. Every other owner's stacks are gone, except from the stack sweep's own
-    listing, where leftover stacks are the targets. All of it is older than
-    every age gate.
+    `list_stacks` the bucket, role and policy sweeps read their live-stack
+    protection from. Every other owner's stacks are gone, except from the stack
+    sweep's own listing, where leftover stacks are the targets. All of it is
+    older than every age gate.
     """
     old = datetime.now(tz=timezone.utc) - timedelta(seconds=STALE_AGE_SECONDS)
     found = [item for owner in owners for item in _resources_of(sweep, owner)]
@@ -1740,6 +1754,13 @@ def _listing(sweep, owners):
         return {
             "list_stacks": [{"StackSummaries": up}],
             "buckets": [{"Name": n, "CreationDate": old} for n in found],
+        }
+    if sweep == "cleanup_stale_idp_roles":
+        return {
+            "list_stacks": [{"StackSummaries": up}],
+            "list_roles": [
+                {"Roles": [{"RoleName": n, "CreateDate": old} for n in found]}
+            ],
         }
     if sweep == "cleanup_stale_idp_policies":
         return {
@@ -1775,31 +1796,53 @@ def _listing(sweep, owners):
     }
 
 
-def _install_beside_long_lived(cbd, monkeypatch, sweep, owners, **kwargs):
-    """`_install` over `_listing`, recording the two deletes `_install` does not.
+def _install_beside_long_lived(
+    cbd, monkeypatch, sweep, owners, contents=None, **kwargs
+):
+    """`_install` over `_listing`, keeping the S3 resource the bucket sweep uses.
 
-    The policy sweep deletes through `_delete_managed_policy`, which `_install`
-    stubs to answer success without recording it. The bucket sweep empties a
+    `_install` records every delete in `aws.deleted`, the policy and role ones
+    made through module helpers included. The bucket sweep also empties a
     bucket through `boto3.resource` before deleting it, and emptying is the half
     that loses the data, so the resource is kept for the caller to read.
+    `contents` stands in for `_listing`'s, for a case that alters the listing.
     """
     aws = _install(
         cbd,
         monkeypatch,
         sweep,
         with_target=True,
-        contents=_listing(sweep, owners),
+        contents=_listing(sweep, owners) if contents is None else contents,
         **kwargs,
     )
-
-    def _delete_policy(_client, arn):
-        aws.deleted.append(arn)
-        return True, ""
-
-    monkeypatch.setattr(cbd, "_delete_managed_policy", _delete_policy)
     s3 = _FakeS3Resource()
     monkeypatch.setattr(cbd.boto3, "resource", lambda *a, **k: s3)
     return aws, s3
+
+
+def _undated_for(contents, field, value, owner):
+    """`contents` with `field` set to `value` on every listed item of `owner`'s.
+
+    `_reaged` with a filter, so one listing holds the long-lived stack's items,
+    which its age gate cannot date, beside an old run's, which it can. An item
+    is `owner`'s when one of its values starts with `owner`; these cases list
+    only that stack and an `idp-MMDD-HHMMSS` run, so neither reads as the other.
+    """
+    if isinstance(contents, dict):
+        owned = any(
+            isinstance(sub, str) and sub.startswith(owner) for sub in contents.values()
+        )
+        return {
+            key: (
+                value
+                if owned and key == field
+                else _undated_for(sub, field, value, owner)
+            )
+            for key, sub in contents.items()
+        }
+    if isinstance(contents, list):
+        return [_undated_for(sub, field, value, owner) for sub in contents]
+    return contents
 
 
 def _printed_long_lived_count(out):
@@ -1811,7 +1854,7 @@ def _printed_long_lived_count(out):
 def test_the_long_lived_stack_set_is_pinned(cbd):
     """Count-pinned: exactly the one stack it was registered with.
 
-    A name added here takes a stack and everything named for it out of four
+    A name added here takes a stack and everything named for it out of five
     sweeps that exist because leaked runs exhausted the account's role quota,
     and leaves whatever that stack leaks for somebody to remove by hand. So the
     expected count is one, the member is the one registered in
@@ -1834,6 +1877,7 @@ def test_the_long_lived_stack_set_is_pinned(cbd):
         (f"{LONG_LIVED_STACK}-iam", True),
         (f"{LONG_LIVED_STACK}-inputbucket-abc", True),
         (f"{LONG_LIVED_STACK}-iam-PassRolePolicy", True),
+        (f"{LONG_LIVED_STACK}-iam-CFServiceRole", True),
         (f"{LONG_LIVED_STACK}{OCR_PROJECT_SUFFIX}", True),
         ("idp-ux-nightlyx", False),
         ("idp-ux-nightly2", False),
@@ -1880,9 +1924,9 @@ def test_the_long_lived_stack_stands_while_an_old_run_beside_it_is_reaped(
 ):
     """Per sweep: nothing of the long-lived stack goes, the old run all goes.
 
-    The policy case passes on deletes alone without the set, since no policy of
-    the long-lived stack ever matched the run-prefix pattern, so it is the
-    printed count that pins that sweep's check.
+    The role and policy cases pass on deletes alone without the set, since no
+    role or policy of the long-lived stack ever matched the run-prefix pattern,
+    so it is the printed count that pins those two sweeps' check.
     """
     aws, s3 = _install_beside_long_lived(
         cbd, monkeypatch, sweep, [LONG_LIVED_STACK, OLD_RUN_STACK]
@@ -1915,9 +1959,10 @@ def test_a_lookalike_of_the_long_lived_stack_gets_no_such_protection(
 ):
     """A different stack, so it is reaped like any other leftover.
 
-    The policy sweep is the one difference, and it predates the set: it only
-    ever deletes run-prefixed policies, so a lookalike's are left as they always
-    were. What it must not do is count them as the long-lived stack's.
+    The role and policy sweeps are the difference, and it is theirs rather than
+    the set's: they only ever delete run-prefixed names, so a lookalike's roles
+    and policies are left as they always were. What they must not do is count
+    them as the long-lived stack's.
     """
     aws, _ = _install_beside_long_lived(
         cbd, monkeypatch, sweep, [LONG_LIVED_STACK, lookalike]
@@ -1927,7 +1972,9 @@ def test_a_lookalike_of_the_long_lived_stack_gets_no_such_protection(
 
     assert findings == [], findings
     reaped = (
-        [] if sweep == "cleanup_stale_idp_policies" else _resources_of(sweep, lookalike)
+        []
+        if sweep in ("cleanup_stale_idp_roles", "cleanup_stale_idp_policies")
+        else _resources_of(sweep, lookalike)
     )
     assert sorted(aws.deleted) == sorted(reaped), (
         f"{sweep} deleted {aws.deleted} with {lookalike} beside {LONG_LIVED_STACK}; "
@@ -1943,6 +1990,7 @@ def test_a_lookalike_of_the_long_lived_stack_gets_no_such_protection(
     [
         "cleanup_stale_idp_stacks",
         "cleanup_stale_idp_buckets",
+        "cleanup_stale_idp_roles",
         "cleanup_stale_idp_policies",
     ],
 )
@@ -2027,6 +2075,52 @@ def test_the_bda_sweep_never_asks_after_the_long_lived_stack(
     assert _printed_long_lived_count(capsys.readouterr().out) == len(
         _resources_of("cleanup_stale_bda_blueprints", LONG_LIVED_STACK)
     )
+
+
+@pytest.mark.parametrize("value", UNDATEABLE)
+@pytest.mark.parametrize(
+    "sweep", [s for s in _long_lived_sweeps() if _SWEEP_SPECS[s]["age_gate"]]
+)
+def test_the_long_lived_stack_is_set_aside_before_the_fail_closed_age_gate(
+    cbd, monkeypatch, capsys, sweep, value
+):
+    """Counted as long-lived where the listing gives it no usable timestamp.
+
+    Every age gate here fails closed (#1445): an item it cannot date is kept and
+    named on a `⚠️ … age not establishable` line. Asking the set first is what
+    keeps the long-lived stack's resources off that line, which would otherwise
+    report resources the sweep never deletes on every run whose listing left
+    them undated. The old run beside them keeps its date and is still reaped,
+    so a sweep that kept everything undated, or everything, fails here as well.
+    """
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    field = _SWEEP_SPECS[sweep]["age_gate"]["field"]
+    aws, s3 = _install_beside_long_lived(
+        cbd,
+        monkeypatch,
+        sweep,
+        owners,
+        contents=_undated_for(_listing(sweep, owners), field, value, LONG_LIVED_STACK),
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        f"{sweep} deleted {aws.deleted}; expected exactly the old run's "
+        f"{_resources_of(sweep, OLD_RUN_STACK)}"
+    )
+    if sweep == "cleanup_stale_idp_buckets":
+        assert s3.emptied == _resources_of(sweep, OLD_RUN_STACK), s3.emptied
+    out = capsys.readouterr().out
+    assert "age not establishable" not in out, (
+        f"{sweep} named the long-lived stack's undated resources as items whose "
+        f"age it could not establish, so it asked its age gate before the set: "
+        f"{out}"
+    )
+    assert _printed_long_lived_count(out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), out
 
 
 # ---------------------------------------------------------------------------

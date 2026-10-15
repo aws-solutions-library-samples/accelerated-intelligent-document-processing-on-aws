@@ -1367,14 +1367,17 @@ and that name carries none. The BDA reaper asks after the stack that the first
 three hyphen-separated parts of a name spell, so it spares `idp-ux-nightly-*`
 resources only while the stack's status is in that reaper's active set, and
 never spares the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`,
-whose first three parts spell no stack. The IAM-policy reaper deletes only
-run-prefixed names, so it already passed that stack's policies over. The stack,
-bucket, IAM-policy and BDA reapers therefore skip the stack and everything named
-`idp-ux-nightly-*` or `idp-ux-nightly_*` — its pre-stack, buckets, managed
-policies, BDA projects and blueprints — and each one's log line counts what it
-left. The match is the name, or the name followed by `-` or by `_` (which no
-CloudFormation stack name can contain), so a lookalike such as `idp-ux-nightly2`
-gets no such protection.
+whose first three parts spell no stack. The IAM-role and IAM-policy reapers
+delete only run-prefixed names, so they already passed that stack's roles and
+policies over. The stack, bucket, IAM-role, IAM-policy and BDA reapers therefore
+skip the stack and everything named `idp-ux-nightly-*` or `idp-ux-nightly_*` —
+its pre-stack, buckets, roles, managed policies, BDA projects and blueprints —
+and each one's log line counts what it left. Those with an age gate ask before
+it: those gates keep an item the listing did not date and name it as one whose
+age could not be established, so a resource of that stack is counted as left
+for it rather than reported on that line. The match is the name, or the name
+followed by `-` or by `_` (which no CloudFormation stack name can contain), so
+a lookalike such as `idp-ux-nightly2` gets no such protection.
 
 Three routes can still take part of that stack:
 
@@ -1385,16 +1388,20 @@ Three routes can still take part of that stack:
   disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
   so that stack's distribution survives only while it stays enabled.
 - The set protects names, not dependencies. A run's `-iam` service role and
-  permissions boundary go at that run's teardown, and the `idp-cli-config-*`
-  bucket that `idp-cli deploy --custom-config <local file>` uploads to goes once
-  it is older than the bucket reaper's age gate. So deploy the stack through its
-  own `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and
-  keep any custom configuration outside an `idp-*` bucket.
+  permissions boundary go at that run's teardown, which deletes every `idp-`
+  role that names the boundary before the boundary itself, so a stack deployed
+  under a run's boundary loses its own roles when that run ends. The
+  `idp-cli-config-*` bucket that `idp-cli deploy --custom-config <local file>`
+  uploads to goes once it is older than the bucket reaper's age gate. So deploy
+  the stack through its own `idp-ux-nightly-iam` pre-stack and boundary, or the
+  shared boundary, and keep any custom configuration outside an `idp-*` bucket.
 
 Two consequences follow: nothing reaps what that stack leaks itself, so a
 leftover of its own is removed by hand; and naming another stack here means
 changing the pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py`
-and its entry in `scripts/tests/gate_exemptions.json`.
+and its entry in `scripts/tests/gate_exemptions.json`. Nothing offline checks a
+reaper added to Step 0 later against the set either, so whether it can take
+that stack is decided when it is written.
 
 ## Success Criteria
 
