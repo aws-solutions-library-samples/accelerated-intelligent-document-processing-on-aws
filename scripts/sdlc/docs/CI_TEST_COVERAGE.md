@@ -1356,6 +1356,46 @@ prior runs: test VPCs, IDP stacks (and their IAM helper stacks), and orphaned S3
 buckets. All reapers are **age-gated and skip anything a concurrent pipeline is
 still using**, so they never touch a live run.
 
+**One stack is left standing at any age: `idp-ux-nightly`**, the name reserved
+for a long-lived review stack that is updated in place rather than created per
+run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). Each reaper would
+otherwise take it in its own way. The stack reaper would delete it and its
+`-iam` pre-stack once they passed its age gate. The bucket reaper would empty
+and delete its buckets once they passed its own, even with the stack up,
+because its live-stack protection is keyed on a run's `idp-MMDD-HHMMSS` prefix
+and that name carries none. The BDA reaper asks after the stack that the first
+three hyphen-separated parts of a name spell, so it spares `idp-ux-nightly-*`
+resources only while the stack's status is in that reaper's active set, and
+never spares the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`,
+whose first three parts spell no stack. The IAM-policy reaper deletes only
+run-prefixed names, so it already passed that stack's policies over. The stack,
+bucket, IAM-policy and BDA reapers therefore skip the stack and everything named
+`idp-ux-nightly-*` or `idp-ux-nightly_*` — its pre-stack, buckets, managed
+policies, BDA projects and blueprints — and each one's log line counts what it
+left. The match is the name, or the name followed by `-` or by `_` (which no
+CloudFormation stack name can contain), so a lookalike such as `idp-ux-nightly2`
+gets no such protection.
+
+Three routes can still take part of that stack:
+
+- The apigw test-VPC reaper does not consult the set, so an
+  `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
+  reaper's age gate. Nothing creates one for that stack.
+- Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
+  disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
+  so that stack's distribution survives only while it stays enabled.
+- The set protects names, not dependencies. A run's `-iam` service role and
+  permissions boundary go at that run's teardown, and the `idp-cli-config-*`
+  bucket that `idp-cli deploy --custom-config <local file>` uploads to goes once
+  it is older than the bucket reaper's age gate. So deploy the stack through its
+  own `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and
+  keep any custom configuration outside an `idp-*` bucket.
+
+Two consequences follow: nothing reaps what that stack leaks itself, so a
+leftover of its own is removed by hand; and naming another stack here means
+changing the pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py`
+and its entry in `scripts/tests/gate_exemptions.json`.
+
 ## Success Criteria
 
 ### Test Pass Criteria

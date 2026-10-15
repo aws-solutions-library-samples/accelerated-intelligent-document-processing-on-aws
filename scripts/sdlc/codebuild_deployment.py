@@ -536,6 +536,31 @@ def _first_failure_reason(existing, candidate):
     return existing or candidate
 
 
+#: Stacks the Step 0 stack, bucket, IAM-policy and BDA sweeps leave standing,
+#: with everything named for them. Those sweeps keep a run's resources only while
+#: the run is young or still up, and `idp-ux-nightly` is reserved for a review
+#: stack that outlives every run, updated in place rather than created per run.
+#: Registered in scripts/tests/gate_exemptions.json.
+SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly"})
+
+
+def _named_for_exempt_stack(name: str) -> bool:
+    """Whether `name` is a SWEEP_EXEMPT_STACK_NAMES stack or is named for one.
+
+    The stack itself, or the stack followed by `-` or `_` and anything. The
+    hyphen form is the match `_stack_scoped_policies` uses, and covers
+    `idp-ux-nightly-iam` and that stack's buckets, managed policies, blueprints
+    and versioned BDA projects. The underscore form covers its BDA-as-OCR
+    project, `idp-ux-nightly_OCR_StdOutput`, and can never match another stack,
+    because a CloudFormation stack name cannot contain `_`. `idp-ux-nightly2`
+    matches neither.
+    """
+    return any(
+        name == stack or name.startswith((f"{stack}-", f"{stack}_"))
+        for stack in SWEEP_EXEMPT_STACK_NAMES
+    )
+
+
 #: The CloudFormation error code for a stack that is not there. `DescribeStacks`
 #: models no error shapes at all, so botocore raises a generic `ClientError` and
 #: the code has to be read off the payload — which is also what makes a gone
@@ -611,6 +636,17 @@ def cleanup_stale_bda_blueprints():
     is over. See `_run_stack_liveness` for why that direction is the only safe
     one on a path that deletes (#1440).
 
+    A blueprint or project named for a SWEEP_EXEMPT_STACK_NAMES stack is never
+    stale, and its stack's liveness is not asked. That stack outlives every run,
+    so a status outside `active_statuses` — UPDATE_ROLLBACK_FAILED, or a
+    `*_CLEANUP_IN_PROGRESS` state mid-update — does not make its resources
+    leftovers. Its BDA-as-OCR project, `<stack>_OCR_StdOutput`, would otherwise
+    be taken at any status: the first three hyphen-separated parts of that name
+    spell no stack, so the liveness question below reads it as a run that is
+    over. And a `DescribeStacks` about that stack that went unanswered would
+    report a finding about resources this sweep never deletes. They are counted
+    in the summary line instead.
+
     One blueprint or project that would not delete stays best effort and is NOT a
     finding — the loops below name it and the next run takes it.
     """
@@ -669,7 +705,10 @@ def cleanup_stale_bda_blueprints():
         # one may lead to a delete. See _run_stack_liveness.
         stack_cache = {}
         liveness_unanswered = {}
+        skipped_long_lived = 0
         for name, _ in blueprints + projects:
+            if _named_for_exempt_stack(name):
+                continue
             parts = name.split("-")
             if len(parts) >= 3:
                 prefix = f"{parts[0]}-{parts[1]}-{parts[2]}"
@@ -689,7 +728,14 @@ def cleanup_stale_bda_blueprints():
             and that hands an unanswerable question the one answer that deletes
             an in-flight run's blueprints (#1440). A prefix missing from the
             cache answers None here too, for the same reason.
+
+            A name for a SWEEP_EXEMPT_STACK_NAMES stack answers False before any
+            of that, whatever the stack's status, and is counted.
             """
+            nonlocal skipped_long_lived
+            if _named_for_exempt_stack(name):
+                skipped_long_lived += 1
+                return False
             parts = name.split("-")
             if len(parts) < 3:
                 return False
@@ -730,7 +776,8 @@ def cleanup_stale_bda_blueprints():
         live = sum(1 for active in stack_cache.values() if active)
         print(
             f"✅ Cleaned up {deleted_projects} projects, {deleted_bps} blueprints "
-            f"(skipped {live} live run(s), {len(liveness_unanswered)} unanswered)"
+            f"(skipped {live} live run(s), {len(liveness_unanswered)} unanswered, "
+            f"{skipped_long_lived} named for a long-lived stack)"
         )
         if liveness_unanswered:
             # Not an enumeration failure and not a stuck delete: the listings
@@ -6388,7 +6435,10 @@ def cleanup_stale_idp_stacks():
     the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks).
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
-    by cleanup_stale_apigw_test_vpcs) and the persistent pipeline stack.
+    by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and every
+    stack named for SWEEP_EXEMPT_STACK_NAMES — the long-lived stack and its
+    `-iam` pre-stack, whose names carry no run prefix for anything below to
+    protect, so the age gate alone would take them.
 
     ONE enumeration of targets, `list_stacks`. Returns the Step 0 sweep outcome
     described at STARTUP_SWEEPS: an empty list only if the listing answered and
@@ -6419,6 +6469,7 @@ def cleanup_stale_idp_stacks():
         now = datetime.now(tz=timezone.utc)
         stale, skipped_young = [], 0
         skipped_retained = 0
+        skipped_long_lived = 0
 
         bucket = _diagnostics_bucket()
         protected, expired = ({}, [])
@@ -6454,6 +6505,9 @@ def cleanup_stale_idp_stacks():
                 # apigw-vpc reaper owns *-apigw-vpc; skip those here.
                 if not name.startswith("idp-") or name.endswith("-apigw-vpc"):
                     continue
+                if _named_for_exempt_stack(name):
+                    skipped_long_lived += 1
+                    continue
                 # Only reap TOP-LEVEL stacks: nested stacks (RootId set) are
                 # deleted by their parent, and deleting a parent cascades.
                 if s.get("RootId") or s.get("ParentId"):
@@ -6487,6 +6541,8 @@ def cleanup_stale_idp_stacks():
             print(f"  ({skipped_retained} retained idp- stack(s) skipped)")
         if skipped_young:
             print(f"  ({skipped_young} young idp- stack(s) skipped — may be in-flight)")
+        if skipped_long_lived:
+            print(f"  ({skipped_long_lived} named for a long-lived stack — skipped)")
         if not stale:
             print("✅ No stale idp- test stacks to reap")
             # Still drop expired markers: a marker whose stack is already gone
@@ -6541,7 +6597,9 @@ IDP_BUCKET_STALE_AGE_SECONDS = 6 * 3600  # 6h
 
 # idp- run-prefix: "idp-MMDD-HHMMSS". A bucket name is
 # "idp-MMDD-HHMMSS[-suffix]-<role>bucket-<rand>"; we group by this prefix so a
-# bucket is protected iff its RUN still has any CloudFormation stack.
+# bucket is protected iff its RUN still has any CloudFormation stack. A name
+# with no such prefix gets none of that protection, which is why a long-lived
+# stack is named in SWEEP_EXEMPT_STACK_NAMES instead.
 _IDP_RUN_PREFIX_RE = re.compile(r"^(idp-\d{4}-\d{6})")
 
 
@@ -6598,7 +6656,10 @@ def cleanup_stale_idp_buckets():
     `idp-cli delete` leaves the bucket behind even after the stack is gone.
     Thousands accumulated this way. This converges them back regardless.
 
-    Safety: a bucket is deleted only if BOTH
+    Safety: a bucket named for a SWEEP_EXEMPT_STACK_NAMES stack is never
+    emptied or deleted. That stack's name carries no run prefix, so the
+    live-stack protection below cannot reach its buckets even while it is up.
+    Any other bucket is deleted only if BOTH
       * its run-prefix (idp-MMDD-HHMMSS) has NO surviving CloudFormation stack
         (so no in-flight/partly-deployed run owns it), AND
       * it is older than IDP_BUCKET_STALE_AGE_SECONDS (backstop for a brand-new
@@ -6649,9 +6710,13 @@ def cleanup_stale_idp_buckets():
 
     try:
         stale, skipped_protected, skipped_young = [], 0, 0
+        skipped_long_lived = 0
         for b in listed:
             name = b.get("Name", "")
             if not name.startswith("idp-"):
+                continue
+            if _named_for_exempt_stack(name):
+                skipped_long_lived += 1
                 continue
             m = _IDP_RUN_PREFIX_RE.match(name)
             if m and m.group(1) in protected:
@@ -6664,10 +6729,11 @@ def cleanup_stale_idp_buckets():
                 continue
             stale.append(name)
 
-        if skipped_protected or skipped_young:
+        if skipped_protected or skipped_young or skipped_long_lived:
             print(
                 f"  ({skipped_protected} protected by a live stack, "
-                f"{skipped_young} younger than the age gate — skipped)"
+                f"{skipped_young} younger than the age gate, "
+                f"{skipped_long_lived} named for a long-lived stack — skipped)"
             )
         if not stale:
             print("✅ No stale idp- test buckets to reap")
@@ -6731,6 +6797,12 @@ def cleanup_stale_idp_policies():
     pre-stack delete that did not complete. Either one outliving its run is
     permanent: no stack owns it, so cleanup_stale_idp_stacks cannot see it.
 
+    A policy named for a SWEEP_EXEMPT_STACK_NAMES stack is skipped before
+    anything below is asked. `idp-ux-nightly`'s boundary and PassRole policy
+    carry no run prefix, so the first condition would spare them anyway;
+    checking first means they do not rest on that name failing the run-prefix
+    match.
+
     Safety — a policy is deleted only if ALL of:
       * its name carries a run prefix (idp-MMDD-HHMMSS), which is also what
         excludes SHARED_BOUNDARY_POLICY_NAME: the shared probe boundary is named
@@ -6777,6 +6849,7 @@ def cleanup_stale_idp_policies():
         protected = _live_idp_run_prefixes()
 
         stale, skipped_protected, skipped_young = [], 0, 0
+        skipped_long_lived = 0
         # Not spelled with a word from exemption_discovery.NAME_VOCABULARY (an
         # earlier `unknown_age` was discovered through `KNOWN_`), because this
         # is not a gate carve-out and no registry entry could say anything
@@ -6788,6 +6861,9 @@ def cleanup_stale_idp_policies():
         for page in paginator.paginate(Scope="Local"):
             for policy in page.get("Policies", []):
                 name = policy.get("PolicyName", "")
+                if _named_for_exempt_stack(name):
+                    skipped_long_lived += 1
+                    continue
                 match = _IDP_RUN_PREFIX_RE.match(name)
                 if not match:
                     continue
@@ -6815,10 +6891,11 @@ def cleanup_stale_idp_policies():
         )
 
     try:
-        if skipped_protected or skipped_young:
+        if skipped_protected or skipped_young or skipped_long_lived:
             print(
                 f"  ({skipped_protected} protected by a live stack, "
-                f"{skipped_young} younger than the age gate — skipped)"
+                f"{skipped_young} younger than the age gate, "
+                f"{skipped_long_lived} named for a long-lived stack — skipped)"
             )
         for name in sorted(age_unestablishable):
             print(
@@ -8414,7 +8491,9 @@ def main():
     # leaked test VPCs exhaust the VPC quota, and leaked -iam stacks' roles
     # exhaust the RolesPerAccount quota (which failed every deploy once ~600
     # roles had accumulated). All are age-gated so a concurrent pipeline's
-    # in-flight run is never touched.
+    # in-flight run is never touched, and the stack, bucket, policy and BDA
+    # sweeps leave a SWEEP_EXEMPT_STACK_NAMES stack, and everything named for
+    # it, standing at any age.
     #
     # Every sweep's outcome is BOUND here rather than printed and forgotten: a
     # sweep whose enumeration failed considered nothing, and a `⚠️` on an
