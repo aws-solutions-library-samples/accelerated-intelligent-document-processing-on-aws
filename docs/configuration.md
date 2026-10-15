@@ -1148,8 +1148,8 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5** | 512 tokens |
-| Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5**, **Sonnet 5.5** | 512 tokens |
+| Claude **Sonnet 5**, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
 | Amazon Nova | ≤ 355 tokens (below any shipped class) |
@@ -1162,6 +1162,14 @@ Note the two Haikus sit at opposite ends of this table, so "Haiku" is not a tier
 Haiku 5.5's minimum is 512 tokens — the lowest here, 8x below Haiku 4.5's — which
 makes it the one cheap model where caching is worth configuring rather than written
 off: a class that never cached on Haiku 4.5 may well cache on it.
+
+**Nor is a version number a tier.** The two Sonnets are in different rows above:
+Sonnet 5.5 caches from 512 tokens and Sonnet 5 from 1,024. So the 25% of shipped
+classes that never cache on the 1,024-token tier is a figure about Sonnet 5, not
+about Sonnet 5.5 — on which some of those same classes do cache. If you are
+switching between the two, re-run `idp-cli config-validate`: its per-class warning
+is computed against the configured model's own minimum, so the answer changes with
+the model and not only with the prompt.
 
 `idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up

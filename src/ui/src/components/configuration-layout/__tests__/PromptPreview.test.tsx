@@ -262,6 +262,30 @@ describe('schemaDivergenceFor', () => {
     it('never leaks into the confidence step, which sends no forced tool', () => {
       expect(schemaDivergenceFor(forcing({ mode: 'simple' }), {}, 'confidence').forcedTool).toBe(false);
     });
+
+    it('is off on the two models that reject a forced toolChoice, and on in the same config for their 5.0 siblings', () => {
+      // Mirrors FORCED_TOOL_CHOICE_UNSUPPORTED in idp_common/bedrock/client.py.
+      // Both halves of each pair matter: the ids are substrings of one another
+      // ('claude-sonnet-5' inside 'claude-sonnet-5-5'), so a check written against
+      // the shorter id would turn the tab off for Sonnet 5 as well — which DOES
+      // accept forcing — and a check that is simply missing turns it on for 5.5,
+      // showing a Tool Schema tab for a request Bedrock answers with a 400 and
+      // folding the toolSpec's tokens into the displayed input-token estimate.
+      const simple = (model: string) => forcing({ mode: 'simple', model });
+
+      expect(schemaDivergenceFor(simple('us.anthropic.claude-sonnet-5-5'), {}, 'extraction').forcedTool).toBe(false);
+      expect(schemaDivergenceFor(simple('global.anthropic.claude-sonnet-5-5'), {}, 'extraction').forcedTool).toBe(false);
+      expect(schemaDivergenceFor(simple('us.anthropic.claude-opus-5-5'), {}, 'extraction').forcedTool).toBe(false);
+
+      expect(schemaDivergenceFor(simple('us.anthropic.claude-sonnet-5'), {}, 'extraction').forcedTool).toBe(true);
+      expect(schemaDivergenceFor(simple('us.anthropic.claude-sonnet-5:1m'), {}, 'extraction').forcedTool).toBe(true);
+      expect(schemaDivergenceFor(simple('us.anthropic.claude-opus-5'), {}, 'extraction').forcedTool).toBe(true);
+      // Haiku 5.5 shares both 5.5 models' sampling and effort surface but accepts
+      // forcing, so "another 5.5" must not become the rule here either.
+      expect(schemaDivergenceFor(simple('us.anthropic.claude-haiku-5-5'), {}, 'extraction').forcedTool).toBe(true);
+      // An unset model keeps the tab: the backend decides, this only affects the preview.
+      expect(schemaDivergenceFor(forcing({ mode: 'simple' }), {}, 'extraction').forcedTool).toBe(true);
+    });
   });
 
   describe('restatesSchema', () => {

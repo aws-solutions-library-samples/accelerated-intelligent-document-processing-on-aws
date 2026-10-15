@@ -43,6 +43,16 @@ SURVEY = os.path.join(
         # make them agree, and only the second of the two assertions catches that.
         ("us.anthropic.claude-haiku-5-5", 512),
         ("global.anthropic.claude-haiku-5-5", 512),
+        # The two Sonnets are a pair for the same reason, and a sharper one: here
+        # the shadowing is in the ids themselves — "claude-sonnet-5" is a SUBSTRING
+        # of "claude-sonnet-5-5", so dropping the sonnet-5-5 alternative from the
+        # 512 tier silently moves 5.5 to 1,024 (double its real minimum) while
+        # leaving every other row green. Measured as a pair on Converse, us-east-1,
+        # 2026-10-14: a 513-token prefix cached on 5.5 and a 508-token one did not,
+        # while Sonnet 5 cached nothing at 825 tokens and cached at 1,223.
+        ("us.anthropic.claude-sonnet-5-5", 512),
+        ("eu.anthropic.claude-sonnet-5-5", 512),
+        ("global.anthropic.claude-sonnet-5-5", 512),
         ("us.anthropic.claude-sonnet-5", 1024),
         ("eu.anthropic.claude-sonnet-5:1m", 1024),
         ("us.anthropic.claude-sonnet-4-6", 1024),

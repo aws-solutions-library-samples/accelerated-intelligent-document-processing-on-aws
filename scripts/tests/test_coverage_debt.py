@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT-0
 """Tests for the coverage ratchet.
 
-The ratchet spans nine trees and has two halves — an aggregate floor in `lib/idp_common_pkg/Makefile` and a
+The ratchet spans every tree in `check_coverage_debt.TREES` and has two halves — an
+aggregate floor in `lib/idp_common_pkg/Makefile` and a
 per-file baseline checked by `scripts/check_coverage_debt.py` — and both are asserted
 here, because the aggregate is the half people remember and the per-file half is the one
 that catches the regression the aggregate hides.
@@ -371,6 +372,196 @@ class TestWiring:
             (REPO_ROOT / "scripts" / "coverage_debt.json").read_text()
         )["trees"]["idp_common"]["total"]
         assert floor <= recorded, f"floor {floor} exceeds recorded {recorded:.2f}"
+
+
+#: The per-file coverage #1221 achieved on two Lambda handler directories, by path.
+#:
+#: Keyed by **repo-relative path**, not by tree name, and that is the whole reason this
+#: pin is worth having rather than being a second copy of the baseline. What has to be
+#: held is the coverage of these four files. *Which* `Tree` records them is an
+#: implementation detail of the registry, and #1227's decided remedy — a derived fan-out
+#: over the handler directories — will change it. A pin written against today's two
+#: registry entries would have to be rewritten by that change; one written against the
+#: paths outlives it, because it asks only that *some* registered tree ratchet the file.
+#:
+#: Why pin at all when the ratchet already compares these files: the ratchet's floor
+#: lives in `scripts/coverage_debt.json`, and `--write` re-records every measured tree
+#: from whatever the current run reports. So the baseline alone cannot tell a deliberate
+#: lowering from an accidental one — following the gate's own printed remedy is enough to
+#: move ten floors at once, which is what #1421 is about. A figure pinned here cannot
+#: move without an edit that says it is moving.
+#:
+#: Measured by `scripts/coverage_all.py` on 2026-10-14 with no tests skipped: 118
+#: collected for `complete_section_review` and 383 for `calculate_capacity`, identical at
+#: `-n 16` and serial. The directory figures #1221 reports as 99% are the whole-report
+#: aggregates (99.66% and 98.69%), which include each directory's own test modules; these
+#: are the source files alone, which is what the baseline records.
+HANDLER_COVERAGE_FLOORS_FROM_1221: dict[str, float] = {
+    "src/lambda/complete_section_review/index.py": 100.0,
+    "src/lambda/calculate_capacity/index.py": 96.9,
+    "src/lambda/calculate_capacity/log_sanitizer.py": 100.0,
+    "src/lambda/calculate_capacity/validation.py": 100.0,
+}
+
+#: The directories those floors cover — derived from the paths, never listed twice.
+#:
+#: Not named `PINNED_…`. That prefix is a fragment in the name vocabulary the collector
+#: under `scripts/tests/` uses to find constants that switch a gate off for something,
+#: so the registry meta-test asks for an authored judgement about any constant spelled
+#: that way. This one switches nothing off — it is the universe the two assertions below
+#: are enforced over — and the documented remedy when a name matches by accident is to
+#: rename, so the name is what changed.
+HANDLER_DIRECTORIES_WITH_FLOORS: tuple[str, ...] = tuple(
+    sorted({str(Path(p).parent) for p in HANDLER_COVERAGE_FLOORS_FROM_1221})
+)
+
+
+def _tracked_sources_under(directory: str) -> list[str]:
+    """Tracked, non-test `.py` under ``directory``, repo-relative.
+
+    Filtered through the gate's own :func:`check_coverage_debt._looks_like_test` rather
+    than a second rule, because a closure assertion whose universe is derived differently
+    from the gate's reports a mismatch that is an artefact of the two rules disagreeing.
+    """
+    out = subprocess.run(
+        ["git", "ls-files", f"{directory}/*.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return sorted(p for p in out if not ccd._looks_like_test(p))
+
+
+@pytest.mark.unit
+class TestTheHandlerDirectoriesWithCoverageToLose:
+    """#1221's coverage work on two Lambda handler directories, held by path.
+
+    #1221 reports taking `src/lambda/complete_section_review` from 47% to 99% and
+    `src/lambda/calculate_capacity` from 31% to 99%, and for a while nothing held either
+    figure: no handler directory was in the coverage registry, so a later change could
+    take both back down with every gate green (#1227). Both are registered now, and this
+    class is the half that survives the registry being reshaped.
+
+    It asserts a property of the **committed baseline**, so it needs no coverage report
+    and no measurement — which is what makes it host-insensitive where the ratchet is
+    not. A machine that skips tests measures a lower figure and the ratchet says so; this
+    pin instead fails only when the recorded floor itself moves down.
+    """
+
+    def _recorded_by_path(self) -> dict[str, float]:
+        """Every file the committed baseline records, re-keyed repo-relative.
+
+        Baseline keys are relative to their own tree's root, so `index.py` means two
+        different files in two different trees. Resolving each through
+        :func:`check_coverage_debt.tree_root` is what makes a path-keyed assertion
+        possible at all, and it is also what will keep working when those two entries are
+        replaced by one fan-out tree.
+        """
+        # Read through the gate's own constant rather than a second copy of the path, so
+        # the register this asserts about is by construction the one the gate checks.
+        baseline = json.loads(ccd.BASELINE.read_text(encoding="utf-8"))
+        recorded: dict[str, float] = {}
+        for tree in ccd.TREES:
+            root = ccd.tree_root(tree)
+            files = baseline.get("trees", {}).get(tree.name, {}).get("files", {})
+            for key, rate in files.items():
+                resolved = (root / key).resolve()
+                try:
+                    recorded[str(resolved.relative_to(REPO_ROOT))] = rate
+                except ValueError:  # pragma: no cover - a tree rooted outside the repo
+                    continue
+        return recorded
+
+    def test_the_pin_set_is_not_empty(self):
+        """Non-vacuity, and it is not theoretical.
+
+        Every other assertion here is parametrised over
+        ``HANDLER_COVERAGE_FLOORS_FROM_1221``, and pytest reports a parametrisation over
+        an empty collection as a skip rather than a failure — so emptying the dict would
+        turn this whole class green while protecting nothing.
+        """
+        assert len(HANDLER_COVERAGE_FLOORS_FROM_1221) >= 4, (
+            f"only {len(HANDLER_COVERAGE_FLOORS_FROM_1221)} file(s) pinned; four were "
+            f"pinned when #1221's work was protected, so a smaller number means pins "
+            f"were dropped rather than that the directories shrank"
+        )
+        assert len(HANDLER_DIRECTORIES_WITH_FLOORS) == 2, (
+            HANDLER_DIRECTORIES_WITH_FLOORS
+        )
+
+    @pytest.mark.parametrize("path", sorted(HANDLER_COVERAGE_FLOORS_FROM_1221))
+    def test_the_file_is_ratcheted_at_or_above_its_pinned_floor(self, path):
+        floor = HANDLER_COVERAGE_FLOORS_FROM_1221[path]
+        recorded = self._recorded_by_path()
+        assert recorded, (
+            "the committed baseline resolved to no files at all, so this assertion "
+            "would otherwise be comparing against an empty map"
+        )
+        assert path in recorded, (
+            f"{path} is not recorded by any tree in check_coverage_debt.TREES, so "
+            f"nothing holds its coverage. #1221 took it to {floor:.2f}% and #1227 is "
+            f"about exactly this gap: measure its directory with `python3 "
+            f"scripts/coverage_all.py --only <tree>` and record it with "
+            f"`python3 scripts/check_coverage_debt.py --write-missing`, which adds only "
+            f"absent entries and cannot move an existing floor."
+        )
+        assert recorded[path] >= floor, (
+            f"{path} is recorded at {recorded[path]:.2f}% but #1221 took it to "
+            f"{floor:.2f}%. A recorded floor only moves down when someone runs a write "
+            f"flag, so this is a lowering rather than a measurement: either the work was "
+            f"undone, or `--write` re-recorded the tree from a run that executed fewer "
+            f"tests. Re-measure before changing the number here."
+        )
+
+    @pytest.mark.parametrize("path", sorted(HANDLER_COVERAGE_FLOORS_FROM_1221))
+    def test_the_pinned_path_is_still_tracked(self, path):
+        """Staleness: a renamed file must fail here rather than leave the pin inert.
+
+        A pin naming a path git no longer tracks shields nothing and pre-approves
+        whatever next occupies the name, which is the failure mode the exemption registry
+        documents for suppression entries. The ratchet catches the same rename from the
+        other side — a recorded path the report no longer mentions — but only while a
+        report exists, and this assertion needs none.
+        """
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", path],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert tracked.returncode == 0, (
+            f"{path} is pinned at {HANDLER_COVERAGE_FLOORS_FROM_1221[path]:.2f}% but git "
+            f"does not track it. If it moved, move the pin; if it was deleted, delete "
+            f"the pin — leaving it names a file that does not exist."
+        )
+
+    @pytest.mark.parametrize("directory", HANDLER_DIRECTORIES_WITH_FLOORS)
+    def test_every_source_file_in_the_directory_is_pinned(self, directory):
+        """Universe closure over the two directories, which is what makes the pin hold.
+
+        A pin over four named files protects those four. A fifth module added beside them
+        would be ratcheted by the baseline at whatever it first measures and pinned by
+        nothing — so adding a source file here has to fail until its floor is written
+        down, the same way a new tree fails `test_every_tree_is_recorded`.
+        """
+        found = _tracked_sources_under(directory)
+        assert found, (
+            f"git tracks no non-test .py under {directory}, so this assertion examined "
+            f"nothing. Either the directory moved or the filter is wrong."
+        )
+        pinned = sorted(
+            p
+            for p in HANDLER_COVERAGE_FLOORS_FROM_1221
+            if p.startswith(f"{directory}/")
+        )
+        assert found == pinned, (
+            f"{directory} holds {len(found)} source file(s) and "
+            f"{len(pinned)} are pinned. Unpinned: "
+            f"{sorted(set(found) - set(pinned))}; pinned but absent: "
+            f"{sorted(set(pinned) - set(found))}. Measure the directory and add each "
+            f"file's floor to HANDLER_COVERAGE_FLOORS_FROM_1221."
+        )
 
 
 def _fake_tree(tmp_path: Path, name: str = "faketree"):

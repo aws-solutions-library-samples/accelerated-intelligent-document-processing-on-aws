@@ -458,6 +458,28 @@
       "files": {
         "handler.py": 88.68
       }
+    },
+    "complete_section_review": {
+      "total": 99.66,
+      "conditions": {
+        "collected": 118,
+        "skipped": 0
+      },
+      "files": {
+        "index.py": 100.0
+      }
+    },
+    "calculate_capacity": {
+      "total": 98.69,
+      "conditions": {
+        "collected": 383,
+        "skipped": 0
+      },
+      "files": {
+        "index.py": 96.9,
+        "log_sanitizer.py": 100.0,
+        "validation.py": 100.0
+      }
     }
   }
 }

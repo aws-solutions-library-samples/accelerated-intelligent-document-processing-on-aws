@@ -169,6 +169,18 @@ in ca-central-1. See [Document Knowledge Base Query](./knowledge-base.md#configu
   Base condition selects, is callable there. Verify with the command in
   [Verifying model availability](#verifying-model-availability) against your
   own Region before relying on a model.
+- **Claude Sonnet 5.5 is offered in Canada and its ca-west-1 status is open.**
+  `us.anthropic.claude-sonnet-5-5` and `global.anthropic.claude-sonnet-5-5` are
+  both ACTIVE in ca-central-1 and the bare `anthropic.claude-sonnet-5-5` is hosted
+  in-Region there (checked 2026-10-14), which is why the model carries no
+  `CA_UNAVAILABLE_MODELS` entry. Neither that nor its two Service Quotas codes
+  (`L-94A31E46`, `L-31AB82D0`) has been resolved from ca-west-1. The quota codes
+  matter more than the usual picklist question there: `CalculateCapacity` re-raises
+  any non-throttling error from `get_service_quota`, so a code that does not
+  resolve fails the **whole** Capacity Planning response rather than one row. Run
+  the availability command below plus `aws service-quotas get-service-quota
+  --service-code bedrock --quota-code L-94A31E46` from a ca-west-1 stack before
+  relying on either.
 
 ## Deploying to ca-central-1
 

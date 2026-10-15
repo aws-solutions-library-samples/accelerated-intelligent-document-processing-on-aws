@@ -107,7 +107,7 @@ extraction:
 > `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
+> 5.5 / Sonnet 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
 > (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
@@ -117,7 +117,8 @@ extraction:
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
 > Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
 > Haiku 5.5 is the first Haiku that accepts effort, and its own default is
-> `medium` rather than `high`.
+> `medium` rather than `high`. Sonnet 5.5's own default is `high`, the ordinary
+> one — so "it is a 5.5 model" does not predict the default either.
 
 ### Advanced (agentic) extraction
 
@@ -206,7 +207,7 @@ Agentic extraction requires models with tool-use support:
 > |---|---|---|
 > | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
 > | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
-> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5, Haiku 5.5) | none — `` `top_k` is deprecated for this model `` | — |
+> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5, Sonnet 5.5, Haiku 5.5) | none — `` `top_k` is deprecated for this model `` | — |
 > | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
 > | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
 >
@@ -888,11 +889,25 @@ may instead emit a worse value that fits the schema, so this is not a free
 accuracy win and it is not yet proven on real corpora. Measure completeness and
 field accuracy on your own documents before enabling it.
 
-**When it is skipped automatically.** Not every route can carry a tool
-configuration. Models reached through a custom Lambda hook and the GPT-5.x
-(Responses API) route fall back to the prompt, and the reason is recorded — so a
+**When it is skipped automatically.** Two different things can make forcing
+unavailable, and both fall back to the prompt with the reason recorded — so a
 before/after comparison can tell "forcing changed nothing" from "forcing never
 ran", which are very different results.
+
+- **The route carries no tool configuration at all**: models reached through a
+  custom Lambda hook, and the GPT-5.x (Responses API) route.
+- **The model carries a tool configuration but rejects a *forced* choice**:
+  **Claude Opus 5.5** and **Claude Sonnet 5.5**. Both answer `toolChoice: auto`
+  with a `toolUse` block and both return a 400 for `{"any": {}}` and
+  `{"tool": {...}}` (`tool_choice: type "tool" and "any" are not supported for this
+  model`), so schema enforcement is simply not available on them and the prose
+  schema is used instead.
+
+⚠️ **This is per model id, not per family.** Claude **Sonnet 5** and **Opus 5**
+both accept a forced choice, as does **Haiku 5.5** — so switching from Sonnet 5 to
+Sonnet 5.5 silently turns schema enforcement off, and `metadata.forced_tool.skipped`
+is where that shows up. Check it before reading a Sonnet 5 → Sonnet 5.5 comparison
+as a model difference.
 
 **A fixed failure to know about.** Before this fix, a *group* attribute whose name
 contains a space (`Account Holder Address` — normal in human-authored classes,
@@ -2004,6 +2019,7 @@ extraction:
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-5` (and the other Claude 4.x/5 Sonnet/Opus IDs)
+- `us.anthropic.claude-sonnet-5-5`
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
 

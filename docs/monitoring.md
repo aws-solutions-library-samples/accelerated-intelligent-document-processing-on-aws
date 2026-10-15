@@ -125,7 +125,7 @@ The over-admission is therefore bounded to roughly one generation of documents
 rather than lasting forever — which is why the guards and the repair below matter
 for cost and for predictable capacity rather than for recoverability.
 
-Four metrics in the stack's own namespace (`<StackName>`) make all of this
+These metrics in the stack's own namespace (`<StackName>`) make all of this
 visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
@@ -136,9 +136,15 @@ visible, all on the **Workflow Concurrency Counter** widget:
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
 - **`ConcurrencyCounterUnderflow`** — a decrement that was refused because the
-  counter was already at zero. Nothing else reports this: the counter and the
-  document both end up correct, so without this metric a duplicate release is
-  invisible.
+  counter was not above zero. Nothing else reports this: the counter and the
+  document both end up correct, so without this metric a release of a slot that
+  was never held is invisible. ⚠️ **Two functions publish it, so a search of one
+  log group is not an answer.** The **workflow tracker** publishes it from the
+  terminal-event decrement and logs `Concurrency counter was already 0`; the
+  **queue processor** publishes it from a compensating hand-back — after a
+  duplicate message, or a `StartExecution` that failed — and logs `Counter
+  decrement refused`. Both are floored on the same condition, so both can trip
+  it, and the alarm below does not distinguish them.
 - **`ConcurrencyDecrementSuppressed`** — a terminal event whose slot had already
   been released, recognised by its `dec#<executionArn>` marker and skipped. This
   is the guard working, not a fault, so it has **no alarm**: EventBridge
@@ -148,8 +154,17 @@ visible, all on the **Workflow Concurrency Counter** widget:
   is the only signal that terminal events are being redelivered at all — a rising
   count alongside `WorkflowTrackerDLQAlarm` or tracker errors says the tracker is
   failing *after* it releases the slot.
+- **`ConcurrencyCounterUpdateFailed`** — a compensating hand-back that could not
+  be written at all, because the `UpdateItem` **raised**. Distinct from
+  `ConcurrencyCounterUnderflow`, which is the write DynamoDB *refused*: this one
+  is the write that errored. The queue processor logs the exception and carries
+  on by design — the execution exists, or the message is being retried. It does
+  log, at ERROR with a traceback: grep the QueueProcessor log group for
+  `Failed to decrement counter`. What issue #1358 lacked was not the log line but
+  a **datapoint**, so nothing an operator was watching moved while the counter
+  climbed. Each datapoint here is one leaked slot.
 
-Four alarms publish to `AlertsTopic`:
+These alarms publish to `AlertsTopic`:
 
 - **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
   fires on the *symptom*, once slots are already being held wrongly.
@@ -157,9 +172,34 @@ Four alarms publish to `AlertsTopic`:
   dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
   so an event it could not process is a slot that was never released, and it
   alarms on the first message rather than waiting for drift to accumulate.
-- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement. The floor
-  already prevented the damage, so this is a *correctness* signal: something
-  released a slot twice, and the reason is worth finding.
+- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement, from either
+  publisher. The floor already prevented the damage, so this is a *correctness*
+  signal: something released a slot it did not hold, and the reason is worth
+  finding. Check **both** log groups for the two fragments above — a duplicate
+  terminal event and a duplicate SQS message produce the same metric. One cause is
+  benign and worth ruling out first: a downward reconciliation
+  landing between a queue-processor increment and its hand-back makes that
+  hand-back a double release, because the correction is computed from the
+  executions actually running and so excludes the slot about to be handed back.
+  Look for a `RECONCILED` line in the QueueProcessor logs immediately before. It
+  needs the stack to be at its ceiling (reconciliation runs only on a refused
+  increment), so it is rare, and nothing is wrong afterwards. ⚠️ **A missing
+  counter item is the opposite of benign and reaches the same alarm.**
+  `active_count > 0` is also false when the `workflow_counter` item or its
+  `active_count` attribute does not exist, so the refusal looks identical. That
+  state should be unreachable: `InitializeConcurrencyTableCustomResource` writes
+  the item at `0` on stack create, and a compensating hand-back always follows a
+  *successful* increment, whose own `active_count < MaxConcurrentWorkflows`
+  condition would already have refused against a missing attribute. So if you
+  see it, the item was deleted or the initialiser never ran — check that the item
+  exists before reading anything else here, because a stack in that state admits
+  nothing at all.
+- **`ConcurrencyDecrementFailedAlarm`** — any hand-back the counter write
+  raised on. Fires on the first occurrence, because one lost hand-back is one
+  leaked slot and the defect it exists for failed on *every* attempt rather than
+  intermittently. Read the exception in the QueueProcessor logs: a
+  `ValidationException` means the request is malformed and every hand-back is
+  failing; a throttle or 5xx means retry pressure on the concurrency table.
 - **`ConcurrencyCounterNegativeAlarm`** — the counter observed below zero. This
   should be unreachable now that the decrement is floored; if it fires, the
   counter is being written by something that bypasses the floor.
@@ -181,6 +221,18 @@ different directions:
   on the value observed, and never to a value below zero. So a negative counter is
   corrected within one admitted document rather than needing the queue to be at
   its ceiling first.
+
+**The one case none of this covers**, stated so a green dashboard is not
+over-read: the same reconciliation race one unit higher. If the counter is at 2
+rather than 1 when the hand-back lands, the write succeeds and leaves the counter
+one *below* the truth, which over-admits by one slot. Nothing reports that —
+`ConcurrencyCounterNegativeAlarm` needs a value below zero,
+`ConcurrencyCounterDrift` is claimed-minus-running and alarms upward only, and
+reconciliation itself never raises the counter except from a negative. Unlike the
+tracker's decrement, a compensating hand-back carries no `dec#<executionArn>`
+marker, so a repeat release cannot be recognised as a repeat; it is only *refused*
+when the counter happens to be at zero already. The residual is bounded at one
+slot per occurrence and self-corrects on the next completion that does decrement.
 
 The repair publishes the pre-repair **negative** value — not the value the counter
 reads after the increment — before it writes, so `ConcurrencyCounterNegativeAlarm`
@@ -789,7 +841,8 @@ on.
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
-| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was already 0 — a slot released twice | `AlertsTopic` | — |
+| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was not above 0 — a slot released that was not held, either a terminal event processed twice (workflow tracker) or a compensating hand-back with nothing to hand back (queue processor) | `AlertsTopic` | — |
+| `ConcurrencyDecrementFailedAlarm` | Any compensating hand-back whose counter write **raised** rather than being refused — logged at ERROR (`Failed to decrement counter`) and continued by design, so each occurrence is one leaked slot that until now moved no metric | `AlertsTopic` | — |
 | `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
@@ -1355,6 +1408,21 @@ Monitor resource usage and costs:
 - **Lambda Execution Time**: Monitor function duration and memory usage
 - **S3 Storage**: Track storage growth over time
 - **Data Transfer**: Monitor network costs between services
+
+### `DocumentEstimatedCost` — the one cost signal the stack emits itself
+
+`DocumentEstimatedCost`, and its companion `UnpricedMeteringRows`, are emitted
+per completed document into the stack's own metric namespace, carrying the cost
+already written to that document's metering rows. `Sum` over a period is spend in
+that period, which is the shape a spend alarm wants; `Average` is cost per
+document. Neither metric carries dimensions, for a reason worth reading before
+adding one.
+
+**It reports and does not enforce.** Nothing throttles, queues or stops
+processing when spend rises, and the stack creates no spend alarm and no budget —
+both are yours to set up. The dimension reasoning, how to scope a budget (which
+is less obvious than it looks) and a method for choosing its amount are in
+[Cost Considerations](cost-calculator.md#documentestimatedcost--a-cloudwatch-metric-you-can-alarm-on).
 
 ## Custom Dashboard Creation
 

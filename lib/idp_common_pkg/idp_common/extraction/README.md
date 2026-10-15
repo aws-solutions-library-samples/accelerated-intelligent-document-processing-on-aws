@@ -598,11 +598,16 @@ attempt's conversation rather than sending the prompt again: a second copy of th
 prompt is a fourth block and a third copy is a fifth
 ([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)).
 
-Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Opus 5.5 /
-Fable 5, 1,024
-on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
-`idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
-point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
+Each model has a **minimum cacheable prefix**, and below it a cache point silently
+does nothing. ⚠️ **The numbers are deliberately not repeated here** — ask
+`idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens(model_id)`. Repeating
+them here would be a sixth copy, and `benchmarks/tests/test_cache_minimum_parity.py`
+only keeps five in agreement. The table is also
+not monotonic across generations and not a property of the family: the two Haikus sit
+at opposite ends of it (4.5 at 4,096, 5.5 at 512) and the two Sonnets a tier apart
+(Sonnet 5 at 1,024, Sonnet 5.5 at 512), so a number carried over from a sibling is
+wrong about half the time. `docs/configuration.md` holds the table for a reader who
+wants to see it, and the function is what the product reads. `merge_utils._validate_prompt_cache_prefix` estimates
 each class's Simple-mode prefix (`estimate_prefix_tokens`, chars/4, about ±10% against
 Bedrock's count; a class within that band of the minimum is reported as "may not
 cache") using the prompt the service would send (the 1S-TopK prompt under integrated
@@ -645,7 +650,7 @@ Simple mode only — the agentic path already sends a tool schema. Off by defaul
 
 | Helper | Purpose |
 |---|---|
-| `should_force_tool(model_id, enabled, class_schema)` | `(force, skip_reason)`. Refuses routes that cannot carry a `toolConfig` (Lambda hook, GPT-5.x Responses API) and schemas with no properties. |
+| `should_force_tool(model_id, enabled, class_schema)` | `(force, skip_reason)`. Refuses routes that cannot carry a `toolConfig` (Lambda hook, GPT-5.x Responses API), models that carry one but reject a *forced* `toolChoice` (Claude Opus 5.5, Claude Sonnet 5.5 — **not** Sonnet 5 or Opus 5, which accept it), and schemas with no properties. |
 | `build_extraction_tool_config(class_schema)` | `(tool_config, name_map)` for the single `emit_extracted_fields` tool. |
 | `forced_tool_choice()` | `{"tool": {"name": ...}}` — must NAME the tool; `any`/`auto` would not be forcing. |
 | `restore_extracted_fields(tool_input, name_map)` | Undoes wire-safe property renaming. |

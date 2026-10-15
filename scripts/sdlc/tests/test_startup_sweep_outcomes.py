@@ -299,6 +299,25 @@ def _contents(cbd, sweep, with_target):
             ),
         }
 
+    if sweep == "cleanup_stale_idp_roles":
+        # No stacks at all, so nothing protects the role's run prefix. These are
+        # leaked by `DeletionPolicy: Retain` rather than by a failed teardown, so
+        # the realistic target is a role whose stack is long gone.
+        roles = (
+            [
+                {
+                    "RoleName": f"{DEAD_RUN}-DOCUMENTK-StartIngestionJobFunction-abc",
+                    "CreateDate": old,
+                }
+            ]
+            if with_target
+            else []
+        )
+        return {
+            "list_stacks": [{"StackSummaries": []}],
+            "list_roles": [{"Roles": roles}],
+        }
+
     if sweep == "cleanup_stale_idp_policies":
         policies = (
             [
@@ -342,36 +361,65 @@ def _contents(cbd, sweep, with_target):
 #: there is no safe selection to make — so a case that only fails the second
 #: covers half the surface. Every registered sweep needs an entry here; one
 #: without is a failure, not a skip.
+#:
+#: `age_gate` drives the age-gate direction (#1445): `field` is the timestamp the
+#: listing carries, `young_line` a fragment the sweep prints for an item inside
+#: the gate, and its presence says the sweep HAS an age gate at all. Five of the
+#: six do; `None` for the BDA sweep, which gates on stack liveness instead, and
+#: `test_every_sweep_with_an_age_gate_in_the_module_has_one_here` derives that
+#: split from the module's source rather than trusting this dict, so a sweep that
+#: grows a gate later is covered or fails by name.
 _SWEEP_SPECS = {
     "cleanup_stale_bda_blueprints": {
         "enumerations": ("list_blueprints", "list_data_automation_projects"),
         "per_item": "delete_blueprint",
         "quiet_line": "✅ No stale BDA resources found",
+        "age_gate": None,  # gated on stack liveness, not on an age
     },
     "cleanup_stale_apigw_test_vpcs": {
         "enumerations": ("list_stacks",),
         "per_item": None,  # delete_apigw_test_vpc returns False; see below
         "quiet_line": "✅ No stale apigw test VPC stacks to reap",
+        "age_gate": {"field": "CreationTime", "young_line": "skipping — only"},
     },
     "cleanup_stale_idp_stacks": {
         "enumerations": ("list_stacks",),
         "per_item": "delete_stack",
         "quiet_line": "✅ No stale idp- test stacks to reap",
+        "age_gate": {
+            "field": "CreationTime",
+            "young_line": "young idp- stack(s) skipped",
+        },
     },
     "cleanup_stale_idp_buckets": {
         "enumerations": ("list_stacks", "list_buckets"),
         "per_item": "delete_bucket",
         "quiet_line": "✅ No stale idp- test buckets to reap",
+        "age_gate": {
+            "field": "CreationDate",
+            "young_line": "younger than the age gate",
+        },
+    },
+    "cleanup_stale_idp_roles": {
+        "enumerations": ("list_stacks", "list_roles"),
+        "per_item": None,  # _delete_iam_role reports (False, detail)
+        "quiet_line": "✅ No leaked idp- IAM roles to reap",
+        "age_gate": {"field": "CreateDate", "young_line": "younger than the age gate"},
     },
     "cleanup_stale_idp_policies": {
         "enumerations": ("list_stacks", "list_policies"),
         "per_item": None,  # _delete_managed_policy reports (False, detail)
         "quiet_line": "✅ No orphaned idp- IAM managed policies to reap",
+        "age_gate": {"field": "CreateDate", "young_line": "younger than the age gate"},
     },
     "cleanup_stale_ci_diagnostics": {
         "enumerations": ("list_objects_v2",),
         "per_item": "delete_object",
         "quiet_line": "✅ No expired diagnostics bundles",
+        # Its gate runs the other way round — past the window is what deletes —
+        # and nothing is printed for an object inside it, since every bundle
+        # written in the last 30 days is inside it on every run.
+        "age_gate": {"field": "LastModified", "young_line": None},
     },
 }
 
@@ -412,9 +460,25 @@ def _install(
     # Two sweeps delegate the per-item action to a module function that already
     # swallows its own failures and reports the outcome in its return value.
     # Patched to the SUCCESS answer here; the best-effort direction drives them
-    # to the failure answer in its own test.
-    monkeypatch.setattr(cbd, "delete_apigw_test_vpc", lambda _name: True)
-    monkeypatch.setattr(cbd, "_delete_managed_policy", lambda _c, _arn: (True, ""))
+    # to the failure answer in its own test. They RECORD as well, so
+    # `aws.deleted` answers "did this sweep reap anything" for all six rather
+    # than for the four whose delete reaches the fake client — a reap test that
+    # cannot see the reap is vacuous in the direction that matters.
+    def _reap_vpc(name):
+        aws.deleted.append(name)
+        return True
+
+    def _reap_policy(_client, arn):
+        aws.deleted.append(arn)
+        return (True, "")
+
+    def _reap_role(_client, name):
+        aws.deleted.append(name)
+        return (True, "")
+
+    monkeypatch.setattr(cbd, "delete_apigw_test_vpc", _reap_vpc)
+    monkeypatch.setattr(cbd, "_delete_managed_policy", _reap_policy)
+    monkeypatch.setattr(cbd, "_delete_iam_role", _reap_role)
     return aws
 
 
@@ -649,6 +713,223 @@ def test_a_policy_that_will_not_delete_stays_best_effort(cbd, monkeypatch, capsy
     out = capsys.readouterr().out
     assert "NOT deleted" in out and DEAD_RUN in out
     assert cbd.SWEEP_NOT_COMPLETED not in out
+
+
+# ---------------------------------------------------------------------------
+# Direction 4: an age gate fails CLOSED, in its own counter (#1445)
+#
+# Three of these gates read an unestablishable age as "old enough to delete" and
+# a fourth read it as "the age gate cannot be satisfied" — four siblings
+# arguing the same question to opposite answers. The trigger is a listing that
+# omits `CreationTime`/`CreationDate`, fields documented as always present, so
+# what is asserted here is the DIRECTION the gate takes when it cannot tell,
+# not a path anyone has observed.
+#
+# ⚠️ Three cases per sweep, and all three are needed. Keeping the unknown-age
+# item is worthless if the gate stops reaping anything (the reaper goes inert,
+# which is the defect #1434 was about from the other side), and it is worth
+# little if "age unknown" is reported as "younger than the gate" — the second is
+# routine and needs no attention, which is why the policy reaper gave the first
+# its own counter.
+#
+# Parametrised off the registry, with the per-sweep timestamp field as driving
+# data, because five near-copies is how one of them ends up subtly different —
+# which is the state this change found the module in.
+# ---------------------------------------------------------------------------
+
+#: Inside every gate in the module. 1 second rather than a fraction of the
+#: narrowest gate, so a gate tuned down does not quietly make this case the
+#: unknown-age one.
+YOUNG_AGE_SECONDS = 1
+
+#: The ways a timestamp can fail to establish an age, all three of which a
+#: listing could carry. A naive datetime is the one that used to raise, which
+#: inside a sweep's blanket `except` cost the whole sweep rather than one item.
+UNDATEABLE = [
+    pytest.param(None, id="absent"),
+    pytest.param("2026-01-01T00:00:00Z", id="a-string-not-a-datetime"),
+    pytest.param(datetime(2026, 1, 1), id="naive-no-tzinfo"),  # noqa: DTZ001
+]
+
+
+def _reaged(contents, field, value):
+    """`contents` with every `field` timestamp replaced by `value`.
+
+    Recursive and by FIELD NAME rather than by position, so it does not depend
+    on the shape of each sweep's account contents — the five listings nest
+    differently and a positional rewrite would silently miss one, leaving a case
+    that drives the old timestamp and passes either way.
+    """
+    if isinstance(contents, dict):
+        return {
+            key: (value if key == field else _reaged(sub, field, value))
+            for key, sub in contents.items()
+        }
+    if isinstance(contents, list):
+        return [_reaged(sub, field, value) for sub in contents]
+    return contents
+
+
+def _age_gate_sweeps():
+    return [s for s in _sweep_names() if _SWEEP_SPECS[s]["age_gate"]]
+
+
+def _aged(cbd, sweep, value):
+    """This sweep's account contents, holding one candidate at `value`."""
+    field = _SWEEP_SPECS[sweep]["age_gate"]["field"]
+    return _reaged(_contents(cbd, sweep, True), field, value)  # noqa: FBT003
+
+
+def test_every_sweep_with_an_age_gate_in_the_module_has_one_here():
+    """Universe closure for the gate set, derived rather than listed.
+
+    `_listing_age_seconds` is the one age computation behind all of them, so
+    reachability from a sweep is what "has an age gate" means — asserted over
+    the call graph, because the policy sweep reaches it through
+    `_policy_age_seconds` and a direct-call search would miss that one. A sweep
+    that grows a gate later is covered by the three cases below or fails here by
+    name; one whose gate is removed fails too, since its driving data would
+    then assert nothing.
+    """
+    functions = _top_level_functions(ast.parse(HARNESS.read_text(encoding="utf-8")))
+
+    def _reaches_the_age_helper(name, seen=None):
+        seen = seen or set()
+        if name in seen or name not in functions:
+            return False
+        seen.add(name)
+        callees = _called_function_names(functions[name])
+        return "_listing_age_seconds" in callees or any(
+            _reaches_the_age_helper(callee, seen) for callee in sorted(callees)
+        )
+
+    gated = {s for s in _sweep_names() if _reaches_the_age_helper(s)}
+    declared = set(_age_gate_sweeps())
+
+    assert gated - declared == set(), (
+        f"{sorted(gated - declared)} applies an age gate and has no `age_gate` "
+        f"entry in _SWEEP_SPECS, so nothing below asserts which way it fails"
+    )
+    assert declared - gated == set(), (
+        f"{sorted(declared - gated)} carries `age_gate` driving data and no "
+        f"longer computes an age, so those cases assert nothing"
+    )
+
+
+def test_each_age_gate_says_what_ITS_sweep_would_have_done():
+    """One reason per member, read off the call sites in the module's source.
+
+    The shared reporter takes the consequence as an argument precisely so each
+    sweep can name its own — a VPC that may still be in use, a bucket emptied
+    before it is deleted, an IAM stack deleted out from under a retained stack.
+    Five call sites sharing one sentence would read as a considered decision and
+    be the defect this repository's exemption registry exists to prevent, and
+    the assertions above pass either way: they match the shared prefix.
+    """
+    tree = ast.parse(HARNESS.read_text(encoding="utf-8"))
+    reasons = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_report_age_unestablishable"
+        ):
+            assert len(node.args) == 2, ast.unparse(node)
+            reason = node.args[1]
+            assert isinstance(reason, ast.Constant) and isinstance(reason.value, str), (
+                f"the consequence at line {node.lineno} is not a literal string, "
+                f"so what it says cannot be read here"
+            )
+            reasons.append(reason.value)
+
+    assert len(reasons) == len(_age_gate_sweeps()), (
+        f"{len(reasons)} age gates report through the shared reporter and "
+        f"{len(_age_gate_sweeps())} are registered with `age_gate` driving data"
+    )
+    assert all(len(r) > 30 for r in reasons), reasons
+    assert len(set(reasons)) == len(reasons), (
+        f"two age gates give the same consequence, so one sentence is standing "
+        f"in for two sweeps whose delete does something different: {reasons}"
+    )
+
+
+@pytest.mark.parametrize("sweep", _age_gate_sweeps())
+@pytest.mark.parametrize("value", UNDATEABLE)
+def test_an_unestablishable_age_keeps_the_item_and_counts_it(
+    cbd, monkeypatch, capsys, sweep, value
+):
+    """Kept, named, and NOT reported as an incomplete sweep.
+
+    An age that cannot be established is not the same claim as being old enough
+    to delete, and these are the paths that issue the delete call against a
+    shared CI account. Not a finding, because every item the listing returned
+    was considered: ending a night's run red on a skipped item is what would
+    make the row that reports a genuinely inert sweep worth less.
+    """
+    aws = _install(
+        cbd, monkeypatch, sweep, with_target=True, contents=_aged(cbd, sweep, value)
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert aws.deleted == [], (
+        f"{sweep} reaped an item whose age it could not establish, which is the "
+        f"gate reading 'cannot tell' as 'old enough to delete'"
+    )
+    assert findings == [], (
+        f"{sweep} turned one skipped item into {findings}; the sweep considered "
+        f"everything the listing returned, so it completed"
+    )
+    out = capsys.readouterr().out
+    assert "age not establishable" in out, out
+    assert DEAD_RUN in out, "the skipped item is not named anywhere"
+    assert cbd.SWEEP_NOT_COMPLETED not in out
+
+
+@pytest.mark.parametrize("sweep", _age_gate_sweeps())
+def test_an_age_past_the_gate_is_still_reaped(cbd, monkeypatch, capsys, sweep):
+    """The other direction, or the gate is merely inert.
+
+    A change that keeps everything whose age it is unsure about is only safe
+    while a KNOWN age past the gate still reaps, which is the whole purpose of
+    these sweeps.
+    """
+    aws = _install(cbd, monkeypatch, sweep, with_target=True)
+
+    findings = _run(cbd, sweep)
+
+    assert aws.deleted, f"{sweep} reaped nothing although its target is stale"
+    assert findings == []
+    assert "age not establishable" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("sweep", _age_gate_sweeps())
+def test_an_age_inside_the_gate_is_counted_as_young_not_unestablishable(
+    cbd, monkeypatch, capsys, sweep
+):
+    """The two counters must not collapse into one.
+
+    "Younger than the gate" is routine and needs no attention; "age unknown"
+    should not happen and names the item. Reporting the first as the second puts
+    a `⚠️` on every green deploy, which is how a row stops being read (#1391).
+    """
+    young = datetime.now(tz=timezone.utc) - timedelta(seconds=YOUNG_AGE_SECONDS)
+    aws = _install(
+        cbd, monkeypatch, sweep, with_target=True, contents=_aged(cbd, sweep, young)
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert aws.deleted == [], f"{sweep} reaped an item younger than its gate"
+    assert findings == []
+    out = capsys.readouterr().out
+    assert "age not establishable" not in out, (
+        f"{sweep} reported a young item as one whose age it could not establish, "
+        f"collapsing two counters that exist to be read differently"
+    )
+    young_line = _SWEEP_SPECS[sweep]["age_gate"]["young_line"]
+    if young_line:
+        assert young_line in out, out
 
 
 # ---------------------------------------------------------------------------

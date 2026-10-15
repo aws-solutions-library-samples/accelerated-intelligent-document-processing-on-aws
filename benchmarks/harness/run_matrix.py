@@ -157,14 +157,25 @@ def resolve_stack(stack):
 def register_testset(stack, res, doc_id, pdf_path):
     """Upload PDF + put a testset# metadata row (idempotent). True on success.
 
-    The metadata row asserts `status: READY` and `fileCount: 1`, so it must not
-    be written unless the object really landed. It used to be written
+    The metadata row asserts `status: COMPLETED` and `fileCount: 1`, so it must
+    not be written unless the object really landed. It used to be written
     unconditionally with the `aws s3 cp` result discarded — not even bound to a
     name — which produced a test set advertising a document that is not there.
     That is worse than a failed launch: the runner accepts the set and returns a
     run id, but `run_complete` needs at least one document to finish, so the
     drain loop spins for the whole --timeout-min and the cell is scored as if the
     document had been measured.
+
+    ⚠️ `status` must be a value the test-set API itself writes. This row bypasses
+    the API and lands in the tracking table directly, so it inherits none of the
+    API's status vocabulary — and every consumer reads `status` as a position in
+    that lifecycle. It used to say `READY`, which the API never writes: the
+    lifecycle is QUEUED -> UPDATING/COPYING -> COMPLETED/FAILED. Test Studio's
+    set list read the unrecognised value as "still being written" and disabled
+    every `bench-*` row — unselectable, so undeletable, with no link to its
+    detail page — and polled the list every 3s for as long as one existed. The
+    set really is complete the moment the copy above succeeds, so that is what
+    the row says.
     """
     tsb = res["testset_bucket"]
     key = f"bench-{doc_id}/input/{os.path.basename(pdf_path)}"
@@ -186,7 +197,7 @@ def register_testset(stack, res, doc_id, pdf_path):
         "name": {"S": f"bench-{doc_id}"},
         "filePattern": {"S": f"bench-{doc_id}/input/"},
         "fileCount": {"N": "1"},
-        "status": {"S": "READY"},
+        "status": {"S": "COMPLETED"},
         "createdAt": {"S": now},
         "InitialEventTime": {"S": now},
     }

@@ -1158,8 +1158,26 @@ The queue page shows:
 - **The ground-truth editor** — the same editor used everywhere else in Test
   Studio, with the page images, per-field confidence, the JSON tab, and the
   revision history.
-- **Save & next in queue** — saves the correction, marks the document reviewed,
-  and moves to the next available document.
+- **Save & next in queue** — saves the correction and moves straight to the next
+  available document, without waiting for the queue to be re-read.
+- **Multi-section documents take more than one save.** A document is marked
+  reviewed once **every** one of its sections carries a human verdict, so a save
+  records the section you were working on and then moves to the next *document* —
+  it does not walk the remaining sections of the one you were in. The
+  confirmation says how many sections the document has, and the document stays in
+  the queue until they are all done; reopen it from the queue rail to work the
+  rest, using the section tabs above the editor. (The set's own document table
+  shows the same thing as **Awaiting review** in its Review state column.)
+- **Labels are correct — mark reviewed** covers a whole document at once: it
+  submits every section unchanged. ⚠️ That is a verdict on *all* of them — each
+  one is tagged human-reviewed, becomes ground truth protected from re-labeling,
+  and is fed to the calibration curve as a correct-at-this-confidence signal — so
+  use it when you have actually looked at every section, not as a shortcut past
+  the ones you have not opened.
+- **Show reviewed documents** — reviewed work drops out of the queue, so this is
+  the way back to a document whose label you already confirmed, including to
+  search for one by name. Those rows are not held in the browser, so revealing
+  them re-reads the queue from the server and takes a few seconds on a large set.
 
 Per-document actions (claim, release, skip, mark reviewed) sit at the top of the
 editor pane, so finishing a long document does not mean scrolling past every field

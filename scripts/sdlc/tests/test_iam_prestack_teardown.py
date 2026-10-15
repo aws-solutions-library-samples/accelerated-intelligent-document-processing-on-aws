@@ -49,25 +49,90 @@ class _Paginator:
         return self._pages
 
 
+class _EntitiesPaginator:
+    """`list_entities_for_policy`, honouring `PolicyUsageFilter`.
+
+    The filter is the part under test: the default answer and the
+    `PermissionsBoundary` answer are different sets here, exactly as in IAM, so
+    code that forgets the filter sees an empty role list and deletes nothing.
+    """
+
+    def __init__(self, iam):
+        self._iam = iam
+
+    def paginate(self, PolicyArn, PolicyUsageFilter=None):  # noqa: N803
+        if PolicyUsageFilter == "PermissionsBoundary":
+            names = self._iam._boundary_holders(PolicyArn)
+        elif PolicyUsageFilter == "PermissionsPolicy":
+            names = list(self._iam.policies.get(PolicyArn, {}).get("Roles", []))
+        else:
+            names = list(
+                self._iam.policies.get(PolicyArn, {}).get("Roles", [])
+            ) + self._iam._boundary_holders(PolicyArn)
+        return [{"PolicyRoles": [{"RoleName": n} for n in names], "PolicyUsers": []}]
+
+
+class _RoleFieldPaginator:
+    """One role-scoped listing, read out of the fake's role records."""
+
+    def __init__(self, iam, field, key):
+        self._iam = iam
+        self._field = field
+        self._key = key
+
+    def paginate(self, RoleName):  # noqa: N803
+        spec = self._iam.roles.get(RoleName)
+        if spec is None:
+            raise _AwsError("NoSuchEntity", f"{RoleName} not found")
+        return [{self._key: list(spec.get(self._field, []))}]
+
+
 class _FakeIam:
     """An in-memory IAM holding customer-managed policies by ARN."""
 
-    def __init__(self, policies=None, *, refuse_delete=(), deny_list=False):
+    def __init__(self, policies=None, *, refuse_delete=(), deny_list=False, roles=None):
         # {arn: {"PolicyName", "Arn", "CreateDate", "Versions", "Roles"}}
         self.policies = dict(policies or {})
         self.refuse_delete = set(refuse_delete)
         self.deny_list = deny_list
         self.delete_calls = []
         self.version_deletes = []
+        #: {role_name: {"Boundary": arn|None, "Inline": [...], "Attached": [...]}}
+        #:
+        #: Roles exist here because a role that merely NAMES a policy as its
+        #: permissions boundary is enough to make IAM refuse DeletePolicy, and
+        #: that is the condition this fake has to be able to express. Modelled as
+        #: account state rather than as a `refuse_delete` flag so that
+        #: `delete_policy` DERIVES the refusal — a test that deletes the roles
+        #: first then finds the policy gone has proved the ordering, and one that
+        #: does not finds the policy still standing.
+        self.roles = {name: dict(spec) for name, spec in (roles or {}).items()}
+        self.role_deletes = []
+
+    def _boundary_holders(self, policy_arn):
+        return sorted(
+            name
+            for name, spec in self.roles.items()
+            if spec.get("Boundary") == policy_arn
+        )
 
     # -- reads ---------------------------------------------------------- #
     def get_paginator(self, name):
-        assert name == "list_policies"
-        if self.deny_list:
-            raise _AwsError(
-                "AccessDenied", "not authorized to perform iam:ListPolicies"
-            )
-        return _Paginator([{"Policies": list(self.policies.values())}])
+        if name == "list_policies":
+            if self.deny_list:
+                raise _AwsError(
+                    "AccessDenied", "not authorized to perform iam:ListPolicies"
+                )
+            return _Paginator([{"Policies": list(self.policies.values())}])
+        if name == "list_entities_for_policy":
+            return _EntitiesPaginator(self)
+        if name == "list_attached_role_policies":
+            return _RoleFieldPaginator(self, "Attached", "AttachedPolicies")
+        if name == "list_role_policies":
+            return _RoleFieldPaginator(self, "Inline", "PolicyNames")
+        if name == "list_instance_profiles_for_role":
+            return _RoleFieldPaginator(self, "Profiles", "InstanceProfiles")
+        raise AssertionError(f"unexpected iam paginator: {name}")
 
     def list_policy_versions(self, PolicyArn):  # noqa: N803
         policy = self.policies.get(PolicyArn)
@@ -77,6 +142,7 @@ class _FakeIam:
 
     def list_entities_for_policy(self, PolicyArn):  # noqa: N803
         roles = self.policies.get(PolicyArn, {}).get("Roles", [])
+        roles = list(roles) + self._boundary_holders(PolicyArn)
         return {"PolicyRoles": [{"RoleName": r} for r in roles], "PolicyUsers": []}
 
     # -- writes --------------------------------------------------------- #
@@ -89,6 +155,43 @@ class _FakeIam:
             v for v in policy.get("Versions", []) if v["VersionId"] != VersionId
         ]
 
+    def detach_role_policy(self, RoleName, PolicyArn):  # noqa: N803
+        spec = self.roles.get(RoleName)
+        if spec is None:
+            raise _AwsError("NoSuchEntity", f"{RoleName} not found")
+        spec["Attached"] = [
+            p for p in spec.get("Attached", []) if p["PolicyArn"] != PolicyArn
+        ]
+
+    def delete_role_policy(self, RoleName, PolicyName):  # noqa: N803
+        spec = self.roles.get(RoleName)
+        if spec is None:
+            raise _AwsError("NoSuchEntity", f"{RoleName} not found")
+        spec["Inline"] = [n for n in spec.get("Inline", []) if n != PolicyName]
+
+    def remove_role_from_instance_profile(  # noqa: N803
+        self, InstanceProfileName, RoleName
+    ):
+        spec = self.roles.get(RoleName)
+        if spec is None:
+            raise _AwsError("NoSuchEntity", f"{RoleName} not found")
+        spec["Profiles"] = [
+            p
+            for p in spec.get("Profiles", [])
+            if p["InstanceProfileName"] != InstanceProfileName
+        ]
+
+    def delete_role(self, RoleName):  # noqa: N803
+        self.role_deletes.append(RoleName)
+        spec = self.roles.get(RoleName)
+        if spec is None:
+            raise _AwsError("NoSuchEntity", f"{RoleName} not found")
+        # IAM's own preconditions, so a cleanup that skips one is caught here
+        # rather than appearing to work against a permissive double.
+        if spec.get("Inline") or spec.get("Attached") or spec.get("Profiles"):
+            raise _AwsError("DeleteConflict", "role still has policies attached")
+        del self.roles[RoleName]
+
     def delete_policy(self, PolicyArn):  # noqa: N803
         self.delete_calls.append(PolicyArn)
         if PolicyArn not in self.policies:
@@ -97,6 +200,15 @@ class _FakeIam:
             # What IAM says while the policy is still a role's boundary. The
             # policy stays in the account, which is the whole point.
             raise _AwsError("DeleteConflict", "policy is attached to entities")
+        holders = self._boundary_holders(PolicyArn)
+        if holders:
+            # The real refusal, derived from account state: DeletePolicy fails
+            # while ANY role names this policy as its permissions boundary, and
+            # `AttachmentCount` stays 0 the whole time.
+            raise _AwsError(
+                "DeleteConflict",
+                f"policy is a permissions boundary for {', '.join(holders)}",
+            )
         if any(
             not v.get("IsDefaultVersion")
             for v in self.policies[PolicyArn].get("Versions", [])
@@ -337,6 +449,166 @@ def test_a_cfn_managed_policy_is_reported_not_deleted(cbd, monkeypatch):
 
     assert PASSROLE_ARN not in iam.delete_calls
     assert any(PASSROLE in f for f in findings), findings
+
+
+# --------------------------------------------------------------------------- #
+# The roles `DeletionPolicy: Retain` leaves behind, which pin the boundary.
+#
+# `nested/bedrockkb/template.yaml` retains StartIngestionJobFunctionRole and
+# DataSourceSchedulerRole so that deleting the stack does not require the
+# deployer's `iam:DeleteRole` (issue #315). Each retained role NAMES this run's
+# boundary policy as its permissions boundary, and IAM refuses DeletePolicy while
+# one does — so the policy leaks on every run unless teardown takes the roles
+# first. 2,019 roles and 582 policies had accumulated that way.
+#
+# Note what the fake does NOT let these tests fake: `delete_policy` derives its
+# refusal from whether a boundary holder is still present, so "the policy is
+# gone" cannot be satisfied except by deleting the roles first.
+# --------------------------------------------------------------------------- #
+RETAINED_ROLES = {
+    f"{STACK}-DOCUMENTK-StartIngestionJobFunction-abc": {
+        "Boundary": BOUNDARY_ARN,
+        # The role as the template declares it: one AWS-managed policy attached
+        # and one inline policy, both of which IAM requires be cleared first.
+        "Attached": [
+            {
+                "PolicyArn": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+                "PolicyName": "AWSLambdaBasicExecutionRole",
+            }
+        ],
+        "Inline": ["BedrockPolicy"],
+    },
+    f"{STACK}-DOCUMENTKB--DataSourceSchedulerRole-xyz": {
+        "Boundary": BOUNDARY_ARN,
+        "Inline": ["SchedulerPolicy"],
+    },
+}
+
+
+def test_the_retained_roles_are_deleted_so_the_boundary_can_go(cbd, monkeypatch):
+    iam = _FakeIam(
+        {BOUNDARY_ARN: _policy(BOUNDARY, BOUNDARY_ARN)}, roles=RETAINED_ROLES
+    )
+    cfn = _FakeCfn({f"{STACK}-iam": "CREATE_COMPLETE"})
+    _install(cbd, monkeypatch, iam, cfn)
+
+    findings = cbd.cleanup_iam_resources(STACK)
+
+    # The account, not the calls: both roles gone and the policy gone with them.
+    assert iam.roles == {}, iam.roles
+    assert BOUNDARY_ARN not in iam.policies
+    assert findings == [], findings
+
+
+def test_the_boundary_leaks_if_a_retained_role_survives(cbd, monkeypatch):
+    """The regression, stated as the account state that produces it.
+
+    One surviving boundary holder is enough: the policy cannot be deleted, so the
+    verification reports it. This is what every run looked like for three months,
+    and it is the direction that must keep failing — a cleanup that deleted the
+    roles but not the policy, or reported success anyway, lands here.
+    """
+    stubborn = dict(RETAINED_ROLES)
+    iam = _FakeIam({BOUNDARY_ARN: _policy(BOUNDARY, BOUNDARY_ARN)}, roles=stubborn)
+    cfn = _FakeCfn({f"{STACK}-iam": "CREATE_COMPLETE"})
+    _install(cbd, monkeypatch, iam, cfn)
+    # One role refuses to go, as a role whose delete is denied would.
+    held = next(iter(stubborn))
+    monkeypatch.setattr(
+        cbd,
+        "_delete_iam_role",
+        lambda _c, name: (False, "AccessDenied") if name == held else (True, ""),
+    )
+
+    findings = cbd.cleanup_iam_resources(STACK)
+
+    assert BOUNDARY_ARN in iam.policies
+    assert any(BOUNDARY in f for f in findings), findings
+
+
+def test_a_role_is_cleared_of_its_policies_before_the_delete(cbd, monkeypatch):
+    """DeleteRole refuses while anything is attached, so all three are cleared.
+
+    The fake enforces IAM's preconditions, so a clear that misses one surfaces
+    here as the role still standing rather than as a passing test against a
+    permissive double.
+    """
+    roles = {
+        f"{STACK}-DOC-WithEverything-abc": {
+            "Boundary": BOUNDARY_ARN,
+            "Attached": [
+                {
+                    "PolicyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess",
+                    "PolicyName": "ReadOnlyAccess",
+                }
+            ],
+            "Inline": ["InlineOne", "InlineTwo"],
+            "Profiles": [{"InstanceProfileName": "a-profile"}],
+        }
+    }
+    iam = _FakeIam({BOUNDARY_ARN: _policy(BOUNDARY, BOUNDARY_ARN)}, roles=roles)
+    _install(cbd, monkeypatch, iam, _FakeCfn({}))
+
+    assert cbd.cleanup_iam_resources(STACK) == []
+    assert iam.roles == {}
+
+
+def test_a_role_held_by_another_runs_boundary_is_untouched(cbd, monkeypatch):
+    """Selection is by boundary usage, so a concurrent run's roles are not ours."""
+    other = "idp-0809-090000"
+    other_arn = f"arn:aws:iam::{ACCOUNT}:policy/{other}-PermissionsBoundary"
+    roles = {
+        f"{STACK}-DOC-Ours-abc": {"Boundary": BOUNDARY_ARN},
+        f"{other}-DOC-Theirs-xyz": {"Boundary": other_arn},
+    }
+    iam = _FakeIam({BOUNDARY_ARN: _policy(BOUNDARY, BOUNDARY_ARN)}, roles=roles)
+    _install(cbd, monkeypatch, iam, _FakeCfn({}))
+
+    cbd.cleanup_iam_resources(STACK)
+
+    assert list(iam.roles) == [f"{other}-DOC-Theirs-xyz"]
+
+
+def test_the_boundary_filter_is_what_finds_the_holders(cbd, monkeypatch):
+    """Without `PolicyUsageFilter="PermissionsBoundary"` the holders are invisible.
+
+    A role that NAMES a policy as its boundary is not in the policy's
+    *attachment* list, so the default listing a reader would reach for first
+    answers "nothing holds this" while IAM refuses the delete. Asserted on the
+    helper directly, because this one wrong argument reinstates the whole leak
+    with every other line unchanged.
+    """
+    iam = _FakeIam(
+        {BOUNDARY_ARN: _policy(BOUNDARY, BOUNDARY_ARN)}, roles=RETAINED_ROLES
+    )
+    _install(cbd, monkeypatch, iam, _FakeCfn({}))
+
+    assert sorted(cbd._roles_holding_policy_as_boundary(iam, BOUNDARY_ARN)) == sorted(
+        RETAINED_ROLES
+    )
+    # The attachment view, which is what `AttachmentCount: 0` reflects.
+    assert _EntitiesPaginator(iam).paginate(
+        PolicyArn=BOUNDARY_ARN, PolicyUsageFilter="PermissionsPolicy"
+    ) == [{"PolicyRoles": [], "PolicyUsers": []}]
+
+
+def test_an_unreadable_holder_listing_still_attempts_the_delete(cbd, monkeypatch):
+    """An unreadable listing must not read as "no roles hold it" AND skip the delete.
+
+    `DeletePolicy` stays the authority on whether the policy went, so the helper
+    returning [] falls through to it rather than short-circuiting.
+    """
+    iam = _FakeIam({BOUNDARY_ARN: _policy(BOUNDARY, BOUNDARY_ARN)})
+    _install(cbd, monkeypatch, iam, _FakeCfn({}))
+    monkeypatch.setattr(
+        cbd,
+        "_roles_holding_policy_as_boundary",
+        lambda *_a: [],  # what the helper returns when the listing raised
+    )
+
+    assert cbd.cleanup_iam_resources(STACK) == []
+    assert BOUNDARY_ARN in iam.delete_calls
+    assert BOUNDARY_ARN not in iam.policies
 
 
 # --------------------------------------------------------------------------- #

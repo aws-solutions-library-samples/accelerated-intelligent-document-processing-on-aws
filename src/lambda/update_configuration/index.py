@@ -129,6 +129,13 @@ MODEL_MAPPINGS = {
     # system_defaults/base-extraction.yaml.
     "us.anthropic.claude-sonnet-5": "eu.anthropic.claude-sonnet-5",
     "us.anthropic.claude-sonnet-5:1m": "eu.anthropic.claude-sonnet-5:1m",
+    # Sonnet 5.5 maps to its own EU geo profile, so this row is safe in BOTH
+    # directions — get_model_mapping walks this dict backwards for a US target, and
+    # the reverse of this row returns the US Sonnet 5.5 profile rather than moving a
+    # user onto a different model (the hazard documented at the bottom of this dict).
+    # There is no ":1m" pair to add: 1M is this model's default window and
+    # "us.anthropic.claude-sonnet-5-5:1m" is not an id Bedrock accepts.
+    "us.anthropic.claude-sonnet-5-5": "eu.anthropic.claude-sonnet-5-5",
     # Opus 4 is end-of-life and Opus 4.1 is LEGACY; neither has an EU profile, so
     # both are rescue rows. Opus 4.5 is the Opus-class EU model, which keeps a
     # stranded Opus configuration on an Opus rather than silently demoting it to
@@ -188,10 +195,27 @@ CA_MODEL_MAPPINGS = {
 
 # Shipped ids with no inference profile and no in-region hosting in ca-central-1
 # (verified 2026-10-11 with `aws bedrock list-inference-profiles --region
-# ca-central-1 --type-equals SYSTEM_DEFINED` and `list-foundation-models`). The
+# ca-central-1 --type-equals SYSTEM_DEFINED` and `list-foundation-models`, and
+# re-checked 2026-10-14 for Claude Sonnet 5.5 — see below). The
 # CA_MODEL_MAPPINGS sources are swapped away from; the rest are simply not
 # offered. us.xai.grok-4.6 has a profile in ca-central-1, so it is not listed.
 # The GPT-5.x bedrock-mantle ids are handled by _is_us_only below.
+#
+# ⚠️ A model ABSENT from this set is offered in a Canada deployment, because
+# filter_models_by_region keeps every `us.`-prefixed id unless it is _is_us_only or
+# listed here. So an absence is a positive claim about live Bedrock availability and
+# needs the two commands above run, not an assumption — an id that is unavailable
+# there and unlisted here reaches a user as an inference-time failure from a
+# picklist entry.
+#
+# Claude Sonnet 5.5 is deliberately absent, and it is the claim most recently
+# checked: on 2026-10-14 `list-inference-profiles --region ca-central-1
+# --type-equals SYSTEM_DEFINED` returned both `us.anthropic.claude-sonnet-5-5` and
+# `global.anthropic.claude-sonnet-5-5` as ACTIVE, and `list-foundation-models
+# --region ca-central-1` returned `anthropic.claude-sonnet-5-5` ACTIVE as well — so
+# it is reachable from Canada all three ways and needs no entry and no
+# CA_MODEL_MAPPINGS swap. This paragraph exists because the verification date above
+# predates the model, which makes the set's silence about it unreadable otherwise.
 CA_UNAVAILABLE_MODELS = {
     "us.amazon.nova-lite-v1:0",
     "us.amazon.nova-pro-v1:0",

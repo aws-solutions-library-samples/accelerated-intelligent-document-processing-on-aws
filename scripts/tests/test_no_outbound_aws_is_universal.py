@@ -93,6 +93,10 @@ LOCAL_AND_BUILD_DIRS = (
     "scratch",
     ".git",
     ".claude",
+    # `.ai-review/base/` is the advisory reviewer's copy of the merge-base tree:
+    # the same hazard, created by this repository's own tooling rather than by a
+    # developer. Kept in step with the sibling gates.
+    ".ai-review",
 )
 
 NOT_SOURCE = tuple(f"/{name}/" for name in LOCAL_AND_BUILD_DIRS)

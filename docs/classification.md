@@ -473,7 +473,7 @@ Despite its strengths in handling full-document context, this method has several
 **Context & Model Constraints:**: 
 - Long documents can exceed the context window of smaller models, resulting in request failure.
 - Lengthy inputs may dilute the model’s focus, leading to inaccurate or inconsistent classifications.
-- Requires high-context models. The extended-context Claude variants — `us.anthropic.claude-sonnet-4-6:1m`, `us.anthropic.claude-sonnet-5:1m` and the `:1m` Opus variants — carry a 1-million-token input window; the base Claude 4.x/5 models carry 200K and the Nova family ~300K. Smaller models are not suitable for this method.
+- Requires high-context models. A 1-million-token input window is reached two different ways, and only one of them is a `:1m` id. The extended-context Claude variants — `us.anthropic.claude-sonnet-4-6:1m`, `us.anthropic.claude-sonnet-5:1m` and the `:1m` Opus variants — **opt into** it; `us.anthropic.claude-sonnet-5-5` and `us.anthropic.claude-haiku-5-5` have it **by default** and have no `:1m` id at all, so looking for one rules out two models that already qualify. Every other base Claude 4.x/5 model carries 200K and the Nova family ~300K. Smaller models are not suitable for this method. `config_library/model_config_limits.yaml` is the authority for which id gets which window.
 - For more details on supported models and their context limits, refer to the [Amazon Bedrock Supported Models documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html).
 
 **Scalability Challenges**: Not ideal for very large or visually complex document sets. In such cases, the Multi-Modal Page-Level Classification method is more appropriate.

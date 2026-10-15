@@ -2922,6 +2922,20 @@
         1308
       ],
       "discoveryNote": "Discovered via the PROSE route, not the name route: OWNERSHIP_REFUSAL_PATTERNS contains none of NAME_VOCABULARY's fragments (no EXEMPT/EXCLU/ALLOW/SKIP/...), so it was the attached comment that caught it -- the safety net firing where the reliable route did not, which is the one direction exemption_discovery.py says not to count on. Had the comment been worded differently this surface would have gone unregistered. Kept as a note rather than acted on, because renaming the constant to carry a vocabulary fragment would make it read as a carve-out, which it is not."
+    },
+    "scripts/tests/test_repo_walk_guards_prune_local_work.py::TREE_COPY_DIRS": {
+      "kind": "enforced-universe",
+      "memberKind": "a repo-relative directory into which this repository's own tooling writes a WHOLE second copy of the tree, paired with the file that writes it",
+      "turnsOff": "nothing. Membership imposes a requirement rather than excusing one: for each member the gate computes that an ignore rule covers the directory and that git tracks nothing under it, and fails naming the directory if either half is false. A directory added here with no ignore rule fails immediately; one left here after the tooling stopped writing it fails the staleness check beside it.",
+      "premise": [
+        "vcs_ignored_build_output"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_repo_walk_guards_prune_local_work.py",
+      "issues": [
+        1358
+      ],
+      "reason": "Discovered through the prose route, on a comment about directories kept out of repo-wide discovery -- which reads as a carve-out and is the opposite. Every gate that discovers through repo_files.tracked_paths rests on one premise: asking git cannot see a stale copy of the repository. That premise is only true while every such copy is gitignored, because tracked_paths lists `--others`, so untracked is not enough. `.ai-review/base/` broke it -- scripts/sdlc/ai_mr_review.py checks the whole merge-base tree out there and nothing ignored it, so inside a review worktree a repo-wide gate read the state before the branch alongside the state after it, and a defect the branch FIXES was reported against it. The per-member premise is computable and is computed: vcs_ignored_build_output asks for an ignore rule covering the path and for git tracking nothing under it, both of which this needs and neither of which a bare check-ignore probe establishes. The staleness ratchet is the other half -- an entry whose creating file no longer names the directory fails, because an ignore rule for a directory nothing writes is dead and a dead one pre-ignores whatever next takes the name -- and test_tracked_discovery_does_not_list_a_tree_copy drives the real helper over a real file placed there, so the claim is behavioural rather than a reading of configuration. Registered rather than reworded, because rewording a comment to slip past discovery is the failure this registry exists to prevent."
     }
   }
 }

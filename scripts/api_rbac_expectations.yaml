@@ -1049,7 +1049,14 @@ operations:
     kind: mutation
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py
-    args: { sessionId: "__nope__" }
+    # EMPTY, not "__nope__", for exactly the reason getChatMessages is — the delete
+    # side gained the same per-session ownership refusal the read side has, and a
+    # well-formed id nobody owns is refused by THAT control before the group floor is
+    # reached, so all five admitted cells read `403!grp?` (ERROR, "could not be run").
+    # An empty sessionId trips `if not session_id` at index.py:101, which precedes the
+    # ownership check at :135, so an allowed role gets a clean 400 and a disallowed one
+    # still gets the dispatcher's 403 — authz.enforce runs ahead of the resolver.
+    args: { sessionId: "" }
     note: >-
       A mutation, so ANY_GROUP even though the ownership scope already bounds it
       to the caller's own sessions: a caller who may hold no session has nothing

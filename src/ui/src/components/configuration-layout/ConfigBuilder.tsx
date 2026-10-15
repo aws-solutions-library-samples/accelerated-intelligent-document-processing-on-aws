@@ -89,6 +89,13 @@ const _CLAUDE_EFFORT_TOKENS = [
   // per the Bedrock model card (a default is not observable from a response),
   // not the 'high' every other model here defaults to.
   'claude-opus-5-5',
+  // Redundant by substring in the same way ('claude-sonnet-5' already matches
+  // 'claude-sonnet-5-5') and listed for the same reason. All five effort levels are
+  // accepted (verified live on Converse, us.anthropic.claude-sonnet-5-5, us-east-1,
+  // 2026-10-14). Its card default is 'high' — the ordinary one, NOT the 'medium'
+  // that Opus 5.5 and Haiku 5.5 carry. Unlike Opus 5.5 thinking can be turned off,
+  // but not with { type: 'disabled' }: this model wants { type: 'between_tools' }.
+  'claude-sonnet-5-5',
   'claude-fable-5',
   // Haiku 5.5 is the first Haiku to accept effort — Haiku 4.5 rejects it with a
   // 400, which is why the comment above excludes it by name. Default 'medium' per

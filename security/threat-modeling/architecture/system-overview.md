@@ -309,9 +309,12 @@ key, an `s3://` URI, a list of extracted attribute names or a model-written page
 description rather than a value, because those compose into one chain that was measured
 running end to end for a groupless caller. ⚠️ That is a check on the **API**.
 `CognitoIdentityPoolSetRole` attaches one `authenticated` role with no `RoleMappings`,
-and it grants `s3:GetObject` and `s3:ListBucket` on the document buckets to every
+and it grants `s3:GetObject` and `s3:GetObjectVersion` on the document buckets to every
 authenticated user irrespective of group, so the **document** bytes are not behind this
-distribution (see UI.T06 and AUTH.T03). The two buckets partitioned per user —
+distribution (see UI.T06 and AUTH.T03). It no longer grants `s3:ListBucket`, so the role
+cannot enumerate those buckets and a direct read needs a key the caller already holds —
+which the key-returning operations above supply to any caller holding a group. The two
+buckets partitioned per user —
 Configuration and Test Set — are deliberately not on that role, so the
 configuration-revision store and the test-set documents are reachable only through a
 resolver that applies the caller's scope to the key.

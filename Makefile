@@ -311,7 +311,7 @@ coverage: ## Re-measure idp_common and print its table, worst-covered first (oth
 coverage-table: ## Print a tree's table from the last run, without re-measuring (COVERAGE_ARGS=--tree=NAME)
 	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
 
-coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
+coverage-all: ## Measure EVERY tree the registry names and print each one's figure
 	@python3 scripts/coverage_all.py $(COVERAGE_ARGS)
 
 # What both CIs run, and the reason the ratchet can now reach more than one tree.
@@ -347,7 +347,7 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.
 CHECK_COVERAGE_DEBT_ARGS ?=
-check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
+check-coverage-debt: ## Ratchet per-file coverage across every registered tree: fail if a file loses coverage, or a new module arrives unratcheted
 	@python3 scripts/check_coverage_debt.py $(CHECK_COVERAGE_DEBT_ARGS)
 
 # The CI form. `--require-all-trees` is the difference and it is not cosmetic: with no
@@ -1183,6 +1183,35 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
 ##@ UI Development
+
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
+# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
+# those targets then runs a node tool out of that same tree. So two UI targets at
+# once in ONE checkout corrupt each other, and the loser does not report
+# contention — it reports a missing or half-deleted module from whatever package
+# the other lane was unpacking (issue #1447).
+#
+# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
+# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
+# realistic composition is "lint in one lane, UI tests in another", which looks
+# like two unrelated things and is not.
+#
+# $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
+# an exclusive lock for the whole command, so a second UI target waits instead of
+# racing. Uncontended it costs one exec and prints nothing; contended it says it is
+# waiting and gives up with an error after UI_DEPS_LOCK_WAIT_SECONDS (default 900,
+# settable either as `make <target> UI_DEPS_LOCK_WAIT_SECONDS=n` or in the
+# environment) rather than blocking forever. There is no stale-lock state — the kernel
+# drops the lock when the holder exits, however it exits. The full rationale,
+# including why nesting cannot deadlock, is in the script's header.
+#
+# Two residuals, stated so a green run is not over-read. `ui-start`'s dev SERVER
+# runs unlocked (it is long-lived, and holding the lock for hours would block every
+# gate), so its `npm ci` is guarded but its `npm run start` is not — do not reinstall
+# UI deps under a running dev server. And a target invoked NOT through make, by
+# running `npm` in src/ui by hand, takes no lock at all.
+UI_DEPS_LOCK := scripts/ui_deps_lock.sh
+
 # Usage: make ui-start STACK_NAME=<stack-name>
 ui-start: ## Start UI dev server (requires STACK_NAME for .env generation)
 ifndef STACK_NAME
@@ -1209,7 +1238,7 @@ endif
 		exit 1; \
 	fi
 	@echo "Installing UI dependencies..."
-	cd src/ui && npm ci --prefer-offline --no-audit
+	$(UI_DEPS_LOCK) 'npm ci --prefer-offline --no-audit'
 	@echo "Starting UI development server..."
 	cd src/ui && npm run start
 
@@ -1218,6 +1247,13 @@ endif
 # codegen-check). Set SKIP_NPM_CI=1 when the caller has ALREADY installed UI
 # deps (the CI code_checks job installs once in before_script) to make these a
 # no-op; unset (local) installs as before.
+#
+# ⚠️ The skip is a COST optimisation and nothing more. It does not make two UI
+# targets safe to run at the same time: the second one still reads node_modules
+# while the first may be rebuilding it, which is the half of the hazard that
+# produced the missing-eslint-formatter failure in #1447. $(UI_DEPS_LOCK) above is
+# what makes concurrency safe, and every target below takes it whether or not the
+# install is skipped.
 NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 
 # THE GATE CHECKS; THE FIXER FIXES. Never the same invocation.
@@ -1244,6 +1280,14 @@ NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 # warm tree produced a success line for work that did not happen — `npm run
 # lint` AND `npm run typecheck`, the second of which the target's name does not
 # even imply. Issue #1152.
+#
+# The checksum is written to `src/ui/.checksum` by its full path, and that is
+# load-bearing rather than tidiness. This whole recipe is ONE shell: the lint line
+# used to begin `cd src/ui &&`, and the bare `.checksum` that followed it landed in
+# src/ui only by inheriting that cd. The lint now runs through $(UI_DEPS_LOCK),
+# which is a child process, so this shell stays at the repository root — and a root
+# `.checksum` is gitignored as well, so the cache would have gone to a file
+# STORED_HASH never reads and simply stopped hitting, with nothing to see.
 ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run; UI_LINT_NO_SKIP=1 forbids the skip.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
@@ -1256,8 +1300,8 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
-		cd src/ui && $(NPM_CI) && npm run lint && npm run typecheck || exit 1; \
-		echo "$$CURRENT_HASH" > .checksum; \
+		$(UI_DEPS_LOCK) '$(NPM_CI) && npm run lint && npm run typecheck' || exit 1; \
+		echo "$$CURRENT_HASH" > src/ui/.checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
 		echo -e "$(YELLOW)⏭️  UI lint SKIPPED - src/ui matches src/ui/.checksum, so eslint and tsc did NOT run.$(NC)"; \
@@ -1271,31 +1315,41 @@ ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict g
 	@# aborts here and the re-check below never runs, leaving the operator with the
 	@# fixer's output instead of the gate's. Ignoring this line's status is safe:
 	@# the gate runs next and decides the target's exit status.
-	-@cd src/ui && $(NPM_CI) && npm run lint:fix
+	-@$(UI_DEPS_LOCK) '$(NPM_CI) && npm run lint:fix'
 	@# Deliberately re-runs the CHECKING form, so the exit status reflects what is
 	@# left rather than what was repaired.
 	@$(MAKE) --no-print-directory ui-lint FORCE=1
 
 ui-build: ## Build UI for production (runs lint + typecheck + vite build)
 	@echo "Checking UI build"
-	cd src/ui && $(NPM_CI) && npm run build
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run build'
 
 ui-build-only: ## Vite production build ONLY (no lint/typecheck) — for CI, where ui-lint already ran them
 	@echo "Building UI (vite only; lint+typecheck already done by ui-lint)"
-	cd src/ui && $(NPM_CI) && npm run build:only
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run build:only'
 
+# $(NPM_CI), not a hardcoded `npm ci`. The literal here was not a decision: this
+# target landed ten days before NPM_CI existed, and the commit that introduced the
+# variable converted the four install sites among the lint/build/codegen gates it
+# was speeding up — this one is not in that set. So SKIP_NPM_CI=1 could not make
+# this target a no-op, and an install-once-then-skip ordering had to carry it as a
+# special case. Nothing in either CI depends on the literal: both inline their own
+# `npm ci && npx vitest run --silent` rather than invoking this target.
+#
+# `ui-start`'s install above stays literal, and that one IS deliberate — it starts
+# a dev server, so an install it was told to skip leaves nothing to serve.
 ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
-	cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
 
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
-	@cd src/ui && npm run codegen
+	@$(UI_DEPS_LOCK) 'npm run codegen'
 	@echo -e "$(GREEN)✅ GraphQL types regenerated. Don't forget to commit the changes.$(NC)"
 
 codegen-check: ## Verify GraphQL codegen output is up-to-date
 	@echo "Checking if GraphQL codegen output is up-to-date..."
-	@cd src/ui && $(NPM_CI) && npm run codegen
+	@$(UI_DEPS_LOCK) '$(NPM_CI) && npm run codegen'
 	@if ! git diff --quiet src/ui/src/graphql/generated/; then \
 		if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then \
 			echo -e "$(RED)ERROR: Generated GraphQL files are out of date!$(NC)"; \

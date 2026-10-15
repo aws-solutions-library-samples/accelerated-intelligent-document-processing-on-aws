@@ -72,6 +72,11 @@ PRUNE_DIR_MARKERS = (
     # scratch/ is gitignored (local benchmarks, cloned tools, throwaway work);
     # never part of the gate. CI never sees it, so prune it locally too.
     "/scratch/",
+    # `.ai-review/base/` is a whole copy of the tree at the merge base, written
+    # into the review worktree by scripts/sdlc/ai_mr_review.py. Same hazard as
+    # the worktrees below, and the one case where this repository's own tooling
+    # creates the copy. Gitignored, so CI never sees it.
+    "/.ai-review/",
     # Two gitignored, locally-staged copies of lib/idp_common_pkg that the
     # idp-data-generator feature's build drops next to its Lambda sources. They
     # hold library code only (no tests/ dir), so every test_*.py they contain is

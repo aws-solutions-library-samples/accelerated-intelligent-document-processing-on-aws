@@ -192,6 +192,101 @@ def emit_control_plane_cost_metric(
             )
 
 
+def emit_document_cost_metrics(
+    estimated_cost: Optional[float],
+    unpriced_row_count: int,
+    namespace: Optional[str] = None,
+) -> None:
+    """Emit one document's estimated cost to CloudWatch.
+
+    Called once per document by ``SaveReportingData.save_metering_data``, which
+    is the single place that already turns metering rows into dollars. ``cost``
+    is **passed in, never recomputed here**: the caller hands over the sum of the
+    per-row ``estimated_cost`` values it has just written to the metering parquet,
+    so the metric and the Athena ledger are the same number by construction
+    rather than by two implementations agreeing.
+
+    Metric shape (namespace from ``METRIC_NAMESPACE``, which the stack sets to the
+    stack name — so stacks are separated by namespace and need no dimension for
+    it):
+
+      - ``DocumentEstimatedCost`` (USD, no dimensions)
+      - ``UnpricedMeteringRows`` (count, no dimensions)
+
+    **No dimensions, deliberately.** CloudWatch bills per metric per distinct
+    dimension combination, and every candidate dimension here is unbounded or
+    grows with use: ``DocumentId`` is one metric per document; ``DocumentClass``
+    is a customer-defined taxonomy; ``ServiceApi``/``Model`` grows with every
+    model and processing step a deployment touches, and a deployment that
+    exercises the whole pipeline already has tens of distinct values. A metric
+    that costs more than the spend it reports is not a cost control. This shape
+    is two metric streams per stack, flat in document volume — and the
+    per-document, per-model, per-class breakdown already exists for free in the
+    metering parquet, the Athena rollups and the UI's per-document cost panel.
+    What those cannot do is drive an alarm, which is the only thing this adds.
+
+    The per-document datapoint is the useful unit rather than a per-row one:
+    ``Sum`` over a period is spend in that period, ``Average`` is cost per
+    document, ``Maximum`` is the most expensive single document and
+    ``SampleCount`` is documents completed. A per-row datapoint would make three
+    of those four meaningless.
+
+    Args:
+        estimated_cost: The document's total estimated cost in USD, already
+            computed by the caller, or ``None`` when **no** metering row for the
+            document had a price at all. ``None`` emits no cost datapoint —
+            a zero would be indistinguishable from a document that genuinely
+            cost nothing, and would drag an average down with a number nobody
+            measured. This mirrors the metering table, which writes NULL rather
+            than 0.00 for the same reason. A cost of ``0.0`` is a *measured*
+            zero and IS emitted.
+        unpriced_row_count: How many of the document's metering rows had no
+            price. Emitted unconditionally, zero included, so that "the cost
+            metric is complete" is an observable fact with a datapoint behind it
+            instead of an absence. Without it, a pricing configuration missing
+            the model actually in use makes ``DocumentEstimatedCost`` read low,
+            or vanish, with nothing on any dashboard to say why.
+        namespace: Override the namespace. Defaults to ``METRIC_NAMESPACE``,
+            matching :func:`put_metric`. Note the stack grants this Lambda
+            ``cloudwatch:PutMetricData`` under a
+            ``StringEquals cloudwatch:namespace = <stack name>`` condition, so a
+            hardcoded namespace would be denied — read it from the environment.
+
+    Failure mode is fire-and-forget, like the rest of this module: cost
+    visibility is never a reason to fail a document's reporting write.
+    """
+    if namespace is None:
+        namespace = os.environ.get("METRIC_NAMESPACE", "GENAIDP")
+
+    metric_data: List[Dict[str, Any]] = [
+        {
+            "MetricName": "UnpricedMeteringRows",
+            "Value": float(unpriced_row_count),
+            "Unit": "Count",
+            "Dimensions": [],
+        }
+    ]
+    if estimated_cost is not None:
+        # CloudWatch has no currency unit; "None" is its explicit dimensionless
+        # unit, and is what makes the datapoint render without a bogus suffix.
+        metric_data.insert(
+            0,
+            {
+                "MetricName": "DocumentEstimatedCost",
+                "Value": float(estimated_cost),
+                "Unit": "None",
+                "Dimensions": [],
+            },
+        )
+
+    with _metric_lock:
+        try:
+            cloudwatch = get_cloudwatch_client()
+            cloudwatch.put_metric_data(Namespace=namespace, MetricData=metric_data)
+        except Exception as e:
+            logger.warning(f"Failed to emit document cost metrics: {e}")
+
+
 def create_client_performance_metrics(
     name: str,
     duration_ms: float,
