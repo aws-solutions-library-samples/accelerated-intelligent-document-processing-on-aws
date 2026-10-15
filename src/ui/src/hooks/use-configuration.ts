@@ -226,9 +226,10 @@ const _getDiff = (oldConfig: Record<string, unknown>, newConfig: Record<string, 
 /**
  * Load one Configuration Profile's schema, default and custom configuration.
  *
- * `versionName` is fetched on mount and whenever it changes. Pass null while the
- * profile is not yet known to be one the caller may read: nothing is fetched and
- * `loading` stays true.
+ * `versionName` is fetched on mount and whenever it changes. Pass null for the
+ * hook to fetch nothing itself: while the profile is not yet known to be one the
+ * caller may read, or while the caller reads through `fetchConfiguration`
+ * instead. `loading` is true until a request has settled.
  *
  * Only the most recent request is applied, whether `versionName` or a call to
  * `fetchConfiguration` made it. An earlier request that answers later is
