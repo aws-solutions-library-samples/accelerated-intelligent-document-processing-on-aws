@@ -6747,10 +6747,12 @@ def cleanup_stale_idp_stacks():
     be established, which is not the same claim as being old enough to delete.
     Neither is a sweep finding: every stack the listing returned was considered,
     and ending a night's run red for a skipped item would make the row that
-    reports a genuinely inert sweep worth less. A stack named for
+    reports a genuinely inert sweep worth less. A top-level stack named for
     SWEEP_EXEMPT_STACK_NAMES is skipped ahead of the markers and the age gate
     both, so it is never in either counter: it is counted as long-lived whatever
-    its `CreationTime` says.
+    its `CreationTime` says or a retention marker in its name says. Its nested
+    stacks are passed over by the top-level filter first, as every nested stack
+    is, so the count is of top-level stacks like every other count here.
     """
     print("🧹 Cleaning up stale idp- test stacks (IAM role leak guard)...")
 
@@ -6804,12 +6806,12 @@ def cleanup_stale_idp_stacks():
                 # apigw-vpc reaper owns *-apigw-vpc; skip those here.
                 if not name.startswith("idp-") or name.endswith("-apigw-vpc"):
                     continue
-                if _named_for_exempt_stack(name):
-                    skipped_long_lived += 1
-                    continue
                 # Only reap TOP-LEVEL stacks: nested stacks (RootId set) are
                 # deleted by their parent, and deleting a parent cascades.
                 if s.get("RootId") or s.get("ParentId"):
+                    continue
+                if _named_for_exempt_stack(name):
+                    skipped_long_lived += 1
                     continue
                 match = _IDP_RUN_PREFIX_RE.match(name)
                 run_prefix = match.group(1) if match else name

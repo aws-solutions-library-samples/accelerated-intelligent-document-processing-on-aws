@@ -49,6 +49,8 @@ guard to invert, where the shape #1433 left behind was `if not failure_reason:`.
 """
 
 import ast
+import io
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1662,7 +1664,8 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch):
 # Each sweep with an age gate asks the set before it. The gates fail closed
 # (#1445), so an item a listing did not date is kept and named as one whose age
 # could not be established; the long-lived stack's resources are counted as its
-# instead.
+# instead. The stack sweep also asks it before a run's retention marker, and
+# after passing over nested stacks, so it counts top-level stacks only.
 #
 # Every case lists the long-lived stack's resources BESIDE another stack's and
 # asserts that other stack is still reaped: a sweep that stopped reaping
@@ -2121,6 +2124,98 @@ def test_the_long_lived_stack_is_set_aside_before_the_fail_closed_age_gate(
     assert _printed_long_lived_count(out) == len(
         _resources_of(sweep, LONG_LIVED_STACK)
     ), out
+
+
+def test_the_stack_sweep_does_not_count_the_long_lived_stacks_nested_stacks(
+    cbd, monkeypatch, capsys
+):
+    """Passed over before the set is asked, as every nested stack is.
+
+    A nested stack is named `<parent>-<LogicalId>-<suffix>`, so each of the
+    long-lived stack's is named for it too. Counted, the main template's nested
+    stacks would sit on a line whose other counts are of top-level stacks only.
+    The old run's nested stacks are passed over the same way, and its top-level
+    stacks are still reaped.
+    """
+    sweep = "cleanup_stale_idp_stacks"
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    old = datetime.now(tz=timezone.utc) - timedelta(seconds=STALE_AGE_SECONDS)
+    contents = _listing(sweep, owners)
+    contents["list_stacks"][0]["StackSummaries"] += [
+        {
+            "StackName": f"{owner}-{logical_id}-1A2B3C4D5E6F",
+            "CreationTime": old,
+            "RootId": f"arn:fake:stack/{owner}/root",
+            "ParentId": f"arn:fake:stack/{owner}/root",
+        }
+        for owner in owners
+        for logical_id in ("PATTERNSTACK", "APIRESOLVERSTACK")
+    ]
+    aws, _ = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, owners, contents=contents
+    )
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        aws.deleted
+    )
+    assert _printed_long_lived_count(capsys.readouterr().out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), "the long-lived stack's nested stacks were counted as left for it"
+
+
+@pytest.mark.parametrize("marker", ["future", "expired", "unreadable"])
+def test_the_long_lived_stack_is_set_aside_before_its_retention_marker_is_read(
+    cbd, monkeypatch, capsys, marker
+):
+    """A marker in its name neither keeps it nor reaps it.
+
+    The stack sweep reads a run's retention marker before its age gate: one in
+    the future keeps the stack as retained, an expired one reaps it at any age,
+    and one whose read did not answer keeps it on a ⚠️ line of its own.
+    `retain_failed_stack` writes a marker only for a run's own stack, so none
+    names this one today; the case pins the order the docstring states, under
+    which the stack is counted as long-lived whatever the marker says. An expired
+    marker is still dropped, as every expired marker is, so it holds no
+    retention slot. The old run beside it has no marker and is still reaped.
+    """
+    sweep = "cleanup_stale_idp_stacks"
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    key = f"{cbd.RETENTION_S3_PREFIX}/{LONG_LIVED_STACK}.json"
+    contents = _listing(sweep, owners)
+    contents["list_objects_v2"] = [{"Contents": [{"Key": key}]}]
+    aws, _ = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, owners, contents=contents
+    )
+    monkeypatch.setenv("SOURCE_BUCKET", "a-bucket")
+    now = datetime.now(tz=timezone.utc)
+    keep_until = {"future": now + timedelta(days=1), "expired": now - timedelta(days=1)}
+
+    def _get_object(Bucket, Key):  # noqa: N803 - boto3 casing
+        if marker == "unreadable":
+            raise _client_error("AccessDenied", "not authorized", "GetObject")
+        body = json.dumps({"keep_until": keep_until[marker].isoformat()})
+        return {"Body": io.BytesIO(body.encode())}
+
+    monkeypatch.setattr(aws, "get_object", _get_object, raising=False)
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert findings == [], findings
+    dropped = [d for d in aws.deleted if d.startswith(f"{cbd.RETENTION_S3_PREFIX}/")]
+    reaped = [d for d in aws.deleted if d not in dropped]
+    assert sorted(reaped) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        f"with a {marker} marker for {LONG_LIVED_STACK} the sweep deleted {aws.deleted}"
+    )
+    assert dropped == ([key] if marker == "expired" else []), dropped
+    out = capsys.readouterr().out
+    assert "retention marker could not be read" not in out, out
+    assert "retained idp- stack(s) skipped" not in out, out
+    assert _printed_long_lived_count(out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), f"a {marker} marker took {LONG_LIVED_STACK} out of the long-lived count: {out}"
 
 
 # ---------------------------------------------------------------------------
