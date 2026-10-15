@@ -384,7 +384,7 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Revision Bodies in S3** (server-side) | A revision's configuration is stored as an object in the Configuration bucket, so the object-read path applies the same profile check to the **key**: `getFileContents` / `getFilePresignedUrl` match the profile in a `config_revisions/<profile>/` key against `allowedConfigVersions` before reading anything. Without it the revision operations above could be bypassed by asking for the body directly, and the Configuration bucket is no longer readable with the browser's own credentials either |
 | **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it |
 | **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
-| **Default Version Selection** (UI) | All version pickers auto-select the first available scoped version |
+| **Default Version Selection** (UI) | Version pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
 
 ### Affected UI Components
 
@@ -392,11 +392,11 @@ All pages with config version selectors automatically respect scope:
 
 | Page | Behavior |
 |------|----------|
-| **View/Edit Configuration** | Shows only scoped versions in Versions panel; loads first scoped version |
+| **View/Edit Configuration** | Shows only scoped versions in the Configuration Profiles table. Waits for that list, then opens the active profile if it is in scope, otherwise the first scoped one; a `?version=` link opens its profile directly. When no existing profile is in the user's scope the page says so instead of opening one |
 | **Upload Documents** | Version picker shows only scoped versions |
 | **Discovery** | Version picker shows only scoped versions |
 | **Test Studio** | Test runner version picker shows only scoped versions |
-| **Capacity Planning** | Version picker shows only scoped versions |
+| **Capacity Planning** | Version picker shows only scoped versions, and says so when none is in the user's scope |
 | **Reprocess Document** | Defaults to document's current ConfigVersion (if in scope) |
 | **Document List** | Server-side filtered — only shows documents matching scoped versions |
 

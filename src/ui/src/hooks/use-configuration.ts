@@ -20,7 +20,7 @@ interface UseConfigurationReturn {
   loading: boolean;
   refreshing: boolean;
   error: string | null;
-  fetchConfiguration: (fetchVersionName?: string, silent?: boolean) => Promise<void>;
+  fetchConfiguration: (fetchVersionName: string, silent?: boolean) => Promise<void>;
   updateConfiguration: (targetVersionName: string, newCustomConfig: unknown, description?: string | null) => Promise<boolean>;
   resetToDefault: (path: string) => { path: string; defaultValue: unknown } | false;
   isCustomized: (path: string) => boolean;
@@ -223,7 +223,14 @@ const _getDiff = (oldConfig: Record<string, unknown>, newConfig: Record<string, 
   return diff;
 };
 
-const useConfiguration = (versionName: string = 'default'): UseConfigurationReturn => {
+/**
+ * Load one Configuration Profile's schema, default and custom configuration.
+ *
+ * `versionName` is fetched on mount and whenever it changes. Pass null while the
+ * profile is not yet known to be one the caller may read: nothing is fetched and
+ * `loading` stays true.
+ */
+const useConfiguration = (versionName: string | null): UseConfigurationReturn => {
   const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
   const [defaultConfig, setDefaultConfig] = useState<Record<string, unknown> | null>(null);
   const [customConfig, setCustomConfig] = useState<Record<string, unknown> | null>(null);
@@ -232,7 +239,7 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchConfiguration = async (fetchVersionName: string = 'default', silent: boolean = false): Promise<void> => {
+  const fetchConfiguration = async (fetchVersionName: string, silent: boolean = false): Promise<void> => {
     // Use different loading states for initial load vs background refresh
     if (silent) {
       setRefreshing(true);
@@ -531,6 +538,7 @@ const useConfiguration = (versionName: string = 'default'): UseConfigurationRetu
   };
 
   useEffect(() => {
+    if (versionName === null) return;
     fetchConfiguration(versionName);
   }, [versionName]); // Re-fetch when version changes
 

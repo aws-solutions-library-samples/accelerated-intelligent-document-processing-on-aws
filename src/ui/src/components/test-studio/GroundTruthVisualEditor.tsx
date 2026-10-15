@@ -48,7 +48,9 @@ import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
 import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useUserRole from '../../hooks/use-user-role';
 import { describeClassConfigSource, resolveClassConfigVersion } from './classConfigVersion';
+import { isProfileReadable } from '../../utils/readable-profile';
 import { getConfigClassOptions } from '../common/config-class-options';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
@@ -362,13 +364,15 @@ const GroundTruthVisualEditor = ({
   // badge below name where the classes came from.
   const stampedConfigVersion = (localData?.metadata as Record<string, unknown> | undefined)?.config_version as string | undefined;
   const { versions } = useConfigurationVersions();
+  const { allowedConfigVersions, loading: roleLoading } = useUserRole();
   const activeConfigVersion = useMemo(() => versions.find((v) => v.isActive)?.versionName, [versions]);
   const classConfig = useMemo(
     () => resolveClassConfigVersion(stampedConfigVersion, configVersion, activeConfigVersion),
     [stampedConfigVersion, configVersion, activeConfigVersion],
   );
   const classConfigVersion = classConfig.version;
-  const { mergedConfig, loading: configLoading, error: configError } = useConfiguration(classConfigVersion);
+  const classConfigReadable = isProfileReadable(classConfigVersion, versions, { allowedConfigVersions, loading: roleLoading });
+  const { mergedConfig, loading: configLoading, error: configError } = useConfiguration(classConfigReadable ? classConfigVersion : null);
   const classOptions = useMemo(() => getConfigClassOptions(mergedConfig), [mergedConfig]);
   /**
    * True when the class list could not be read, as opposed to being genuinely empty.

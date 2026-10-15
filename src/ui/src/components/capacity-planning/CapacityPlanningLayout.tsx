@@ -24,12 +24,15 @@ import {
 } from '@cloudscape-design/components';
 import useConfiguration from '../../hooks/use-configuration';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useUserRole from '../../hooks/use-user-role';
 import useSettingsContext from '../../contexts/settings';
 import useDocumentsContext from '../../contexts/documents';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
+import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
 import { parseMetering } from '../../graphql/awsjson-parsers';
+import { chooseOpeningProfile, isProfileReadable } from '../../utils/readable-profile';
 
 // Type definitions for configuration and state
 interface Configuration {
@@ -176,9 +179,23 @@ interface SelectOption {
 const _DOCUMENT_LIST_SHARDS_PER_DAY = 6;
 
 const CapacityPlanningLayout = () => {
-  const { mergedConfig: configurationUntyped, fetchConfiguration } = useConfiguration();
+  const {
+    versions,
+    loaded: versionsLoaded,
+    loading: versionsLoading,
+    error: versionsError,
+    getVersionOptions,
+  } = useConfigurationVersions();
+  const { allowedConfigVersions, loading: roleLoading } = useUserRole();
+  const callerScope = { allowedConfigVersions, loading: roleLoading };
+  const { mergedConfig: configurationUntyped, fetchConfiguration } = useConfiguration(
+    isProfileReadable('default', versions, callerScope) ? 'default' : null,
+  );
   const configuration = configurationUntyped as Configuration | null;
-  const { versions, getVersionOptions } = useConfigurationVersions();
+  const openingProfile = chooseOpeningProfile(
+    { versions, loaded: versionsLoaded, loading: versionsLoading, error: versionsError },
+    callerScope,
+  );
   const { settings: deploymentSettings } = useSettingsContext();
   const {
     documents,
@@ -2078,7 +2095,9 @@ const CapacityPlanningLayout = () => {
           </Alert>
         )}
 
-        {!configuration && (
+        {!configuration && openingProfile.status === 'none' && <NoConfigProfilesInScopeAlert />}
+
+        {!configuration && openingProfile.status !== 'none' && (
           <Alert type="warning">
             <strong>⚠️ Configuration not loaded.</strong> Please visit the <strong>View/Edit Configuration</strong> tab first to load your
             pattern configuration, then return to Capacity Planning.
