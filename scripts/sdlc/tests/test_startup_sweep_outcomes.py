@@ -1693,6 +1693,189 @@ def test_a_live_runs_ocr_project_is_asked_about_under_the_runs_own_stack(
     )
 
 
+#: Stack names as the harness builds them, each with the stacks a sweep that
+#: reads its BDA names correctly asks about while it is up: every hyphen-separated
+#: prefix from three parts on, in order, ending at the stack itself. The primary
+#: run is `generate_stack_name()`. A deployment-variant probe and a transform
+#: deploy test append a suffix to a timestamp of their own, so their first three
+#: parts name a stack that never existed. No stack is named the third way today;
+#: it is here because nothing in either naming rule keeps a hyphen out of a
+#: suffix.
+RUN_STACKS = {
+    "primary-run": ("idp-1015-120000", ["idp-1015-120000"]),
+    "suffixed": (
+        "idp-1015-120507-apigw",
+        ["idp-1015-120507", "idp-1015-120507-apigw"],
+    ),
+    "hyphenated-suffix": (
+        "idp-1015-120507-jobs-api",
+        ["idp-1015-120507", "idp-1015-120507-jobs", "idp-1015-120507-jobs-api"],
+    ),
+}
+
+
+def _bda_resources_named_for(stack):
+    """(blueprints, projects) a stack creates in BDA, named as the code names them.
+
+    A class's blueprint is `<stack>-<class>-<uuid8>` (`BdaBlueprintService` and
+    `BlueprintOptimizer`), with the class id passed through `sanitize_class_name`,
+    which keeps an underscore. A configuration version's project is
+    `<stack>-<version>`, and its bootstrap blueprint `<project>-bootstrap-<uuid8>`.
+    The BDA-as-OCR project is `sanitize_ocr_project_name(stack)`. The class ids
+    are real ones, one carrying hyphens of its own and one an underscore, and the
+    version is the one Step 4 syncs.
+    """
+    from idp_common.bda.bda_ocr import sanitize_ocr_project_name
+    from idp_common.config.class_names import sanitize_class_name
+
+    version_project = f"{stack}-test-bda"
+    blueprints = [
+        f"{stack}-{sanitize_class_name(class_id)}-abcd1234"
+        for class_id in ("Payslip", "US-drivers-licenses", "BANK_CHECK")
+    ]
+    blueprints.append(f"{version_project}-bootstrap-abcd1234")
+    return blueprints, [version_project, sanitize_ocr_project_name(stack)]
+
+
+def _bda_listing(blueprints, projects):
+    """Account contents listing exactly these blueprint and project names."""
+    return {
+        "list_blueprints": [
+            {
+                "blueprints": [
+                    {
+                        "blueprintName": name,
+                        "blueprintArn": f"arn:fake:blueprint/{name}",
+                    }
+                    for name in blueprints
+                ]
+            }
+        ],
+        "projects": [
+            {"projectName": name, "projectArn": f"arn:fake:project/{name}"}
+            for name in projects
+        ],
+    }
+
+
+def _cloudformation_by_name(monkeypatch, aws, stacks, unanswered=None):
+    """`describe_stacks` as CloudFormation answers it when asked by stack NAME.
+
+    A stack in `stacks` answers with its status, and every other name raises the
+    `ValidationError` a stack that does not exist raises, rather than the fake's
+    `DELETE_COMPLETE` default, which a describe by name never returns. So every
+    longer name a sweep might read off a BDA name reads as gone, the way it does
+    in the account. `unanswered` maps a name to the `(code, message)` it raises
+    instead.
+    """
+    unanswered = unanswered or {}
+
+    def describe_stacks(StackName):  # noqa: N803 - boto3 casing
+        aws.described.append(StackName)
+        if StackName in unanswered:
+            raise _client_error(*unanswered[StackName])
+        if StackName not in stacks:
+            raise _client_error(
+                "ValidationError", f"Stack with id {StackName} does not exist"
+            )
+        return {"Stacks": [{"StackStatus": stacks[StackName]}]}
+
+    monkeypatch.setattr(aws, "describe_stacks", describe_stacks)
+
+
+@pytest.mark.parametrize("shape", list(RUN_STACKS))
+def test_a_live_stack_keeps_every_bda_resource_named_for_it(cbd, monkeypatch, shape):
+    """Nothing a live stack named after itself is reaped, whatever its name's shape.
+
+    Where the stack name ends inside a BDA name cannot be read off the name: a
+    blueprint carries a class and a uuid after it, and a suffixed stack's first
+    three parts name no stack. So any single cut, three parts or the whole name
+    up to its first `_`, reads some live stack's resources as left over from a
+    run that is over. The questions stop at the stack itself, since its answer
+    alone keeps every name.
+    """
+    live, asked = RUN_STACKS[shape]
+    blueprints, projects = _bda_resources_named_for(live)
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing(blueprints, projects),
+    )
+    _cloudformation_by_name(monkeypatch, aws, {live: "CREATE_COMPLETE"})
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert aws.deleted == [], f"a live stack's BDA resources were reaped: {aws.deleted}"
+    assert findings == [], findings
+    assert aws.described == asked, aws.described
+
+
+@pytest.mark.parametrize("shape", list(RUN_STACKS))
+def test_a_gone_stacks_bda_resources_are_all_reaped(cbd, monkeypatch, shape):
+    """The counterpart: with no stack standing, every one of those names goes.
+
+    Asking about more stacks per name can only narrow what is reaped, so this is
+    the direction the wider rule breaks. A sweep that stops asking before every
+    candidate has answered gone passes the live case above, and leaves every
+    blueprint and versioned project a dead run created in place for good.
+    """
+    stack, _ = RUN_STACKS[shape]
+    blueprints, projects = _bda_resources_named_for(stack)
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing(blueprints, projects),
+    )
+    _cloudformation_by_name(monkeypatch, aws, {})
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(
+        [f"arn:fake:blueprint/{name}" for name in blueprints]
+        + [f"arn:fake:project/{name}" for name in projects]
+    ), aws.deleted
+
+
+def test_a_longer_candidate_that_goes_unanswered_keeps_the_name_and_is_named(
+    cbd, monkeypatch
+):
+    """Every stack a name could belong to has to be established gone, not the first.
+
+    A suffixed stack's first three parts answer that they do not exist, and that
+    settles nothing while the suffixed stack itself is a question with no answer.
+    The name stays, the finding names the stack that was not answered, and the
+    longer names past it are not asked about, since that one answer already keeps
+    the name.
+    """
+    stack = f"{DEAD_RUN}-apigw"
+    blueprint = f"{stack}-Payslip-abcd1234"
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing([blueprint], []),
+    )
+    _cloudformation_by_name(
+        monkeypatch,
+        aws,
+        {},
+        unanswered={stack: ("ThrottlingException", "Rate exceeded")},
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert aws.deleted == [], f"reaped with a candidate unanswered: {aws.deleted}"
+    assert aws.described == [DEAD_RUN, stack], aws.described
+    assert len(findings) == 1, findings
+    assert f"{stack} (ThrottlingException" in findings[0], findings
+
+
 # ---------------------------------------------------------------------------
 # The retry config the layer's safety premise rests on, per client (#1445)
 #

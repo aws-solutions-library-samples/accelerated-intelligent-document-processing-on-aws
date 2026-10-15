@@ -625,24 +625,35 @@ def _run_stack_liveness(cf_client, stack_name, active_statuses):
     return stacks[0].get("StackStatus", "") in active_statuses, ""
 
 
-def _bda_run_stack_name(name: str) -> str | None:
-    """The stack a BDA blueprint or project is named for, or None if it names none.
+def _bda_stack_name_candidates(name: str) -> list[str]:
+    """Every stack a BDA blueprint or project could be named for, shortest first.
 
-    The first three hyphen-separated parts of the name, read only up to its first
-    `_`. A BDA name may contain `_` and a CloudFormation stack name cannot, so
-    nothing from the first `_` on belongs to a stack name. Every stack in the
-    commercial partition creates a BDA-as-OCR project named
-    `<stack>_OCR_StdOutput`; split on `-` alone, a run's third part is
-    `HHMMSS_OCR_StdOutput`, so the three parts spell no stack, `DescribeStacks`
-    answers that it does not exist, and the project reads as left over from a
-    run that is over while that run's stack is still up. A name with fewer than
-    three parts before its first `_` names no run, so it is neither asked about
-    nor reaped, like a name with fewer than three parts at all.
+    Each hyphen-separated prefix of the name with at least three parts, read only
+    up to its first `_`. A BDA name may contain `_` and a CloudFormation stack
+    name cannot, so nothing from the first `_` on belongs to a stack name: every
+    stack in the commercial partition creates a BDA-as-OCR project named
+    `<stack>_OCR_StdOutput`, and a blueprint name keeps a class id's underscores.
+
+    Where the stack name ends before that cannot be read off the name, so no
+    single cut is safe. A stack names its blueprints `<stack>-<class>-<uuid8>`
+    and a configuration version's project `<stack>-<version>`, so taking the
+    whole prefix as the stack name puts a live primary run's blueprints under a
+    stack that never existed. Taking three parts fails the other way: a
+    deployment-variant probe or a transform deploy test names its stack
+    `idp-MMDD-HHMMSS-<suffix>` with a timestamp of its own, so the first three
+    parts of everything that stack creates name no stack either. Each cut makes
+    `DescribeStacks` answer that a stack does not exist and reads a live stack's
+    resources as left over from a run that is over, so the caller reaps a name
+    only when every candidate is established gone.
+
+    Shortest first, because the primary run's stack is the usual owner and one
+    answer for it covers everything that run created. The caller stops at the
+    first candidate that does not answer gone, since that answer alone keeps the
+    name. A name with fewer than three parts before its first `_` names no run
+    and has no candidate, so it is neither asked about nor reaped.
     """
     parts = name.split("_", 1)[0].split("-")
-    if len(parts) < 3:
-        return None
-    return "-".join(parts[:3])
+    return ["-".join(parts[:end]) for end in range(3, len(parts) + 1)]
 
 
 def cleanup_stale_bda_blueprints():
@@ -719,27 +730,33 @@ def cleanup_stale_bda_blueprints():
         stack_cache = {}
         liveness_unanswered = {}
         for name, _ in blueprints + projects:
-            prefix = _bda_run_stack_name(name)
-            if prefix is not None and prefix not in stack_cache:
-                active, detail = _run_stack_liveness(cf_client, prefix, active_statuses)
-                stack_cache[prefix] = active
-                if active is None:
-                    liveness_unanswered[prefix] = detail
+            for candidate in _bda_stack_name_candidates(name):
+                if candidate not in stack_cache:
+                    active, detail = _run_stack_liveness(
+                        cf_client, candidate, active_statuses
+                    )
+                    stack_cache[candidate] = active
+                    if active is None:
+                        liveness_unanswered[candidate] = detail
+                if stack_cache[candidate] is not False:
+                    break
 
         def _is_stale(name):
-            """Stale only where the run's stack is POSITIVELY established gone.
+            """Stale only where every stack the name could be for is POSITIVELY gone.
 
             `is False` rather than a falsy test: the cache's third value is None
-            for a prefix whose liveness could not be read, `not None` is True,
+            for a candidate whose liveness could not be read, `not None` is True,
             and that hands an unanswerable question the one answer that deletes
-            an in-flight run's blueprints (#1440). A prefix missing from the
-            cache answers None here too, for the same reason. The prefix is
-            the one `_bda_run_stack_name` reads off the name, as above.
+            an in-flight run's blueprints (#1440). A candidate missing from the
+            cache answers None here too, for the same reason, which covers the
+            ones the loop above never asked because an earlier candidate did not
+            answer gone. The candidates are the ones `_bda_stack_name_candidates`
+            reads off the name, and a name with none is never stale.
             """
-            prefix = _bda_run_stack_name(name)
-            if prefix is None:
-                return False
-            return stack_cache.get(prefix) is False
+            candidates = _bda_stack_name_candidates(name)
+            return bool(candidates) and all(
+                stack_cache.get(candidate) is False for candidate in candidates
+            )
 
         # Step 1: Delete projects first (blueprints are referenced by projects)
         deleted_projects = 0
