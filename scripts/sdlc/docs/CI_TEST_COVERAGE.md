@@ -1369,18 +1369,28 @@ resources only while the stack's status is in that reaper's active set, and
 never spares the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`,
 whose first three parts spell no stack. The IAM-role and IAM-policy reapers
 delete only run-prefixed names, so they already passed that stack's roles and
-policies over. The stack, bucket, IAM-role, IAM-policy and BDA reapers therefore
-skip the stack and everything named `idp-ux-nightly-*` or `idp-ux-nightly_*` —
-its pre-stack, buckets, roles, managed policies, BDA projects and blueprints —
-and each one's log line counts what it left. Those with an age gate ask before
-it: those gates keep an item the listing did not date and name it as one whose
-age could not be established, so a resource of that stack is counted as left
-for it rather than reported on that line. The match is the name, or the name
-followed by `-` or by `_` (which no CloudFormation stack name can contain), so
-a lookalike such as `idp-ux-nightly2` gets no such protection.
+policies over. The stack reaper therefore skips `idp-ux-nightly` and its
+pre-stack, `idp-ux-nightly-iam`, and no other stack: it asks only about
+top-level stacks, so the stack's nested stacks never reach that check, and any
+other top-level `idp-ux-nightly-*` stack is a stack of its own, reaped once it
+passes the age gate. The bucket, IAM-role, IAM-policy and BDA reapers skip
+everything named `idp-ux-nightly-*` or `idp-ux-nightly_*` — the buckets, roles,
+managed policies, BDA projects and blueprints of the stack and its pre-stack —
+by matching the name, or the name followed by `-` or by `_` (which no
+CloudFormation stack name can contain), so a lookalike such as
+`idp-ux-nightly2` gets no such protection from any of the five. Each reaper's
+log line counts what it left. Those with an age gate ask before it: those gates
+keep an item the listing did not date and name it as one whose age could not
+be established, so a resource of that stack is counted as left for it rather
+than reported on that line.
 
-Three routes can still take part of that stack:
+Four routes can still take part of that stack:
 
+- The stack reaper spares two names, not a prefix, so a feature extension
+  installed into that stack under its default stack name,
+  `idp-ux-nightly-feature-<id>` — the name `idp-feature-cli deploy` and a
+  console install from the web UI both propose — is reaped once it passes that
+  reaper's age gate. Give one a stack name that does not start `idp-`.
 - The apigw test-VPC reaper does not consult the set, so an
   `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
   reaper's age gate. Nothing creates one for that stack.
@@ -1406,12 +1416,15 @@ Three routes can still take part of that stack:
   `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and keep
   any custom configuration outside an `idp-*` bucket.
 
-Two consequences follow: nothing reaps what that stack leaks itself, so a
-leftover of its own is removed by hand; and naming another stack here means
-changing the pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py`
-and its entry in `scripts/tests/gate_exemptions.json`. Nothing offline checks a
-reaper added to Step 0 later against the set either, so whether it can take
-that stack is decided when it is written.
+Two consequences follow: nothing reaps a leftover of that stack's own that the
+reapers spare by name — a bucket an update orphaned, or the stack or its
+pre-stack left in `DELETE_FAILED` — so one is removed by hand; and naming
+another stack here means changing the pinned set in
+`scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its entry in
+`scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails that
+same module until it either consults the set or is named there with its reason
+for not doing so, so whether it can take that stack is decided when it is
+written.
 
 ## Success Criteria
 

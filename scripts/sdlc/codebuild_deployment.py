@@ -566,12 +566,14 @@ def _first_failure_reason(existing, candidate):
 
 
 #: Stacks the Step 0 stack, bucket, IAM-role, IAM-policy and BDA sweeps leave
-#: standing, with everything named for them. Those sweeps keep a run's resources
-#: only while the run is young or still up, and `idp-ux-nightly` is reserved for a
-#: review stack that outlives every run, updated in place rather than created per
-#: run. Each of them asks before its age gate or liveness check, so a name for one
-#: of these stacks is counted as long-lived, never reported as an item whose age
-#: could not be established (#1445) or whose run's liveness went unanswered.
+#: standing. The stack sweep spares each one and its `-iam` pre-stack
+#: (`_is_exempt_stack_or_pre_stack`); the other four spare everything named for
+#: it (`_named_for_exempt_stack`). Those sweeps keep a run's resources only while
+#: the run is young or still up, and `idp-ux-nightly` is reserved for a review
+#: stack that outlives every run, updated in place rather than created per run.
+#: Each of them asks before its age gate or liveness check, so a name it spares
+#: is counted as long-lived, never reported as an item whose age could not be
+#: established (#1445) or whose run's liveness went unanswered.
 #: Registered in scripts/tests/gate_exemptions.json.
 SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly"})
 
@@ -579,18 +581,36 @@ SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly"})
 def _named_for_exempt_stack(name: str) -> bool:
     """Whether `name` is a SWEEP_EXEMPT_STACK_NAMES stack or is named for one.
 
-    The stack itself, or the stack followed by `-` or `_` and anything. The
-    hyphen form is the match `_stack_scoped_policies` uses, and covers
-    `idp-ux-nightly-iam` and that stack's buckets, roles, managed policies,
-    blueprints and versioned BDA projects. The underscore form covers its
-    BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`, and can never match
-    another stack, because a CloudFormation stack name cannot contain `_`.
-    `idp-ux-nightly2` matches neither.
+    The match the bucket, IAM-role, IAM-policy and BDA sweeps use; the stack
+    sweep's is the narrower `_is_exempt_stack_or_pre_stack`. The stack itself,
+    or the stack followed by `-` or `_` and anything. The hyphen form is the
+    match `_stack_scoped_policies` uses, and covers the buckets, roles, managed
+    policies, blueprints and versioned BDA projects of that stack and of its
+    `-iam` pre-stack. The underscore form covers its BDA-as-OCR project,
+    `idp-ux-nightly_OCR_StdOutput`, and can never match another stack, because
+    a CloudFormation stack name cannot contain `_`. `idp-ux-nightly2` matches
+    neither.
     """
     return any(
         name == stack or name.startswith((f"{stack}-", f"{stack}_"))
         for stack in SWEEP_EXEMPT_STACK_NAMES
     )
+
+
+def _is_exempt_stack_or_pre_stack(name: str) -> bool:
+    """Whether `name` is a SWEEP_EXEMPT_STACK_NAMES stack or its `-iam` pre-stack.
+
+    The stack sweep's match, and narrower than `_named_for_exempt_stack` on
+    purpose. That sweep reaches it only for top-level stacks, having passed over
+    every nested stack first, so the long-lived stack's nested stacks never
+    depend on it. Any other top-level stack named `<stack>-…` is a stack of its
+    own, which, were it spared, would hold its IAM roles until somebody removed
+    it by hand, so it is reaped like the rest once it passes the age gate: a
+    throwaway somebody named after the long-lived stack, and equally a feature
+    extension installed into it under the default stack name
+    `<stack>-feature-<id>`.
+    """
+    return any(name in (stack, f"{stack}-iam") for stack in SWEEP_EXEMPT_STACK_NAMES)
 
 
 #: The CloudFormation error code for a stack that is not there. `DescribeStacks`
@@ -6713,10 +6733,11 @@ def cleanup_stale_idp_stacks():
     the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks).
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
-    by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and every
-    stack named for SWEEP_EXEMPT_STACK_NAMES — the long-lived stack and its
-    `-iam` pre-stack, whose names carry no run prefix for anything below to
-    protect, so the age gate alone would take them.
+    by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and each
+    SWEEP_EXEMPT_STACK_NAMES stack and its `-iam` pre-stack, whose names carry
+    no run prefix for anything below to protect, so the age gate alone would
+    take them. Only those two names (`_is_exempt_stack_or_pre_stack`): any
+    other top-level stack named for that stack is reaped like the rest.
 
     ONE enumeration of targets, `list_stacks`. Returns the Step 0 sweep outcome
     described at STARTUP_SWEEPS: an empty list only if the listing answered and
@@ -6747,12 +6768,13 @@ def cleanup_stale_idp_stacks():
     be established, which is not the same claim as being old enough to delete.
     Neither is a sweep finding: every stack the listing returned was considered,
     and ending a night's run red for a skipped item would make the row that
-    reports a genuinely inert sweep worth less. A top-level stack named for
-    SWEEP_EXEMPT_STACK_NAMES is skipped ahead of the markers and the age gate
-    both, so it is never in either counter: it is counted as long-lived whatever
-    its `CreationTime` says or a retention marker in its name says. Its nested
-    stacks are passed over by the top-level filter first, as every nested stack
-    is, so the count is of top-level stacks like every other count here.
+    reports a genuinely inert sweep worth less. A SWEEP_EXEMPT_STACK_NAMES stack
+    and its `-iam` pre-stack are skipped ahead of the markers and the age gate
+    both, so neither is ever in either counter: each is counted as long-lived
+    whatever its `CreationTime` says or a retention marker in its name says.
+    That stack's nested stacks are passed over by the top-level filter first, as
+    every nested stack is, so the count is of top-level stacks like every other
+    count here.
     """
     print("🧹 Cleaning up stale idp- test stacks (IAM role leak guard)...")
 
@@ -6810,7 +6832,7 @@ def cleanup_stale_idp_stacks():
                 # deleted by their parent, and deleting a parent cascades.
                 if s.get("RootId") or s.get("ParentId"):
                     continue
-                if _named_for_exempt_stack(name):
+                if _is_exempt_stack_or_pre_stack(name):
                     skipped_long_lived += 1
                     continue
                 match = _IDP_RUN_PREFIX_RE.match(name)
@@ -8974,8 +8996,8 @@ def main():
     # exhaust the RolesPerAccount quota (which failed every deploy once ~600
     # roles had accumulated). All are age-gated so a concurrent pipeline's
     # in-flight run is never touched, and the stack, bucket, role, policy and
-    # BDA sweeps leave a SWEEP_EXEMPT_STACK_NAMES stack, and everything named
-    # for it, standing at any age.
+    # BDA sweeps leave a SWEEP_EXEMPT_STACK_NAMES stack and its `-iam`
+    # pre-stack standing at any age, the last four with everything named for it.
     #
     # Every sweep's outcome is BOUND here rather than printed and forgotten: a
     # sweep whose enumeration failed considered nothing, and a `⚠️` on an
