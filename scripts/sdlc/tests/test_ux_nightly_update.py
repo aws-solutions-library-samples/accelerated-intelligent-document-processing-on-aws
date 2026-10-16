@@ -240,6 +240,32 @@ class _FakeDeploy:
         )
 
 
+class _FakeStackListing:
+    """CloudFormation as the Step 0 stack sweep sees it: one listing, then deletes.
+
+    Each stack it is given is listed as top-level and created a month ago, past
+    every age gate, and each `delete_stack` is recorded. It is its own
+    `list_stacks` paginator.
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        created = datetime.now(timezone.utc) - timedelta(days=31)
+        self.summaries = [
+            {"StackName": name, "CreationTime": created} for name in sorted(names)
+        ]
+        self.deleted: list[str] = []
+
+    def get_paginator(self, api: str) -> _FakeStackListing:
+        assert api == "list_stacks", api
+        return self
+
+    def paginate(self, **kwargs: object) -> list[dict]:
+        return [{"StackSummaries": self.summaries}]
+
+    def delete_stack(self, StackName: str) -> None:
+        self.deleted.append(StackName)
+
+
 @dataclass
 class _Installed:
     cf: _FakeCloudFormation
@@ -302,12 +328,14 @@ def test_the_review_stack_is_one_the_step0_sweeps_leave_standing(cbd):
 
 @pytest.mark.unit
 def test_every_stack_the_update_reaches_is_one_the_stack_sweep_spares(cbd, monkeypatch):
-    """Read off the calls the update makes, so a third stack cannot slip in.
+    """Read off the calls the update makes, then put through the stack sweep itself.
 
-    The stack sweep spares a SWEEP_EXEMPT_STACK_NAMES stack and its `-iam`
+    The Step 0 stack sweep spares a SWEEP_EXEMPT_STACK_NAMES stack and its `-iam`
     pre-stack, and reaps any other top-level stack named after it once that stack
     passes the age gate. So the update may describe, refresh, wait on and deploy
-    those two stacks and nothing else: one it reached under any other
+    those two stacks and nothing else, and `cleanup_stale_idp_stacks` is given
+    each of them as a top-level stack past the age gate, beside an old run's pair
+    it must still reap. One the update reached under any other
     `idp-ux-nightly-<x>` name would be reaped by the first run to find it more
     than three hours old, and every nightly update after that would stop short of
     the deploy.
@@ -326,12 +354,19 @@ def test_every_stack_the_update_reaches_is_one_the_stack_sweep_spares(cbd, monke
         ),
     }
     assert reached == {cbd.UX_NIGHTLY_STACK_NAME, f"{cbd.UX_NIGHTLY_STACK_NAME}-iam"}
-    unspared = sorted(
-        name for name in reached if not cbd._is_exempt_stack_or_pre_stack(name)
-    )
-    assert unspared == [], (
-        f"the update reaches {unspared}, which the Step 0 stack sweep reaps once it "
-        "is older than IDP_STACK_STALE_AGE_SECONDS"
+
+    old_run = ["idp-1013-131553", "idp-1013-131553-iam"]
+    listing = _FakeStackListing([*reached, *old_run])
+    monkeypatch.setattr(cbd.boto3, "client", lambda *args, **kwargs: listing)
+    monkeypatch.delenv("SOURCE_BUCKET", raising=False)
+
+    assert cbd.cleanup_stale_idp_stacks() == []
+    assert sorted(listing.deleted) == old_run, (
+        f"the Step 0 stack sweep deleted {listing.deleted} from a listing of "
+        f"{sorted(reached)} beside an old run's {old_run}, each top-level and "
+        "older than IDP_STACK_STALE_AGE_SECONDS. A stack the update reaches that "
+        "the sweep deletes is gone before the next nightly update, and an old run "
+        "it leaves standing is a sweep that stopped reaping"
     )
 
 
