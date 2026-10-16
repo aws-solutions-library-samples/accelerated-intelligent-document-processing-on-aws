@@ -67,8 +67,8 @@ STALE_AGE_SECONDS = 31 * 24 * 3600
 #: A run prefix whose stacks are all gone, so nothing protects its leftovers.
 DEAD_RUN = "idp-0101-000000"
 
-#: A second run prefix, for the mixed case: one run whose liveness is readable
-#: beside one whose is not.
+#: A second run prefix with no stack standing, so a case can show the BDA sweep's
+#: finding does not multiply with the runs it listed.
 OTHER_RUN = "idp-0202-000000"
 
 
@@ -142,7 +142,20 @@ class _StackListing:
 
 
 class _FakeAws:
-    """Account contents plus a chosen failure, standing in for every client."""
+    """Account contents plus a chosen failure, standing in for every client.
+
+    `stacks` is `{StackName: StackStatus}`, the account's stacks with deleted
+    ones included as `DELETE_COMPLETE`, which `list_stacks` then pages through
+    `_StackListing`. None leaves `list_stacks` to `contents`, where the other
+    sweeps' cases write its pages directly.
+
+    `stack_listing_error` is `(pages, exception)`: the stack listing raises
+    `exception` once it has answered `pages` pages, so 0 fails it outright. A
+    different surface from `failing`, which refuses the paginator itself with
+    one error.
+
+    `calls` records every enumeration call, in the order the sweep made it.
+    """
 
     def __init__(
         self,
@@ -155,16 +168,8 @@ class _FakeAws:
         self.contents = contents or {}
         self.failing = failing
         self.breaking = breaking
-        #: {StackName: StackStatus} — the account's stacks, deleted ones included
-        #: as `DELETE_COMPLETE`, which `list_stacks` then pages through
-        #: `_StackListing`. None leaves `list_stacks` to `contents`, where the
-        #: other sweeps' cases write its pages directly.
         self.stacks = stacks
-        #: (pages, exception): the stack listing raises `exception` once it has
-        #: answered `pages` pages, so 0 fails it outright. A different surface
-        #: from `failing`, which refuses the paginator itself with one error.
         self.stack_listing_error = stack_listing_error
-        #: Every enumeration call, in the order the sweep made it.
         self.calls = []
         self.deleted = []
         self.described = []
@@ -265,7 +270,6 @@ def _contents(cbd, sweep, with_target):
     if sweep == "cleanup_stale_bda_blueprints":
         if not with_target:
             return {"list_blueprints": [{"blueprints": []}], "projects": []}
-        # No stacks at all, so nothing protects the blueprint's run prefix.
         return {
             "list_blueprints": [
                 {

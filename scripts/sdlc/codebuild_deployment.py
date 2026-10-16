@@ -8806,8 +8806,9 @@ def main():
     # startup reapers converge the account back to clean regardless — otherwise
     # leaked test VPCs exhaust the VPC quota, and leaked -iam stacks' roles
     # exhaust the RolesPerAccount quota (which failed every deploy once ~600
-    # roles had accumulated). All are age-gated so a concurrent pipeline's
-    # in-flight run is never touched.
+    # roles had accumulated). All but the BDA sweep are age-gated so a
+    # concurrent pipeline's in-flight run is never touched; that one is gated
+    # on its run's surviving stacks instead.
     #
     # Every sweep's outcome is BOUND here rather than printed and forgotten: a
     # sweep whose enumeration failed considered nothing, and a `⚠️` on an
