@@ -283,7 +283,7 @@ def _assert_destroyed_nothing(installed: _Installed) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The stack it updates is one the Step 0 sweeps leave standing
+# The stacks it updates are ones the Step 0 sweeps leave standing
 # ---------------------------------------------------------------------------
 
 
@@ -292,11 +292,46 @@ def test_the_review_stack_is_one_the_step0_sweeps_leave_standing(cbd):
     members = getattr(cbd, "SWEEP_EXEMPT_STACK_NAMES", None)
     assert members is not None and cbd.UX_NIGHTLY_STACK_NAME in members, (
         f"{cbd.UX_NIGHTLY_STACK_NAME!r} is not in SWEEP_EXEMPT_STACK_NAMES "
-        f"({'not defined' if members is None else sorted(members)}). That constant "
-        "arrives with feature/ux-review-stack-sweep-exemption: rebase this branch "
-        "onto a develop that carries it. Until then the scheduled run's Step 0 "
-        "sweeps would delete the review stack and its -iam stack after 3 h and its "
-        "buckets after 6 h."
+        f"({'not defined' if members is None else sorted(members)}). Both name the "
+        "review stack, so rename them together, with the set's pin in "
+        "test_startup_sweep_outcomes.py and its entry in "
+        "scripts/tests/gate_exemptions.json. Otherwise the Step 0 sweeps delete the "
+        "review stack and its -iam pre-stack after 3 h and its buckets after 6 h."
+    )
+
+
+@pytest.mark.unit
+def test_every_stack_the_update_reaches_is_one_the_stack_sweep_spares(cbd, monkeypatch):
+    """Read off the calls the update makes, so a third stack cannot slip in.
+
+    The stack sweep spares a SWEEP_EXEMPT_STACK_NAMES stack and its `-iam`
+    pre-stack, and reaps any other top-level stack named after it once that stack
+    passes the age gate. So the update may describe, refresh, wait on and deploy
+    those two stacks and nothing else: one it reached under any other
+    `idp-ux-nightly-<x>` name would be reaped by the first run to find it more
+    than three hours old, and every nightly update after that would stop short of
+    the deploy.
+    """
+    installed = _install(cbd, monkeypatch)
+
+    assert cbd.update_ux_nightly_stack(TEMPLATE_URL)["state"] == "updated"
+
+    reached = {
+        *installed.cf.made("describe_stacks"),
+        *(call["StackName"] for call in installed.cf.made("update_stack")),
+        *(call["StackName"] for call in installed.cf.made("wait")),
+        *(
+            command.cmd.split("--stack-name ", 1)[1].split()[0]
+            for command in installed.deploy.commands
+        ),
+    }
+    assert reached == {cbd.UX_NIGHTLY_STACK_NAME, f"{cbd.UX_NIGHTLY_STACK_NAME}-iam"}
+    unspared = sorted(
+        name for name in reached if not cbd._is_exempt_stack_or_pre_stack(name)
+    )
+    assert unspared == [], (
+        f"the update reaches {unspared}, which the Step 0 stack sweep reaps once it "
+        "is older than IDP_STACK_STALE_AGE_SECONDS"
     )
 
 

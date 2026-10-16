@@ -688,9 +688,12 @@ release fixes a High or Critical security bug, and at least once a month.
   declare it among that project's `EnvironmentVariables` in the template.
 - Deploy and update the stack through its own `idp-ux-nightly-iam` pre-stack and
   boundary, or the shared `idp-cicd-shared-PermissionsBoundary`, never through a
-  run's; keep any custom configuration outside an `idp-*` bucket; and keep its
-  CloudFront distribution enabled. Why each of those matters, and how the Step 0
-  sweeps leave the stack standing, is under
+  run's; keep any custom configuration outside an `idp-*` bucket; keep its
+  CloudFront distribution enabled; and give any stack deployed beside it, such as a
+  feature extension or a private network's endpoints stack, a name that does not
+  start `idp-`, because the stack sweep spares `idp-ux-nightly` and
+  `idp-ux-nightly-iam` and no other stack. Why each of those matters, and how the
+  Step 0 sweeps leave the stack standing, is under
   [Startup reapers](#startup-reapers-converge-leaks-from-interrupted-prior-runs).
 
 **The Polly grant.** `polly:SynthesizeSpeech` is granted to the GitLab CI role in
