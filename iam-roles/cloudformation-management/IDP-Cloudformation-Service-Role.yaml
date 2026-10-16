@@ -354,6 +354,13 @@ Resources:
                       - !Sub 'glue.${AWS::URLSuffix}'
                       - !Sub 'lambda.${AWS::URLSuffix}'
                       - !Sub 'logs.${AWS::URLSuffix}'
+                      # AWS::GuardDuty::MalwareProtectionPlan passes
+                      # MalwareScanRole to GuardDuty (MalwareScanning=CREATE_PLAN
+                      # only). The principal is NOT `guardduty.` — the plan's own
+                      # sub-service principal is what the role trusts and what
+                      # appears in iam:PassedToService, so a `guardduty.` entry
+                      # here would read as correct and deny anyway.
+                      - !Sub 'malware-protection-plan.guardduty.${AWS::URLSuffix}'
                       - !Sub 'scheduler.${AWS::URLSuffix}'
                       - !Sub 'states.${AWS::URLSuffix}'
 
@@ -566,6 +573,39 @@ Resources:
                   - scheduler:*
                   - ec2:*
                   - ecr:*
+                  # Optional malware scanning (`MalwareScanning: CREATE_PLAN`)
+                  # declares an AWS::GuardDuty::MalwareProtectionPlan. Granted
+                  # unconditionally because this one role serves every deploy
+                  # variant and CloudFormation revalidates nothing per
+                  # parameter — but note the asymmetry: with the default
+                  # `DISABLED`, or with `GATE_ONLY`, no GuardDuty resource is
+                  # created and this statement is never exercised. A deployer
+                  # who will never use `CREATE_PLAN` can remove this line; the
+                  # gate in scripts/sdlc/tests/ derives what is required from
+                  # the templates, so it would then fail and say so.
+                  #
+                  # ⚠️ The verb set this feature actually needs is small and
+                  # closed (Create/Get/Update/Delete/ListMalwareProtectionPlans
+                  # plus Tag/UntagResource), and narrowing to it would keep this
+                  # role out of GuardDuty's detector, findings and member-account
+                  # surface. It is NOT narrowed, and the reason is measured
+                  # rather than assumed: `validate_service_role_permissions.py`
+                  # derives one required `<service>:*` per resource type a
+                  # template declares and compares against the role's collapsed
+                  # service set, so a verb list reports `guardduty:*` as missing
+                  # and `test_shipped_service_role_satisfies_the_main_stack`
+                  # fails. Narrowing any one service here therefore means
+                  # changing that validator for all of them, which is a separate
+                  # change with its own blast radius — not something to smuggle
+                  # in behind a new feature.
+                  #
+                  # ⚠️ If `scripts/sdlc/validate_service_role_permissions.py`
+                  # ever gains per-action support, THIS is the statement to
+                  # revisit: a deployer who will never set
+                  # MalwareScanning=CREATE_PLAN can already drop this line
+                  # today, as `docs/malware-scanning.md` records under
+                  # "Enabling it".
+                  - guardduty:*
                 Resource: '*'
               # UPGRADE-ONLY. No current template declares an AWS::AppSync::*
               # resource, so a first-time deployment of 0.6.0 or later never

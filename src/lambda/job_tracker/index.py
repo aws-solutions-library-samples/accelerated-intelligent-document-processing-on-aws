@@ -1,11 +1,17 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import boto3
 import json
-import os
 import logging
-import zipfile
+import os
+
+import boto3
+from idp_common.job_completion import (
+    JOB_KEY_PREFIX,
+    complete_job_results,
+    finalize_job_file,
+    parse_job_document_id,
+)
 from idp_common.job_service import create_job_service
 from idp_common.models import (
     Status,
@@ -13,42 +19,68 @@ from idp_common.models import (
     terminal_document_status,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-from io import BytesIO
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"]
-TERMINAL_STATUSES = {
-    Status.COMPLETED.value,
-    Status.FAILED.value,
-    Status.ABORTED.value,
-    Status.REJECTED.value,
-}
 
 s3 = boto3.client("s3")
 job_service = create_job_service()
 
 
 def handler(event, context):
+    """Record a job file's outcome when its workflow execution ends.
+
+    This is one of two writers that can finalize a job file; the other is the
+    ingest malware gate in ``queue_sender``, which refuses documents that never
+    start an execution and so never reach this handler. Both go through
+    ``idp_common.job_completion.finalize_job_file`` so the all-files-terminal
+    check and the results zip exist once.
+
+    It also answers a second event shape, ``{"idpJobCompletion": {"jobId": ...}}``,
+    which that gate sends when its refusal was the *last* file in a batch to go
+    terminal. Only this function can serve it: building the zip needs read and
+    write on the output bucket plus the memory, timeout and ephemeral storage
+    declared on this resource, none of which the 128 MB per-upload ingest
+    function has. See ``_delegate_job_results`` in ``queue_sender``.
+    """
     logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
+
+    # Keyed on the key being PRESENT, not on its contents being truthy. An empty
+    # or malformed payload is still a delegation and must be reported as one;
+    # falling through would hand it to the Step Functions branch, which raises
+    # KeyError on `detail` and so reports a malformed delegation as a crash.
+    completion = event.get("idpJobCompletion") if isinstance(event, dict) else None
+    if completion is not None:
+        job_id = (completion or {}).get("jobId", "")
+        if not job_id:
+            logger.error("idpJobCompletion event carries no jobId")
+            return {"statusCode": 400, "body": "Missing jobId"}
+        result = complete_job_results(
+            job_id=job_id,
+            job_service=job_service,
+            s3_client=s3,
+            output_bucket=OUTPUT_BUCKET,
+        )
+        return {"statusCode": 200, "body": json.dumps(result)}
 
     # Extract document ID from Step Functions event
     input_data = json.loads(event["detail"]["input"])
     doc_id = input_data.get("document", {}).get("document_id", "")
 
-    # Check if this is a job document
-    if not doc_id.startswith("jobs/"):
+    # Two distinct answers, deliberately kept apart: a document outside jobs/ is
+    # the ordinary case and nothing to report, whereas a jobs/ key that does not
+    # name a file is malformed and should be visible as a client error.
+    if not doc_id.startswith(JOB_KEY_PREFIX):
         logger.info(f"Not a job document: {doc_id}")
         return {"statusCode": 200, "body": "Not a job document"}
-
-    # Parse job_id and filename from jobs/{job_id}/{filename}
-    parts = doc_id.split("/", 2)
-    if len(parts) < 3:
+    parsed = parse_job_document_id(doc_id)
+    if parsed is None:
         logger.error(f"Invalid job document path: {doc_id}")
         return {"statusCode": 400, "body": "Invalid job document path"}
+    job_id, filename = parsed
 
-    job_id, filename = parts[1], parts[2]
     workflow_status = event["detail"]["status"]
 
     # Map workflow status to file status. A SUCCEEDED run keeps a status the
@@ -60,51 +92,26 @@ def handler(event, context):
         workflow_status, document_wrapper_status(output)
     )
 
-    # Update job file status and get updated Files map
-    files = job_service.update_file_status(job_id, filename, file_status)
-    if not files:
-        logger.error(f"Job not found: {job_id}")
-        return {"statusCode": 404, "body": "Job not found"}
-
-    logger.info(f"Updated job {job_id} file {filename} to {file_status.value}")
-
-    # Check if all files are in terminal state
-    if not all(s in TERMINAL_STATUSES for s in files.values()):
-        logger.info(f"Job {job_id} still processing: {files}")
+    if file_status == Status.HITL_IN_PROGRESS:
+        # Not terminal: record the hold so the job shows the file as under
+        # review, and leave the job open. finalize_job_file refuses a
+        # non-terminal status by design; the finalize execution that ends the
+        # review reaches this handler again with a terminal one.
+        if not job_service.update_file_status(job_id, filename, file_status):
+            return {"statusCode": 404, "body": "Job not found"}
         return {"statusCode": 200, "body": "Job still processing"}
 
-    # All files complete - create ZIP
-    logger.info(f"All files complete for job {job_id}, creating ZIP")
-    try:
-        create_results_zip(job_id)
-        # Mark the job's results as ready only after the zip is successfully
-        # uploaded. The API handler uses this flag to gate SUCCEEDED/
-        # PARTIALLY_SUCCEEDED so clients never race into a 404 on download.
-        job_service.mark_results_ready(job_id, True)
-        return {"statusCode": 200, "body": f"ZIP created for job {job_id}"}
-    except Exception as e:
-        logger.error(f"Failed to create ZIP for job {job_id}: {e}")
-        raise
+    result = finalize_job_file(
+        job_id=job_id,
+        filename=filename,
+        status=file_status,
+        job_service=job_service,
+        s3_client=s3,
+        output_bucket=OUTPUT_BUCKET,
+    )
 
-
-def create_results_zip(job_id: str):
-    """Create zip of all result files for a job."""
-    prefix = f"jobs/{job_id}"
-    response = s3.list_objects_v2(Bucket=OUTPUT_BUCKET, Prefix=prefix)
-    objects = response.get("Contents", [])
-
-    if not objects:
-        logger.warning(f"No output files found for job {job_id}")
-        return
-
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for obj in objects:
-            file_data = s3.get_object(Bucket=OUTPUT_BUCKET, Key=obj["Key"])[
-                "Body"
-            ].read()
-            zip_file.writestr(obj["Key"], file_data)
-
-    zip_key = f"jobs/{job_id}/results.zip"
-    s3.put_object(Bucket=OUTPUT_BUCKET, Key=zip_key, Body=zip_buffer.getvalue())
-    logger.info(f"Uploaded ZIP to s3://{OUTPUT_BUCKET}/{zip_key}")
+    if not result["found"]:
+        return {"statusCode": 404, "body": "Job not found"}
+    if not result["job_complete"]:
+        return {"statusCode": 200, "body": "Job still processing"}
+    return {"statusCode": 200, "body": f"ZIP created for job {job_id}"}

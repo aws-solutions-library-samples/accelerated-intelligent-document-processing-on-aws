@@ -16,11 +16,24 @@ inputs:
     description: >-
       Also install Node 22 and basedpyright. Needed by any job whose gates shell
       out to basedpyright — which is not only the type gate: `scripts/tests`
-      contains a LIVE basedpyright probe, so the package suites need it too.
+      contains a LIVE basedpyright probe, so the package suites need it too — and
+      by any job that runs `scripts/tests/test_ux_recorder.py`, whose click-label
+      tests run under node and fail in CI without it.
     required: false
     default: "false"
   cfn-lint:
     description: Also install the pinned cfn-lint (only `make lint-cicd` needs it).
+    required: false
+    default: "false"
+  ui-deps:
+    description: >-
+      Also run `npm ci` in `src/ui`, for a job that runs `scripts/tests`.
+      `test_ui_test_discovery.py` checks its hand-written copies of Vitest's
+      file-naming convention against the installed Vitest, so without the UI's
+      dependencies those three assertions cannot run — and until #1390 they
+      answered that by SKIPPING, in every job but the UI one, so the literals that
+      are the input to that module's gate assertions were calibrated nowhere.
+      Implies `node`.
     required: false
     default: "false"
 
@@ -54,7 +67,7 @@ runs:
     # repo unregistered, the following apt-get installed Debian's own nodejs 18 —
     # which ships no npm — and the job failed later with a bare `npm: not found`.
     - name: Install Node.js
-      if: inputs.node == 'true'
+      if: inputs.node == 'true' || inputs.ui-deps == 'true'
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: 22
@@ -64,11 +77,35 @@ runs:
       shell: bash
       run: npm install -g basedpyright
 
+    # Deliberately inside this action rather than as a step in the caller, which is
+    # what puts it before the caller's own steps: a setup step that lands after the
+    # step it is setting up for is a configuration error nothing in the job's exit
+    # code reveals.
+    #
+    # Uncached, unlike the GitLab side and unlike the `ui_tests` job in
+    # developer-tests.yml, and that is a choice rather than an omission.
+    # `actions/setup-node`'s npm cache has only ever run here in `ui_tests`, which
+    # has no `container:`; these jobs do, and asking a mechanism proven elsewhere to
+    # work in a configuration this repository has not run it in trades about 30
+    # seconds against both of these jobs going red. `--prefer-offline` keeps the
+    # install cheap, and nothing about whether the calibrations RUN depends on a
+    # cache hit — which is the property worth protecting, since a cache that
+    # silently stops hitting is how they came to be skipped in the first place.
+    - name: Install the web UI's npm dependencies
+      if: inputs.ui-deps == 'true'
+      shell: bash
+      run: cd src/ui && npm ci --prefer-offline --no-audit
+
     - name: Install Python dependencies
       shell: bash
       env:
         WANT_CFN_LINT: ${{ inputs.cfn-lint }}
       run: |
+        # Pinned for the same reason as cfn-lint below: an unpinned linter on a
+        # blocking gate can red-line develop with no code change. Keep in step
+        # with RUFF_VERSION in the Makefile, which is the single source of truth
+        # — scripts/tests/test_ci_gate_parity.py fails if this, .gitlab-ci.yml
+        # and the Makefile disagree.
         uv pip install 'ruff==0.15.13'
         if [ "$WANT_CFN_LINT" = "true" ]; then
           # Pinned: cfn-lint gates templates via `make lint-cicd`, and an unpinned

@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Guards for two ways this suite silently stopped testing things.
+"""Guards for three ways this suite silently stopped testing things.
 
 **1. A test module must not replace a real installed package globally.**
 Five modules under ``tests/unit/agents/`` did ``sys.modules["strands"] =
@@ -26,6 +26,17 @@ are genuinely absent.
 runs) carried only ``@pytest.mark.agentic``, which nothing filters on — so the
 only thing standing between them and a billed CI run was the very stub that was
 breaking everything else.
+
+**3. A unit test must not wait out a real retry or poll ladder.** Two tests in
+``tests/unit/lambdas/test_data_mart_rollup.py`` each patched one boundary of
+``_run_reconcile`` and left the other real, so each reached ``_wait_for_athena``
+against a MagicMock Athena client that never reports a terminal state and slept
+1 s per poll to that function's 300 s default. The ``TimeoutError`` that
+followed was caught by the production code's own ``except Exception``, so both
+tests passed. 300.1 s each, measured serially, against 1.2 s for the other 197
+tests in that module put together (#1380). ``tests/conftest.py``'s
+``bounded_real_sleep`` now fails a unit test on the sleep that would carry it
+past a one-second budget, before that sleep is served.
 """
 
 from __future__ import annotations
@@ -33,6 +44,7 @@ from __future__ import annotations
 import ast
 import importlib
 import os
+import time
 
 import boto3
 import pytest
@@ -427,3 +439,190 @@ def test_the_default_marker_filter_is_actually_in_effect(pytestconfig):
         f"the session is not excluding integration-marked tests (markexpr="
         f"{markexpr!r}); live-Bedrock tests would run"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3. A unit test must not wait out a real retry or poll ladder.
+# ---------------------------------------------------------------------------
+# `tests/conftest.py`'s `bounded_real_sleep` is the tripwire. The tests below
+# pin the properties that make it work at all — it is in force for unit tests,
+# it refuses an oversized sleep without serving it, it accumulates across a
+# ladder of small sleeps, its failure escapes an `except Exception`, it stands
+# aside for `integration`-marked tests, and the budget itself stays small
+# enough to catch a ladder — because a tripwire that is installed and silently
+# inert is worse than none: it reads as protection while the next incomplete
+# mock sleeps for five minutes and passes.
+
+
+@pytest.mark.unit
+def test_the_sleep_budget_is_in_scope_for_unit_tests(request):
+    """Its own fixture closure is the evidence, the same way the credential
+    reconciliation above is pinned. If the fixture moves into a subdirectory
+    conftest, every unit test outside that subdirectory loses it."""
+    assert "bounded_real_sleep" in request.fixturenames, (
+        "the sleep budget is not in scope for tests under tests/unit/; a test "
+        "that reaches an unmocked retry ladder will wait out its timeout and "
+        "then pass"
+    )
+
+
+@pytest.mark.unit
+def test_an_oversized_sleep_is_refused_before_it_is_served(bounded_real_sleep):
+    """The refusal has to happen BEFORE the sleep, not after.
+
+    Deciding afterwards would make the failure loud and leave the cost exactly
+    where it was — the 300 s this exists to stop would still be spent, and the
+    suite would go from slow-and-green to slow-and-red.
+    """
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match="sleep budget"):
+        time.sleep(bounded_real_sleep.limit + 10)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0, (
+        f"the oversized sleep was served before the budget refused it "
+        f"({elapsed:.2f}s elapsed)"
+    )
+
+
+@pytest.mark.unit
+def test_the_sleep_budget_accumulates_across_one_test(bounded_real_sleep):
+    """A poll ladder's individual sleeps are small — `_wait_for_athena` asks
+    for 1 s at a time — so a per-call limit would never fire on the case this
+    was written for. The budget is per test, over the sum."""
+    bounded_real_sleep.limit = 0.06
+    time.sleep(0.02)
+    time.sleep(0.02)
+    assert bounded_real_sleep.spent == pytest.approx(0.04)
+    with pytest.raises(pytest.fail.Exception):
+        time.sleep(0.03)
+
+
+@pytest.mark.unit
+def test_the_sleep_budget_failure_escapes_an_except_exception(bounded_real_sleep):
+    """The property that makes the tripwire loud rather than merely fast.
+
+    The call path it was written for raises inside a production
+    `except Exception` that files the error in a result dict and returns
+    normally (`_run_reconcile`'s daily self-heal arm). An `Exception` raised
+    from the sleep would be caught right there: the test would get five
+    minutes faster and stay exactly as silent, which is the half of #1380 that
+    was expensive. `pytest.fail` raises from `BaseException` instead.
+    """
+    assert not issubclass(pytest.fail.Exception, Exception), (
+        "the sleep-budget failure is now an Exception subclass, so production "
+        "code under test that catches Exception will swallow it"
+    )
+    caught = None
+    try:
+        time.sleep(bounded_real_sleep.limit + 10)
+    except Exception as exc:  # noqa: BLE001 - the point of the test
+        caught = exc
+    except pytest.fail.Exception:
+        pass
+    else:
+        pytest.fail("the sleep budget did not fire at all")
+    assert caught is None, f"an `except Exception` swallowed the refusal ({caught!r})"
+
+
+@pytest.mark.unit
+def test_the_sleep_budget_stands_aside_for_integration_tests():
+    """Keyed on the marker, like the credential reconciliation it sits beside.
+
+    An `integration`-marked test polls real AWS — a stack update, an Athena
+    query, a Step Functions execution — and those waits are the test. Keying on
+    the directory instead would miss the integration-marked tests that live
+    under `tests/unit/`.
+    """
+    fixture = _root_conftest_fixture("bounded_real_sleep")
+    assert fixture is not None, (
+        "tests/conftest.py no longer defines the sleep budget fixture"
+    )
+    src = ast.unparse(fixture)
+    assert "get_closest_marker('integration')" in src, (
+        "the sleep budget is autouse over the whole package but no longer keys "
+        "on the `integration` marker, so a real AWS poll now fails at 5s"
+    )
+    assert "monkeypatch.setattr(time, 'sleep'" in src, (
+        "the fixture no longer intercepts time.sleep, so it cannot see a sleep at all"
+    )
+
+
+@pytest.mark.unit
+def test_the_sleep_budget_is_too_small_to_let_a_ladder_through():
+    """A budget raised far enough reads as installed and refuses nothing.
+
+    Found by mutation sampling: of the mutations aimed at
+    ``bounded_real_sleep``, every one that removed or inverted part of the
+    decision was killed by the tests above, and the single survivor was
+    ``_SLEEP_BUDGET_SEC`` set to a million — the tripwire still present, still
+    autouse, still intercepting every sleep, and permissive enough to serve the
+    300 s poll it exists to stop. The tests above all phrase their oversized
+    sleep as ``limit + 10``, so they follow the budget wherever it goes and
+    cannot see that.
+
+    The band is deliberately wide, because which number inside it is a
+    judgement about this suite and the conftest is where that judgement is
+    recorded. What is pinned is the order of magnitude: the ladders in this
+    repository time out in minutes, so putting the budget on that scale has to
+    be a deliberate edit with a reason beside it rather than a one-character
+    change nothing notices.
+    """
+    path = os.path.join(TESTS_DIR, "conftest.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    found = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_SLEEP_BUDGET_SEC"
+            for t in node.targets
+        )
+    ]
+    assert len(found) == 1, (
+        f"expected exactly one _SLEEP_BUDGET_SEC assignment in tests/conftest.py, "
+        f"found {len(found)}"
+    )
+    budget = ast.literal_eval(found[0])
+    assert 0 < budget <= 10, (
+        f"the unit-test sleep budget is {budget}s. Above ~10s it stops being a "
+        f"tripwire on an unmocked retry ladder: the ladders in this repository "
+        f"time out in minutes, and a test that waits one out passes while "
+        f"reporting nothing (#1380). If a unit test genuinely needs to sleep "
+        f"longer than this, patch `time.sleep` in that test and assert on the "
+        f"delays it was asked for instead."
+    )
+
+
+@pytest.mark.unit
+def test_a_sleep_in_a_forked_child_is_served_rather_than_refused(bounded_real_sleep):
+    """A forked child inherits the wrapper, and must not be budgeted by it.
+
+    `tests/unit/rule_validation/test_rule_validation_chunking.py` provokes a
+    child that never finishes by asking it to sleep 30 s and killing it after
+    1, so that 30 s is never spent and the parent's `join(timeout)` is the real
+    bound. `pytest.fail` inside a child is not a test failure — it is a
+    non-zero exit, which that harness reads as the child having *died* rather
+    than having *hung*, which is a distinction it exists to draw. Budgeting the
+    child broke it, and did so only when the whole package ran, which is the
+    expensive way to find out.
+    """
+    bounded_real_sleep.limit = 0.01
+    pid = os.fork()
+    if pid == 0:
+        code = 0
+        try:
+            time.sleep(0.05)
+        except BaseException:  # noqa: BLE001 - reported to the parent as a status
+            code = 17
+        os._exit(code)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status), f"the forked child did not exit cleanly ({status})"
+    assert os.WEXITSTATUS(status) == 0, (
+        "the sleep budget refused a sleep in a forked child; a harness that "
+        "distinguishes a hung child from a dead one now gets the wrong answer"
+    )
+    # ... and the parent is still budgeted, so the pid check narrows the scope
+    # rather than turning the tripwire off.
+    with pytest.raises(pytest.fail.Exception):
+        time.sleep(0.05)

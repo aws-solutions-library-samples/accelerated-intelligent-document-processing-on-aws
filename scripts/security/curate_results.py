@@ -46,6 +46,24 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_ROOT = REPO_ROOT / "security" / "test-results"
 
+# The SRT gate's own scope decision, imported rather than reimplemented.
+#
+# The curated snapshot is read as the record of what a release's security tests
+# established, so a verdict in it that disagrees with the gate that produced it is
+# worse than no verdict: three consecutive snapshots published
+# `SRT — FAIL ❌ (7 open/reopened HIGH)` for a tree whose gate was green, because
+# this script applied one of the two partitions `scripts/srt/run.py` applies and
+# not the other (#1365). Calling the same function is what keeps them from drifting
+# again — a copy of the rule here would agree today and diverge on the next change
+# to it.
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "srt"))
+from ci_paths import (  # noqa: E402
+    partition_by_ci_visibility,
+    partition_by_name_heuristic_scope,
+)
+
+sys.path.pop(0)
+
 # ---------------------------------------------------------------------------
 # Redaction — the single choke point every emitted string passes through.
 # ---------------------------------------------------------------------------
@@ -179,43 +197,25 @@ def _stub(title: str, source_hint: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _git_ignored_set(paths: list[str]) -> set[str]:
-    """Return the subset of `paths` that git ignores (one batched call).
-
-    A fresh local `.srt/issues.json` scans gitignored trees (`.aws-sam/`,
-    `scratch/`, vendored `layer/python/`, …) that a CI clean-checkout never
-    sees. To publish a result that matches what CI gates on, we drop findings
-    whose path is git-ignored. `git check-ignore --stdin` classifies every path
-    in one process (per-path spawning is far too slow for an 8k-finding scan).
-    On any error we return an empty set — better a false-keep than silently
-    hiding a real finding.
-    """
-    uniq = sorted({p for p in paths if p})
-    if not uniq:
-        return set()
-    try:
-        res = subprocess.run(
-            ["git", "check-ignore", "--stdin"],
-            cwd=REPO_ROOT,
-            input="\n".join(uniq),
-            capture_output=True,
-            text=True,
-        )
-        return {ln for ln in res.stdout.splitlines() if ln}
-    except Exception:
-        return set()
-
-
 def curate_srt(issues_path: Path) -> tuple[str, dict]:
     if not issues_path.exists():
         return _stub("SRT — SAST & Dependency Scan", f"`{issues_path}`"), {
             "status": "not-run"
         }
     raw_issues = json.loads(issues_path.read_text())
-    # Reconcile to CI's view: drop findings whose path is git-ignored.
-    ignored = _git_ignored_set([i.get("path", "") for i in raw_issues])
-    issues = [i for i in raw_issues if i.get("path", "") not in ignored]
-    dropped = len(raw_issues) - len(issues)
+    # Reconcile to CI's view — with the gate's own partition rather than a second
+    # implementation of it. A fresh local `.srt/issues.json` scans build output and
+    # vendored trees that CI's clean checkout never contains, and reporting those as
+    # blocking produced phantom regressions after every publish.
+    #
+    # This was a private `git check-ignore` pass, which asks a DIFFERENT question:
+    # CI checks out the TRACKED files, so "untracked" is the criterion and
+    # "ignored" is a subset of it. The two agree on a released tree and disagree on
+    # an untracked-but-not-ignored file, where the gate passed and this published a
+    # FAIL — one rule, copied, diverging, which is the defect #1365 is about
+    # surviving in the other half of the same function.
+    issues, not_in_ci = partition_by_ci_visibility(raw_issues, REPO_ROOT)
+    dropped = len(not_in_ci)
     # Which source produced this — the live scan results or the committed
     # disposition register — is itself an audit-relevant fact.
     src_name = issues_path.name
@@ -249,6 +249,20 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
         for i in issues
         if prio(i) == "HIGH" and (i.get("status") or "").lower() in ("open", "reopened")
     ]
+    # The second of the gate's two partitions, in the same order `run.py` applies
+    # them: Bandit's B105/B106 match an identifier's NAME against a password
+    # wordlist, and SRT promotes both to HIGH unconditionally, so a fixture key
+    # called `pass_count` arrives at the priority of a real credential. In test
+    # code that no deployment artifact is built from they are reported at Bandit's
+    # own severity and do not gate; everywhere that ships — including a test-shaped
+    # file inside a Lambda's CodeUri, which `sam build` copies into the artifact —
+    # they still do. See NAME_HEURISTIC_EXEMPT in scripts/srt/ci_paths.py for why
+    # no Bandit rule can express that scope, and why this cannot be a baseline.
+    #
+    # Applied to the gating list rather than to `issues`, so the priority × status
+    # matrix below still counts every CI-visible finding. Nothing is dropped: the
+    # demoted findings are listed in their own section.
+    open_high, name_scoped = partition_by_name_heuristic_scope(open_high, REPO_ROOT)
     gate = (
         "PASS ✅"
         if not open_high
@@ -280,16 +294,27 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
         "(Syft), and the security-matrix review, aggregated by the "
         "[Sample Security Review Tool](https://github.com/aws-samples/sample-security-review-tool). "
         "The gate is HIGH findings that are **open or reopened** (i.e. not "
-        "suppressed or resolved); lower tiers are reported as counts (they are "
+        "suppressed or resolved) and not scoped out of it by the rule in "
+        "`scripts/srt/ci_paths.py`; lower tiers are reported as counts (they are "
         "dominated by tracked third-party/vendored code).",
         "",
         "## Summary",
         "",
         f"- **Gate (open/reopened HIGH findings):** {gate}",
         f"- **CI-visible findings:** {len(issues)}",
+        *(
+            [
+                f"- **Scoped out of the gate:** {len(name_scoped)} identifier-name "
+                "finding(s) (Bandit B105/B106) in test code no deployment artifact "
+                "is built from — listed below, reported at Bandit's own severity"
+            ]
+            if name_scoped
+            else []
+        ),
         f"- **Source:** {source_desc}"
         + (
-            f" — {dropped} git-ignored finding(s) excluded to match the CI view"
+            f" — {dropped} finding(s) in files CI's checkout does not contain,"
+            " excluded to match the CI view"
             if dropped
             else ""
         ),
@@ -337,8 +362,9 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
             "## HIGH findings by check (disposition)",
             "",
             "Every HIGH check-ID flagged, with how many are in each status. "
-            "A green gate means all are resolved or suppressed (0 Open and "
-            "0 reopened).",
+            "A green gate means every one of them is either resolved, suppressed, "
+            "or an identifier-name finding scoped out of the gate (see the section "
+            "below and the Summary count above).",
             "",
             "| Source | Check | " + " | ".join(statuses) + " |",
             "|--------|-------|" + "|".join(["--:"] * len(statuses)) + "|",
@@ -347,6 +373,32 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
             c = by_check[(src, cid)]
             cells = " | ".join(str(c.get(s, 0)) for s in statuses)
             lines.append(f"| {redact(src)} | `{redact(cid)}` | {cells} |")
+        lines.append("")
+
+    if name_scoped:
+        lines += [
+            "## ℹ️ Identifier-name findings in test code (non-blocking)",
+            "",
+            "Bandit's B105/B106 match an identifier's **name** against a password "
+            "wordlist, never its value, and SRT promotes both to HIGH regardless of "
+            "what was matched. In test code that no deployment artifact is built "
+            "from they are reported at Bandit's own severity instead of blocking; "
+            "the same name shape still gates anywhere that ships. This is the scope "
+            "decision `make srt-scan` applies, applied here so this snapshot and "
+            "that gate give the same verdict.",
+            "",
+            "| Source | Check | Path | Line |",
+            "|--------|-------|------|-----:|",
+        ]
+        # The check id, path and line locate the finding; Bandit's message for
+        # B105/B106 quotes the literal it matched, and these are published
+        # routinely rather than after a triage, so it is left out here. The scan's
+        # own output carries it for whoever is looking.
+        for i in name_scoped:
+            lines.append(
+                f"| {redact(i.get('source', ''))} | `{redact(i.get('check_id', ''))}` "
+                f"| `{redact(i.get('path', ''))}` | {i.get('line', '')} |"
+            )
         lines.append("")
 
     if open_high:
@@ -396,6 +448,7 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
         "status": "run",
         "total": len(issues),
         "open_high": len(open_high),
+        "name_scoped": len(name_scoped),
         "gate": "pass" if not open_high else "fail",
     }
     return "\n".join(lines), meta
@@ -1084,7 +1137,17 @@ def write_manifest(out_dir: Path, version: str, date: str, per_test: dict) -> No
         "|------|------|--------|",
         f"| [SRT — SAST & deps](./srt.md) | {gate_of('srt')} | "
         f"{per_test.get('srt', {}).get('open_high', '?')} open/reopened HIGH of "
-        f"{per_test.get('srt', {}).get('total', '?')} tracked |",
+        f"{per_test.get('srt', {}).get('total', '?')} tracked"
+        # A PASS reached by scoping findings out of the gate says so here. The
+        # count is a property of the snapshot a reader acts on: it is the
+        # difference between "nothing was found" and "what was found does not
+        # block", and only one of those two is worth a second look.
+        + (
+            f", {per_test['srt']['name_scoped']} scoped out"
+            if per_test.get("srt", {}).get("name_scoped")
+            else ""
+        )
+        + " |",
         f"| [RBAC — static](./rbac-static.md) | {gate_of('rbac_static')} | "
         f"{per_test.get('rbac_static', {}).get('fail', '?')} fail, "
         f"{per_test.get('rbac_static', {}).get('warn', '?')} known-gap warn |",

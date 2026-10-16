@@ -5,11 +5,23 @@ import { useState, useEffect } from 'react';
 import { generateClient } from '../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getPricing, updatePricing as updatePricingOp, restoreDefaultPricing as restoreDefaultPricingOp } from '../graphql/generated';
-import { parsePricingData } from '../graphql/awsjson-parsers';
+import { parseNonChargeableUnits, parsePricingData } from '../graphql/awsjson-parsers';
+import type { NonChargeableUnits } from '../graphql/awsjson-types';
 
 interface UsePricingReturn {
   pricing: unknown;
   defaultPricing: unknown;
+  /**
+   * Per pricing key, the metering units `idp_common.metering_units` declares
+   * free, as this deployment's resolver reports them.
+   *
+   * The document cost table needs these to tell a unit that is free from one
+   * nobody has priced; it cannot import the declarations and must not guess.
+   * `{}` means none reached us — an older resolver, or a fetch that failed — and
+   * resolves an omitted unit to unpriced rather than to $0.00. See
+   * `components/document-panel/pricing.ts`.
+   */
+  nonChargeableUnits: NonChargeableUnits;
   loading: boolean;
   refreshing: boolean;
   error: string | null;
@@ -23,6 +35,7 @@ const logger = new ConsoleLogger('usePricing');
 
 const usePricing = (): UsePricingReturn => {
   const [pricing, setPricing] = useState<unknown>(null);
+  const [nonChargeableUnits, setNonChargeableUnits] = useState<NonChargeableUnits>({});
   const [defaultPricing, setDefaultPricing] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -60,6 +73,7 @@ const usePricing = (): UsePricingReturn => {
       logger.debug('Parsed default pricing:', defaultPricingData);
       setPricing(pricingData);
       setDefaultPricing(defaultPricingData);
+      setNonChargeableUnits(parseNonChargeableUnits(response.nonChargeableUnits));
     } catch (err: unknown) {
       logger.error('Error fetching pricing', err);
       const message = err instanceof Error ? err.message : String(err);
@@ -142,6 +156,7 @@ const usePricing = (): UsePricingReturn => {
   return {
     pricing,
     defaultPricing,
+    nonChargeableUnits,
     loading,
     refreshing,
     error,

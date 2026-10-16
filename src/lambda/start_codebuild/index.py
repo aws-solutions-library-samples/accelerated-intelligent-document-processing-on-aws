@@ -103,6 +103,34 @@ VERIFY_LOG_PREFIX = "ECR IMAGE VERIFICATION"
 VERIFY_FAILURE_SUFFIX = "ECR image verification failed"
 
 
+# The only fields of a `batch_get_builds` build entry this function logs.
+#
+# An allowlist, and the distinction from the file's other sanitized call sites is
+# the point. `sanitize_event_for_logging` redacts by key *name* against a fixed
+# denylist (password, token, claims, identity, ...), which is right for a
+# CloudFormation event whose sensitive members are known by name; none of `arn`,
+# `environment`, `exportedEnvironmentVariables`, `logs`, `source` or `serviceRole`
+# is on that denylist, so routing a build reply through it would still publish the
+# build ARN and the service-role ARN (both carry the account id), the ECR registry
+# URI, and every environment variable the build was given -- including any
+# `environmentVariablesOverride` a future trigger passes. A build reply carries
+# over thirty members and grows with the service, so naming what may be logged is
+# the only form that stays closed as CodeBuild adds fields.
+#
+# `startTime` is the origin of the image-scan wait budget and `currentPhase` is
+# what a stuck build is diagnosed from, so both are worth their place here.
+BUILD_LOG_FIELDS = ("id", "buildStatus", "currentPhase", "startTime")
+
+
+def _build_log_summary(build: dict) -> dict:
+    """The loggable subset of one `batch_get_builds` build entry.
+
+    Absent fields are omitted rather than reported as None, so the line shows what
+    CodeBuild actually returned.
+    """
+    return {field: build[field] for field in BUILD_LOG_FIELDS if field in build}
+
+
 class EcrImageVerificationError(RuntimeError):
     """ECR image verification could not complete.
 
@@ -417,14 +445,20 @@ def poll_create_or_update(event, _):
         try:
             build_id = helper_data["build_id"]
             response = CODEBUILD_CLIENT.batch_get_builds(ids=[build_id])
-            LOGGER.info(response)
 
             builds = response["builds"]
             if not builds:
-                raise RuntimeError("could not find build")
+                # The id rather than the reply: `buildsNotFound` echoes back the
+                # id this call passed in, so it adds nothing the message does not
+                # already carry, and the rest of the reply is not loggable here.
+                raise RuntimeError(f"could not find build {build_id}")
 
             build = builds[0]
             build_status = build["buildStatus"]
+            # BUILD_LOG_FIELDS only. This poll runs every two minutes for the
+            # length of the build, and the whole reply carries the build and
+            # service-role ARNs and every build environment variable.
+            LOGGER.info("build: %s", _build_log_summary(build))
             LOGGER.info("build status: [%s]", build_status)
 
             if build_status == "SUCCEEDED":

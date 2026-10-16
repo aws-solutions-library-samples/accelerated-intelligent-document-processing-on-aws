@@ -3,10 +3,19 @@
 
 """Unit tests for Claude reasoning-effort capability detection.
 
-`output_config.effort` is accepted on Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 /
-Fable 5 (verified live on Bedrock Converse to change output tokens) but REJECTED
-(400) on Sonnet 4.5 and Haiku 4.5. GPT-5.x uses the OpenAI Responses
-`reasoning.effort` control instead, not this Converse path.
+`output_config.effort` is accepted on Sonnet 5 / Sonnet 5.5 / Sonnet 4.6 /
+Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (verified live on Bedrock
+Converse to change output tokens) but REJECTED (400) on Sonnet 4.5 and Haiku 4.5.
+GPT-5.x uses the OpenAI Responses `reasoning.effort` control instead, not this
+Converse path.
+
+``is_claude_effort_model`` is the authority and this list is a copy of it; the
+parametrised cases below are examples rather than the closed set, so read the
+function when the question is "which models". What the two Haikus and the two
+Sonnets are here for is the narrower claim that neither the family name nor the
+major version decides the answer — 4.5 rejects effort where 5.5 accepts it, and a
+set widened to a shared ``haiku``/``sonnet-5`` stem breaks the rejecting
+assertions rather than the accepting ones.
 """
 
 import pytest
@@ -23,6 +32,16 @@ class TestIsClaudeEffortModel:
             "us.anthropic.claude-sonnet-5:1m",
             "global.anthropic.claude-sonnet-5",
             "eu.anthropic.claude-sonnet-5:1m",
+            # Sonnet 5.5. Matched by prefix through "anthropic.claude-sonnet-5", so
+            # these cases pass whether or not the set names it explicitly — they are
+            # here because the docstring above claims the model takes effort and a
+            # claim this file makes should be a case it runs. The explicit set
+            # membership is pinned in tests/unit/bedrock/test_sonnet_5_5_capabilities.py.
+            # No ":1m" form: 1M is this model's default window and there is no such id.
+            "us.anthropic.claude-sonnet-5-5",
+            "eu.anthropic.claude-sonnet-5-5",
+            "au.anthropic.claude-sonnet-5-5",
+            "global.anthropic.claude-sonnet-5-5",
             "us.anthropic.claude-sonnet-4-6",
             "us.anthropic.claude-opus-4-5-20251101-v1:0",
             "us.anthropic.claude-opus-4-6-v1",

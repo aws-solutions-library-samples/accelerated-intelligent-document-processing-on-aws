@@ -201,6 +201,13 @@ CSV_COLS = [
     "scalar_accuracy",
     "typed_accuracy",
     "cell_accuracy",
+    # `cell_accuracy`'s DENOMINATOR, beside it. Without it the CSV carries a ratio and
+    # not the count it was taken over, which is the "a null column scores 1.000" blind
+    # spot: a run that compared 10 cells and one that compared 800 render identically,
+    # and a run that compared none renders as a blank a reader fills in as zero. The
+    # scorer has always written it and `METHODOLOGY.md` has always said it is printed
+    # beside `cell_accuracy`; `DictWriter(extrasaction="ignore")` was dropping it.
+    "cells_compared",
     # Mean over repeats IS the boundary-detection pass rate.
     "sections_correct",
     "weighted_accuracy",
@@ -228,6 +235,19 @@ CSV_COLS = [
     "conf_rows_scored",
     "conf_rows_unscored",
     "conf_coverage",
+    # What the pipeline WARNED about on this run (#1378). Until these existed a
+    # lossy-but-warned run was recorded identically to a clean one, which is how
+    # #1361 came to be written as rows being lost "silently" when
+    # `extraction_rows_below_ocr_estimate` had fired on every lossy count in it.
+    # `processing_issues` is the count (0 on a clean row, never null — absence of
+    # issues is the measurement, not a failure to read it); the other two are the
+    # severity and code tallies rendered flat, because a CSV cell cannot hold a
+    # tally and `DictWriter(extrasaction="ignore")` drops an unlisted key in
+    # silence. The tallies themselves, and every issue verbatim, are in the JSON.
+    "processing_issues",
+    "processing_issues_malformed",
+    "processing_issue_severities",
+    "processing_issue_codes",
     # Calibration against exact per-cell truth (#935). `calibration_separation`
     # below is a different and much weaker instrument — a difference of two means,
     # available only on the reference path — and it cannot distinguish a grader that
@@ -260,7 +280,56 @@ CSV_COLS = [
     "sections_unreadable",
     "sections_unread",
     "eval_unread",
+    # WHICH scorer produced this row's accuracy, and — when the exact-key family does
+    # not apply — why, and which column carries the accuracy instead (#1364). In the
+    # CSV for the same reason `cost_unread` is: the reader comparing two grids in a
+    # spreadsheet is exactly the reader who would otherwise take four blank accuracy
+    # cells for a row that was never scored.
+    "scored_against",
+    "exact_truth_unavailable",
 ]
+
+
+# The accuracy family `score_synthetic` owns and `score_reference` cannot produce.
+# Presence of ANY of them identifies the exact-truth scorer on a row written before
+# `scored_against` existed; membership is what `row_scored_against` falls back to.
+EXACT_TRUTH_METRICS = (
+    "cells_compared",
+    "cell_accuracy",
+    "scalar_accuracy",
+    "completeness_recall",
+)
+
+
+def row_scored_against(row):
+    """Which scorer produced this row's accuracy (#1364), for a row of any vintage.
+
+    The recorded `scored_against` wins. A row scored before that key existed — every
+    one of the committed grids — is classified from the shape it does carry, in this
+    order:
+
+    * a truthy ``sub_doc`` is set only by ``score_reference_run``, on a row expanded
+      from a reference-corpus run, which is exactly the condition under which
+      ``score_doc`` was handed no truth;
+    * otherwise an exact-key metric present at all means ``score_synthetic`` ran;
+    * otherwise a ``weighted_accuracy`` key present at all means ``score_reference``
+      did.
+
+    ``None`` when none of those says — a NOT_LAUNCHED row, or one whose sections would
+    not read. That is "unknown", and deliberately not "exact truth": defaulting it
+    would reintroduce the reading this function exists to remove, on the rows least
+    able to bear it.
+    """
+    recorded = row.get("scored_against")
+    if recorded in (analyze.SCORED_EXACT_TRUTH, analyze.SCORED_STACK_EVALUATION):
+        return recorded
+    if row.get("sub_doc"):
+        return analyze.SCORED_STACK_EVALUATION
+    if any(k in row for k in EXACT_TRUTH_METRICS):
+        return analyze.SCORED_EXACT_TRUTH
+    if "weighted_accuracy" in row:
+        return analyze.SCORED_STACK_EVALUATION
+    return None
 
 
 def _stats(vals):
@@ -286,6 +355,49 @@ def _stats(vals):
         "cv": round(stdev / mean, 4) if mean else None,
         "min": round(min(xs), 5),
         "max": round(max(xs), 5),
+    }
+
+
+def _merge_tallies(tallies):
+    """Sum any number of ``{name: count}`` tallies into one.
+
+    Keyed on whatever names arrive, so a code or severity this file has never heard
+    of rolls up without an edit here (#1378).
+    """
+    out = {}
+    for tally in tallies:
+        if not isinstance(tally, dict):
+            continue
+        for name, n in tally.items():
+            if isinstance(n, (int, float)):
+                out[str(name)] = out.get(str(name), 0) + n
+    return out
+
+
+def cell_issues(rs):
+    """Per-cell roll-up of what the pipeline warned about (#1378).
+
+    Over **every** run in the cell, not just the successful ones, unlike the
+    statistics beside it. A run that failed is the one whose warnings triage wants
+    first, and restricting this to `success` would reproduce the blind spot the
+    figure exists to close at the cell level. `n_runs` is carried so the counts
+    have a visible denominator.
+
+    Always a populated dict, which is what lets `_missing_metric_notes` tell a cell
+    that recorded no issues (every count 0) from a grid scored before this existed
+    (the key absent) — the distinction `LATE_ADDED_METRICS` is about.
+    """
+    counted = [r for r in rs if isinstance(r.get("processing_issues"), int)]
+    return {
+        "n_runs": len(rs),
+        "n_runs_scored": len(counted),
+        "n_runs_with_issues": sum(1 for r in counted if r["processing_issues"]),
+        "n_issues": sum(r["processing_issues"] for r in counted),
+        "by_severity": _merge_tallies(
+            r.get("processing_issues_by_severity") for r in rs
+        ),
+        "by_code": _merge_tallies(r.get("processing_issues_by_code") for r in rs),
+        "by_stage": _merge_tallies(r.get("processing_issues_by_stage") for r in rs),
     }
 
 
@@ -319,6 +431,22 @@ def cell_stats(rows):
             # contribute to none of the quality statistics below.
             "n_sections_unread": sum(1 for r in succ if r.get("sections_unread")),
             "max_repeat": max((r.get("repeat", 0) for r in rs), default=0) + 1,
+            # How this cell's successful runs split between the two scorers (#1364).
+            # A `core` cell holds both — 21 synthetic runs and 120 reference-corpus
+            # ones — and the two produce DISJOINT accuracy families, so
+            # `scalar_accuracy.n` is 21 and `weighted_accuracy.n` is 120 in a cell
+            # whose `n_success` is 141. Both look thinned, and a reader with no way to
+            # tell a scorer that does not apply from one that failed has to guess
+            # which. These two counts are the denominator each of those `n`s belongs
+            # to, in the artifact rather than reconstructed from `sub_doc`.
+            "n_scored_exact_truth": sum(
+                1 for r in succ if row_scored_against(r) == analyze.SCORED_EXACT_TRUTH
+            ),
+            "n_scored_stack_evaluation": sum(
+                1
+                for r in succ
+                if row_scored_against(r) == analyze.SCORED_STACK_EVALUATION
+            ),
             "cost": _stats([r.get("cost") for r in succ]),
             "completeness_recall": _stats([r.get("completeness_recall") for r in succ]),
             "scalar_accuracy": _stats([r.get("scalar_accuracy") for r in succ]),
@@ -355,6 +483,8 @@ def cell_stats(rows):
             "calibration": analyze.pool_calibration(
                 [r.get("calibration_curve") for r in succ]
             ),
+            # What the pipeline warned about, over ALL this cell's runs (#1378).
+            "processing_issues": cell_issues(rs),
         }
     return out
 
@@ -383,7 +513,33 @@ def cell_stats(rows):
 # them would delete lines carrying values — and "every deleted line is punctuation"
 # is exactly the property that makes a backfill of this size checkable as additive.
 # Compacting them is a reformat of untouched data and belongs in its own change.
-COMPACT_PAYLOAD_KEYS = ("calibration_curve", "calibration", "conf_coverage")
+#
+# `processing_issue_detail` and the cell-level `processing_issues` block join them for
+# a different reason, and the numbers are why rather than the shape (#1378). The
+# detail list carries issues VERBATIM, and nothing bounds how many a document has:
+# `message` has no size ceiling at all, and `MAX_DETAIL_STRING_BYTES` is per string
+# LEAF rather than per payload. Measured by running `write_summary`: a 39-row grid
+# with 5 sections × 1 realistic issue is 708 KB, the same grid at 20 sections × 3
+# issues is 7.8 MB (today's largest committed summary is 8.8 MB), a 130-run grid of
+# that is 24.8 MB, and 20 × 3 maximal issues is 60.3 MB. Emptying the detail list
+# takes the busy grid to 60 KB, so essentially all of it is the detail. Expanded, ten
+# issues per document renders 409,533 lines — three times the 130k figure the comment
+# above calls "a diff nobody reads by eye". Compact, the same data is −72% lines and
+# −23% bytes, at one line per issue.
+#
+# The list branch of `_reserve_compact_payloads` propagates the key to each element,
+# so a list of issue dicts compacts per issue. That is a deliberate exception to the
+# "no key a reader scans for" rule above — `message` is very much read — and the
+# trade is taken because one long line per issue is still readable where a 400k-line
+# artifact is not, and because the alternative (capping the list) would break the
+# property the change exists for: every emitted issue reaches the summary.
+COMPACT_PAYLOAD_KEYS = (
+    "calibration_curve",
+    "calibration",
+    "conf_coverage",
+    "processing_issue_detail",
+    "processing_issues",
+)
 
 # Named *PLACEHOLDER* rather than *TOKEN*: Bandit's B105 matches on the identifier, so a
 # module-level constant whose name contains "token" and whose value is a string literal is
@@ -493,6 +649,27 @@ def write_summary(rm, rows, out):
             "evaluation, which is a different scorer and not comparable with "
             "locally-scored rows."
         )
+    # The same statement for the rows that are scored that way BY DESIGN, derived from
+    # the rows themselves rather than from the runmap (#1364). The notice above is the
+    # right sentence for a reference corpus and never fired for one: it reads
+    # `docs_missing_truth`, which `run_matrix` populates only with SYNTHETIC documents
+    # whose local `.pdf.truth.json` is absent, so a grid in which 2,280 of 2,679 rows
+    # came from the stack's evaluation printed nothing at all about it. A control that
+    # exists and is never consulted on the case it describes.
+    by_eval = [
+        r for r in rows if row_scored_against(r) == analyze.SCORED_STACK_EVALUATION
+    ]
+    if by_eval:
+        corpora = sorted({str(r.get("doc")) for r in by_eval if r.get("doc")})
+        print(
+            f"ℹ {len(by_eval)} of {len(rows)} rows ({', '.join(corpora)}) are scored by "
+            "the stack's own evaluation against the corpus labels, NOT against exact "
+            "per-cell truth — their accuracy is `weighted_accuracy` (and "
+            "`class_accuracy`). `cells_compared`, `cell_accuracy`, `scalar_accuracy` "
+            "and `completeness_recall` do not apply to them and are absent, not zero; "
+            "do not read a mean over no observations as a score of nan. Each row says "
+            "so in `scored_against` / `exact_truth_unavailable`."
+        )
     cells = cell_stats(rows)
     dump_summary(
         {"meta": _meta(rm), "rows": rows, "cell_stats": cells},
@@ -511,6 +688,27 @@ def write_summary(rm, rows, out):
         )
         for cell, cv, n in sorted(noisy, key=lambda x: -(x[1] or 0)):
             print(f"    {cell}: cost CV={cv} over n={n}")
+    # ...and loudly when the pipeline warned about anything (#1378). Printed for the
+    # same reason the incomplete-grid notice above is: whoever runs this is the
+    # person about to copy these numbers somewhere, and a completeness warning that
+    # only ever reaches a file is how a warned run gets described as a silent one.
+    warned = [
+        (cell, s["processing_issues"])
+        for cell, s in cells.items()
+        if s.get("processing_issues", {}).get("n_issues")
+    ]
+    if warned:
+        print(
+            "⚠ the pipeline recorded processing issues — these runs are NOT clean, "
+            "see each row's processing_issue_detail:"
+        )
+        for cell, pi in sorted(warned, key=lambda x: -x[1]["n_issues"]):
+            print(
+                f"    {cell}: {pi['n_issues']} issue(s) on "
+                f"{pi['n_runs_with_issues']} of {pi['n_runs']} runs — "
+                f"{analyze.render_tally(pi['by_severity'])} — "
+                f"{analyze.render_tally(pi['by_code'])}"
+            )
     print(
         f"summary -> {out}/summary.{{json,csv}} + cell_stats.csv ({len(rows)} rows, {len(cells)} cells)"
     )
@@ -833,6 +1031,7 @@ def calibration_findings(cur, base, regression=True):
 LATE_ADDED_METRICS = {
     "calibration": "pooled confidence ECE / AUROC (#935)",
     "conf_coverage": "confidence coverage (#997)",
+    "processing_issues": "pipeline processing issues (#1378)",
 }
 
 
@@ -867,6 +1066,17 @@ def _missing_metric_notes(cur, base):
             # A `_stats` block, so "collected" means it saw at least one observation.
             cur_present = bool(cur_value) and bool(cur_value.get("n"))
             base_present = bool(base.get(metric)) and bool(base[metric].get("n"))
+        elif metric == "processing_issues":
+            # `cell_issues` returns a populated dict for every cell, so plain
+            # truthiness would read as "collected" on a grid that measured none of
+            # it — the KMS-pending-deletion case this function's docstring names,
+            # and the one direction it was added to catch. `n_runs_scored` is the
+            # count of rows that actually carry the figure, so it is zero exactly
+            # when nothing here was measured.
+            cur_present = bool(cur_value) and bool(cur_value.get("n_runs_scored"))
+            base_present = bool(base.get(metric)) and bool(
+                base[metric].get("n_runs_scored")
+            )
         else:
             cur_present, base_present = bool(cur_value), bool(base.get(metric))
         if cur_present and not base_present:
@@ -1861,6 +2071,121 @@ def figures_compare(new_path, base_path, new_label="new", base_label="baseline")
     print(f"figures -> {cost_png}\nfigures -> {acc_png}")
 
 
+REFERENCE_TABLE_COLUMNS = (
+    ("runs", None),
+    ("documents", None),
+    ("completed", None),
+    ("weighted accuracy", "weighted_accuracy"),
+    ("class accuracy", "class_accuracy"),
+    ("parse failures", "parse_failures"),
+    ("mean conf", "mean_confidence"),
+    ("cost/doc", "cost"),
+    ("wall", "wall_s"),
+)
+
+# Metrics of this table that are probabilities, so a value above 1.0 is not a figure
+# at all. Four releases' grids carry such a mean_confidence (#1395: one grader leaf
+# answered on a 0-100 scale, which the row mean then carries), and this renderer used
+# to print it to three decimal places like any other number -- which is how four of
+# them reached docs/benchmarking/config-guidance.md as published confidences above 1.0
+# (#1411). The harness now refuses an out-of-range leaf at the point of measurement,
+# so this only arises on an already-committed grid; printing a word rather than a
+# number is what keeps re-rendering one from re-publishing an impossible figure.
+PROBABILITY_SCALE_METRICS = frozenset(
+    {"weighted_accuracy", "class_accuracy", "mean_confidence"}
+)
+
+# Floating-point slack on the upper bound, so a mean that lands a few ULPs above 1.0
+# reads as the 1.000 it is rather than as a defect.
+PROBABILITY_SCALE_SLACK = 1e-6
+
+# The two named non-values, both deliberately words. `not scored` is the older of the
+# two and means no value was produced -- an arm with the confidence pass off, for
+# instance. `not measurable` means values were produced and at least one was off scale,
+# so their mean is not a quantity: a corrected figure would need a re-score, and the
+# distinction between the two states is the information a reader needs.
+UNSCORED_LABEL = "not scored"
+OUT_OF_RANGE_LABEL = "not measurable"
+
+
+def reference_tables(summary_path):
+    """The per-corpus × per-cell accuracy table, rendered from a scored summary.
+
+    This is the view `config-guidance.md` §2c publishes. No command produced it, so the
+    tables were assembled by hand from the artifact — a step that does not happen when
+    the reader has already concluded the corpora were not scored (#1364). One grid, one
+    invocation, Markdown out.
+
+    Only reference-corpus rows are included, grouped by (doc, cell) — a corpus is a
+    test SET, so its 20 documents average into one figure per cell exactly as
+    `cell_stats` averages them. `documents` is the number of DISTINCT documents behind
+    the row and `runs` the number of scored runs, because the two differ whenever the
+    suite ran repeats and quoting only the second invites reading a 3-repeat grid as
+    60 documents.
+    """
+    summary = json.load(open(summary_path))
+    rows = [
+        r
+        for r in summary.get("rows") or []
+        if row_scored_against(r) == analyze.SCORED_STACK_EVALUATION
+    ]
+    if not rows:
+        print(
+            f"{summary_path}: no reference-corpus rows — this grid scored nothing by "
+            "the stack's own evaluation. A synthetic-only suite (`coresynth`) is the "
+            "expected reason; `meta.docs_reference` says what the suite launched."
+        )
+        return {}
+    meta = summary.get("meta") or {}
+    out = {}
+    for corpus in sorted({str(r.get("doc")) for r in rows}):
+        by_cell = {}
+        for r in rows:
+            if str(r.get("doc")) == corpus:
+                by_cell.setdefault(r["cell"], []).append(r)
+        out[corpus] = by_cell
+    for corpus, by_cell in out.items():
+        n_docs = len({str(r.get("sub_doc")) for rs in by_cell.values() for r in rs})
+        print(
+            f"\n### {corpus} ({n_docs} documents) — {meta.get('suite', '?')} on "
+            f"{meta.get('stack_version', '?')}"
+            + (
+                f", --set {' '.join(meta['overrides'])}"
+                if meta.get("overrides")
+                else ""
+            )
+        )
+        print("| cell | " + " | ".join(h for h, _ in REFERENCE_TABLE_COLUMNS) + " |")
+        print("|---" * (len(REFERENCE_TABLE_COLUMNS) + 1) + "|")
+        for cell, rs in sorted(by_cell.items()):
+            succ = [r for r in rs if r.get("success")]
+            docs = len({str(r.get("sub_doc")) for r in rs})
+            vals = [str(len(rs)), str(docs), str(len(succ))]
+            for header, metric in REFERENCE_TABLE_COLUMNS:
+                if metric is None:
+                    continue
+                mean, n = _mean(rs, metric)
+                if mean is None:
+                    # Named, never blank: a blank cell here is what the whole issue
+                    # was about.
+                    vals.append(UNSCORED_LABEL)
+                elif (
+                    metric in PROBABILITY_SCALE_METRICS
+                    and mean > 1.0 + PROBABILITY_SCALE_SLACK
+                ):
+                    vals.append(OUT_OF_RANGE_LABEL)
+                elif metric == "cost":
+                    vals.append(f"${mean:.4f}")
+                elif metric == "wall_s":
+                    vals.append(f"{mean:.0f} s")
+                elif metric == "parse_failures":
+                    vals.append(f"{mean:.0f}" if n else UNSCORED_LABEL)
+                else:
+                    vals.append(f"{mean:.3f}")
+            print("| `" + cell + "` | " + " | ".join(vals) + " |")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", help="results/run-XXXX dir to score")
@@ -1883,6 +2208,13 @@ def main():
     )
     ap.add_argument(
         "--cost-var", help="summary.json: print per-cell cost mean±stdev+CV"
+    )
+    ap.add_argument(
+        "--reference-tables",
+        metavar="SUMMARY",
+        help="summary.json: print the per-corpus x per-cell accuracy table "
+        "(weighted_accuracy / class_accuracy / parse failures / cost / wall) as "
+        "Markdown — the view config-guidance.md section 2c publishes",
     )
     ap.add_argument(
         "--calibration",
@@ -1942,6 +2274,8 @@ def main():
         figures_compare(
             *a.figures_compare, new_label=a.labels[0], base_label=a.labels[1]
         )
+    if a.reference_tables:
+        reference_tables(a.reference_tables)
     if a.cost_var:
         cs = _cells(json.load(open(a.cost_var)))
         print(

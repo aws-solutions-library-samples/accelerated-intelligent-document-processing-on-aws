@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
+  Alert,
   Box,
   ButtonDropdown,
   ColumnLayout,
@@ -34,6 +35,7 @@ import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-uti
 import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheModel';
 import type { PromptCacheDescription } from '../common/promptCacheModel';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
+import { getMalwareScanView } from '../common/malware-scan';
 import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
 import TroubleshootModal from './TroubleshootModal';
 import DocumentVersionsPanel from './DocumentVersionsPanel';
@@ -60,6 +62,12 @@ interface MappedDocument {
   completionTime?: string;
   duration?: string;
   configVersion?: string;
+  /** Where configVersion came from — see CONFIG_SOURCE_LABELS. */
+  configSource?: string;
+  /** The config prefix mapping that decided it, when one did. */
+  configMappingPrefix?: string;
+  /** Why the document was refused at ingest, for a `reject` prefix mapping. */
+  configAssignmentError?: string;
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -77,6 +85,15 @@ interface MappedDocument {
   hitlReviewedBy?: string;
   hitlReviewedByEmail?: string;
   mergedConfig?: Record<string, unknown>;
+  // Declared rather than left to the index signature below, so a typo in one of
+  // these names is a type error here instead of a field that silently reads
+  // `undefined` and renders nothing — the malware verdict failing to display is
+  // indistinguishable from there being no verdict.
+  malwareScanStatus?: string;
+  malwareScanResult?: string;
+  malwareScanThreat?: string;
+  malwareScanReasons?: string[];
+  malwareScanTime?: string;
   [key: string]: unknown;
 }
 
@@ -150,6 +167,21 @@ interface TroubleshootJobData {
   documentKey: string | undefined;
 }
 
+/**
+ * How each `ConfigSource` value reads to an operator. The raw values are the
+ * wire/DB spelling (idp_common.config.prefix_mappings SOURCE_*); these are the
+ * sentence fragments that answer "why this profile?".
+ */
+const CONFIG_SOURCE_LABELS: Record<string, string> = {
+  'prefix-mapping': 'Assigned by prefix mapping',
+  metadata: 'Specified at upload',
+  'active-profile': 'Active profile',
+  'document-pin': 'Kept from the previous run',
+  'explicit-request': 'Chosen when reprocessing',
+  'internal-producer': 'Pinned by the submitting feature',
+  rejected: 'Refused at ingest',
+};
+
 const client = generateClient();
 const logger = new ConsoleLogger('DocumentPanel');
 
@@ -191,7 +223,7 @@ const formatCostCell = (rowItem: MeteringRowItem): React.JSX.Element | string =>
 // Component to display metering information in a table
 const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps): React.JSX.Element | null => {
   // Use usePricing hook to get pricing data from the new separate pricing config
-  const { pricing, loading } = usePricing();
+  const { pricing, nonChargeableUnits, loading } = usePricing();
   const [pricingData, setPricingData] = useState<PricingLookup>({});
   // We no longer use a default unit cost, showing "None" instead
 
@@ -224,7 +256,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   }
 
   // Transform metering data into table rows with context parsing
-  const { rows, contextTotals, totalCost } = priceMetering(meteringData, pricingData);
+  const { rows, contextTotals, totalCost } = priceMetering(meteringData, pricingData, nonChargeableUnits);
   const rawTableItems: MeteringRowItem[] = rows.map(({ context, serviceApi, unit, value, unitPrice, cost }) => ({
     context,
     serviceApi,
@@ -471,6 +503,23 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
               <strong>Config Profile</strong>
             </Box>
             <div>{formatConfigVersionLink(item.configVersion, versions)}</div>
+            {/*
+              WHERE that profile came from. There are several possible sources and
+              the name alone does not say which applied, so a profile that
+              surprises someone is otherwise unexplainable without correlating
+              logs across two Lambdas.
+            */}
+            {item.configSource && (
+              <Box fontSize="body-s" color="text-body-secondary">
+                {CONFIG_SOURCE_LABELS[item.configSource] ?? item.configSource}
+                {item.configMappingPrefix ? ` (${item.configMappingPrefix})` : ''}
+              </Box>
+            )}
+            {item.configAssignmentError && (
+              <Box fontSize="body-s" color="text-status-error">
+                {item.configAssignmentError}
+              </Box>
+            )}
           </div>
         </SpaceBetween>
 
@@ -536,8 +585,72 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
             <div>{item.summaryReportUri ? 'Available' : 'N/A'}</div>
           </div>
         </SpaceBetween>
+
+        <MalwareScanAttribute item={item} />
       </ColumnLayout>
     </Container>
+  );
+};
+
+/**
+ * The malware-scan verdict as a detail field.
+ *
+ * Rendered for CLEAN documents too, not only refused ones: "the scan ran and
+ * found nothing" is the observation an auditor needs, and showing it only on a
+ * detection would make a clean document indistinguishable from an unscanned one.
+ *
+ * Renders nothing at all when the document carries no verdict and is not waiting
+ * for one, which is every document on a stack with malware scanning disabled —
+ * so enabling the feature is what makes this field appear, rather than it sitting
+ * there reading N/A on every deployment.
+ */
+const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Element | null => {
+  const scan = getMalwareScanView(item);
+  if (scan.outcome === 'none') return null;
+
+  const statusType = {
+    clean: 'success' as const,
+    threat: 'error' as const,
+    unscannable: 'warning' as const,
+    pending: 'in-progress' as const,
+  }[scan.outcome];
+
+  return (
+    <SpaceBetween size="xs">
+      <div>
+        <Box margin={{ bottom: 'xxxs' }} color="text-label">
+          <strong>Malware scan</strong>
+        </Box>
+        <StatusIndicator type={statusType}>{scan.label}</StatusIndicator>
+        {scan.time ? (
+          <Box fontSize="body-s" color="text-status-inactive">
+            {new Date(scan.time).toLocaleString()}
+          </Box>
+        ) : null}
+      </div>
+    </SpaceBetween>
+  );
+};
+
+/**
+ * The whole story for a document the malware gate refused.
+ *
+ * This is the surface that replaces the flow viewer for such a document: it
+ * never started an execution, so there is no execution to open and the diagram
+ * would be empty. Without this the UI would show a terminal status nobody can
+ * explain.
+ */
+const MalwareScanAlert = ({ item }: { item: MappedDocument }): React.JSX.Element | null => {
+  const scan = getMalwareScanView(item);
+  if (!scan.refused) return null;
+
+  return (
+    <Alert
+      type={scan.outcome === 'threat' ? 'error' : 'warning'}
+      header={scan.outcome === 'threat' ? 'Malware detected — document quarantined' : 'Document was not malware-scanned'}
+    >
+      {scan.detail}
+    </Alert>
   );
 };
 
@@ -888,6 +1001,11 @@ export const DocumentPanel = ({
           }
         >
           <SpaceBetween size="l">
+            {/* Above the attribute grid on purpose: for a refused document this
+                is the only explanation there is, since no workflow ran and the
+                flow viewer has no execution to show. */}
+            <MalwareScanAlert item={enhancedItem} />
+
             <DocumentAttributes
               item={enhancedItem}
               versions={versions}
@@ -938,6 +1056,7 @@ export const DocumentPanel = ({
             visible={isFlowViewerVisible}
             onDismiss={() => setIsFlowViewerVisible(false)}
             mergedConfig={documentVersionConfig}
+            malwareScan={localItem}
           />
         )}
 

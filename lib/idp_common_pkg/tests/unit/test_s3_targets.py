@@ -55,8 +55,16 @@ class TestTheBucketAllowList:
             )
 
         # The dispatcher picks 403 from the exception CLASS NAME, falling back to an
-        # anchored message prefix. Both have to hold or the refusal becomes a 500.
-        assert type(excinfo.value).__name__ == "PermissionError"
+        # anchored message prefix. Both have to hold or the refusal becomes a 500,
+        # so both are asserted — and the CLASS is the narrower claim of the two:
+        # `ResourceAccessDenied` is what tells a consumer this was a refusal of the
+        # OBJECT the caller named rather than of their GROUP (see
+        # idp_common.api_adapter.ResourceAccessDenied and issue #1308). It is a
+        # PermissionError subclass, so every mapping that keyed on PermissionError
+        # still applies, and the "Unauthorized" message prefix means even a
+        # dispatcher that predates the class maps this to 403 rather than 500.
+        assert type(excinfo.value).__name__ == "ResourceAccessDenied"
+        assert isinstance(excinfo.value, PermissionError)
         assert str(excinfo.value).startswith("Unauthorized")
 
     def test_the_refusal_discloses_neither_the_bucket_nor_the_allow_list(self):

@@ -29,6 +29,29 @@ that would break reproducibility) so a regenerated corpus is byte-comparable.
 > configuration — as `cell_accuracy` was here, exactly 0.500 for all 19 cells — suspect the
 > document before the product.
 
+> ⚠️ **The corpus manifest names paths relative to the repository root, and must.**
+> `corpus/manifest.yaml` is tracked and records a `pdf`, `truth` and `out` path per
+> document. Those paths are relative and are resolved at read time against the
+> manifest's own location (`harness/corpus_manifest.py`), so the manifest cannot name a
+> checkout other than the one holding it. It used to record absolute paths — whatever
+> `gen_corpus.py` produced on the machine that last ran it — and the committed copy
+> therefore named a sibling checkout, every path of it
+> ([#1393](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1393)).
+>
+> The case to worry about is the one that **works**. Where two checkouts sit side by
+> side, a consumer resolves those paths, reads documents and ground truth out of the
+> other tree, and produces a grid that is internally consistent, plausible, and about
+> code that was never run — and nothing in the output records which tree it came from,
+> so the result is not attributable to the commit it was run at. A machine without that
+> directory fails immediately and misleads nobody. An absolute path, a `~` or `$VAR`
+> path that becomes absolute on expansion, and a relative path that climbs out with
+> `..` are all refused rather than resolved, and a resolved path this checkout does not
+> hold is an error rather than a fallback: `corpus/docs/` is gitignored and
+> deterministically regenerable, so the remedy is always `python3
+> benchmarks/harness/gen_corpus.py`. Check the committed file with
+> `python3 benchmarks/harness/corpus_manifest.py --check`;
+> `benchmarks/tests/test_corpus_manifest_paths.py` asserts it on every PR.
+
 ### B. Reference (real, labeled)
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
@@ -245,7 +268,7 @@ Every run is scored on SEVEN dimensions:
 | **completeness** | Synthetic: distinct `SEQ` recovered ÷ GT count (recall); truncation point = longest contiguous prefix; dup/gap counts. Reference: parse-failure rate. |
 | **accuracy** | Synthetic: field-exact match rate on scalar fields + per-row cell match on list fields (keyed by SEQ). Reference: stack `evaluation/results.json` `weighted_overall_score`. |
 | **confidence calibration** | Two instruments, and the second answers the question the first cannot. Distributional: mean confidence, %below-threshold (alert rate), and — where a match flag exists — separation = mean(conf\|correct) − mean(conf\|incorrect). Per-cell, on the synthetic corpus only: each confidence leaf is joined to the cell it scores through `flatten_confidences`' field path and the row's `SEQ` tag, giving true `(confidence, correct)` pairs from which `idp_common.evaluation.ConfidenceCurve` computes **ECE** (calibration) and **AUROC** (discrimination), alongside an unbinned AUROC and a Brier score computed locally from the stored value tally and squared-error sum (asserted equal to Stickler's `AUROCMetric` / `BrierScoreMetric` in `benchmarks/tests/`, but not computed by them — that is what keeps the `[evaluation]` extra off the scoring path). Over-confidence on wrong values is a calibration regression even if accuracy holds — and a score that is well calibrated can still rank at chance, which only AUROC sees. |
-| **confidence coverage** | `scored_rows / expected_rows` per document and per field, computed by the same `audit_explainability` rule the `assessment_coverage_incomplete` guard fires on. Distinct from the row above: it counts rows with NO confidence, where the row above describes the scores that exist. Undefined (`None`), not 1.0, for a document with no list attribute. |
+| **confidence coverage** | `scored_rows / expected_rows` per document and per field, computed by the same `audit_explainability` rule the `assessment_coverage_incomplete` guard fires on. Distinct from the row above: it counts rows with NO confidence, where the row above describes the scores that exist. Undefined (`None`), not 1.0, for a document with no list attribute. Both the unscored rows and the expected rows are recorded per field (`conf_unscored_by_field`, `conf_rows_expected_by_field`), because the guard's rungs divide by the section-wide row total — so an attribute that is wholly unscored beside a large scored one sits below the warning fraction, and the numerator alone cannot be read for it. |
 | **latency** | Wall-clock from doc WorkflowStartTime→CompletionTime; also per-phase where available. |
 | **token use** | Per-phase, per-model, per-unit (input/output/cacheRead/cacheWrite/requests) from the doc `Metering` map. |
 | **cost** | Metering priced with `config_library/pricing.yaml` (longest-suffix key match), broken out by phase (OCR/Extraction/Assessment/Summarization/Lambda). |
@@ -270,7 +293,21 @@ blind spot before it was closed.
 
 - **A `None` metric is "not measured", never "fine".** Before reporting "no effect",
   check that the instrument that would have shown the effect was populated — the
-  aggregate prints `cells_compared` alongside `cell_accuracy` for exactly this.
+  aggregate prints `cells_compared` alongside `cell_accuracy`, in both the JSON and
+  the CSV, for exactly this.
+- **An ABSENT metric has a third reading the rule above does not cover: "does not
+  apply to this row".** The two scorers emit disjoint accuracy families, so every
+  exact-key metric is absent on a reference row and `weighted_accuracy` is absent on
+  a synthetic one, and neither absence says anything about the run. Read
+  `scored_against` on the row before reading its accuracy at all: `exact_truth` means
+  the exact-key family is the measurement, `stack_evaluation` means
+  `weighted_accuracy` and `class_accuracy` are, and `exact_truth_unavailable` spells
+  out which. Per cell, `n_scored_exact_truth` and `n_scored_stack_evaluation` are the
+  denominators the corresponding `_stats` `n`s belong to — in `core` a 141-run cell
+  splits 21 / 120, so **both** accuracy `n`s look thinned against `n_success` and
+  neither is. A mean taken across the two families is a mean over no observations,
+  which prints as `nan`; that is a property of the column read and not of the runs
+  ([#1364](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1364)).
 - **Scoring is retroactive.** It re-reads S3 and DynamoDB, so adding truth or a metric
   lets an already-completed run be re-scored with no new spend. Prefer that to a re-run.
 

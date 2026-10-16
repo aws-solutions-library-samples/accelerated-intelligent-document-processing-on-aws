@@ -151,6 +151,9 @@ _EXCLUDED_PARTS = {
     ".venv",
     "scratch",
     ".claude",
+    # `.ai-review/base/` is the advisory reviewer's copy of the merge-base tree:
+    # the same hazard as the two above, created by this repository's own tooling.
+    ".ai-review",
 }
 
 

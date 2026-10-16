@@ -516,8 +516,9 @@ class ForcedToolConfig(BaseModel):
             "response SHAPE, not the values in it, so it is not self-evidently an "
             "improvement and is gated on a measured win. Models that cannot carry "
             "a toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced "
-            "toolChoice (Claude Opus 5.5) fall back to the prompt automatically, "
-            "and the reason is recorded in the section metadata. "
+            "toolChoice (Claude Opus 5.5, Claude Sonnet 5.5) fall back to the "
+            "prompt automatically, and the reason is recorded in the section "
+            "metadata. "
             "Property names Bedrock rejects are sanitized on the way out and "
             "restored on the way back, so no extracted field is renamed."
         ),
@@ -834,6 +835,64 @@ class PostprocessingConfig(FlatHookConfig):
     """
 
 
+class MalwareScanningConfig(BaseModel):
+    """Top-level `malware_scanning` section.
+
+    The POLICY applied to Amazon GuardDuty Malware Protection verdicts on
+    uploaded documents. Scanning itself is enabled by the ``MalwareScanning``
+    stack parameter, not here — nothing in this section can turn it on, because a
+    GuardDuty protection plan is infrastructure and a config row that claimed to
+    create one would be lying.
+
+    ⚠️ **Declared here so it survives a model round-trip.** ``IDPConfig`` takes
+    Pydantic's default ``extra="ignore"``, so a section with no field would be
+    silently dropped the first time a configuration passed through the model —
+    an Admin's saved setting would simply vanish on the next save, with nothing
+    reporting it.
+
+    A document GuardDuty reports as *infected* is always refused; that is not
+    configurable and so has no field.
+    """
+
+    on_unscannable: str = Field(
+        default="block",
+        description=(
+            "What to do with a document GuardDuty returned no verdict for "
+            "(password-protected, over the size/archive quotas, SSE-C encrypted, "
+            "or an internal scan error). 'block' (default) stops it with status "
+            "MALWARE_SCAN_FAILED. 'allow' processes it anyway — and takes effect "
+            "ONLY if the AllowUnscannableDocuments stack parameter is also true, "
+            "so this setting cannot by itself admit an unscanned file."
+        ),
+    )
+    alert_on_block: bool = Field(
+        default=True,
+        description=(
+            "Publish to the stack's SNS alerts topic when a document is "
+            "quarantined or refused as unscannable. The CloudWatch metrics and "
+            "the document's own status are recorded either way."
+        ),
+    )
+
+    @field_validator("on_unscannable")
+    @classmethod
+    def _validate_on_unscannable(cls, value: str) -> str:
+        """Refuse anything but the two known values, lower-cased.
+
+        Fails loudly rather than falling back to 'block': a typo like 'Allow' or
+        'permit' in a security policy must not be read as the stricter setting
+        and then quietly ignored, because the author believed they had loosened
+        it and would not find out until an unscannable document was refused.
+        """
+        normalised = str(value).strip().lower()
+        if normalised not in ("block", "allow"):
+            raise ValueError(
+                f"malware_scanning.on_unscannable must be 'block' or 'allow', "
+                f"got {value!r}"
+            )
+        return normalised
+
+
 class ConfidenceConfig(BaseModel):
     """Per-field confidence configuration (v0.6).
 
@@ -1024,13 +1083,23 @@ class GeometryConfig(BaseModel):
     mode: str = Field(
         default="ocr_only",
         description=(
-            "How field bounding boxes are produced. 'ocr_only' (default): DO NOT "
-            "ask the model for boxes — derive geometry purely by matching each "
-            "extracted value to real OCR lines (pageData.json), disambiguating "
-            "repeated values by row order. Cheaper and more accurate than "
-            "LLM-estimated boxes. 'llm_grounded': the model emits boxes and OCR "
-            "grounding refines them. 'llm': use the model's boxes as-is with no "
-            "grounding. 'off': no geometry is produced at all."
+            "How field bounding boxes are produced. A box locates an extracted "
+            "VALUE on the page, so a field the model returned nothing for is never "
+            "located under any mode. "
+            "'ocr_only' (default): the model is not asked for boxes — each "
+            "extracted value is matched to real OCR lines (pageData.json), "
+            "repeated values disambiguated by row order. No added prompt tokens, "
+            "and more accurate than LLM-estimated boxes. "
+            "'llm_grounded': the model emits boxes and OCR grounding corrects "
+            "them; use this when values are not present verbatim in the OCR text "
+            "(reformatted dates, figures read off a chart) and ocr_only therefore "
+            "matches too little. "
+            "'llm': the model's boxes as-is. DISCOURAGED, and retained only for "
+            "compatibility — it sends the same prompt as llm_grounded and costs "
+            "the same, then skips the correction step, so there is no case where "
+            "it is the better of the two. "
+            "'off': no geometry at all; the viewers stop offering to show fields "
+            "on the page."
         ),
     )
     task_prompt_bbox: str = Field(
@@ -3851,6 +3920,12 @@ class IDPConfig(BaseModel):
     )
 
     notes: Optional[str] = Field(default=None, description="Configuration notes")
+    malware_scanning: MalwareScanningConfig = Field(
+        default_factory=MalwareScanningConfig,
+        description="Policy applied to GuardDuty Malware Protection verdicts on "
+        "uploaded documents. Scanning is enabled by the MalwareScanning stack "
+        "parameter; this section only decides how a verdict is acted on.",
+    )
     preprocessing: PreprocessingConfig = Field(
         default_factory=PreprocessingConfig,
         description="Preprocessing configuration — home of the standalone "

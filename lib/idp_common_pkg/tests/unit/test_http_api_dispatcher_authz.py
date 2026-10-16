@@ -869,3 +869,342 @@ def test_a_string_groups_claim_is_tolerated(authz):
     assert authz.caller_groups(
         {"identity": {"claims": {"cognito:groups": "Admin"}}}
     ) == ["Admin"]
+
+
+# ===================== which control refused (issue #1308) ================== #
+# Every refusal this API makes is 403 with `errorType: "Unauthorized"`, and two
+# controls answering OPPOSITE questions produce it: the field-level group floor in
+# `authz.py`, and a per-object control inside a resolver. Nothing in the response
+# told them apart, so `403/Unauthorized` meant both "this caller's group does not
+# admit this operation" and "this caller's group was fine and the object they named
+# was refused". The live RBAC matrix read the second as the first and reported eight
+# correct per-object refusals as group-authorization failures.
+#
+# These tests assert the DISTINCTION, in both directions, rather than that any
+# particular cell passes. A test that only checked "the eight are gone" would be
+# satisfied by suppressing them.
+def _refusal_control(resp) -> object:
+    idx_mod = sys.modules["index"]
+    return _error(resp).get(idx_mod.AUTHZ_CONTROL_FIELD)
+
+
+def _resolver_backed(idx, monkeypatch, field, payload):
+    """Route ``field`` to a fake resolver that answers with ``payload``."""
+    fake = _FakeLambda(payload)
+    monkeypatch.setattr(idx, "_lambda", fake)
+    idx.FIELD_FUNCTION_MAP[idx.FIELD_ALIASES.get(field, field)] = ARN
+    return fake
+
+
+def _function_error(error_type, message):
+    """The invoke response shape a resolver's unhandled exception produces.
+
+    The class OBJECT never crosses the invoke boundary — only this string pair —
+    which is why the dispatcher attributes a resolver refusal by class NAME.
+    """
+    return {"errorType": error_type, "errorMessage": message}
+
+
+class _ErroringLambda(_FakeLambda):
+    def invoke(self, **kwargs):
+        resp = super().invoke(**kwargs)
+        resp["FunctionError"] = "Unhandled"
+        return resp
+
+
+def _resolver_raising(idx, monkeypatch, field, error_type, message):
+    fake = _ErroringLambda(_function_error(error_type, message))
+    monkeypatch.setattr(idx, "_lambda", fake)
+    idx.FIELD_FUNCTION_MAP[idx.FIELD_ALIASES.get(field, field)] = ARN
+    return fake
+
+
+def test_the_group_floor_labels_its_own_refusal(idx):
+    """A group mismatch, attributed to the floor from control flow."""
+    resp = idx.handler(_http_event("listUsers", groups=["Viewer"]))
+
+    assert resp["statusCode"] == 403
+    assert _error(resp)["errorType"] == "Unauthorized"
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_GROUP_FLOOR
+
+
+def test_an_undeclared_field_and_an_iam_only_op_are_also_the_group_floor(idx):
+    """All three of ``enforce``'s refusals are decisions about the field and the
+    caller's groups, which is the axis the label names."""
+    undeclared = idx.handler(_http_event("someNewOperation", groups=["Admin"]))
+    iam_only = idx.handler(
+        _http_event("updateAgentJobStatus", {"jobId": "x"}, groups=["Admin"])
+    )
+
+    assert _refusal_control(undeclared) == idx.AUTHZ_CONTROL_GROUP_FLOOR
+    assert _refusal_control(iam_only) == idx.AUTHZ_CONTROL_GROUP_FLOOR
+
+
+def test_a_resolvers_per_object_refusal_is_labelled_resource(idx, monkeypatch):
+    """The case the eight false failures were. A caller the policy ADMITS, refused
+    by the object they named — same status, same errorType, different control."""
+    _resolver_raising(
+        idx,
+        monkeypatch,
+        "listUsers",
+        "ResourceAccessDenied",
+        "Unauthorized: requested bucket is not accessible from this deployment.",
+    )
+
+    resp = idx.handler(_http_event("listUsers", groups=["Admin"]))
+
+    assert resp["statusCode"] == 403, "the client contract must not change"
+    assert _error(resp)["errorType"] == "Unauthorized"
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_RESOURCE
+
+
+def test_the_two_refusals_are_indistinguishable_WITHOUT_the_label(idx, monkeypatch):
+    """Why the label had to be added rather than inferred.
+
+    The group refusal and the per-object refusal agree on the status, on the
+    ``errorType``, and on the ``Unauthorized`` message prefix. Strip the label and
+    nothing in either response identifies the control — which is the state the live
+    matrix was reading, and the reason it could not tell a correct refusal from a
+    correct one of the other kind.
+    """
+    floor = idx.handler(_http_event("listUsers", groups=["Viewer"]))
+    _resolver_raising(
+        idx,
+        monkeypatch,
+        "listUsers",
+        "ResourceAccessDenied",
+        "Unauthorized: session not found for this user.",
+    )
+    resource = idx.handler(_http_event("listUsers", groups=["Admin"]))
+
+    def _without_the_label(resp):
+        err = dict(_error(resp))
+        err.pop(idx.AUTHZ_CONTROL_FIELD, None)
+        err.pop("message")  # prose: see the class docstring for why it cannot carry it
+        return resp["statusCode"], err
+
+    assert _without_the_label(floor) == _without_the_label(resource)
+    assert _refusal_control(floor) != _refusal_control(resource), (
+        "the label is the ONLY thing that separates them"
+    )
+
+
+def test_an_unattributed_resolver_refusal_is_not_labelled_resource(idx, monkeypatch):
+    """Fail-closed polarity. A resolver that refuses with a plain
+    ``PermissionError`` — which is what every resolver GROUP check still does — must
+    not be read as a per-object refusal, or a real group-check regression inside a
+    resolver would be downgraded to a known coverage gap downstream."""
+    _resolver_raising(
+        idx,
+        monkeypatch,
+        "listUsers",
+        "PermissionError",
+        "Unauthorized: listUsers requires Admin group",
+    )
+
+    resp = idx.handler(_http_event("listUsers", groups=["Admin"]))
+
+    assert resp["statusCode"] == 403
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_RESOLVER_UNSPECIFIED
+    assert _refusal_control(resp) != idx.AUTHZ_CONTROL_RESOURCE
+
+
+def test_a_message_prefixed_refusal_with_no_class_is_also_unattributed(
+    idx, monkeypatch
+):
+    """The dispatcher's oldest mapping route: a resolver with no recognised class
+    whose message starts with ``Unauthorized``. Still a 403, still unattributed."""
+    _resolver_raising(
+        idx, monkeypatch, "listUsers", "RuntimeError", "Unauthorized: nope"
+    )
+
+    resp = idx.handler(_http_event("listUsers", groups=["Admin"]))
+
+    assert resp["statusCode"] == 403
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_RESOLVER_UNSPECIFIED
+
+
+def test_resource_access_denied_is_checked_before_the_message_prefix(idx, monkeypatch):
+    """Ordering, which is load-bearing and silent when wrong.
+
+    ``ResourceAccessDenied``'s messages deliberately keep the ``Unauthorized``
+    prefix — so the refusal still maps to 403 rather than 500 on a resolver
+    deployed ahead of this dispatcher — and the general authorization branch
+    matches that prefix. If the class check ran second, every per-object refusal
+    would arrive labelled ``resolver`` and the distinction would be inert with
+    every test but this one green.
+    """
+    _resolver_raising(
+        idx,
+        monkeypatch,
+        "listUsers",
+        "ResourceAccessDenied",
+        "Unauthorized: that location is reserved and cannot be written to.",
+    )
+
+    resp = idx.handler(_http_event("listUsers", groups=["Admin"]))
+
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_RESOURCE
+
+
+def test_every_403_the_dispatcher_can_return_carries_a_label(idx, monkeypatch):
+    """Universe closure over the refusal paths, so a new one cannot be unlabelled.
+
+    An absent label is read downstream as "this deployment cannot tell me", which
+    is exactly the pre-#1308 behaviour — so a forgotten label restores the defect
+    silently and with no test failing. The paths are DERIVED from the module by
+    finding every `_denial_response` call site, rather than listed here.
+    """
+    import ast
+
+    tree = ast.parse((_DISPATCHER_DIR / "index.py").read_text())
+    builders = {
+        "_denial_response": [],  # the one function allowed to answer 403
+        "__module__": [],
+    }
+    # Every `_http_response(403, ...)` call, attributed to the function holding it.
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            name = getattr(call.func, "id", None) or getattr(call.func, "attr", None)
+            if name != "_http_response" or not call.args:
+                continue
+            first = call.args[0]
+            if isinstance(first, ast.Constant) and first.value == 403:
+                builders.setdefault(node.name, []).append(call.lineno)
+
+    assert builders["_denial_response"], (
+        "_denial_response no longer builds a 403 — the labelling chokepoint is gone"
+    )
+    offenders = {
+        fn: lines
+        for fn, lines in builders.items()
+        if lines and fn != "_denial_response"
+    }
+    assert not offenders, (
+        f"403 built outside _denial_response, so it carries no control label: "
+        f"{offenders}"
+    )
+
+    probes = [
+        idx.handler(_http_event("listUsers", groups=["Viewer"])),
+        idx.handler(_http_event("someNewOperation", groups=["Admin"])),
+        idx.handler(_http_event("updateAgentJobStatus", {"jobId": "x"}, groups=["A"])),
+    ]
+    _resolver_raising(
+        idx, monkeypatch, "listUsers", "ResourceAccessDenied", "Unauthorized: x"
+    )
+    probes.append(idx.handler(_http_event("listUsers", groups=["Admin"])))
+    _resolver_raising(idx, monkeypatch, "listUsers", "PermissionError", "Forbidden: x")
+    probes.append(idx.handler(_http_event("listUsers", groups=["Admin"])))
+
+    assert all(p["statusCode"] == 403 for p in probes)
+    for p in probes:
+        assert _refusal_control(p) in idx.AUTHZ_CONTROLS, (
+            f"a 403 with no recognised control label: {_error(p)}"
+        )
+    # Non-vacuity: the probes must cover more than one value, or "they all carry a
+    # label" would be satisfied by a constant. ⚠️ Three, not four: these probes do
+    # not reach `normalize_event`'s refusal, which is driven and asserted
+    # separately in test_the_unverified_identity_refusal_is_labelled_at_its_own_site.
+    # Requiring four here would be the wrong fix — a probe that ALSO provoked that
+    # path would make this test's failure message ambiguous between four causes.
+    assert len({_refusal_control(p) for p in probes}) >= 3
+
+
+def test_a_non_403_outcome_is_untouched(idx, monkeypatch):
+    """The label is specific to refusals; a bad argument and a missing object keep
+    their own statuses and gain nothing."""
+    _resolver_raising(
+        idx, monkeypatch, "listUsers", "ValueError", "testSetId is required"
+    )
+    bad = idx.handler(_http_event("listUsers", groups=["Admin"]))
+    # KeyError is the other half of the 400 mapping and was asserted nowhere: an
+    # unbiased mutation sample dropped it from the tuple and every suite stayed
+    # green, which would have turned a missing argument into a 500 — a deliberate
+    # client error counted in the fault rate the 5xx alarms watch.
+    _resolver_raising(idx, monkeypatch, "listUsers", "KeyError", "'objectKeys'")
+    missing_arg = idx.handler(_http_event("listUsers", groups=["Admin"]))
+    _resolver_raising(
+        idx, monkeypatch, "listUsers", "ResourceNotFound", "no such test set"
+    )
+    gone = idx.handler(_http_event("listUsers", groups=["Admin"]))
+
+    assert (bad["statusCode"], _error(bad)["errorType"]) == (400, "BadRequest")
+    assert (missing_arg["statusCode"], _error(missing_arg)["errorType"]) == (
+        400,
+        "BadRequest",
+    )
+    assert (gone["statusCode"], _error(gone)["errorType"]) == (404, "ResourceNotFound")
+    for resp in (bad, missing_arg, gone):
+        assert idx.AUTHZ_CONTROL_FIELD not in _error(resp)
+
+
+def test_the_resource_class_is_a_permission_error_so_old_mappings_still_apply():
+    """``api_resolver`` and three Lambdas key on ``PermissionError``. Subclassing is
+    what keeps this change additive rather than a behaviour change."""
+    from idp_common.api_adapter import ResourceAccessDenied
+
+    assert issubclass(ResourceAccessDenied, PermissionError)
+    assert ResourceAccessDenied.__name__ == "ResourceAccessDenied", (
+        "the dispatcher matches this across the invoke boundary BY NAME"
+    )
+
+
+def test_the_group_floor_class_is_a_permission_error(authz):
+    assert issubclass(authz.GroupFloorDenied, PermissionError)
+
+
+def test_an_unknown_control_still_denies_rather_than_502ing(idx, monkeypatch, caplog):
+    """``_denial_response`` runs inside an ``except`` handler, so raising from it
+    escapes the handler and API Gateway answers a bodiless 502 — a refusal that
+    stops being a refusal, and a policy denial counted in the 5xx rate that server
+    faults are alarmed on. An unrecognised label is logged and downgraded to the
+    strict one instead."""
+    with caplog.at_level("ERROR"):
+        resp = idx._denial_response("Unauthorized: x", "not-a-control")
+
+    assert resp["statusCode"] == 403
+    assert _error(resp)["errorType"] == "Unauthorized"
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_RESOLVER_UNSPECIFIED
+    assert any("Unknown authz control" in r.message for r in caplog.records)
+
+
+def test_the_unverified_identity_refusal_is_labelled_at_its_own_site(idx, manifest):
+    """The fourth label, driven through the handler like the other three.
+
+    An independent review measured this gap: relabelling that one call site as
+    ``resource`` survived every suite, because the three probes in
+    ``test_every_403_the_dispatcher_can_return_carries_a_label`` cover the other
+    three values and that test only requires three distinct ones. The practical
+    risk was nil — the live matrix never provokes this path, and ``resource``
+    cannot turn any cell into a pass — but an unasserted label is one that can be
+    changed with no test failing, which is the whole shape of #1308.
+
+    The refusal comes from ``normalize_event``, not from ``authz``: an invocation
+    that asserts its own ``identity`` rather than presenting one the transport
+    verified. It is neither a group decision nor an object one, so it gets a label
+    of its own.
+    """
+    group_scoped = sorted(f for f, p in manifest.items() if isinstance(p, list))
+    assert group_scoped, "no group-scoped operation in the manifest — probe is broken"
+    field = group_scoped[0]
+
+    resp = idx.handler(
+        {
+            "arguments": {},
+            "identity": {
+                "claims": {"cognito:groups": list(manifest[field])},
+                "username": "self@example.com",
+            },
+            "info": {"fieldName": field},
+        }
+    )
+
+    assert resp["statusCode"] == 403
+    assert _error(resp)["errorType"] == "Unauthorized"
+    assert _refusal_control(resp) == idx.AUTHZ_CONTROL_UNVERIFIED_IDENTITY
+    assert _refusal_control(resp) != idx.AUTHZ_CONTROL_RESOURCE

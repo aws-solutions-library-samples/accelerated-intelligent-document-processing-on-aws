@@ -218,7 +218,10 @@ captures what the tab shows, continuously, and every mark also takes a frame.
 **Every click is logged and drawn where it happened.** The cursor overlay
 reports each mousedown to the recorder with its coordinates, the element under
 the pointer and whether that element was interactive; `render` prints a click
-table and warns about any click that hit nothing interactive. In the video each
+table and warns about any click that hit nothing interactive. A click made while
+the recorder is paused is the exception: the recorder keeps only that it happened
+and whether it hit anything interactive, so `status` counts it but the video and
+the click table leave it out. In the video each
 click is shown as a ring and pointer composited onto the **last frame before the
 click**, held for `--click-hold` seconds (0.7) before the page changes — a
 single-page app reacts within tens of milliseconds, so a marker drawn live would
@@ -266,8 +269,34 @@ in the player (QuickTime: View → Subtitles; VLC: Subtitle menu) — and writte
 
 A recording of a live stack shows real documents. Everything lands under
 `scratch/ux-recordings/` (gitignored); never commit it or attach it to a PR, and
-say so when you hand over the path. Nothing is redacted. Polly receives only the
-narration text you wrote; frames never leave the machine.
+say so when you hand over the path. The frames show the page exactly as it looked,
+with nothing redacted: a password revealed by a show-password toggle is in the
+video. Polly receives only the narration text you wrote; frames never leave the
+machine.
+
+Each click is also logged, with a label, in `events.jsonl` and `timeline.json`,
+and `render` prints the same labels in its click table and quotes them in its
+warnings. A click on a form field, an editable region (`contenteditable`, or a
+`textbox`, `searchbox` or `spinbutton` role), a `combobox` or the Monaco code editor
+is labelled by what names the field — its `aria-label` or `aria-labelledby` text,
+its `<label>`, its placeholder, or its name, type or role, and never by text inside
+the field — so a click on a filled password field is logged as the field's label,
+not the password. A click on the code in Monaco logs as `code`, the role Monaco
+gives the editor, for as long as nothing labels the editor element itself; Monaco
+puts its own `ariaLabel` option on its hidden input instead. Any other click is
+labelled by the page's own text, which can repeat what was typed or chosen: the
+current choice on a dropdown's trigger button (Cloudscape's Select trigger is a
+plain button), a date picker's calendar button, whose label names the selected
+date, a token for a chosen option or filter, or an autosuggest option reading
+`Use: "…"` with the typed value in it.
+
+A click made while the recorder is paused is logged with no label and no position,
+and `render` leaves it out of the video and the click table, so a `pause` around a
+sign-in keeps what was clicked out of the click log as well as the video. The
+session also records the tab's address, in `session.json`, `timeline.json` and
+`recorder.log`, and its title, in `session.json`. Treat the session directory as
+at least as sensitive as the video, and read `render`'s click table and warnings
+before copying any of it into `review.md` or anything you share.
 
 ## What to look for
 

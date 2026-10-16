@@ -14,17 +14,27 @@ So retention is only safe while three claims hold, and each is pinned here:
 * a retained stack is eventually reaped, whatever happens to the run that
   retained it (the marker carries a deadline; the startup reaper enforces it),
 * no more than `MAX_RETAINED_STACKS` are ever held at once, and
-* a marker that cannot be read, or whose stack is gone, does not hold a slot.
+* a marker whose stack is gone, or whose body cannot be parsed, does not hold a
+  slot.
 
 The third is the subtle one: a marker is the only thing standing between a
-retained stack and the reaper, so every way a marker can be malformed has to
-fail *towards* reaping.
+retained stack and the reaper, so every way a marker's *content* can be
+malformed has to fail *towards* reaping.
+
+A marker whose read did not ANSWER is the one case that goes the other way, and
+the two directions are consistent rather than in tension. The reaper keeps that
+run's stacks, because a refused GetObject says nothing about whether the run
+asked for them (#1445) — so the slot is genuinely occupied, and
+`retain_failed_stack` counts it against the ceiling for exactly that reason.
+Counting it as free is what would let the ceiling drift below the number of
+stacks actually being held, which is the quota exhaustion it exists to bound.
 """
 
 import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from botocore.exceptions import ClientError
 
 pytestmark = pytest.mark.unit
 
@@ -178,6 +188,28 @@ class TestRetainFailedStack:
 
         assert cbd.retain_failed_stack("idp-1009-072103") is True
 
+    def test_a_marker_that_could_not_be_read_still_holds_its_slot(
+        self, cbd, s3, monkeypatch, capsys
+    ):
+        """The ceiling counts stacks actually held, not markers readable today.
+
+        The reaper keeps a run whose marker read was refused, so those ~122 IAM
+        roles are still consumed. Counting the slot as free would let this
+        ceiling under-count the stacks being retained, which is the quota
+        exhaustion it exists to bound.
+        """
+        monkeypatch.setattr(cbd, "MAX_RETAINED_STACKS", 1)
+        s3.objects[f"{cbd.RETENTION_S3_PREFIX}/idp-0101-000001.json"] = (
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject"
+            ),
+            datetime.now(tz=timezone.utc),
+        )
+
+        assert cbd.retain_failed_stack("idp-1009-072103") is False
+        assert f"{cbd.RETENTION_S3_PREFIX}/idp-1009-072103.json" not in s3.objects
+        assert "idp-0101-000001" in capsys.readouterr().out
+
     def test_retention_can_be_switched_off(self, cbd, s3, monkeypatch):
         monkeypatch.setattr(cbd, "KEEP_FAILED_STACK", False)
         assert cbd.retain_failed_stack("idp-1009-072103") is False
@@ -239,19 +271,48 @@ class TestKeepUntilParsing:
         naive = (now + timedelta(hours=3)).replace(tzinfo=None).isoformat()
         assert cbd._keep_until_in_future(naive, now) is True
 
-    def test_an_unreadable_marker_body_reads_as_expired(self, cbd, s3):
-        """A marker whose GetObject raises must not protect its stack."""
+    def test_a_marker_body_that_cannot_be_parsed_reads_as_expired(self, cbd, s3):
+        """The GetObject ANSWERED and the answer is unintelligible.
+
+        This is the case the reaper's expiry override is right about: a marker
+        nobody can parse would otherwise pin a retention slot forever.
+        """
         s3.objects[f"{cbd.RETENTION_S3_PREFIX}/idp-0101-000001.json"] = (
-            RuntimeError("denied"),
+            b"{not json at all",
             datetime.now(tz=timezone.utc),
         )
 
-        protected, expired = cbd._expired_retention_markers(
+        protected, expired, unreadable = cbd._expired_retention_markers(
             BUCKET, datetime.now(tz=timezone.utc)
         )
 
         assert protected == {}
         assert expired == ["idp-0101-000001"]
+        assert unreadable == {}
+
+    def test_a_marker_whose_read_did_not_answer_is_neither(self, cbd, s3):
+        """A failed GetObject establishes nothing, so it is the THIRD answer.
+
+        Reported separately from `expired` because the reaper must not reap on
+        it: "could not read it this run" converges on the next run, which makes
+        the same call, while reaping destroys the evidence a failed run
+        deliberately asked to keep (#1445).
+        """
+        s3.objects[f"{cbd.RETENTION_S3_PREFIX}/idp-0101-000001.json"] = (
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject"
+            ),
+            datetime.now(tz=timezone.utc),
+        )
+
+        protected, expired, unreadable = cbd._expired_retention_markers(
+            BUCKET, datetime.now(tz=timezone.utc)
+        )
+
+        assert protected == {}
+        assert expired == []
+        assert list(unreadable) == ["idp-0101-000001"]
+        assert "AccessDenied" in unreadable["idp-0101-000001"]
 
 
 class TestDiagnosticsBundle:

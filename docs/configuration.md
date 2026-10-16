@@ -616,6 +616,8 @@ Key parameters that can be configured during CloudFormation deployment:
 - `PostProcessingLambdaHookFunctionArn`: Optional Lambda ARN for custom post-processing (see [post-processing-lambda-hook.md](post-processing-lambda-hook.md) for detailed implementation guidance)
 - `BedrockGuardrailId`: Optional Bedrock Guardrail ID to apply
 - `BedrockGuardrailVersion`: Version of Bedrock Guardrail to use
+- `MalwareScanning`: Hold each uploaded document at ingest until Amazon GuardDuty Malware Protection for S3 reports it clean — `DISABLED` (default), `GATE_ONLY` (gate on a plan managed elsewhere) or `CREATE_PLAN` (this stack creates the GuardDuty plan and role). See [malware-scanning.md](malware-scanning.md)
+- `AllowUnscannableDocuments`: Whether a document GuardDuty could not scan (password-protected, over its quotas, SSE-C encrypted, scan error) may still be processed (default: `false`, so such documents stop in `MALWARE_SCAN_FAILED`). This is a ceiling over the per-configuration `malware_scanning.on_unscannable` setting, which is editable from the web UI — setting that to `allow` has no effect unless this is also `true`
 
 For details on processing modes, see [architecture.md](architecture.md). For legacy pattern-specific references, see [pattern-1.md](pattern-1.md) (BDA) and [pattern-2.md](pattern-2.md) (Pipeline).
 
@@ -680,6 +682,59 @@ This applies guardrails to all Bedrock model interactions, including:
 4. **Compliance Alignment**: Ensure guardrails align with organizational compliance requirements
 
 For more information on creating and managing Guardrails, see the [Amazon Bedrock documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html).
+
+⚠️ **Guardrails do not read the uploaded file.** They inspect the text sent to and
+returned by the model, so a malicious PDF or Office document — whose payload is in
+the file's structure, not its extracted text — is invisible to them. Scanning the
+file itself is a separate, optional control: see
+[Malware Scanning](#malware-scanning) below.
+
+## Malware Scanning
+
+Uploaded documents can be held at ingest until Amazon GuardDuty Malware
+Protection for S3 reports them clean. Off by default.
+
+### What is configured where
+
+Enablement is **infrastructure** and lives in CloudFormation, because a GuardDuty
+protection plan cannot be created by editing a configuration row:
+
+- `MalwareScanning`: `DISABLED` (default) | `GATE_ONLY` | `CREATE_PLAN`
+- `AllowUnscannableDocuments`: `false` (default) | `true`
+
+Policy is **configuration** and lives in the `malware_scanning` section, editable
+in the Visual Editor and versioned with the rest of the configuration:
+
+```yaml
+malware_scanning:
+  # What to do with a document GuardDuty returned no verdict for — a
+  # password-protected file, an object over its quotas, an SSE-C encrypted
+  # object, or an internal scan error.
+  on_unscannable: block    # block (default) | allow
+  # Publish to the stack's SNS alerts topic when a document is refused.
+  alert_on_block: true
+```
+
+⚠️ **`on_unscannable: allow` needs the stack parameter too.** The configuration is
+editable by any Admin from the web UI, so `AllowUnscannableDocuments` acts as a
+ceiling over it: with that parameter `false`, setting the configuration to `allow`
+has no effect and the gate logs that it ignored it. Loosening the policy takes
+both a configuration change and a stack update.
+
+A document GuardDuty reports as **infected** is always refused. That is not
+configurable and the schema offers no field for it.
+
+### Statuses you will see
+
+| Status | Meaning |
+|---|---|
+| `MALWARE_SCANNING` | Uploaded, waiting for the verdict. No workflow has started. |
+| `QUARANTINED` | GuardDuty found malware. Not processed. |
+| `MALWARE_SCAN_FAILED` | No verdict was obtainable and the policy fails closed. Not processed. |
+
+For the design, the GuardDuty IAM and KMS prerequisites, the metrics and alarms,
+the cost and quota figures, and what the gate does **not** cover, see
+[malware-scanning.md](malware-scanning.md).
 
 ## Concurrency and Throttling Management
 
@@ -885,14 +940,42 @@ reading the resolved client configurations rather than the source, so botocore's
 attempt count is inside the bound, along with the ladder's stop behaviour and the Map's
 `Retry`, `Catch` and zero tolerance.
 
-⚠️ **One exposure the arithmetic above does not close.** The `BedrockClient` used for
-the non-streamed call has its own retry ladder (7 attempts, backing off 2 s doubling to
-300 s) which does not consult the invocation deadline, so on the separate-confidence
-shard path it can overrun an invocation by itself regardless of the table above. The
-budget bounds one stalled call per client, not that ladder. Making it deadline-aware
-changes behaviour for every non-agentic step — classification, simple extraction,
-summarization, assessment — so it is tracked separately; the test above pins its
-numbers so the exposure cannot drift unnoticed.
+**The `BedrockClient` ladder is bounded the same way, not by the table.** The client
+used for the non-streamed call makes 7 retries backing off 2 s doubling to 300 s, with
+no cumulative allowance, so its own worst case is far outside one invocation whatever
+the table says — eight attempts at a 300 s read timeout is 2,400 s, and three fill a
+900 s function exactly. It consults the invocation deadline at every retry decision and
+clamps every backoff to what remains
+([#1362](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1362)),
+which is what makes a request too slow for one read timeout fail in one attempt's time
+as a retryable error, rather than consuming the invocation and being reported as
+deterministic.
+
+⚠️ **The bound is "no attempt begins that the remaining invocation cannot hold, given
+what the ladder has already measured".** It is not "no attempt overruns". The check
+compares what remains against the **costliest** attempt the ladder has measured so far
+plus the backoff about to be slept, so what it cannot refuse is an attempt more
+expensive than anything it has seen: a ladder's first attempt is unmeasured, and a
+ladder whose attempts have all been cheap will begin one expensive attempt before the
+figure reflects it. On the LambdaHook path, where one attempt may occupy 840 s of a
+900 s caller, seven quick throttles followed by one real stall still ends past the wall.
+
+Taking the cost from the configured `read_timeout` instead would close that and would
+refuse requests that were going to complete — a read timeout is an upper bound on an
+attempt, not its expected cost, so a hook that normally returns in 20 s would be refused
+in all but the first 60 s of every invocation. What the gate does remove is the ladder
+repeating an expense it has already proved, which is the shape both #1310 and #1362
+reported. The residual that follows is that one full stall on each of the two clients can
+still together exceed the invocation (600 + 300 + 90 is over 900), which is why the
+arithmetic above is stated as what it is rather than as a guarantee.
+
+⚠️ **Returning early is not the same as being retried.** Where the error that surfaces
+is a read timeout the handlers wrap it as `TransientError` and the state machine retries
+it; on two of the refusal paths — the OpenAI Responses HTTP-status branch and the
+LambdaHook function-error branch — the ladder's own exhausted path raises a
+`RuntimeError` that classification does not read as transient, and the gate raises the
+same thing rather than inventing a different name. At those two the gain is the freed
+invocation and the released concurrency slot, not a retry.
 
 ### Concurrency Control
 
@@ -1099,8 +1182,8 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5** | 512 tokens |
-| Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5**, **Sonnet 5.5** | 512 tokens |
+| Claude **Sonnet 5**, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
 | Amazon Nova | ≤ 355 tokens (below any shipped class) |
@@ -1113,6 +1196,14 @@ Note the two Haikus sit at opposite ends of this table, so "Haiku" is not a tier
 Haiku 5.5's minimum is 512 tokens — the lowest here, 8x below Haiku 4.5's — which
 makes it the one cheap model where caching is worth configuring rather than written
 off: a class that never cached on Haiku 4.5 may well cache on it.
+
+**Nor is a version number a tier.** The two Sonnets are in different rows above:
+Sonnet 5.5 caches from 512 tokens and Sonnet 5 from 1,024. So the 25% of shipped
+classes that never cache on the 1,024-token tier is a figure about Sonnet 5, not
+about Sonnet 5.5 — on which some of those same classes do cache. If you are
+switching between the two, re-run `idp-cli config-validate`: its per-class warning
+is computed against the configured model's own minimum, so the answer changes with
+the model and not only with the prompt.
 
 `idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up

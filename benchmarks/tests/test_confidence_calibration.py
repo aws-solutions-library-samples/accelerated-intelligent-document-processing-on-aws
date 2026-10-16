@@ -1221,6 +1221,10 @@ def test_the_numeric_payloads_are_written_on_one_line(tmp_path):
         "calibration_curve",
         "calibration",
         "conf_coverage",
+        # Added for a different reason — artifact SIZE rather than reader noise, see
+        # that constant's comment and test_processing_issues_recorded.py (#1378).
+        "processing_issue_detail",
+        "processing_issues",
     }
 
     lines = text.splitlines()

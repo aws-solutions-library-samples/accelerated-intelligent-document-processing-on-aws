@@ -6,8 +6,21 @@ the stack is gone (thousands accumulated this way). This reaper is destructive,
 so these mock-boto3 tests pin the SAFETY logic: never delete a bucket whose run
 still has ANY CloudFormation stack (protected), never delete one younger than
 the age gate, always empty versions before deleting, and only touch idp- names.
+
+They also pin the reaper's OUTCOME, which is a separate claim from its safety:
+a sweep that could not enumerate the account considered nothing, and must not be
+reportable as one that enumerated and found nothing to do (#1391 defect 2).
+
+One thing deliberately NOT pinned, so a green run here is not over-read: whether
+an already-set `failure_reason` in main() wins over the sweep's. The verdict flip
+is pinned below; the precedence of the one-line reason is not, because asserting
+it means either running main() end to end or pinning the polarity of a nested
+guard in the AST, and the same unpinned pattern already carries the teardown
+verification's reason. Inverting it would mis-attribute a deploy failure's
+message, not change whether the run fails.
 """
 
+import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -203,6 +216,451 @@ def test_never_raises_on_api_error(cbd, monkeypatch):
     monkeypatch.setattr(cbd.boto3, "client", lambda name, *a, **k: _Boom())
     monkeypatch.setattr(cbd.boto3, "resource", lambda name, *a, **k: object())
     cbd.cleanup_stale_idp_buckets()  # must swallow, not raise
+
+
+# ---------------------------------------------------------------------------
+# An inert sweep must not be reportable as a clean one (#1391 defect 2)
+#
+# The reaper swallowed every failure into one `⚠️ Stale idp- bucket cleanup
+# failed` line and returned, so a run whose FIRST call was denied — considering
+# zero buckets, establishing nothing about the account — was indistinguishable
+# from a run that enumerated the account and found nothing to reap. Both printed
+# one line and left a green run.
+#
+# The two directions below are therefore asserted on the returned OUTCOME, not
+# on what was printed: a printed string is the thing that was already there and
+# that nobody read. Enumeration failing yields a finding; enumerating and
+# finding nothing yields none. A per-bucket delete failure stays best effort and
+# yields none either, because one stuck bucket must not cost a deploy.
+#
+# `_live_idp_run_prefixes` (ListStacks) is enumeration too, and it runs BEFORE
+# `list_buckets`: without the protected-prefix set there is no safe selection to
+# make, so it is covered in the same class rather than treated as a partial.
+# ---------------------------------------------------------------------------
+
+
+class _EnumerationFailure:
+    """A client that answers neither enumeration call.
+
+    `which` picks which of the two fails, so the test can show that both land in
+    the same class — the reaper has two enumerations and either one failing
+    leaves it with nothing to sweep.
+    """
+
+    def __init__(self, which):
+        self._which = which
+        self.deleted = []
+
+    def get_paginator(self, name):
+        if self._which == "stacks":
+            raise RuntimeError("AccessDenied: ListStacks")
+        return _FakeStackPaginator([])
+
+    def list_buckets(self):
+        if self._which == "buckets":
+            raise RuntimeError("AccessDenied: ListBuckets")
+        return {"Buckets": []}
+
+    def delete_bucket(self, Bucket):  # pragma: no cover - must never be reached
+        self.deleted.append(Bucket)
+
+
+@pytest.mark.parametrize("which", ["buckets", "stacks"])
+def test_an_enumeration_failure_is_a_finding_not_a_completed_sweep(
+    cbd, monkeypatch, capsys, which
+):
+    client = _EnumerationFailure(which)
+    monkeypatch.setattr(cbd.boto3, "client", lambda name, *a, **k: client)
+    monkeypatch.setattr(cbd.boto3, "resource", lambda name, *a, **k: _FakeS3Resource())
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    # The outcome, which is what the pipeline reads.
+    assert findings, (
+        "a sweep that could not enumerate its targets returned no finding, so "
+        "the run cannot tell it apart from one that enumerated and found "
+        "nothing — the defect itself"
+    )
+    assert all(f.startswith(cbd.STALE_BUCKET_SWEEP_FINDING) for f in findings)
+    assert client.deleted == []
+    # And it must not ALSO claim the clean outcome, which is the string a reader
+    # skims for.
+    assert "No stale idp- test buckets to reap" not in capsys.readouterr().out
+
+
+def test_a_clean_sweep_is_still_the_quiet_path(cbd, monkeypatch, capsys):
+    """Enumerated, nothing stale → no finding and the ordinary ✅ line.
+
+    The direction a careless fix breaks: making every green deploy report a
+    cleanup problem is worse than the silence, because it trains the reader to
+    ignore the row that matters. "Nothing to reap" is a completed sweep.
+    """
+    client, _ = _install(cbd, monkeypatch, buckets=[], live_stacks=[])
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    assert findings == []
+    assert client.deleted == []
+    out = capsys.readouterr().out
+    assert "✅ No stale idp- test buckets to reap" in out
+    assert cbd.STALE_BUCKET_SWEEP_FINDING not in out
+
+
+def test_a_sweep_that_reaps_everything_it_found_reports_no_finding(cbd, monkeypatch):
+    """The other clean direction: targets found, all deleted, nothing to report."""
+    old = cbd.IDP_BUCKET_STALE_AGE_SECONDS + 3600
+    client, _ = _install(
+        cbd,
+        monkeypatch,
+        buckets=[("idp-0709-160356-inputbucket-abc", old)],
+        live_stacks=[],
+    )
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    assert findings == []
+    assert client.deleted == ["idp-0709-160356-inputbucket-abc"]
+
+
+def test_a_per_bucket_delete_failure_stays_best_effort(cbd, monkeypatch, capsys):
+    """One stuck bucket is reported and costs nothing else.
+
+    The asymmetry this fix has to preserve. A BucketNotEmpty or a replication
+    hold on one bucket must not fail a deploy: the loop names it, the other
+    buckets are still reaped, and the next run tries again. So it is NOT a
+    finding, and the only thing that distinguishes it from the enumeration
+    failure above is which `except` catches it.
+    """
+    old = cbd.IDP_BUCKET_STALE_AGE_SECONDS + 3600
+    client, _ = _install(
+        cbd,
+        monkeypatch,
+        buckets=[
+            ("idp-0709-100000-inputbucket-a", old),
+            ("idp-0709-200000-inputbucket-b", old),
+        ],
+        live_stacks=[],
+    )
+    orig = client.delete_bucket
+
+    def flaky(Bucket):
+        if Bucket.endswith("-a"):
+            raise RuntimeError("BucketNotEmpty")
+        orig(Bucket)
+
+    monkeypatch.setattr(client, "delete_bucket", flaky)
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    assert findings == []
+    assert client.deleted == ["idp-0709-200000-inputbucket-b"]
+    out = capsys.readouterr().out
+    assert "idp-0709-100000-inputbucket-a" in out  # the stuck one is named
+    assert cbd.STALE_BUCKET_SWEEP_FINDING not in out
+
+
+def test_a_sweep_abandoned_part_way_is_a_finding_too(cbd, monkeypatch):
+    """Iteration giving out mid-selection leaves buckets unconsidered.
+
+    Partial is not clean, so it reports for the same reason enumeration does:
+    the buckets after the one that broke were never looked at, and the sweep
+    cannot be read as one that enumerated and found nothing.
+
+    The vehicle is a listing entry that is not a mapping, which is synthetic —
+    the shape that used to arrive here was an undateable `CreationDate`, and
+    `_listing_age_seconds` now answers None for it so that one is a single
+    skipped bucket (see the test below) rather than an abandoned sweep. What is
+    pinned here is the handler, not any particular way of reaching it, so a
+    vehicle that still raises mid-selection keeps the claim intact.
+    """
+    old = cbd.IDP_BUCKET_STALE_AGE_SECONDS + 3600
+    client, _ = _install(
+        cbd,
+        monkeypatch,
+        buckets=[("idp-0709-160356-inputbucket-abc", old)],
+        live_stacks=[],
+    )
+    now = datetime.now(tz=timezone.utc)
+    monkeypatch.setattr(
+        client,
+        "list_buckets",
+        lambda: {
+            "Buckets": [
+                {
+                    "Name": "idp-0709-160356-inputbucket-abc",
+                    "CreationDate": now - timedelta(seconds=old),
+                },
+                # Not a mapping, so selection raises before the delete pass and
+                # the bucket above is never attempted.
+                "idp-0709-160357-inputbucket-def",
+            ]
+        },
+    )
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    assert findings
+    assert all(f.startswith(cbd.STALE_BUCKET_SWEEP_FINDING) for f in findings)
+    assert client.deleted == []
+
+
+def test_a_bucket_whose_age_cannot_be_established_is_skipped_not_reaped(
+    cbd, monkeypatch, capsys
+):
+    """A naive `CreationDate` is one skipped bucket, not a reaped one (#1445).
+
+    Both halves matter. The bucket is kept, because an age that cannot be
+    established is not the same claim as being old enough to delete and this
+    path empties the bucket before deleting it; and the sweep still completes,
+    because every bucket the listing returned was considered.
+    """
+    client, _ = _install(cbd, monkeypatch, buckets=[], live_stacks=[])
+    monkeypatch.setattr(
+        client,
+        "list_buckets",
+        lambda: {
+            "Buckets": [
+                {
+                    "Name": "idp-0709-160356-inputbucket-abc",
+                    "CreationDate": datetime(2026, 1, 1),  # noqa: DTZ001
+                }
+            ]
+        },
+    )
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    assert findings == []
+    assert client.deleted == []
+    out = capsys.readouterr().out
+    assert "idp-0709-160356-inputbucket-abc" in out
+    assert "age not establishable" in out
+    # Not misreported as the routine case, which needs no attention.
+    assert "younger than the age gate" not in out
+
+
+# ---------------------------------------------------------------------------
+# The pipeline has to surface it, or the outcome is as inert as the warning was
+# ---------------------------------------------------------------------------
+
+
+def _summary(cbd, findings):
+    """The consolidated status table — printed, uploaded to S3, mailed on fail."""
+    primary = {
+        "stack_name": "idp-0101-000000",
+        "success": True,
+        "step_results": {"Step 3: Default config": {"status": "passed", "error": ""}},
+        "teardown": {"retained": False, "findings": []},
+    }
+    # Keyed by sweep since #1434 made the table cover all six Step 0 sweeps; the
+    # other five are absent here, which is their "not reported" state and renders
+    # rows `_sweep_rows` does not match.
+    return cbd.build_consolidated_summary(
+        "idp-0101-000000", primary, [], True, {"cleanup_stale_idp_buckets": findings}
+    )
+
+
+def _sweep_rows(text):
+    """The table's sweep row(s), so the ROW's own status can be asserted.
+
+    The overall verdict is not enough on its own, in either direction. A row
+    rendered `✅` beside a finding still flips OVERALL, so the verdict alone
+    passes a table that ticks a sweep it is simultaneously failing the run for;
+    and a row rendered `❌` on a clean sweep does not flip anything, so the
+    verdict alone passes a table that reports a problem on every green deploy.
+    Both were live survivors of the mutation sample.
+    """
+    return [line for line in text.splitlines() if "Stale idp- bucket sweep" in line]
+
+
+def test_the_summary_fails_the_run_on_a_sweep_finding(cbd):
+    text = _summary(cbd, [f"{cbd.STALE_BUCKET_SWEEP_FINDING} could not enumerate"])
+    assert "OVERALL: FAIL" in text
+    assert "could not enumerate" in text
+    rows = _sweep_rows(text)
+    assert rows and all(row.strip().startswith("❌") for row in rows), rows
+
+
+def test_the_summary_passes_on_a_completed_sweep(cbd):
+    text = _summary(cbd, [])
+    assert "OVERALL: PASS" in text
+    assert cbd.STALE_BUCKET_SWEEP_FINDING not in text
+    # The row itself must read as a pass. A ❌ on every clean sweep is the
+    # careless-fix direction: it trains the reader to ignore the row, which is
+    # how the warning that preceded it came to be ignored.
+    rows = _sweep_rows(text)
+    assert len(rows) == 1 and rows[0].strip().startswith("✅"), rows
+
+
+def test_the_summary_does_not_claim_a_sweep_nobody_reported(cbd):
+    """`None` is "the caller does not have the result", not "clean".
+
+    Collapsing those two would reproduce the defect one level up: a table that
+    says the sweep was fine because nothing told it otherwise. So the row may
+    not carry the pass tick, and the detail must say so in words.
+    """
+    text = _summary(cbd, None)
+    assert "OVERALL: PASS" in text
+    assert "enumerated, swept" not in text
+    rows = _sweep_rows(text)
+    assert len(rows) == 1, rows
+    assert "not reported" in rows[0]
+    assert not rows[0].strip().startswith("✅"), rows[0]
+
+
+# ---------------------------------------------------------------------------
+# main() must actually consult it
+#
+# A return value nothing reads is the same inert control one level up, and that
+# is the recurring defect class here. Asserted over main's AST rather than its
+# text: the question is whether the value is bound and then used to decide the
+# run, which a substring search cannot answer.
+# ---------------------------------------------------------------------------
+
+HARNESS = Path(__file__).resolve().parents[1] / "codebuild_deployment.py"
+
+
+def _main_function():
+    tree = ast.parse(HARNESS.read_text(encoding="utf-8"))
+    main = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "main"
+        ),
+        None,
+    )
+    assert main is not None, f"no main() in {HARNESS.name}"
+    return main
+
+
+def _sweep_result_name(main):
+    """The local main() binds cleanup_stale_idp_buckets()'s return value to."""
+    for node in ast.walk(main):
+        if not isinstance(node, ast.Assign):
+            continue
+        call = node.value
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "cleanup_stale_idp_buckets"
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            return node.targets[0].id
+    return None
+
+
+def test_main_binds_the_sweep_result_instead_of_discarding_it():
+    main = _main_function()
+    name = _sweep_result_name(main)
+    assert name, (
+        "main() calls cleanup_stale_idp_buckets() as a bare statement, so its "
+        "findings go nowhere and the sweep's outcome cannot reach the verdict "
+        "— the shape of #1391 defect 2"
+    )
+
+
+def test_main_fails_the_run_on_a_sweep_finding():
+    """The bound name must gate an assignment of `stack_success = False`."""
+    main = _main_function()
+    name = _sweep_result_name(main)
+    assert name
+
+    def _tests_on(node):
+        return name in {
+            inner.id for inner in ast.walk(node.test) if isinstance(inner, ast.Name)
+        }
+
+    def _assigns_failure(node):
+        return any(
+            isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "stack_success"
+                for t in stmt.targets
+            )
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is False
+            for stmt in ast.walk(node)
+        )
+
+    guarded = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.If) and _tests_on(node) and _assigns_failure(node)
+    ]
+    assert guarded, (
+        f"no `if {name}:` in main() sets stack_success = False, so a sweep that "
+        f"considered zero buckets still leaves the run green — which is the "
+        f"defect, not the fix"
+    )
+
+    # And it must carry a reason, so the 💥 line and the failure email say what
+    # went wrong rather than just that something did. Whether an already-set
+    # reason wins is NOT pinned here — see the module docstring note.
+    assert any(
+        isinstance(stmt, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "failure_reason" for t in stmt.targets
+        )
+        for node in guarded
+        for stmt in ast.walk(node)
+    ), (
+        f"the `if {name}:` block in main() sets no failure_reason, so the run "
+        f"goes red with nothing naming the sweep as the cause"
+    )
+
+
+def _names_carrying(main, name):
+    """`name` plus any local main() assigns a value that mentions it.
+
+    One hop, because since #1434 the six Step 0 sweeps reach the table through a
+    mapping keyed by sweep rather than one argument each. The claim asserted
+    below is unchanged — the sweep's outcome has to arrive at the table — and
+    only the route is wider. That the mapping actually carries THIS sweep under
+    THIS key is pinned in test_startup_sweep_outcomes.py, over every sweep in the
+    registry rather than this one.
+    """
+    carried = {name}
+    for node in ast.walk(main):
+        if not isinstance(node, ast.Assign):
+            continue
+        mentioned = {
+            inner.id for inner in ast.walk(node.value) if isinstance(inner, ast.Name)
+        }
+        if carried & mentioned:
+            carried |= {
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            }
+    return carried
+
+
+def test_main_passes_the_sweep_result_to_the_consolidated_summary():
+    """The row in the published table, as well as the exit code."""
+    main = _main_function()
+    name = _sweep_result_name(main)
+    assert name
+    carried = _names_carrying(main, name)
+
+    passed_to = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "build_consolidated_summary"
+        and carried
+        & {
+            inner.id
+            for arg in [*node.args, *(kw.value for kw in node.keywords)]
+            for inner in ast.walk(arg)
+            if isinstance(inner, ast.Name)
+        }
+    ]
+    assert passed_to, (
+        f"no build_consolidated_summary(...) call in main() is given {name}, so "
+        f"the status table — the artifact a reader opens, and the one mailed on "
+        f"failure — cannot show whether the sweep ran"
+    )
 
 
 # ---------------------------------------------------------------------------

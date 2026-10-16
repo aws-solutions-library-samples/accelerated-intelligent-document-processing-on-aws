@@ -19,6 +19,11 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getFieldConfidenceInfo } from '../common/confidence-alerts-utils';
+import FieldGeometryAffordance from '../common/FieldGeometryAffordance';
+import { hasAnyDrawableGeometry, summariseGeometryCoverage } from '../common/geometry-coverage';
+
+/** Stands in at every level below the root, which does not render the count. */
+const EMPTY_COVERAGE = { located: 0, total: 0 };
 import type { BoxProps } from '@cloudscape-design/components';
 
 // Extended Box props to allow native HTML attributes that Cloudscape passes through at runtime
@@ -130,6 +135,32 @@ const FormFieldRenderer = memo<Record<string, any>>(
     // Calculate path key for collapse state using displayPath
     const pathKey = [...displayPath, fieldKey].join('.');
     const isCollapsed = collapsedPaths.has(pathKey);
+
+    /**
+     * How many of this section's fields have a bounding box.
+     *
+     * Only at the root, which is the only level that renders it. This component
+     * recurses, and the walk is over the value subtree, so computing it at every
+     * level costs depth × nodes on a table-heavy document for a line that is
+     * drawn once.
+     */
+    const coverage = path.length === 0 ? summariseGeometryCoverage(value, explainabilityInfo) : EMPTY_COVERAGE;
+
+    /**
+     * Whether this document produced any boxes at all, which decides whether a
+     * field's own value explains anything about its missing box.
+     *
+     * ⚠️ Derived from `explainabilityInfo`, never from `coverage`. This component
+     * recurses and each level recomputes from its own props, so a count taken
+     * over the local `value` is zero at a leaf — which read as "nothing to judge
+     * from", flipped this to true, and made every row of a box-less document
+     * claim its value could not be matched on the page.
+     *
+     * With no `explainability_info` at all there is genuinely nothing to judge
+     * from, and that is not the same claim as "no boxes were produced": it reads
+     * as available, and the per-field reasons apply instead.
+     */
+    const geometryAvailable = !explainabilityInfo || hasAnyDrawableGeometry(explainabilityInfo);
 
     // Helper to check if a value has confidence alerts (recursively)
     const hasConfidenceAlertInTree = (
@@ -655,22 +686,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         ✏️
                       </ExtBox>
                     )}
-                    {/* The only keyboard-reachable way to ask "where did this come
-                        from?", and the only visible sign that asking is possible.
-                        The whole field was a click target before, with no
-                        affordance: invisible to sighted users, unreachable to AT
-                        ones. */}
-                    {geometry && (
-                      <Button
-                        variant="inline-icon"
-                        iconName="search"
-                        ariaLabel={`Show ${fieldKey} on the page`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleClick();
-                        }}
-                      />
-                    )}
+                    {/* The only visible sign of whether this field can be shown on the
+                        page, and the only keyboard-reachable way to ask. The reasoning
+                        lives in the component, which all four value branches share. */}
+                    <FieldGeometryAffordance
+                      fieldKey={fieldKey}
+                      value={value}
+                      geometry={geometry}
+                      geometryAvailable={geometryAvailable}
+                      hasFieldData={Boolean(confidenceInfo.hasEntry)}
+                      onLocate={handleClick}
+                    />
                   </SpaceBetween>
                   <div
                     style={{
@@ -881,22 +907,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         ✏️
                       </ExtBox>
                     )}
-                    {/* The only keyboard-reachable way to ask "where did this come
-                        from?", and the only visible sign that asking is possible.
-                        The whole field was a click target before, with no
-                        affordance: invisible to sighted users, unreachable to AT
-                        ones. */}
-                    {geometry && (
-                      <Button
-                        variant="inline-icon"
-                        iconName="search"
-                        ariaLabel={`Show ${fieldKey} on the page`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleClick();
-                        }}
-                      />
-                    )}
+                    {/* The only visible sign of whether this field can be shown on the
+                        page, and the only keyboard-reachable way to ask. The reasoning
+                        lives in the component, which all four value branches share. */}
+                    <FieldGeometryAffordance
+                      fieldKey={fieldKey}
+                      value={value}
+                      geometry={geometry}
+                      geometryAvailable={geometryAvailable}
+                      hasFieldData={Boolean(confidenceInfo.hasEntry)}
+                      onLocate={handleClick}
+                    />
                   </SpaceBetween>
                   <div
                     style={{
@@ -1117,22 +1138,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         ✏️
                       </ExtBox>
                     )}
-                    {/* The only keyboard-reachable way to ask "where did this come
-                        from?", and the only visible sign that asking is possible.
-                        The whole field was a click target before, with no
-                        affordance: invisible to sighted users, unreachable to AT
-                        ones. */}
-                    {geometry && (
-                      <Button
-                        variant="inline-icon"
-                        iconName="search"
-                        ariaLabel={`Show ${fieldKey} on the page`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleClick();
-                        }}
-                      />
-                    )}
+                    {/* The only visible sign of whether this field can be shown on the
+                        page, and the only keyboard-reachable way to ask. The reasoning
+                        lives in the component, which all four value branches share. */}
+                    <FieldGeometryAffordance
+                      fieldKey={fieldKey}
+                      value={value}
+                      geometry={geometry}
+                      geometryAvailable={geometryAvailable}
+                      hasFieldData={Boolean(confidenceInfo.hasEntry)}
+                      onLocate={handleClick}
+                    />
                   </SpaceBetween>
                   <div
                     style={{
@@ -1351,6 +1367,36 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   {groupEvalResult.reason && ` - ${groupEvalResult.reason}`}
                 </ExtBox>
               )}
+              {/* How much of this section has bounding boxes, at the root only.
+                  Stated up front because the alternative is learning it by clicking:
+                  the per-field controls answer for one field each, and a reader
+                  wanting to know what to expect had to hover every row.
+
+                  Rendered whenever the section displays at least one field, and
+                  gated on that rather than on anything being recorded: "0 of 10" is
+                  the informative answer where nothing was, and only "0 of 0" — a
+                  section with no fields to describe — is worth withholding. */}
+              {path.length === 0 && coverage.total > 0 && (
+                <ExtBox fontSize="body-s" color="text-body-secondary">
+                  {/* Always the count, and never a claim about the document: a
+                      packet section can come back with no boxes while its siblings
+                      have them, so only the section this line captions can be
+                      spoken for. `0 of 13 fields have a bounding box` says that
+                      much and attributes no cause. */}
+                  {`${coverage.located} of ${coverage.total} field${coverage.total === 1 ? '' : 's'} have a bounding box`}
+                  {/* "in this section" once a filter is on, because the count is of
+                      the section and the rows are a subset of it. Without that the
+                      caption reads as a statement about what is on screen, and
+                      "6 of 10" above two rows is the same two-facts-no-way-to-choose
+                      problem this caption exists to remove. */}
+                  {filterMode !== 'none' && ' in this section'}
+                  {/* No clause naming the causes. There are four of them, only one
+                      applies to any given row, and which one requires that row's own
+                      entry and value — so a line about the section can only list
+                      them all or guess. Each row's control names its own cause,
+                      which is where the distinction can be made correctly. */}
+                </ExtBox>
+              )}
             </ExtBox>
             {!isCollapsed && (
               <ExtBox padding={{ left: 'l' }}>
@@ -1553,22 +1599,17 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         ✏️
                       </ExtBox>
                     )}
-                    {/* The only keyboard-reachable way to ask "where did this come
-                        from?", and the only visible sign that asking is possible.
-                        The whole field was a click target before, with no
-                        affordance: invisible to sighted users, unreachable to AT
-                        ones. */}
-                    {geometry && (
-                      <Button
-                        variant="inline-icon"
-                        iconName="search"
-                        ariaLabel={`Show ${fieldKey} on the page`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleClick();
-                        }}
-                      />
-                    )}
+                    {/* The only visible sign of whether this field can be shown on the
+                        page, and the only keyboard-reachable way to ask. The reasoning
+                        lives in the component, which all four value branches share. */}
+                    <FieldGeometryAffordance
+                      fieldKey={fieldKey}
+                      value={value}
+                      geometry={geometry}
+                      geometryAvailable={geometryAvailable}
+                      hasFieldData={Boolean(confidenceInfo.hasEntry)}
+                      onLocate={handleClick}
+                    />
                   </SpaceBetween>
                   <div
                     style={{
@@ -1919,17 +1960,14 @@ const FormFieldRenderer = memo<Record<string, any>>(
                  This is the fallback field shape, which has no value header row to
                  hang the locate control off. */
               secondaryControl={
-                geometry ? (
-                  <Button
-                    variant="inline-icon"
-                    iconName="search"
-                    ariaLabel={`Show ${fieldKey} on the page`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleClick();
-                    }}
-                  />
-                ) : undefined
+                <FieldGeometryAffordance
+                  fieldKey={fieldKey}
+                  value={value}
+                  geometry={geometry}
+                  geometryAvailable={geometryAvailable}
+                  hasFieldData={Boolean(confidenceInfo.hasEntry)}
+                  onLocate={handleClick}
+                />
               }
             >
               {isReadOnly ? (

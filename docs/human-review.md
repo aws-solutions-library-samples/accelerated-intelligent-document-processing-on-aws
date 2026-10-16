@@ -294,6 +294,7 @@ The visual editor provides a comprehensive review experience with a modern tabbe
 #### Navigation Controls
 - **Mouse Wheel Zoom**: Zoom in/out using the mouse wheel without requiring modifier keys
 - **Click-and-Drag Panning**: Pan around zoomed images by clicking and dragging (cursor shows grab/grabbing state)
+- **Rotate**: Turn a sideways or upside-down page in 90° steps, either direction. The rotated page is re-fitted to the panel rather than cropped, bounding-box overlays rotate with it, the rotation stays applied as you move between pages, and **Reset View** clears it along with zoom and pan
 - **Section Navigation**: Use Previous/Next buttons to navigate between document sections without closing the editor
 
 #### Tabbed Interface

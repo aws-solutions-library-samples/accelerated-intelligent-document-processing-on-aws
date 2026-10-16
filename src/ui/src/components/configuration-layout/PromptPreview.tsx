@@ -504,13 +504,22 @@ export const simpleIntegratedDowngraded = (
 //                   which need not implement tool use at all.
 //   * GPT-5.x     — served by the bedrock-mantle Responses API, which has its own
 //                   tools schema and takes no Converse toolConfig.
-//   * Opus 5.5    — takes a toolConfig and answers `toolChoice: auto` normally, but
-//                   rejects `any`/`tool` with a 400. The only one of the three that
-//                   fails on FORCING rather than on tool use.
+//   * Opus 5.5 and
+//     Sonnet 5.5  — take a toolConfig and answer `toolChoice: auto` normally, but
+//                   reject `any`/`tool` with a 400. The only ones here that fail on
+//                   FORCING rather than on tool use. Sonnet 5.5 verified live on
+//                   Converse (us.anthropic.claude-sonnet-5-5, us-east-1,
+//                   2026-10-14) with the same three requests and the identical
+//                   ValidationException.
 //
-// Claude Haiku 5.5 is deliberately NOT a fourth exclusion. It shares Opus 5.5's
-// sampling-parameter surface and its effort control, so "another 5.5 model" is the
-// natural guess — but it accepts both forcing modes and emits the toolUse block
+// ⚠️ The checks below are SUBSTRING tests, so the two 5.5 ids must be matched
+// explicitly: 'claude-sonnet-5' is a substring of 'claude-sonnet-5-5' but not the
+// reverse, and Sonnet 5 and Opus 5 DO accept forcing — so neither family's answer
+// can be read off the other's.
+//
+// Claude Haiku 5.5 is deliberately NOT a further exclusion. It shares both 5.5
+// models' sampling-parameter surface and effort control, so "another 5.5 model" is
+// the natural guess — but it accepts both forcing modes and emits the toolUse block
 // (verified live on Converse, us.anthropic.claude-haiku-5-5, us-west-2,
 // 2026-10-08). Mirrors FORCED_TOOL_CHOICE_UNSUPPORTED in idp_common/bedrock/client.py.
 const modelCanBeForced = (modelId: unknown): boolean => {
@@ -523,6 +532,7 @@ const modelCanBeForced = (modelId: unknown): boolean => {
   if (id === 'lambdahook') return false;
   if (id.includes('openai.gpt-5')) return false;
   if (id.includes('claude-opus-5-5')) return false;
+  if (id.includes('claude-sonnet-5-5')) return false;
   return true;
 };
 

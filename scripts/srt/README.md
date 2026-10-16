@@ -240,6 +240,25 @@ substitute for its source in a security scan: every inline suppression is gone.
 make srt-setup
 ```
 
+### `PyYAML is not importable on this interpreter`
+
+```bash
+pip install PyYAML
+```
+
+`make srt-scan` refuses to start without it, and the refusal is deliberate rather
+than strict. The scan classifies Bandit's identifier-name findings (B105/B106) by
+whether their file sits inside a directory a deployment artifact is built from, and
+for a container-built Lambda that directory is named only in the CodeBuild buildspec
+— which needs a YAML parser to read. Without one, nothing can be established about
+the packaged set, so every such finding in test code is reported as a gating HIGH:
+a findings table and exit 1, which is also what a real security regression looks
+like. Install the package rather than reading the findings.
+
+Install it for the interpreter that runs the scan, which the message names. It is
+the one on `PATH` (or the repository's `.venv`), **not** SRT's managed venv under
+`.srt/.venv` — that one holds the scanners.
+
 ### Configuration issues
 
 ```bash

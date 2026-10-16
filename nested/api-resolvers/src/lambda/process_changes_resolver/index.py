@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timezone
 
 import boto3
+from idp_common.api_adapter import ResourceAccessDenied
 from idp_common.docs_service import create_document_service
 
 # Import IDP Common modules
@@ -59,6 +60,121 @@ _EDITABLE_STATUSES = {
     Status.REDACTED_SUPERSEDED.value,
 }
 
+# Roles `_OPERATION_GROUPS` admits that are NOT additionally confined per object, and
+# the role that is. Named rather than inlined so the two halves of the Annotator rule
+# read as one decision: the group list above says which callers reach the operation,
+# `_assert_annotator_scope` says which objects an Annotator reaches.
+#
+# Reviewer is deliberately absent from the unscoped set even though the group list
+# admits it. Admin and Author are the pair `testset_scope` itself treats as unscoped,
+# and exempting Reviewer as well would turn object scope OFF for anyone holding both
+# Reviewer and Annotator instead of intersecting the two — the same correction
+# `complete_section_review` carries, for the same reason: annotators are assigned by
+# hand in Cognito, so holding both is an easy mistake to make.
+_SCOPE_EXEMPT_GROUPS = {"Admin", "Author"}
+_SCOPED_GROUP = "Annotator"
+
+# Built on first use, not at import. The scope check is the only thing in this module
+# that reads DynamoDB directly, and a resource built at import time binds before a
+# test's mock (or moto) is in place.
+_tracking_table = None
+
+
+def _tracking_table_resource():
+    """The tracking table, for the scope check's `TestSetId` read."""
+    global _tracking_table
+    if _tracking_table is None:
+        _tracking_table = boto3.resource("dynamodb").Table(
+            os.environ.get("TRACKING_TABLE", "")
+        )
+    return _tracking_table
+
+
+def _assert_annotator_scope(event, object_key):
+    """Verify a scoped Annotator may re-group this document.
+
+    The per-object half of this operation's authorization. `_OPERATION_GROUPS` admits
+    Annotator, which is a decision about the caller's GROUP; an Annotator is
+    additionally confined to the test sets named in their `allowedTestSets`, which is
+    a decision about the OBJECT they named. The three operations this operation's
+    group list was copied from — `completeSectionReview`, `claimReview`,
+    `releaseReview` — each apply this before touching the document. The group list was
+    copied and the per-object check was not, so the operation admitted the role
+    without confining it.
+
+    The rule itself is `testset_scope.assert_can_access_test_set`, called unchanged:
+    a scope matcher that differs between call sites admits somewhere what it denies
+    elsewhere. What is local here is the derivation of the scope subject — a review
+    document carries its originating `TestSetId` on its tracking-table record — and
+    the refusal class.
+
+    Shape follows `src/lambda/complete_section_review/index.py`'s helper of the same
+    name, including that a document carrying no `TestSetId` is production work and is
+    refused rather than read as unscoped. Two things differ, both because this
+    resolver's handler is shaped differently from that one's:
+
+    * **The refusal class.** This resolver's own group floor raises `PermissionError`,
+      which the dispatcher labels `authzControl: "resolver"`. Refusing the object with
+      the same class would make the two refusals indistinguishable in the response,
+      which is the attribution defect #1308 is about — and here specifically it would
+      read as "the group floor stopped admitting Annotator". `ResourceAccessDenied`
+      carries `authzControl: "resource"`, so the refusal is attributed to the object.
+      It subclasses `PermissionError`, so `handler`'s existing `except
+      PermissionError: raise` arm — which sits BEFORE the catch-all — keeps it out of
+      the 200-with-`success: false` body the catch-all produces.
+
+    * **A failed lookup is turned into a refusal here** rather than left to
+      propagate. In the sibling an uncaught read error reaches the Lambda runtime; in
+      this handler the catch-all would convert it into a 200 saying the re-grouping
+      did not happen, which answers a question about availability to a question about
+      authorization. An authorization question that cannot be answered must resolve to
+      refused — not to allowed, and not to a fault.
+
+    ⚠️ Resolving an Annotator's `allowedTestSets` reads the users table, which
+    `testset_scope` locates through `USERS_TABLE_NAME`. Where that is unset the lookup
+    yields no scope and every Annotator is refused — fail-closed, and the direction to
+    fail in, but it also makes the role's legitimate use unavailable. See the note on
+    this function in the operation's entry in `scripts/api_rbac_expectations.yaml`.
+    """
+    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    if _SCOPED_GROUP not in groups or _SCOPE_EXEMPT_GROUPS.intersection(groups):
+        return
+
+    from idp_common.testset_scope import (
+        TestSetAccessDenied,
+        assert_can_access_test_set,
+    )
+
+    try:
+        item = _tracking_table_resource().get_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"}
+        )
+    except Exception as e:  # noqa: BLE001 — fail closed, see the docstring
+        logger.error(
+            "Refusing updateDocumentSections: the document's test set could not be "
+            "read, so the caller's scope could not be evaluated: %s",
+            e,
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: your test-set assignment could not be verified"
+        ) from e
+
+    test_set_id = (item.get("Item") or {}).get("TestSetId")
+    if not test_set_id:
+        logger.warning(
+            "Forbidden: annotator attempted to re-group a non-test-set document"
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: annotators may only re-group test-set documents"
+        )
+
+    try:
+        assert_can_access_test_set(event, test_set_id)
+    except TestSetAccessDenied as e:
+        raise ResourceAccessDenied(str(e)) from e
+
 
 def update_document_sections(event):
     """Re-group a processed document's pages, keeping its extracted values.
@@ -89,6 +205,16 @@ def update_document_sections(event):
             "message": "objectKey is required",
             "processingJobId": None,
         }
+
+    # Before every other check on the arguments, and before the document is read for
+    # any purpose other than deciding this. Two reasons it is first: nothing below may
+    # run for a caller the object is out of scope for, and each guard below answers a
+    # 200 saying the request was malformed — placed after any of them, the
+    # authorization check would simply not be reached for the arguments that trip them
+    # (`sections: []` is one, and is what the live RBAC matrix drives this operation
+    # with).
+    _assert_annotator_scope(event, object_key)
+
     if not incoming:
         return {
             "success": False,

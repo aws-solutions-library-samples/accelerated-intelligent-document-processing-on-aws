@@ -1173,11 +1173,11 @@ class AssessmentService:
         # Converse signal (``stopReason == "max_tokens"``) and the OpenAI
         # Responses adapter's mapped ``status`` (``incomplete`` /
         # ``max_output_tokens``) so the guard holds across model families.
-        raw_response = response_with_metering.get("response", response_with_metering)
-        stop_reason = (
-            raw_response.get("stopReason") if isinstance(raw_response, dict) else None
-        )
-        truncated = stop_reason in ("max_tokens", "max_output_tokens", "incomplete")
+        # One matcher for the three callers that ask this question, so the set of
+        # stop reasons cannot drift between them.
+        from idp_common.utils.bedrock_utils import is_output_token_truncation
+
+        truncated = is_output_token_truncation(response_with_metering)
         if truncated:
             logger.warning(
                 "Assessment response truncated at max output tokens "

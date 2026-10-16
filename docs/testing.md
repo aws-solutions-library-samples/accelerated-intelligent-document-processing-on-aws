@@ -336,10 +336,10 @@ path-filtered, and `Test Results` is a check run an action creates behind an `if
 so none of them reports on every PR and requiring one would leave a check pending
 forever and block every merge.
 
-Three details are worth knowing about what it reads. Eight of the ten shared gates
+Three details are worth knowing about what it reads. Ten of the twelve shared gates
 live in `developer-tests.yml` and the other two — the SRT scan and the dependency
 audit — in `security-checks.yml`; because a context is a *job*, and those two
-workflows hold four and two jobs respectively, the ten gates produce six
+workflows hold four and two jobs respectively, the twelve gates produce six
 requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
 it looks**: the test suites are their own contexts, so all six have to be required
 for a red test run to block a merge. It reads **both** enforcement mechanisms,
@@ -387,6 +387,20 @@ make ui-build       # lint + typecheck + production Vite build
 
 Both CIs run the Vitest suite. Nothing in this layer opens a browser — that is
 layer 6's UX review, and it is the only tier in the repo that does.
+
+**If you are splitting a local run across lanes, note that these two share
+`src/ui/node_modules` with `make lint-cicd`.** Both reinstall that directory with
+`npm ci`, which deletes it before rebuilding it, and so do the three UI targets
+`lint-cicd` performs itself (`ui-lint`, `ui-build-only`, `codegen-check`) — so
+"lint in one lane, UI tests in another" is two lanes writing one directory, which
+is how three gates once went red with three unrelated-looking missing-module
+errors. Every one of those targets now takes an exclusive lock on that directory,
+so the second lane waits rather than racing; it tells you it is waiting, and it
+gives up with an error after a bounded wait instead of hanging. The cost in a
+single serial run is one `flock` and no output. Neither CI is affected either way:
+both split these gates across separate runners with separate checkouts, so nothing
+there contends. See the comment above the UI section of the `Makefile` and
+`scripts/ui_deps_lock.sh`.
 
 ## 4. Security scanning (SAST and SCA)
 
@@ -488,8 +502,15 @@ frames only when the screen changes, and re-paces the result for a viewer: idle
 gaps clamped, paused stretches dropped, narration spoken by Amazon Polly, every
 click drawn on the frame that was on screen when it happened. Output — `review.mp4`,
 `review.srt`, `segments.json`, `review.md` — lands under gitignored
-`scratch/ux-recordings/`. **A recording of a live stack shows real documents and
-nothing is redacted: never commit one or attach it to a pull request.** Details:
+`scratch/ux-recordings/`, in a session directory that also holds the tab's address
+and title and a click log (`events.jsonl`, `timeline.json`) that labels clicks with
+text from the page. **A recording of a live stack shows real documents and
+nothing is redacted: never commit the session directory or attach any of it to a
+pull request.** The one exception is a finished product-demo video its author chooses
+to publish: the author uploads that `demo.mp4`, and nothing else from the session, to
+get its asset URL for the demo videos page. What a click label can hold is set out under Privacy in
+[`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md#privacy).
+Details:
 [`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy).
 
 ## 7. Benchmarks

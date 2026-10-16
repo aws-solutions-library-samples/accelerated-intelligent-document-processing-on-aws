@@ -7,8 +7,8 @@
 is easy to raise once and easy to lose quietly, which is why this gate has two halves
 that fail on different things.
 
-**It covers nine trees, not one.** Measuring them was the point: nobody knew `scripts/`
-was already at 81% across 33,000 statements, or that
+**It covers every tree in :data:`TREES`, not one.** Measuring them was the point: nobody
+knew `scripts/` was already at 81% across 33,000 statements, or that
 `feature-platform/main-stack-extensions` was at 95%, or that `idp_sdk` (36%) and
 `idp_cli` (27%) were the only genuinely low ones. An unmeasured tree is not a tree at 0%
 — it is a tree nobody can make a decision about, and this repository had six of them.
@@ -41,6 +41,22 @@ It deliberately does **not** fail when coverage *rises*. A ratchet that demanded
 baseline be rewritten on every improvement would be re-recorded reflexively, and a file
 whose real coverage had fallen would be re-recorded along with it. `--write` is explicit.
 
+## What it quotes beside a finding, which is not a finding of its own
+
+A figure is a property of the **test set** that produced it, so every tree records the
+conditions it was measured under — how many tests were collected, and how many of them
+were skipped. When a file
+is reported as fallen or missing, the skip counts are quoted beside it if this run skipped
+materially more than the recording run did, because that is the difference between a file
+that lost lines and a file whose tests did not run here. A capability gate removes tests
+silently on a machine lacking the capability: `idp_feature_sdk` reported three files
+falling by up to 7.80 points on a runner with no AWS SAM CLI while all three were intact,
+its `tests/conftest.py` having skipped 24 tests that the recording machine ran (#1377).
+
+A count difference **never fails on its own**. Coverage is allowed to rise, a run with
+fewer skips measures more, and a gate that red-lined a branch for a condition nobody
+caused would be switched off. The line adds information to a finding that already exists.
+
 ## What makes it refuse, which is not the same as failing
 
 A verdict needs a measurement, so two inputs produce **no verdict at all** (exit 2)
@@ -57,6 +73,15 @@ rather than a pass:
   further for a caller that knows which tree it just measured: it fails **by name** if
   that tree was not checked, which is stronger than "something was checked" once more
   than one tree can have a report. Issue #1190.
+
+  ⚠️ **"Something was checked" is what both CI configurations settled for, and it is
+  how eight of the nine trees stayed unratcheted.** The only report either CI produced
+  was `lib/idp_common_pkg`'s, so this gate compared one tree, named the other eight as
+  unchecked, and exited 0 — a job log in which a complete run and a one-ninth run look
+  the same. `--require-all-trees` is the CI spelling: it requires **every** tree in
+  :data:`TREES`, and the list is derived from the registry here rather than enumerated
+  by a caller, so a tree added to `TREES` is required without any Makefile or CI config
+  being edited. Issue #1256.
 * **A report whose run did not finish cleanly.** A partially failed pytest still writes
   a `coverage.xml`, and a run where some xdist workers errored writes one showing large,
   uniform-looking falls across unrelated files — the tests that would have covered them
@@ -168,6 +193,30 @@ class Tree(NamedTuple):
     #: the flag is not what protects those files -- `scripts/coverage_all.py` is, through
     #: :func:`coverage_all.subprocess_coverage_env`.
     #:
+    #: ⚠️ **Read that as a statement about subprocess instrumentation, not as a general
+    #: claim that the worker count cannot move a figure.** It can, for a file whose
+    #: branches depend on **process-global** state, because the worker count decides how
+    #: the tests are partitioned into processes and `--dist load` makes the partition vary
+    #: run to run. The live instance was credential resolution: `boto3.DEFAULT_SESSION`
+    #: caches the credentials the first bare `boto3.client(...)` in a process resolved, so
+    #: a later `monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")` is ignored and a
+    #: `try: ...get_caller_identity() / except:` branch is covered or not according to
+    #: which test ran first in that worker. Measured on `idp_feature_sdk`, 461 tests and 0
+    #: skips in every cell: `pack.py` came out 99.44% or 100.00% from one run to the next
+    #: at a fixed `-n 4`. What removes it is neutralising the AWS environment rather than
+    #: pinning the worker count -- `coverage_all.hermetic_aws_env`, under which the same
+    #: file measured 100.00% at every worker count tried. Issue #1377.
+    #:
+    #: ⚠️ **A capability difference is a third thing again, and `serial` does not help
+    #: with it either.** An absent tool changes the *test set*, not the schedule: with no
+    #: AWS SAM CLI on `PATH` the autouse fixture in `lib/idp_feature_sdk/tests/conftest.py`
+    #: skips every test that would shell out to `sam`, and that tree measures `437 passed,
+    #: 24 skipped` for 97.15% instead of `461 passed` for 99.94% -- reproduced exactly, to
+    #: the hundredth on each of the three files that move, by removing `sam` from `PATH`
+    #: on a machine that has it. So a baseline recorded where a tool is installed is
+    #: **unreachable** where it is not, and the conditions a figure was measured under are
+    #: part of the figure.
+    #:
     #: What this flag is for, then, is cost and caution: it keeps a tree on the
     #: measurement conditions its recorded baseline was taken under. `scripts` stays
     #: serial because its recorded figures come from a serial run and whether the
@@ -196,11 +245,38 @@ TREES: tuple[Tree, ...] = (
             "scripts/security/tests",
             "scripts/srt/tests",
         ),
-        # Measured serially, which is what its recorded figures are. The parallel run
-        # is not meaningfully faster on this tree anyway -- one root cannot use every
-        # worker -- and the coverage of the hooks its suites run as subprocesses is
-        # unaffected by the worker count either way. See `Tree.serial`.
-        serial=True,
+        # MEASURED PARALLEL-SAFE, 2026-10-14. See `Tree.serial` for what the flag
+        # does and does not protect; this entry records the measurement that the
+        # note there asked for before anyone flipped it.
+        #
+        # Both runs `--cov=scripts`, 6094 passed and 42 skipped in each, with
+        # subprocess instrumentation and the hermetic AWS environment live in both
+        # (those are what protect the figures; the worker count is not).
+        #   serial   1291s (21:31), 0.84 cores, 86.22% (37986/44058)
+        #   -n 4      462s (07:41), 4.1  cores, 86.22% (37989/44061)
+        # Compared PER FILE, which is the granularity the ratchet actually reads:
+        # all 214 files identical to the hundredth, whole-tree delta +0.0009
+        # points -- 3 statements, in `coverage_all.py`'s own worker-budget branch,
+        # which a parallel run executes and a serial one does not.
+        #
+        # ⚠️ The `-n 4` is measured at `-n 4`, not inferred from a wider run. An
+        # earlier pass of this measurement compared a 14-worker run instead,
+        # because `--only <one tree>` clamps `--jobs` to 1 and then hands that one
+        # tree every CPU -- so the obvious invocation measures a configuration
+        # nothing runs. Three trees at `--jobs 3` on a 14-CPU machine is what
+        # reproduces CI's share, since `worker_share` divides and floors.
+        #
+        # `-n 4` is the worker count this tree actually gets in CI, not an
+        # arbitrary one: `coverage-all-cicd` passes `--jobs 4` and
+        # `coverage_all.worker_share(4)` divides a 16-vCPU runner four ways. A
+        # measurement at `-n auto` would have been a measurement of a
+        # configuration nothing runs.
+        #
+        # The claim this replaces -- "the parallel run is not meaningfully faster
+        # on this tree anyway, one root cannot use every worker" -- was true when
+        # it was written and is not true at 6093 tests. It was costing 29 minutes
+        # of a 34-minute `unit_tests` job, 84% of the job, as the only serial tree
+        # of nine.
     ),
     Tree("idp_sdk", "lib/idp_sdk", "idp_sdk", ("-m", "not integration")),
     Tree("main_stack_extensions", "feature-platform/main-stack-extensions", "."),
@@ -221,6 +297,32 @@ TREES: tuple[Tree, ...] = (
         ".",
         ("tests",),
     ),
+    # Two Lambda handler directories, registered individually rather than as the start
+    # of a fan-out.
+    #
+    # #1221 reports taking `src/lambda/complete_section_review` from 47% to 99% and
+    # `src/lambda/calculate_capacity` from 31% to 99%, and until these entries existed
+    # nothing held either figure: no handler directory was in this registry, so a later
+    # change could take both back down with every gate green. That is the failure the
+    # per-file baseline exists to prevent, on the tree it did not reach.
+    #
+    # ⚠️ **This is not a fan-out and must not be grown into one by addition.** Counting
+    # tracked, non-test `.py` attributed to the directory under a `src/lambda/` segment:
+    # 84 handler directories hold code, of which 82 hold a module named `index.py`.
+    # Registering them one `Tree` at a time would be a hand-written list that a newly
+    # added handler joins only when somebody notices, which is the shape #1227 is about.
+    # That issue's decided remedy is a **derived** fan-out — one logical tree over many
+    # pytest roots, membership computed from the handler directories, and a
+    # universe-closure ratchet with a pinned count so a directory added later fails
+    # rather than being absorbed. When that lands it subsumes these two: remove both
+    # entries and their baseline records drop out on the next write, because
+    # `write_baseline` carries over only the trees this registry names.
+    #
+    # Each is its own `Tree` rather than one covering `src/lambda`, for the reason every
+    # entry above is separate: both directories contain a module named `index.py`, as do
+    # 82 of the 84, so two in a single pytest process collide at collection.
+    Tree("complete_section_review", "src/lambda/complete_section_review", "."),
+    Tree("calculate_capacity", "src/lambda/calculate_capacity", "."),
 )
 
 TREES_BY_NAME = {tree.name: tree for tree in TREES}
@@ -387,6 +489,29 @@ class RunTrust(NamedTuple):
     state: str
     #: One line naming the evidence, printed as-is.
     detail: str
+    #: How many tests the run **collected** — those it ran plus those it skipped.
+    #:
+    #: This is pytest's `<testsuite tests="...">`, which is the total rather than the
+    #: number that executed. `437 passed, 24 skipped` is recorded as 461 and 24, so the
+    #: two together say how much of the suite ran; naming it `collected` is what keeps a
+    #: reader of the baseline from reading 461 as "461 tests ran".
+    collected: int = 0
+    #: How many it **skipped** — the measurement condition that matters most here.
+    #:
+    #: A figure is a property of the test set that produced it, and the cheapest
+    #: observable summary of that set is how much of it did not run. A capability gate
+    #: (`shutil.which("sam")` is the live one; a missing optional dependency and an
+    #: unreachable service are the same shape) silently removes tests on a machine
+    #: lacking the capability, so the same suite at the same commit measures a different
+    #: tree. `idp_feature_sdk` is `461 passed, 0 skipped` for 99.94% where SAM is
+    #: installed and `437 passed, 24 skipped` for 97.15% where it is not.
+    #:
+    #: Recording the **count** rather than a list of tools is deliberate. Which tool
+    #: gates which test is not derivable, so enumerating them would be authored guesswork
+    #: in a generated file; the number of tests that did not run is measured, needs no
+    #: maintenance, and covers every capability gate including the ones nobody has met
+    #: yet. Issue #1377.
+    skipped: int = 0
 
 
 def run_record_path(report: Path) -> Path:
@@ -412,7 +537,26 @@ def run_trust(report: Path) -> RunTrust:
     both CI configurations invoke this gate as a **separate step** from the run — which is
     the gap issue #1190 is about — and the coverage report's own internal consistency
     cannot tell a genuinely low figure from a fabricated one.
+
+    ⚠️ It also answers the cruder question of whether the **report** can be read at all,
+    and that belongs here rather than at the two call sites because both of them already
+    handle ``unverified`` correctly and neither handled an exception: `check` put the
+    traceback in front of a reader instead of a named refusal, and `--write` died partway
+    through regenerating the baseline. A zero-byte `coverage.xml` is the live shape — what
+    a producer leaves behind when it is killed mid-write, or when the disk filled — and it
+    is the more misleading one than an absent file, because a reader who sees the report
+    sitting there concludes the gate compared it. Treated as unmeasured, exactly like a
+    record that cannot be read, so `--require-all-trees` names the tree and the run
+    reaches no verdict for it.
     """
+    try:
+        ET.parse(report)
+    except (ET.ParseError, OSError) as exc:
+        return RunTrust(
+            "unverified",
+            f"{report.name} cannot be read as a coverage report ({exc}), so it measures "
+            f"nothing — a producer killed mid-write leaves exactly this",
+        )
     record = run_record_path(report)
     if not record.is_file():
         return RunTrust(
@@ -444,6 +588,14 @@ def run_trust(report: Path) -> RunTrust:
         errors = sum(int(s.get("errors") or 0) for s in suites)
         failures = sum(int(s.get("failures") or 0) for s in suites)
         tests = sum(int(s.get("tests") or 0) for s in suites)
+        # `skipped` is read the same way as the three above and, like them, is taken as
+        # the larger of the attribute and the elements, so a producer that writes only
+        # one spelling is still read. Unlike them it is not grounds for refusing a
+        # report: a skip is a test declining to run, not a run that did not finish.
+        skipped = max(
+            sum(int(s.get("skipped") or 0) for s in suites),
+            len(list(root.iter("skipped"))),
+        )
     except ValueError as exc:
         return RunTrust(
             "unverified", f"{record.name} has an unreadable test count ({exc})"
@@ -470,7 +622,12 @@ def run_trust(report: Path) -> RunTrust:
             f"{record.name} records 0 tests, so nothing executed and the report "
             f"describes no measurement",
         )
-    return RunTrust("clean", f"{record.name} records {tests} test(s), 0 errors")
+    return RunTrust(
+        "clean",
+        f"{record.name} records {tests} test(s) collected, {skipped} skipped, 0 errors",
+        tests,
+        skipped,
+    )
 
 
 class Unchecked(NamedTuple):
@@ -488,8 +645,67 @@ class Unchecked(NamedTuple):
     reason: str
 
 
+#: How many more tests this run may skip than the recording run before it is mentioned.
+#:
+#: Not zero: a handful of skips move between runs for reasons nobody chose (a slow optional
+#: dependency, a platform guard) and naming them beside every finding would train a reader
+#: to scroll past the line. A capability gate taking a whole feature out is the case worth
+#: a sentence, and the live one is 24.
+SKIP_DRIFT_WORTH_MENTIONING = 5
+
+
+def _conditions_diagnosis(
+    tree: Tree, recorded_conditions: dict | None, trust: RunTrust
+) -> str | None:
+    """One line on the measurement conditions, when they explain a finding.
+
+    Returned only when a file has already been reported as fallen or missing, so this
+    **adds information to an existing finding and never creates one**. That restraint is
+    the point: a count difference on its own is not a regression — coverage is allowed to
+    rise, and a run with *fewer* skips measures more — so failing on it would red-line
+    branches for a condition nobody caused, which is how a gate gets switched off.
+
+    What it answers is the question that cost a day: whether the file really lost lines,
+    or whether the tests that covered them did not run here. `idp_feature_sdk` reports
+    three files falling by 1.27, 5.21 and 7.80 points on a runner with no AWS SAM CLI,
+    and all three are intact — 24 tests were skipped by the autouse fixture in its
+    `tests/conftest.py`, and the baseline was recorded where `sam` was installed.
+    """
+    if not recorded_conditions:
+        return (
+            f"[{tree.name}] its baseline records no measurement conditions, so whether "
+            f"the run above executed the same tests cannot be checked. This report "
+            f"collected {trust.collected} test(s) and skipped {trust.skipped} of them. "
+            f"Only --write can capture them, and it is the wider command: a conditions "
+            f"record is written as part of recording a whole tree, so --write replaces "
+            f"every floor in every measured tree with this run's figure. "
+            f"--write-missing cannot do it — it preserves the recorded entry as it "
+            f"stands, and the conditions are part of that entry. So capturing them "
+            f"means accepting this machine's measurement for this tree; do it from a "
+            f"run you would be willing to make the baseline."
+        )
+    was_skipped = recorded_conditions.get("skipped")
+    was_collected = recorded_conditions.get("collected")
+    if was_skipped is None or was_collected is None:
+        return None
+    drift = trust.skipped - was_skipped
+    if drift < SKIP_DRIFT_WORTH_MENTIONING:
+        return None
+    return (
+        f"[{tree.name}] this report skipped {trust.skipped} test(s) where its baseline "
+        f"was recorded over a run that skipped {was_skipped} ({was_collected} collected "
+        f"then, {trust.collected} now). {drift} more test(s) declined to run here, so check "
+        f"whether the file(s) above lost lines or whether the tests covering them were "
+        f"skipped — a capability gate (an absent CLI, a missing optional dependency) "
+        f"removes tests silently on a machine that lacks the capability, and a baseline "
+        f"recorded on a more capable machine is a floor this environment cannot reach."
+    )
+
+
 def check_tree(
-    tree: Tree, recorded: dict[str, float]
+    tree: Tree,
+    recorded: dict[str, float],
+    recorded_conditions: dict | None = None,
 ) -> tuple[list[str], float | None]:
     """Compare one tree against its recorded baseline. Returns (problems, overall)."""
     report = _resolve_report(tree)
@@ -497,22 +713,34 @@ def check_tree(
         return [], None
     measured = read_report(report, tree_root(tree))
     problems: list[str] = []
+    looks_worse = False
 
     for path, was in sorted(recorded.items()):
         now = measured.get(path)
         if now is None:
+            looks_worse = True
             problems.append(
                 f"[{tree.name}] {path} is recorded at {was:.2f}% but the report does not "
-                f"mention it. If it moved or was deleted, re-record with --write; if it "
-                f"stopped being imported by any test, that is the regression."
+                f"mention it. If it moved or was deleted, re-record with --write — only "
+                f"that drops a stale entry, and it re-records every measured tree's "
+                f"floors wholesale while doing so; if it stopped being imported by any "
+                f"test, that is the regression."
             )
             continue
         if now < was - TOLERANCE_PCT:
+            looks_worse = True
             problems.append(
                 f"[{tree.name}] {path} fell from {was:.2f}% to {now:.2f}% "
                 f"(-{was - now:.2f} points, tolerance {TOLERANCE_PCT}). Add tests for the "
-                f"lines it lost, or re-record deliberately with --write."
+                f"lines it lost, or re-record deliberately with --write — only that "
+                f"lowers a recorded floor, and it re-records every measured tree's "
+                f"floors wholesale while doing so."
             )
+
+    if looks_worse:
+        diagnosis = _conditions_diagnosis(tree, recorded_conditions, run_trust(report))
+        if diagnosis:
+            problems.append(diagnosis)
 
     unaccounted = [
         path
@@ -527,7 +755,11 @@ def check_tree(
             f"baseline, so their coverage is unratcheted: "
             + ", ".join(unaccounted[:6])
             + ("..." if len(unaccounted) > 6 else "")
-            + ". Re-record with --write."
+            + ". Record them with --write-missing, which adds only the entries the "
+            "baseline lacks and by construction cannot raise or lower an existing "
+            "floor. Do not reach for the wider re-record here: it would accept this "
+            "machine's figure for every other file in every measured tree, which on a "
+            "host-sensitive gate is how an unexamined floor becomes permanent."
         )
     return problems, report_total(report)
 
@@ -595,7 +827,9 @@ def check(required: tuple[str, ...] = ()) -> CheckResult:
             unchecked.append(Unchecked(tree.name, trust.detail))
             continue
         recorded = trees.get(tree.name, {}).get("files", {})
-        tree_problems, overall = check_tree(tree, recorded)
+        tree_problems, overall = check_tree(
+            tree, recorded, trees.get(tree.name, {}).get("conditions")
+        )
         if overall is None:  # pragma: no cover - the report resolved a moment ago
             unchecked.append(Unchecked(tree.name, "its report disappeared mid-run"))
             continue
@@ -603,7 +837,10 @@ def check(required: tuple[str, ...] = ()) -> CheckResult:
         if not recorded:
             problems.append(
                 f"[{tree.name}] a report exists but this tree has no recorded baseline, "
-                f"so nothing about it is ratcheted. Re-record with --write."
+                f"so nothing about it is ratcheted. Record it with --write-missing: a "
+                f"tree with no entry has nothing to preserve, so it is recorded in full "
+                f"— total, conditions and every file — while no other tree's recorded "
+                f"floors move."
             )
         problems.extend(tree_problems)
 
@@ -630,7 +867,7 @@ def check(required: tuple[str, ...] = ()) -> CheckResult:
     return CheckResult(code, problems + refusals, unchecked, checked)
 
 
-def write_baseline() -> int:
+def write_baseline(missing_only: bool = False) -> int:
     """Re-record baselines from the reports that a finished run produced.
 
     Refuses outright — writing nothing — if any report came from a run that did not
@@ -640,6 +877,38 @@ def write_baseline() -> int:
     failure message offers this command as one of two remedies. Skipping the bad tree and
     recording the rest would still leave the operator believing the baseline was
     refreshed; the remedy for an unfinished run is to run it again.
+
+    ⚠️ **``missing_only`` exists because a single remedy for every finding is wider than
+    most of them.** Of the problems `check_tree` raises, two — a tracked file the report
+    measures and the baseline does not record, and a whole tree with no baseline entry —
+    are fixed by adding entries, and need nothing existing to move. `--write` re-records
+    the file set of **every** measured tree wholesale, so with it as the only remedy the
+    narrowest available response to one new module is to accept this machine's figure for
+    every other file in its tree. That is the wrong direction on a gate whose figures are
+    host-sensitive: a baseline recorded on a more capable machine is a floor the gate's
+    own environment cannot reach, which is what `conditions` was added for. Measured on
+    the `scripts` tree while closing #1256: one file needed recording, and `--write`
+    would have raised ten existing floors with it, six past the tolerance and the largest
+    by 18.75 points. #1421 reports the same count taken independently on the same tree —
+    ten floors again, two of them on files whose host-versus-CI discrepancy is pinned on
+    purpose — after the printed remedy was followed a second time and caught by hand.
+    That is why those two findings now name this mode, and the ones that genuinely need
+    the wider command say that it is wider.
+
+    **Which findings keep `--write`, and why, since the distinction is the whole point.**
+    Lowering a recorded floor and dropping a stale entry are both things ``missing_only``
+    cannot do by construction, so a file that fell and a recorded path the report no
+    longer mentions keep `--write`. So does a baseline with no `conditions` record: a
+    tree whose entry already exists is preserved verbatim here, and the conditions are
+    part of that entry, so the only way to capture them is to re-record the tree. Those
+    messages say that the command is the wider one rather than leaving the reader to
+    discover it, because following a printed remedy without knowing what it moves is the
+    defect, not the flag.
+
+    So ``missing_only`` adds only entries the baseline **lacks**, and by construction
+    cannot raise or lower an existing floor — asserted below rather than left to the
+    reader, because "it only adds" is exactly the kind of claim that is true of the code
+    as written and false after one edit.
     """
     trees: dict[str, dict] = {}
     measured_trees: list[str] = []
@@ -666,8 +935,39 @@ def write_baseline() -> int:
             for path, rate in sorted(measured.items())
             if path in tracked and not any(path.startswith(k) for k in NOT_MEASURED)
         }
-        trees[tree.name] = {"total": report_total(report), "files": files}
-        print(f"  ✓ {tree.name}: {len(files)} file(s) at {report_total(report):.2f}%")
+        if missing_only:
+            existing = recorded_now.get(tree.name)
+            if existing:
+                kept = dict(existing.get("files", {}))
+                added = {p: r for p, r in files.items() if p not in kept}
+                # The whole claim of this mode, checked rather than asserted in prose.
+                assert all(kept[p] == existing["files"][p] for p in kept), tree.name
+                merged = {**kept, **added}
+                trees[tree.name] = {**existing, "files": dict(sorted(merged.items()))}
+                if added:
+                    print(
+                        f"  + {tree.name}: {len(added)} new entr(y/ies) "
+                        + ", ".join(
+                            f"{p} at {r:.2f}%" for p, r in sorted(added.items())
+                        )
+                    )
+                else:
+                    print(f"  = {tree.name}: nothing missing, left exactly as recorded")
+                continue
+            # A tree with no baseline at all has nothing to preserve, so the ordinary
+            # full record is both correct and the only thing available.
+        trees[tree.name] = {
+            "total": report_total(report),
+            # The conditions this figure was measured under, so a later comparison can
+            # tell a file that lost lines from one whose tests did not run here. See
+            # `RunTrust.skipped` for why the count is recorded and a tool list is not.
+            "conditions": {"collected": trust.collected, "skipped": trust.skipped},
+            "files": files,
+        }
+        print(
+            f"  ✓ {tree.name}: {len(files)} file(s) at {report_total(report):.2f}% "
+            f"({trust.collected} test(s) collected, {trust.skipped} skipped)"
+        )
 
     if refusals:
         print(
@@ -706,6 +1006,19 @@ def write_baseline() -> int:
                     "",
                     "A tree with no report is left untouched rather than erased, so a",
                     "partial run cannot silently discard another tree's baseline.",
+                    "",
+                    "Each tree's `conditions` are the measurement conditions its figures",
+                    "were taken under: how many tests were COLLECTED, and how many of",
+                    "them SKIPPED. A figure is a property of the test set that produced",
+                    "it, and a capability gate (an absent CLI, a missing optional",
+                    "dependency) removes tests silently on a machine without it -- so a",
+                    "baseline recorded on a more capable machine is a floor the gate's",
+                    "own environment cannot reach. idp_feature_sdk was exactly that:",
+                    "recorded at 99.94% where the AWS SAM CLI was installed, and",
+                    "unreachable in CI, which skips 24 tests and measures 97.15%. A count",
+                    "difference is never itself a failure -- it is quoted beside a fall,",
+                    "so a reader can tell a file that lost lines from one whose tests",
+                    "did not run.",
                 ],
                 "generator": "python3 scripts/check_coverage_debt.py --write",
                 "tolerancePct": TOLERANCE_PCT,
@@ -751,6 +1064,17 @@ def main() -> int:
         help="Re-record baselines from whatever reports exist, instead of checking",
     )
     parser.add_argument(
+        "--write-missing",
+        action="store_true",
+        help=(
+            "Like --write, but ONLY adds entries the baseline lacks: it cannot raise or "
+            "lower an existing floor. The bounded remedy for the two findings that need "
+            "nothing but new entries — a measured file the baseline does not record, "
+            "and a tree with no baseline at all — where --write would re-record every "
+            "measured tree wholesale"
+        ),
+    )
+    parser.add_argument(
         "--summary", action="store_true", help="Print each tree's recorded figure"
     )
     parser.add_argument(
@@ -764,7 +1088,26 @@ def main() -> int:
             "saying only that nothing was checked."
         ),
     )
+    parser.add_argument(
+        "--require-all-trees",
+        action="store_true",
+        help=(
+            "Fail unless EVERY tree in the registry was checked. What both CI "
+            "configurations pass, now that they produce a report per tree"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.require_all_trees:
+        # Derived from the registry, never enumerated by the caller. A Makefile or CI
+        # config listing the nine names would be a second copy of TREES, and the copy
+        # that goes stale is the one deciding what this gate is allowed to skip -- so a
+        # tree added to the registry and forgotten there would be unratcheted while the
+        # gate reported that every tree was required. Issue #1256.
+        args.require_tree = [
+            *args.require_tree,
+            *(t.name for t in TREES if t.name not in set(args.require_tree)),
+        ]
 
     unknown = [n for n in args.require_tree if n not in TREES_BY_NAME]
     if unknown:
@@ -775,12 +1118,16 @@ def main() -> int:
             f"{', '.join(unknown)}. Known trees: {', '.join(t.name for t in TREES)}"
         )
         return 2
-    if args.require_tree and (args.summary or args.write):
+    if args.require_tree and (args.summary or args.write or args.write_missing):
         # Refused rather than ignored. Neither of those modes compares anything, so a
         # caller passing both has asserted a precondition that nothing will evaluate --
         # and an ignored assertion is the exact shape of the defect this flag exists for.
+        # Named by the spelling the caller actually used: `--require-all-trees` expands
+        # into `require_tree` above, so a message naming only the latter would cite a
+        # flag that is not on the command line.
+        flag = "--require-all-trees" if args.require_all_trees else "--require-tree"
         print(
-            "🚫 --require-tree asserts that a tree was CHECKED, which neither --summary "
+            f"🚫 {flag} asserts that a tree was CHECKED, which neither --summary "
             "nor --write does. Drop one of them."
         )
         return 2
@@ -799,8 +1146,17 @@ def main() -> int:
             )
         return 0
 
-    if args.write:
-        return write_baseline()
+    if args.write and args.write_missing:
+        # Refused rather than resolved in either direction: one re-records every file of
+        # every measured tree and the other cannot change a single existing figure, so
+        # there is no reading of both that is a narrowing of one of them.
+        print(
+            "🚫 --write re-records every measured tree wholesale and --write-missing "
+            "adds only what is absent. Pick one."
+        )
+        return 2
+    if args.write or args.write_missing:
+        return write_baseline(missing_only=args.write_missing)
 
     result = check(tuple(args.require_tree))
     code, problems, unchecked = result.code, result.problems, result.unchecked

@@ -92,16 +92,33 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 # document-level alarm — 5% is the point where a reader should stop trusting the
 # confidence surface as a whole rather than a few rows in it.
 #
-# What the fraction does to a SHORT list is arithmetic, and #997 is about it: a
-# single unscored row is a shortfall of 1/N, so one unscored row fires the warning
-# for any section totalling ``int(1 / _COVERAGE_SHORTFALL_WARNING_FRACTION)`` rows or
-# fewer — 20 at the value below. The absolute floor further down bounds that class
-# for the ERROR rung only. ``confidence_coverage`` exists so the rate at which that
-# actually happens can be recorded rather than argued about; what the committed
-# benchmark artifacts already show, and the three reasons they cannot settle the
-# nested short-list case, are written up under "Coverage: measured and unobserved"
-# in this package's README. The rungs stay where they are until a multi-record run
-# measures them, because the available proxy cannot see the shape in question.
+# Note that those are two justifications of different shapes sharing one constant.
+# "Stop trusting the surface as a whole" is proportional and a fraction is the right
+# instrument for it; "a 1-2 row gap is the other issue's business" is ABSOLUTE, and a
+# fraction scales it with the list, so the number of unscored rows this rung passes
+# in silence is 0 at 20 rows and 39 at 800. The backstop that discharges the second
+# justification is narrower than it reads, too: ``split_stats["unrecoverable_rows"]``
+# is computed for the LARGEST list field only. That residual is measured (the worst
+# observed is 24 unscored rows of 800) and left in place rather than patched with a
+# second constant, because the committed grids cannot say whether the ladder already
+# reported those rows — ``processing_issues`` postdates all of them. See "The shape
+# of the warning fraction, and the residual it leaves" in this package's README.
+#
+# What the fraction does to a SHORT list is arithmetic: a single unscored row is a
+# shortfall of 1/N, so one unscored row fires the warning for any section totalling
+# ``int(1 / _COVERAGE_SHORTFALL_WARNING_FRACTION)`` rows or fewer — 20 at the value
+# below. #997 asked whether a healthy run produces that single unscored row often
+# enough to make the rung noise, and that is now MEASURED rather than argued, over
+# the committed benchmark grids, by this module's own ``confidence_coverage``: 6,672
+# coverage-bearing document-runs across 38 grids (v0.6.8 → v0.6.11), of which 6,493
+# — 97.3% — sit at exactly 0 unscored rows, and a 0 aggregate implies 0 in every
+# section, so that share is exact per section rather than diluted. The figures and
+# the method are written up under "Coverage: measured" in this package's README; the
+# short-list result is that among the 2,452 single-section runs extracting 20 rows
+# or fewer, the number showing a PARTIAL shortfall — one or two rows of a short list
+# unscored, the shape that would make the warning rung noise — is ZERO. The 21 that
+# do fire there have NO scored row at all. So the fractions below stay where #912
+# put them, now as an observed property.
 #
 # Why 25% for error severity: at a quarter of the rows unscored the surface is no
 # longer a usable sample of the document — the #901 run was ~76% unscored. Below
@@ -120,6 +137,20 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 # rows is more data than a reviewer can be assumed to spot-check by hand, and it is
 # ~1% of the #901 shape (912 of 1,200 unscored), so the case the guard exists for is
 # unaffected.
+#
+# The floor is NOT applied when NOTHING was scored, and that exception is what the
+# measurement above changed (#997). Of the 6,672 runs, 21 cross the error fraction
+# with fewer than 10 unscored rows — exactly the class the floor exists to keep at
+# warning severity — and all 21 have ``scored_rows == 0``: a section whose only list
+# attribute carries no confidence anywhere. The partial case the floor was written
+# for, "one ``None`` leaf in a two-entry ENDORSEMENTS array", occurs zero times in
+# the same corpus. So as measured the floor only ever downgraded a TOTAL absence of
+# a confidence surface, which is the strongest form of the condition the error rung
+# exists to report — the issue's own message at that point says confidence-based
+# review "does not apply to any of it". Zero scored rows is therefore error severity
+# at any list length, and the floor keeps governing the partial shortfalls it was
+# argued for. This adds no constant: ``scored_rows == 0`` is an exact boundary the
+# function already computes, not a tuned number.
 _COVERAGE_SHORTFALL_WARNING_FRACTION = 0.05
 _COVERAGE_SHORTFALL_ERROR_FRACTION = 0.25
 _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS = 10
@@ -1375,10 +1406,21 @@ def coverage_from_gaps(
     comparing a rounded ratio moves each rung by up to half a rounding step. At the
     shipped 0.05, 100 unscored rows out of 2001 is 0.04997501…, which rounds to
     exactly 0.05 and would fire a warning the unrounded value does not.
+
+    ``expected_rows_by_field`` is the DENOMINATOR beside the existing
+    ``unscored_rows_by_field`` numerator, so a per-field coverage ratio is
+    recoverable from the figure a run records. Without it a section with two list
+    attributes is unreadable in the one direction that matters: the rungs divide by
+    the section-wide row total, so an attribute that is *wholly* unscored beside a
+    large, fully-scored one lands below the warning fraction, and the ladder's own
+    ``unrecoverable_rows`` cannot cover it either, because that counts only the
+    LARGEST list field. Both numbers are per field here so that case can be read off
+    a recorded artifact rather than reasoned about (#997).
     """
-    expected_rows = sum(
-        len(v) for v in (extraction_results or {}).values() if isinstance(v, list)
-    )
+    per_field_expected = {
+        f: len(v) for f, v in (extraction_results or {}).items() if isinstance(v, list)
+    }
+    expected_rows = sum(per_field_expected.values())
     unscored_rows = sum(len(idxs) for idxs in gaps.values())
     scored_rows = expected_rows - unscored_rows
     return {
@@ -1392,6 +1434,7 @@ def coverage_from_gaps(
             round(scored_rows / expected_rows, 4) if expected_rows else None
         ),
         "unscored_rows_by_field": {f: len(idxs) for f, idxs in gaps.items()},
+        "expected_rows_by_field": per_field_expected,
     }
 
 
@@ -1402,11 +1445,15 @@ def confidence_coverage(
     """Measure confidence coverage for one section: scored rows over extracted rows.
 
     The instrument for #997. The ``assessment_coverage_incomplete`` thresholds were
-    reasoned off the reconciliation code path — a run whose model scored every row
-    should land at 0% shortfall — and nothing in this repository recorded coverage
-    on real output, so the false-positive rate of the warning rung was not known.
-    This makes the figure something a caller can record unconditionally instead of
-    only learning it when the guard already fired.
+    originally reasoned off the reconciliation code path — a run whose model scored
+    every row should land at 0% shortfall — with nothing in this repository
+    recording coverage on real output, so the false-positive rate of the warning
+    rung was not known. This makes the figure something a caller can record
+    unconditionally instead of only learning it when the guard already fired, and
+    the committed benchmark grids now carry it: 97.3% of 6,672 coverage-bearing
+    document-runs sit at exactly 0 unscored rows, which is what turned the
+    thresholds from reasoned into observed. See "Coverage: measured" in this
+    package's README for the distribution and what it still cannot answer.
 
     It deliberately calls :func:`audit_explainability` rather than re-deriving the
     rule. A measurement that reimplements "is this row scored?" measures a
@@ -1449,13 +1496,15 @@ def audit_explainability(
     - **Coverage (#901 item 3):** the share of extracted list rows that actually
       carry a confidence. A materially short section emits
       ``assessment_coverage_incomplete`` — ``warning`` past
-      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` only past
-      ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` **and**
+      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` for a *partial* shortfall
+      only past ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` **and**
       ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` absolute unscored rows (a
-      fraction alone makes a one-row gap in a four-row list an error) — so partial
-      coverage is visible instead of the section reporting unqualified success. This
-      is a *symptom* report computed from the final data; it deliberately makes no
-      claim about the cause.
+      fraction alone makes a one-row gap in a four-row list an error), and ``error``
+      at any list length when ``scored_rows == 0``, where the section has no
+      confidence surface at all rather than a short one — so partial coverage is
+      visible instead of the section reporting unqualified success. This is a
+      *symptom* report computed from the final data; it deliberately makes no claim
+      about the cause.
 
       Pass ``ladder_issues`` (the return of :func:`build_assessment_issues` for the
       same section) to suppress this rung when the ladder already reported an
@@ -1577,14 +1626,22 @@ def audit_explainability(
         shortfall = unscored_list_rows / total_list_rows
         if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
             scored = coverage["scored_rows"]
-            # Error severity needs BOTH a large proportion and a large absolute
-            # number of unscored rows — see _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS.
+            # A PARTIAL shortfall needs BOTH a large proportion and a large absolute
+            # number of unscored rows to be an error — see
+            # _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS. ``scored == 0`` is not a
+            # partial shortfall: the section has no confidence surface at all, which
+            # is the limit case of the condition the error rung reports, so the
+            # absolute floor does not apply to it (#997 — measured; see the threshold
+            # comment block above for the 21 runs that establish it).
             severity = (
                 "error"
                 if (
-                    shortfall >= _COVERAGE_SHORTFALL_ERROR_FRACTION
-                    and unscored_list_rows
-                    >= _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+                    scored == 0
+                    or (
+                        shortfall >= _COVERAGE_SHORTFALL_ERROR_FRACTION
+                        and unscored_list_rows
+                        >= _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+                    )
                 )
                 else "warning"
             )

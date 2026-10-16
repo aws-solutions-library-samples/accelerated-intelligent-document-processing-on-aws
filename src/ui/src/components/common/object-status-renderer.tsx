@@ -12,6 +12,10 @@ const VIEWS: Record<string, { type: StatusIndicatorProps.Type; label?: string }>
   REJECTED: { type: 'stopped', label: 'Rejected' },
   REDACTED_SUPERSEDED: { type: 'info' },
   QUEUED: { type: 'pending' },
+  // Refused at the ingest malware gate (see ../common/malware-scan).
+  QUARANTINED: { type: 'error' },
+  MALWARE_SCAN_FAILED: { type: 'warning' },
+  MALWARE_SCANNING: { type: 'in-progress' },
 };
 
 const IN_FLIGHT = new Set([

@@ -109,14 +109,23 @@ def _respond(idx, monkeypatch, field, error_type, message):
 
 
 class TestTheBucketAllowListRefusalIsA403:
+    # `ResourceAccessDenied` is what the resolver raises for this refusal today —
+    # a PermissionError subclass that also labels the refusal as per-object
+    # (issue #1308) — and `PermissionError` is what it raised before and what every
+    # undeclared refusal still raises. Both must map to the same 403, because the
+    # UI keys on the marker and a resolver deployed either side of that change must
+    # not produce a 500.
+    @pytest.mark.parametrize("error_type", ["PermissionError", "ResourceAccessDenied"])
     @pytest.mark.parametrize("field", ["getFileContents", "getFilePresignedUrl"])
-    def test_a_permissionerror_becomes_403_unauthorized(self, idx, monkeypatch, field):
+    def test_a_permissionerror_becomes_403_unauthorized(
+        self, idx, monkeypatch, field, error_type
+    ):
         """Both fields are served by the one resolver, so both must map."""
         status, error = _respond(
             idx,
             monkeypatch,
             field,
-            "PermissionError",
+            error_type,
             "Unauthorized: requested bucket is not accessible from this deployment.",
         )
 

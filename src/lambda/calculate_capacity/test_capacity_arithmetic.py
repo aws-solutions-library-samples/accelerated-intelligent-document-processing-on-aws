@@ -789,7 +789,16 @@ def test_the_token_limit_is_the_most_constrained_model_not_the_best_provisioned(
 
 @pytest.mark.unit
 def test_the_request_limit_is_also_the_most_constrained_model(monkeypatch):
-    """The RPM half of the same `min` is reduced the same way, and is measured.
+    """The RPM half of the same `min` takes the binding model, and is measured.
+
+    ⚠️ "The same way" would be wrong, and the difference is the point of this
+    docstring rather than a detail: the TPM half is narrowed to the plan's step
+    models (see `test_only_the_models_the_plan_calls_constrain_its_throughput`),
+    while this one reduces over EVERY entry in the mapping —
+    `min(bedrock_quota_rpm.values())`. So a genuinely low RPM quota for a model the
+    pipeline never calls still binds the request limit, which is the defect that was
+    fixed for TPM and not for RPM. What both halves do share is taking the minimum
+    rather than a maximum, which is what the rest of this docstring is about.
 
     Stated because the two halves disagreed for a long time — the token limit was
     taken from an account-wide ceiling that collapsed the per-model quotas to
@@ -809,8 +818,9 @@ def test_the_request_limit_is_also_the_most_constrained_model(monkeypatch):
 def test_only_the_models_the_plan_calls_constrain_its_throughput(monkeypatch, capsys):
     """The reduction is over the plan's step models, not the whole account mapping.
 
-    `BEDROCK_MODEL_QUOTA_CODES` lists every model the stack supports — fourteen on
-    a default deployment — so reducing over all of them answers a question nobody
+    `BEDROCK_MODEL_QUOTA_CODES` lists the models the stack has quota codes for, a
+    figure deliberately not quoted here since it moves whenever a model is added —
+    so reducing over all of them answers a question nobody
     asked: it reports the limit of whichever model the account is least
     provisioned for, whether or not the pipeline ever calls it. That is the mirror
     image of the account-wide maximum this replaced, understating instead of

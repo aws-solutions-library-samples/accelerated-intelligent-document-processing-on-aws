@@ -3614,7 +3614,13 @@ class TestReconcileMode:
             captured_bounds.append((start_raw, end_raw))
             return {"hours_attempted": 24, "hours_succeeded": 24}
 
-        with patch.object(rollup, "_run_backfill", side_effect=_fake_backfill):
+        with (
+            patch.object(rollup, "_run_backfill", side_effect=_fake_backfill),
+            # The daily self-heal arm, stubbed because this test is about the
+            # hourly bounds. Unstubbed it reaches a real Athena poll — see
+            # ``test_reconcile_delegates_the_hourly_range_unwrapped`` below.
+            patch.object(rollup, "_run_daily", return_value={"mode": "daily"}),
+        ):
             # Trigger at 12:35 UTC → end should truncate to 12:00,
             # start should be 24 h earlier at 12:00 of the prior day.
             anchor = datetime(2026, 9, 21, 12, 35, 0, tzinfo=timezone.utc)
@@ -3623,25 +3629,94 @@ class TestReconcileMode:
             ("2026-09-20T12:00:00+00:00", "2026-09-21T12:00:00+00:00")
         ]
 
-    def test_reconcile_is_a_thin_wrapper_over_backfill(self, rollup):
-        """The reconciler is deliberately unopinionated — it just delegates
-        to `_run_backfill`. That's the whole design: same idempotency,
-        same failure handling, same result shape. Changes to backfill
-        semantics automatically apply to the reconciler."""
-        with patch.object(
-            rollup,
-            "_run_backfill",
-            return_value={
-                "mode": "backfill",
-                "hours_attempted": 24,
-                "hours_succeeded": 24,
-            },
-        ) as bf:
+    def test_reconcile_delegates_the_hourly_range_unwrapped(self, rollup):
+        """The hourly half of the reconciler is a straight delegation to
+        ``_run_backfill``: same idempotency, same failure handling, same
+        result shape, returned without wrapping. Changes to backfill
+        semantics therefore apply to the reconciler automatically.
+
+        The reconciler as a whole is **not** just that delegation — it
+        also attempts a daily self-heal for the previous full UTC day
+        (``_run_daily``), whose result it files under ``"daily"``. That
+        second arm is this test's other half, and the two tests below
+        cover its failure isolation and its anchor.
+
+        Both arms are stubbed here, and the daily one has to be: left
+        real, ``_run_daily`` → ``_require_hourly_matches_raw_metering``
+        → ``_run_athena`` → ``_wait_for_athena`` polls a mocked Athena
+        client that never reports a terminal state, so the call sat in
+        ``time.sleep`` for the poll's full 300 s default and then raised
+        ``TimeoutError`` — which ``_run_reconcile`` catches, so the test
+        passed and reported nothing while costing five minutes of wall
+        clock. Two tests in this class were in that state (#1380). The
+        sleep budget in ``tests/conftest.py`` is what now fails a unit
+        test that reaches a real poll ladder instead of waiting it out.
+        """
+        with (
+            patch.object(
+                rollup,
+                "_run_backfill",
+                return_value={
+                    "mode": "backfill",
+                    "hours_attempted": 24,
+                    "hours_succeeded": 24,
+                },
+            ) as bf,
+            patch.object(
+                rollup,
+                "_run_daily",
+                return_value={"mode": "daily", "target_date": "2026-09-20"},
+            ) as daily,
+        ):
             anchor = datetime(2026, 9, 21, 12, 35, 0, tzinfo=timezone.utc)
             result = rollup._run_reconcile(anchor)
         bf.assert_called_once()
         # Reconciler returns whatever backfill returned — no wrapping.
+        assert result["mode"] == "backfill"
         assert result["hours_attempted"] == 24
+        assert result["hours_succeeded"] == 24
+        # ... plus the daily self-heal's own result, under its own key, and
+        # anchored on the reconcile trigger rather than on wall-clock now.
+        daily.assert_called_once_with(anchor)
+        assert result["daily"] == {"mode": "daily", "target_date": "2026-09-20"}
+        assert "daily_error" not in result
+
+    def test_reconcile_isolates_a_failing_daily_self_heal(self, rollup):
+        """A daily-only failure must not propagate into the hourly result.
+
+        The daily arm's own docstring is explicit that it is isolated:
+        the completeness guard raises when the hourly cron itself failed
+        for that day, and the hourly reconcile above is unaffected by
+        that. So the failure is recorded as ``daily_error`` and the
+        backfill result is returned intact — the reconciler does not
+        raise, because raising would send the whole :35 fire to the DLQ
+        over an arm that the next fire retries anyway.
+        """
+        with (
+            patch.object(
+                rollup,
+                "_run_backfill",
+                return_value={
+                    "mode": "backfill",
+                    "hours_attempted": 24,
+                    "hours_succeeded": 23,
+                },
+            ),
+            patch.object(
+                rollup,
+                "_run_daily",
+                side_effect=RuntimeError("metering_hourly is missing hours ['07']"),
+            ),
+        ):
+            anchor = datetime(2026, 9, 21, 12, 35, 0, tzinfo=timezone.utc)
+            result = rollup._run_reconcile(anchor)
+        # Hourly result survives intact.
+        assert result["hours_attempted"] == 24
+        assert result["hours_succeeded"] == 23
+        # The daily failure is reported, not swallowed silently...
+        assert "missing hours" in result["daily_error"]
+        # ... and no partial daily result is filed alongside it.
+        assert "daily" not in result
 
 
 @pytest.mark.unit

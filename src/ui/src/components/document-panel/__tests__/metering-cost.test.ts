@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { calculateTotalCosts, meteringCount, priceMetering } from '../metering-cost';
-import type { PricingLookup } from '../pricing';
+import type { NonChargeableUnits, PricingLookup } from '../pricing';
 
 const SONNET = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
 const NOVA = 'us.amazon.nova-2-lite-v1:0';
@@ -41,6 +41,15 @@ const STORED_WITH_CACHE_DETAILS: Record<string, Record<string, unknown>> = {
     outputTokens: 600,
     requests: 1,
   },
+};
+
+// What the `getPricing` resolver reports for these two Bedrock keys, transcribed
+// by hand from the declarations in `idp_common.metering_units`. Neither
+// `totalTokens` nor `requests` is a billing dimension of Bedrock model
+// inference; the Textract entry declares nothing, which is why it is absent.
+const DECLARED: NonChargeableUnits = {
+  [`bedrock/${SONNET}`]: ['requests', 'totalTokens'],
+  [`bedrock/${NOVA}`]: ['requests', 'totalTokens'],
 };
 
 const EXPECTED_ROW_COSTS: Array<[string, string, number]> = [
@@ -90,13 +99,13 @@ describe('meteringCount', () => {
 
 describe('priceMetering', () => {
   it('gives a structured member such as cacheDetails no row', () => {
-    const { rows } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING);
+    const { rows } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED);
     expect(rows.map((row) => row.unit)).not.toContain('cacheDetails');
     expect(rows.map((row) => [row.context, row.unit])).toEqual(EXPECTED_ROW_COSTS.map(([context, unit]) => [context, unit]));
   });
 
   it('keeps every figure finite when a stored member is not a count', () => {
-    const { rows, contextTotals, totalCost } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING);
+    const { rows, contextTotals, totalCost } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED);
     for (const row of rows) {
       expect(Number.isFinite(row.value)).toBe(true);
       expect(Number.isFinite(row.cost)).toBe(true);
@@ -107,7 +116,7 @@ describe('priceMetering', () => {
   });
 
   it('prices each numeric member at its own rate', () => {
-    const { rows } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING);
+    const { rows } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED);
     expect(rows).toHaveLength(EXPECTED_ROW_COSTS.length);
     rows.forEach((row, index) => {
       expect(row.cost).toBeCloseTo(EXPECTED_ROW_COSTS[index][2], 12);
@@ -115,16 +124,55 @@ describe('priceMetering', () => {
   });
 
   it('sums every numeric row of a context into its subtotal, including the rows before a member that is not a count', () => {
-    const { contextTotals } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING);
+    const { contextTotals } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED);
     expect(contextTotals.OCR).toBeCloseTo(0.006, 12);
     expect(contextTotals.Extraction).toBeCloseTo(0.2235, 12);
     expect(contextTotals.Extraction).not.toBeCloseTo(0.0045, 6);
   });
 
   it('totals the subtotals', () => {
-    const { contextTotals, totalCost } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING);
+    const { contextTotals, totalCost } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED);
     expect(totalCost).toBeCloseTo(0.2295, 12);
     expect(totalCost).toBeCloseTo(contextTotals.OCR + contextTotals.Extraction, 12);
+  });
+
+  it('reads a declared free unit as $0.00 and an undeclared omitted unit as unpriced', () => {
+    // THE #1406 ASSERTION. The row for `totalTokens` is $0.00 — the backend
+    // declares it non-chargeable on Bedrock — and the row for `cacheReadInputTokens`
+    // on an entry that prices neither cache unit is unpriced, which is the same
+    // answer the reporting table records (`unit_cost IS NULL`). The old file
+    // answered 0 for both and understated.
+    const partial: PricingLookup = {
+      [`bedrock/${SONNET}`]: { inputTokens: 3e-6, outputTokens: 1.5e-5 },
+    };
+    const metered: Record<string, Record<string, unknown>> = {
+      [`Extraction/bedrock/${SONNET}`]: {
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+        cacheReadInputTokens: 500,
+      },
+    };
+    const { rows, contextTotals, totalCost } = priceMetering(metered, partial, DECLARED);
+    const named = Object.fromEntries(rows.map((row) => [row.unit, row]));
+    expect(named.totalTokens.unitPrice).toBe(0);
+    expect(named.totalTokens.cost).toBe(0);
+    expect(named.cacheReadInputTokens.unitPrice).toBeNull();
+    expect(named.cacheReadInputTokens.cost).toBe(0);
+    // The unpriced row is left out of the total; the declared row contributes 0.
+    expect(totalCost).toBeCloseTo(10 * 3e-6 + 2 * 1.5e-5, 12);
+    expect(contextTotals.Extraction).toBeCloseTo(totalCost, 12);
+  });
+
+  it('reads every omitted unit as unpriced when the declarations are absent', () => {
+    // An older deployment's resolver sends no `nonChargeableUnits`, so the
+    // parser hands us `{}`. The panel must then show the gap on every row the
+    // declarations would have made free, rather than carrying a TypeScript copy
+    // of the register and disagreeing silently with it.
+    const { rows } = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, {});
+    const totals = Object.fromEntries(rows.map((row) => [`${row.serviceApi}/${row.unit}`, row]));
+    expect(totals[`bedrock/${SONNET}/totalTokens`].unitPrice).toBeNull();
+    expect(totals[`bedrock/${SONNET}/requests`].unitPrice).toBeNull();
   });
 
   it('keeps a member no pricing entry covers as an unpriced row that adds nothing', () => {
@@ -172,11 +220,34 @@ describe('priceMetering', () => {
   });
 });
 
+describe('the total does not depend on the declarations', () => {
+  it('is the same with declarations, without them, and with implausible ones', () => {
+    // Scope-correct note on an easily-mistaken parameter. Declarations only
+    // decide whether an omitted unit is $0.00 or unpriced, and both contribute
+    // 0 to a total — a $0.00 row by its rate, an unpriced row by being left
+    // out — so a change in the declarations cannot change what the document
+    // costs. Passing them to `calculateTotalCosts` would be an argument whose
+    // presence no result could reveal, which is why that function takes no such
+    // argument; this is the test that pins the equivalence rather than the
+    // signature.
+    const withDeclared = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED).totalCost;
+    const withNone = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, {}).totalCost;
+    const withEveryUnit = priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, {
+      [`bedrock/${SONNET}`]: ['requests', 'totalTokens', 'cacheReadInputTokens', 'cacheWriteInputTokens'],
+      [`bedrock/${NOVA}`]: ['requests', 'totalTokens', 'cacheReadInputTokens', 'cacheWriteInputTokens'],
+      'textract/detect_document_text': ['inputTokens', 'outputTokens'],
+    }).totalCost;
+    expect(withDeclared).toBeCloseTo(withNone, 12);
+    expect(withDeclared).toBeCloseTo(withEveryUnit, 12);
+    expect(calculateTotalCosts(STORED_WITH_CACHE_DETAILS, 4, PRICING).totalCost).toBeCloseTo(withDeclared, 12);
+  });
+});
+
 describe('calculateTotalCosts', () => {
   it('reports the table total and divides it by the page count', () => {
     const { totalCost, costPerPage } = calculateTotalCosts(STORED_WITH_CACHE_DETAILS, 4, PRICING);
     expect(totalCost).toBeCloseTo(0.2295, 12);
-    expect(totalCost).toBe(priceMetering(STORED_WITH_CACHE_DETAILS, PRICING).totalCost);
+    expect(totalCost).toBe(priceMetering(STORED_WITH_CACHE_DETAILS, PRICING, DECLARED).totalCost);
     expect(costPerPage).toBeCloseTo(0.057375, 12);
   });
 

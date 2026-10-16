@@ -27,6 +27,32 @@ import pytest
 # order. See the note in tests/conftest.py.
 
 
+def _aws_environment_to_keep() -> dict:
+    """Every ``AWS_*`` variable currently set, to be carried across a ``clear=True``.
+
+    ⚠️ ``patch.dict(os.environ, ..., clear=True)`` erases the controls that make this
+    suite hermetic, and the two it erases are the two that no amount of unsetting can
+    replace: ``AWS_SHARED_CREDENTIALS_FILE`` and ``AWS_CONFIG_FILE`` (pointed at
+    ``/dev/null`` by ``$(HERMETIC_AWS)`` and by ``scripts/run_all_tests.py``) and
+    ``AWS_EC2_METADATA_DISABLED``. With those gone botocore falls back to the default
+    ``~/.aws/credentials`` path and to the instance metadata service, so the
+    machine's real ``[default]`` profile becomes resolvable again *for the duration of
+    the test* — stripping the environment at the runner cannot help, because this
+    clears the stripping too.
+
+    That is not hypothetical here. Importing ``idp_common.agents.factory`` runs a
+    module-scope probe that calls Secrets Manager ``GetSecretValue`` to decide whether
+    to register the External MCP agents, and it is imported inside this fixture's
+    scope. Measured with botocore's real send replaced by a recorder: one request,
+    signed with credentials of a real shape, from this module — the only such request
+    left in this package once the runner strips the environment. Issue #1398.
+
+    Keeping the ``AWS_*`` variables preserves what the clear is for (nothing else in
+    the environment reaches the code under test) without reopening the two sources.
+    """
+    return {k: v for k, v in os.environ.items() if k.startswith("AWS_")}
+
+
 @pytest.fixture
 def setup_env():
     """Set up environment variables for testing."""
@@ -37,7 +63,7 @@ def setup_env():
         "MAX_CONVERSATION_TURNS": "20",
         "DOCUMENT_ANALYSIS_AGENT_MODEL_ID": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     }
-    with patch.dict(os.environ, env_vars, clear=True):
+    with patch.dict(os.environ, {**_aws_environment_to_keep(), **env_vars}, clear=True):
         yield
 
 
@@ -245,7 +271,9 @@ class TestConversationalOrchestrator:
             "DOCUMENT_ANALYSIS_AGENT_MODEL_ID": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         }
 
-        with patch.dict(os.environ, env_vars, clear=True):
+        with patch.dict(
+            os.environ, {**_aws_environment_to_keep(), **env_vars}, clear=True
+        ):
             mock_orchestrator = MagicMock()
             mock_orchestrator.hooks = MagicMock()
             mock_create_orchestrator.return_value = mock_orchestrator
@@ -368,3 +396,44 @@ class TestConversationalOrchestrator:
 
         # Verify it's not wrapped by checking it's the exact same object
         assert result is mock_orchestrator
+
+
+@pytest.mark.unit
+def test_the_aws_environment_survives_this_modules_environment_clear():
+    """``setup_env`` must not erase the controls that make this suite hermetic.
+
+    The property is stated as an equality against the environment outside the
+    fixture, rather than against literal values, because what is in force depends on
+    how pytest was invoked: ``$(HERMETIC_AWS)`` and ``scripts/run_all_tests.py`` point
+    ``AWS_CONFIG_FILE`` and ``AWS_SHARED_CREDENTIALS_FILE`` at ``/dev/null`` and
+    disable IMDS, a bare ``pytest`` sets neither, and ``tests/conftest.py`` installs
+    placeholder credentials in both cases. Asserting the *names* survive is true of
+    every invocation and is what was false: ``clear=True`` removed all of them, which
+    put the machine's real ``~/.aws/credentials`` back in reach for the duration —
+    and the module-scope Secrets Manager probe in ``idp_common.agents.factory``, run
+    on the import inside this fixture, then signed a request with it. #1398.
+
+    ``BEDROCK_REGION`` is not an ``AWS_*`` name, so the two sets below are disjoint
+    from what the fixture sets and no exception is needed for it.
+    """
+    outside = {k for k in os.environ if k.startswith("AWS_")}
+    assert outside, (
+        "no AWS_* variable is set outside the fixture, so this test cannot tell a "
+        "surviving control from a removed one; tests/conftest.py installs "
+        "placeholder credentials at import time and should have made this non-empty"
+    )
+
+    with patch.dict(
+        os.environ,
+        {**_aws_environment_to_keep(), **{"BEDROCK_REGION": "us-west-2"}},
+        clear=True,
+    ):
+        inside = {k for k in os.environ if k.startswith("AWS_")}
+
+    assert inside == outside, (
+        f"this module's environment clear removed {sorted(outside - inside)}. Those "
+        f"are what keep botocore from reading the machine's shared credentials file "
+        f"and the instance metadata service, and no amount of unsetting replaces "
+        f"them — so a test running under this fixture can resolve real credentials "
+        f"even when the runner stripped them. #1398."
+    )

@@ -69,6 +69,20 @@ CB_STATE_ERROR_TRANSIENT = "ERROR_TRANSIENT"
 CB_STATE_ERROR_TERMINAL = "ERROR_TERMINAL"
 DOCUMENT_QUEUE_URL = os.environ.get("DOCUMENT_QUEUE_URL", "")
 RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("RECOVERY_TIMEOUT_SECONDS", "300"))
+# How many workflows HALF_OPEN admits per window, and how long that window is.
+# A half-open breaker is supposed to admit a BOUNDED number of probes and keep
+# everything else out; these two numbers are that bound. See
+# ``_claim_half_open_probe`` for why the budget is per rolling window rather
+# than per half-open episode, and ``check_circuit_breaker`` for why these values.
+HALF_OPEN_PROBE_BUDGET = 5
+HALF_OPEN_PROBE_WINDOW_SECONDS = 60
+#: Attributes ``_claim_half_open_probe`` maintains on the breaker item. Only
+#: this function reads or writes them; the manager's
+#: ``update_circuit_breaker_state`` writes named attributes only, so it never
+#: clobbers them, and the API resolver projects an explicit field list, so they
+#: are inert to the UI.
+HALF_OPEN_PROBE_COUNT_ATTR = "half_open_probes"
+HALF_OPEN_PROBE_WINDOW_ATTR = "half_open_probe_window"
 # How long a suspected counter leak must persist across two independent samples
 # before it is corrected. Must comfortably exceed the window between an
 # increment and its execution becoming visible to ListExecutions, since during
@@ -175,28 +189,67 @@ def update_counter(increment: bool = True) -> bool:
     the same shape the tracker's decrement uses, and deliberately conservative:
     the real conflict rate is unmeasured (this change is not deploy-validated).
 
+    Both directions are conditional, and on DIFFERENT conditions: the increment
+    refuses to cross ``MAX_CONCURRENT`` and the decrement refuses to cross zero.
+    Each supplies only the expression value its own condition references — see
+    the comment below, which is the defect that made that worth spelling out.
+
+    ⚠️ **The guard for THIS function is ``test_counter_decrement.py``, not the
+    whole-tree gate.** ``scripts/tests/test_dynamodb_unused_expression_values.py``
+    reports the defect class for every DynamoDB request in the repository, but it
+    deliberately does not read a value added by subscript — which is exactly how
+    the two branches below now add theirs, so this call site is outside its reach
+    by construction. The behavioural suite drives both directions against a real
+    expression engine instead. Do not read a green run of that gate as cover for
+    an edit here. Issue #1461 tracks teaching the gate this shape.
+
     Args:
         increment: Whether to increment (True) or decrement (False) the counter
 
     Returns:
-        bool: True if update successful, False if at limit
+        bool: True if the write landed. False if its condition refused it: at
+        ``MAX_CONCURRENT`` for an increment, at zero for a decrement. Callers
+        act on the increment's answer (it is the admission decision); a refused
+        decrement is logged, because the slot it would have released is not held
+        and there is nothing for the caller to do differently.
 
     Raises:
         ClientError: If DynamoDB operation fails
     """
     logger.info(f"Updating counter: increment={increment}, max={MAX_CONCURRENT}")
-    update_args = {
+    update_args: Dict[str, Any] = {
         "Key": {"counter_id": COUNTER_ID},
         "UpdateExpression": "ADD active_count :inc",
-        "ExpressionAttributeValues": {
-            ":inc": 1 if increment else -1,
-            ":max": MAX_CONCURRENT,
-        },
+        "ExpressionAttributeValues": {":inc": 1 if increment else -1},
         "ReturnValues": "UPDATED_NEW",
     }
 
+    # ``:max`` is supplied ONLY on the path that references it. DynamoDB rejects
+    # an UpdateItem carrying an expression value no expression mentions, with
+    # ``ValidationException: Value provided in ExpressionAttributeValues unused
+    # in expressions``. Supplying it unconditionally therefore made every
+    # DECREMENT fail — the increment path was fine, because its
+    # ``ConditionExpression`` referenced it — so both compensating decrements in
+    # ``process_message`` leaked a slot each time they ran, and a repeatedly
+    # redelivered message could walk the counter up to ``MAX_CONCURRENT`` and
+    # block admission entirely until ``reconcile_counter`` or an operator
+    # corrected it (issue #1358).
     if increment:
         update_args["ConditionExpression"] = "active_count < :max"
+        update_args["ExpressionAttributeValues"][":max"] = MAX_CONCURRENT
+    else:
+        # The same floor the tracker's decrement carries (issue #915), and it
+        # matters here for the first time: until the ``:max`` defect above was
+        # fixed this write never landed at all. ``ADD active_count :inc`` with
+        # ``:inc = -1`` is unconditional arithmetic, so a hand-back racing a
+        # ``reconcile_counter`` reset — or any decrement the counter has already
+        # accounted for — drives it NEGATIVE. Admission is ``active_count <
+        # :max``, so every unit below zero permanently raises the effective
+        # ceiling above MaxConcurrentWorkflows, and the only thing that notices
+        # is ``_repair_if_counter_was_negative`` on some later increment.
+        # Refusing the write is the safe direction: the slot stays released.
+        update_args["ConditionExpression"] = "active_count > :zero"
+        update_args["ExpressionAttributeValues"][":zero"] = 0
 
     last_conflict: Optional[ClientError] = None
     for attempt in range(1, COUNTER_CONFLICT_MAX_ATTEMPTS + 1):
@@ -213,7 +266,29 @@ def update_counter(increment: bool = True) -> bool:
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code")
             if code == "ConditionalCheckFailedException":
-                logger.warning("Concurrency limit reached")
+                # Direction-aware: the two paths now carry DIFFERENT conditions,
+                # and the same message for both would report a counter at its
+                # floor as a counter at its ceiling — the opposite reading, on
+                # the one log line an operator goes looking for when intake
+                # stops.
+                if increment:
+                    logger.warning("Concurrency limit reached")
+                else:
+                    # "not above zero" rather than "already 0": the condition
+                    # also fails on a counter that is NEGATIVE (from a release
+                    # before this floor existed, or from the tracker's path) and
+                    # on an absent item or attribute. All three mean the same
+                    # thing to the reader — there is no slot here to release.
+                    logger.warning(
+                        "Counter decrement refused: active_count is not above "
+                        "zero, so the slot this hand-back would release is not "
+                        "held. Leaving it rather than driving the counter "
+                        "negative, which would admit work above "
+                        "MaxConcurrentWorkflows. Investigate duplicate delivery "
+                        "of this message, or a counter edited out from under the "
+                        "stack."
+                    )
+                    _emit_concurrency_event_metric("ConcurrencyCounterUnderflow")
                 return False
             if code == "TransactionConflictException":
                 last_conflict = e
@@ -740,6 +815,43 @@ def _emit_counter_active_metric(active: int) -> None:
         logger.warning(f"Could not emit concurrency counter metric: {e}")
 
 
+def _emit_concurrency_event_metric(metric_name: str) -> None:
+    """Publish a single count for an exceptional concurrency-counter event.
+
+    Deliberately the same shape as the workflow tracker's ``_emit_event_metric``:
+    namespace is the stack name and there are no dimensions, so an alarm declared
+    without dimensions fires whichever function published. Two conditions use it.
+
+    ``ConcurrencyCounterUnderflow`` — a hand-back refused because the counter held
+    no slot. The tracker publishes the same name for the same condition on its own
+    decrement, so one alarm covers both and the operator question is identical
+    either way: a slot was released that nobody held.
+
+    ``ConcurrencyCounterUpdateFailed`` — the counter write RAISED, and the caller
+    logged it and carried on. #1358 was not unlogged — both call sites log at
+    ERROR with a traceback — it was UNALARMED: a ``ValidationException`` on every
+    decrement produced a log line and no datapoint, so nothing anyone watches
+    moved while the counter climbed. The refusal case above is now visible; this
+    makes the raising case visible too, which is the shape of the next variant
+    rather than of this one.
+
+    Never allowed to affect the write it reports on.
+    """
+    try:
+        boto3.client("cloudwatch").put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit {metric_name} metric: {e}")
+
+
 def _emit_circuit_breaker_check_failure(classification: str) -> None:
     """Record that the breaker's state could not be read, and how it was judged.
 
@@ -765,6 +877,149 @@ def _emit_circuit_breaker_check_failure(classification: str) -> None:
         )
     except Exception as e:  # never let telemetry break message processing
         logger.warning(f"Could not emit circuit breaker check-failure metric: {e}")
+
+
+def _probe_window(now: Optional[float] = None) -> int:
+    """The rolling window a probe claimed at ``now`` belongs to.
+
+    An integer bucket rather than a timestamp, so the comparison in the
+    conditional writes below is a cheap ``<`` on a number that only ever
+    increases.
+    """
+    return int((time.time() if now is None else now) // HALF_OPEN_PROBE_WINDOW_SECONDS)
+
+
+def _take_probe_slot(window: int) -> bool:
+    """Claim a slot in a window another invocation already opened.
+
+    The whole decision is the ``ConditionExpression``: DynamoDB evaluates it
+    and applies the increment as one serialized operation on the item, so N
+    concurrent invocations cannot all read "0 slots used" and all proceed. The
+    ``#state`` term is part of that — a probe cannot be claimed against a
+    breaker that re-OPENED or CLOSED between the read above and this write.
+
+    Returns:
+        True if this invocation now owns a probe slot. False means the
+        condition did not hold, which this function deliberately does not try
+        to attribute: slots exhausted, a different window, or the state moved
+        are all "no slot for you".
+    """
+    try:
+        concurrency_table.update_item(
+            Key={"counter_id": CIRCUIT_BREAKER_ID},
+            UpdateExpression=(
+                f"SET {HALF_OPEN_PROBE_COUNT_ATTR} = "
+                f"{HALF_OPEN_PROBE_COUNT_ATTR} + :one"
+            ),
+            ConditionExpression=(
+                "#state = :half_open"
+                f" AND {HALF_OPEN_PROBE_WINDOW_ATTR} = :window"
+                f" AND {HALF_OPEN_PROBE_COUNT_ATTR} < :budget"
+            ),
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={
+                ":one": 1,
+                ":half_open": CB_STATE_HALF_OPEN,
+                ":window": window,
+                ":budget": HALF_OPEN_PROBE_BUDGET,
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        # Anything else (throttle, access denied, table gone) is for
+        # check_circuit_breaker's classifier to judge, exactly as a failed
+        # state read is.
+        raise
+
+
+def _open_probe_window(window: int) -> bool:
+    """Claim the FIRST slot of a window nobody has opened yet.
+
+    The condition is ``<`` and not ``<>`` on purpose. The window number is
+    monotonic, so a laggard invocation — a cold start whose clock is behind, a
+    message that sat in the queue — must never be able to pull the window
+    *backwards*, which would hand out a second full budget inside one window.
+    An older recorded window (left over from a previous half-open episode, or
+    from before the breaker last closed) is replaced, which is what makes the
+    budget replenish without anything having to clean up after itself.
+
+    Returns:
+        True if this invocation opened the window and owns its first slot.
+    """
+    try:
+        concurrency_table.update_item(
+            Key={"counter_id": CIRCUIT_BREAKER_ID},
+            UpdateExpression=(
+                f"SET {HALF_OPEN_PROBE_COUNT_ATTR} = :one,"
+                f" {HALF_OPEN_PROBE_WINDOW_ATTR} = :window"
+            ),
+            ConditionExpression=(
+                "#state = :half_open"
+                f" AND (attribute_not_exists({HALF_OPEN_PROBE_WINDOW_ATTR})"
+                f" OR {HALF_OPEN_PROBE_WINDOW_ATTR} < :window)"
+            ),
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={
+                ":one": 1,
+                ":half_open": CB_STATE_HALF_OPEN,
+                ":window": window,
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def _claim_half_open_probe() -> bool:
+    """Try to claim one of HALF_OPEN's bounded probe slots.
+
+    **The budget is per rolling window, not per half-open episode**, and that
+    is the load-bearing design choice rather than an approximation of one. The
+    trickle a window budget allows is what detects recovery: the first probe
+    that completes successfully closes the breaker
+    (``workflow_tracker.notify_circuit_breaker``), and nothing in this state
+    reports a probe *failure*, so the only way to find out that the service is
+    back is to keep trying. A per-episode budget stops the trying — once spent
+    with no success, nothing further is admitted for the rest of the episode —
+    and a window budget keeps it going at a fixed, bounded rate for as long as
+    the breaker is half-open.
+
+    How bad "the rest of the episode" is depends on what ends an episode, and
+    that is why this reads as a trade rather than a deadlock: the manager's
+    ``handle_half_open_timeout`` returns an episode that no probe closed to
+    OPEN (issue #1437), so an episode is bounded in time. Without that bound a
+    spent per-episode budget would have refused every document indefinitely,
+    with the service free to recover and nothing left to notice. A per-episode
+    budget is therefore a viable alternative now, and switching to one is a
+    separate decision: this one needs no coordination with the episode length,
+    and the two numbers below replenish without anything cleaning up after an
+    episode.
+
+    Three writes at most, and only in HALF_OPEN:
+
+    1. Take a slot in a window that is already open.
+    2. If there is no such window, open this one and take its first slot.
+    3. If *that* lost the race, retry (1) — the winner of (2) only consumed
+       one slot, so a budget above 1 still has room and refusing here would
+       throttle below the configured budget.
+
+    Returns:
+        True if a slot was claimed and the workflow may start.
+
+    Raises:
+        ClientError / BotoCoreError: anything that is not a conditional-check
+            failure, for ``check_circuit_breaker`` to classify.
+    """
+    window = _probe_window()
+    return (
+        _take_probe_slot(window)
+        or _open_probe_window(window)
+        or _take_probe_slot(window)
+    )
 
 
 def check_circuit_breaker() -> tuple[bool, str]:
@@ -834,6 +1089,38 @@ def check_circuit_breaker() -> tuple[bool, str]:
     specific to *this read* — a permissions boundary or scoped-down policy that
     allows ``UpdateItem`` and not ``GetItem``, say.
 
+    **HALF_OPEN admits a bounded number of probes** (issue #934, item 4b), not
+    everything. It used to return ``True`` unconditionally with a log line
+    calling the traffic "probe traffic", which made the state a no-op gate: the
+    breaker spent a whole outage admitting 100% of documents into the failing
+    dependency, which is the opposite of what it exists for. HALF_OPEN is also
+    bounded in *time* by the manager's ``handle_half_open_timeout``, which
+    returns an episode that no probe closed to OPEN (issue #1437), so it is a
+    window the breaker passes through rather than a state it rests in — which
+    is what makes a bounded trickle the right admission rate for it.
+
+    ``HALF_OPEN_PROBE_BUDGET`` workflows per ``HALF_OPEN_PROBE_WINDOW_SECONDS``
+    are admitted and the rest are refused, claimed atomically — see
+    ``_claim_half_open_probe``, including why the budget is per window rather
+    than per half-open episode.
+
+    **Why 5 per 60 s.** One probe per window would be enough to *detect*
+    recovery, because a single successful workflow closes the breaker, but it
+    makes that detection hostage to one document: a probe that fails for its
+    own reasons (a malformed PDF, an extraction error) would cost a whole
+    window. Five gives recovery several independent chances a minute while
+    still bounding admitted work to roughly 5 documents a minute against a
+    default ``MaxConcurrentWorkflows`` of 100 continuously in flight. The cost
+    of the bound is paid only while the breaker is half-open, and only until
+    one probe completes — on the order of one document's latency — after which
+    the breaker closes and the cap is gone.
+
+    A refused probe is NOT given extended visibility the way an ``OPEN``
+    refusal is. The next window is at most ``HALF_OPEN_PROBE_WINDOW_SECONDS``
+    away, which the queue's 60 s visibility timeout already matches, and
+    pushing refusals to ``RECOVERY_TIMEOUT_SECONDS`` would throttle probes far
+    below the budget and slow recovery detection to that interval.
+
     Nothing here runs on a default deployment: ``CircuitBreakerEnabled``
     defaults to ``"false"``, which makes ``CIRCUIT_BREAKER_ENABLED`` false and
     returns before the table is touched at all.
@@ -864,8 +1151,20 @@ def check_circuit_breaker() -> tuple[bool, str]:
             logger.warning("Circuit breaker is OPEN - blocking new workflows")
             return False, state
         elif state == CB_STATE_HALF_OPEN:
-            logger.info("Circuit breaker is HALF_OPEN - allowing probe traffic")
-            return True, state
+            if _claim_half_open_probe():
+                logger.info(
+                    f"Circuit breaker is HALF_OPEN - admitting this workflow as one "
+                    f"of at most {HALF_OPEN_PROBE_BUDGET} probes per "
+                    f"{HALF_OPEN_PROBE_WINDOW_SECONDS}s"
+                )
+                return True, state
+            logger.warning(
+                f"Circuit breaker is HALF_OPEN and its probe budget "
+                f"({HALF_OPEN_PROBE_BUDGET} per {HALF_OPEN_PROBE_WINDOW_SECONDS}s) "
+                f"is spent - blocking this workflow; the message returns to "
+                f"DocumentQueue and retries"
+            )
+            return False, state
 
         return True, state
 
@@ -1254,6 +1553,12 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     logger.error(
                         f"Failed to decrement counter: {counter_error}", exc_info=True
                     )
+                    # Swallowing this is right — the execution exists and the
+                    # message must be acked. What #1358 lacked was not the log
+                    # line above (ERROR, with a traceback) but a DATAPOINT: no
+                    # metric moved while the counter climbed, so nothing anyone
+                    # watches showed the leak.
+                    _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
                 ack_message(receipt_handle)
                 return True, message_id
             workflow_started = True
@@ -1306,6 +1611,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                 logger.error(
                     f"Failed to decrement counter: {counter_error}", exc_info=True
                 )
+                _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
             return False, message_id
 
     except json.JSONDecodeError as e:

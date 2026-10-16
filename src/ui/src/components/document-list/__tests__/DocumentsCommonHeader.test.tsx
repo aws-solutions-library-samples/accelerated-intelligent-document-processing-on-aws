@@ -178,3 +178,66 @@ describe('DocumentViewSelector', () => {
     expect(setDocumentView).not.toHaveBeenCalled();
   });
 });
+
+describe('DocumentsCommonHeader reprocess guard', () => {
+  /**
+   * Reprocess re-queues a document directly, bypassing the malware-scanning
+   * ingest gate — the refused file is still sitting in the input bucket, so
+   * reprocessing a quarantined document would push it into OCR and Bedrock.
+   * The resolver refuses it server-side; this is so a reviewer finds out before
+   * clicking rather than from an error afterwards.
+   */
+  const reprocessButton = () => screen.getByRole('button', { name: 'Reprocess' });
+
+  it('is enabled for an ordinary selection', () => {
+    render(<DocumentsCommonHeader selectedItems={[row('a.pdf')]} onReprocess={vi.fn()} />);
+    expect(reprocessButton()).not.toBeDisabled();
+  });
+
+  it.each(['QUARANTINED', 'MALWARE_SCAN_FAILED'])('is disabled for a %s document', (status) => {
+    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: status })]} onReprocess={vi.fn()} />);
+    expect(reprocessButton()).toBeDisabled();
+  });
+
+  it('is disabled when ANY selected document was refused', () => {
+    // Reprocess acts on the whole selection, so one refused document in it is
+    // enough — allowing the click would reprocess the clean ones and fail on the
+    // refused one, which reads as a partial failure rather than a refusal.
+    render(
+      <DocumentsCommonHeader
+        selectedItems={[row('clean.pdf'), row('infected.pdf', { objectStatus: 'QUARANTINED' })]}
+        onReprocess={vi.fn()}
+      />,
+    );
+    expect(reprocessButton()).toBeDisabled();
+  });
+
+  it('is disabled while a document is still being scanned', () => {
+    // MALWARE_SCANNING is not a refusal, and is still blocked here. A held
+    // document has no verdict, and Reprocess does not wait for one: it builds a
+    // fresh QUEUED document and starts the workflow, so the file would reach OCR
+    // and Bedrock unscanned, during exactly the window the gate exists for. The
+    // arriving verdict would then find the row no longer MALWARE_SCANNING, fail
+    // its compare-and-set, and be read as an at-least-once duplicate — dropping
+    // a THREATS_FOUND at INFO.
+    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
+    expect(reprocessButton()).toBeDisabled();
+  });
+
+  it('says a scanning document is waiting, not refused', () => {
+    // The two blocked cases need different wording: this one clears by itself,
+    // whereas a refusal needs the file deleted or replaced. Telling someone to
+    // delete a file that becomes reprocessable in two minutes is how a tooltip
+    // stops being read.
+    render(<DocumentsCommonHeader selectedItems={[row('pending.pdf', { objectStatus: 'MALWARE_SCANNING' })]} onReprocess={vi.fn()} />);
+    const tooltip = reprocessButton().closest('span[title]');
+    expect(tooltip?.getAttribute('title')).toContain('still being scanned');
+    expect(tooltip?.getAttribute('title')).not.toContain('refused by malware scanning');
+  });
+
+  it('explains why, rather than just going grey', () => {
+    render(<DocumentsCommonHeader selectedItems={[row('infected.pdf', { objectStatus: 'QUARANTINED' })]} onReprocess={vi.fn()} />);
+    const tooltip = reprocessButton().closest('span[title]');
+    expect(tooltip?.getAttribute('title')).toContain('refused by malware scanning');
+  });
+});

@@ -19,7 +19,7 @@
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { lookupUnitPrice } from './pricing';
-import type { PricingLookup } from './pricing';
+import type { NonChargeableUnits, PricingLookup } from './pricing';
 
 const logger = new ConsoleLogger('metering-cost');
 
@@ -66,12 +66,23 @@ const parseServiceApiKey = (serviceApiKey: string): { context: string; serviceAp
 /**
  * Price every member of a metering map that holds a count.
  *
- * `unitPrice` follows `lookupUnitPrice`: `null` when no pricing entry covers the
- * member (rendered 'None' / 'N/A', and left out of every total), `0` when its
- * entry does not list the unit (metered but not chargeable). An entry that is not
- * a map of unit to count is skipped.
+ * `unitPrice` follows `lookupUnitPrice`: the entry's rate when it lists the unit;
+ * `0` when it omits one the backend declares non-chargeable, or one metered as 0;
+ * and `null` — rendered 'None' / 'N/A', and left out of every total — when no
+ * entry covers the member at all, or when one does but nothing prices or declares
+ * the unit. An entry that is not a map of unit to count is skipped.
+ *
+ * `nonChargeableUnits` carries those declarations from the `getPricing` response.
+ * Omitting it is not a way of saying "there are none to apply": every unit a
+ * matched entry omits then resolves to `null`, which is the answer that shows a
+ * pricing gap rather than hiding it, and the same answer the reporting table
+ * records for the row.
  */
-export const priceMetering = (meteringData: Record<string, unknown>, pricingData: PricingLookup): PricedMetering => {
+export const priceMetering = (
+  meteringData: Record<string, unknown>,
+  pricingData: PricingLookup,
+  nonChargeableUnits: NonChargeableUnits = {},
+): PricedMetering => {
   const rows: PricedMeteringRow[] = [];
   const contextTotals: Record<string, number> = {};
   let totalCost = 0;
@@ -84,7 +95,7 @@ export const priceMetering = (meteringData: Record<string, unknown>, pricingData
       const value = meteringCount(member);
       if (value === null) return;
 
-      const price = lookupUnitPrice(pricingData, serviceApi, unit);
+      const price = lookupUnitPrice(pricingData, serviceApi, unit, { count: value, nonChargeableUnits });
       const unitPrice = price !== null && Number.isFinite(price) ? price : null;
       let cost = 0;
       if (unitPrice !== null) {
@@ -103,7 +114,17 @@ export const priceMetering = (meteringData: Record<string, unknown>, pricingData
   return { rows, contextTotals, totalCost };
 };
 
-/** The document total and its cost per page, from the same rows as the table. */
+/**
+ * The document total and its cost per page, from the same rows as the table.
+ *
+ * It takes no declarations, and the reason is worth stating because the omission
+ * looks like the bug #1406 was: the total cannot depend on them. Every unit a
+ * matched entry omits contributes exactly 0 either way — a declared one because
+ * its rate is 0, an undeclared one because an unpriced row is left out of every
+ * total — so the declarations change what a row *says* and never what the
+ * document *costs*. Passing them here would be a parameter no result could
+ * distinguish. `test_the_total_does_not_depend_on_the_declarations` pins that.
+ */
 export const calculateTotalCosts = (
   meteringData: Record<string, unknown> | null,
   pageCount: number | undefined,

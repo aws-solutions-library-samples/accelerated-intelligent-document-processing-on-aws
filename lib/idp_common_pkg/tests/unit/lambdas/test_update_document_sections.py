@@ -428,6 +428,368 @@ class TestPerOperationRbac:
             resolver.handler(event, None)
 
 
+# ---------------------------------------------------------------------------
+# Per-object scope: admitting Annotator is not confining it
+# ---------------------------------------------------------------------------
+# `_OPERATION_GROUPS` admits Annotator, which decides which callers reach the
+# operation. An Annotator is additionally confined to the test sets named in their
+# `allowedTestSets`, which decides which DOCUMENTS they reach, and the two are
+# separate controls in separate files. This operation's group list was copied from
+# `completeSectionReview` and the per-object check was not, so the role was admitted
+# and not confined.
+#
+# These tests drive the real `idp_common.testset_scope` rule rather than a stub: the
+# rule is shared precisely so it cannot differ between call sites, and a test that
+# stubbed it would pass on a resolver calling something else. Only the two DynamoDB
+# tables underneath it are faked.
+class _FakeTable:
+    """A tracking or users table with exactly the two reads the scope path makes."""
+
+    def __init__(self, *, item=None, allowed_test_sets=None, raises=None):
+        self._item = item
+        self._allowed = allowed_test_sets
+        self._raises = raises
+        self.get_item_calls = 0
+
+    def get_item(self, **kwargs):
+        self.get_item_calls += 1
+        if self._raises is not None:
+            raise self._raises
+        return {"Item": self._item} if self._item is not None else {}
+
+    def query(self, **kwargs):
+        if self._raises is not None:
+            raise self._raises
+        if not self._allowed:
+            return {"Items": []}
+        return {"Items": [{"allowedTestSets": list(self._allowed)}]}
+
+
+def _annotator_event(object_key="packet.pdf", sections=None, groups=("Annotator",)):
+    event = _event(object_key=object_key, sections=sections, groups=groups)
+    # The users table is keyed by email, so an Annotator with no resolvable email has
+    # no scope and is refused — which would make every in-scope case below pass for
+    # the wrong reason.
+    event["identity"]["claims"]["email"] = "annotator@example.com"
+    return event
+
+
+def _call_scoped(module, document, event, *, tracking, users):
+    """Drive `handler` with both tables faked and both table names configured."""
+    service = MagicMock()
+    service.get_document.return_value = document
+    tables = {"tracking-table": tracking, "users-table": users}
+    resource = MagicMock()
+    resource.Table.side_effect = lambda name: tables[name]
+    env = {"TRACKING_TABLE": "tracking-table", "USERS_TABLE_NAME": "users-table"}
+    with patch.dict(os.environ, env):
+        with patch("boto3.resource", return_value=resource):
+            with patch.object(module, "create_document_service", return_value=service):
+                result = module.handler(event, None)
+    return result, service
+
+
+@pytest.mark.unit
+class TestAnnotatorObjectScope:
+    @pytest.fixture(autouse=True)
+    def _clear_scope_cache(self):
+        """`testset_scope` caches a resolved scope per Lambda container."""
+        from idp_common import testset_scope
+
+        testset_scope.clear_scope_cache()
+        yield
+        testset_scope.clear_scope_cache()
+
+    @pytest.fixture
+    def document(self, resolver):
+        return _document(resolver, [_section(resolver, "1", [1, 2], "Invoice")])
+
+    @staticmethod
+    def _regroup():
+        return [{"sectionId": "1", "pageIds": ["1", "2"]}]
+
+    # -- refused, with the resource-level class, and nothing written ----------
+    def test_an_annotator_outside_the_documents_test_set_is_refused(
+        self, resolver, document
+    ):
+        """The defect. The group floor admits the role; the object must not."""
+        tracking = _FakeTable(item={"TestSetId": "set-they-do-not-have"})
+        users = _FakeTable(allowed_test_sets=["set-they-do-have"])
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup()),
+                tracking=tracking,
+                users=users,
+            )
+
+    def test_the_refusal_writes_nothing(self, resolver, document):
+        """A refusal that still saved the re-grouping would refuse nothing."""
+        tracking = _FakeTable(item={"TestSetId": "set-they-do-not-have"})
+        users = _FakeTable(allowed_test_sets=["set-they-do-have"])
+        service = MagicMock()
+        service.get_document.return_value = document
+        tables = {"tracking-table": tracking, "users-table": users}
+        resource = MagicMock()
+        resource.Table.side_effect = lambda name: tables[name]
+        env = {"TRACKING_TABLE": "tracking-table", "USERS_TABLE_NAME": "users-table"}
+        with patch.dict(os.environ, env):
+            with patch("boto3.resource", return_value=resource):
+                with patch.object(
+                    resolver, "create_document_service", return_value=service
+                ):
+                    with pytest.raises(resolver.ResourceAccessDenied):
+                        resolver.handler(
+                            _annotator_event(sections=self._regroup()), None
+                        )
+        service.update_document.assert_not_called()
+
+    def test_a_document_in_no_test_set_is_refused(self, resolver, document):
+        """Production HITL work, not annotation work. Refused rather than read as
+        unscoped — a record with no `TestSetId` is the shape every non-test-set
+        document in the deployment has, so treating absence as "no restriction"
+        would make the check a no-op for all of them."""
+        tracking = _FakeTable(item={"ObjectKey": "packet.pdf"})
+        users = _FakeTable(allowed_test_sets=["set-a"])
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup()),
+                tracking=tracking,
+                users=users,
+            )
+
+    def test_an_annotator_with_no_assigned_test_sets_is_refused(
+        self, resolver, document
+    ):
+        """A half-created annotator is denied everything, not granted everything."""
+        tracking = _FakeTable(item={"TestSetId": "set-a"})
+        users = _FakeTable(allowed_test_sets=None)
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup()),
+                tracking=tracking,
+                users=users,
+            )
+
+    # -- admitted, and the operation proceeds --------------------------------
+    def test_an_annotator_inside_the_documents_test_set_may_regroup(
+        self, resolver, document
+    ):
+        """The other half, and it is not optional.
+
+        A test written only for the refusal passes on a resolver that refuses every
+        annotator — which is what an unwired users table produces — and that would
+        take the role's legitimate use away rather than confine it.
+        """
+        tracking = _FakeTable(item={"TestSetId": "set-a"})
+        users = _FakeTable(allowed_test_sets=["set-a", "set-b"])
+
+        result, service = _call_scoped(
+            resolver,
+            document,
+            _annotator_event(sections=self._regroup()),
+            tracking=tracking,
+            users=users,
+        )
+
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+
+    # -- roles the check does not apply to are unchanged ---------------------
+    @pytest.mark.parametrize("group", ["Admin", "Reviewer"])
+    def test_admin_and_reviewer_are_unaffected(self, resolver, document, group):
+        """Pinned, because a scope check that caught the roles it does not apply to
+        would break ordinary review. Neither table name is configured here, so a
+        check that ran at all would fail closed and this would refuse."""
+        document_key = "packet.pdf"
+        result, service = _call(
+            resolver,
+            document,
+            _event(object_key=document_key, sections=self._regroup(), groups=(group,)),
+        )
+
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+
+    def test_a_caller_holding_both_reviewer_and_annotator_is_still_scoped(
+        self, resolver, document
+    ):
+        """The intersection of the two roles, not the union.
+
+        Admin and Author are the pair `testset_scope` treats as unscoped; Reviewer is
+        deliberately not among them. Exempting it would turn object scope OFF for
+        anyone holding both, and annotators are assigned by hand in Cognito, so
+        holding both is an easy mistake to make.
+        """
+        tracking = _FakeTable(item={"TestSetId": "set-they-do-not-have"})
+        users = _FakeTable(allowed_test_sets=["set-they-do-have"])
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(
+                    sections=self._regroup(), groups=("Reviewer", "Annotator")
+                ),
+                tracking=tracking,
+                users=users,
+            )
+
+    def test_an_admin_who_also_holds_annotator_is_not_scoped(self, resolver, document):
+        """Admin owns the test sets; scoping it would break test-set management."""
+        result, service = _call(
+            resolver,
+            document,
+            _event(sections=self._regroup(), groups=("Admin", "Annotator")),
+        )
+
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+
+    # -- fails closed --------------------------------------------------------
+    def test_a_failed_test_set_read_refuses(self, resolver, document):
+        """An authorization question that cannot be answered must not resolve to
+        allowed on a path that mutates. It must not resolve to a fault either: this
+        handler's catch-all turns an uncaught exception into a 200 saying the
+        re-grouping did not happen, which answers a question about availability to a
+        question about authorization."""
+        tracking = _FakeTable(raises=RuntimeError("ProvisionedThroughputExceeded"))
+        users = _FakeTable(allowed_test_sets=["set-a"])
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup()),
+                tracking=tracking,
+                users=users,
+            )
+
+    def test_a_failed_scope_lookup_refuses(self, resolver, document):
+        """The other read on the path: resolving `allowedTestSets` itself."""
+        tracking = _FakeTable(item={"TestSetId": "set-a"})
+        users = _FakeTable(raises=RuntimeError("ProvisionedThroughputExceeded"))
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup()),
+                tracking=tracking,
+                users=users,
+            )
+
+    def test_an_unconfigured_users_table_refuses(self, resolver, document):
+        """Where `USERS_TABLE_NAME` is unset there is no scope to resolve, so there
+        is no annotator the check can admit. Pinned as a refusal because the
+        alternative reading — no table, no restriction — is the one that would make
+        the check a no-op in exactly the deployment that has not wired it."""
+        tracking = _FakeTable(item={"TestSetId": "set-a"})
+        resource = MagicMock()
+        resource.Table.side_effect = lambda name: tracking
+        service = MagicMock()
+        service.get_document.return_value = document
+        with patch.dict(os.environ, {"TRACKING_TABLE": "tracking-table"}):
+            with patch("boto3.resource", return_value=resource):
+                with patch.object(
+                    resolver, "create_document_service", return_value=service
+                ):
+                    with pytest.raises(resolver.ResourceAccessDenied):
+                        resolver.handler(
+                            _annotator_event(sections=self._regroup()), None
+                        )
+        service.update_document.assert_not_called()
+
+    # -- the refusal is not laundered into a fault ---------------------------
+    def test_the_refusal_class_survives_the_handlers_error_handling(
+        self, resolver, document
+    ):
+        """`ResourceAccessDenied` is recognised by class NAME across the invoke
+        boundary, and it is what carries `authzControl: "resource"`.
+
+        The handler's catch-all would re-wrap it into a 200 body with
+        `success: false` — destroying both signals the dispatcher derives a status
+        from, so the refusal would arrive as a success and not as a denial at all.
+        What prevents that is the `except PermissionError: raise` arm sitting BEFORE
+        the catch-all; this asserts the outcome rather than the arrangement.
+        """
+        tracking = _FakeTable(item={"TestSetId": "set-they-do-not-have"})
+        users = _FakeTable(allowed_test_sets=["set-they-do-have"])
+
+        with pytest.raises(resolver.ResourceAccessDenied) as excinfo:
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup()),
+                tracking=tracking,
+                users=users,
+            )
+
+        # The name is the contract: the exception object does not cross the invoke
+        # boundary, only `errorType`, which the dispatcher compares to this string.
+        assert type(excinfo.value).__name__ == "ResourceAccessDenied"
+        # A subclass, so the dispatcher's 403 and `errorType: "Unauthorized"` are
+        # unchanged and only the control label differs.
+        assert isinstance(excinfo.value, PermissionError)
+        # Not the group floor's refusal, which this resolver words after the
+        # operation. A reader of the response must be able to tell "the floor stopped
+        # admitting Annotator" from "the floor was fine and the object was refused".
+        assert "requires" not in str(excinfo.value)
+
+    def test_the_permission_arm_precedes_the_catch_all(self, resolver):
+        """Read structurally, because the behavioural test above cannot distinguish
+        "the arms are ordered correctly" from "the catch-all happens not to match".
+        Reversing them is a two-line edit that leaves every other test here green.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(resolver.handler))
+        handler = ast.parse(source).body[0]
+        tries = [n for n in ast.walk(handler) if isinstance(n, ast.Try)]
+        arms = [
+            (h.type.id if isinstance(h.type, ast.Name) else None)
+            for t in tries
+            for h in t.handlers
+        ]
+        assert "PermissionError" in arms, (
+            "the handler has no `except PermissionError` arm, so a refusal is "
+            "swallowed by the catch-all and returned as a 200"
+        )
+        assert arms.index("PermissionError") < arms.index("Exception"), (
+            "the catch-all precedes the PermissionError arm, so every refusal this "
+            "resolver raises is re-wrapped into a 200 body"
+        )
+
+    # -- the check runs before argument validation ---------------------------
+    def test_the_scope_check_precedes_argument_validation(self, resolver, document):
+        """Each guard after it answers a 200 saying the request was malformed. Placed
+        after any of them, the check would not be reached for the arguments that trip
+        them — and `sections: []` is both one of those and what the live RBAC matrix
+        drives this operation with, so the matrix's own cell would measure nothing.
+        """
+        tracking = _FakeTable(item={"TestSetId": "set-they-do-not-have"})
+        users = _FakeTable(allowed_test_sets=["set-they-do-have"])
+
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=[]),
+                tracking=tracking,
+                users=users,
+            )
+
+
 @pytest.mark.unit
 class TestQueueReviewerRefused:
     """A QueueReviewer-only caller works review queues, not these operations (FR-25)."""

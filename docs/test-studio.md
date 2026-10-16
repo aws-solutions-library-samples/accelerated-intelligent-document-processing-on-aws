@@ -657,6 +657,16 @@ page 1 are fetched, so large packets stay cheap). Each document name links
 to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
 mirroring the app's Document List → Document Details structure.
 
+The search box above the table searches the **whole set**, not the page on screen,
+so a document several pages along is found from page 1. Pagination then runs over
+the matches, and the count beside the heading reads "50 of 73 matching" so the page
+is not mistaken for the whole result. Matching is a case-insensitive substring of
+the document name, the same rule as elsewhere in the UI. A search reads up to
+50,000 document names; past that the count is shown as a floor — `73+ matching` —
+and the table asks for a narrower search rather than overstating what it counted.
+Sorting is the one control that stays page-scoped — see
+[Confidence-guided review](#confidence-guided-review).
+
 This page is where a set is worked on end to end: **Publish version** at the top
 acts on the set as a whole, while **Add documents**, **Generate draft labels**,
 **Annotate**, **Clear draft labels** and **Remove** sit above the document list and
@@ -671,9 +681,13 @@ The document detail page offers two views:
   Multi-section baselines get a section selector that also scopes the page
   images to that section's `split_document.page_indices`; when a baseline
   carries `explainability_info` geometry (created via **Copy to Baseline**),
-  focusing a field highlights its bounding box on the page image. Saves write
-  back to the section's `baseline/.../result.json` and append an
-  `_editHistory` provenance entry.
+  focusing a field highlights its bounding box on the page image. The page
+  images carry **Zoom**, **Pan** and **Rotate** controls — rotate turns the
+  page in 90° steps for a sideways or upside-down scan, re-fitting it to the
+  panel and carrying any bounding-box highlight around with it. Rotation
+  applies to every page you then navigate to, and **Reset View** clears it
+  along with zoom and pan. Saves write back to the section's
+  `baseline/.../result.json` and append an `_editHistory` provenance entry.
 
 Note: page images are rendered in the browser from the source document
 (test set documents are unprocessed, so no pipeline page images exist).
@@ -949,7 +963,11 @@ confidence alerts elsewhere in the app instead of using fixed cutoffs.
 
 The table defaults to **worst-first** ordering whenever confidence data is
 present, so review starts where the labels are least trustworthy. Sorting
-applies to the current page (document listing is paginated server-side).
+applies to the current page, because the document listing is paginated
+server-side and the ranking needs confidence values the page carries and the
+rest of the set does not. Search is not page-scoped — it runs over the whole
+set — and the table says which of the two is which whenever the page is not the
+whole set.
 
 Reviewing a draft label is the same **Edit Ground Truth** flow described above;
 saving flips the label to *Reviewed (human)*. Once enough of the set is
@@ -966,9 +984,11 @@ not hide the confidence of the others.
 navigation as well as closing the tab — clicking a nav link with corrections
 pending used to discard them silently.
 
-Each field also carries a **Show &lt;field&gt; on the page** button, which highlights
-where the value was read from. That was previously available only by clicking the
-field, with no visible affordance and no keyboard equivalent.
+Each field carries a **Highlight &lt;field&gt; on the page image** button where a
+bounding box was recorded, which outlines where the value was read from; where
+none was, the same slot explains why. Locating a value was previously available
+only by clicking the field, with no visible affordance and no keyboard
+equivalent.
 
 ## How much review is enough?
 
@@ -1140,8 +1160,26 @@ The queue page shows:
 - **The ground-truth editor** — the same editor used everywhere else in Test
   Studio, with the page images, per-field confidence, the JSON tab, and the
   revision history.
-- **Save & next in queue** — saves the correction, marks the document reviewed,
-  and moves to the next available document.
+- **Save & next in queue** — saves the correction and moves straight to the next
+  available document, without waiting for the queue to be re-read.
+- **Multi-section documents take more than one save.** A document is marked
+  reviewed once **every** one of its sections carries a human verdict, so a save
+  records the section you were working on and then moves to the next *document* —
+  it does not walk the remaining sections of the one you were in. The
+  confirmation says how many sections the document has, and the document stays in
+  the queue until they are all done; reopen it from the queue rail to work the
+  rest, using the section tabs above the editor. (The set's own document table
+  shows the same thing as **Awaiting review** in its Review state column.)
+- **Labels are correct — mark reviewed** covers a whole document at once: it
+  submits every section unchanged. ⚠️ That is a verdict on *all* of them — each
+  one is tagged human-reviewed, becomes ground truth protected from re-labeling,
+  and is fed to the calibration curve as a correct-at-this-confidence signal — so
+  use it when you have actually looked at every section, not as a shortcut past
+  the ones you have not opened.
+- **Show reviewed documents** — reviewed work drops out of the queue, so this is
+  the way back to a document whose label you already confirmed, including to
+  search for one by name. Those rows are not held in the browser, so revealing
+  them re-reads the queue from the server and takes a few seconds on a large set.
 
 Per-document actions (claim, release, skip, mark reviewed) sit at the top of the
 editor pane, so finishing a long document does not mean scrolling past every field

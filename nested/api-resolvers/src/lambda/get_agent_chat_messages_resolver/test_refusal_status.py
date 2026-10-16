@@ -69,22 +69,34 @@ def _tables(monkeypatch):
 
 
 class TestTheOwnershipRefusalIsAnAuthorizationRefusal:
-    def test_a_session_the_caller_does_not_own_is_a_permissionerror(self):
+    def test_a_session_the_caller_does_not_own_is_a_resource_refusal(self):
         with pytest.raises(PermissionError) as excinfo:
             index.handler(_event(), None)
 
-        assert type(excinfo.value).__name__ == "PermissionError", (
-            "the dispatcher matches the exception CLASS NAME to choose 403"
+        assert type(excinfo.value).__name__ == "ResourceAccessDenied", (
+            "the dispatcher matches the exception CLASS NAME, both to choose 403 "
+            "and to label WHICH control refused. This one is per-object — the "
+            "caller holds a group the operation admits and this session is not "
+            "theirs — and labelling it is what stops the live RBAC matrix reading "
+            "this check working as a group-authorization failure (issue #1308)"
+        )
+        assert isinstance(excinfo.value, PermissionError), (
+            "a PermissionError subclass, so every mapping that keyed on the base "
+            "class is unaffected"
         )
         assert str(excinfo.value).startswith("Unauthorized"), (
-            "and falls back to an anchored message prefix, so the message must "
-            "still begin with it"
+            "and the dispatcher falls back to an anchored message prefix, so the "
+            "message must still begin with it"
         )
 
-    def test_no_resolvable_identity_is_a_permissionerror(self):
+    def test_no_resolvable_identity_stays_an_unattributed_refusal(self):
+        """Deliberately NOT the per-object class: there is no object decision here,
+        the caller could not be resolved at all. An unattributed refusal gets the
+        strict reading downstream, which is the right outcome for this one."""
         with pytest.raises(PermissionError) as excinfo:
             index.handler(_event(username="anonymous"), None)
 
+        assert type(excinfo.value).__name__ == "PermissionError"
         assert str(excinfo.value).startswith("Unauthorized")
 
     def test_the_refusal_does_not_name_the_session_or_the_owner(self):

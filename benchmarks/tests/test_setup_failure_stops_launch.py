@@ -13,13 +13,14 @@ so, and those numbers get written down.
 
 The same shape existed in ``register_testset``, which discarded the ``aws s3 cp``
 result entirely (not even bound to a name) and then wrote a metadata row
-asserting ``status: READY`` and ``fileCount: 1``.
+asserting ``status: COMPLETED`` and ``fileCount: 1``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -153,8 +154,8 @@ def test_register_testset_writes_no_metadata_row_when_the_copy_fails(monkeypatch
     )
     assert ok is False
     assert spy.puts == [], (
-        "a metadata row claiming status=READY / fileCount=1 was written for a "
-        "document whose S3 copy failed"
+        "a metadata row claiming status=COMPLETED / fileCount=1 was written for "
+        "a document whose S3 copy failed"
     )
 
 
@@ -171,7 +172,63 @@ def test_register_testset_writes_the_row_on_success(monkeypatch):
     )
     assert ok is True
     assert len(spy.puts) == 1
-    assert spy.puts[0]["Item"]["status"]["S"] == "READY"
+    assert spy.puts[0]["Item"]["status"]["S"] == "COMPLETED"
+
+
+@pytest.mark.unit
+def test_the_row_claims_a_status_the_test_set_api_actually_writes(monkeypatch):
+    """The row bypasses the test-set API, so nothing else checks its vocabulary.
+
+    `status` is read by every consumer as a position in the API's lifecycle. This
+    row used to say `READY`, which the API never writes, and Test Studio read the
+    unrecognised value as in-flux: every `bench-*` row disabled, so unselectable
+    and undeletable, plus a 3s poll that never stopped. Asserting the literal
+    alone would not have caught that — `READY` was asserted — so the check is
+    membership in the resolver's own terminal statuses.
+    """
+    spy = _SpyDDB()
+    monkeypatch.setattr(run_matrix.lib, "ddb", lambda: spy)
+    monkeypatch.setattr(run_matrix, "sh", lambda cmd: _Proc(returncode=0))
+    run_matrix.register_testset(
+        "stk",
+        {"testset_bucket": "b", "tracking_table": "t"},
+        "tiny_form",
+        "/tmp/tiny_form.pdf",
+    )
+    written = spy.puts[0]["Item"]["status"]["S"]
+
+    resolver = os.path.join(
+        os.path.dirname(BENCH),
+        "nested",
+        "api-resolvers",
+        "src",
+        "lambda",
+        "test_set_resolver",
+        "index.py",
+    )
+    assert os.path.exists(resolver), resolver
+    with open(resolver, encoding="utf-8") as fh:
+        src = fh.read()
+
+    # Read the in-flux set out of the resolver rather than restating it: a status
+    # added there must not silently become a legal value for this row.
+    match = re.search(
+        r"IN_FLUX_TEST_SET_STATUSES = frozenset\(\{([^}]*)\}\)", src, re.S
+    )
+    assert match, "could not find IN_FLUX_TEST_SET_STATUSES in the resolver"
+    in_flux = set(re.findall(r'"([A-Z_]+)"', match.group(1)))
+
+    assert written not in in_flux, (
+        f"the harness writes status={written!r}, which the resolver treats as "
+        f"in-flux ({sorted(in_flux)}) — consumers will read this completed set "
+        f"as still being written"
+    )
+    # Terminal, and specifically one the resolver writes — not merely absent from
+    # the in-flux set, which is what let `READY` through.
+    assert f'"status": "{written}"' in src, (
+        f"the harness writes status={written!r}, which the test-set resolver "
+        f"never writes; use a value from its own lifecycle"
+    )
 
 
 # --------------------------------------------------------------------------

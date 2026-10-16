@@ -144,8 +144,25 @@ the top 20 together are ~35s of a 10-minute run: the cost is ~10,000 × per-test
 fixture setup, spread flat, at 62% CPU on 14 cores. It is neither CPU-bound nor
 hostage to a few slow tests. Cutting it further means sharding it across several
 *jobs*, which needs a splitter plugin and a `coverage combine` before
-`make check-coverage-debt` can read a complete report — deliberately not done
+`make check-coverage-debt-cicd` can read a complete report — deliberately not done
 here, since the measured gain over the current shape is ~5 minutes.
+
+⚠️ **The coverage producer costs this job roughly another 16 minutes, and that is
+the price of the gate reading more than one tree.** `make coverage-all-cicd` runs
+before the ratchet in the same job, because the reports pass between the two steps
+through the workspace — splitting them would need artifacts, which is the same
+obstacle as sharding above. Eight trees are measured concurrently and the wall clock
+is **not** their sum: measured at nine trees, four at a time, 979s against roughly 33
+minutes sequential. What it cannot compress is `scripts`, which declares
+`Tree.serial` and takes ~16 minutes as a single process, so that tree alone sets the
+floor on every host and the concurrency's whole job is to hide the other seven behind
+it. `COVERAGE_CICD_JOBS` is the dial, bounded in the script by `cpus // 2`, so a
+4-CPU runner takes 2 at a time rather than obeying the 4 the Makefile asks for.
+
+Read against the alternative rather than against the old number: the step this
+replaces compared **one** of nine trees and exited 0 over the other eight, so the
+~11 minutes it used to cost bought a gate that could not see a loss anywhere outside
+`lib/idp_common_pkg`.
 
 The split's cost, stated plainly: the Python environment is built in four jobs
 instead of one, so the pipeline **burns more runner minutes to finish in less
@@ -161,7 +178,9 @@ not need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyri
 resolve the first-party packages instead of merely looking right — so a suite whose
 name says nothing about types reaches an npm package. The fix is to give the job
 the tool, not to let the probe skip when it is missing, which is the whole reason
-that check is a live probe.
+that check is a live probe. `scripts/tests/test_ux_recorder.py` needs Node in the
+same job on its own account: it runs the recorder's cursor-overlay JavaScript under
+`node`, and fails in CI rather than skipping when `node` is missing.
 
 ### The GitHub side runs the same two security gates
 
@@ -188,13 +207,13 @@ required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
 GitHub can only require job-level contexts — never individual steps — so the
-mapping from gates to contexts is decided by how the jobs are arranged. Eight of
-the ten shared gates live in `developer-tests.yml` (four jobs) and the other two in
-`security-checks.yml` (two jobs), which is how ten gates produce
+mapping from gates to contexts is decided by how the jobs are arranged. Ten of
+the twelve shared gates live in `developer-tests.yml` (four jobs) and the other two in
+`security-checks.yml` (two jobs), which is how twelve gates produce
 six requireable contexts.
 
 Splitting `developer-tests.yml` into four parallel jobs **improved** this. It used
-to be one job holding eight of the ten shared gates, which collapsed those eight
+to be one job holding ten of the twelve shared gates, which collapsed those ten
 into a single requireable context: they shared one red mark, so a required-check
 failure did not say which of them had failed. They are now four contexts, so a red
 mark names the half of the work that broke.
@@ -208,7 +227,7 @@ names all six for that reason.
 | Check context | Workflow / job | Covers |
 |---|---|---|
 | `Lint, Type Check, and Static Scans` | `developer-tests.yml` / `developer_tests` | `lint-cicd`, `typecheck`, `api-test-static`, first-party dep check, service-role permissions |
-| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `check-coverage-debt` |
+| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `coverage-all-cicd`, `check-coverage-debt-cicd` |
 | `Package and Lambda Test Suites` | `developer-tests.yml` / `package_tests` | `test-packages-cicd` |
 | `UI Unit Tests` | `developer-tests.yml` / `ui_tests` | `npx vitest run` |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
@@ -293,6 +312,32 @@ catches it.
   - **Slack** — the `integration_tests` job posts the result and the deploy
     summary to the team channel, but only on the **scheduled** run. Needs the
     masked `SLACK_WEBHOOK_URL` CI variable; absent, it logs one line and skips.
+    Three verdicts, not two: ✅ PASSED, ❌ FAILED, and **⚠️ UNVERIFIED** when the
+    monitor handed off before the pipeline reached a terminal state — the job
+    exits 0 in that case as well, so a green job is two different claims.
+
+    ⚠️ A post from `integration_tests` can only describe a run that **reached**
+    `integration_tests`. A nightly that fails in `fast_checks` has that job
+    *skipped*, so the `after_script` never runs and the channel gets nothing —
+    and a silent nightly is indistinguishable from one nobody scheduled. The
+    `nightly_notification` job in the `notify` stage covers that: it runs
+    `when: always` on a scheduled pipeline, stays quiet when
+    `integration_tests` already posted (it keys on a `slack_posted.txt` artifact
+    written only on a *successful* post), and otherwise sends
+    **❌ FAILED BEFORE THE DEPLOY**, which states plainly that nothing was
+    deployed and no integration test ran. If the deploy ran but its own post
+    failed, the fallback sends the summary instead as
+    **⚠️ RESULT NOT DELIVERED**. It declares **no `needs`** on purpose — GitLab
+    skips a job whose needed job was skipped, which would reproduce the silence
+    — and posts with `urllib`, because `curl` is not in the job's image.
+    Pinned by `scripts/sdlc/tests/test_nightly_notification.py`.
+
+    This was the shape of the 2026-10-14 20:03 run: `package_tests` failed
+    because Claude Sonnet 4 reached the end-of-life date AWS published for it and
+    the LEGACY expiry alarm in `scripts/tests/test_model_surface_consistency.py`
+    fired **with no code change at all**. A dated alarm can take the nightly out
+    on a tree nobody touched, so "the pipeline was silent" must never be
+    readable as "nothing happened".
   - **Email** — the *Pipeline status emails* integration sends pipeline failures
     on the default branch to the team distribution list. ⚠️ It fires for **any**
     failed `develop` pipeline, not just the nightly: GitLab cannot filter
@@ -321,21 +366,44 @@ runs Claude Code (via Bedrock) over the MR diff with
 `allow_failure: true`, has `needs: []` so it does not wait for `static_checks`, and
 it is deliberately absent from `test_ci_gate_parity.py`'s `SHARED_GATES` — a
 model's opinion must not decide whether code merges, and a Bedrock throttle must
-not red-line an MR. It is **GitLab-only** because the AWS credentials are here; a
-GitHub equivalent would need its own OIDC role.
+not red-line an MR.
+
+**The same reviewer also runs on GitHub**, as `ai_pr_review` in
+`.github/workflows/ai-pr-review.yml` (`scripts/sdlc/ai_mr_review.py --forge
+github`). It is advisory there too, by a different mechanism: GitHub has no
+`allow_failure`, so what keeps it advisory is that its status-check context is
+pinned in `MUST_STAY_ADVISORY` in
+`scripts/tests/test_check_branch_protection.py` and absent from `SHARED_GATES`.
+Three differences are worth reading before relying on either side:
+
+| | GitLab | GitHub |
+|---|---|---|
+| AWS credential | the integration-test role `idp-sdlc-GitLab`, assumed by the runner fleet's `gitlab-runners-prod` role and gated on `GitLab:Group`/`GitLab:Project` session tags (`scripts/sdlc/cfn/credential-vendor.yml`) | a **Bedrock-only** role assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
+| Posting token | `GITLAB_REVIEW_TOKEN`, a project access token that has to be provisioned — `CI_JOB_TOKEN` cannot create notes | the built-in `GITHUB_TOKEN` with `pull-requests: write`; nothing to provision |
+| Fork contributions | not reviewed — masked variables are absent from a fork pipeline | reviewed by the **hourly `schedule`**, which is triggered by the repository rather than by the contribution and so holds the credentials regardless of origin |
+
+⚠️ **GitHub reads `on: schedule` from the workflow file on the *default* branch,
+which is `main`.** Until `ai-pr-review.yml` reaches `main` the cron never fires
+and says nothing, so fork coverage is silently absent. The `pull_request`
+trigger is unaffected and works from `develop`.
 
 ⚠️ **It runs automatically, and it costs real money per run.** A 5,400-line MR
 measured **$3.42** in CI ($6.12 locally), and reviews are idempotent per head SHA,
 so a new push means a new paid review. Three things bound that and all three must
-stay: `interruptible: true` (a push mid-review cancels it, so a burst costs about
-one review rather than one per push — this is the main protection and it is one
-line), Draft MRs excluded (the WIP phase, where pushes are frequent, is free), and
-exactly one triggering rule with **no scheduled sweep** — the script supports one
-(`--all-open`) but enabling it applies the per-push multiplier to the whole open
-queue. The unbounded residual is pushes spaced further apart than a review takes
-(~9 min in CI); if that dominates, add a cooldown in `ai_mr_review.py` rather than
-reverting to a manual button. Pinned by
-`test_the_automatic_trigger_keeps_its_cost_bounds`.
+stay. The first is the per-push multiplier and is spelled differently on each
+platform: `interruptible: true` on GitLab, `concurrency: cancel-in-progress` on
+GitHub — a push mid-review cancels it, so a burst costs about one review rather
+than one per push. This is the main protection and it is one line on either side.
+The second is that drafts are excluded, so the WIP phase, where pushes are
+frequent, is free. The third differs in substance: GitLab has exactly one
+triggering rule and **no scheduled sweep**, because a sweep there would apply the
+per-push multiplier to the whole open queue; GitHub does run one, bounded to
+`--max-mrs 3` per tick, and it is affordable only because the per-head-SHA marker
+makes a tick with no new head cost nothing. The unbounded residual on both is
+pushes spaced further apart than a review takes (~9 min in CI); if that dominates,
+add a cooldown in `ai_mr_review.py` rather than reverting to a manual button.
+Pinned by `test_the_automatic_trigger_keeps_its_cost_bounds` and
+`test_the_github_trigger_keeps_its_cost_bounds`.
 
 Automatic also means no human is in the loop before a model reads
 author-controlled text, which is why the sandbox note below matters.
@@ -409,10 +477,10 @@ Notes:
 
 ## Test Execution Strategy
 
-### Parallel Execution (Steps 3-11, 13, 14)
-- **11 tests run concurrently** to minimize pipeline runtime (Step 13, the
-  read-only permissions-boundary check, and Step 14, the pipeline-hook test,
-  join the parallel pool)
+### Parallel Execution (Steps 3-11, 13, 14, 15)
+- **12 tests run concurrently** to minimize pipeline runtime (Step 13, the
+  read-only permissions-boundary check, Step 14, the pipeline-hook test, and
+  Step 15, the config-prefix-mapping routing check, join the parallel pool)
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
@@ -811,6 +879,40 @@ The persisted-marker assertion therefore checks the **postprocessing** marker,
 which is correctly the final value; `preprocessing` is proven to have run by its
 own `invoked` count.
 
+### Step 15: Config Prefix Mapping Routing ⚡ *Parallel*
+**What it tests**: that a [config prefix mapping](../../../docs/configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands)
+actually routes a document at ingest, across all three conflict modes, with and
+without an upload tag.
+- **Why it exists**: this is the one layer the offline suites structurally cannot
+  reach. The precedence rules are exhaustively covered as a pure function with no
+  AWS, and each Lambda's wiring is covered with the resolver stubbed out — but what
+  failed in practice was the **composition**: a mapping as the API stores it,
+  against the key an upload actually creates, resolved by the real ingest Lambda.
+  A deployment whose three mappings were saved without a trailing slash resolved
+  every upload by its own tag with no mapping applied, and every layer was
+  individually correct. On the document list that is indistinguishable from "the
+  mapping deferred to the upload", so the conflict mode looked broken when it had
+  never been reached.
+- **Verification** (six combinations, three mappings):
+  - `mapping` precedence: an untagged upload **and** a tagged one both resolve to
+    the mapping's profile, with `ConfigSource: prefix-mapping`
+  - `metadata` precedence: a tagged upload resolves to the tag's profile with
+    `ConfigSource: metadata`, and the mapping prefix is **still recorded** — the
+    field that distinguishes "a mapping deferred" from "no mapping matched"
+  - `reject`: a tagged upload is written `FAILED` with a reason on the row, and no
+    workflow starts
+- **Cost**: reads the tracking row rather than waiting for extraction, since
+  resolution happens in `queue_sender` when the object lands. That is what keeps
+  it cheap enough for the parallel pool.
+- **Isolation**: creates its own run-scoped Configuration Profile and three
+  run-scoped prefixes, and removes the mappings **before** the profile in its
+  `finally` — `deleteConfigVersion` refuses while a mapping still names the
+  profile, which is a guard the feature adds and this cleanup respects rather than
+  fights. Dropping the mappings first also stops a `reject` rule catching an
+  unrelated upload while the rest of the cleanup runs.
+
+---
+
 #### Validating Step 14 without a pipeline round-trip
 
 A pipeline round-trip is ~70 minutes, so debug the hook **outside** it. Deploy the
@@ -854,6 +956,70 @@ Two gotchas the same technique surfaced, worth knowing before writing any hook:
   the 50MB direct-upload limit.
 
 ---
+
+### Step 15: Malware-Scanning Ingest Gate 🔒 *Sequential*
+**What it tests**: that the optional [malware-scanning ingest
+gate](../../../docs/malware-scanning.md) refuses a known-bad upload — and, more
+importantly, that it refuses it *before* the pipeline reads it.
+- **Why it exists, and why it is on the primary stack rather than a variant
+  probe**: the primary stack now deploys with `MalwareScanning=CREATE_PLAN`, so
+  **every document every other step processes passes through the gate**. That is
+  the coverage that matters: the gate withholds the SQS message for every upload,
+  so a defect in it does not degrade one feature, it stalls ingest — and a
+  variant probe that deploys and smoke-tests could only prove the GuardDuty plan
+  and the EventBridge rule exist. The whole functional suite reaching `COMPLETED`
+  is the assertion that the gate admits correctly; this step is the assertion that
+  it also *refuses*.
+- **Verification**:
+  - the document reaches **`QUARANTINED`**
+  - **no Step Functions execution exists for it** — checked both on the tracking
+    row's `WorkflowExecutionArn` and against `list_executions`. This is the
+    property a status check alone cannot give: a document could be marked
+    QUARANTINED *after* being processed and the status would look identical
+  - the verdict is on the row (`MalwareScanResult=THREATS_FOUND` plus a threat
+    name), because the UI reads it from there and a quarantine nobody can explain
+    is not usable
+  - the object is **still in the input bucket**, tagged
+    `GuardDutyMalwareScanStatus=THREATS_FOUND` — the documented disposition, so
+    this pins it rather than a silent delete
+
+**Test Document**: an EICAR probe uploaded by the step. EICAR is the
+industry-standard harmless test signature every scanner recognises, and the one
+GuardDuty's own documentation uses in its `THREATS_FOUND` example; nothing
+malicious is involved. ⚠️ The signature is **assembled from two string fragments**
+in `codebuild_deployment.py` so this repository does not contain it intact —
+endpoint tooling on a developer machine or a CI worker quarantines a file that
+does, which would break the checkout rather than test anything.
+`scripts/sdlc/tests/test_malware_gate_step.py` asserts both that the probe is the
+real signature and that no source file holds it whole.
+
+**Duration**: typically under two minutes; budgeted at 15.
+⚠️ **This step can report success with a WARNING, and that is deliberate.**
+GuardDuty's scan latency has no SLA and is not ours to control, so a verdict that
+has not arrived inside the budget is reported as inconclusive rather than failed —
+the alternative is a suite that goes red on somebody else's queue depth, which
+gets ignored, which costs more than the coverage. A verdict that arrives and says
+the wrong thing IS a failure. When it warns, read the malware-verdict dead-letter
+queue and the QueueSender log.
+
+**Execution**: sequential, for a different reason from Step 12. Step 12 is
+sequential because it mutates stack-wide auth; this one is simply slow and bursty,
+and adding its wait to the fail-fast parallel pool's wall clock buys nothing —
+a document held at the gate is not a failure.
+
+**Implementation**: `test_step15_malware_gate` in
+`scripts/sdlc/codebuild_deployment.py`. Its own verdict logic — which is the part
+that could pass vacuously, since "no verdict yet" is a success — is unit-tested
+offline in `scripts/sdlc/tests/test_malware_gate_step.py` against a faked AWS.
+
+**Not covered here**: throughput. The gate's failure mode under concurrency is
+documents accumulating in `MALWARE_SCANNING`, which one upload cannot show.
+`scripts/malware_gate_burst.py` pushes a few hundred documents through at once
+and asserts that nothing is stuck, no benign document was quarantined and
+admission is not serialised. It is kept **out** of the nightly deliberately:
+admitting a few hundred documents starts a few hundred Step Functions executions
+and the Bedrock calls behind them, which is real money for a property that does
+not change nightly. Run it for a release check or after changing the gate.
 
 ## Additional Deployment Tests: the deployment-variant probe framework
 
@@ -1070,7 +1236,34 @@ time-capped. The GitLab monitor that watches it has credentials capped at 1 hour
 keep watching to ~110 min. If a run outlives that, the monitor hands off
 gracefully — the pipeline finishes on its own and the authoritative result still
 arrives via the S3 summary + SNS email. A failure detected at handoff fails the
-GitLab job (it isn't masked by a green handoff).
+GitLab job (it isn't masked by a green handoff), and a handoff with no verdict
+yet posts to Slack as **⚠️ UNVERIFIED** rather than ✅ PASSED, because the job
+exits 0 either way and "12/12 green" and "nobody watched the end" must not read
+the same.
+
+⚠️ **The 1h cap governs `after_script` too, and it cannot refresh.** The
+runner's credential vendor mints the job's credentials *before* the job starts,
+and `after_script` — which fetches the CodeBuild logs, pulls the S3 summary and
+copies out the ZAP report — runs on those, not on the monitor's refreshed
+session: that refresh rebinds this process's boto3 clients only. `after_script`
+cannot re-assume the role itself either, since `sts:AssumeRole` needs live
+credentials to call and by then it has none. So the **monitor** writes each
+session it mints to `aws_after_script_creds.env` (at startup and on every
+50-minute refresh, so the file always has ≥10 min of life left) and
+`after_script` sources it before its first `aws` call. The file is `0600`, is
+excluded from the deployment zip, is not an artifact, is gitignored, and is
+removed as the job's last step.
+
+Without that handover, whether the logs were captured at all was decided by how
+long the deploy took, and the failure was mislabelled. The 2026-10-11 nightly
+(job 30872567) went terminal `Succeeded` at 59 min with 12/12 tests passing, ran
+62.6 min wall clock, and spent all 12 `list-action-executions` attempts
+re-sending an expired token; the three nights before it ran 58.4–58.5 min and
+resolved on the first attempt. Because the loop sent stderr to `/dev/null`, both
+the artifact and the Slack post said "after 12 attempts (~60s)", which reads as
+the eventual-consistency race the retry loop exists for. The loop now keeps its
+stderr, stops immediately on a credential error instead of retrying one, and
+names which of the two failures occurred.
 
 ---
 
@@ -1528,6 +1721,14 @@ but revisit:
 - [x] **Mid-run monitor credential refresh** — the monitor refreshes its
       1h-capped credentials to watch long runs to ~110 min. *(Needs a live >1h
       run to fully validate.)*
+- [x] **`after_script` credential handover** — the monitor persists each session
+      it mints so the log/summary capture no longer depends on the job
+      finishing inside its own 1h credential window. Pinned by
+      `scripts/sdlc/tests/test_after_script_log_capture.py` and
+      `test_credential_refresh.py`. *(Needs a live >1h run to fully validate.)*
+- [x] **Credential failures are not reported as eventual consistency** — the
+      CodeBuild-id resolve loop keeps its stderr, stops rather than retrying an
+      expired token, and the artifact names which failure it was.
 
 ---
 

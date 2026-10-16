@@ -50,7 +50,17 @@ _MIN_PREFIX_TIERS = (
     # 5.5's model card publishes 512, the smallest. Matching on a shared
     # ``haiku-`` stem would therefore have given this model an 8x-too-high
     # minimum and warned that classes which do cache will not.
-    (re.compile(r"claude-(opus-5|fable-5|haiku-5-5)"), 512),
+    #
+    # ``sonnet-5-5`` is here for the same reason and its placement is load-bearing in
+    # the opposite direction: ``claude-sonnet-5`` is a SUBSTRING of
+    # ``claude-sonnet-5-5``, so without this alternative ahead of it Sonnet 5.5 falls
+    # through to the 1,024-token tier below — double its real minimum, which silently
+    # warns that classes between 512 and 1,024 tokens will not cache when they do.
+    # The two Sonnets genuinely differ, measured as a pair on Converse (us-east-1,
+    # 2026-10-14): Sonnet 5.5 wrote 513 cache tokens for a 513-token prefix and
+    # nothing for a 508-token one, while Sonnet 5 wrote nothing at 825 tokens and
+    # 1,223 at 1,223. Sonnet 5.5's model card publishes 512 and 4 checkpoints.
+    (re.compile(r"claude-(opus-5|fable-5|haiku-5-5|sonnet-5-5)"), 512),
     (re.compile(r"claude-opus-4-7"), 2048),
     (re.compile(r"claude-(opus-4-6|opus-4-5|haiku-4-5)"), 4096),
     # Sonnet 5, Sonnet 4.6, Opus 4.8, Sonnet 4.5, Sonnet 4, Opus 4.1, Opus 4, 3.7 Sonnet

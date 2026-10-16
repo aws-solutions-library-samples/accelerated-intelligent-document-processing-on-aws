@@ -88,6 +88,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [API Gateway Hosting](./apigateway-hosting.md) - Serve the full Web UI from the existing API Gateway REST API (S3 proxy), within a VPC when combined with `ApiGatewayVisibility=PRIVATE` (alternative to CloudFront)
 - [GovCloud Deployment](./govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
 - [EU Region Model Support](./eu-region-model-support.md) - Model availability in EU regions
+- [Canada (Central) Region Model Support](./canada-region-model-support.md) - Model availability and default model changes in ca-central-1
 
 ## Development Setup
 

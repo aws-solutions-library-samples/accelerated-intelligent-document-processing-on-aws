@@ -109,7 +109,18 @@ export default defineConfig(({ mode }) => ({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
-    include: ['src/**/*.test.{ts,tsx}'],
+    // Every extension Vitest's own `defaultInclude` accepts
+    // (`**/*.{test,spec}.?(c|m)[jt]s?(x)`), written as braces because that is
+    // the syntax `scripts/tests/test_ui_test_discovery.py` can resolve without
+    // Node. This was `src/**/*.test.{ts,tsx}`: two extensions, so a test written
+    // as `Foo.test.jsx` — a file the eslint script lints and tsc reads — was
+    // never collected, and `npx vitest run` exited 0 without mentioning it. That
+    // gate asserts every test-named file under src/ui is matched by what is
+    // configured here, so narrowing this list fails it rather than quietly
+    // dropping suites.
+    include: [
+      'src/**/*.{test,spec}.{js,jsx,ts,tsx,cjs,cjsx,cts,ctsx,mjs,mjsx,mts,mtsx}',
+    ],
     // Above vitest's 5s default, for CI runner variance rather than to license
     // slow tests. Rendering a Cloudscape table in jsdom costs hundreds of
     // milliseconds, and the shared CI runner has been observed ~5x slower than a

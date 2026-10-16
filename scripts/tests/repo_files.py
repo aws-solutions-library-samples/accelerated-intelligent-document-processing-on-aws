@@ -81,6 +81,13 @@ FALLBACK_PRUNE_DIRS = frozenset(
         "site-packages",
         "scratch",
         ".claude",
+        # The advisory reviewer's inputs, including `.ai-review/base/` — a whole
+        # copy of the tree at the merge base. Gitignored, so the git route above
+        # already excludes it and this entry is only reachable when git is
+        # unavailable; it is here because the fallback exists precisely for when
+        # the primary route is absent, and two of the three directories holding a
+        # tree copy being listed is the shape of a gap that surfaces later.
+        ".ai-review",
     }
 )
 

@@ -15,7 +15,7 @@
  * server-side against the caller's allowedTestSets.
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -62,6 +62,7 @@ import AnnotationScreen from '../review-workspace/AnnotationScreen';
 import type { AnnotationQueue, QueueItem } from '../review-workspace/test-set-adapter';
 import { renderAlertCount, renderLabelSource } from './TestSetDetail';
 import { annotationQueueLink, currentDraft, draftBadgeHover, queueEmptyText } from './annotation-edit-flags';
+import { createLatestResponseGuard } from './latestResponseOnly';
 
 export type { QueueItem } from '../review-workspace/test-set-adapter';
 
@@ -144,33 +145,91 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const [deleting, setDeleting] = useState<QueueItem | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [pollTick, setPollTick] = useState(0);
+  // Whether the queue in hand was read with reviewed documents included. The server
+  // omits them unless asked, so revealing them costs a reload this tracks.
+  const [queueIncludesReviewed, setQueueIncludesReviewed] = useState(false);
 
-  const loadQueue = useCallback(async () => {
-    if (!testSetId) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const r = await client.graphql({
-        query: getAnnotationQueue,
-        variables: { testSetId, limit: QUEUE_PAGE_SIZE, includeCompleted: showReviewed },
-      });
-      const data = r.data?.getAnnotationQueue ?? null;
-      if (!data) {
-        setError('The annotation queue could not be loaded.');
-        return;
+  /**
+   * One guard per mounted page: `useRef(createLatestResponseGuard())` would build a
+   * fresh guard on every render and discard all but the first.
+   */
+  const responseGuard = useMemo(createLatestResponseGuard, []);
+
+  /**
+   * How many foreground loads are in flight. A count rather than a flag because the
+   * spinner belongs to all of them collectively; see `loadQueue`'s `finally`.
+   */
+  const foregroundLoads = useRef(0);
+
+  /**
+   * `background` reconciles without blocking: the spinner (the table's loading state)
+   * and the page banner are left alone. Used by the poll while draft labeling runs or
+   * summaries build, which nobody asked for and which would otherwise blank the table
+   * every few seconds.
+   *
+   * ⚠️ Reloads overlap — the poll, a status-filter change and the reload after an
+   * assignment can all be in flight at once, and each reply's duration scales with the
+   * sections it hydrates — so a reply has to prove it is still the newest before it may
+   * replace the queue. Otherwise an older reply (say, one read without reviewed
+   * documents) lands last and overwrites the one asked for; see `latestResponseOnly.ts`.
+   *
+   * A background failure is deliberately not raised as the page banner: nothing the
+   * user did caused it, and the banner suppresses the "Queue complete" alert, which is
+   * gated on there being no error. The next foreground load still reports.
+   */
+  const loadQueue = useCallback(
+    async (background = false) => {
+      if (!testSetId) return;
+      // Claimed before the await, so precedence is decided by which request started
+      // last rather than by which happened to finish last.
+      const isCurrentLoad = responseGuard.claim();
+      if (!background) {
+        foregroundLoads.current += 1;
+        setIsLoading(true);
+        setError(null);
       }
-      setQueue(data);
-    } catch (err) {
-      logger.error('Error loading annotation queue:', err);
-      setError(
-        isAuthorizationError(err)
-          ? 'You do not have access to this test set. Ask an Admin to give your account access.'
-          : describeApiError(err, 'load the annotation queue'),
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [testSetId, showReviewed]);
+      try {
+        const r = await client.graphql({
+          query: getAnnotationQueue,
+          variables: { testSetId, limit: QUEUE_PAGE_SIZE, includeCompleted: showReviewed },
+        });
+        if (!isCurrentLoad()) return;
+        const data = r.data?.getAnnotationQueue ?? null;
+        if (!data) {
+          if (!background) setError('The annotation queue could not be loaded.');
+          return;
+        }
+        setQueue(data);
+        setQueueIncludesReviewed(showReviewed);
+      } catch (err) {
+        logger.error('Error loading annotation queue:', err);
+        // A superseded request's failure must not put a banner over the request whose
+        // rows are actually being shown, for the same reason its success must not
+        // replace them.
+        if (!background && isCurrentLoad()) {
+          setError(
+            isAuthorizationError(err)
+              ? 'You do not have access to this test set. Ask an Admin to give your account access.'
+              : describeApiError(err, 'load the annotation queue'),
+          );
+        }
+      } finally {
+        // Cleared when the LAST foreground load finishes, not when this one does.
+        //
+        // ⚠️ Not `isCurrentLoad()`, which deadlocks: a background load claims the same
+        // guard, so it can supersede a foreground one that then declines to clear the
+        // spinner no background load will ever clear either — leaving isLoading true
+        // for good. Counting in-flight foreground loads keeps the protective half (a
+        // superseded reply cannot report "loaded" while the reply that will be shown is
+        // still coming) without a state nothing can leave.
+        if (!background) {
+          foregroundLoads.current = Math.max(0, foregroundLoads.current - 1);
+          if (foregroundLoads.current === 0) setIsLoading(false);
+        }
+      }
+    },
+    [testSetId, showReviewed, responseGuard],
+  );
 
   useEffect(() => {
     if (legacyDoc) {
@@ -196,7 +255,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   useEffect(() => {
     if (!labelJobRunning && !summariesBuilding) return undefined;
     const timer = setTimeout(async () => {
-      await loadQueue();
+      await loadQueue(true);
       setPollTick((n) => n + 1);
     }, LABEL_JOB_POLL_MS);
     return () => clearTimeout(timer);
@@ -345,6 +404,34 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     </div>
   );
 
+  const revealReviewed = () => {
+    setStatusFilter('reviewed');
+    setQueuePage(1);
+  };
+
+  /**
+   * The reveal for reviewed documents, shared by the two places that offer it: the
+   * table's filter bar, and the action on the "Queue complete" alert.
+   *
+   * One definition because the progress line is the whole point and it is easy to fix
+   * in one place and leave the other dead. Reviewed documents are not held client-side
+   * — the server omits them unless asked — so the reveal costs a queue reload, slow
+   * enough on a large set to look like a dead click. The alert stays up until that
+   * reply lands, so without the progress line its button would simply vanish.
+   *
+   * Null once the queue in hand includes reviewed documents: the rows themselves are
+   * the confirmation.
+   */
+  const showReviewedControl = !showReviewed ? (
+    <Button iconName="status-positive" onClick={revealReviewed}>
+      Show reviewed documents
+    </Button>
+  ) : isLoading && !queueIncludesReviewed ? (
+    <Box fontSize="body-s" color="text-body-secondary">
+      <Spinner /> Loading reviewed documents…
+    </Box>
+  ) : null;
+
   if (!roleLoading && !canAnnotate) {
     return (
       <ContentLayout header={<Header variant="h1">Annotate</Header>}>
@@ -481,11 +568,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         )}
 
         {queue && queue.documents.length === 0 && !error && !labelJobRunning && !summariesBuilding && (
-          <Alert
-            type="success"
-            header="Queue complete"
-            action={!showReviewed && <Button onClick={() => setStatusFilter('reviewed')}>Show reviewed documents</Button>}
-          >
+          <Alert type="success" header="Queue complete" action={showReviewedControl}>
             Every document in this test set has been reviewed. Open a reviewed document to check or change its labels.
           </Alert>
         )}
@@ -560,6 +643,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                   options={STATUS_FILTER_OPTIONS}
                   ariaLabel="Filter by status"
                 />
+                {showReviewedControl}
               </SpaceBetween>
             }
             columnDefinitions={[

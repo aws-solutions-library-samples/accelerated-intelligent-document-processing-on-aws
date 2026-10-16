@@ -97,17 +97,16 @@ def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, A
 def _is_max_tokens_error(exc: Exception) -> bool:
     """Detect Strands' hard failure on a response truncated at max output tokens.
 
-    Strands raises ``MaxTokensReachedException`` when the model stops with
-    ``stopReason == "max_tokens"``, and deliberately lets it bubble up rather
-    than wrapping it. Match on type name and message text rather than importing
-    the Strands exception type, mirroring ``_is_context_overflow_error`` in
-    ``extraction.agentic_idp`` — this module must stay importable when the
-    agentic extras are not installed.
+    Thin delegate to :func:`idp_common.utils.bedrock_utils.is_max_tokens_agent_error`,
+    which is the single implementation: the agentic extraction loop asks the same
+    question for a different reason (salvaging an already-validated extraction, see
+    ``extraction.agentic_idp._invoke_agent_for_extraction``) and two copies of a
+    matcher drift. Kept as a module-local name because this module's tests and the
+    two call sites below already reach for it.
     """
-    if "maxtokensreached" in type(exc).__name__.lower():
-        return True
-    msg = str(exc).lower()
-    return "max_tokens limit" in msg or "due to max_tokens" in msg
+    from idp_common.utils.bedrock_utils import is_max_tokens_agent_error
+
+    return is_max_tokens_agent_error(exc)
 
 
 class RulesTruncatedError(Exception):
@@ -700,11 +699,14 @@ class RulesDiscovery:
 
         Recognizes the Bedrock Converse signal (``stopReason == "max_tokens"``)
         and the OpenAI Responses adapter's mapped status, so the check holds
-        across model families.
+        across model families. One matcher
+        (``utils.bedrock_utils.is_output_token_truncation``) for the three callers
+        that ask this question, so the set of stop reasons cannot drift between
+        them.
         """
-        raw = response.get("response", response) if isinstance(response, dict) else None
-        stop_reason = raw.get("stopReason") if isinstance(raw, dict) else None
-        return stop_reason in ("max_tokens", "max_output_tokens", "incomplete")
+        from idp_common.utils.bedrock_utils import is_output_token_truncation
+
+        return is_output_token_truncation(response)
 
     def _safe_parse_rules(self, content_text: str) -> List[Dict[str, Any]]:
         """Best-effort parse of a possibly-truncated response, for reporting only.
@@ -796,11 +798,20 @@ class RulesDiscovery:
             if len(rule_props) == 0:
                 return False, "rule_properties must contain at least one rule"
 
-            # Validate each rule property has a description
+            # Validate each rule property has a NON-EMPTY description.
+            #
+            # Truthiness, not presence: ``RuleValidationService._get_rule_metadata``
+            # keeps a rule only ``if description``, so a rule emitted as
+            # ``{"description": ""}`` satisfied this gate, was persisted, and was
+            # then dropped at evaluation time with nothing reporting it — one rule
+            # short of the policy, reported as a clean validation. Refusing it here
+            # routes the model through the existing retry-with-feedback loop
+            # instead, which is the same trade ``RulesTruncatedError`` makes: a
+            # failed job beats a silently incomplete compliance ruleset.
             for rule_id, rule_def in rule_props.items():
                 if not isinstance(rule_def, dict):
                     return False, f"Rule '{rule_id}' must be an object"
-                if "description" not in rule_def:
+                if not rule_def.get("description"):
                     return False, f"Rule '{rule_id}' missing 'description' field"
 
             return True, ""

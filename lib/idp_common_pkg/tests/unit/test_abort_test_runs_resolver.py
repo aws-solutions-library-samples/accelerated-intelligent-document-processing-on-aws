@@ -39,6 +39,26 @@ def mock_lambda_client():
         yield mock_client
 
 
+# The handler pauses for `_SETTLE_SECONDS` after queueing the test-result cache
+# update, so the metrics Lambda has started reading before the run is marked
+# ABORTED. Served for real, that is two seconds of this suite's wall clock in
+# every test that reaches it, and nothing asserted the pause existed at all --
+# so the four tests below paid for it and proved nothing about it. They patch it
+# and assert it instead (#1380).
+_SETTLE_SECONDS = 2
+
+
+def _assert_settled(settle):
+    """The handler paused for the settle interval, once per aborted run."""
+    assert settle.call_args_list, (
+        "the handler did not pause after queueing the cache update, so the "
+        "metrics Lambda can be asked to read a run already marked ABORTED"
+    )
+    assert all(call.args == (_SETTLE_SECONDS,) for call in settle.call_args_list), (
+        f"the settle is no longer {_SETTLE_SECONDS}s: {settle.call_args_list}"
+    )
+
+
 @pytest.mark.unit
 def test_abort_single_test_run_success(mock_env, mock_dynamodb, mock_lambda_client):
     """Test successful abort of a single test run"""
@@ -69,8 +89,13 @@ def test_abort_single_test_run_success(mock_env, mock_dynamodb, mock_lambda_clie
         "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "arguments": {"testRunIds": ["test-run-1"]},
     }
-    with patch.object(index, "_wait_for_documents_terminal_state"):
+    with (
+        patch.object(index, "_wait_for_documents_terminal_state"),
+        # Patched, not served: see the note above `_assert_settled`.
+        patch("time.sleep") as settle,
+    ):
         result = index.lambda_handler(event, None)
+    _assert_settled(settle)
     assert result["success"] is True
     assert result["abortedCount"] == 1
     assert result["failedCount"] == 0
@@ -161,8 +186,13 @@ def test_abort_queued_test_run(mock_env, mock_dynamodb, mock_lambda_client):
         "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "arguments": {"testRunIds": ["queued-test-run"]},
     }
-    with patch.object(index, "_wait_for_documents_terminal_state"):
+    with (
+        patch.object(index, "_wait_for_documents_terminal_state"),
+        # Patched, not served: see the note above `_assert_settled`.
+        patch("time.sleep") as settle,
+    ):
         result = index.lambda_handler(event, None)
+    _assert_settled(settle)
     assert result["success"] is True
     assert result["abortedCount"] == 1
 
@@ -287,8 +317,13 @@ def test_abort_updates_completed_at_timestamp(
         "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "arguments": {"testRunIds": ["test-run-123"]},
     }
-    with patch.object(index, "_wait_for_documents_terminal_state"):
+    with (
+        patch.object(index, "_wait_for_documents_terminal_state"),
+        # Patched, not served: see the note above `_assert_settled`.
+        patch("time.sleep") as settle,
+    ):
         index.lambda_handler(event, None)
+    _assert_settled(settle)
     # Verify CompletedAt was set
     update_call = mock_dynamodb.update_item.call_args
     completed_at = update_call[1]["ExpressionAttributeValues"][":completed_at"]
@@ -338,8 +373,13 @@ def test_abort_multiple_test_runs_mixed_results(
         "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "arguments": {"testRunIds": ["test-run-1", "test-run-2", "test-run-3"]},
     }
-    with patch.object(index, "_wait_for_documents_terminal_state"):
+    with (
+        patch.object(index, "_wait_for_documents_terminal_state"),
+        # Patched, not served: see the note above `_assert_settled`.
+        patch("time.sleep") as settle,
+    ):
         result = index.lambda_handler(event, None)
+    _assert_settled(settle)
     assert result["abortedCount"] == 1  # test-run-1 succeeds
     assert result["failedCount"] == 2  # test-run-2 (complete), test-run-3 (not found)
 

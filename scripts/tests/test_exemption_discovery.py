@@ -12,6 +12,11 @@ comment above it. Both are quiet when they miss. Both have missed:
   passed. One letter of aperture.
 * ``NOT_A_PRESET``, ``NOT_AN_IDP_CONFIG`` and ``READ_ELSEWHERE`` were matched by
   nothing, by name or by prose, and became discoverable only when they were renamed.
+* ``CODES_NOT_IN_RESULT_JSON`` was matched by nothing either, two fragments later: the
+  vocabulary held ``NOT_A`` and ``NON_`` and no bare ``NOT_``, so the plainest spelling
+  of "members a gate does not reach" fell between them. Same ending -- it became
+  discoverable when it was renamed. ``NOT_IN_`` closes that shape and
+  ``test_a_set_named_for_what_a_gate_does_not_reach_is_discovered_by_name`` pins it.
 
 The remedy is not "make the lists longer" on its own, because a longer list has the
 same property: nothing anywhere asks whether an entry on it can fire. So the meta-
@@ -299,6 +304,95 @@ def test_an_underscore_bearing_fragment_does_not_match_loosely(fragment: str) ->
         f"rejects it, so the Make and shell patterns are broader than _matches_name: "
         f"{sorted(found)}. Check that exemption_discovery._text_pattern still puts the "
         "fragments in verbatim."
+    )
+
+
+def test_a_set_named_for_what_a_gate_does_not_reach_is_discovered_by_name() -> None:
+    """``X_NOT_IN_Y`` is an exemption shape, and the NAME route has to reach it.
+
+    Measured before ``NOT_IN_`` existed: a constant spelled ``CODES_NOT_IN_RESULT_JSON``
+    was discovered by neither route on any of the three surfaces -- not by name, because
+    none of the 28 fragments matched it, and not by prose, because the comment above it
+    used none of the four recognised phrasings. So a set of things a gate deliberately
+    does not reach could be added with nothing asking for a judgement about it, and the
+    one that was only became visible because a person renamed it.
+
+    The name here is deliberately NOT the generated :func:`_probe_name` shape. The
+    parametrised probes above prove the fragment *can* fire; this proves it fires on the
+    spelling somebody actually wrote, which is the claim worth pinning -- a vocabulary
+    tested only against names the test builds is tested against itself.
+    """
+    name = "CODES_NOT_IN_RESULT_JSON"
+    _assert_attributable("NOT_IN_", name)
+    found = _discover(
+        {
+            # The comment carries no EXEMPTION_PROSE phrase, so a hit cannot come from
+            # the prose route and the assertion is about the name route alone.
+            "scripts/probe.py": f"# The result JSON omits these.\n{name} = {{'a'}}\n",
+            "Makefile": f"{name} = a b\n",
+            "scripts/probe.sh": f"#!/bin/sh\n{name.lower()}=1\n",
+        }
+    )
+    for rel, spelling in (
+        ("scripts/probe.py", name),
+        ("Makefile", name),
+        ("scripts/probe.sh", name.lower()),
+    ):
+        assert f"{rel}::{spelling}" in found, (
+            f"a set named {spelling} in {rel} -- members a gate does not reach -- is "
+            f"not discovered, so it could be added with no registry entry and nothing "
+            f"would ask. Found: {sorted(found)}"
+        )
+    assert found[f"scripts/probe.py::{name}"].via == "name", (
+        f"{name} was discovered via "
+        f"{found[f'scripts/probe.py::{name}'].via!r} rather than by name, so the prose "
+        "route is carrying it and the name route's reach is still untested."
+    )
+
+
+def test_the_negative_assertion_family_is_not_read_as_an_exemption() -> None:
+    """Why the fragment is ``NOT_IN_`` and not a bare ``NOT_``.
+
+    A bare ``NOT_`` reaches the shape above and also the family that says what a check
+    must *not* do, which is an assertion rather than a carve-out. Swept over this tree
+    it discovers five surfaces and four are that family: two fixture tables spelled
+    ``..._THAT_MUST_NOT_TRIP``, a ``_NOT_CALLS`` fixture, and a function-local
+    ``not_run``. The widening direction is not free -- the registry's remedy for a
+    discovered surface is an authored judgement, and four judgements on noise for one
+    point of reach is how a reviewer learns to rubber-stamp it.
+
+    The boundary therefore lives here rather than only in a comment: widening the
+    vocabulary until these three are discovered arrives as a failure with the
+    measurement to read, instead of as four fixture entries nobody questioned.
+
+    Note which guard this is *not*. ``_matches_name``'s polarity guard rejects a word
+    read inside its own inversion (``ALLOW`` inside ``DISALLOWED``); none of these is
+    an inversion of anything, and extending that guard to cover them would be a
+    denylist of today's tree -- it narrows discovery globally, so a genuine carve-out
+    whose name happened to contain one of the guard words would stop being found.
+    """
+    names = ("SHAPES_THAT_MUST_NOT_TRIP", "MODULE_LEVEL_NOT_CALLS", "CANNOT_PARSE_ROWS")
+    for name in names:
+        assert not exemption_discovery._matches_name(name), (
+            f"{name} is matched by the NAME vocabulary. It states what a check must "
+            "not do, which is an assertion and not a carve-out; registering one is a "
+            "judgement with nothing to decide. If this is a deliberate widening, the "
+            "sweep in exemption_discovery.NAME_VOCABULARY's comment is what to read "
+            "and update first."
+        )
+    found = _discover(
+        {
+            "scripts/probe.py": "".join(f"{name} = {{'a'}}\n" for name in names),
+            "Makefile": "".join(f"{name} = a b\n" for name in names),
+            "scripts/probe.sh": "#!/bin/sh\n"
+            + "".join(f"{name.lower()}=1\n" for name in names),
+        }
+    )
+    assert not found, (
+        "the negative-assertion family is discovered on at least one surface: "
+        f"{sorted(found)}. _text_pattern builds the Make and shell patterns from the "
+        "same vocabulary, so a divergence here means those two surfaces are broader "
+        "than _matches_name."
     )
 
 

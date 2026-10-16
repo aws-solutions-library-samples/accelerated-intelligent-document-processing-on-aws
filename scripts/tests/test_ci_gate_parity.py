@@ -61,12 +61,14 @@ conditions, not just at whether the gate's name is present.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
@@ -95,6 +97,15 @@ SHARED_GATES = [
     "make api-test-static",
     "make test-cicd",
     "make test-packages-cicd",
+    # The two halves of the coverage ratchet's reach. `coverage-all-cicd` is what
+    # produces a report per tree; `check-coverage-debt-cicd` is the ratchet with
+    # `--require-all-trees`, so a tree with no report is red BY NAME rather than
+    # named-and-passed. Before both existed, eight of the nine trees were reported as
+    # "not checked" and the gate exited 0 (#1256), which is why the pair is listed
+    # here rather than left to the universe-closure check: parity is the property
+    # that stops one CI keeping the reports and the other losing them.
+    "make coverage-all-cicd",
+    "make check-coverage-debt-cicd",
     "npx vitest run",
     "scripts/check_first_party_deps.py",
     "scripts/sdlc/validate_service_role_permissions.py",
@@ -237,8 +248,17 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "its exit status — so there is no verdict for a CI to carry. The ratchet it "
         "reports on does run in both CIs: the aggregate floor inside "
         "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline via "
-        "`make check-coverage-debt`, which both configurations invoke immediately "
-        "after that test step because it reads the report the step writes."
+        "`make check-coverage-debt-cicd`, which both configurations invoke after the "
+        "test steps because it reads the reports those steps write."
+    ),
+    "check-coverage-debt": (
+        "The ratchet with no arguments, which is the LOCAL spelling. It names a tree "
+        "with no report and exits 0, so on a checkout holding one tree's report it "
+        "reports on that tree and passes — correct for a developer who measured one "
+        "tree, and the exact state that left eight of nine trees advisory-but-passing "
+        "in CI (#1256). Both CIs therefore reach `check-coverage-debt-cicd` instead, "
+        "which adds `--require-all-trees` and is in SHARED_GATES. Registered here for "
+        "this one target: the check runs in both CIs, under the other name."
     ),
     "coverage-table": (
         "Reprints the table from the last measurement without re-measuring. Reading "
@@ -250,9 +270,10 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "Measures every tree and prints each one's figure. Like `coverage` above it has "
         "no threshold and no failure mode of its own -- it exits non-zero only if a "
         "tree's own tests fail, which the test gates already report -- so there is no "
-        "verdict for CI to carry. Its output is the input to `check-coverage-debt`, "
-        "which IS reached by both CIs. Wiring it into CI would re-run nine suites to "
-        "print a table nobody reads there."
+        "verdict for CI to carry. What both CIs run is `coverage-all-cicd`, which is "
+        "in SHARED_GATES: same producer, but with a concurrency budget and skipping "
+        "the tree an earlier CI step already measured. This unbudgeted nine-tree form "
+        "is the local one."
     ),
     "coverage-summary": (
         "Prints the recorded per-tree figures out of scripts/coverage_debt.json without "
@@ -972,18 +993,70 @@ def test_cfn_lint_is_pinned_consistently() -> None:
         )
 
 
+def _lint_debt_module():
+    """``scripts/check_lint_debt.py``, loaded by path.
+
+    By path rather than by import, because ``scripts`` is not a package here.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_check_lint_debt_under_test", REPO_ROOT / "scripts" / "check_lint_debt.py"
+    )
+    assert spec and spec.loader, "scripts/check_lint_debt.py is not loadable"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _declared_version(marker: str) -> str:
+    """The value of a ``NAME := value`` pin declared in the ``Makefile``.
+
+    A trailing comment is stripped, because ``NC := \\033[0m  # No Color`` is the
+    house style for these declarations and a pin written the same way would
+    otherwise compare as ``"1.2.3 # bumped"`` and never match anything.
+    """
+    makefile = MAKEFILE.read_text()
+    match = re.search(rf"^{re.escape(marker)}\s*:?=\s*(.*)$", makefile, re.MULTILINE)
+    assert match, f"{marker} is no longer declared in the Makefile"
+    return match.group(1).split("#", 1)[0].strip()
+
+
 @pytest.mark.unit
 def test_ruff_is_pinned_consistently() -> None:
-    """The two CIs must pin the same ``ruff``, and the pin must be installable here.
+    """The ``Makefile`` and both CIs must pin one ``ruff``, and it must be installable.
 
     ``ruff``'s findings are version-dependent, and ``make check-lint-debt``
     compares a recorded per-file finding count against a live measurement — so
     two CI systems on different ``ruff`` releases would disagree about whether
     the baseline is current, and the disagreement would look like a code defect.
     ``lib/idp_common_pkg/pyproject.toml`` supplies ``ruff`` locally as a range, so
-    the CI pin has to fall inside it or a contributor's ``make lint`` and CI are
+    the pin has to fall inside it or a contributor's ``make lint`` and CI are
     running different linters by construction.
+
+    ⚠️ **The ``Makefile`` is the side this was missing.** Both CIs pinned ruff
+    while the ``Makefile`` declared nothing and its lint recipes invoked whatever
+    ``ruff`` was first on ``PATH``, so the local gate and the CI gate were the
+    same measurement only by coincidence (issue #1381). The two versions in play
+    did agree on the tree at the time — the defect is that nothing constructed
+    that agreement, and ``ruff format`` output changes between releases as a diff
+    on a file nobody touched, which is the hardest failure shape to attribute.
+    ``RUFF_VERSION`` is now the single source of truth and this asserts the other
+    three places agree with it: the two CI configs, and the lookup in
+    ``scripts/check_lint_debt.py`` that names the pin when a count was measured
+    under a different linter.
+
+    A declared pin that nothing installs is not a pin, so the ``Makefile`` is
+    also asserted to *use* ``$(RUFF_VERSION)`` in its install recipes and to
+    report a mismatch at every ruff invocation. That is the direction a mutation
+    gets through: deleting the ``ruff==$(RUFF_VERSION)`` from ``setup`` leaves a
+    declaration, a comment and three agreeing CI configs all in place.
     """
+    version = _declared_version("RUFF_VERSION")
+    assert re.fullmatch(r"[0-9][0-9A-Za-z.\-]*", version), (
+        f"RUFF_VERSION is {version!r}, which is not a version literal. The "
+        f"comparisons below are exact string matches, so a variable reference or "
+        f"a range here would make every one of them vacuous."
+    )
+
     pins = {}
     for label, text in _pinned_tool_sources():
         found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", text)
@@ -996,15 +1069,214 @@ def test_ruff_is_pinned_consistently() -> None:
         "`make check-lint-debt` would then reach different verdicts depending on "
         "which CI a change was merged through."
     )
-    version = next(iter(pins.values()))
+
+    # Exact equality, not containment: `ruff==0.15.130` contains `0.15.13`, so a
+    # substring test would accept a pin two minor releases away.
+    drifted = {label: pin for label, pin in pins.items() if pin != version}
+    assert not drifted, (
+        f"these CI configs pin a ruff version other than the Makefile's "
+        f"RUFF_VERSION ({version}): {drifted}. CI would then run a different "
+        f"linter than `make lint` does locally, and a formatting difference "
+        f"between the two arrives as a diff on a file the change never touched."
+    )
+
+    # Counted over _uncommented(), which drops `echo` lines. The version note's
+    # own remedy line reads `pip install 'ruff==$(RUFF_VERSION)'` inside an echo,
+    # so a raw count is 3 and `>= 2` then passes with BOTH real installs intact
+    # or ONE of them deleted — a count pinned against a number a sentence can
+    # satisfy. Measured: dropping the `setup` install survived this assertion
+    # until the echo lines came out of it.
+    installs = re.findall(
+        r"ruff==\$\(RUFF_VERSION\)", _uncommented(MAKEFILE.read_text())
+    )
+    assert len(installs) >= 2, (
+        f"the Makefile installs `ruff==$(RUFF_VERSION)` in {len(installs)} "
+        f"place(s). Both `setup` and `setup-venv` must install the pin, or an "
+        f"environment built through this Makefile gets whatever the pyproject "
+        f"range resolves to on the day and the declaration above is decoration."
+    )
+
+    for target in ("ruff-lint", "format", "lint-cicd"):
+        assert "$(ruff_version_note)" in _recipe(target), (
+            f"`{target}` invokes ruff without the version note. The recipes call "
+            f"ruff as a bare command, so the pin is advisory at invocation time — "
+            f"a mismatch between the installed ruff and RUFF_VERSION is reported "
+            f"rather than enforced, and removing the report makes it silent, "
+            f"which is the state issue #1381 describes."
+        )
+
+    # The note must compare against the MARKER, not against a copy of its value.
+    # A literal here reports correctly today and then reports nothing — or
+    # reports on every run — from the first bump onwards, which is the same
+    # coincidental-agreement defect one level down.
+    note = re.search(
+        r"^define ruff_version_note$(.*?)^endef$",
+        MAKEFILE.read_text(),
+        re.MULTILINE | re.DOTALL,
+    )
+    assert note, "the Makefile no longer defines the ruff_version_note recipe"
+    # _uncommented() again, and for the third time in this test it is the echo
+    # lines that matter: the note's own remedy line reads `pip install
+    # 'ruff==$(RUFF_VERSION)'`, so a body-wide substring search finds the marker
+    # whether the COMPARISON uses it or a hardcoded copy of its value. Measured:
+    # rewriting the comparison as `!= "0.15.13"` survived until this dropped the
+    # echoes.
+    comparison = _uncommented(note.group(1))
+    assert "$(RUFF_VERSION)" in comparison, (
+        f"the ruff_version_note recipe compares the running ruff against "
+        f"something other than $(RUFF_VERSION):\n{comparison.strip()}\n"
+        f"A copy of today's value reports correctly until the pin is bumped and "
+        f"then reports on every run, or on none."
+    )
+
+    # CALLED, not grepped for. A textual check that the lookup mentions
+    # RUFF_VERSION passes on a lookup that raises or returns None — which is the
+    # exact state it was in, reading a file the pin had moved out of. Asserting
+    # the returned value is the only form that distinguishes the two.
+    assert _lint_debt_module()._ci_ruff_pin() == version, (
+        f"scripts/check_lint_debt.py's _ci_ruff_pin() returns "
+        f"{_lint_debt_module()._ci_ruff_pin()!r}, not RUFF_VERSION ({version}). "
+        f"It previously read the pin out of a CI workflow file, the pin moved "
+        f"into a composite action, and the lookup silently resolved to None — so "
+        f"`make check-lint-debt` reported a finding-count mismatch measured "
+        f"under a different linter with no hint that was the cause."
+    )
 
     pyproject = (REPO_ROOT / "lib" / "idp_common_pkg" / "pyproject.toml").read_text()
     specifier = re.search(r'"ruff([^"]*)"', pyproject)
     assert specifier, "lib/idp_common_pkg/pyproject.toml no longer declares ruff"
     assert Version(version) in SpecifierSet(specifier.group(1)), (
-        f"CI pins ruff=={version}, which is outside the range "
+        f"RUFF_VERSION is {version}, which is outside the range "
         f"{specifier.group(1)!r} that lib/idp_common_pkg installs locally. A "
         "developer's `make lint` would then run a different linter than CI."
+    )
+
+
+@pytest.mark.unit
+def test_the_lint_debt_pin_lookup_follows_the_marker(tmp_path: Path) -> None:
+    """``_ci_ruff_pin()`` must FOLLOW ``RUFF_VERSION``, not agree with it today.
+
+    Comparing the lookup's answer to the marker's current value cannot tell a
+    lookup that reads the ``Makefile`` apart from one that returns a copy of
+    today's value — both are correct until the pin is bumped, and the second then
+    reports a stale version while claiming to name the pin. That is the same
+    coincidental-agreement shape as the defect in #1381 itself, so it is measured
+    the only way that distinguishes them: point the module at a throwaway tree
+    declaring a *different* version and require the lookup to change its answer.
+    """
+    module = _lint_debt_module()
+    (tmp_path / "Makefile").write_text(
+        "# throwaway tree for this assertion only\nRUFF_VERSION := 9.99.99\n"
+    )
+    module.REPO_ROOT = tmp_path
+    assert module._ci_ruff_pin() == "9.99.99", (
+        f"_ci_ruff_pin() returned {module._ci_ruff_pin()!r} for a tree whose "
+        f"Makefile declares RUFF_VERSION := 9.99.99, so it is not reading the "
+        f"marker. A lookup that hardcodes the version names a stale pin from the "
+        f"first bump onwards, which is worse than naming none."
+    )
+
+
+#: The file classes that *execute* a ruff install, for the closure check below.
+#: Globs rather than a file list, so a second composite action or a new setup
+#: script is covered the day it is added — a third location that disagrees with
+#: the pin is the way this defect comes back, and it comes back in a file nobody
+#: thought to name.
+#:
+#: ``*.sh`` is every tracked shell script in the tree rather than
+#: ``scripts/setup/*.sh``, because the directory a script sits in is not what
+#: makes it an install surface: a measured probe put an unpinned
+#: ``pip3 install ruff`` in ``scripts/install_dev_tools.sh`` and the narrower
+#: glob did not read it.
+RUFF_INSTALL_SURFACE_GLOBS = (
+    "Makefile",
+    "make/*.mk",
+    ".gitlab-ci.yml",
+    ".github/workflows/*.y*ml",
+    ".github/actions/*/action.yml",
+    "*.sh",
+)
+
+
+def _install_surface_files() -> list[str]:
+    """Repo-relative paths matching :data:`RUFF_INSTALL_SURFACE_GLOBS`.
+
+    Discovered through ``git ls-files``, including files not yet committed
+    (``--others --exclude-standard``), for the two reasons that idiom exists
+    elsewhere in this repository: a filesystem walk reads build output, a sibling
+    worktree and ``.venv``, producing findings CI cannot reproduce; and a universe
+    restricted to *committed* files changes its answer at ``git add`` time, so a
+    newly written setup script would be judged only after it was already in.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    return [
+        path
+        for path in tracked
+        if any(PurePosixPath(path).match(glob) for glob in RUFF_INSTALL_SURFACE_GLOBS)
+    ]
+
+
+@pytest.mark.unit
+def test_every_executing_ruff_install_pins_the_version() -> None:
+    """Closure: nothing that *runs* a ruff install may leave it unpinned.
+
+    Comparing the ``Makefile`` to the two CI configs cannot see a fourth place.
+    ``scripts/setup/dev_setup_ubuntu.sh`` was exactly that — a
+    ``pip3 install virtualenv typer ruff`` with no pin, building the environment
+    a developer then runs ``make lint`` in, with every pin assertion above green
+    because that file is in none of them.
+
+    So the universe is derived from :data:`RUFF_INSTALL_SURFACE_GLOBS`, at every
+    depth, and every member that installs ruff must pin ``RUFF_VERSION``.
+
+    Two boundaries, stated so a green run is not over-read. ``echo``'d lines are
+    dropped by :func:`_uncommented`, so a script *telling a human* to
+    ``pip install ... ruff`` is not covered — nor are the equivalent lines in
+    ``docs/``. Those are instructions rather than installs, and they leave
+    ``cfn-lint`` unpinned in the same breath, so pinning one linter there and not
+    the other would be a half-measure dressed as a gate. And the check reads
+    files, not what a shell would do, so an install assembled from a variable is
+    invisible to it.
+    """
+    version = _declared_version("RUFF_VERSION")
+    # Boundary-anchored, not a substring: `ruff==0.15.13` IS a prefix of
+    # `ruff==0.15.130`, so the obvious `f"ruff=={version}" in line` accepts a pin
+    # a release away from the one it claims to be checking. Measured: that form
+    # passed `'ruff==0.15.130'` in the Ubuntu setup script.
+    pinned = re.compile(
+        rf"ruff==(?:{re.escape(version)}|\$\(RUFF_VERSION\))(?![\w.\-])"
+    )
+    checked, unpinned = [], []
+    for relative in _install_surface_files():
+        path = REPO_ROOT / relative
+        if not path.is_file():
+            continue
+        for line in _uncommented(path.read_text()).splitlines():
+            if not re.search(r"\b(pip|pip3|uv pip)\b.*\binstall\b", line):
+                continue
+            if not re.search(r"(?<![\w.-])ruff(?![\w.-])", line):
+                continue
+            checked.append(relative)
+            if not pinned.search(line):
+                unpinned.append(f"{relative}: {line.strip()}")
+
+    assert len(checked) >= 4, (
+        f"only {len(checked)} ruff install line(s) were found ({checked}), which "
+        f"is fewer than the Makefile's two plus one per CI config. The globs or "
+        f"the line patterns have stopped matching and this check would pass "
+        f"vacuously — the failure mode it exists to prevent."
+    )
+    assert not unpinned, (
+        f"these lines install ruff without pinning RUFF_VERSION ({version}): "
+        f"{unpinned}. Whatever they install is what `ruff check` and "
+        f"`ruff format` then measure, and findings and formatting are both "
+        f"properties of the linter version."
     )
 
 
@@ -1117,4 +1389,419 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
         f"({offenders}). That is a real improvement, but the "
         "`test-integration-all` entry in GATES_DELIBERATELY_OUT_OF_CI says the "
         "opposite — rewrite it, and delete this test or invert it."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# per-job toolchains: a suite's inputs have to reach the job that runs it,
+# before the step that runs it
+# --------------------------------------------------------------------------- #
+
+#: The ``make`` targets through which a CI job reaches ``scripts/tests``, and so
+#: ``scripts/tests/test_ui_test_discovery.py``, whose three calibrations consult the
+#: installed Vitest. ``test-packages-cicd`` runs that suite directly;
+#: ``coverage-all-cicd`` re-runs it in order to measure it, which drags the same
+#: toolchain requirement into a job whose name and ``script:`` block say nothing
+#: about it. Both spellings are listed because either one alone would leave a job
+#: that runs the suite outside the universe below.
+SCRIPTS_SUITE_TARGETS = ("test-packages-cicd", "coverage-all-cicd")
+
+#: The composite-action input by which a GitHub job asks for the UI's npm
+#: dependencies. GitHub Actions has no YAML anchors, so the install itself lives in
+#: ``.github/actions/python-env/action.yml`` and the job's side of it is this input
+#: — which is a string, and proves nothing on its own. That is why
+#: :func:`test_the_github_ui_deps_input_actually_installs_the_dependencies` is a
+#: separate assertion rather than a clause of the one before it.
+UI_DEPS_INPUT = "ui-deps"
+
+
+def _gitlab_job_commands() -> dict[str, list[str]]:
+    """``{job name: its before_script + script}``, in order, merge keys resolved.
+
+    A list rather than one blob because the order is part of what is asserted: an
+    install that lands after the step it is installing for is not an install. And
+    parsed rather than sliced out of the text by indentation, because a job's
+    toolchain arrives through a merge key (``<<: *fast_check_job``) as readily as
+    through its own lines, and a text slice cannot follow one.
+    """
+    loaded = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
+    jobs: dict[str, list[str]] = {}
+    for name, body in loaded.items():
+        if not isinstance(body, dict) or "script" not in body:
+            continue
+        jobs[name] = [
+            str(line)
+            for line in list(body.get("before_script") or [])
+            + list(body.get("script") or [])
+        ]
+    return jobs
+
+
+def _github_job_steps(workflow: Path = GITHUB_TESTS) -> dict[str, list[str]]:
+    """``{job name: one string per step}``, in order.
+
+    A step contributes either its shell text or, when it ``uses`` a composite
+    action **in this repository**, a rendering of the inputs it passed — because
+    that is how a GitHub job asks for a toolchain. Reading only the shell would
+    report the UI dependencies as missing from every job while they were being
+    installed, which is the false-alarm direction :func:`_github_ci_text` was
+    written about; reading only the inputs would accept one no action honours,
+    which is the assertion after this one.
+    """
+    loaded = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    jobs: dict[str, list[str]] = {}
+    for name, body in (loaded.get("jobs") or {}).items():
+        rendered: list[str] = []
+        for step in body.get("steps") or []:
+            uses = str(step.get("uses", ""))
+            if uses.startswith("./"):
+                passed = " ".join(
+                    f"{key}={value}" for key, value in (step.get("with") or {}).items()
+                )
+                rendered.append(f"uses {uses} with {passed}")
+            else:
+                rendered.append(str(step.get("run", "")))
+        jobs[name] = rendered
+    return jobs
+
+
+def _installs_the_ui_deps(command: str) -> bool:
+    """Does ``command`` install the UI's npm dependencies?
+
+    Either spelling counts: ``npm ci`` run against ``src/ui``, or
+    ``ui-deps=true`` passed to a composite action in this repository. One line has
+    to carry both halves of the first, so a ``cd src/ui`` in one command and an
+    ``npm ci`` in an unrelated one do not add up to an install. Run through
+    :func:`_uncommented` first — a commented-out install reads to a substring
+    search exactly like a live one, which is the first of the escapes
+    ``scripts/tests/test_ui_test_discovery.py`` documents against itself.
+    """
+    for line in _uncommented(command).splitlines():
+        # `src/ui` as a whole path element, so a neighbouring directory does not
+        # read as the UI: `cd src/ui-staging && npm ci` contains `src/ui` as a
+        # substring and installs this suite nothing. (`src/ui/` still matches.)
+        if "npm ci" in line and re.search(r"src/ui(?![\w-])", line):
+            return True
+        if line.lstrip().startswith("uses ./") and f"{UI_DEPS_INPUT}=true" in line:
+            return True
+    return False
+
+
+def _runs_the_scripts_suite(command: str) -> bool:
+    return any(_invokes(_uncommented(command), t) for t in SCRIPTS_SUITE_TARGETS)
+
+
+def _first_index(commands: list[str], predicate) -> int | None:
+    return next((i for i, c in enumerate(commands) if predicate(c)), None)
+
+
+def _ci_jobs_running_the_scripts_suite() -> dict[str, dict[str, list[str]]]:
+    """``{config name: {job name: ordered commands}}`` for jobs running the suite.
+
+    Derived from the ``make`` targets rather than listed by job name, so a third
+    job that starts running the suite is covered the day it is added rather than
+    the day somebody remembers a list.
+    """
+    out: dict[str, dict[str, list[str]]] = {}
+    for label, jobs in (
+        (GITLAB.name, _gitlab_job_commands()),
+        (GITHUB_TESTS.name, _github_job_steps()),
+    ):
+        out[label] = {
+            name: commands
+            for name, commands in jobs.items()
+            if any(_runs_the_scripts_suite(c) for c in commands)
+        }
+    return out
+
+
+@pytest.mark.unit
+def test_every_ci_job_running_this_suite_installs_the_ui_deps() -> None:
+    """A job that runs ``scripts/tests`` installs the UI's npm dependencies first.
+
+    ``scripts/tests/test_ui_test_discovery.py`` holds hand-written copies of
+    Vitest's file-naming convention — the twelve extensions ``?(c|m)[jt]s?(x)``
+    expands to, and ``defaultInclude`` itself — and those literals are the *input*
+    to its gate assertions: the file set it calls the universe is derived from
+    them. Three assertions calibrate them against the installed Vitest, and those
+    three need ``src/ui/node_modules``.
+
+    Until #1390 no job that ran that suite had it. ``node`` was on the runner for
+    basedpyright and the UI's dependencies were installed in a different job, so
+    the calibrations skipped — on **both** platforms, in all four jobs — and a skip
+    exits 0. Nothing escalated, and the literals went unchecked against the tool
+    they describe for as long as that lasted. A Vitest upgrade broadening its own
+    convention is the live case: the gate would keep asserting against the stale
+    expansion, pass, and quietly stop covering the new spelling, which is the exact
+    failure that module was written to prevent.
+
+    Both platforms at once, because giving one a toolchain and not the other is the
+    asymmetry this module exists for, and it has already cost ``package_tests`` a
+    red run once — see the toolchain notes in ``.gitlab-ci.yml``.
+
+    **And in that order.** A ``cd src/ui && npm ci`` that sits after the step
+    running the suite is a step that looks exactly like a fix and is not one: the
+    install happens, the job's log shows it, and the suite that needed it has
+    already skipped past. Presence alone cannot tell the two apart.
+    """
+    discovered = _ci_jobs_running_the_scripts_suite()
+
+    # Both platforms are read, asserted by NAME rather than by iterating whatever
+    # the dict happens to hold. A per-platform loop over the keys cannot see a
+    # platform that is not a key: dropping one of the two pairs in
+    # _ci_jobs_running_the_scripts_suite leaves this test green over the other
+    # side alone, which is a parity test that has stopped comparing — measured as
+    # a surviving mutant, not imagined.
+    assert set(discovered) == {GITLAB.name, GITHUB_TESTS.name}, (
+        f"this test read {sorted(discovered)}, not both CI configurations. Parity "
+        "is the claim; one side alone cannot carry it."
+    )
+
+    # Non-vacuity, per platform: a side whose jobs are not found cannot have an
+    # offender, so the loop below would pass by reading nothing.
+    for platform, jobs in discovered.items():
+        assert jobs, (
+            f"no job in {platform} was found running any of {SCRIPTS_SUITE_TARGETS}. "
+            "Either the suite has stopped running there — which "
+            "test_gate_runs_in_both_cis is the gate for — or it is invoked in a form "
+            "this discovery cannot see, in which case fix the discovery rather than "
+            "the expectation: with an empty universe this test reports nothing."
+        )
+
+    missing: list[str] = []
+    late: list[str] = []
+    for platform, jobs in discovered.items():
+        for name, commands in jobs.items():
+            installs = _first_index(commands, _installs_the_ui_deps)
+            runs = _first_index(commands, _runs_the_scripts_suite)
+            if installs is None:
+                missing.append(f"{platform}: job `{name}`")
+            elif runs is not None and installs > runs:
+                late.append(
+                    f"{platform}: job `{name}` (installs at step {installs}, runs "
+                    f"the suite at step {runs})"
+                )
+
+    assert not missing, (
+        "these CI jobs run scripts/tests without installing the UI's npm "
+        "dependencies, so test_ui_test_discovery.py's three calibrations cannot run "
+        "there:\n  " + "\n  ".join(missing) + "\n\n"
+        "On GitLab add `cd src/ui && npm ci --prefer-offline --no-audit && cd ../..` "
+        "to the job's before_script, with the src/ui/node_modules cache block the "
+        f'other jobs declare. On GitHub pass `{UI_DEPS_INPUT}: "true"` to the '
+        "python-env composite action. That module now FAILS rather than skips when "
+        "it finds them missing under CI, so such a job is red rather than quietly "
+        "incomplete — but the remedy is the dependencies, not relaxing it back to a "
+        "skip (#1390)."
+    )
+    assert not late, (
+        "these CI jobs install the UI's npm dependencies only AFTER the step that "
+        "runs scripts/tests, which is the same as not installing them as far as the "
+        "suite is concerned:\n  " + "\n  ".join(late)
+    )
+
+
+def _ci_paths_module():
+    """``scripts/srt/ci_paths.py``, loaded by path.
+
+    By path rather than by import, because ``scripts/srt`` is not a package. The
+    module is stdlib-only at import time — the parser this test is about is imported
+    lazily inside it — so loading it here costs nothing and cannot depend on the
+    thing being asserted.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_ci_paths_for_parity", REPO_ROOT / "scripts" / "srt" / "ci_paths.py"
+    )
+    assert spec and spec.loader, "scripts/srt/ci_paths.py is not loadable"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _installs_the_distribution(command: str, distribution: str) -> bool:
+    """Does ``command`` ``pip install`` a distribution by that name?
+
+    Per line, because a GitHub step's ``run`` is a whole shell script and a GitLab
+    job's is one entry per line: a file-wide search would accept an install in a
+    different step of a different job. Case-insensitively, because distribution
+    names are compared case-insensitively by pip and ``pyyaml`` and ``PyYAML`` are
+    the same package.
+    """
+    pattern = re.compile(rf"(?<![\w.-]){re.escape(distribution)}(?![\w.-])", re.I)
+    for line in _uncommented(command).splitlines():
+        if "pip install" in line and pattern.search(line):
+            return True
+    return False
+
+
+def _ci_jobs_running_the_srt_gate() -> dict[str, dict[str, list[str]]]:
+    """``{config name: {job name: ordered commands}}`` for jobs running the scan.
+
+    Found by the ``make`` target rather than by job name, for the same reason the
+    suite discovery above is: the job is renameable and a second one is addable.
+    """
+    out: dict[str, dict[str, list[str]]] = {}
+    for label, jobs in (
+        (GITLAB.name, _gitlab_job_commands()),
+        (GITHUB_SECURITY.name, _github_job_steps(GITHUB_SECURITY)),
+    ):
+        out[label] = {
+            name: commands
+            for name, commands in jobs.items()
+            if any(_invokes(_uncommented(c), "srt-scan") for c in commands)
+        }
+    return out
+
+
+@pytest.mark.unit
+def test_every_ci_job_running_the_srt_gate_installs_the_parser_it_needs() -> None:
+    """The SRT gate's job installs the distributions its classification requires.
+
+    ``scripts/srt/ci_paths.py`` reads a CodeBuild buildspec to learn which
+    directories a deployment artifact is built from, and that read needs PyYAML.
+    Neither job installed it. The parser was therefore absent on every CI run, the
+    "cannot establish the packaged set" branch was taken every time, and the
+    demotion that branch switches off is what keeps Bandit's identifier-name
+    findings in test files out of the gate — so the security gate reported ten HIGH
+    findings and exit 1 on every pull request for a day, for a missing
+    ``pip install`` (#1428). The scan refuses outright on that condition now, which
+    makes it legible; this is what keeps it from arising.
+
+    **Both platforms, by name.** A gap between the two CIs is what this module
+    exists for, and this is the shape it takes here: an environment dependency is
+    the easiest thing to add on one side and forget on the other, and the symptom
+    is not a missing step but a passing gate that has stopped classifying.
+
+    The distributions come from ``REQUIRED_DISTRIBUTIONS`` in the module itself, so
+    a second one added there has to reach both configurations rather than being
+    silently required of neither.
+    """
+    required = _ci_paths_module().REQUIRED_DISTRIBUTIONS
+    assert required, (
+        "ci_paths.REQUIRED_DISTRIBUTIONS is empty, so the loop below asserts "
+        "nothing. If the classification genuinely needs no third-party parser any "
+        "more, delete this test rather than leaving it vacuous."
+    )
+
+    discovered = _ci_jobs_running_the_srt_gate()
+    assert set(discovered) == {GITLAB.name, GITHUB_SECURITY.name}, (
+        f"this test read {sorted(discovered)}, not both CI configurations. Parity "
+        "is the claim; one side alone cannot carry it."
+    )
+    for platform, jobs in discovered.items():
+        assert jobs, (
+            f"no job in {platform} was found running `make srt-scan`. Either the "
+            "gate has stopped running there — which test_gate_runs_in_both_cis is "
+            "the gate for — or it is invoked in a form this discovery cannot see, "
+            "in which case fix the discovery: with an empty universe this test "
+            "reports nothing."
+        )
+
+    missing: list[str] = []
+    late: list[str] = []
+    for platform, jobs in discovered.items():
+        for name, commands in jobs.items():
+            scan = _first_index(
+                commands, lambda c: _invokes(_uncommented(c), "srt-scan")
+            )
+            for distribution in required:
+                installs = _first_index(
+                    commands,
+                    lambda c, d=distribution: _installs_the_distribution(c, d),
+                )
+                if installs is None:
+                    missing.append(f"{platform}: job `{name}` needs {distribution}")
+                elif scan is not None and installs > scan:
+                    late.append(
+                        f"{platform}: job `{name}` installs {distribution} at step "
+                        f"{installs} but scans at step {scan}"
+                    )
+
+    assert not missing, (
+        "these CI jobs run the SRT gate without installing a distribution its "
+        "classification requires, so the gate runs degraded:\n  "
+        + "\n  ".join(missing)
+        + "\n\nAdd the package to the job's existing `pip install` line in both "
+        "configurations — one side alone is the defect this module is for."
+    )
+    assert not late, (
+        "these CI jobs install the parser only after running the scan, which is "
+        "the same as not installing it:\n  " + "\n  ".join(late)
+    )
+
+
+@pytest.mark.unit
+def test_the_github_ui_deps_input_actually_installs_the_dependencies() -> None:
+    """The input the assertion above accepts has to do something.
+
+    ``ui-deps: "true"`` in a workflow is a string handed to a composite action. If
+    no step in that action is conditioned on it, or the step it is conditioned on
+    installs nothing, the assertion above would read the request and call it
+    satisfied — a gate measuring an intention rather than an effect, which is the
+    shape of defect this module's docstring is about.
+
+    Composite actions are globbed rather than named, so the input may be honoured
+    by whichever of them the jobs use.
+    """
+    actions = sorted(GITHUB_ACTIONS_DIR.glob("*/action.yml"))
+    assert actions, (
+        f"no composite action found under {GITHUB_ACTIONS_DIR.name}, so this test "
+        "read nothing"
+    )
+
+    requested = sorted(
+        name
+        for name, commands in _github_job_steps().items()
+        if any(
+            c.lstrip().startswith("uses ./") and f"{UI_DEPS_INPUT}=true" in c
+            for c in commands
+        )
+    )
+    # The value the jobs actually pass, which the honouring condition below has to
+    # be the condition FOR. Without this the check accepts any condition that
+    # merely mentions the input: `if: inputs.ui-deps == 'yes'` names it, installs
+    # nothing for a job passing "true", and survived this test as written. Nothing
+    # here evaluates a GitHub expression — that is a language, not a string — but
+    # requiring the passed value to appear in the condition is enough to tell a
+    # live comparison from one that can never be true.
+    passed_value = "true"
+    # Deliberately conditional, and deliberately NOT guarded by `assert requested`.
+    # The claim here is "an input that is passed must do something", which is
+    # vacuous when nothing passes it — and in that state the assertion above is the
+    # one that fails, because it requires every suite-running job to install the
+    # dependencies by SOME route. Demanding a non-empty `requested` here would
+    # instead demand that GitHub use the input route specifically, so an inline
+    # `cd src/ui && npm ci` in the job — which installs them perfectly well, and is
+    # how `ui_tests` does it — would be reported as a defect. The two assertions
+    # together leave no gap: this one cannot be satisfied by an inert input, and
+    # that one cannot be satisfied by no input at all.
+    if not requested:
+        return
+
+    honouring: list[str] = []
+    for action in actions:
+        loaded = yaml.safe_load(action.read_text(encoding="utf-8"))
+        # The input has to be DECLARED as well as tested. An undeclared input
+        # passed through `with:` is a warning on GitHub rather than an error, and
+        # `inputs.ui-deps` then evaluates to the empty string — so the condition
+        # below is false, nothing is installed, and the workflow still runs. The
+        # suite catches that at CI time now (it fails rather than skips), but an
+        # offline gate that can see it should.
+        if UI_DEPS_INPUT not in (loaded.get("inputs") or {}):
+            continue
+        for step in (loaded.get("runs") or {}).get("steps") or []:
+            condition = str(step.get("if", ""))
+            if (
+                UI_DEPS_INPUT in condition
+                and f"'{passed_value}'" in condition
+                and _installs_the_ui_deps(str(step.get("run", "")))
+            ):
+                honouring.append(action.parent.name)
+                break
+    assert honouring, (
+        f'{requested} pass `{UI_DEPS_INPUT}: "{passed_value}"`, but no composite '
+        f"action under {GITHUB_ACTIONS_DIR.name} has a step whose `if:` tests that "
+        f"input against '{passed_value}' AND runs `npm ci` in src/ui. The input is "
+        "therefore inert, and those jobs run scripts/tests with no UI dependencies "
+        "while appearing to ask for them."
     )

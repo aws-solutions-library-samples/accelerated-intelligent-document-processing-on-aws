@@ -662,3 +662,259 @@ def test_an_exhausted_scan_wait_lets_the_poller_succeed(index):
     )
 
     assert index.poll_create_or_update(_poll_event(), None) is True
+
+
+# --------------------------------------------------------------------------- #
+# #1345: what the poller may write to CloudWatch
+#
+# The poller used to log the whole `batch_get_builds` reply at INFO, once every
+# two minutes for the length of the build. It now logs BUILD_LOG_FIELDS of the
+# one build it read.
+#
+# These tests are written against the **capability** rather than against the
+# three items the issue happened to name, because the leak is in the shape of the
+# argument and not in the message text: any field CodeBuild returns, including
+# ones the service has not added yet, reaches the log if the whole reply is
+# logged. So the member list comes from botocore's own model of the operation and
+# every member outside the allowlist is probed, which is also what keeps the test
+# honest if the allowlist grows -- adding a field to BUILD_LOG_FIELDS removes it
+# from the probe set and that is visible in the diff.
+#
+# The group's log group is the auto-created one with no retention policy set
+# (this is a custom-resource-only Lambda), so anything written here persists for
+# the life of the account.
+#
+# The claim is bounded to the reply, and the bound is worth stating: this file
+# also logs botocore error text in full on its failure paths -- the poller's broad
+# handler and the fatal-ECR-error branch -- and a realistic AccessDeniedException
+# carries an account id and an assumed-role ARN. That is deliberate and depended
+# on elsewhere in this suite: crhelper carries the exception text to
+# CloudFormation as the custom resource's failure Reason, which is the only place
+# an operator learns why a stack operation failed. So "the poller may log only
+# BUILD_LOG_FIELDS" is a statement about the success path and about the reply, not
+# about everything this function can write.
+# --------------------------------------------------------------------------- #
+
+
+def _build_shape_members() -> dict:
+    """Every member of botocore's ``Build`` shape, keyed by name.
+
+    botocore's service model is the authority for what `batch_get_builds` can
+    return; a hand-written list of fields would encode this suite's beliefs about
+    CodeBuild rather than measuring them, and would not grow with the service.
+    """
+    import botocore.session
+
+    operation = (
+        botocore.session.get_session()
+        .get_service_model("codebuild")
+        .operation_model("BatchGetBuilds")
+    )
+    output_shape = operation.output_shape
+    assert output_shape is not None
+    return dict(output_shape.members["builds"].member.members)
+
+
+def _value_carrying(shape, sentinel: str):
+    """A value of ``shape``'s broad type with ``sentinel`` somewhere inside it.
+
+    Scalars that are not strings get the sentinel string anyway: nothing on the
+    IN_PROGRESS poll path coerces a build field other than ``buildStatus``, so a
+    string in a timestamp or integer slot is never parsed, and the alternative --
+    a real timestamp -- could not carry a sentinel to look for.
+    """
+    if shape.type_name == "list":
+        return [sentinel]
+    if shape.type_name in ("structure", "map"):
+        return {"leaked": sentinel}
+    return sentinel
+
+
+_SENSITIVE_BUILD_MEMBERS = sorted(
+    name
+    for name in _build_shape_members()
+    # BUILD_LOG_FIELDS is read from the module in the tests themselves; this
+    # collection-time set is deliberately derived from the names in the source so
+    # that the parametrisation cannot be narrowed by a change to the module
+    # without the diff showing it.
+    if name not in ("id", "buildStatus", "currentPhase", "startTime")
+)
+
+
+def _poller_log_text(caplog) -> str:
+    """Every log record the poller emitted, as one string."""
+    return "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_the_build_shape_has_members_to_probe():
+    """An empty derived list would collect as nothing and pin nothing.
+
+    A `parametrize` over an empty sequence is reported as a *skip*, not a
+    failure, so the guarantee below would disappear silently if botocore's model
+    moved or the lookup broke.
+    """
+    assert len(_SENSITIVE_BUILD_MEMBERS) >= 25, _SENSITIVE_BUILD_MEMBERS
+    # The three the issue named, so the probe set demonstrably covers them.
+    for named in ("arn", "environment", "serviceRole"):
+        assert named in _SENSITIVE_BUILD_MEMBERS
+
+
+def test_the_log_allowlist_names_real_build_fields(index):
+    """A typo in BUILD_LOG_FIELDS does not leak -- it silently logs nothing.
+
+    `_build_log_summary` omits absent keys, so `buildstatus` for `buildStatus`
+    would leave the poll line empty and take the diagnostic away rather than
+    failing anywhere.
+    """
+    assert index.BUILD_LOG_FIELDS, "an empty allowlist logs nothing at all"
+    members = _build_shape_members()
+    for field in index.BUILD_LOG_FIELDS:
+        assert field in members, f"{field} is not a member of the Build shape"
+        # Scalars only. `_build_log_summary` copies the value whole and has no
+        # depth limit, so allowlisting one of the sixteen structure or list
+        # members -- `logs`, `environment`, `vpcConfig`, ... -- would log that
+        # whole subtree, and every one of them has named fields worth not
+        # logging (`logs.cloudWatchLogsArn`, `vpcConfig.vpcId`). The probe below
+        # cannot see this: it plants its sentinel at a key production never
+        # reads, so a member moved into the allowlist leaves its probe green.
+        assert members[field].type_name not in ("structure", "list", "map"), (
+            f"{field} is a {members[field].type_name}; logging it logs a subtree"
+        )
+
+
+def test_the_probe_set_and_the_allowlist_together_are_the_whole_build_shape(index):
+    """Universe closure, which is what makes the probe below trustworthy.
+
+    The probe set is derived from the field names spelled in this file rather
+    than from the module, so that narrowing the probe takes a visible edit here.
+    The cost of that is two lists which could drift apart: a member in neither
+    would be probed by nothing and logged by nothing, and a member in both would
+    be allowlisted while its probe asserts it is not logged. This closes it.
+    """
+    members = set(_build_shape_members())
+    allowlisted = set(index.BUILD_LOG_FIELDS)
+    probed = set(_SENSITIVE_BUILD_MEMBERS)
+
+    assert not (allowlisted & probed), allowlisted & probed
+    assert allowlisted | probed == members, members - (allowlisted | probed)
+
+
+@pytest.mark.parametrize("member", _SENSITIVE_BUILD_MEMBERS)
+def test_no_build_field_outside_the_allowlist_reaches_the_log(index, caplog, member):
+    """Every other member of the reply, one at a time, must not be logged."""
+    caplog.set_level(logging.DEBUG)
+    sentinel = f"SENTINEL-{member}-0ff1ce"
+    build = {
+        "id": "proj:11111111-2222-3333-4444-555555555555",
+        "buildStatus": "IN_PROGRESS",
+        member: _value_carrying(_build_shape_members()[member], sentinel),
+    }
+    index.CODEBUILD_CLIENT.batch_get_builds.return_value = {"builds": [build]}
+
+    # The in-progress poll is the one that runs repeatedly, and it reaches the
+    # logging without touching ECR at all.
+    assert index.poll_create_or_update(_poll_event(), None) is None
+
+    logged = _poller_log_text(caplog)
+    assert logged, "the poll logged nothing, so this test would pass vacuously"
+    assert sentinel not in logged, f"{member} reached the log: {logged!r}"
+
+
+def test_the_poll_still_reports_the_build_and_its_status(index, caplog):
+    """The fix must not be "log nothing": a silent poll cannot be diagnosed.
+
+    This is the other half of the probe above. Taken alone, that one is satisfied
+    by deleting the log line.
+    """
+    caplog.set_level(logging.DEBUG)
+    build_id = "proj:11111111-2222-3333-4444-555555555555"
+    index.CODEBUILD_CLIENT.batch_get_builds.return_value = {
+        "builds": [
+            {
+                "id": build_id,
+                "buildStatus": "IN_PROGRESS",
+                "currentPhase": "BUILD",
+                "arn": "arn:aws:codebuild:us-east-1:123456789012:build/" + build_id,
+            }
+        ]
+    }
+
+    assert index.poll_create_or_update(_poll_event(), None) is None
+
+    logged = _poller_log_text(caplog)
+    assert build_id in logged
+    assert "IN_PROGRESS" in logged
+    assert "BUILD" in logged
+
+
+def test_a_build_environment_variable_is_not_logged_on_the_success_path(index, caplog):
+    """The standing leak channel: anything a future trigger puts in the build env.
+
+    `batch_get_builds` echoes `environmentVariables`, including any
+    `environmentVariablesOverride` the trigger passed, so this is not a bounded
+    disclosure of the ARNs -- it is whatever the build is given from now on. The
+    SUCCEEDED branch is the one that reads those variables, so it is the branch
+    that has to be checked separately from the probe above.
+    """
+    caplog.set_level(logging.DEBUG)
+    # Named `planted_value` rather than `secret`: this file sits inside a Lambda
+    # `CodeUri`, so `sam build` copies it into the deployed artifact, and bandit's
+    # B105 matches an identifier's NAME against a password wordlist. A variable
+    # called `secret` here is a HIGH finding on the security gate regardless of
+    # what it holds.
+    planted_value = "SENTINEL-env-var-value-0ff1ce"
+    build = _succeeded_build(datetime.now(timezone.utc) - timedelta(seconds=60))
+    build["environment"]["environmentVariables"].append(
+        {"name": "SOME_FUTURE_SETTING", "value": planted_value}
+    )
+    build["arn"] = "arn:aws:codebuild:us-east-1:123456789012:build/x"
+    build["serviceRole"] = (
+        "arn:aws:iam::123456789012:role/idp-stack-CodeBuildExecutionRole"
+    )
+    index.CODEBUILD_CLIENT.batch_get_builds.return_value = {"builds": [build]}
+    index.ECR_CLIENT.describe_images.side_effect = _describe_images_returning(
+        "COMPLETE"
+    )
+
+    assert index.poll_create_or_update(_poll_event(), None) is True
+
+    logged = _poller_log_text(caplog)
+    assert logged
+    assert planted_value not in logged
+    # The account id travels in both ARNs and in the ECR registry host. The
+    # repository name and the image tag are logged deliberately (#1342) and
+    # neither carries one; `ecr_uri.split("/")[-1]` is what drops the host.
+    assert "123456789012" not in logged
+    assert "environmentVariables" not in logged
+
+
+def test_the_not_found_branch_names_the_build_instead_of_dumping_the_reply(index):
+    """Removing the dump must not remove the diagnostic from this branch.
+
+    The whole reply was the only thing this path reported, and `buildsNotFound`
+    echoes back the id the call passed in, so naming the id carries everything
+    that line did.
+
+    Both halves are asserted, because the message is raised and so reaches both
+    this Lambda's log and CloudFormation's failure Reason. Asserting only that the
+    id is present leaves the obvious regression green: a message that interpolates
+    the reply contains the id as well, since `buildsNotFound` is where the id
+    came from. So a value the reply carries and the message must not is planted
+    too.
+    """
+    build_id = "proj:11111111-2222-3333-4444-555555555555"
+    planted_value = "SENTINEL-not-found-reply-0ff1ce"
+    index.CODEBUILD_CLIENT.batch_get_builds.return_value = {
+        "builds": [],
+        "buildsNotFound": [build_id],
+        # Not a `Build`, so the probe above never reaches it: `batch_get_builds`
+        # returns this alongside `builds` and it is part of what the dump wrote.
+        "ResponseMetadata": {"RequestId": planted_value},
+    }
+
+    with pytest.raises(RuntimeError) as excinfo:
+        index.poll_create_or_update(_poll_event(), None)
+
+    message = str(excinfo.value)
+    assert build_id in message
+    assert planted_value not in message, f"the reply reached the message: {message!r}"

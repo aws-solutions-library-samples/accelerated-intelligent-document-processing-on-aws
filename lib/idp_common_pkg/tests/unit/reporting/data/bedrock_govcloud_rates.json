@@ -1,0 +1,1824 @@
+{
+  "model_count": 32,
+  "models": {
+    "Claude 3 Haiku": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.5e-07"
+        ],
+        "outputTokens": [
+          "1.25e-06"
+        ],
+        "token_dimension_count": 7
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-07"
+        ],
+        "outputTokens": [
+          "1.5e-06"
+        ],
+        "token_dimension_count": 2
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-07"
+        ],
+        "outputTokens": [
+          "1.5e-06"
+        ],
+        "token_dimension_count": 2
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.5e-07"
+        ],
+        "outputTokens": [
+          "1.25e-06"
+        ],
+        "token_dimension_count": 7
+      }
+    },
+    "Claude 3.5 Sonnet": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05"
+        ],
+        "token_dimension_count": 6
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3.6e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05"
+        ],
+        "token_dimension_count": 4
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3.6e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05"
+        ],
+        "token_dimension_count": 4
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05"
+        ],
+        "token_dimension_count": 6
+      }
+    },
+    "Claude 3.7 Sonnet": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "3.75e-06"
+        ],
+        "inputTokens": [
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05"
+        ],
+        "token_dimension_count": 6
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "3.6e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "4.5e-06"
+        ],
+        "inputTokens": [
+          "3.6e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05"
+        ],
+        "token_dimension_count": 4
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "3.6e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "4.5e-06"
+        ],
+        "inputTokens": [
+          "3.6e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05"
+        ],
+        "token_dimension_count": 4
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "3.75e-06"
+        ],
+        "inputTokens": [
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05"
+        ],
+        "token_dimension_count": 6
+      }
+    },
+    "Claude Fable 5.1": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "2.5e-07",
+          "2.75e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.2e-05",
+          "2e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "1.25e-05",
+          "1.375e-05"
+        ],
+        "inputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "outputTokens": [
+          "5.5e-05",
+          "5e-05"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.4e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "1.5e-05"
+        ],
+        "inputTokens": [
+          "1.2e-05"
+        ],
+        "outputTokens": [
+          "6e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.4e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "1.5e-05"
+        ],
+        "inputTokens": [
+          "1.2e-05"
+        ],
+        "outputTokens": [
+          "6e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "2.5e-07",
+          "2.75e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.2e-05",
+          "2e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "1.25e-05",
+          "1.375e-05"
+        ],
+        "inputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "outputTokens": [
+          "5.5e-05",
+          "5e-05"
+        ],
+        "token_dimension_count": 10
+      }
+    },
+    "Claude Haiku 5.5": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "1.1e-08",
+          "1e-08"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.2e-07",
+          "2e-07"
+        ],
+        "cacheWriteInputTokens": [
+          "1.25e-07",
+          "1.375e-07"
+        ],
+        "inputTokens": [
+          "1.1e-07",
+          "1e-07"
+        ],
+        "outputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "token_dimension_count": 20
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "1.2e-08"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWriteInputTokens": [
+          "1.5e-07"
+        ],
+        "inputTokens": [
+          "1.2e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "1.2e-08"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWriteInputTokens": [
+          "1.5e-07"
+        ],
+        "inputTokens": [
+          "1.2e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "1.1e-08",
+          "1e-08"
+        ],
+        "cacheWrite1hInputTokens": [
+          "2.2e-07",
+          "2e-07"
+        ],
+        "cacheWriteInputTokens": [
+          "1.25e-07",
+          "1.375e-07"
+        ],
+        "inputTokens": [
+          "1.1e-07",
+          "1e-07"
+        ],
+        "outputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "token_dimension_count": 20
+      }
+    },
+    "Claude Opus 4.8": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "6.25e-06",
+          "6.875e-06"
+        ],
+        "inputTokens": [
+          "5.5e-06",
+          "5e-06"
+        ],
+        "outputTokens": [
+          "2.5e-05",
+          "2.75e-05"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.2e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "7.5e-06"
+        ],
+        "inputTokens": [
+          "6e-06"
+        ],
+        "outputTokens": [
+          "3e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.2e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "7.5e-06"
+        ],
+        "inputTokens": [
+          "6e-06"
+        ],
+        "outputTokens": [
+          "3e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "6.25e-06",
+          "6.875e-06"
+        ],
+        "inputTokens": [
+          "5.5e-06",
+          "5e-06"
+        ],
+        "outputTokens": [
+          "2.5e-05",
+          "2.75e-05"
+        ],
+        "token_dimension_count": 10
+      }
+    },
+    "Claude Opus 5": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "6.25e-06",
+          "6.875e-06"
+        ],
+        "inputTokens": [
+          "5.5e-06",
+          "5e-06"
+        ],
+        "outputTokens": [
+          "2.5e-05",
+          "2.75e-05"
+        ],
+        "token_dimension_count": 14
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.2e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "7.5e-06"
+        ],
+        "inputTokens": [
+          "6e-06"
+        ],
+        "outputTokens": [
+          "3e-05"
+        ],
+        "token_dimension_count": 7
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.2e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "7.5e-06"
+        ],
+        "inputTokens": [
+          "6e-06"
+        ],
+        "outputTokens": [
+          "3e-05"
+        ],
+        "token_dimension_count": 7
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "cacheWriteInputTokens": [
+          "6.25e-06",
+          "6.875e-06"
+        ],
+        "inputTokens": [
+          "5.5e-06",
+          "5e-06"
+        ],
+        "outputTokens": [
+          "2.5e-05",
+          "2.75e-05"
+        ],
+        "token_dimension_count": 14
+      }
+    },
+    "Claude Opus 5.5": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "2.2e-07",
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "8.8e-06",
+          "8e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "5.5e-06",
+          "5e-06"
+        ],
+        "inputTokens": [
+          "4.4e-06",
+          "4e-06"
+        ],
+        "outputTokens": [
+          "2.2e-05",
+          "2e-05"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "9.6e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "6e-06"
+        ],
+        "inputTokens": [
+          "4.8e-06"
+        ],
+        "outputTokens": [
+          "2.4e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "9.6e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "6e-06"
+        ],
+        "inputTokens": [
+          "4.8e-06"
+        ],
+        "outputTokens": [
+          "2.4e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "2.2e-07",
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "8.8e-06",
+          "8e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "5.5e-06",
+          "5e-06"
+        ],
+        "inputTokens": [
+          "4.4e-06",
+          "4e-06"
+        ],
+        "outputTokens": [
+          "2.2e-05",
+          "2e-05"
+        ],
+        "token_dimension_count": 10
+      }
+    },
+    "Claude Sonnet 4.5": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "3.3e-07",
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "6.6e-06",
+          "6e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "3.75e-06",
+          "4.125e-06"
+        ],
+        "inputTokens": [
+          "3.3e-06",
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05",
+          "1.65e-05"
+        ],
+        "token_dimension_count": 14
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "3.6e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "7.2e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "4.5e-06"
+        ],
+        "inputTokens": [
+          "3.6e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05"
+        ],
+        "token_dimension_count": 7
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "3.6e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "7.2e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "4.5e-06"
+        ],
+        "inputTokens": [
+          "3.6e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05"
+        ],
+        "token_dimension_count": 7
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "3.3e-07",
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "6.6e-06",
+          "6e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "3.75e-06",
+          "4.125e-06"
+        ],
+        "inputTokens": [
+          "3.3e-06",
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05",
+          "1.65e-05"
+        ],
+        "token_dimension_count": 14
+      }
+    },
+    "Claude Sonnet 5": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "2.2e-07",
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.4e-06",
+          "4e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "2.5e-06",
+          "2.75e-06"
+        ],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.8e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "3e-06"
+        ],
+        "inputTokens": [
+          "2.4e-06"
+        ],
+        "outputTokens": [
+          "1.2e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.8e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "3e-06"
+        ],
+        "inputTokens": [
+          "2.4e-06"
+        ],
+        "outputTokens": [
+          "1.2e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "2.2e-07",
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.4e-06",
+          "4e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "2.5e-06",
+          "2.75e-06"
+        ],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "token_dimension_count": 10
+      }
+    },
+    "Claude Sonnet 5.5": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "1.1e-07",
+          "1e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.4e-06",
+          "4e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "2.5e-06",
+          "2.75e-06"
+        ],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "token_dimension_count": 10
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "1.2e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.8e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "3e-06"
+        ],
+        "inputTokens": [
+          "2.4e-06"
+        ],
+        "outputTokens": [
+          "1.2e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "1.2e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.8e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "3e-06"
+        ],
+        "inputTokens": [
+          "2.4e-06"
+        ],
+        "outputTokens": [
+          "1.2e-05"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "1.1e-07",
+          "1e-07"
+        ],
+        "cacheWrite1hInputTokens": [
+          "4.4e-06",
+          "4e-06"
+        ],
+        "cacheWriteInputTokens": [
+          "2.5e-06",
+          "2.75e-06"
+        ],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "1.1e-05",
+          "1e-05"
+        ],
+        "token_dimension_count": 10
+      }
+    },
+    "Grok 4.7": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "6.6e-06",
+          "6e-06"
+        ],
+        "token_dimension_count": 20
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "6.6e-07",
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.4e-06",
+          "2.64e-06"
+        ],
+        "outputTokens": [
+          "7.2e-06",
+          "7.92e-06"
+        ],
+        "token_dimension_count": 20
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "6.6e-07",
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.4e-06",
+          "2.64e-06"
+        ],
+        "outputTokens": [
+          "7.2e-06",
+          "7.92e-06"
+        ],
+        "token_dimension_count": 20
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "6.6e-06",
+          "6e-06"
+        ],
+        "token_dimension_count": 20
+      }
+    },
+    "Kimi K3": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "3.3e-07",
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "3.75e-06",
+          "4.125e-06"
+        ],
+        "inputTokens": [
+          "3.3e-06",
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05",
+          "1.65e-05"
+        ],
+        "token_dimension_count": 26
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "3.6e-07",
+          "3.96e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "4.5e-06",
+          "4.95e-06"
+        ],
+        "inputTokens": [
+          "3.6e-06",
+          "3.96e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05",
+          "1.98e-05"
+        ],
+        "token_dimension_count": 26
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "3.6e-07",
+          "3.96e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "4.5e-06",
+          "4.95e-06"
+        ],
+        "inputTokens": [
+          "3.6e-06",
+          "3.96e-06"
+        ],
+        "outputTokens": [
+          "1.8e-05",
+          "1.98e-05"
+        ],
+        "token_dimension_count": 26
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "3.3e-07",
+          "3e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "3.75e-06",
+          "4.125e-06"
+        ],
+        "inputTokens": [
+          "3.3e-06",
+          "3e-06"
+        ],
+        "outputTokens": [
+          "1.5e-05",
+          "1.65e-05"
+        ],
+        "token_dimension_count": 26
+      }
+    },
+    "Llama 3 70B": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.65e-06"
+        ],
+        "outputTokens": [
+          "3.5e-06"
+        ],
+        "token_dimension_count": 2
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.65e-06"
+        ],
+        "outputTokens": [
+          "3.5e-06"
+        ],
+        "token_dimension_count": 2
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.65e-06"
+        ],
+        "outputTokens": [
+          "3.5e-06"
+        ],
+        "token_dimension_count": 2
+      }
+    },
+    "Llama 3 8B": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 2
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 2
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 2
+      }
+    },
+    "NVIDIA Nemotron 3 Super 120B A12B": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.5e-07"
+        ],
+        "outputTokens": [
+          "6.5e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.8e-07"
+        ],
+        "outputTokens": [
+          "7.8e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.8e-07"
+        ],
+        "outputTokens": [
+          "7.8e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.5e-07"
+        ],
+        "outputTokens": [
+          "6.5e-07"
+        ],
+        "token_dimension_count": 16
+      }
+    },
+    "NVIDIA Nemotron Nano 2": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "6e-08"
+        ],
+        "outputTokens": [
+          "2.3e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7.2e-08"
+        ],
+        "outputTokens": [
+          "2.76e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7.2e-08"
+        ],
+        "outputTokens": [
+          "2.76e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "6e-08"
+        ],
+        "outputTokens": [
+          "2.3e-07"
+        ],
+        "token_dimension_count": 16
+      }
+    },
+    "NVIDIA Nemotron Nano 2 VL": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.4e-07"
+        ],
+        "outputTokens": [
+          "7.2e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.4e-07"
+        ],
+        "outputTokens": [
+          "7.2e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 16
+      }
+    },
+    "Nemotron Nano 3 30B": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "6e-08"
+        ],
+        "outputTokens": [
+          "2.4e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7.2e-08"
+        ],
+        "outputTokens": [
+          "2.88e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7.2e-08"
+        ],
+        "outputTokens": [
+          "2.88e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "6e-08"
+        ],
+        "outputTokens": [
+          "2.4e-07"
+        ],
+        "token_dimension_count": 16
+      }
+    },
+    "Nova Lite": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "1.5e-08"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "0"
+        ],
+        "inputTokens": [
+          "6e-08"
+        ],
+        "outputTokens": [
+          "2.4e-07"
+        ],
+        "token_dimension_count": 11
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "1.8e-08"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7.2e-08"
+        ],
+        "outputTokens": [
+          "2.88e-07"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "1.5e-08"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "0"
+        ],
+        "inputTokens": [
+          "6e-08"
+        ],
+        "outputTokens": [
+          "2.4e-07"
+        ],
+        "token_dimension_count": 6
+      }
+    },
+    "Nova Micro": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "8.75e-09"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "0"
+        ],
+        "inputTokens": [
+          "3.5e-08"
+        ],
+        "outputTokens": [
+          "1.4e-07"
+        ],
+        "token_dimension_count": 11
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "1.05e-08"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "4.2e-08"
+        ],
+        "outputTokens": [
+          "1.68e-07"
+        ],
+        "token_dimension_count": 5
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "8.75e-09"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "0"
+        ],
+        "inputTokens": [
+          "3.5e-08"
+        ],
+        "outputTokens": [
+          "1.4e-07"
+        ],
+        "token_dimension_count": 6
+      }
+    },
+    "Nova Pro": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "0"
+        ],
+        "inputTokens": [
+          "8e-07"
+        ],
+        "outputTokens": [
+          "3.2e-06"
+        ],
+        "token_dimension_count": 19
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "9.6e-07"
+        ],
+        "outputTokens": [
+          "3.84e-06"
+        ],
+        "token_dimension_count": 13
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "0"
+        ],
+        "inputTokens": [
+          "8e-07"
+        ],
+        "outputTokens": [
+          "3.2e-06"
+        ],
+        "token_dimension_count": 14
+      }
+    },
+    "google.gemma-4-26b-a4b": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.3e-07"
+        ],
+        "outputTokens": [
+          "4e-07"
+        ],
+        "token_dimension_count": 8
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.56e-07"
+        ],
+        "outputTokens": [
+          "4.8e-07"
+        ],
+        "token_dimension_count": 8
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.3e-07"
+        ],
+        "outputTokens": [
+          "4e-07"
+        ],
+        "token_dimension_count": 8
+      }
+    },
+    "google.gemma-4-31b": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.4e-07"
+        ],
+        "outputTokens": [
+          "4e-07"
+        ],
+        "token_dimension_count": 8
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.68e-07"
+        ],
+        "outputTokens": [
+          "4.8e-07"
+        ],
+        "token_dimension_count": 8
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.4e-07"
+        ],
+        "outputTokens": [
+          "4e-07"
+        ],
+        "token_dimension_count": 8
+      }
+    },
+    "google.gemma-4-e2b": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "4e-08"
+        ],
+        "outputTokens": [
+          "8e-08"
+        ],
+        "token_dimension_count": 8
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "4.8e-08"
+        ],
+        "outputTokens": [
+          "9.6e-08"
+        ],
+        "token_dimension_count": 7
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "4e-08"
+        ],
+        "outputTokens": [
+          "8e-08"
+        ],
+        "token_dimension_count": 8
+      }
+    },
+    "gpt-oss-120b": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.5e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.8e-07"
+        ],
+        "outputTokens": [
+          "7.2e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.8e-07"
+        ],
+        "outputTokens": [
+          "7.2e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.5e-07"
+        ],
+        "outputTokens": [
+          "6e-07"
+        ],
+        "token_dimension_count": 16
+      }
+    },
+    "gpt-oss-20b": {
+      "us-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7e-08"
+        ],
+        "outputTokens": [
+          "3e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "8.4e-08"
+        ],
+        "outputTokens": [
+          "3.6e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "8.4e-08"
+        ],
+        "outputTokens": [
+          "3.6e-07"
+        ],
+        "token_dimension_count": 16
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "7e-08"
+        ],
+        "outputTokens": [
+          "3e-07"
+        ],
+        "token_dimension_count": 16
+      }
+    },
+    "openai.gpt-5.4": {
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "3.3e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3.3e-06"
+        ],
+        "outputTokens": [
+          "1.98e-05"
+        ],
+        "token_dimension_count": 3
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "3.3e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "3.3e-06"
+        ],
+        "outputTokens": [
+          "1.98e-05"
+        ],
+        "token_dimension_count": 3
+      }
+    },
+    "openai.gpt-5.6-luna": {
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "2.64e-08"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "3.3e-07"
+        ],
+        "inputTokens": [
+          "2.64e-07"
+        ],
+        "outputTokens": [
+          "1.584e-06"
+        ],
+        "token_dimension_count": 24
+      }
+    },
+    "openai.gpt-5.6-terra": {
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "2.64e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [
+          "3.3e-06"
+        ],
+        "inputTokens": [
+          "2.64e-06"
+        ],
+        "outputTokens": [
+          "1.584e-05"
+        ],
+        "token_dimension_count": 24
+      }
+    },
+    "xai.grok-4.3": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.25e-06"
+        ],
+        "outputTokens": [
+          "2.5e-06"
+        ],
+        "token_dimension_count": 12
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "2.4e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.5e-06"
+        ],
+        "outputTokens": [
+          "3e-06"
+        ],
+        "token_dimension_count": 12
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "2e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "1.25e-06"
+        ],
+        "outputTokens": [
+          "2.5e-06"
+        ],
+        "token_dimension_count": 12
+      }
+    },
+    "xai.grok-4.6": {
+      "us-east-1": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "6.6e-06",
+          "6e-06"
+        ],
+        "token_dimension_count": 18
+      },
+      "us-gov-east-1": {
+        "cacheReadInputTokens": [
+          "6.6e-07",
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.4e-06",
+          "2.64e-06"
+        ],
+        "outputTokens": [
+          "7.2e-06",
+          "7.92e-06"
+        ],
+        "token_dimension_count": 18
+      },
+      "us-gov-west-1": {
+        "cacheReadInputTokens": [
+          "6.6e-07",
+          "6e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.4e-06",
+          "2.64e-06"
+        ],
+        "outputTokens": [
+          "7.2e-06",
+          "7.92e-06"
+        ],
+        "token_dimension_count": 18
+      },
+      "us-west-2": {
+        "cacheReadInputTokens": [
+          "5.5e-07",
+          "5e-07"
+        ],
+        "cacheWrite1hInputTokens": [],
+        "cacheWriteInputTokens": [],
+        "inputTokens": [
+          "2.2e-06",
+          "2e-06"
+        ],
+        "outputTokens": [
+          "6.6e-06",
+          "6e-06"
+        ],
+        "token_dimension_count": 18
+      }
+    }
+  },
+  "retrieved": "2026-10-13",
+  "sources": [
+    {
+      "offer_code": "AmazonBedrock",
+      "offer_version": "20261010182242",
+      "product_count": 13315,
+      "publication_date": "2026-10-10T18:22:42Z"
+    },
+    {
+      "offer_code": "AmazonBedrockFoundationModels",
+      "offer_version": "20261012084008",
+      "product_count": 7026,
+      "publication_date": "2026-10-12T08:40:08Z"
+    }
+  ]
+}

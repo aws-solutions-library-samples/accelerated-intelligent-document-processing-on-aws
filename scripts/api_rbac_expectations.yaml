@@ -76,6 +76,30 @@
 #                  the referenced object existing (getStepFunctionExecution)
 #                  has its args replaced at run time by apply_dynamic_args in
 #                  scripts/test_api_rbac.py.
+#   object_scoped_roles: [Annotator, ...] — roles the FIELD-level policy admits
+#                  and a PER-OBJECT control in the resolver refuses for the args
+#                  above. The dynamic matrix then asserts a refusal that is NOT
+#                  attributed to the group floor (authzControl != api-group-floor),
+#                  which is two assertions in one cell: the floor still admits the
+#                  role, AND the per-object control still refuses an object outside
+#                  the caller's scope.
+#                  ⚠️ The cell needs the authzControl label (#1308), so against a
+#                  stack deployed before that field existed it records "could not be
+#                  run" — blocking, and not a pass — rather than a verdict it has no
+#                  way to reach. Redeploy to evaluate it.
+#                  Every role named here must appear in
+#                  `groups:` — scripts/test_api_rbac.py exits non-zero otherwise,
+#                  because on a role the policy EXCLUDES the cell would assert the
+#                  opposite of the floor's job.
+#                  Use it only where the ordinary remedy is unavailable. Normally an
+#                  allowed role refused by a per-object control is a cell that did
+#                  not measure the group check (scored ERROR, see issue #1308), and
+#                  the fix is to give the operation an argument that control admits.
+#                  The three review mutations have no such argument: the control
+#                  reads the named document's TestSetId from the tracking table, so
+#                  the only admitting argument is a real document in a real test
+#                  set, which the matrix would then have Admin and Reviewer perform
+#                  a real review mutation against.
 #   skip_allowed:  true -> dynamic test exercises ONLY the denied cells
 #                  (unauth + disallowed roles); the allowed-role call is
 #                  skipped because it would do real work (start an LLM agent,
@@ -331,14 +355,32 @@ operations:
   uploadDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
+    scope_enforced_in: _handle_upload_document
     args: { fileName: "x.pdf" }
-    note: presigned-URL generation only; nothing uploaded by the test
+    note: >
+      Presigned-URL generation only; nothing is uploaded by the test. The scope
+      check is on the RESOLVED Configuration Profile, not on the requested one, and
+      that is the only form that works: there are two routes to choosing a profile
+      and checking the request would cover one of them. The `version` argument names
+      a profile directly; a config prefix mapping lets the DESTINATION PREFIX choose
+      one with no metadata involved at all. `resolve_destination` resolves both
+      through one function and refuses when the result is outside the caller's
+      allowedConfigVersions. Before that this operation checked the caller's Cognito
+      group and the target bucket and nothing else, so a scoped Author could put a
+      document into any profile in the deployment -- i.e. into any scoped user's
+      document-visibility partition -- by naming it.
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
+    scope_enforced_in: _handle_upload_sample_document
     args: { sampleId: "__nope__" }
+    note: >
+      The second caller-chosen-prefix writer into the Input bucket, so it carries
+      the identical resolved-profile scope check as uploadDocument above.
   deleteDocumentVersion:
     groups: [Admin]
     kind: mutation
@@ -425,6 +467,67 @@ operations:
     scope_checked: true
     enforced_in: *cfg
     args: { profileName: "__nope__", revision: 1 }
+  # Config prefix mappings: an S3 prefix in the Input bucket -> a Configuration
+  # Profile. CRUD is Admin-only, and that is an access-control decision rather than
+  # a convenience one: a mapping ASSIGNS a profile, a document's profile is the
+  # document-visibility partition for every scoped user, so writing a mapping
+  # decides who can see the documents landing under that prefix. The three write/read
+  # ops carry no `scope_checked` because an Admin has no scope to check; the scope
+  # that matters for a mapping is enforced where a non-Admin meets it, at upload
+  # time, on the RESOLVED profile -- see uploadDocument above.
+  listConfigPrefixMappings:
+    groups: [Admin]
+    kind: read
+    enforced_in: *cfg
+    args: {}
+    note: >
+      Deliberately NOT scope-filtered, and Admin-only for that reason. The mapping
+      set is a statement of the deployment's routing policy; a partially-filtered
+      view of a longest-prefix rule is actively misleading, because you cannot tell
+      which mapping wins when some of them are hidden from you.
+  putConfigPrefixMapping:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    args: { prefix: "__nope__/", configProfile: "__nope__" }
+  deleteConfigPrefixMapping:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    args: { prefix: "__nope__/" }
+  resolveConfigPrefixMapping:
+    # Admin+Author, NOT Viewer. The dry run exists to serve the upload form, and
+    # Author is the lowest role that can upload at all -- a Viewer has no Upload
+    # entry in the navigation, so the grant would have no consumer while still
+    # disclosing routing policy. That matters because the scope filter only
+    # engages for a caller who HAS a scope: an unscoped Viewer would get the
+    # profile, the prefix and the reason in full, and could enumerate the mapping
+    # set one probed key at a time -- reconstructing exactly what makes
+    # listConfigPrefixMappings Admin-only.
+    groups: [Admin, Author]
+    kind: read
+    # scope_FILTERED, not scope_checked: this operation returns 200 with every
+    # naming field nulled for an out-of-scope destination, and never 403s. The two
+    # flags are indistinguishable to scan_api_rbac's S4 check (it tests
+    # `scope_checked or scope_filtered`) and to the dynamic driver, so nothing would
+    # have caught the wrong one -- but they feed different published figures, so
+    # declaring the refusing kind here moved one operation from the filtering tally
+    # to the verifying one and published both wrong. No figure is restated here on
+    # purpose: test_api_policy_counts_in_docs.py reads these declarations back and
+    # pins them against DOC PROSE, and it cannot see a number inside a YAML
+    # comment -- so a count written here is one nothing can stop going stale. The
+    # threat model and docs/rbac.md are where they live.
+    scope_filtered: true
+    enforced_in: *cfg
+    args: { objectKey: "__nope__/x.pdf" }
+    note: >
+      The dry run, and the one prefix-mapping op a non-Admin may call: it answers
+      "what configuration would this key process under?", which is what makes a
+      longest-prefix rule checkable before it is live. Its answer is SCOPE-FILTERED
+      rather than refused -- a caller outside the resolved profile's scope is told
+      the destination is out of scope and is NOT told the profile's name, because
+      returning it would make this a profile-name enumeration oracle for every
+      scoped caller. getConfigVersions is scope_filtered for the same reason.
   getPricing:
     groups: [Admin, Author, Viewer]
     kind: read
@@ -811,6 +914,24 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", sections: [] }
+    object_scoped_roles: [Annotator]
+    note: >-
+      As completeSectionReview, and for the same reason: the group list admits
+      Annotator, and `_assert_annotator_scope` in the same resolver then confines an
+      Annotator to the test sets in their `allowedTestSets`. The group list was copied
+      from that sibling and the per-object check was not, so the operation admitted
+      the role without confining it; this entry is what makes the omission a failure
+      rather than a silence. `__nonexistent__.pdf` names no document, so it carries no
+      `TestSetId` and a scoped annotator is refused for the object rather than for
+      their group. The refusal is `ResourceAccessDenied`
+      (`authzControl: "resource"`), not this resolver's `PermissionError` group floor,
+      so the two are distinguishable — which they must be here, since a floor-labelled
+      refusal on this operation would mean the manifest stopped admitting Annotator.
+      ⚠️ Resolving `allowedTestSets` reads the users table via `USERS_TABLE_NAME`.
+      ProcessChangesResolverFunction does not yet set it, so until it does the check
+      refuses every Annotator: fail-closed, and the right direction to fail in, but
+      the role's legitimate use is unavailable until that variable and a read grant on
+      the users table reach the function.
 
   processChanges:
     groups: [Admin, Reviewer]
@@ -824,6 +945,23 @@ operations:
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", sectionId: "1" }
+    # This operation is the handler's FALL-THROUGH path — claimReview, releaseReview
+    # and skipAllSectionsReview each return from their own `if`, and what is left runs
+    # for this one. So there is no branch named after it for a per-operation entry
+    # point to be found in, and naming the handler is both the accurate answer and a
+    # stronger one than a branch: `_assert_annotator_scope` is called there
+    # unconditionally. Read by the Annotator-scope closure test, which otherwise
+    # cannot determine the entry point and reports that rather than guessing.
+    scope_enforced_in: handler
+    object_scoped_roles: [Annotator]
+    note: >-
+      The Annotator cell asserts a refusal that is NOT the group floor's.
+      _assert_annotator_scope reads this objectKey's TestSetId out of the tracking
+      table before completing anything, and `__x__` names no document, so a scoped
+      annotator is refused for the object rather than for their group. The pair of
+      failures that assertion catches: a 403 labelled api-group-floor (the manifest
+      stopped admitting Annotator) and no refusal at all (an annotator completed a
+      review on a document belonging to no test set of theirs).
   claimReview:
     # Annotator annotates test-set ground truth; the resolver additionally
     # requires the document's test set to be in their allowedTestSets.
@@ -831,6 +969,15 @@ operations:
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
+    object_scoped_roles: [Annotator]
+    note: >-
+      As completeSectionReview, and for this operation specifically: claimReview is
+      what makes a queue entry exclusive to one annotator, so "refused for the
+      object" is the answer that keeps one annotator from claiming a document in a
+      test set they were never assigned. _assert_annotator_scope runs before
+      claim_review, and `__x__` names no document, so the refusal is the per-object
+      one and a 403 from the group floor instead would mean the manifest no longer
+      admits the role.
   releaseReview:
     # Annotator annotates test-set ground truth; the resolver additionally
     # requires the document's test set to be in their allowedTestSets.
@@ -838,6 +985,13 @@ operations:
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
+    object_scoped_roles: [Annotator]
+    note: >-
+      As claimReview, and for this operation specifically: releasing another
+      annotator's claim is how a queue entry would be taken from them, so a caller
+      not assigned to the document's test set must be refused for the object.
+      _assert_annotator_scope runs before release_review, and `__x__` names no
+      document, so the refusal is the per-object one.
   skipAllSectionsReview:
     groups: [Admin, Reviewer]
     kind: mutation
@@ -946,7 +1100,14 @@ operations:
     kind: mutation
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py
-    args: { sessionId: "__nope__" }
+    # EMPTY, not "__nope__", for exactly the reason getChatMessages is — the delete
+    # side gained the same per-session ownership refusal the read side has, and a
+    # well-formed id nobody owns is refused by THAT control before the group floor is
+    # reached, so all five admitted cells read `403!grp?` (ERROR, "could not be run").
+    # An empty sessionId trips `if not session_id` at index.py:101, which precedes the
+    # ownership check at :135, so an allowed role gets a clean 400 and a disallowed one
+    # still gets the dispatcher's 403 — authz.enforce runs ahead of the resolver.
+    args: { sessionId: "" }
     note: >-
       A mutation, so ANY_GROUP even though the ownership scope already bounds it
       to the caller's own sessions: a caller who may hold no session has nothing

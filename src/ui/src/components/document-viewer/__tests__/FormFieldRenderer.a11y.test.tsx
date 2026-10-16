@@ -59,29 +59,37 @@ describe('FormFieldRenderer accessibility', () => {
     const onFieldFocus = vi.fn();
     renderField({ onFieldFocus });
 
-    const locate = screen.getByRole('button', { name: /Show AccountNumber on the page/i });
+    const locate = screen.getByRole('button', { name: /Highlight AccountNumber on the page image/i });
     await userEvent.click(locate);
 
     expect(onFieldFocus).toHaveBeenCalledWith(GEOMETRY);
   });
 
-  it('offers no locate control when the field has no bounding box', () => {
-    renderField({ geometry: undefined });
+  it('offers no locate control when the field has no bounding box, and says why instead', () => {
+    renderField({ geometry: undefined, value: '' });
 
     // Caught on a live stack: a baseline with no geometry showed the banner "No
     // field geometry available — bounding-box highlighting is disabled" and a
     // magnifier on every field regardless. A control that cannot do the thing it
     // depicts is worse than no control.
-    expect(screen.queryByRole('button', { name: /on the page/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /AccountNumber/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Highlight AccountNumber on the page image/i })).not.toBeInTheDocument();
+
+    // An empty slot is not the answer either: it is indistinguishable from a
+    // viewer that does not do bounding boxes, which is what left a reader unable
+    // to tell an unlocatable field from a broken feature ([#1327]). The slot
+    // carries the reason instead.
+    expect(screen.getByRole('button', { name: /Why AccountNumber has no bounding box/i })).toBeInTheDocument();
   });
 
   it('still selects the field on focus when there is no bounding box to show', async () => {
-    // Removing the button must not remove keyboard reach: selection is what drives
-    // the copy-link affordance, and it does not need geometry.
+    // Keyboard reach to selection must survive whichever control occupies the
+    // slot: selection drives the copy-link affordance and needs no geometry.
+    // Two tabs, because that slot is a control in both states now — the same
+    // count as the located case below, which is the point of the symmetry.
     const onFieldPathSelect = vi.fn();
-    renderField({ geometry: undefined, onFieldPathSelect });
+    renderField({ geometry: undefined, value: '', onFieldPathSelect });
 
+    await userEvent.tab();
     await userEvent.tab();
 
     expect(onFieldPathSelect).toHaveBeenCalledWith('AccountNumber');
@@ -91,7 +99,7 @@ describe('FormFieldRenderer accessibility', () => {
     renderField({ isReadOnly: true });
 
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Show AccountNumber on the page/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Highlight AccountNumber on the page image/i })).toBeInTheDocument();
   });
 
   it('selects the field when the input takes focus, so keyboard users get what clicking gives', async () => {

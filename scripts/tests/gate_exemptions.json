@@ -145,12 +145,12 @@
     },
     "Makefile::ARN_PARTITION_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one template",
+      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one named template per entry",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
+      "reason": "Two entries, one reason each, both bounded to a single file and a single line pattern. credential-vendor.yml:gitlab-runners-prod \u2014 cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised; not machine-checkable, because whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree. github-oidc-review-role.yml:sts.amazon \u2014 the two lines carry an OpenID Connect audience claim that happens to be spelled like a hostname; GitHub mints the token with it as an opaque value and configure-aws-credentials requests it verbatim in every partition, so ${AWS::URLSuffix} would render an audience GitHub never issues. Not machine-checkable either: distinguishing a claim value from an endpoint needs the meaning of the surrounding IAM key, not a grep.",
       "crossReferences": [
         "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
         "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"
@@ -162,6 +162,23 @@
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/tests/test_discover_templates.py"
+    },
+    "Makefile::COVERAGE_CICD_SKIP": {
+      "kind": "exemption",
+      "memberKind": "the name of one registry tree in check_coverage_debt.TREES whose coverage report the CI coverage-producer step does not generate",
+      "turnsOff": "nothing, for the one member it has. It removes `idp_common` from the trees `make coverage-all-cicd` measures, because the CI step immediately before it -- `make test-cicd -C lib/idp_common_pkg` -- already writes that tree's report to the path `check_coverage_debt.LEGACY_IDP_COMMON_REPORT` names. The ratchet step after it runs `--require-all-trees`, which requires `idp_common` BY NAME like every other tree, so the coverage of this tree is enforced exactly as it was; what is skipped is the second measurement of it, not the check.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/check_coverage_debt.py",
+        "scripts/tests/test_coverage_debt.py"
+      ],
+      "issues": [
+        1256
+      ],
+      "reason": "Discovered by name: the fragment `SKIP` is in the discovery vocabulary, and it matching here is the mechanism working rather than a false positive -- a variable that removes a tree from a coverage producer is exactly the shape this registry governs, whatever its intent. The judgement is bounded to one member because the variable holds one: `--skip idp_common`. Why it is JUDGEMENT rather than a computed premise: the fact that would have to be computed is 'an earlier step in the same CI job already wrote this tree's report', and that is a property of the ORDER of steps in two CI configuration files, not of a path or a file on disk, so none of the predicates in gate_premises.py can express it and a new one would have to parse and order both configs to answer for a single member. What makes the entry safe without that is the ratchet, and it is stronger than the premise would have been: `check-coverage-debt-cicd` passes `--require-all-trees`, whose required set is derived from `TREES` inside `check_coverage_debt.py` rather than written out anywhere a skip could be mirrored. So a tree named here and produced by nobody is not quietly unmeasured -- it is named in a refusal and the gate exits 2. TestRequireAllTreesIsDerivedFromTheRegistry in scripts/tests/test_coverage_debt.py asserts that closure, including against a tree invented by the test so the derivation cannot be satisfied by hardcoding today's nine names, and test_the_cicd_producer_skips_exactly_the_tree_CI_already_measured in the same file pins the membership of this variable to exactly `idp_common` and pins that the recipe still invokes the producer -- deleting the recipe body is a mutation this registry entry alone would not catch and that assertion does. The residual a reviewer should check is the one thing neither asserts: that the earlier CI step really still writes that report. It is not unprotected, it is protected one layer out -- if that step stops writing it, `--require-all-trees` fails naming `idp_common`, which is the loud direction."
     },
     "Makefile::CFN_LINT_IGNORE": {
       "kind": "exemption",
@@ -282,22 +299,7 @@
       "ratchet": "staleness",
       "reason": "Embedding models emit no metering entry, so there is no key for a pricing row to price. test_coverage_exempt_has_no_stale_entries asserts each is still encountered by the enumeration.",
       "crossReferences": [
-        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_NO_CACHE_UNITS_EXPECTED"
-      ],
-      "memberKind": "Bedrock model id",
-      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py"
-    },
-    "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_NO_CACHE_UNITS_EXPECTED": {
-      "kind": "exemption",
-      "turnsOff": "the cache-pricing coverage requirement for eleven model ids",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "staleness",
-      "reason": "Same shape as its sibling. Entry strength varies: some are one-line checks against CACHEPOINT_SUPPORTED_MODELS, one is an unrepeatable live measurement.",
-      "crossReferences": [
-        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_COVERAGE_EXEMPT",
-        "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS"
+        "lib/idp_common_pkg/idp_common/metering_units.py::EXPECTED_CACHE_UNIT_OMISSIONS"
       ],
       "memberKind": "Bedrock model id",
       "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py"
@@ -611,9 +613,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -1180,12 +1182,12 @@
     },
     "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path \u2014 test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction \u2014 it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
       "memberKind": "check id + path scope",
       "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
       "crossReferences": [
@@ -1341,7 +1343,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1456,13 +1458,13 @@
     },
     "scripts/tests/test_check_branch_protection.py::MUST_STAY_ADVISORY": {
       "kind": "exemption",
-      "turnsOff": "the required-status-check eligibility assertion for three CI contexts",
+      "turnsOff": "the required-status-check eligibility assertion for four CI contexts, and for the AI-review workflow also the conditional-shape assertion in test_no_workflow_in_this_repo_has_a_conditional_shape_we_would_miss",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "none",
-      "reason": "Two workflows are path-filtered and one check is created behind a conditional, so requiring any would leave it pending forever. Readable from the workflow YAML.",
-      "ratchetGap": "No check that a named workflow is still path-filtered, so a workflow that loses its paths: filter keeps an exemption it no longer needs.",
+      "reason": "One reason per member, because they are advisory for three different reasons and an aggregate reading hides that. build-docs.yml and generate-dep-manifest.yml: path-filtered, so a PR touching no matching path never reports and a required check would stay pending forever. Test Results: created by an action behind a conditional step, so likewise. AI PR Review (advisory): it reports on every non-draft same-repository PR to develop, so unlike the other three it is not a pending-forever risk -- it is the OPPOSITE failure. A job-level `if:` excludes drafts and fork PRs, and GitHub reports a conditionally skipped job as SUCCEEDING, so requiring it would let the gate pass on those PRs with no review having run. It is also advisory by intent: a model's opinion must not decide whether code merges. All four are readable from the workflow YAML; none is machine-decidable as a policy.",
+      "ratchetGap": "No check that a named workflow is still path-filtered, so a workflow that loses its paths: filter keeps an exemption it no longer needs. For the AI-review member the residual is different and narrower: nothing asserts that its job-level `if:` is still the reason it is ineligible, so if the condition were removed the entry would keep shielding a context that had become requireable. The eligibility derivation itself is tested.",
       "crossReferences": [
         "scripts/sdlc/check_branch_protection.py::allowed"
       ],
@@ -1509,7 +1511,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1524,7 +1526,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -1584,6 +1586,21 @@
       "reason": "Detection vocabulary, not an exemption.",
       "ratchetGap": "Not a gate exemption.",
       "memberKind": "path"
+    },
+    "scripts/tests/test_curated_srt_matches_the_gate.py::_NOT_IN_CI": {
+      "kind": "fixture",
+      "memberKind": "repo-relative path, keyed by the shape it exercises",
+      "turnsOff": "nothing. It is probe INPUT: two sample paths a clean CI checkout does not hold, fed to tests asserting the curator withholds a HIGH finding against either. The filtering it exercises lives in scripts/srt/ci_paths.py; this constant only supplies the cases.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "True of both members, and it settles nothing, because what these cases turn on is the DIFFERENCE between them: one is covered by an ignore rule and the other is not. That is the divergence between the curator's old private check ('is this git-ignored') and the gate's ('is this tracked'), and the only reason the second member exists. The predicate collapses exactly that distinction, so _not_in_ci_paths() checks both halves per member against git itself.",
+        "vcs_ignored_build_output": "Holds for the .aws-sam member and is FALSE for the other one by construction -- a path that is neither tracked nor ignored is the case the curator got wrong. One premise over this set would be the defect this registry exists for, which is why it is not claimed for either member."
+      },
+      "reason": "Test data, matched on NOT_IN_. The opposite of a carve-out: each case asserts that a finding is withheld from the published snapshot only where CI could not have seen the file, so a wrong member weakens an assertion rather than excusing one. Discovered when NOT_IN_ was added for #1388; registered rather than renamed, since the name says accurately what it holds.",
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_curated_srt_matches_the_gate.py"
     },
     "scripts/tests/test_data_plane_component_labels.py::EXPECTED_COMPONENT": {
       "kind": "enforced-universe",
@@ -2658,12 +2675,53 @@
         1212,
         1206
       ],
-      "reason": "Six entries, each carrying its own sourcing rather than sharing one, because whether a unit is a billing dimension is a property of the unit and the service. Four cite AWS's public Bedrock price list by URL and say what it showed; the owning test re-asserts those four against a committed digest of that file, derived by bedrock_price_list_digest.py, and re-derives it live under CHECK_AWS_PRICE_LIST=1. That is a computed premise, but the computation is a reading of a published price list rather than a fact about this tree, so there is no gate_premises predicate for it and the entry says JUDGEMENT instead of naming one it does not call. Two entries are judgements outright and labelled so: 'requests' on a LambdaHook is a counter this project injects for shape parity with a Bedrock response, not a third party's billing dimension, so no price list settles it; and the two cache units on Bedrock record the behaviour that already shipped, whose per-model basis needs a live call and is issue 1206. Two ratchets, both in the named test: non-vacuity per member, which derives the metered-unit universe from the writers' own source and the unlisted set from the real pricing file, so an entry that shields nothing fails rather than pre-declaring whatever next carries that name; and a pinned entry count, so a seventh free unit is a deliberate edit with its sourcing reviewed beside it.",
+      "reason": "Four entries, each carrying its own sourcing rather than sharing one, because whether a unit is a billing dimension is a property of the unit and the service. Three cite AWS's public Bedrock price list by URL and say what it showed; the owning test re-asserts those against a committed digest of that file, derived by bedrock_price_list_digest.py, and re-derives it live under CHECK_AWS_PRICE_LIST=1. That is a computed premise, but the computation is a reading of a published price list rather than a fact about this tree, so there is no gate_premises predicate for it and the entry says JUDGEMENT instead of naming one it does not call. One entry is a judgement outright and labelled so: 'requests' on a LambdaHook is a counter this project injects for shape parity with a Bedrock response, not a third party's billing dimension, so no price list settles it. It held six entries until issue 1206: the two Bedrock cache units were declared here at SERVICE scope, which priced a cache read at $0.00 on eleven different models' behalf from one reason, nine of them with no recorded basis -- and whether a prompt-cache read is chargeable is a property of the model, since AWS prices one on Nova Premier and publishes no such dimension for Claude 3 Haiku in any region. They are now EXPECTED_CACHE_UNIT_OMISSIONS, registered separately, one entry per pricing key and unit. Two ratchets, both in the named test: non-vacuity per member, which derives the metered-unit universe from the writers' own source and the unlisted set from the real pricing file, so an entry that shields nothing fails rather than pre-declaring whatever next carries that name; and a pinned entry count, so a fifth free unit is a deliberate edit with its sourcing reviewed beside it.",
       "crossReferences": [
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::METERING_WRITERS",
-        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_NO_CACHE_UNITS_EXPECTED"
+        "lib/idp_common_pkg/idp_common/metering_units.py::EXPECTED_CACHE_UNIT_OMISSIONS"
+      ]
+    },
+    "lib/idp_common_pkg/idp_common/metering_units.py::EXPECTED_CACHE_UNIT_OMISSIONS": {
+      "kind": "exemption",
+      "memberKind": "(shipped bedrock pricing key, omitted prompt-cache metering unit) pair",
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Matched only on the phrase 'is absent', which here describes membership of a Python list -- a model id absent from bedrock.client.CACHEPOINT_SUPPORTED_MODELS -- and not a path. Every file this entry names is tracked and present, and that membership question is computed per member by the owning test rather than restated in prose."
+      },
+      "turnsOff": "the unpriced report for ONE cache unit on ONE pricing entry, and only for a member whose priced_by_aws is false. Such a member's metering row is written as $0.00 rather than as a NULL cost, in both cost implementations (idp_common/reporting/save_reporting_data.py::_get_unit_cost and benchmarks/harness/lib.py::price_metering). A member whose priced_by_aws is TRUE turns nothing off: it records the basis for the pricing.yaml omission and is deliberately NOT shielded at runtime, so the unit is still reported. A cache unit absent from any bedrock entry this register does not name is reported.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_cache_unit_omission_basis.py",
+      "issues": [
+        1206,
+        1212
+      ],
+      "reason": "This replaced two entries in NON_CHARGEABLE_METERING_UNITS that declared the two cache units free for the whole 'bedrock' service. That was one justification attached to a set where the justification is a property of individual members: AWS prices a cache read at $0.625/MTok on Nova Premier and publishes no cache dimension for Claude 3 Haiku in any of 17 regions, so a service-wide reason is false for one of them whichever way it is written. Measured before the change: a million cache-read tokens and a million cache-write tokens on each of the eleven shipped entries that omit the units came back as exactly $0.00 from both implementations with no unpriced marker, while a key with no entry at all was reported -- so the entry axis was visible and the unit axis was not. Each member now names the price-list model it was read against and what that reading showed, and both halves of its premise are computed -- with a stated reach, because what the computation establishes is narrower than the member's prose. The price-list half computes whether AWS publishes a non-zero rate for the dimension on the model NAMED, and pins that name to the entry citing it by requiring the entry's own input and output rates to be ones AWS publishes for that model: measured, that pins 18 of the 21 members to exactly one model out of 141. It does NOT detect a basis that is simply false -- a fabricated member naming a rate-compatible model with the convenient cache answer passes every mechanical check, and that is what this registry's one-member's-worth-of-authored-reason discipline is for, since no test can read a sentence. The residual where the ambiguity could change a verdict rather than merely the name is measured and pinned for equality in EXPECTED_RATE_AMBIGUOUS_IDENTITIES: one member today. The price-list half is asserted against a committed digest of AWS's two public offer files (bedrock_cache_dimension_digest.py, unauthenticated, refreshable with --refresh); priced_by_aws must equal whether that digest carries a non-zero rate, in both directions, and the digest's retrieval date must equal the date metering_units records. The reachability half -- that this code path can never meter the unit for the model, because the id is absent from bedrock.client.CACHEPOINT_SUPPORTED_MODELS and is not one of prompt_cache._IMPLICIT_CACHE_BASE_NAMES -- is asserted per member against those two constants, with both import targets probed first so a renamed or emptied list cannot make it pass vacuously. The premise is labelled JUDGEMENT rather than naming a gate_premises predicate because neither computation is a fact about this tree: one is a reading of a third party's published price list and the other spans two modules of the library under test, and a predicate takes one member and answers about the repository. Universe closure rather than a pinned count: the member set is DERIVED from config_library/pricing.yaml and asserted equal in both directions, so a twelfth entry omitting a cache rate fails for being unregistered and a member whose entry has since gained the rate fails for being stale. A count would be redundant beside that, and would turn paying the debt down -- adding a rate and deleting the member -- into a red gate. Non-vacuity is covered by the same closure plus a floor on the number of bedrock entries the YAML walk reads, which is deliberately NOT a floor on the number omitting: an empty derived list makes every parametrised assertion collect as a pytest skip, which reads green and proves nothing.",
+      "crossReferences": [
+        "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS",
+        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_COVERAGE_EXEMPT",
+        "lib/idp_common_pkg/tests/unit/reporting/test_cache_unit_omission_basis.py::EXPECTED_RATE_AMBIGUOUS_IDENTITIES",
+        "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_cache_unit_omission_basis.py::EXPECTED_RATE_AMBIGUOUS_IDENTITIES": {
+      "kind": "enforced-universe",
+      "memberKind": "(bedrock pricing key, prompt-cache unit) pair whose recorded price-list model is not pinned well enough by the entry's own rates to settle the recorded verdict, and the candidate models that disagree with it",
+      "turnsOff": "nothing. It is the pin for a measured residual in EXPECTED_CACHE_UNIT_OMISSIONS's price-list premise, asserted for EQUALITY in both directions -- so an entry being listed is what makes that ambiguity a reviewed fact rather than what excuses it, and a member arriving here fails until somebody reads it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/reporting/test_cache_unit_omission_basis.py",
+      "issues": [
+        1206
+      ],
+      "reason": "A member's recorded price-list model is tied to the pricing entry citing it by requiring the entry's own input AND output rates to be ones AWS publishes for that model. Both rather than one because the input rate alone left 2 to 11 candidate models per entry, which is a rate collision away from meaningless; both pins 18 of 21 members to exactly one model out of 141. Three members remain ambiguous because different real models are priced identically, which vendors do -- and an ambiguity only matters where the candidates DISAGREE about the thing the register decides, since naming the wrong one of two models that answer the same way on this unit cannot change a cost. Measured: exactly one member is in that state, amazon.nova-lite-v1:0's cache read, where 'Nemotron Nano 3 30B' and 'Nova Sonic' share its rates and publish no cache read, so substituting one would flip priced_by_aws to false and shield the unit. Not computable from a predicate: it is a property of a third party's published price list, so the entry says JUDGEMENT rather than naming one it does not call. Equality in both directions is the ratchet, plus a guard that the pinned member still HAS multiple candidates -- without which the comparison could hold over two empty dicts -- and a separate floor on how many identities are uniquely pinned, so the check cannot degrade back to the state it replaced. The floor is a floor and not an equality on purpose: a model AWS adds at identical rates legitimately lowers it and must not turn the branch red.",
+      "crossReferences": [
+        "lib/idp_common_pkg/idp_common/metering_units.py::EXPECTED_CACHE_UNIT_OMISSIONS"
       ]
     },
     "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS": {
@@ -2700,6 +2758,7 @@
       "reason": "Discovered on the EXPECTED_ fragment; a pin rather than a carve-out. Non-vacuity on its own only demands that a declaration shield at least ONE site, which left a declaration able to shrink from 94 shielded pricing entries to 1 while still reading as a live decision. Each number is measured from config_library/pricing.yaml by the owning test, so a new pricing entry arriving under an existing declaration's cover fails rather than being absorbed, and rates being added fails too -- which is the signal that a declaration is on its way out. One number per member, because how much each one shields is a property of that member.",
       "crossReferences": [
         "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS",
+        "lib/idp_common_pkg/idp_common/metering_units.py::EXPECTED_CACHE_UNIT_OMISSIONS",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::METERING_WRITERS"
       ]
@@ -2722,6 +2781,149 @@
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS"
       ]
+    },
+    "scripts/tests/test_prefix_mapping_call_sites.py::SCOPE_BEARING": {
+      "kind": "enforced-universe",
+      "memberKind": "one of the four deploy artifacts that resolves a configuration prefix mapping assignment",
+      "turnsOff": "nothing. It records, per call site, WHETHER that site hands the resolver a caller scope, and the test asserts the recorded value against the AST in both directions -- so an entry saying False is what makes that omission a tested fact rather than what excuses it. A site that starts or stops passing `allowed_profiles` fails the same assertion.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_prefix_mapping_call_sites.py",
+      "reason": "Discovered through the prose route, on a comment saying `allowed_profiles` is 'deliberately NOT in SEAMS' -- which reads as an exclusion and is instead the fact being asserted. Two of the four sites must omit a caller scope and two must pass one: ingest is an EventBridge S3 event with no caller to scope, and the dry run performs its own check because it has to null individual response fields rather than refuse. A blanket requirement would therefore be wrong, but so would silence -- a flip in either direction is an authorization change, and one already happened: the dry run's local check kept a narrower subject set than the library's after the library gained a third subject, so the preview could approve a destination the upload then refused. Closure is by equality with CALL_SITES, which is itself derived from `git ls-files` rather than authored, so a fifth caller fails for being unrecorded before anyone reads this entry. There is no per-member fact to compute: whether a given Lambda has a caller identity at all is a property of its event source, which no predicate can read. What a reviewer should check is that the equality bites -- delete an `allowed_profiles=` argument and watch it fail. Registered rather than reworded, since rewording to slip past discovery is what this registry exists to prevent."
+    },
+    "scripts/tests/test_dynamodb_query_filter_keys.py::GUARDED_CALLS": {
+      "kind": "exemption",
+      "memberKind": "a boto3 DynamoDB Table method name whose FilterExpression argument this gate reads -- `query` today, and `scan` is the operation left out",
+      "turnsOff": "the key-attribute-in-a-FilterExpression check, for every DynamoDB operation not named in the tuple. In practice that is `scan`: a filtered scan naming `PK` or `SK` is not reported, while the same expression on a `query` is.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_dynamodb_query_filter_keys.py",
+      "issues": [
+        1366
+      ],
+      "reason": "Not computable from this tree: it is a property of the DynamoDB API, which documents the two operations oppositely. Query -- 'A FilterExpression does not allow key attributes. You cannot define a filter expression based on a partition key or a sort key' -- so the call is refused with ValidationException on every attempt. Scan -- 'With Scan, you can specify any attributes in a filter expression, including partition key and sort key attributes' -- so it is correct there. Guarding both would mean an exemption for every legitimate filtered scan in the repository, and the first thing a reviewer would learn is to add one. Measured: lifting the exclusion reports 11 sites, all of them scans, including nested/api-resolvers/src/lambda/test_results_resolver/index.py:1677, which was mistaken for a fourth instance of #1366 and is not one. test_the_scan_exclusion_is_not_shielding_nothing asserts the exclusion still shields at least one such site, so it cannot go dead and pre-approve whatever next occupies the name. The count is reported rather than pinned to equality: writing a new legitimate filtered scan is a correct thing to do and must not turn this gate red."
+    },
+    "lib/idp_common_pkg/tests/unit/bedrock/test_invocation_budget_guard.py::BUDGET_UNBOUNDED_BEDROCK_LADDERS": {
+      "kind": "exemption",
+      "memberKind": "a `<module path>::<function>` in idp_common that both sleeps and invokes a Bedrock call, and is deliberately not bounded by the invocation budget",
+      "turnsOff": "the invocation-budget closure in test_invocation_budget_guard.py for one named function. Without the entry, `test_every_sleeping_bedrock_caller_is_enforced_or_registered` fails on it, which is what it is doing today for its single member.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/bedrock/test_invocation_budget_guard.py",
+      "issues": [
+        1362
+      ],
+      "reason": "One member: rule_validation/z3/rule_translator.py::_invoke_bedrock. It is a real unbounded Bedrock ladder -- 2 application attempts over botocore's defaults at a default 60 s read timeout is nominally 601 s, inside a ConfigurationResolverFunction capped at 120 s -- and it is excluded rather than fixed because bounding it is not the same edit as the other four. Its client is built with `boto3.client(\"bedrock-runtime\")` and NO botocore Config at all, so the fix has to choose a read timeout for work nobody has measured, which is a product decision; and no handler on its call path publishes a deadline, so the gate would be inert there today even if added. Writing a reason that would be false of a second member is the defect this registry exists to catch, so the entry is per function and the module is not exempted. Three ratchets apply and all three are in the owning test: membership is DERIVED from the whole package by a predicate deliberately unlike the one that selects the enforced modules (a function that calls both `sleep` and a Bedrock invoke), so a new ladder is in neither set and fails; the derivation asserts its own non-emptiness; and a registered member that no longer sleeps between Bedrock calls fails as stale rather than pre-excusing whatever next takes that name. What is NOT ratcheted is the 601 s figure itself -- it is nominal arithmetic over botocore defaults, not a measurement of that Lambda, and nothing recomputes it.",
+      "ratchetGap": "The nominal 601 s worst case quoted in the reason is arithmetic over botocore's defaults rather than a measured overrun, and no test recomputes it; if that client gains a Config the figure is stale and only the prose says so."
+    },
+    "lib/idp_common_pkg/tests/unit/bedrock/test_invocation_budget_guard.py::EXPECTED_FAILURE_METRICS": {
+      "kind": "enforced-universe",
+      "memberKind": "the exact name of a ladder's ordinary failed-request counter, as emitted alongside a refusal",
+      "turnsOff": "nothing. It is the complete set of failure counters a refusal site may emit, bounding what a gate site is allowed to record; a counter in neither set fails `test_every_refusal_is_observable_and_raises`.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/bedrock/test_invocation_budget_guard.py",
+      "issues": [
+        1362
+      ],
+      "reason": "Discovered by name, on EXPECTED_. These are the three ladders' pre-existing failure counters, and of the three exactly ONE is plotted today -- BedrockRequestsFailed, in patterns/unified/template.yaml; BedrockEmbeddingRequestsFailed and LambdaHookRequestsFailed appear in no template, dashboard or alarm. That was measured after the first version of this reason claimed all three were, which is the aggregate-reason defect this registry exists to catch, so it is stated per member here. The judgement is the same forward-looking one as for EXPECTED_REFUSAL_METRICS: a refusal is a failed request and has to be counted as one under the name that ladder already uses, whether or not a widget reads it yet. It bounds rather than excuses -- the assertion is that a gate site emits nothing outside these two sets, which is what caught a site emitting one counter twice. Whether a site emits a failure counter AT ALL is asserted behaviourally instead, by `test_a_refusal_counts_one_failed_request_not_two` and the per-ladder metric-count assertions, because one site deliberately leaves it to the enclosing handler and a structural rule could only express that as a carve-out."
+    },
+    "lib/idp_common_pkg/tests/unit/bedrock/test_invocation_budget_guard.py::EXPECTED_REFUSAL_METRICS": {
+      "kind": "enforced-universe",
+      "memberKind": "the exact name of a CloudWatch metric a budget-gate refusal site may emit to record that it refused",
+      "turnsOff": "nothing. It is the complete set of metric names a refusal may use, and `test_every_refusal_is_observable_and_raises` requires every gate site to emit one FROM it -- so membership is what makes a name acceptable, not what excuses it. A site emitting a name outside the set fails the same assertion.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/bedrock/test_invocation_budget_guard.py",
+      "issues": [
+        1362
+      ],
+      "reason": "Discovered by name, on EXPECTED_. The set replaced an `endswith(\"RetryAbandonedOutOfTime\")` match, which accepted any prefix, so a renamed metric passed as compliant. Measured rather than assumed, because the first version of this reason said these names are already plotted and that is false: searching every .yaml/.yml/.json in the tree, NONE of these three appears -- they are new in #1362 and nothing reads them yet (the sibling BedrockMaxRetriesExceeded is on the Bedrock Retries widget in patterns/unified/template.yaml, and BedrockServiceOutageAlarm keys on BedrockServiceUnavailable/BedrockThrottles/BedrockQuotaLimitErrors). What makes exactness the point is therefore forward-looking: these are the strings an operator will have to point a widget or an alarm at, a rename is invisible to a suffix match, and the per-ladder prefix is what distinguishes which ladder gave up. The judgement is that these three names are the right vocabulary, which is not computable from this tree; whether a name is PLOTTED is computable and is deliberately not asserted, since requiring it would block the first change that introduces a metric. The closure runs in both directions at every gate site: one of these must appear, and a name in neither this set nor EXPECTED_FAILURE_METRICS may not. A reviewer should check that by renaming one metric in client.py and watching the test fail."
+    },
+    "benchmarks/tests/test_processing_issues_recorded.py::STAGES_EXCLUDED_FROM_RESULT_JSON": {
+      "kind": "enforced-universe",
+      "memberKind": "the `stage` string of a ProcessingIssue, as declared in idp_common/document_failure.py",
+      "turnsOff": "nothing in a gate. It names the processing-issue stages whose issues reach the section's DynamoDB record and NOT the section result.json that analyze.score_processing_issues reads, so the benchmark harness cannot see them. Membership is a fact about where the pipeline writes, not a decision to skip anything, and the test compares `STAGES - SITE_STAGES` against it for EQUALITY in both directions.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "benchmarks/tests/test_processing_issues_recorded.py",
+      "issues": [
+        1378
+      ],
+      "reason": "rule_validation and postprocessing build their issues through document_failure.record_section_failure from handlers in patterns/unified/src/, after extraction and assessment have written the section result.json, and nothing rewrites that file afterwards. So a stage in this list is one the harness is structurally blind to, and the whole point of registering it is that the blindness is written down instead of discovered again -- #1378 is itself an instance of a check firing into a field nobody read. The closure is an equality with no authored inventory on either side: the left-hand set is every stage whose only ProcessingIssue construction is the document_failure pass-through, derived by AST, and the right is this list, so a sixth stage lands in the left and fails rather than being silently unread. What a reviewer should check is that the equality is real -- add a *_STAGE constant to document_failure.py and watch test_every_declared_stage_is_either_covered_or_a_named_boundary fail. The reason this is not an exemption is that there is no gate here for it to excuse: nothing in this repository asserts the harness sees every stage, because measurement says it does not, and an assertion to the contrary is the defect rather than the fix."
+    },
+    "benchmarks/tests/test_processing_issues_recorded.py::CODES_EXCLUDED_FROM_RESULT_JSON": {
+      "kind": "enforced-universe",
+      "memberKind": "the `code` string of a ProcessingIssue, as declared in idp_common/assessment/degradation.py",
+      "turnsOff": "nothing in a gate. Same boundary as STAGES_EXCLUDED_FROM_RESULT_JSON one level finer: these are assessment-STAGE codes, so the stage list cannot reach them, and they are the half that costs something. The test compares this against the *_CODE constants degradation.py declares for EQUALITY.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "benchmarks/tests/test_processing_issues_recorded.py",
+      "issues": [
+        1378
+      ],
+      "reason": "assessment_failed_confidence_unavailable and assessment_skipped_confidence_unavailable are ERROR severity on a document that COMPLETES -- not failing it is the entire purpose of the degrade/skip path -- so unlike the failure-path codes there is no ObjectStatus to fall back on and a section that came back with no confidence scores at all reads in summary.json as processing_issues 0, success true. degradation.py's own docstring says that path 'deliberately does not rewrite that file', and all five skip_section_no_confidence call sites in assessment/service.py return before the result.json write. It is live where it matters: over the committed results/v0.6.11/*/summary.json rows, resolved.assessment is separate on 4192 rows against 516 integrated and 257 off, and the skip sites are on the standalone path. Two things make this more than a note. The equality means a third code declared in degradation.py fails. And the premise is COMPUTED rather than restated -- test_the_premise_behind_that_boundary_is_computed_not_asserted greps degradation.py for an S3 write and fails if one appears, with the same probe proving non-vacuous against extraction/service.py, and test_every_skip_site_returns_before_the_result_json_write checks the five call sites still return. So the day the pipeline starts writing these into result.json, this entry fails instead of under-reporting forever."
+    },
+    "benchmarks/tests/test_processing_issues_recorded.py::INVENTED_CODES": {
+      "kind": "fixture",
+      "memberKind": "a ProcessingIssue `code` string that no service in this repository emits",
+      "turnsOff": "nothing. It is the NEGATIVE CONTROL for the property #1378 is about: three codes nobody has written, fed through the real writer and reader to prove the recorder tallies on each issue's own values rather than recognising a list of known types. A member being in it is what makes it a test input, not what excuses it from anything.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "benchmarks/tests/test_processing_issues_recorded.py",
+      "issues": [
+        1378
+      ],
+      "reason": "Discovered through the prose route, on a comment explaining that a recognition rule 'would let codes through' -- which reads to the matcher as an exemption rationale and is the exact opposite. The three members are chosen so that no rule a recorder might plausibly carry admits any of them: one has a real stage prefix so an exact-code allowlist rejects it, one has no prefix any service uses so a prefix rule rejects it, one has a stage that is not a pipeline stage. That spread is measured rather than guessed: a single invented code spelled extraction_... left a recorder filtering on startswith(('extraction_', 'assessment_', 'classification_')) passing the entire suite, which is this issue's own defect one level up. The ratchet is that each member is asserted ABSENT from the AST-derived universe of real codes, so if a service ever adopts one of these names the negative control stops being negative and the test fails rather than becoming vacuous; the file also asserts the derived universe is non-empty, because an empty parametrisation collects as a pytest SKIP with a green exit. Registered rather than reworded, because rewording a comment to slip past discovery is the failure this registry exists to prevent."
+    },
+    "scripts/sdlc/scan_api_rbac.py::OWNERSHIP_REFUSAL_PATTERNS": {
+      "kind": "enforced-universe",
+      "memberKind": "one spelling of a refusal, which the S3 ownership arm accepts as evidence that an `ownership: true` declaration is enforced",
+      "turnsOff": "nothing by itself. It widens what SATISFIES the S3 ownership arm: a resolver declaring `ownership: true` is believed if its file contains one of these spellings, or if every key expression in it names a caller term. Before this arm existed the declaration was believed on a substring match against OWNERSHIP_PATTERNS alone, which name the SUBJECT of a check rather than the check -- so a resolver mentioning `user_id` in a log line satisfied it while scoping nothing.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Detection vocabulary, not a carve-out -- the same shape as SCOPE_PATTERNS beside it. Registered because the direction matters: this list decides which files the gate BELIEVES, so a pattern in it that matches nothing is not harmless, it is pre-approval of whatever next contains that string. That is the identical hazard RATCHET_EVIDENCE_MARKERS carries in this registry's own meta-test, and the reason given there applies verbatim. JUDGEMENT rather than a computed premise because the fact that would have to be computed is 'this string denotes a refusal in this codebase's idiom', which is a reading of code intent and not a property of a path or a file. The ratchet is what makes that safe, and it is stronger than the premise would have been.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/sdlc/tests/test_ownership_refusal_vocabulary.py"
+      ],
+      "ratchetDetail": "test_no_refusal_pattern_is_dead asserts every member matches at least one of the 9 ownership-declaring resolvers' enforced_in files -- so a member that shields nothing is vacuous and fails. It fired on its first run and two speculative members were deleted on that evidence (`raise Unauthorized` and the errorType literal). test_the_arm_still_rejects_a_resolver_that_never_refuses pins the other direction, that the vocabulary does not admit the shape the arm was added for, so the two tests cannot both pass by the list becoming broad enough to accept everything. A third test guards both against an empty universe.",
+      "ratchetGap": "A member that matches a resolver for a reason unrelated to refusing is not detected: non-vacuity establishes that the string occurs, not that its occurrence is a refusal. `PermissionError` is the realistic case, since a file could name it in an unrelated `except`. Bounded by the arm being a disjunction with the per-access predicate rather than the only route, and by the live RBAC matrix, which exercises the refusal itself rather than its spelling.",
+      "issues": [
+        1308
+      ],
+      "discoveryNote": "Discovered via the PROSE route, not the name route: OWNERSHIP_REFUSAL_PATTERNS contains none of NAME_VOCABULARY's fragments (no EXEMPT/EXCLU/ALLOW/SKIP/...), so it was the attached comment that caught it -- the safety net firing where the reliable route did not, which is the one direction exemption_discovery.py says not to count on. Had the comment been worded differently this surface would have gone unregistered. Kept as a note rather than acted on, because renaming the constant to carry a vocabulary fragment would make it read as a carve-out, which it is not."
+    },
+    "scripts/tests/test_repo_walk_guards_prune_local_work.py::TREE_COPY_DIRS": {
+      "kind": "enforced-universe",
+      "memberKind": "a repo-relative directory into which this repository's own tooling writes a WHOLE second copy of the tree, paired with the file that writes it",
+      "turnsOff": "nothing. Membership imposes a requirement rather than excusing one: for each member the gate computes that an ignore rule covers the directory and that git tracks nothing under it, and fails naming the directory if either half is false. A directory added here with no ignore rule fails immediately; one left here after the tooling stopped writing it fails the staleness check beside it.",
+      "premise": [
+        "vcs_ignored_build_output"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_repo_walk_guards_prune_local_work.py",
+      "issues": [
+        1358
+      ],
+      "reason": "Discovered through the prose route, on a comment about directories kept out of repo-wide discovery -- which reads as a carve-out and is the opposite. Every gate that discovers through repo_files.tracked_paths rests on one premise: asking git cannot see a stale copy of the repository. That premise is only true while every such copy is gitignored, because tracked_paths lists `--others`, so untracked is not enough. `.ai-review/base/` broke it -- scripts/sdlc/ai_mr_review.py checks the whole merge-base tree out there and nothing ignored it, so inside a review worktree a repo-wide gate read the state before the branch alongside the state after it, and a defect the branch FIXES was reported against it. The per-member premise is computable and is computed: vcs_ignored_build_output asks for an ignore rule covering the path and for git tracking nothing under it, both of which this needs and neither of which a bare check-ignore probe establishes. The staleness ratchet is the other half -- an entry whose creating file no longer names the directory fails, because an ignore rule for a directory nothing writes is dead and a dead one pre-ignores whatever next takes the name -- and test_tracked_discovery_does_not_list_a_tree_copy drives the real helper over a real file placed there, so the claim is behavioural rather than a reading of configuration. Registered rather than reworded, because rewording a comment to slip past discovery is the failure this registry exists to prevent."
     }
   }
 }

@@ -73,6 +73,53 @@ it — no effect, or no opportunity? `forced_tool_honored_rate` (a forced tool t
 answered in prose has measured nothing), `coercions` / `coercion_refusals`, and
 `validation_valid_rate` are reported per run and rolled up per cell.
 
+**Did the pipeline warn about anything?** Five stages emit structured
+`ProcessingIssue`s — extraction, classification and assessment from inside the
+services, plus rule validation and postprocessing from the pipeline handlers —
+covering 28 codes including `extraction_rows_below_ocr_estimate`,
+`assessment_coverage_incomplete` and `extraction_validation_failed`. `analyze.py`
+records them per run as `processing_issues` (the count, `0` on a clean
+run and never null), `processing_issues_by_severity` / `_by_code` / `_by_stage`
+(tallies), and `processing_issue_detail` (every issue verbatim, which is where the
+message a reader needs lives). `cell_stats` merges the tallies per cell over **all**
+its runs including the failed ones, and `aggregate.py` prints a `⚠` line at scoring
+time naming the codes. The CSV carries the count plus the severity and code tallies
+rendered flat.
+
+Read these **before** reading a completeness figure. A check that fires into a field
+nobody reads is indistinguishable, in the results tree, from a check that does not
+fire — so until these existed a run whose extraction reported losing rows was
+recorded identically to a clean one, which is how a warned run came to be described
+as a silent one. Nothing in the recorder enumerates issue codes: the tallies are
+keyed on each issue's own values, so a code added to any service is recorded without
+a harness change.
+
+⚠️ **A zero here does not cover everything, and this is the part to know before
+trusting one.** The figures come from the section's `result.json`. Three things
+record onto the section's DynamoDB record *after* that file is written, and nothing
+rewrites it afterwards, so a `processing_issues: 0` is silent about them rather than
+evidence they did not fire:
+
+- **The assessment degrade and skip pair** — `assessment_failed_confidence_unavailable`
+  and `assessment_skipped_confidence_unavailable`. These are the ones that matter.
+  They are **error** severity on a document that **completes**, because not failing
+  it is the whole purpose of that path, so a section that came back with *no
+  confidence scores at all* reads here as `processing_issues: 0, success: true` with
+  no `status` to fall back on. And they are live in what you measure: across
+  `results/v0.6.11/`, `resolved.assessment` is `separate` on 4,192 rows against 516
+  `integrated` and 257 `off`, and the skip path is the standalone one.
+- **`rule_validation` and `postprocessing`** — smaller, because these accompany a
+  document the harness already records as failed, so what is lost is the reason
+  rather than the event.
+
+The tracking record is not read instead because it would need de-duplicating against
+the S3 copy of everything earlier, it is another large attribute fetched per run, and
+it is deleted with its stack while the S3 artifacts outlive it. So the boundary is
+declared and closed: universe-closure tests over the declared stage constants and
+over the codes `assessment/degradation.py` declares, plus a computed check that that
+module still performs no S3 write, so a third such stage or code — or the boundary
+ceasing to be true — fails a test rather than going quietly unread.
+
 Scoring is **resolver-free** — it reads S3 output and DynamoDB metering directly, so it
 works on any stack version (useful for cross-release comparisons).
 
@@ -183,18 +230,27 @@ model only appears there if it has been swept, and the table records when:
 | **Claude Sonnet 5** (default) | ✅ | **2026-09-19, v0.6.9** (133 runs, plus `scaling`, `scalingsimple`, `cost`, `advverify`, `astravalue`, `astracap`) | the shipped default; 0 failures of 133 at $0.676/doc, no confidence leaf below 0.9 anywhere in the grid |
 | Sonnet 5 `:1m` | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | matched Sonnet 5's accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
 | **Claude Opus 5** | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
-| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ❌ **not yet measured** — added to the matrix on 2026-09-23, no run behind it | Its rate card is cheaper than Opus 5 in every category ($4/$20 per 1M vs $5/$25, and a cache read at 0.05x input rather than 0.1x), and its launch claim adds "fewer tokens for the same task" on top — three multipliers that compound, so **no cost figure for it should be quoted until `opus55value` has run**. Two behaviours also differ from Opus 5 in ways a run will show: thinking cannot be disabled (effort is the only spend lever, and its default is `medium` where Opus 5's is `high` — per the model card; a default is not observable from a response, so it is cited rather than measured), and a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on` for it |
+| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | **2026-10-11, v0.6.11** (`coresynth`, 133 runs, 13 failed) | **Measured: recall 1.000, cell accuracy 1.000, $0.699/doc, 286 s/doc** — the joint-best accuracy in the grid and cheaper per document than Opus 5 ($0.816), but the slowest arm by 52%. ⚠️ **It cannot complete a large document in simple mode at all**: all 13 of its failures are `large_narrow`, and they are exactly the 13 *simple*-mode cells, while all 6 *advanced* (sharded) cells completed 7/7. Sonnet 5 and Sonnet 5 1M completed all 13 of those same cells in the same window on the same stack, so this is a per-request limit (the 300 s non-streaming `converse` read timeout), not load. **On large documents this model requires advanced mode.** ⚠️ **The `forcing` axis has no measurement for it**, now confirmed from the API rather than the model card: its `force-on` cells completed with `forced_tool_attempted=0`, `forced_tool_honored_rate=None` and the refusal recorded in `forced_tool_skips` — `tool_choice: type "tool" and "any" are not supported for this model`. Every other arm honoured forcing at rate 1.00, so that column is meaningful everywhere else and absent here. `opus55value` has still not run. Its rate card is cheaper than Opus 5 in every category ($4/$20 per 1M vs $5/$25, and a cache read at 0.05x input rather than 0.1x), and its launch claim adds "fewer tokens for the same task" on top — three multipliers that compound, so **no cost figure for it should be quoted until `opus55value` has run**. Two behaviours also differ from Opus 5 in ways a run will show: thinking cannot be disabled (effort is the only spend lever, and its default is `medium` where Opus 5's is `high` — per the model card; a default is not observable from a response, so it is cited rather than measured), and a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on` for it |
 | **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap-opus55value) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
 | Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | see the guide §5.3 |
-| **Claude Haiku 5.5** | ✅ (`extraction_model` **and** `classification_model` sweeps) | ❌ **not yet measured** — added to the matrix on 2026-10-08, no run behind it | The cheap end of the axis, and the first one that is a Claude: $0.11/$0.55 per 1M in/out, 10x below Haiku 4.5 and 20x below Sonnet 5 on input. The open question is not whether it wins but **how much completeness and accuracy the floor costs**, so quote no accuracy figure for it until the sweep has run. Four things a run will show that cannot be carried over from the Haiku 4.5 row: it accepts `reasoning_effort` (the first Haiku that does — 4.5 rejects it with a 400 — default `medium` per the model card, so an effort-unset cell is not comparable to a 4.5 cell); a forced `toolChoice` **is** accepted, unlike Opus 5.5, so a `forcing` A/B is valid; its prompt-cache minimum is 512 tokens against 4.5's 4,096, so classes that never cached may cache here; and images cost high-resolution tokens (~4,770 for a 2550x3301 page vs ~1,542 on 4.5), so an image-bearing cell is ~3x the input tokens and "10x cheaper per token" is not "10x cheaper per page". ⚠️ **Cost is under-reported by 5x above 100,000 input tokens, and the sizers cross that by default** — Anthropic prices this model in two prompt-length bands (5x on every token type above 100,000 tokens) while `pricing.yaml` holds one flat rate per model, and its agentic shard budget is 578,400 tokens. Same shape as the GPT-6 Astra arm and handled the same way; read the note on its `model_config_limits.yaml` entry before quoting a dollar figure for it. Capping the window to dodge the band was tried and rejected: 100,000 leaves a 2,000-token shard budget against Sonnet 5's 18,400 |
+| **Claude Haiku 5.5** | ✅ (`extraction_model` **and** `classification_model` sweeps) | **2026-10-11, v0.6.11** (`coresynth` extraction sweep 133 runs / 4 failed, **and** the `classification_model` sweep 133 runs / 5 failed) | **Measured accuracy: cell accuracy 0.999 over ~61,400 compared cells — equal to the shipped default — at recall 0.981 and 168 s/doc.** As a *classification* model it is also at 0.999, indistinguishable from the `nova_2_lite` default, so classification is where it is unambiguously safe to adopt. ⚠️ **Two caveats that the accuracy figure alone hides.** Completeness at size: only **9 of 13** simple-mode cells complete on `large_narrow`, against 13/13 for Sonnet 5 in the same window — it is the second-least reliable arm in simple mode after Opus 5.5. And **cost remains unquotable**: the 5× long-context band below is not a hypothetical here, **105 of its 129 completed runs exceed 100,000 input tokens** (median 543,675, max 10.96M), so the harness's $0.155/doc is a lower bound and 5× of it (~$0.77) would exceed Sonnet 5's $0.587 — the *sign* of the comparison is unresolved, so **no cost ratio for this model is published**. The cheap end of the axis, and the first one that is a Claude: $0.11/$0.55 per 1M in/out, 10x below Haiku 4.5 and 20x below Sonnet 5 on input. The open question is not whether it wins but **how much completeness and accuracy the floor costs**, so quote no accuracy figure for it until the sweep has run. Four things a run will show that cannot be carried over from the Haiku 4.5 row: it accepts `reasoning_effort` (the first Haiku that does — 4.5 rejects it with a 400 — default `medium` per the model card, so an effort-unset cell is not comparable to a 4.5 cell); a forced `toolChoice` **is** accepted, unlike Opus 5.5, so a `forcing` A/B is valid; its prompt-cache minimum is 512 tokens against 4.5's 4,096, so classes that never cached may cache here; and images cost high-resolution tokens (~4,770 for a 2550x3301 page vs ~1,542 on 4.5), so an image-bearing cell is ~3x the input tokens and "10x cheaper per token" is not "10x cheaper per page". ⚠️ **Cost is under-reported by 5x above 100,000 input tokens, and the sizers cross that by default** — Anthropic prices this model in two prompt-length bands (5x on every token type above 100,000 tokens) while `pricing.yaml` holds one flat rate per model, and its agentic shard budget is 578,400 tokens. Same shape as the GPT-6 Astra arm and handled the same way; read the note on its `model_config_limits.yaml` entry before quoting a dollar figure for it. Capping the window to dodge the band was tried and rejected: 100,000 leaves a 2,000-token shard budget against Sonnet 5's 18,400 |
+| **Claude Sonnet 5.5** | ❌ not in any sweep | — | selectable but **not measured**, so quote no accuracy, completeness or cost figure for it. Its per-token input and output rates are **identical** to Sonnet 5's in the AWS price list ($2.20/$11.00 per 1M, us./eu.), so "cheaper Sonnet" is wrong as a summary — the one price difference is cache reads at half Sonnet 5's ($0.11 vs $0.22 per 1M), which pays off in proportion to how much of a prompt caches. ⚠️ Three things make a cell for it **not** comparable to a Sonnet 5 cell without a change to the arm: a forced `toolChoice` is **rejected**, so `extraction.forced_tool` silently falls back to the prose schema (a `forcing` A/B is invalid on this model, unlike on Sonnet 5 and Haiku 5.5); its default context window is **1M with no `:1m` id**, so auto-sizing derives a 578,400-token agentic shard budget against Sonnet 5's 18,400, which is the `:1m` arm's sizing rather than the default arm's; and its prompt-cache minimum is **512 tokens against Sonnet 5's 1,024**, so classes that never cached may cache here. Its per-token cost is not under-reported at any prompt length — unlike Haiku 5.5 and Astra, the price list gives it a single band |
 | xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
 
-The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 4.5 · Haiku 5.5)
-and the confidence-model axis (Nova Lite default · Nova 2 Lite · Sonnet 5) were each
-swept on the full grid for v0.6.8 — **except Haiku 5.5**, which was added to both the
-extraction and classification axes on 2026-10-08 and has no run behind it yet. The
-guide's §5.3 and §5.4 report the rest.
+The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 5.5) and the
+confidence-model axis (Nova Lite default · Nova 2 Lite · Sonnet 5) were **both swept in
+full on v0.6.11** — three arms each, 133 runs per arm, 2026-10-11. The guide's §5.3 and
+§5.4 report them.
+
+⚠️ **Haiku 4.5 is not on the classification axis**, and that is deliberate rather than an
+omission: `config_matrix.yaml` sweeps `haiku55` and states that `haiku45` is not swept, so
+that the axis stays "the same width as before plus one". Both remain axis *values*, so a
+named cell or an explicit `--set classification_model=haiku45` covers the 4.5-vs-5.5 pair
+on demand, and `advsplitcost__classification-model-haiku45` is a committed result to diff
+against. **Read the axis in `config_matrix.yaml`, never a prose list of it** — this
+paragraph, the release-validation skill's own copy of the same axis, and a finding in the
+v0.6.11 prerelease record each drifted from it independently.
 
 Two numbers the `classification_model` sweep does **not** produce, and which the
 guidance for that axis needs: per-page **classification accuracy** and

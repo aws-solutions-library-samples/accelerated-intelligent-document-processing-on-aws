@@ -406,6 +406,52 @@ def test_error_severity_needs_an_absolute_row_floor_not_just_a_fraction():
     assert ten.severity == "error"
 
 
+def test_zero_scored_rows_is_an_error_at_every_list_length():
+    """The absolute row floor does not apply when NOTHING was scored (#997).
+
+    ``scored_rows == 0`` is not a short list with a gap in it — the section has no
+    confidence surface anywhere, and the message the gate emits in that case says
+    confidence-based review "does not apply to any of it". Measured over the
+    committed benchmark grids, every run that crossed the error fraction with fewer
+    than 10 unscored rows was in exactly this state, and the partial case the floor
+    was written for (one ``None`` leaf in a two-entry array) occurred zero times — so
+    as shipped the floor only ever downgraded a total absence of coverage.
+    ``benchmarks/tests/test_coverage_threshold_evidence.py`` re-derives that from the
+    artifacts.
+
+    Both sides of the boundary are asserted, across list lengths, with **lopsided**
+    inputs on the warning side: one row scored out of ten is a 90% shortfall and nine
+    unscored rows, which is as close to the exception as a partial shortfall gets
+    while still being one. A mutant that drops the exception fails the first loop; one
+    that widens it to ``scored <= 1`` fails the second; one that replaces the ``or``
+    with an ``and`` fails the first loop at every length below the floor; and an
+    inverted comparison fails both.
+    """
+    floor = _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+
+    # Nothing scored → error, from a single-row list up to one far above the floor.
+    for total in (1, 2, 3, 4, floor - 1, floor, 40, 400):
+        issue = _coverage_issue(total, 0)
+        assert issue is not None, total
+        assert issue.severity == "error", (total, issue.severity)
+        assert issue.details["scored_rows"] == 0, total
+
+    # One row scored, everything else not: still a partial shortfall, so the floor
+    # governs it and it stays a warning while the unscored count is below the floor.
+    for total in (2, 3, 4, floor - 1, floor):
+        unscored = total - 1
+        issue = _coverage_issue(total, 1)
+        assert issue is not None, total
+        expected = "error" if unscored >= floor else "warning"
+        assert issue.severity == expected, (total, unscored, issue.severity)
+
+    # The floor's own boundary, reached from the lopsided side: one row scored out of
+    # eleven is ten unscored rows, which is the floor, so it is an error — and the
+    # rung below it is not.
+    assert _coverage_issue(floor + 1, 1).severity == "error"
+    assert _coverage_issue(floor, 1).severity == "warning"
+
+
 def test_zero_coverage_does_not_claim_partial_coverage():
     """At 0% scored, "covers only part of this section" is simply false, and this
     audit cannot vouch for the extracted data either — it only knows nothing was
@@ -658,6 +704,49 @@ def test_coverage_counts_every_list_field_not_just_the_largest():
     assert coverage["expected_rows"] == 14  # scalars are not rows
     assert coverage["scored_rows"] == 10
     assert coverage["unscored_rows_by_field"] == {"fees": 4}
+    # The DENOMINATOR beside that numerator, so a per-field ratio is recoverable.
+    # Without it "fees: 4" cannot be read as 4 of 4 rather than 4 of 400, which is
+    # the difference between an attribute with no confidence surface and a trace.
+    assert coverage["expected_rows_by_field"] == {"transactions": 10, "fees": 4}
+
+
+def test_a_wholly_unscored_small_field_can_sit_under_the_section_wide_fraction():
+    """The residual the section-wide denominator leaves, pinned rather than fixed.
+
+    Both rungs divide by the TOTAL list rows of the section, so an attribute that is
+    entirely unscored beside a large fully-scored one lands below the 5% warning
+    fraction and nothing is emitted — and the ladder cannot cover it either, because
+    ``split_stats["unrecoverable_rows"]`` is computed for the largest list field
+    only. The per-field numbers are what make the case readable off a recorded run,
+    which is why both halves are now carried.
+
+    This asserts current behaviour deliberately. Firing per field instead would be
+    strictly more sensitive, and the committed benchmark grids cannot say what that
+    would cost: they record unscored rows per field but, until
+    ``conf_rows_expected_by_field`` was added, no per-field denominator, so the
+    false-positive rate of a per-field rung is unmeasured. Changing this should
+    follow that measurement, not precede it (#997).
+    """
+    data = {
+        "transactions": [{"amount": "1"} for _ in range(400)],
+        "endorsements": [{"text": "a"}, {"text": "b"}],
+    }
+    assessment = {
+        "transactions": [{"amount": _leaf(0.9)} for _ in range(400)],
+        "endorsements": [{"text": _leaf(None)}, {"text": _leaf(None)}],
+    }
+    coverage = confidence_coverage(assessment, data)
+    assert coverage["unscored_rows_by_field"] == {"endorsements": 2}
+    assert coverage["expected_rows_by_field"] == {
+        "transactions": 400,
+        "endorsements": 2,
+    }
+    # 2 of 402 is 0.5% section-wide, and 100% of the attribute it belongs to.
+    assert coverage["unscored_fraction"] < _COVERAGE_SHORTFALL_WARNING_FRACTION
+    _gaps, issues = audit_explainability(
+        assessment, data, geometry_mode="off", section_id="1"
+    )
+    assert [i for i in issues if i.code == "assessment_coverage_incomplete"] == []
 
 
 def test_coverage_from_gaps_rounds_for_reporting_only():

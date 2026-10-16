@@ -11,8 +11,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from ci_paths import (  # noqa: E402
+    dependency_failure_message,
     is_gating_status,
     is_in_ci_checkout,
+    missing_distributions,
     partition_by_ci_visibility,
     partition_by_name_heuristic_scope,
     tracked_files,
@@ -28,6 +30,30 @@ from scanner_health import (  # noqa: E402
     failed_checkov_scans,
     missing_whole_repo_scanners,
 )
+
+
+def abort_on_missing_dependencies():
+    """Refuse to scan at all when a classification dependency is not installed.
+
+    `main` asks this before it scans, and it is a refusal rather than a warning for
+    one reason: the two outcomes have to look different. Without the parser the
+    gate still ran, still printed a findings table and still exited 1 — it just
+    classified ten identifier-name findings in test files as gating HIGH, because
+    the packaged-set read they are demoted by was unavailable (#1428). A reader
+    cannot tell that apart from a credential landing in shipped code, so the gate
+    was red for everything on every pull request for a day and carried no signal.
+
+    Checked before the scan, not after, because the scan costs 5-15 minutes and the
+    answer does not depend on it. `ci_paths.packaged_source_dirs` raises on the same
+    condition, which is what covers a caller that skips this — see
+    :class:`ci_paths.ScanDependencyError`.
+    """
+    missing = missing_distributions()
+    if not missing:
+        return
+
+    print(f"❌ {dependency_failure_message(missing)}")
+    sys.exit(1)
 
 
 def warn_about_build_artifacts(project_root):
@@ -367,11 +393,16 @@ def main():
         os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS")
     )
 
+    # Setup faults first, before anything that costs time or prints a banner: a
+    # missing scanner and a missing parser are both answerable in one line, and
+    # both were historically discovered minutes into a run or not at all.
     if not srt_executable.exists():
         print(f"❌ SRT not found at: {srt_executable}")
         print(f"   Expected .srt directory at: {srt_dir}")
         print("   Run 'make srt-setup' first.")
         sys.exit(1)
+
+    abort_on_missing_dependencies()
 
     print("Running SRT security assessment...")
     print(f"✓ SRT binary found at: {srt_executable}")

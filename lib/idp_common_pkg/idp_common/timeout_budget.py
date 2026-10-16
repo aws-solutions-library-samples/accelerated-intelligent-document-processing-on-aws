@@ -32,7 +32,7 @@ document and configuration passed at 600s and has failed every CI run since the 
 
 So ``AGENT_READ_TIMEOUT_SECONDS`` is back at a value the work fits inside, and the
 invariant that keeps the invocation safe lives in the retry ladder instead:
-``utils.bedrock_utils._attempt_cannot_finish`` refuses to BEGIN an attempt the size
+``lambda_deadline.attempt_cannot_finish`` refuses to BEGIN an attempt the size
 of the one that just failed when the remaining invocation cannot hold it, and raises
 the underlying error. The handlers wrap that as ``TransientError``, which
 ``ExtractionStep``/``ShardExtractionStep`` retry eight times against a state-machine
@@ -107,15 +107,26 @@ because ``utils.settings_helper`` builds an SSM client while it executes. A leaf
 module with no imports of its own is free to import from anywhere.
 ``tests/unit/test_import_surface_region_free.py`` holds that property.
 
-⚠️ ONE EXPOSURE IS NOT BOUNDED BY THESE CONSTANTS. ``bedrock/client.py``'s
-``_invoke_with_retry`` has its own application-level ladder — ``max_retries``
-attempts, backing off ``initial_backoff`` doubling to ``max_backoff`` — which does
-NOT consult ``get_lambda_deadline_epoch`` and so can overrun an invocation by itself
-regardless of the arithmetic above. Making that ladder deadline-aware changes
-behaviour for every non-agentic path (classification, simple extraction,
-summarization, assessment), so it is deliberately out of scope; its nominal worst
-case is pinned by ``tests/unit/extraction/test_shard_timeout_budget.py`` so it fails
-if either of its numbers moves.
+⚠️ **THE CONSTANTS DO NOT BOUND THE LADDERS IN ``bedrock/client.py``; THE SAME GATE
+DOES.** That module's four application-level ladders — non-streamed ``converse``,
+embedding, LambdaHook and the OpenAI Responses endpoint — each make ``max_retries``
+attempts backing off ``initial_backoff`` doubling to ``max_backoff``, with no
+cumulative allowance, so their nominal worst case exceeds an invocation by itself
+whatever the arithmetic above says: eight non-streamed ``converse`` attempts at
+``CONFIDENCE_READ_TIMEOUT_SECONDS`` is 2,400 s of a 900 s function, and three of them
+fill it exactly. What keeps them inside the invocation is not a constant but
+``lambda_deadline.attempt_cannot_finish``, the same gate the streamed ladder uses:
+every retry decision there refuses to begin an attempt the size of the COSTLIEST one
+measured so far, plus the backoff about to be slept, when the remaining invocation
+cannot hold it, and every sleep is clamped by ``clamp_sleep_to_budgets`` (#1362).
+
+The costliest rather than the last, because a ladder's costs are not monotonic: a cheap
+throttle between two stalls resets a last-attempt comparison and re-licenses an attempt
+that cannot return. That gate measures rather than estimating, so it needs no entry in
+the inequality above — and what it therefore cannot refuse is an attempt more expensive
+than anything it has seen, which includes every ladder's first.
+``tests/unit/bedrock/test_invocation_budget_guard.py`` states the bound that way and
+pins it.
 """
 
 from __future__ import annotations

@@ -35,6 +35,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -55,15 +56,40 @@ ccd = cov_all._ccd
 
 
 class _Recorder:
-    """Stands in for `subprocess.run`, recording every command and cwd."""
+    """Stands in for `subprocess.run`, recording every command and cwd.
+
+    Appends under a lock, because `coverage_all.main` measures trees on a thread pool
+    and `list.append` from several threads is not what this is here to exercise. ⚠️ The
+    recorded **order** is the pool's scheduling order and is not a property to assert —
+    three assertions in this module did assert it and passed or failed run to run. Where
+    an order genuinely matters, drive the sequential path with `--jobs 1`.
+    """
 
     def __init__(self, returncode: int = 0, write_report: bool = True) -> None:
         self.calls: list[tuple[list[str], Path]] = []
         self.returncode = returncode
         self.write_report = write_report
+        self._lock = threading.Lock()
+
+    def cmd_for(self, cwd_name: str) -> list[str]:
+        """The one command recorded for the tree whose cwd is named ``cwd_name``.
+
+        ⚠️ Use this rather than `calls[0]`/`calls[1]`. Positional indexing into a list
+        several threads appended to reads whichever tree happened to be scheduled first,
+        so an assertion about *that* tree's command line is really an assertion about the
+        pool — which is how a per-tree claim ("the serial tree gets no `-n`") passed and
+        failed run to run while the thing it claimed was never checked.
+        """
+        matching = [cmd for cmd, cwd in self.calls if cwd and cwd.name == cwd_name]
+        assert len(matching) == 1, (
+            f"expected exactly one invocation from {cwd_name!r}, got {len(matching)}; "
+            f"recorded: {[c.name for _, c in self.calls if c]}"
+        )
+        return matching[0]
 
     def __call__(self, cmd, cwd=None, **kwargs):
-        self.calls.append((list(cmd), Path(cwd) if cwd else None))
+        with self._lock:
+            self.calls.append((list(cmd), Path(cwd) if cwd else None))
         if self.write_report:
             for arg in cmd:
                 if arg.startswith("--cov-report=xml:"):
@@ -74,6 +100,20 @@ class _Recorder:
                         encoding="utf-8",
                     )
         return subprocess.CompletedProcess(cmd, self.returncode)
+
+
+def _fake_lib_package(root: Path, name: str) -> Path:
+    """A `lib/<name>/pyproject.toml` under `root`, which is what the pin is derived from.
+
+    `first_party_pythonpath` globs `lib/*/pyproject.toml` relative to
+    `coverage_all.REPO_ROOT`, and `_install` repoints that at `tmp_path` — so a fixture
+    without this produces an empty pin, and an assertion about the pin then passes over
+    a run that carries none.
+    """
+    package = root / "lib" / name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    return package
 
 
 def _fake_tree(tmp_path: Path, name: str):
@@ -111,7 +151,12 @@ class TestTheCommandItBuilds:
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 0
         capsys.readouterr()
-        assert [c[1].name for c in rec.calls] == ["alpha", "beta"]
+        # Compared as a SET, deliberately. Trees are measured concurrently, so the order
+        # the calls are recorded in is the order the pool happened to schedule them —
+        # asserting a sequence here passed and failed run to run. What the test is about
+        # survives: one invocation per tree, each from that tree's own directory, and no
+        # tree consolidated into another's call.
+        assert sorted(c[1].name for c in rec.calls) == ["alpha", "beta"]
 
     def test_the_report_lands_where_the_ratchet_looks_for_it(
         self, monkeypatch, tmp_path, capsys
@@ -213,19 +258,22 @@ class TestFailuresAreDistinguishableFromCleanRuns:
         tree is what lets the reader distrust the right figures instead of all of them.
         """
         good, bad = _fake_tree(tmp_path, "good"), _fake_tree(tmp_path, "bad")
-        calls = {"n": 0}
         rec_ok = _Recorder()
 
         def run(cmd, cwd=None, **kwargs):
-            calls["n"] += 1
             rec_ok(cmd, cwd=cwd)
-            return subprocess.CompletedProcess(cmd, 0 if calls["n"] == 1 else 1)
+            # Keyed on the TREE, not on a call counter. "whichever ran first succeeded"
+            # is a race once trees are measured concurrently, and it made this test pass
+            # or fail run to run — while the property it is about, that the failing tree
+            # is the one named, is exactly what such a race would silently invert.
+            return subprocess.CompletedProcess(cmd, 1 if Path(cwd).name == "bad" else 0)
 
         _install(monkeypatch, tmp_path, [good, bad], run)
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 1
         out = capsys.readouterr().out
         assert "tests failed in: bad" in out, out
+        assert "good" not in out.split("tests failed in:")[1], out
         assert "may be partial" in out, out
 
     def test_a_failing_tree_does_not_stop_the_later_trees_from_being_measured(
@@ -235,16 +283,26 @@ class TestFailuresAreDistinguishableFromCleanRuns:
         the ratchet would skip them all while reporting the trees it did check as fine."""
         trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
         calls: list[str] = []
+        lock = threading.Lock()
 
         def run(cmd, cwd=None, **kwargs):
-            calls.append(Path(cwd).name)
+            with lock:
+                calls.append(Path(cwd).name)
             return subprocess.CompletedProcess(cmd, 1 if Path(cwd).name == "a" else 0)
 
         _install(monkeypatch, tmp_path, trees, run)
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 1
-        capsys.readouterr()
-        assert calls == ["a", "b", "c"]
+        out = capsys.readouterr().out
+        # A SET, because the trees are measured concurrently and the completion order is
+        # the pool's to choose. The property is that `a` failing cost nothing: all three
+        # were still invoked.
+        assert sorted(calls) == ["a", "b", "c"]
+        # And the one that failed is named, which is the half concurrency could plausibly
+        # break — a result attributed to whichever thread finished next would report the
+        # wrong tree while still exiting 1, so the exit code alone does not show it.
+        assert "tests failed in: a" in out, out
+        assert "failed in: b" not in out and "failed in: c" not in out, out
 
     def test_a_tree_that_produced_no_report_is_shown_as_such_not_as_zero_percent(
         self, monkeypatch, tmp_path, capsys
@@ -294,6 +352,35 @@ class TestTreeSelection:
         assert [c[1].name for c in rec.calls] == ["b"]
 
     def test_only_is_repeatable(self, monkeypatch, tmp_path, capsys):
+        """Two `--only` flags select both trees and nothing else.
+
+        Driven with `--jobs 1` so the caller's own order — `c` before `a`, which is not
+        registry order — is observable at all. Under concurrency the recorded order is
+        the pool's, so the same assertion on the default path passed and failed run to
+        run; the selection is the property, and the order is asserted here where it is
+        real rather than inferred from a race.
+        """
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["coverage_all.py", "--jobs", "1", "--only", "c", "--only", "a"],
+        )
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert [c[1].name for c in rec.calls] == ["c", "a"]
+
+    def test_only_selects_exactly_the_named_trees_when_run_concurrently(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The same selection on the default (concurrent) path, as a set.
+
+        Separate from the test above because the two assert different things: that one
+        is about the order `--only` preserves, this one about the membership it produces
+        — and only the second is a property of the path CI actually takes.
+        """
         trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
         rec = _Recorder()
         _install(monkeypatch, tmp_path, trees, rec)
@@ -302,7 +389,7 @@ class TestTreeSelection:
         )
         assert cov_all.main() == 0
         capsys.readouterr()
-        assert [c[1].name for c in rec.calls] == ["c", "a"]
+        assert sorted(c[1].name for c in rec.calls) == ["a", "c"]
 
     def test_an_unknown_tree_name_exits_2_and_lists_the_known_ones(
         self, monkeypatch, tmp_path, capsys
@@ -386,17 +473,59 @@ class TestASerialTreeIsNeverRunInParallel:
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 0
         capsys.readouterr()
-        assert "-n" not in rec.calls[0][0]
-        assert "-n" in rec.calls[1][0]
+        # Looked up by tree, not by position: the two are measured concurrently, so
+        # `calls[0]` is whichever the pool scheduled first.
+        assert "-n" not in rec.cmd_for("ser")
+        assert "-n" in rec.cmd_for("par")
 
-    def test_the_scripts_tree_is_declared_serial_in_the_real_registry(self):
-        """Not a synthetic tree: the one whose baseline was measured serially.
+    def test_no_registry_tree_declares_serial_without_recording_why(self):
+        """`serial` costs wall clock, so an entry that declares it has to say why.
 
-        The `scripts` figures in `coverage_debt.json` come from a serial run. Flipping this
-        changes the conditions the recorded numbers were taken under, so it is a decision
-        that comes with a measurement rather than a default.
+        This replaces an assertion that `scripts` **is** serial. That assertion was
+        the pin on a decision, and its docstring set the price of changing it: "a
+        decision that comes with a measurement rather than a default". The
+        measurement was taken on 2026-10-14 and is recorded at the entry --
+        `6093 passed` either way, `86.22%` either way, identical per file, and
+        1291s serial against 585s at the `-n 4` that `coverage-all-cicd` actually
+        gives this tree. So `scripts` is no longer serial, and the pin now guards
+        the general property instead of that one tree's value.
+
+        Why the general form. Serial was costing 29 of the 34 minutes of the
+        `unit_tests` job -- 84% of it, as the only serial tree of nine -- and the
+        reason in the entry ("not meaningfully faster on this tree anyway") had
+        quietly stopped being true as the suite grew to 6093 tests. A pin on the
+        literal value cannot catch a stale justification; requiring the entry to
+        carry its measurement at least puts the claim where the next reader will
+        check it.
+
+        ⚠️ Asserted as "the set is empty", not as a loop over serial trees with
+        the check inside. The loop form is what this test was first written as,
+        and with no serial tree left its body never executed: it passed
+        vacuously AND left its own line uncovered, which the per-file coverage
+        diff caught. A guard that cannot run is the thing this repository keeps
+        finding, so the assertion is on a value that is always computed.
+
+        `Tree.serial` stays as a capability -- the synthetic trees earlier in
+        this class cover both directions of it -- and if a tree ever needs it
+        again, the failure here is where the measurement gets asked for.
         """
-        assert ccd.TREES_BY_NAME["scripts"].serial is True
+        serial_trees = [tree.name for tree in ccd.TREES if tree.serial]
+        assert serial_trees == [], (
+            f"{serial_trees} declare serial=True. Serial is the expensive option: "
+            "it cost 29 of the 34 minutes of the `unit_tests` job when `scripts` "
+            "was the only one of nine. Record at the entry what the serial run "
+            "buys -- the measurement `Tree.serial` describes -- and then update "
+            "this test deliberately."
+        )
+
+    def test_the_scripts_tree_runs_in_parallel_in_the_real_registry(self):
+        """The flip itself, so a silent revert shows up as a failure.
+
+        Reverting this costs ~12 minutes of every `unit_tests` run, which is the
+        kind of regression that is invisible in a diff and obvious only in a
+        pipeline nobody is timing.
+        """
+        assert ccd.TREES_BY_NAME["scripts"].serial is False
 
 
 def _probe_tree(tmp_path: Path, name: str = "probe"):
@@ -547,7 +676,9 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         tree = _probe_tree(tmp_path)
         monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
         monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
-        name, code, total = cov_all.run(tree, sys.executable, parallel=False)
+        # `capture` left at its default, so a probe that fails shows its pytest output
+        # here rather than only in a return value this assertion discards.
+        name, code, total, _ = cov_all.run(tree, sys.executable, parallel=False)
         assert (name, code) == ("probe", 0)
         assert total is not None
         assert _probe_rate(ccd.report_path(tree)) == 100.0
@@ -588,7 +719,7 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
         monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
         monkeypatch.setattr(cov_all, "subprocess_coverage_env", crippled)
-        name, code, _ = cov_all.run(tree, sys.executable, parallel=False)
+        name, code, _, _ = cov_all.run(tree, sys.executable, parallel=False)
         assert (name, code) == ("probe", 0)
         assert _probe_rate(ccd.report_path(tree)) == 0.0
 
@@ -615,7 +746,7 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
         monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
         monkeypatch.setattr(cov_all, "subprocess_coverage_env", crippled)
-        name, code, _ = cov_all.run(tree, sys.executable, parallel=False)
+        name, code, _, _ = cov_all.run(tree, sys.executable, parallel=False)
         assert (name, code) == ("probe", 0)
         files = _probe_files(ccd.report_path(tree))
         assert any("far.py" in f for f in files), files
@@ -635,3 +766,255 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         assert cov_all.SUBPROCESS_RC.is_file()
         config = coverage.Coverage(config_file=str(cov_all.SUBPROCESS_RC)).config
         assert config.parallel is True
+
+
+@pytest.mark.unit
+class TestTheWorkerBudgetUnderConcurrency:
+    """Concurrent trees share one host, so no tree may ask for all of it.
+
+    ``-n auto`` is per-process: four trees each passing it request four times the
+    machine, and the oversubscription costs more than the concurrency wins. The budget
+    is therefore a division, and the thing to assert is that ``auto`` never reaches a
+    command line once more than one tree is in flight — a regression to it would look
+    like a speed-up on a 16-core developer box and a slow-down on a 4-CPU runner, which
+    is the direction nobody measures.
+    """
+
+    def test_no_concurrent_invocation_asks_for_auto(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert rec.calls, "nothing ran"
+        for cmd, cwd in rec.calls:
+            assert "auto" not in cmd, (cwd, cmd)
+            # And it is a real count, so a regression to `-n` with a missing value
+            # cannot pass by `auto` merely being absent.
+            n = cmd[cmd.index("-n") + 1]
+            assert n.isdigit() and int(n) >= 2, (cwd, cmd)
+
+    def test_the_share_is_at_least_two_and_divides_the_host(self):
+        """Floored at 2: one worker is slower than the serial run it replaced while
+        still paying xdist's startup, so the floor is not cosmetic."""
+        assert cov_all.worker_share(4, cpus=16) == 4
+        assert cov_all.worker_share(3, cpus=16) == 5
+        assert cov_all.worker_share(1, cpus=16) == 16
+        # Small hosts: the floor, not a zero or a one.
+        assert cov_all.worker_share(4, cpus=4) == 2
+        assert cov_all.worker_share(9, cpus=2) == 2
+        assert cov_all.worker_share(0, cpus=8) == 8  # a zero divisor must not raise
+
+    def test_jobs_is_bounded_by_the_host_not_only_by_the_flag(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """⚠️ The bound has to be computed, and prose was the previous answer.
+
+        `worker_share` floors at 2, so `--jobs 4` asks for 8 workers whatever the
+        machine has — and GitHub's runner is a 4-CPU container. The ceiling is therefore
+        `cpus // 2`, enforced here against a pretend 4-CPU host so the assertion does
+        not depend on whatever the test machine has.
+        """
+        monkeypatch.setattr(cov_all, "cpu_count", lambda: 4)
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d", "e")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "5"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        assert "2 at a time" in out, out
+        assert "2 xdist worker(s) each on 4 CPU(s)" in out, out
+
+    def test_jobs_is_bounded_by_the_number_of_trees(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        monkeypatch.setattr(cov_all, "cpu_count", lambda: 64)
+        trees = [_fake_tree(tmp_path, "only")]
+        _install(monkeypatch, tmp_path, trees, _Recorder())
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "8"])
+        assert cov_all.main() == 0
+        assert "1 at a time" in capsys.readouterr().out
+
+    def test_jobs_below_one_is_refused_rather_than_clamped(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """`--jobs 0` is a caller error, and clamping it would run the whole thing with
+        a plausible-looking log instead of saying the flag was wrong."""
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path, "a")], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "0"])
+        assert cov_all.main() == 2
+        assert rec.calls == [], "nothing should have been run"
+
+    def test_a_serial_tree_gets_no_n_even_in_a_concurrent_run(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The asymmetry survives concurrency, which is the whole reason for it.
+
+        `scripts` declares serial because xdist under-collects a suite driving its
+        subject as a subprocess. Concurrency exists to hide that tree's 16 minutes
+        behind the others — so a budget that handed it workers would be the change that
+        defeats its own purpose, silently, by reporting falls in files whose suites are
+        green.
+        """
+        ser = ccd.Tree("ser", "ser", "pkg", (), serial=True)
+        par = ccd.Tree("par", "par", "pkg", (), serial=False)
+        for t in (ser, par):
+            (tmp_path / t.cwd).mkdir(parents=True, exist_ok=True)
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [ser, par], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "2"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert "-n" not in rec.cmd_for("ser")
+        assert "-n" in rec.cmd_for("par")
+
+    def test_the_concurrent_path_prints_one_block_per_tree(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Interleaved pytest output from several trees is unreadable, and this is the
+        producer for a gate: a reader who cannot find the failure summary reads a failed
+        run as a slow one. So each tree's output is captured and printed under a lock
+        behind its own heading."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+        _install(monkeypatch, tmp_path, trees, _Recorder())
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        headings = [
+            line for line in out.splitlines() if line.startswith("=== coverage:")
+        ]
+        assert len(headings) == 4, out
+        assert sorted(h.split()[2] for h in headings) == ["a", "b", "c", "d"], headings
+        # The wall clock is reported, because the only reason this concurrency exists is
+        # time and an unreported figure is one nobody re-measures.
+        assert "wall clock:" in out, out
+
+
+@pytest.mark.unit
+class TestSkipRefusesRatherThanNarrowingSilently:
+    """`--skip` removes a tree from the producer; getting it wrong must be loud.
+
+    The variable that uses it (`COVERAGE_CICD_SKIP`) is registered in
+    gate_exemptions.json precisely because it narrows what a gate's input covers, and
+    the registered reason rests on the skip naming exactly the tree an earlier CI step
+    already measured. A typo there would be an unmeasured tree, which is #1256 again.
+    """
+
+    def test_a_skipped_tree_is_not_measured_and_the_others_are(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--skip", "b"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert sorted(c[1].name for c in rec.calls) == ["a", "c"]
+
+    def test_an_unknown_name_to_skip_exits_2_and_measures_nothing(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """A typo must not quietly skip nothing either. Both directions are wrong: the
+        caller's wall-clock expectation and the gate's report coverage stop matching,
+        and only one of the two is visible in a job log."""
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path, "alpha")], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--skip", "alfa"])
+        assert cov_all.main() == 2
+        out = capsys.readouterr().out
+        assert "alfa" in out and "alpha" in out, out
+        assert rec.calls == [], "nothing should have been run"
+
+    def test_skipping_every_tree_is_refused(self, monkeypatch, tmp_path, capsys):
+        """Otherwise the producer exits 0 having written no report at all, and the
+        ratchet behind it then refuses with nothing to point at."""
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path, "alpha")], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--skip", "alpha"])
+        assert cov_all.main() == 2
+        assert "nothing would be reported" in capsys.readouterr().out
+        assert rec.calls == []
+
+
+@pytest.mark.unit
+class TestTheRunIsPinnedToThisCheckout:
+    """A figure measured from another checkout is worse than no figure (#1094).
+
+    `import idp_common` follows the editable-install pointer in the interpreter's
+    site-packages, not the checkout a suite lives in, and this script spawns
+    `python -m pytest` itself rather than through `$(PYTEST_HERMETIC)` — so the pin that
+    wrapper would have supplied has to be supplied here. What makes it worse than
+    elsewhere is the destination: these figures are a ratchet's input and `--write`
+    records them permanently.
+    """
+
+    def test_every_invocation_carries_this_checkouts_package_roots(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        captured: dict[str, str] = {}
+        tree = _fake_tree(tmp_path, "alpha")
+
+        def run(cmd, cwd=None, env=None, **kwargs):
+            captured.update(env or {})
+            return subprocess.CompletedProcess(cmd, 0)
+
+        _install(monkeypatch, tmp_path, [tree], run)
+        # `_install` repoints REPO_ROOT at tmp_path, so the checkout this run is pinned
+        # to is tmp_path. Give it a `lib/` package, or the pin is legitimately empty and
+        # the assertion would pass over a run carrying no pin at all.
+        _fake_lib_package(tmp_path, "idp_fake_pkg")
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        cov_all.main()
+        capsys.readouterr()
+        pinned = cov_all.first_party_pythonpath()
+        assert pinned, "no lib/*/pyproject.toml found, so the pin would be vacuous"
+        assert captured.get("PYTHONPATH", "").startswith(pinned), captured.get(
+            "PYTHONPATH"
+        )
+
+    def test_the_roots_are_absolute_and_inside_this_checkout(self):
+        """Absolute because a child that changes directory loses a relative entry, and
+        inside this checkout because an entry naming a sibling worktree resolves
+        perfectly while saying nothing about this tree."""
+        roots = cov_all.first_party_pythonpath().split(":")
+        assert roots and all(roots)
+        for root in roots:
+            assert Path(root).is_absolute(), root
+            assert Path(root).is_relative_to(cov_all.REPO_ROOT), root
+            assert (Path(root) / "pyproject.toml").is_file(), root
+
+    def test_the_set_is_derived_from_the_tree_not_listed(self, monkeypatch, tmp_path):
+        """A package added under `lib/` is covered without an edit here, which is the
+        same rule `FIRST_PARTY_PYTHONPATH` in make/hermetic_aws.mk follows."""
+        (tmp_path / "lib" / "a_new_package").mkdir(parents=True)
+        (tmp_path / "lib" / "a_new_package" / "pyproject.toml").write_text("[project]")
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        assert cov_all.first_party_pythonpath() == str(
+            tmp_path / "lib" / "a_new_package"
+        )
+
+    def test_a_callers_own_pythonpath_is_kept_behind_the_pin(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Prepended rather than replacing: the pin must win, and an existing entry a
+        suite legitimately needs must not be dropped to achieve that."""
+        captured: dict[str, str] = {}
+        tree = _fake_tree(tmp_path, "alpha")
+
+        def run(cmd, cwd=None, env=None, **kwargs):
+            captured.update(env or {})
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
+        _install(monkeypatch, tmp_path, [tree], run)
+        _fake_lib_package(tmp_path, "idp_fake_pkg")
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        cov_all.main()
+        capsys.readouterr()
+        path = captured.get("PYTHONPATH", "")
+        assert path.endswith(":/somewhere/else"), path
+        assert path.startswith(cov_all.first_party_pythonpath()), path

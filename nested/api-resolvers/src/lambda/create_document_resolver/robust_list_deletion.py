@@ -95,60 +95,94 @@ def try_exact_list_deletion(tracking_table, list_pk: str, list_sk: str, object_k
         return False
 
 
+def list_entry_names_document(entry: Dict[str, Any], object_key: str) -> bool:
+    """Does this shard row belong to the document at ``object_key``?
+
+    Two shapes exist in the table and both have to match, which is why this is an OR.
+    The ``ObjectKey`` attribute is the primary route; some rows instead encode the key
+    in the sort key as ``ts#<timestamp>#id#<object_key>``, which is the only route to a
+    row whose ``ObjectKey`` attribute was never written.
+
+    ⚠️ **The sort-key arm parses the key out and compares it whole; every looser test is
+    wrong here because this feeds a delete.** A substring test matched a *different*
+    document whose key merely starts with this one — ``invoices/report.pdf`` selected
+    the rows for ``invoices/report.pdf.bak`` and ``invoices/report.pdf (1).pdf``;
+    anchoring at the end still matched one whose own key *contains* ``#id#`` and ends
+    with the target, which ``#`` being legal in an S3 key makes reachable by upload.
+    Every row this returns is deleted by key, so the sibling would vanish from the
+    document list while its tracking record survived. Splitting on the FIRST ``#id#``
+    is what this repository's own reader of the same sort key does.
+
+    ⚠️ **This is a client-side predicate, and it has to be: the sort-key half cannot be
+    a ``FilterExpression``.** DynamoDB refuses a key attribute in a ``Query`` filter —
+    "A ``FilterExpression`` does not allow key attributes. You cannot define a filter
+    expression based on a partition key or a sort key" — so
+    ``contains(SK, :obj_id)`` made this shard query raise ``ValidationException`` on
+    every call (#1366). Nothing is lost by moving it here: a ``FilterExpression`` is
+    applied after the items are read and consumes no extra read capacity, so the
+    server-side form only ever saved response bytes, and the query below asks for just
+    the three attributes that are read.
+
+    Kept in step with ``idp_common.delete_documents.list_entry_names_document``. This
+    Lambda has no ``idp_common`` layer, so the predicate is duplicated rather than
+    imported; ``test_robust_list_deletion.py`` fails if the two disagree.
+    """
+    if entry.get('ObjectKey') == object_key:
+        return True
+    sort_key = entry.get('SK')
+    if not isinstance(sort_key, str) or '#id#' not in sort_key:
+        return False
+    return sort_key.split('#id#', 1)[1] == object_key
+
+
 def query_shard_for_object_key(tracking_table, list_pk: str, object_key: str) -> List[Dict[str, Any]]:
     """
-    Query a shard for any list entries containing the specified object key.
-    Uses DynamoDB filter expressions for efficiency.
-    
+    Query a shard for any list entries naming the specified object key.
+
     Args:
         tracking_table: DynamoDB table resource
         list_pk: Primary key of the shard
         object_key: Document object key to search for
-        
+
     Returns:
-        List[Dict]: List of matching DynamoDB items
+        List[Dict]: List of matching DynamoDB items, each carrying PK, SK and (where
+        it exists) ObjectKey. Selection is ``list_entry_names_document``, evaluated
+        client-side — see that function for why.
     """
     try:
-        logger.info(f"Querying shard {list_pk} for entries containing ObjectKey: {object_key}")
-        
-        # Use filter expression to efficiently query only matching items
-        # This prevents loading all shard items and reduces pagination issues
-        response = tracking_table.query(
-            KeyConditionExpression=Key('PK').eq(list_pk),
-            FilterExpression="ObjectKey = :obj_key OR contains(SK, :obj_id)",
-            ExpressionAttributeValues={
-                ':obj_key': object_key,
-                ':obj_id': f"#id#{object_key}"
-            }
-        )
-        
+        logger.info(f"Querying shard {list_pk} for entries naming ObjectKey: {object_key}")
+
+        # Only the three attributes the predicate and the delete read. The selection
+        # itself is client-side; see list_entry_names_document.
+        query_kwargs: Dict[str, Any] = {
+            'KeyConditionExpression': Key('PK').eq(list_pk),
+            'ProjectionExpression': 'PK, SK, ObjectKey',
+        }
+        response = tracking_table.query(**query_kwargs)
+
         matching_items = []
-        if 'Items' in response:
-            for item in response['Items']:
+        for item in response.get('Items', []):
+            if list_entry_names_document(item, object_key):
                 matching_items.append(item)
                 logger.info(f"Found matching list entry: PK={item.get('PK')}, SK={item.get('SK')}")
-        
-        # Handle pagination if needed (though filter should make this rare)
+
+        # Paginate. The shard partition is read in full now that the server applies no
+        # filter, so this loop carries the whole selection rather than being rare.
         while 'LastEvaluatedKey' in response:
             logger.info(f"Handling pagination for shard query, continuing from: {response['LastEvaluatedKey']}")
             response = tracking_table.query(
-                KeyConditionExpression=Key('PK').eq(list_pk),
-                FilterExpression="ObjectKey = :obj_key OR contains(SK, :obj_id)",
-                ExpressionAttributeValues={
-                    ':obj_key': object_key,
-                    ':obj_id': f"#id#{object_key}"
-                },
-                ExclusiveStartKey=response['LastEvaluatedKey']
+                **query_kwargs,
+                ExclusiveStartKey=response['LastEvaluatedKey'],
             )
-            
-            if 'Items' in response:
-                for item in response['Items']:
+
+            for item in response.get('Items', []):
+                if list_entry_names_document(item, object_key):
                     matching_items.append(item)
                     logger.info(f"Found matching list entry (paginated): PK={item.get('PK')}, SK={item.get('SK')}")
-        
+
         logger.info(f"Found {len(matching_items)} matching entries in shard {list_pk}")
         return matching_items
-    
+
     except Exception as e:
         logger.error(f"Error querying shard for object key {object_key}: {str(e)}")
         return []

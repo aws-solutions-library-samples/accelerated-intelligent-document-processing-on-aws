@@ -708,7 +708,7 @@ def test_sanitize_ocr_project_name_truncates_but_keeps_suffix():
         ("us-west-2", "us"),
         ("eu-central-1", "eu"),
         ("ap-southeast-2", "apac"),  # NOT "ap" — the real profile is apac.*
-        ("ca-central-1", "ca"),
+        ("ca-central-1", "na"),  # AWS names the Canada (Central) profile na.*, not ca.*
         ("sa-east-1", "sa"),
     ],
 )

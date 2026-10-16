@@ -17,6 +17,7 @@ import yaml
 # PYTHONPATH for every harness entry point (benchmarks/matrices/METHODOLOGY.md),
 # and this module is stdlib-only, so importing it costs nothing.
 from idp_common.metering_units import (
+    CACHE_UNITS,
     NOT_CHARGEABLE,
     classify_absent_unit,
     pricing_key_service,
@@ -450,17 +451,26 @@ def price_metering(metering) -> Priced:
                 # Free, or unpriced? One rule, imported rather than restated, so
                 # this and production cannot answer it differently:
                 # idp_common.metering_units.classify_absent_unit. A zero count is
-                # free arithmetically; a unit declared non-chargeable for the
-                # service on AWS price-list evidence is free by declaration;
-                # anything else is a price this harness does not have, and
-                # dropping it made a new Bedrock usage field cost 0.00 (#1212).
+                # free arithmetically; a unit declared non-chargeable is free by
+                # declaration -- at SERVICE scope for the units that are not a
+                # billing dimension of the service at all, and per PRICING KEY
+                # for the two prompt-cache units, since whether a cache read
+                # costs anything is a property of the model (#1206). Anything
+                # else is a price this harness does not have, and dropping it
+                # made a new Bedrock usage field cost 0.00 (#1212).
                 if classify_absent_unit(matched, unit, count) == NOT_CHARGEABLE:
                     continue
+                declaration = (
+                    "EXPECTED_CACHE_UNIT_OMISSIONS (per pricing key and unit)"
+                    if unit in CACHE_UNITS
+                    else f"NON_CHARGEABLE_METERING_UNITS for "
+                    f"{pricing_key_service(matched)!r}"
+                )
                 unpriced.append(
                     f"{meter_key!r} unit {unit!r}: pricing entry {matched!r} "
-                    f"lists no rate for it and it is not declared "
-                    f"non-chargeable for "
-                    f"{pricing_key_service(matched)!r} (count={count!r}) — add "
+                    f"lists no rate for it and nothing declares it "
+                    f"non-chargeable in idp_common.metering_units."
+                    f"{declaration} (count={count!r}) — add "
                     f"the rate, or this run's cost is below truth by whatever "
                     f"it spent on it"
                 )
@@ -843,10 +853,95 @@ def walk_confidence(explainability_info):
     Requires ``idp_common`` on ``PYTHONPATH`` (pinned in
     benchmarks/matrices/METHODOLOGY.md). ``confidence_curve`` and ``curve_store``
     are deliberately standard-library-only, so this import does not pull Stickler.
+
+    Every score is range-checked on the way out — see
+    :func:`assert_confidences_in_range`. This is the one place every confidence
+    score the harness reports passes through, so checking here is what makes the
+    range a property of the harness rather than of each statistic that remembered
+    to ask.
     """
     from idp_common.evaluation import flatten_confidences
 
-    return flatten_confidences(explainability_info)
+    found = flatten_confidences(explainability_info)
+    assert_confidences_in_range(found, "explainability_info")
+    return found
+
+
+CONFIDENCE_MIN = 0.0
+CONFIDENCE_MAX = 1.0
+
+# How many offending leaves the message names before it stops. A table whose every
+# row carries the same mis-scaled column would otherwise print thousands of lines
+# and bury the count.
+MAX_OUT_OF_RANGE_REPORTED = 10
+
+
+class ConfidenceOutOfRange(ValueError):
+    """A stored confidence that is not a probability reached a harness statistic.
+
+    Deliberately an exception and not a clamp, and not a recorded ``None``.
+    A clamp is what hid GitHub #1395: four releases published a
+    ``mean_confidence`` of up to 14.185 — one leaf carrying 100 averaged with
+    fourteen carrying fractions — and had the value been clamped to 1.0 the same
+    unit mismatch would have produced a plausible-looking 0.99 that nothing could
+    have found. The scorer's callers (``aggregate.score_all`` and
+    ``aggregate.score_reference_run``) already turn an exception into one
+    ``SCORE_ERROR`` row carrying the message, so raising costs the run one row
+    and no more, and the reason travels with it.
+    """
+
+
+def assert_confidences_in_range(scores, where=""):
+    """Raise :class:`ConfidenceOutOfRange` unless every score is in [0, 1].
+
+    A confidence is a probability. ``scores`` is either a ``{field path: score}``
+    mapping (what :func:`walk_confidence` returns) or any iterable of scores; the
+    mapping form is preferred because the message can then name the field, which
+    is what says whether the mismatch is one grader leaf or a whole column.
+
+    Checked BEFORE any statistic is computed, so no mean, percentage or bin index
+    is ever derived from a value outside the range — a check downstream of the
+    arithmetic cannot stop the number being written. ``NaN`` fails the comparison
+    and so is caught here too, which matters because it would otherwise travel
+    silently through every mean it entered.
+
+    An empty mapping passes, and that is not a hole: there is nothing out of
+    range in it, and the statistics that consume it already report ``None``
+    rather than a figure over no observations.
+    """
+    items = (
+        sorted(scores.items())
+        if isinstance(scores, dict)
+        else [(str(i), v) for i, v in enumerate(scores)]
+    )
+    bad = [
+        (path, value)
+        for path, value in items
+        if not (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and CONFIDENCE_MIN <= float(value) <= CONFIDENCE_MAX
+        )
+    ]
+    if not bad:
+        return
+    named = ", ".join(
+        f"{path}={value!r}" for path, value in bad[:MAX_OUT_OF_RANGE_REPORTED]
+    )
+    if len(bad) > MAX_OUT_OF_RANGE_REPORTED:
+        named += f", … ({len(bad) - MAX_OUT_OF_RANGE_REPORTED} more)"
+    source = f" in {where}" if where else ""
+    raise ConfidenceOutOfRange(
+        f"{len(bad)} of {len(items)} confidence scores{source} are outside "
+        f"[{CONFIDENCE_MIN}, {CONFIDENCE_MAX}]: {named}. "
+        "A confidence is a probability, so every statistic taken over these — "
+        "mean_confidence, pct_conf_below_0.9, and every calibration figure — "
+        "would be meaningless rather than merely imprecise. A value at or near "
+        "100 is a percentage averaged with fractions (GitHub #1395); the "
+        "assessment stage stores the grader's number verbatim and only warns "
+        "(assessment_confidence_out_of_range), so the value reaching this point "
+        "is expected and reporting a figure over it is not."
+    )
 
 
 def confidence_values(explainability_info):

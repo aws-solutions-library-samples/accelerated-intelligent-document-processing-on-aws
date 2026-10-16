@@ -70,6 +70,7 @@ from idp_common.extraction.validation import (
     validate_extraction,
 )
 from idp_common.models import Document, Section
+from idp_common.utils.bedrock_utils import is_output_token_truncation
 from idp_common.utils.few_shot_example_builder import (
     build_few_shot_extraction_examples_content,
 )
@@ -2229,10 +2230,34 @@ class ExtractionService:
 
     #: Below this many matching OCR table rows the row-shortfall check stays quiet.
     _OCR_ROW_ESTIMATE_MIN = 30
-    #: Extracted rows below this fraction of the matched OCR rows are a shortfall.
-    #: Column-heading rows repeated per page inflate the estimate a little, so the
-    #: bar is "less than half", not "fewer".
+    #: Extracted rows below this fraction of the matched OCR rows are a MATERIAL
+    #: shortfall — the one ``extraction.row_shortfall_action`` governs.
     _OCR_ROW_SHORTFALL_RATIO = 0.5
+    #: The smallest row gap this check will speak about at all, and the reason it
+    #: is the same number as ``_OCR_ROW_ESTIMATE_MIN`` rather than a second knob.
+    #:
+    #: ``_OCR_ROW_SHORTFALL_RATIO`` is a MULTIPLICATIVE slack standing in for an
+    #: ADDITIVE imprecision — a column heading reprinted once per page — so the
+    #: tolerance grows with the document while the thing it absorbs does not. On a
+    #: 17-page 800-row statement the OCR evidence is 817 rows, of which 17 are
+    #: headings (2.1%), and half of 817 is 408.5: an extraction returning 409 of
+    #: the 800 rows, losing 48.9% of the document, crossed no bar and carried no
+    #: processing issue at all (#1361, measured 2026-10-14). The slack was ~24x
+    #: the imprecision it was chosen for, and the factor is proportional to the
+    #: page count.
+    #:
+    #: The imprecision is computable exactly — ``_ocr_tables`` emits one entry per
+    #: page-repeat and each entry's ``rows`` includes its heading row, so
+    #: ``_heading_rows_for_width`` is the whole of it — which leaves the
+    #: width-only attribution in ``_expected_rows_for_width`` as the only reason
+    #: to tolerate anything further. That one can only INFLATE the evidence (an
+    #: unrelated table of the same width is summed in; nothing ever subtracts), so
+    #: the honest bound on it is "a gap no larger than a table the check would
+    #: decline to speak about anyway". That is ``_OCR_ROW_ESTIMATE_MIN``, so this
+    #: is defined as that value rather than chosen: the silent band becomes
+    #: bounded in ABSOLUTE rows (at most 29, whatever the document's size) instead
+    #: of proportional to it (408 at 800 rows, 1,600 at 3,200).
+    _OCR_ROW_GAP_MIN = _OCR_ROW_ESTIMATE_MIN
     #: A pipe-delimited run shorter than this is not a table (a prose line with a
     #: "|", a two-line caption).
     _OCR_TABLE_MIN_ROWS = 3
@@ -2317,6 +2342,29 @@ class ExtractionService:
     #: builder and the ``_save_results`` tail cannot drift apart.
     ROW_SHORTFALL_CODE = "extraction_rows_below_ocr_estimate"
 
+    #: The ``ProcessingIssue.code`` for a response the model did not finish —
+    #: certain evidence, as opposed to ``ROW_SHORTFALL_CODE``'s OCR estimate.
+    #: ``warning`` severity, always: the row-shortfall code is the one
+    #: ``extraction.row_shortfall_action`` governs, and widening that knob to cover
+    #: this code too would fail runs that complete today on a deployment that has
+    #: already opted into ``fail``.
+    OUTPUT_TRUNCATED_CODE = "extraction_output_truncated"
+
+    #: The ``ProcessingIssue.code`` for the band ``_OCR_ROW_SHORTFALL_RATIO``
+    #: leaves silent: fewer rows than the OCR's matched tables actually hold, by
+    #: more than their reprinted headings can explain, but not under half. It is
+    #: the same evidence and the same arithmetic as ``ROW_SHORTFALL_CODE``, read
+    #: against the data-row count instead of half of the inflated one.
+    #:
+    #: ``warning`` severity, always, and deliberately NOT governed by
+    #: ``extraction.row_shortfall_action`` — for the reason
+    #: ``OUTPUT_TRUNCATED_CODE`` is not either. Widening that knob to cover this
+    #: band would start FAILING runs that complete today on any deployment that
+    #: has already opted into ``fail``, and whether a materially short extraction
+    #: should fail is a product decision rather than a detection one. Detection is
+    #: what is fixed here; the consequence is unchanged.
+    PARTIAL_ROW_SHORTFALL_CODE = "extraction_partial_row_shortfall"
+
     def _row_shortfall_action(self) -> str:
         """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
 
@@ -2344,6 +2392,24 @@ class ExtractionService:
         table lacks (a derived Balance) is not compared at all.
         """
         return sum(tb["rows"] for tb in tables if tb["cols"] == n_props)
+
+    @classmethod
+    def _heading_rows_for_width(cls, n_props: int, tables: list[dict[str, int]]) -> int:
+        """Column-heading rows included in ``_expected_rows_for_width``'s sum.
+
+        ``_ocr_tables`` emits one entry per page-repeat of a table and counts the
+        row before the ``|---|`` separator — the heading — as one of that entry's
+        ``rows``. So the heading inflation in the summed evidence is exactly the
+        NUMBER of matched tables, and ``summed - this`` is the OCR's data-row
+        count: measured on the renderings this check is tested against, the
+        identity holds exactly (817 summed − 17 tables = 800 rows).
+
+        One shape is off by one in the SAFE direction. A run whose separator is
+        its first line has no heading row to count, so its entry's ``rows`` are
+        all data and subtracting one under-states the body by one — which lowers
+        the bar and can only suppress a firing, never cause one.
+        """
+        return sum(1 for tb in tables if tb["cols"] == n_props)
 
     @staticmethod
     def _declared_max_items(spec: Any) -> int | None:
@@ -3674,6 +3740,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           deterministic table parser is built for exactly this.
         - **Below-threshold population** (``extraction_sparse``, info): reuses the
           existing ``population_check`` heuristic when present.
+        - **A response the model did not finish** (``extraction_output_truncated``,
+          warning): ``metadata["output_truncated"]``, set from the response's own
+          ``stopReason`` or from the JSON repair reader. The only certain signal
+          here; the others are estimates.
 
         Best-effort and advisory: a genuinely empty section (no such data in the
         document) will also flag, so these are warning/info, never hard errors.
@@ -3729,7 +3799,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
         ]
         if empty_lists:
-            fields_str = ", ".join(empty_lists)
+            # `map(str, ...)` because these names come from the class SCHEMA, not
+            # from the response: a schema read straight from YAML can carry a bare
+            # numeric key, which arrives as an `int`, and this function runs with
+            # no enclosing `try` (`_save_results` calls it directly), so a
+            # `TypeError` out of the join would cost the section its whole
+            # processing-issue list and fail the save. Same reason as the
+            # equivalent join in the truncation block below; fixed in both rather
+            # than in the one that happened to be new.
+            fields_str = ", ".join(str(name) for name in empty_lists)
             rec = (
                 " This document has large/tabular fields; Advanced (agentic) "
                 "extraction with table parsing is recommended for it."
@@ -3756,6 +3834,146 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     ),
                     section_id=section_id,
                     details={"empty_list_fields": empty_lists, "agentic": is_agentic},
+                )
+            )
+
+        # 1b) The model's output was cut off mid-answer.
+        #
+        # This is the one signal here that is not a heuristic: either the response
+        # carried a ``stopReason`` saying the output ceiling was reached, or the
+        # text did not parse and the repair reader found an unterminated structure.
+        # Both mean the answer stops in the middle, so every list in it is a prefix
+        # of what the model was producing.
+        #
+        # It was ALREADY detected and then went nowhere: ``output_truncated`` was
+        # recorded in the section's metadata and read by no report, no status path
+        # and no UI, so a run whose output was demonstrably cut off completed with
+        # zero processing issues (#1361). Reporting it here is what makes the loss
+        # visible.
+        #
+        # Deliberately independent of ``extraction_rows_below_ocr_estimate``, and
+        # both can fire on one section. That check needs OCR that emits Markdown
+        # tables (Textract ``TABLES`` or BDA) and a table whose width matches the
+        # list item, and it is silent above its half ratio; this one needs neither
+        # OCR nor a list. Where they overlap they say different things — this names
+        # the cause, that one counts the rows — and suppressing either would remove
+        # evidence from a report that has room for both.
+        if metadata.get("output_truncated"):
+            # Top-level declared arrays that came back holding rows. NOT "the lists
+            # that were truncated", and the name says so: a response is cut at ONE
+            # point, so every list emitted before the cut is complete and nothing
+            # here can tell a reader which one was interrupted. `extracted_fields`
+            # insertion order would, but `_filter_extracted_to_schema` and
+            # `_apply_missing_field_handling` rewrite the dict in between, so that
+            # order is not safe to lean on. Naming the wrong field is worse than
+            # naming none, so this reports presence and leaves the inference to the
+            # reader. `isinstance` rather than truthiness, so a declared array that
+            # came back as a string is not reported as a list.
+            #
+            # No `str(name)` here, unlike the empty-list join above, and the
+            # asymmetry is the point rather than an oversight — but be precise about
+            # WHY, because the obvious reason is the wrong one. A non-string schema
+            # property name (a bare `2024` read straight from YAML) reaching this
+            # join would raise `TypeError`, and this function has no enclosing
+            # `try`. Two things together keep it from arriving, and it is the second
+            # that is load-bearing:
+            #
+            # 1. The RESPONSE cannot supply such a key. `extracted_fields` comes
+            #    from `json.loads` or from a forced-tool payload, both string-keyed,
+            #    and `ExtractionResult.extracted_fields` is typed `dict[str, Any]`.
+            # 2. One path DOES key by schema name, so (1) alone is not enough:
+            #    `_apply_missing_field_handling` — whose output is what
+            #    `_save_results` passes here, not `result.extracted_fields` — does
+            #    `fields_out[prop_name] = None` or pops the key. So a non-string
+            #    name can be present, and what excludes it is the
+            #    `isinstance(..., list)` test below: the value is `None`, never a
+            #    list.
+            #
+            # So this list is **unreachable** with a non-string name rather than
+            # safe against one, and the `isinstance` guard is what makes the
+            # coercion unnecessary. A `str()` here would be dead defence, and the
+            # test written to cover it could not: it set an `int` schema key and a
+            # `str` response key, so `present` was empty and the mutation survived.
+            # `empty_lists` above is the opposite case — a schema-only name lands
+            # there by construction — which is why that join keeps its coercion.
+            present = [
+                name
+                for name in array_fields
+                if isinstance(extracted_fields.get(name), list)
+                and extracted_fields.get(name)
+            ]
+            # Advanced mode does not exist for the OpenAI Responses families:
+            # `_invoke_extraction_model` raises `ValueError` for `agentic.enabled`
+            # with one of those models. Recommending it to a deployment that cannot
+            # select it is advice that breaks the run — and `incomplete`, the stop
+            # reason those models report, is exactly the one that brings a reader
+            # here.
+            # No `str(... or "")` wrapper: `is_openai_responses_model` returns False
+            # for a falsy id, so the wrapper was unreachable defence — and a
+            # random-sample mutation of its fallback was semantically EQUIVALENT
+            # (no input could distinguish `""` from any other non-OpenAI string),
+            # which no test can catch. Deleting the line is the honest fix.
+            can_use_agentic = not is_openai_responses_model(
+                self._pending_extraction_model or self.config.extraction.model
+            )
+            if is_agentic:
+                rec = (
+                    " Reduce the rows a single shard is asked for "
+                    "(extraction.agentic max_pages_per_shard) or split the document."
+                )
+            else:
+                rec = (
+                    " Simple extraction returns one response per section, so a "
+                    "section whose answer does not fit in one response loses the "
+                    "tail; "
+                )
+                rec += (
+                    "use Advanced (agentic) extraction, which shards the section "
+                    "across requests, or split the document."
+                    if can_use_agentic
+                    else "split the document, or process it with a model that "
+                    "supports Advanced (agentic) extraction, which shards the "
+                    "section across requests."
+                )
+            lists_clause = (
+                f" List field(s) in the partial result: {', '.join(present)}."
+                if present
+                else ""
+            )
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code=self.OUTPUT_TRUNCATED_CODE,
+                    message=(
+                        "The model's extraction response was cut off before it "
+                        "finished, so the result holds only the part that was "
+                        f"emitted.{lists_clause} Scalar fields and the rows that "
+                        "did arrive can still be perfectly correct, so no accuracy "
+                        f"or confidence signal flags this.{rec}"
+                    ),
+                    root_cause=(
+                        f"{'agentic' if is_agentic else 'traditional'} extraction "
+                        f"with model "
+                        f"{self._pending_extraction_model or self.config.extraction.model}; "
+                        f"response truncated before completion"
+                        + (
+                            f"; repaired by {metadata.get('repair_method')}"
+                            if metadata.get("output_repaired")
+                            else ""
+                        )
+                    ),
+                    section_id=section_id,
+                    details={
+                        # Present, not truncated — see the comment above the
+                        # comprehension. A key named for the stronger claim would
+                        # be read as the stronger claim.
+                        "list_fields_present": present,
+                        "output_repaired": bool(metadata.get("output_repaired")),
+                        "repair_method": metadata.get("repair_method"),
+                        "agentic": is_agentic,
+                        "advanced_mode_available": can_use_agentic,
+                    },
                 )
             )
 
@@ -3819,10 +4037,104 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extracted = sum(
                     1 for _lb, rows, _mx in members for r in rows if isinstance(r, dict)
                 )
-                if (
-                    expected < self._OCR_ROW_ESTIMATE_MIN
-                    or extracted >= expected * self._OCR_ROW_SHORTFALL_RATIO
-                ):
+                if expected < self._OCR_ROW_ESTIMATE_MIN:
+                    continue  # too little evidence to say anything either way
+                if extracted >= expected * self._OCR_ROW_SHORTFALL_RATIO:
+                    # The band #843's half ratio left silent. At 409 extracted of
+                    # 817 summed OCR rows — 409 of the document's 800 real rows,
+                    # 48.9% lost — NOTHING was reported, so a reader who knows
+                    # about the row check concluded the section was fine (#1361).
+                    # Same evidence, same group, same `maxItems` cap; the only
+                    # change is the bar, read against the OCR's DATA rows rather
+                    # than half of the heading-inflated count. See
+                    # `_OCR_ROW_GAP_MIN` for why the residual tolerance is a row
+                    # gap and not a ratio.
+                    heading_rows = self._heading_rows_for_width(n_props, tables)
+                    ocr_body = max(0, ocr_rows - heading_rows)
+                    body_bar = (
+                        ocr_body if group_cap is None else min(ocr_body, group_cap)
+                    )
+                    missing = body_bar - extracted
+                    if missing < self._OCR_ROW_GAP_MIN:
+                        continue
+                    # `missing >= _OCR_ROW_GAP_MIN` and `extracted >= 0` make
+                    # `body_bar` at least that floor, so the ratio below cannot
+                    # divide by zero.
+                    fields_str = ", ".join(labels)
+                    # Only when the declared ceiling actually binds, so the
+                    # wording is unchanged for every schema that declares none.
+                    partial_cap_clause = (
+                        f", bounded to {body_bar} by the declared maxItems of the "
+                        f"list field(s)"
+                        if group_cap is not None and group_cap < ocr_body
+                        else ""
+                    )
+                    partial_rec = (
+                        " Simple extraction returns one response per section and "
+                        "stops early on long lists; for documents this size use "
+                        "Advanced (agentic) extraction, which shards."
+                        if not is_agentic
+                        else " Check that the table-parsing tool was used."
+                    )
+                    issues.append(
+                        ProcessingIssue(
+                            stage="extraction",
+                            severity="warning",
+                            code=self.PARTIAL_ROW_SHORTFALL_CODE,
+                            message=(
+                                f"Extracted {extracted} row(s) for list field(s) "
+                                f"{fields_str}, but the section's OCR text holds "
+                                f"{body_bar} data row(s) in {n_props}-column "
+                                f"table(s) of that shape "
+                                f"({ocr_rows} counted, less {heading_rows} "
+                                f"reprinted column-heading row(s))"
+                                f"{partial_cap_clause} — "
+                                f"{missing} row(s) are unaccounted for. That is "
+                                f"at or above half the evidence, so "
+                                f"{self.ROW_SHORTFALL_CODE} does not fire and "
+                                "extraction.row_shortfall_action does not apply: "
+                                "the run reports success and scalar fields are "
+                                "unaffected. Evidence is matched on column width "
+                                "only and summed over the section, so an "
+                                "unrelated table of the same width inflates this "
+                                "figure; treat it as a shortfall to confirm "
+                                "rather than a certain loss." + partial_rec
+                            ),
+                            root_cause=(
+                                f"{'agentic' if is_agentic else 'traditional'} "
+                                f"extraction with model "
+                                f"{self._pending_extraction_model or self.config.extraction.model}; "
+                                f"{extracted} extracted rows vs {body_bar} "
+                                f"matching OCR table data rows for {fields_str}"
+                            ),
+                            section_id=section_id,
+                            details={
+                                "list_fields": labels,
+                                "item_property_count": n_props,
+                                "extracted_rows": extracted,
+                                # The bar the ratio is taken against, so
+                                # `extracted / ocr_estimated_rows == ratio` and
+                                # `extracted + missing_rows == ocr_estimated_rows`
+                                # both hold. `ocr_matched_table_rows` is the raw
+                                # sum this check does NOT use as its bar, and
+                                # `ocr_heading_rows` is the difference, so the
+                                # denominator is auditable from the issue alone.
+                                "ocr_estimated_rows": body_bar,
+                                "ocr_matched_table_rows": ocr_rows,
+                                "ocr_heading_rows": heading_rows,
+                                "missing_rows": missing,
+                                "declared_max_items": group_cap,
+                                "ratio": round(extracted / body_bar, 3),
+                                # What this issue is NOT: the material bar it sits
+                                # above, named so a report can show both.
+                                "material_shortfall_ratio": (
+                                    self._OCR_ROW_SHORTFALL_RATIO
+                                ),
+                                "ocr_tables": tables,
+                                "agentic": is_agentic,
+                            },
+                        )
+                    )
                     continue
                 fields_str = ", ".join(labels)
                 # What `minItems` buys is MODE-DEPENDENT, and recommending it
@@ -6194,7 +6506,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Parse response into JSON
             extracted_fields = {}
             parsing_succeeded = True
-            output_truncated = False
+            # Did the model stop because it ran out of OUTPUT budget? Read from the
+            # response's own ``stopReason`` BEFORE parsing, because a ceiling can be
+            # hit at a point where the text still parses — a complete JSON object
+            # followed by commentary that was cut off, or a repair that succeeds —
+            # and the parse-failure branch below is then never reached. The two
+            # sources are ORed rather than assigned: whichever notices first wins.
+            output_truncated = is_output_token_truncation(response_with_metering)
+            if output_truncated:
+                raw_response = response_with_metering.get("response")
+                logger.warning(
+                    "Extraction response for %s stopped at the model's output token "
+                    "ceiling (stopReason=%s) — the result is truncated and any list "
+                    "in it is incomplete. Section result: %s",
+                    section_info.class_label,
+                    raw_response.get("stopReason")
+                    if isinstance(raw_response, dict)
+                    else None,
+                    section_info.output_uri,
+                )
             output_repaired = False
             repair_method = None
             instance_count = 0
@@ -6252,7 +6582,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
                     # Attempt to repair truncated JSON
                     repaired_data, repair_info = repair_truncated_json(extracted_text)
-                    output_truncated = repair_info.get("was_truncated", False)
+                    # OR, never assign: the stopReason read above is the stronger
+                    # evidence of the two (the model said so), and the repair
+                    # heuristic answering False must not erase it.
+                    output_truncated = output_truncated or repair_info.get(
+                        "was_truncated", False
+                    )
 
                     if repaired_data:
                         # Repair succeeded
@@ -6895,6 +7230,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         merged_assessment = None
         merged_assessment_alerts = None
         assessment_split_stats = None
+        # One of this section's agent runs was cut off at the model's output ceiling
+        # and its already-validated extraction was salvaged from agent state rather
+        # than failing the section (#1363). ORed with ``result.output_truncated``
+        # below, which is the Simple path's own ``stopReason``-derived flag, so the
+        # two modes reach one issue. Popped regardless of mode: only the agentic path
+        # writes it, and popping it only there would leave a non-token-counter key in
+        # the metering report if that ever stopped being true.
+        agent_output_truncated = bool(
+            (result.metering or {}).pop("_output_truncated", False)
+        )
         if extraction_method == "agentic" and result.metering:
             table_stats = result.metering.pop("_table_parsing_stats", None)
             tool_used = table_stats is not None
@@ -7109,7 +7454,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 metadata["shard_trace"] = shard_meta
 
         # Add truncation/repair metadata when relevant
-        if result.output_truncated:
+        if result.output_truncated or agent_output_truncated:
             metadata["output_truncated"] = True
         if result.output_repaired:
             metadata["output_repaired"] = True

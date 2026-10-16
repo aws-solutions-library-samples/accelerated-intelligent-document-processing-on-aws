@@ -23,12 +23,13 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.anthropic.claude-haiku-5-5` | `eu.anthropic.claude-haiku-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
 | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude 3.5 Sonnet is end-of-life; the EU twin was no better than the US original |
 | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude 3.7 Sonnet is end-of-life; same reason |
-| `us.anthropic.claude-sonnet-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude Sonnet 4 reaches end of life on 2026-10-14 in both regions, so its EU twin is no better than the US original |
+| `us.anthropic.claude-sonnet-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Claude Sonnet 4 reached end of life on 2026-10-14 in both regions, so its EU twin is no better than the US original; the row remains so that a configuration stored before its removal is rewritten onto a working model |
 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | Direct mapping. An AWS Health notice puts this model in legacy from 2026-10-08 with end of life on 2027-04-08; it is still invocable, so the row stays |
 | `us.anthropic.claude-sonnet-4-6` | `eu.anthropic.claude-sonnet-4-6` | Direct mapping |
 | `us.anthropic.claude-sonnet-4-6:1m` | `eu.anthropic.claude-sonnet-4-6:1m` | Direct mapping |
 | `us.anthropic.claude-sonnet-5` | `eu.anthropic.claude-sonnet-5` | Direct mapping |
 | `us.anthropic.claude-sonnet-5:1m` | `eu.anthropic.claude-sonnet-5:1m` | Direct mapping |
+| `us.anthropic.claude-sonnet-5-5` | `eu.anthropic.claude-sonnet-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
 | `us.anthropic.claude-opus-4-20250514-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | **Fallback mapping.** Claude Opus 4 is end-of-life, so this row is reachable only by a configuration stored before its removal. Opus 4.5 keeps it on an Opus rather than demoting it to a Sonnet |
 | `us.anthropic.claude-opus-4-1-20250805-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | **Fallback mapping.** Claude Opus 4.1 is legacy (end of life 2027-01-08) and has no EU profile |
 | `us.anthropic.claude-opus-4-5-20251101-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | Direct mapping |
@@ -122,6 +123,7 @@ Based on the mappings above, the following EU models are supported:
 - `eu.anthropic.claude-sonnet-4-6:1m`
 - `eu.anthropic.claude-sonnet-5`
 - `eu.anthropic.claude-sonnet-5:1m`
+- `eu.anthropic.claude-sonnet-5-5`
 - `eu.anthropic.claude-opus-4-5-20251101-v1:0`
 - `eu.anthropic.claude-opus-4-6-v1`
 - `eu.anthropic.claude-opus-4-6-v1:1m`
@@ -225,6 +227,7 @@ The following US models do not have direct EU equivalents:
 This feature supports all AWS regions but is specifically designed for:
 - **EU Regions**: `eu-west-1`, `eu-central-1`, `eu-north-1`, etc.
 - **US Regions**: `us-east-1`, `us-west-2`, etc.
+- **Canada (Central)**: `ca-*` regions have their own picklist filter and default swaps, described in [Canada (Central) Region Model Support](canada-region-model-support.md)
 
 Other regions (Asia-Pacific, etc.) will use the original model IDs without mapping.
 

@@ -332,10 +332,12 @@ the ranked usability findings; a flow that is blocked because the feature is onl
 an unmerged branch is **blocked, not broken**, and the record must say which.
 
 Optionally record it (`scripts/ux_recorder.py start … mark … stop`, then `render`) —
-useful when a finding is easier to show than to describe. The mp4 stays in gitignored
-`scratch/ux-recordings/`: it shows real documents from a live stack, so it is
-**never** committed or attached to a PR. Link nothing; describe the finding in the
-record and keep the video for the team channel.
+useful when a finding is easier to show than to describe. The session directory
+stays in gitignored `scratch/ux-recordings/`: its mp4 shows real documents from a
+live stack, and its click log labels clicks with text from the page (Privacy in
+`ux-test.md`), so none of it is **ever** committed or attached to a PR, and
+`render`'s click table stays out of the record. Link nothing; describe the finding
+in the record and keep the video for the team channel.
 
 Skill: `ux-test.md`.
 
@@ -523,15 +525,6 @@ with the test extras, and never write "GovCloud works" from a commercial run.
 
 ## Standing issues to recognise, not rediscover (delete when fixed)
 
-- **`make security-results` curates an SRT verdict its own gate disagrees with**
-  (2026-09-26, open). `make srt-scan` carries a scope decision: Bandit `B105`/`B106`
-  match an identifier's *name* against a password wordlist, and in test code that no
-  deployment artifact is built from they are reported at Bandit's own severity rather
-  than blocking. `scripts/security/curate_results.py` implements no equivalent, so the
-  **published** snapshot read `SRT — FAIL ❌ (5 open/reopened HIGH)` for a release whose
-  security gate was green, on the same `.srt/issues.json`. Check the open-HIGH list
-  against the scan's own "identifier-name findings in test code" block before believing
-  a red snapshot, and say in the record which of the two you are reporting.
 - **`make coverage-summary` is a baseline, not a measurement** (see tier A). It prints
   `scripts/coverage_debt.json`, which is a ratchet floor and always self-consistent, so
   quoting it as the release's coverage cannot fail visibly.

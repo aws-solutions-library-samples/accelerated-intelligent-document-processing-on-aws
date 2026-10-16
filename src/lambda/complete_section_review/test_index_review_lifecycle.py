@@ -533,6 +533,57 @@ def test_an_annotator_can_neither_claim_nor_release_a_production_document(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name,arguments",
+    [
+        ("claimReview", {"objectKey": "__x__"}),
+        ("releaseReview", {"objectKey": "__x__"}),
+        ("completeSectionReview", {"objectKey": "__x__", "sectionId": "1"}),
+    ],
+)
+def test_an_annotator_is_refused_a_document_that_does_not_exist(
+    mod, table, field_name, arguments
+):
+    """The argument the LIVE authorization matrix sends, on all three routes.
+
+    `scripts/api_rbac_expectations.yaml` drives these three operations with
+    `objectKey: "__x__"`, which names no document at all — so the tracking-table
+    read returns nothing, there is no `TestSetId` to check, and a scoped annotator
+    is refused for the object. That is what `object_scoped_roles: [Annotator]`
+    declares in the expectations file, and what the live cell asserts: a refusal
+    that is NOT the dispatcher's group floor.
+
+    Both halves are pinned here, because the live cell needs both:
+
+    * the refusal happens at all — an annotator reaching a review mutation on a
+      document outside every test set of theirs is the escalation;
+    * the message keeps the `Unauthorized` prefix, which is the ONLY thing that
+      makes the dispatcher map this `ValueError` to 403 rather than to 400. Reword
+      it and the live cell sees a 400, reads "not refused", and reports a leak —
+      while this suite, matching on the sentence, would stay green.
+
+    The two neighbouring tests cover a document that exists and carries no
+    `TestSetId`; this one covers a document that is not there, which is a different
+    branch of the same read and the one the matrix actually provokes.
+    """
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        with pytest.raises(ValueError) as refused:
+            mod.handler(
+                event(field_name, ["Annotator"], arguments=arguments),
+                None,
+            )
+    assert str(refused.value).startswith("Unauthorized"), (
+        "the refusal lost its 'Unauthorized' prefix, so the dispatcher maps it to "
+        f"400 and the live matrix reads it as not refused: {refused.value!r}"
+    )
+    assert "test-set documents" in str(refused.value)
+
+
+@pytest.mark.unit
 def test_an_in_scope_annotator_may_claim_a_document_from_their_own_test_set(mod, table):
     """The other direction, so the two refusals above are not a blanket one.
 

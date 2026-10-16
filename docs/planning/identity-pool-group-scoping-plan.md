@@ -61,8 +61,8 @@ CognitoIdentityPoolSetRole:
 There is no `RoleMappings` key. Cognito therefore has nothing to map a
 `cognito:groups` claim onto: every successfully authenticated identity assumes
 `CognitoAuthorizedRole`, and an empty groups claim is as good as any other. That
-role's `S3` policy grants `s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket`
-on the Input and Output buckets and their contents, plus five KMS actions
+role's `S3` policy grants `s3:GetObject` and `s3:GetObjectVersion` on the Input and
+Output buckets — object ARNs only — plus five KMS actions
 (`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) on the
 customer-managed key. Neither of the two buckets the per-user scope axes partition
 is on it: the Configuration bucket was removed so `allowedConfigVersions` could not
@@ -89,11 +89,16 @@ unreachable.** It makes that *operation* unreachable. The correct statement of
 what #979 and #1033 bought is: a caller in no group can no longer discover keys,
 enumerate runs, read a run's URIs and confidence alerts, read the workflow
 execution, read a chat transcript, or ask the API for file bytes. A caller in no
-group who obtains a key by any other means — being told one, guessing a
-predictable upload name, or `s3:ListBucket` on their own role — can still read the
-object. `s3:ListBucket` is the important one: it makes the key enumeration
-self-contained on the S3 side, so closing the API-side enumeration narrowed the
-chain without severing it.
+group who obtains a key by any other means — being told one, or guessing a
+predictable upload name — can still read the object.
+
+The role's own enumeration verb used to be the shortest of those routes:
+`s3:ListBucket` on the same policy made key discovery self-contained on the S3
+side, so closing the API-side enumeration narrowed the chain without severing it.
+That verb is gone (issue #1033), and the chain is now severed for a caller in no
+group: both remaining actions authorize against a key, and nothing the role can
+call produces one. For a caller **in** a group it is narrowed and not severed, since
+the key-returning operations are `ANY_GROUP`.
 
 ---
 
@@ -144,10 +149,11 @@ the UI has to distinguish from a broken deployment.
 
 ### Option 2 — narrow `CognitoAuthorizedRole` and route every read through a resolver
 
-Remove `s3:GetObject`/`GetObjectVersion`/`ListBucket` (and the KMS grant) from the
-browser's role, and make `getFilePresignedUrl` / `getFileContents` the only read
-path. The group floor then genuinely bounds the asset, and a per-key check becomes
-possible because there is a resolver in the path to make it.
+Remove `s3:GetObject`/`GetObjectVersion` (and the KMS grant) from the browser's
+role — `ListBucket` is already off it — and make `getFilePresignedUrl` /
+`getFileContents` the only read path. The group floor then genuinely bounds the
+asset, and a per-key check becomes possible because there is a resolver in the path
+to make it.
 
 **What it buys.** Everything option 1 buys, plus the place to put a per-document
 check, plus closure of UI.T06 once that check exists. This is the shape that makes

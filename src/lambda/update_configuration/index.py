@@ -115,7 +115,7 @@ MODEL_MAPPINGS = {
     # LEGACY model takes no further Service Quota increases.
     "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-sonnet-4-6",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-sonnet-4-6",
-    # Sonnet 4 reaches end of life on 2026-10-14 in both regions, so its EU twin
+    # Sonnet 4 reached end of life on 2026-10-14 in both regions, so its EU twin
     # is no better than the US original — same shape as the 3.5/3.7 rows above.
     "us.anthropic.claude-sonnet-4-20250514-v1:0": "eu.anthropic.claude-sonnet-4-6",
     # Same model in both regions, and still invocable while LEGACY, so this row
@@ -129,6 +129,13 @@ MODEL_MAPPINGS = {
     # system_defaults/base-extraction.yaml.
     "us.anthropic.claude-sonnet-5": "eu.anthropic.claude-sonnet-5",
     "us.anthropic.claude-sonnet-5:1m": "eu.anthropic.claude-sonnet-5:1m",
+    # Sonnet 5.5 maps to its own EU geo profile, so this row is safe in BOTH
+    # directions — get_model_mapping walks this dict backwards for a US target, and
+    # the reverse of this row returns the US Sonnet 5.5 profile rather than moving a
+    # user onto a different model (the hazard documented at the bottom of this dict).
+    # There is no ":1m" pair to add: 1M is this model's default window and
+    # "us.anthropic.claude-sonnet-5-5:1m" is not an id Bedrock accepts.
+    "us.anthropic.claude-sonnet-5-5": "eu.anthropic.claude-sonnet-5-5",
     # Opus 4 is end-of-life and Opus 4.1 is LEGACY; neither has an EU profile, so
     # both are rescue rows. Opus 4.5 is the Opus-class EU model, which keeps a
     # stranded Opus configuration on an Opus rather than silently demoting it to
@@ -167,6 +174,67 @@ MODEL_MAPPINGS = {
     # direction-aware mapping, not another row here.
 }
 
+# Canada (ca-*) swaps for the shipped defaults that are not callable from
+# ca-central-1. A SEPARATE table on purpose: get_model_mapping(..., "us") walks
+# MODEL_MAPPINGS backwards over its twin rows, so a Canada row placed there would
+# rewrite a US deployment's stored id as well. This table is a one-way lookup and
+# is never reversed. The consequence: a stored ca. id stays as it is when the
+# configuration is redeployed into a US or EU region, and a stored eu. id in a
+# Canada stack is not rewritten. The picklists hide both, but a stored value stays
+# until someone edits it.
+CA_MODEL_MAPPINGS = {
+    # Twin: the Canada geo profile of the same model, processed in Canada.
+    "us.amazon.nova-lite-v1:0": "ca.amazon.nova-lite-v1:0",
+    # Rescue: Nova Pro has no inference profile in ca-central-1. Nova 2 Lite is the
+    # catalog's current Nova default for OCR, classification and evaluation, and
+    # is multimodal and cheaper.
+    "us.amazon.nova-pro-v1:0": "us.amazon.nova-2-lite-v1:0",
+    # Cohere Embed v4 is reachable from Canada only through its global. profile.
+    "us.cohere.embed-v4:0": "global.cohere.embed-v4:0",
+}
+
+# Shipped ids with no inference profile and no in-region hosting in ca-central-1
+# (verified 2026-10-11 with `aws bedrock list-inference-profiles --region
+# ca-central-1 --type-equals SYSTEM_DEFINED` and `list-foundation-models`, and
+# re-checked 2026-10-14 for Claude Sonnet 5.5 — see below). The
+# CA_MODEL_MAPPINGS sources are swapped away from; the rest are simply not
+# offered. us.xai.grok-4.6 has a profile in ca-central-1, so it is not listed.
+# The GPT-5.x bedrock-mantle ids are handled by _is_us_only below.
+#
+# ⚠️ A model ABSENT from this set is offered in a Canada deployment, because
+# filter_models_by_region keeps every `us.`-prefixed id unless it is _is_us_only or
+# listed here. So an absence is a positive claim about live Bedrock availability and
+# needs the two commands above run, not an assumption — an id that is unavailable
+# there and unlisted here reaches a user as an inference-time failure from a
+# picklist entry.
+#
+# Claude Sonnet 5.5 is deliberately absent, and it is the claim most recently
+# checked: on 2026-10-14 `list-inference-profiles --region ca-central-1
+# --type-equals SYSTEM_DEFINED` returned both `us.anthropic.claude-sonnet-5-5` and
+# `global.anthropic.claude-sonnet-5-5` as ACTIVE, and `list-foundation-models
+# --region ca-central-1` returned `anthropic.claude-sonnet-5-5` ACTIVE as well — so
+# it is reachable from Canada all three ways and needs no entry and no
+# CA_MODEL_MAPPINGS swap. This paragraph exists because the verification date above
+# predates the model, which makes the set's silence about it unreadable otherwise.
+CA_UNAVAILABLE_MODELS = {
+    "us.amazon.nova-lite-v1:0",
+    "us.amazon.nova-pro-v1:0",
+    "us.cohere.embed-v4:0",
+    "global.amazon.nova-pro-v1:0",
+    "us.meta.llama4-maverick-17b-instruct-v1:0",
+    "us.meta.llama4-scout-17b-instruct-v1:0",
+    "qwen.qwen3-vl-235b-a22b",
+    "google.gemma-3-27b-it",
+    "nvidia.nemotron-nano-12b-v2",
+}
+
+
+def _is_geo_scoped(model_id: str) -> bool:
+    """True for a geo inference-profile id (us., eu., ca., apac., ...); False for
+    global. and unprefixed ids. Uses the shared prefix rule, so a new geo prefix
+    reaches this filter too."""
+    return _base_model_id(model_id) != model_id and not model_id.startswith("global.")
+
 
 def get_current_region() -> str:
     """Get the current AWS region"""
@@ -187,12 +255,18 @@ def is_us_region(region: str) -> bool:
     return region.startswith("us-")
 
 
+def is_ca_region(region: str) -> bool:
+    """Check if the region is a Canada region"""
+    return region.startswith("ca-")
+
+
 def get_model_mapping(model_id: str, target_region_type: str) -> str:
     """Get the equivalent model for the target region type.
 
     The EU direction is a plain lookup. The US direction walks the table
     backwards, and must consider only the rows that name the SAME foundation
-    model on both sides.
+    model on both sides. The Canada direction is a plain lookup in the separate
+    ``CA_MODEL_MAPPINGS``, which is never walked backwards.
 
     ``MODEL_MAPPINGS`` holds two kinds of row. A *twin* row maps a model onto its
     own profile in the other region, and reversing it is correct. A *rescue* row
@@ -218,6 +292,8 @@ def get_model_mapping(model_id: str, target_region_type: str) -> str:
             ):
                 return us_model
         return model_id
+    elif target_region_type == "ca":
+        return CA_MODEL_MAPPINGS.get(model_id, model_id)
     return model_id
 
 
@@ -255,10 +331,15 @@ def filter_models_by_region(data: Any, region_type: str) -> Any:
         filtered_data = {}
         for key, value in data.items():
             if isinstance(value, list) and any(
-                isinstance(item, str) and ("us." in item or "eu." in item)
+                isinstance(item, str)
+                and ("us." in item or "eu." in item or "ca." in item)
                 for item in value
             ):
-                # This is a model list - filter it
+                # This is a model list - filter it. `ca.` is in the test so a list
+                # whose only geo ids are Canada ones is still recognised: without
+                # it such a list skips filtering entirely and a US or EU stack is
+                # offered a `ca.` id it cannot call. Every shipped picklist also
+                # carries `us.` ids, so this changes no current output.
                 filtered_list = []
                 for item in value:
                     if isinstance(item, str):
@@ -267,20 +348,26 @@ def filter_models_by_region(data: Any, region_type: str) -> Any:
                             filtered_list.append(item)
                         # Include models that match the region type or are region-agnostic
                         elif region_type == "us":
-                            # Include US models and non-region-specific models, exclude EU models
-                            if item.startswith("us.") or (
-                                not item.startswith("eu.")
-                                and not item.startswith("us.")
-                            ):
+                            # Include US models and non-region-specific models, exclude other geo prefixes.
+                            # GovCloud (us-gov-*) stacks resolve to this region type, so us-gov. ids stay.
+                            if item.startswith(
+                                ("us.", "us-gov.")
+                            ) or not _is_geo_scoped(item):
                                 filtered_list.append(item)
                         elif region_type == "eu":
                             # Exclude US-only models (e.g., openai.gpt-5.*) that have no EU availability
                             if _is_us_only(item):
                                 continue
-                            # Include EU models and non-region-specific models, exclude US models
-                            if item.startswith("eu.") or (
-                                not item.startswith("eu.")
-                                and not item.startswith("us.")
+                            # Include EU models and non-region-specific models, exclude other geo prefixes
+                            if item.startswith("eu.") or not _is_geo_scoped(item):
+                                filtered_list.append(item)
+                        elif region_type == "ca":
+                            # Exclude US-only models and ids with no profile in ca-central-1
+                            if _is_us_only(item) or item in CA_UNAVAILABLE_MODELS:
+                                continue
+                            # Include US, Canada and non-region-specific models, exclude other geo prefixes
+                            if item.startswith(("us.", "ca.")) or not _is_geo_scoped(
+                                item
                             ):
                                 filtered_list.append(item)
                         else:
@@ -309,7 +396,16 @@ def swap_model_ids(data: Any, region_type: str) -> Any:
                 # Never swap special model values
                 swapped_data[key] = value
             elif isinstance(value, str) and ("us." in value or "eu." in value):
-                # This is a model ID - check if it needs swapping
+                # This is a model ID - check if it needs swapping.
+                #
+                # `ca.` is deliberately NOT in this test, unlike the picklist
+                # filter above. Every arm below rewrites a stored id INTO the
+                # deploying region's geo, and none of them starts from a `ca.` id:
+                # CA_MODEL_MAPPINGS is one-way, so get_model_mapping(ca_id, "us")
+                # and (ca_id, "eu") both return the id unchanged by design — see
+                # that table's comment. A `ca.` arm here would be unreachable
+                # code, and widening the test alone would only walk `ca.` values
+                # that then match no arm.
                 if region_type == "us" and value.startswith("eu."):
                     new_model = get_model_mapping(value, "us")
                     if new_model != value:
@@ -319,6 +415,11 @@ def swap_model_ids(data: Any, region_type: str) -> Any:
                     new_model = get_model_mapping(value, "eu")
                     if new_model != value:
                         logger.info(f"Swapped US model {value} to EU model {new_model}")
+                    swapped_data[key] = new_model
+                elif region_type == "ca" and value.startswith("us."):
+                    new_model = get_model_mapping(value, "ca")
+                    if new_model != value:
+                        logger.info(f"Swapped US model {value} to CA model {new_model}")
                     swapped_data[key] = new_model
                 else:
                     swapped_data[key] = value
@@ -688,6 +789,8 @@ def handler(event: Dict[str, Any], context: Any) -> None:
             if is_eu_region(current_region)
             else "us"
             if is_us_region(current_region)
+            else "ca"
+            if is_ca_region(current_region)
             else "other"
         )
         logger.info(f"Detected region: {current_region}, region type: {region_type}")
@@ -712,7 +815,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
             if "Schema" in properties:
                 resolved_schema = resolve_content(properties["Schema"])
                 # Filter models based on region
-                if region_type in ["us", "eu"]:
+                if region_type in ["us", "eu", "ca"]:
                     resolved_schema = filter_models_by_region(
                         resolved_schema, region_type
                     )
@@ -858,7 +961,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                         continue
 
             # Apply region-specific model swapping to all configurations at once
-            if region_type in ["us", "eu"] and configurations:
+            if region_type in ["us", "eu", "ca"] and configurations:
                 configurations = swap_model_ids(configurations, region_type)
                 logger.info(
                     f"Applied model swapping for {region_type} region to all configurations"

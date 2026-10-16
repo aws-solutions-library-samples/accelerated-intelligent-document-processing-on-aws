@@ -32,6 +32,7 @@ import {
   MODEL_CONFIG_LIMITS_PATH,
   DISCOVERY_PATH,
   USER_MANAGEMENT_PATH,
+  CONFIG_PREFIX_MAPPINGS_PATH,
   AGENT_CHAT_PATH,
   CAPACITY_PLANNING_PATH,
   CUSTOM_MODELS_PATH,
@@ -53,6 +54,7 @@ const NAV_HOTSPOTS: Record<string, string> = {
   [`#${CUSTOM_MODELS_PATH}`]: 'nav-custom-models',
   [`#${CAPACITY_PLANNING_PATH}`]: 'nav-capacity-planning',
   [`#${USER_MANAGEMENT_PATH}`]: 'nav-user-management',
+  [`#${CONFIG_PREFIX_MAPPINGS_PATH}`]: 'nav-config-prefix-mappings',
   [`#${PRICING_PATH}`]: 'nav-pricing',
   [`#${TEST_STUDIO_PATH}?tab=sets`]: 'nav-test-sets',
   [`#${TEST_STUDIO_PATH}?tab=executions`]: 'nav-test-executions',
@@ -120,6 +122,10 @@ export const adminNavItems = [
       { type: 'link', text: 'Custom Models', href: `#${CUSTOM_MODELS_PATH}` },
       { type: 'link', text: 'Capacity Planning', href: `#${CAPACITY_PLANNING_PATH}` },
       { type: 'link', text: 'User Management', href: `#${USER_MANAGEMENT_PATH}` },
+      // Admin-only, and only in this list: a mapping assigns a Configuration
+      // Profile, which is the document-visibility partition, so it is not an
+      // Author-level setting.
+      { type: 'link', text: 'Prefix Mappings', href: `#${CONFIG_PREFIX_MAPPINGS_PATH}` },
       { type: 'link', text: 'View / Edit Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View / Edit Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
     ],
@@ -497,6 +503,8 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     activeHref = `#${DISCOVERY_PATH}`;
   } else if (path.includes(USER_MANAGEMENT_PATH)) {
     activeHref = `#${USER_MANAGEMENT_PATH}`;
+  } else if (path.includes(CONFIG_PREFIX_MAPPINGS_PATH)) {
+    activeHref = `#${CONFIG_PREFIX_MAPPINGS_PATH}`;
   } else if (path.includes(CUSTOM_MODELS_PATH)) {
     activeHref = `#${CUSTOM_MODELS_PATH}`;
   } else if (path.includes(CAPACITY_PLANNING_PATH)) {

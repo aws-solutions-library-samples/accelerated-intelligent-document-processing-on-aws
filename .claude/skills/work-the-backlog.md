@@ -726,12 +726,23 @@ the failures this repo keeps re-learning.
 
 ⚠️ **Every fixer agent must cap its worker count. `make test-cicd` defaults to
 `pytest -n auto`, which takes *every* core**, so N agents running it unbounded is
-N × `nproc` workers on `nproc` cores. Pass `PYTEST_PARALLEL="-n <nproc/N>"`, floor
-of 2:
+N × `nproc` workers on `nproc` cores. Cap at `-n <nproc/N>`, floor of 2:
 
 ```bash
 make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1 PYTEST_PARALLEL="-n 4"   # N=4 on 16 cores
+make test-packages-cicd PYTEST_XDIST="-n 4"                                  # ROOT targets: different variable
 ```
+
+⚠️ **It takes two variables, not one, and the second is the heavier target.**
+`PYTEST_PARALLEL` is declared in `lib/idp_common_pkg/Makefile` and governs that
+makefile only — it appears **nowhere** in the root `Makefile`. Root targets read
+`PYTEST_XDIST`, and that is what every `$(PYTEST_HERMETIC)` line in
+`test-packages-cicd` goes through. The two share a default (`?= -n auto`) and not
+a name, so `PYTEST_PARALLEL="-n 4"` on a root target is **silently ignored** and
+the ~12-minute suite keeps every core — the failure arrives exactly when you were
+trying to prevent it, and it is invisible because the run succeeds. Measured on
+this loop: three agents told to cap took the host to load 10.74 and then 23.33 on
+16 cores while each believed itself bounded.
 
 **This is faster as well as lighter, which is not the intuitive result.** Measured,
 four concurrent runs of the same suite on the same 16-core host:
@@ -748,10 +759,11 @@ predictable, a 0.7 s spread across four against 19 s, which matters when you are
 deciding whether a run has hung. (Serial is 584 s, so `-n 4` is still a 3.4×
 speed-up; the floor of 2 keeps that worthwhile at higher N.)
 
-`PYTEST_PARALLEL` is the documented override and the only correct place for `-n` —
-passing it through `PYTEST_ARGS` puts two `-n` flags on one command line, and
-pytest then collects nothing and exits 5, which reads as a pass to anything
-checking only for absence of failures.
+`PYTEST_PARALLEL` (for `lib/idp_common_pkg`) and `PYTEST_XDIST` (for root targets)
+are the documented overrides and the only correct places for `-n` — passing one
+through `PYTEST_ARGS` puts two `-n` flags on one command line, and pytest then
+collects nothing and exits 5, which reads as a pass to anything checking only for
+absence of failures.
 
 **Why the split, since it is the main efficiency lever in this loop.** Those
 suites take every core, so each run blocks every other agent. With N=4 and each
@@ -938,7 +950,8 @@ thirty minutes whether or not anything else happens:
 ⚠️ **This is a floor on intent, not an override of the load guard in section 5 — read
 one without the other and the fix for under-dispatching becomes a cause of
 over-dispatching.** Measure load at the moment you dispatch, and if it already exceeds
-`nproc`, dispatch **what fits**, lower each agent's `PYTEST_PARALLEL` accordingly, tell
+`nproc`, dispatch **what fits**, lower each agent's `PYTEST_PARALLEL` and
+`PYTEST_XDIST` accordingly, tell
 them to run targeted tests first and defer the full suite, and record the rest as
 **deferred rather than satisfied** so the next heartbeat picks it up. Observed working:
 with a whole-tree battery running and load at 16 on 16 cores, two fixers at `-n 2` was
@@ -1177,8 +1190,10 @@ and with what worker cap, not of the suite. `make test-packages-cicd` **~12 min*
 `pytest scripts/tests` **6–7 min**; the cheap checks **under a minute**.
 
 **So the two levers are independent and both matter:** N bounds how many agents run,
-and `PYTEST_PARALLEL` bounds what each one costs. Raising N without capping workers
-makes the run slower, which is why the gate tier in section 2 requires the cap.
+and the worker cap bounds what each one costs — `PYTEST_PARALLEL` for
+`lib/idp_common_pkg` and `PYTEST_XDIST` for root targets, both of which have to be
+passed. Raising N without capping workers makes the run slower, which is why the
+gate tier in section 2 requires the cap.
 
 **So: start at N = 4 on a 16-core host. Cap at 6.** Check before each dispatch:
 

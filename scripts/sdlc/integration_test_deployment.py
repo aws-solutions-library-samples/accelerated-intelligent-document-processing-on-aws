@@ -6,6 +6,7 @@ Handles code packaging, S3 upload, and pipeline monitoring for integration tests
 """
 
 import os
+import pathlib
 import subprocess
 import sys
 import time
@@ -65,6 +66,12 @@ def create_deployment_package():
         "**/.env",
         "*.docker/*",
         "*.aws-sam/*",
+        # Live credentials the monitor persists for after_script. This package
+        # is uploaded to S3 and unpacked by CodeBuild, and a GitLab runner can
+        # reuse a workspace between jobs, so a file left by a PREVIOUS run
+        # would otherwise be shipped. after_script removes it too; this is the
+        # belt to that braces.
+        f"*{AFTER_SCRIPT_CREDS_FILE}",
     ]
 
     exclude_args = " ".join([f'-x "{pattern}"' for pattern in excludes])
@@ -323,6 +330,34 @@ MONITOR_HANDOFF_SECONDS = 6600  # 110 min
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
 
+# ⚠️ after_script's shell `aws` calls do NOT share this process's refreshed
+# credentials. The runner's credential vendor mints the job's credentials BEFORE
+# the job starts ("AWS Credential Vendor -- Success -- Assumed role
+# .../idp-sdlc-GitLab"), and a chained assume is hard-capped at 1h, so a run
+# that outlives the hour leaves after_script holding a dead session. Every
+# `aws` call there discarded stderr, which made that failure indistinguishable
+# from the eventual-consistency race the CodeBuild-id retry loop exists for:
+# the 2026-10-11 nightly (job 30872567, 62.6 min wall clock, pipeline terminal
+# at 59m) burned all 12 attempts against an expired token and posted "no logs
+# were fetched" to Slack, while the three preceding nights (58.4-58.5 min)
+# resolved on the first attempt. The job was 3 minutes slower, nothing else.
+#
+# after_script also cannot fix this itself: re-assuming the role needs valid
+# credentials to call STS with, and by then it has none. So the MONITOR, which
+# does hold a live session, writes each freshly-minted one here and
+# after_script sources it. Written on every successful refresh INCLUDING one at
+# startup, so the file is never older than CREDENTIAL_REFRESH_SECONDS and
+# always has >=10 min of life left when after_script runs.
+#
+# ⚠️ NEVER add this path to the job's `artifacts:` — it holds live credentials,
+# and this repository's pipelines are readable by everyone in the group.
+AFTER_SCRIPT_CREDS_FILE = "aws_after_script_creds.env"
+
+# Written when the monitor exits on the HANDOFF path, where the job exits 0
+# without the pipeline having reached a terminal state. The job is green and
+# the suite's result is unknown, and those must not look the same in Slack.
+MONITOR_HANDOFF_MARKER = "monitor_handoff.txt"
+
 
 class _CredentialRefresher:
     """Keep the monitor's AWS creds alive past the 1h role-chaining cap.
@@ -336,6 +371,10 @@ class _CredentialRefresher:
     the newly-vended session. If the re-assume fails (missing self-assume
     permission, expired base creds), it returns None so the caller falls back to
     the graceful S3/SNS handoff rather than crashing.
+
+    Each successful refresh is also persisted to AFTER_SCRIPT_CREDS_FILE, which
+    is the only way after_script's shell `aws` calls can outlive the job's own
+    1h credentials — see the comment on that constant.
     """
 
     def __init__(self, region):
@@ -373,9 +412,32 @@ class _CredentialRefresher:
                 "aws_secret_access_key": creds["SecretAccessKey"],
                 "aws_session_token": creds["SessionToken"],
             }
+            self._persist_for_after_script(creds)
             return True
         except Exception as e:  # noqa: BLE001
             print(f"⚠️ Credential refresh failed ({e}); will hand off at deadline")
+            return False
+
+    @staticmethod
+    def _persist_for_after_script(creds):
+        """Write the fresh session where after_script's `aws` calls can source it.
+
+        Best effort: a write failure costs the log/summary artifacts on a long
+        run, which is strictly better than failing a deploy that worked.
+        """
+        try:
+            path = pathlib.Path(AFTER_SCRIPT_CREDS_FILE)
+            path.write_text(
+                f"export AWS_ACCESS_KEY_ID={creds['AccessKeyId']}\n"
+                f"export AWS_SECRET_ACCESS_KEY={creds['SecretAccessKey']}\n"
+                f"export AWS_SESSION_TOKEN={creds['SessionToken']}\n"
+            )
+            # The runner workspace is shared with after_script and nothing else
+            # needs to read a live credential out of it.
+            path.chmod(0o600)
+            return True
+        except OSError as e:
+            print(f"⚠️ Could not persist credentials for after_script: {e}")
             return False
 
     def build_clients(self):
@@ -407,6 +469,16 @@ def monitor_pipeline_execution(
 
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     refresher = _CredentialRefresher(region)
+    # Mint a session up front, not only at the 50-min mark. The job's OWN
+    # credentials are already part-used when this process starts (the vendor
+    # mints them pre-job, and before_script installs the AWS CLI first), so a
+    # run that finishes just over the hour would otherwise leave after_script
+    # with nothing to source. On failure we keep the ambient creds and behave
+    # exactly as before.
+    if refresher.refresh():
+        console.print(
+            "[dim]🔑 Minted a session for after_script's log capture.[/dim]"
+        )
     codepipeline, logs_client = refresher.build_clients()
     # Re-assume before the 1h chained-session cap; recompute clients on refresh.
     next_refresh_at = CREDENTIAL_REFRESH_SECONDS
@@ -621,6 +693,15 @@ def main():
     """Main execution function"""
     print("Starting integration test deployment...")
 
+    # Clear this run's state files before anything else. A GitLab runner can
+    # reuse a workspace between jobs, and after_script reads all of these: a
+    # stale pipeline_execution_id.txt makes it fetch and publish the PREVIOUS
+    # run's CodeBuild logs as if they were this one's, and a stale handoff
+    # marker makes Slack report a verified pass as UNVERIFIED. Both produce a
+    # confident wrong answer, which is worse than a missing one.
+    for stale in (MONITOR_HANDOFF_MARKER, "pipeline_execution_id.txt"):
+        pathlib.Path(stale).unlink(missing_ok=True)
+
     # Get configuration from environment
     account_id = get_env_var("IDP_ACCOUNT_ID", "020432867916")
     region = get_env_var("AWS_DEFAULT_REGION", "us-east-1")
@@ -646,6 +727,19 @@ def main():
         # Not a failure — the real result lands in the S3 summary + SNS. Exit 0
         # so a healthy long run doesn't show as a red job; monitoring it to
         # completion is impossible on 1h role-chained creds.
+        #
+        # Leave a marker so the Slack post can say UNVERIFIED instead of
+        # PASSED: exit 0 here means "nobody watched the end", and a reader
+        # cannot tell that apart from a 12/12 green run otherwise.
+        try:
+            pathlib.Path(MONITOR_HANDOFF_MARKER).write_text(
+                "The monitor exited before the pipeline reached a terminal "
+                "state, so this job's green status does NOT mean the suite "
+                "passed. The authoritative result is the S3 deploy summary "
+                "and the SNS email.\n"
+            )
+        except OSError as e:  # noqa: BLE001
+            print(f"⚠️ Could not write the handoff marker: {e}")
         print(
             "↪ Integration test pipeline still running at handoff; "
             "monitor exited cleanly. See the S3 deploy summary / SNS for the "

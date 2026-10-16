@@ -509,6 +509,10 @@ def _discover_log_group_templates(root: Path | None = None) -> list[str]:
         ".git",
         "scratch",
         ".claude",
+        # The advisory reviewer's inputs: `.ai-review/base/` is a whole copy of
+        # the tree at the merge base, and unlike the two above it is a copy this
+        # repository's own tooling creates. Kept in step with the sibling gates.
+        ".ai-review",
     }
     found = []
     for path in tracked_paths(root, "*.yaml", "*.yml"):

@@ -84,8 +84,11 @@ Notes:
   the dispatcher maps that to **HTTP 403** with `errorType: "Unauthorized"`. This
   layer stays: the dispatcher enforces the field-level floor, the resolver
   enforces per-object scope (config version, test set, ownership) on top of it.
-  When triaging a 403, check which layer produced it — the dispatcher logs
-  `Denied <field>: ...` in `authz.py`, the resolver logs its own message.
+  **The response says which layer produced it:** every 403 carries
+  `errors[0].authzControl` — `api-group-floor`, `resource`, `resolver` or
+  `unverified-identity`. See "A 403 is two different verdicts" below; the logs
+  (`Denied <field>: ...` in `authz.py`, the resolver's own message) are the second
+  stop, not the first.
 - **Config-version scope denials are IN-BAND:** the configuration & sync
   resolvers return `{success:false, error:{type:"Unauthorized"}}` with **HTTP
   200** (NOT a 403). The harness treats an in-band `Unauthorized` as a denial.
@@ -174,7 +177,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (143 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (159 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -227,6 +230,62 @@ original auth flows on exit (even NO_TEARDOWN only skips the user delete).
 Test users get a **random per-run password** (printed when NO_TEARDOWN or
 --setup-only keeps them alive). Exit code is non-zero only on **hard fails**
 (a real leak) — known gaps are WARNs.
+
+## A 403 is two different verdicts — read `authzControl` first
+
+⚠️ **`403`/`Unauthorized` is the response shape for two controls that answer
+opposite questions**, and conflating them is the worst mistake available to this
+layer:
+
+| The response means | Control | `authzControl` |
+|---|---|---|
+| "this caller's **groups** do not admit this operation" | the field-level floor in `authz.py` — also an undeclared field and an `IAM_ONLY` op | `api-group-floor` |
+| "this caller's groups were **fine** and the **object** they named was refused" | a per-object control in a resolver: the bucket allow-list, the write-once key rule, chat-session ownership, the test-set selection scope | `resource` |
+| the resolver refused and did not say which control it was — every resolver's own group check is here | a resolver | `resolver` |
+| an invocation asserted its own `identity` | `normalize_event` | `unverified-identity` |
+
+The matrix asserts the first and **cannot avoid provoking the second**, because it
+drives every operation with deliberately bogus arguments. With one indistinguishable
+shape for both, eight cells of one run reported three per-object controls working
+correctly as group-authorization failures, and the curated snapshot published
+`RBAC dynamic — FAIL ❌ (8 hard failures)` for a release whose authorization was fine
+([#1308](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1308)).
+Establishing that those eight were not a regression took a by-hand comparison
+against a prior run that happened to still be on disk.
+
+How the harness scores it (`classify()`, pinned offline in
+`scripts/sdlc/tests/test_api_rbac_refusal_attribution.py`):
+
+| Cell | `api-group-floor`, `resolver`, or no label | `resource` |
+|---|---|---|
+| an **allowed** role was refused | **FAIL** — the shape a real regression takes | **ERROR** 🛑 — the floor admitted the caller and a per-object control refused the object, so the cell did not measure the group check. Not a pass, still blocking, and it names the control |
+| a **disallowed** role was refused | **PASS** | **FAIL** — the floor runs before routing, so a caller it must refuse cannot reach a resolver; a `resource` label here means the floor did not refuse somebody it must |
+
+⚠️ **The remedy for an ERROR here is to fix the operation's ARGUMENT, not to
+register a gap.** Give the operation an argument the per-object control admits so
+the group floor is what answers — the pattern `getFileContents` uses (an
+in-allow-list bucket with a key that does not exist) and the one
+`autoDetectSections`, `addDocumentsToTestSetByKey` and `getChatMessages` were given
+(an empty required argument, which the resolver's own validation rejects **before**
+it consults the control; that source ordering is pinned by
+`test_the_argument_guard_runs_before_the_per_object_control`). Scoring it green, or
+putting it in the gap register, turns a cell that measured nothing into a cell that
+reports success — the worse half of the defect.
+
+⚠️ **An unlabelled refusal gets the STRICT verdict.** Only an explicit `resource`
+leaves the hard-failure branch, so a per-object control that forgets to declare
+itself costs a visible failure rather than a silent pass. Declare one by raising
+`ResourceAccessDenied` (`idp_common.api_adapter`; a `PermissionError` subclass,
+recognised by class **name** across the invoke boundary, so a layerless resolver may
+declare its own). Keep the `Unauthorized` message prefix.
+
+⚠️ **An absent label is not the same as `resolver`.** `None` means the deployment
+did not say — a stack older than the field, the route's Cognito authorizer answering
+401 ahead of the dispatcher, or an in-band `{success:false,error:{type:
+"Unauthorized"}}` 200. Every row in `report.json` carries `authz_control`, including
+passes, so **a report whose column is empty throughout is one where this whole
+distinction was inert** and the verdicts are the pre-#1308 ones. Check that before
+reading a run as having exercised it.
 
 ## The five outcomes — a refusal and an inconclusive result are different
 
@@ -285,6 +344,13 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
    a 5xx is usually a resolver raising a bare `Exception` for a validation refusal
    (see `GAP-SEC-INCONCLUSIVE-5XX`) and is fixed by giving that refusal a
    `ValueError`, not by widening anything here.
+
+   **Then: which control refused?** Read `authzControl` in the report's
+   **Control** column before anything else below. `resource` means the group floor
+   admitted the caller and a per-object control answered — not an RBAC regression,
+   and the remedy is the operation's argument (see above). `api-group-floor` on an
+   allowed role is the real thing. An empty column means this run could not
+   attribute refusals at all, so every verdict in it is the pre-`authzControl` one.
 1. **In-band denial not recognized?** If the op denies via `{success:false,
    error:{type:Unauthorized}}` (200), confirm `classify()`/`_denied()` treat
    in-band `Unauthorized` as denied. (Config & sync resolvers use this.)
@@ -355,7 +421,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 143 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 159 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,

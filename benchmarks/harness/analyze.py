@@ -18,6 +18,37 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib  # noqa: E402
 
+CONF_BELOW = 0.9
+
+
+def confidence_distribution(confs, where=""):
+    """``mean_confidence`` / ``pct_conf_below_0.9`` / ``n_conf_leaves`` for one document.
+
+    The three figures were computed by the same copy-pasted expression in
+    ``score_synthetic`` and ``score_reference``, which is one definition too many
+    for a statistic whose range was never checked in either: GitHub #1395 found a
+    ``mean_confidence`` of 14.185 in four releases' committed grids, and it reached
+    both scorers through the same arithmetic.
+
+    The range check runs FIRST, before any of the three is computed, so a value
+    outside [0, 1] cannot be written and then flagged — see
+    :func:`lib.assert_confidences_in_range`, which raises rather than clamping. It
+    runs on the empty case too, where it passes because there is nothing out of
+    range; ``mean_confidence`` and ``pct_conf_below_0.9`` are then ``None`` and
+    ``n_conf_leaves`` is 0, which is what distinguishes "the grader scored nothing
+    here" from "it scored 0.0".
+    """
+    lib.assert_confidences_in_range(confs, where)
+    return {
+        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
+        "pct_conf_below_0.9": round(
+            100 * sum(1 for c in confs if c < CONF_BELOW) / len(confs), 1
+        )
+        if confs
+        else None,
+        "n_conf_leaves": len(confs),
+    }
+
 
 def score_confidence_coverage(sections):
     """Confidence coverage over every section of one document: scored/extracted rows.
@@ -48,6 +79,7 @@ def score_confidence_coverage(sections):
 
     expected = scored = 0
     by_field = {}
+    expected_by_field = {}
     for sec in sections:
         info = sec.get("explainability_info")
         # `explainability_info` is written as a one-element list wrapping the
@@ -58,12 +90,19 @@ def score_confidence_coverage(sections):
         scored += cov["scored_rows"]
         for field, n in cov["unscored_rows_by_field"].items():
             by_field[field] = by_field.get(field, 0) + n
+        for field, n in cov["expected_rows_by_field"].items():
+            expected_by_field[field] = expected_by_field.get(field, 0) + n
     return {
         "conf_rows_expected": expected,
         "conf_rows_scored": scored,
         "conf_rows_unscored": expected - scored,
         "conf_coverage": round(scored / expected, 4) if expected else None,
         "conf_unscored_by_field": by_field or None,
+        # The denominator beside that numerator. The rungs divide by the
+        # section-wide row total, so an attribute that is wholly unscored beside a
+        # large fully-scored one lands below the warning fraction; without a
+        # per-field denominator a recorded run cannot be read for that case at all.
+        "conf_rows_expected_by_field": expected_by_field or None,
     }
 
 
@@ -761,6 +800,175 @@ def score_audit_metadata(sections):
     }
 
 
+def render_tally(tally):
+    """A ``{name: count}`` tally as one CSV-safe string, or ``None`` when empty.
+
+    ``"code=4 other_code=1"``, sorted by name so two grids diff. Needed because
+    ``aggregate._write_summary_csvs`` uses ``csv.DictWriter``: a dict row value
+    stringifies to its ``repr`` in the cell, and a key absent from ``CSV_COLS`` is
+    dropped without a word. The JSON keeps the tally as a tally.
+    """
+    return " ".join(f"{k}={tally[k]}" for k in sorted(tally)) or None
+
+
+def score_processing_issues(sections):
+    """What the pipeline WARNED about on this document (GitHub #1378).
+
+    ``grep -rn processing_issues benchmarks/harness/*.py`` returned nothing before
+    this existed. Extraction, classification and assessment all emit
+    :class:`idp_common.models.ProcessingIssue`, and none of it reached
+    ``benchmarks/results/*/summary.json`` — so a run whose extraction reported
+    losing rows was recorded identically to a clean one, and **a check that fires
+    into a field nobody reads is indistinguishable, in the results tree, from a
+    check that does not fire**. Issue #1361 was duly filed as large documents
+    losing rows "silently" when ``extraction_rows_below_ocr_estimate`` had fired on
+    every lossy count it reported.
+
+    Read off the same place :func:`score_audit_metadata` reads its audit block: the
+    section's ``result.json`` ``metadata``. More than extraction's own issues reach
+    that key — extraction preserves the issues of stages it does not own
+    (``owned_stages`` in ``extraction/service.py``) and assessment merges into it
+    rather than replacing it — but it is **not** the complete per-section set, and
+    the difference matters more than the mechanisms do.
+
+    ⚠️ **What this cannot see, and why a ``0`` here is not a clean bill of health.**
+    Everything below records onto the section's DynamoDB record and never into the
+    S3 object this reads, because nothing rewrites ``result.json`` afterwards:
+
+    * ``assessment``'s **degrade and skip** pair —
+      ``assessment_failed_confidence_unavailable`` and
+      ``assessment_skipped_confidence_unavailable``, declared in
+      ``assessment/degradation.py``, whose own docstring says that path
+      "deliberately does not rewrite that file", and whose five
+      ``skip_section_no_confidence`` call sites in ``assessment/service.py`` each
+      ``return document`` before the write. These are the ones to worry about: they
+      are **error** severity on a document that **completes** — not failing it is
+      the whole point of the path — so a section that came back with no confidence
+      scores at all reads here as ``processing_issues: 0, success: true``, with no
+      ``status`` to fall back on. And it is live where it counts: over the committed
+      ``results/v0.6.11/*/summary.json`` rows, ``resolved.assessment`` is
+      ``separate`` on 4,192 rows against 516 ``integrated`` and 257 ``off``, and the
+      skip sites are on the standalone path.
+    * ``rule_validation`` and ``postprocessing``, recorded through
+      ``document_failure.record_section_failure`` from the handlers in
+      ``patterns/unified/src/``. Smaller, because these accompany a document the
+      harness already records as failed: what is lost is the reason, not the event.
+
+    The DynamoDB record is not read instead, for three reasons that point the same
+    way: it would need de-duplicating against the S3 copy of every earlier stage's
+    issues, it is another large attribute fetched per run on a path that already
+    scans, and it is deleted with its stack (three release stacks already are) where
+    the S3 artifacts outlive it. So the boundary is **declared and closed** instead:
+    ``test_processing_issues_recorded.py`` partitions every declared stage and every
+    code declared in ``degradation.py`` across what reaches ``result.json`` and a
+    named boundary list, so a *third* such stage or a *third* such code fails there
+    rather than going quietly unread.
+
+    Nothing here enumerates issue types. The tallies are keyed on each issue's own
+    ``severity``/``code``/``stage``, and ``processing_issue_detail`` carries the
+    issue dicts themselves, so a code added to any service tomorrow is recorded
+    without an edit here. A recorder listing the codes it knows would be the very
+    defect this closes, one level up.
+
+    Each issue is normalised through the shipped model —
+    ``ProcessingIssue.from_dict(...).to_dict()`` — rather than copied raw or
+    re-described by a field list written here. That makes the model the authority
+    for what an issue *is* (and applies its own ``root_cause``/``details`` size
+    bounds, which is what keeps a 281 KB jsonschema message out of a committed
+    artifact). Imported inside the function and deliberately NOT wrapped in a
+    try/except recording ``None``, for the same reason
+    :func:`score_confidence_coverage` is not: a silent skip here reproduces exactly
+    the defect the measurement exists to close.
+
+    ``processing_issues`` is ``0`` for a clean document and never ``None``. The
+    absence of issues IS the measurement here, whereas ``None`` is the encoding
+    this harness reserves for "could not be read" (see :func:`unread_sections_row`)
+    — and both callers return before reaching this when the sections did not read,
+    so a ``0`` always means a document that was read and warned about nothing.
+    An entry that is not a dict, or a ``processing_issues`` that is not a list, is
+    counted as ``processing_issues_malformed`` rather than dropped: output nobody
+    can parse is a finding about the run, not an empty one.
+    """
+    from idp_common.models import ProcessingIssue
+
+    issues = []
+    malformed = 0
+    why: list[str] = []
+    for sec in sections:
+        md = sec.get("metadata")
+        if not isinstance(md, dict):
+            continue
+        raw = md.get("processing_issues")
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            malformed += 1
+            why.append(f"processing_issues is {type(raw).__name__}, not a list")
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict):
+                malformed += 1
+                why.append(f"issue entry is {type(entry).__name__}, not a dict")
+                continue
+            # An entry with no `code` is not an issue type, it is malformed output.
+            # `{}` would otherwise become a real issue tallied under `""` for all
+            # three axes, which reads as a warned run with an unnameable cause. The
+            # test is STRUCTURAL — the identifying field is absent — not a check
+            # against any list of known codes, so a code nobody has written yet is
+            # still recorded, and an emitter that stopped setting `code` would show
+            # up here as malformed rather than vanish.
+            if not str(entry.get("code") or "").strip():
+                malformed += 1
+                why.append("issue entry carries no code")
+                continue
+            # `isinstance(entry, dict)` is not enough to admit it to the model.
+            # `ProcessingIssue.__post_init__` byte-truncates `root_cause`, so an
+            # entry carrying a non-string there raises `AttributeError` on
+            # `.encode` — and one such entry killed the whole scoring pass, which is
+            # the opposite of what a reader of malformed output must do. Narrow by
+            # construction: the only call inside is the model's, the failure is
+            # COUNTED and NAMED rather than swallowed, and a reason is on the row.
+            try:
+                issues.append(ProcessingIssue.from_dict(entry).to_dict())
+            except Exception as exc:  # noqa: BLE001 - reported on the row, not hidden
+                malformed += 1
+                why.append(
+                    f"issue entry {str(entry.get('code') or '?')[:60]!r} would not "
+                    f"read: {type(exc).__name__}: {exc}"
+                )
+    by_severity, by_code, by_stage = {}, {}, {}
+    for issue in issues:
+        for tally, field in (
+            (by_severity, "severity"),
+            (by_code, "code"),
+            (by_stage, "stage"),
+        ):
+            name = str(issue.get(field) or "")
+            tally[name] = tally.get(name, 0) + 1
+    return {
+        "processing_issues": len(issues),
+        # Counted whether or not anything READ. A document whose every issue entry
+        # is unparseable must not report as clean — `malformed if issues else None`
+        # is the shape that does, and it is the issue's own defect.
+        "processing_issues_malformed": malformed or None,
+        # ...and WHY, in the same spirit as `cost_unread` and `sections_unread`: a
+        # count alone cannot be acted on. JSON only; the CSV carries the count.
+        "processing_issues_malformed_why": why or None,
+        # Severity is kept as its OWN axis rather than folded into the total: the
+        # whole use of this figure is triage, and a warning and an error collapsed
+        # into one count cannot be triaged.
+        "processing_issues_by_severity": by_severity,
+        "processing_issues_by_code": by_code,
+        "processing_issues_by_stage": by_stage,
+        # The issues themselves, verbatim. This is what makes the figure readable
+        # rather than merely present: #1361's author needed the message
+        # ("141 of an estimated 814 rows"), not a count.
+        "processing_issue_detail": issues,
+        "processing_issue_severities": render_tally(by_severity),
+        "processing_issue_codes": render_tally(by_code),
+    }
+
+
 def unread_sections_row(read):
     """The row keys a document whose sections could not all be READ contributes.
 
@@ -855,6 +1063,7 @@ def score_synthetic(bucket, doc_prefix, truth):
     )
     return {
         **audit,
+        **score_processing_issues(sections),
         "sections": len(sections),
         "sections_expected": expected_sections,
         "sections_correct": sections_correct,
@@ -869,13 +1078,7 @@ def score_synthetic(bucket, doc_prefix, truth):
         "typed_fields": typed_tot or None,
         "cell_accuracy": cell_accuracy,
         "cells_compared": cell_tot or None,
-        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
-        "pct_conf_below_0.9": round(
-            100 * sum(1 for c in confs if c < 0.9) / len(confs), 1
-        )
-        if confs
-        else None,
-        "n_conf_leaves": len(confs),
+        **confidence_distribution(confs, f"{doc_prefix}sections/*/result.json"),
         **score_confidence_coverage(sections),
         # Calibration and discrimination against the exact per-cell truth (#935).
         # Only the synthetic corpus can carry these: a reference corpus is scored by
@@ -974,19 +1177,55 @@ def score_reference(bucket, doc_prefix):
         confs += lib.confidence_values(sec.get("explainability_info"))
     return {
         **score_audit_metadata(sections),
+        **score_processing_issues(sections),
         "eval_unread": ev_read.error if ev_read.is_failed else None,
         "weighted_accuracy": acc,
         "parse_failures": pf,
         "calibration_separation": sep,
         **score_classification(ev),
-        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
-        "pct_conf_below_0.9": round(
-            100 * sum(1 for c in confs if c < 0.9) / len(confs), 1
-        )
-        if confs
-        else None,
-        "n_conf_leaves": len(confs),
+        **confidence_distribution(confs, f"{doc_prefix}sections/*/result.json"),
         **score_confidence_coverage(sections),
+    }
+
+
+# Which of the two scorers produced a row's accuracy, recorded ON the row (#1364).
+#
+# `score_doc` dispatches on whether a local truth file exists, and the two scorers emit
+# DISJOINT accuracy families: `score_synthetic` writes `cells_compared`,
+# `cell_accuracy`, `scalar_accuracy` and `completeness_recall`; `score_reference` writes
+# `weighted_accuracy` and `class_accuracy` from the stack's own evaluation against the
+# corpus labels. Which one ran was recorded nowhere, so a reference row was shaped
+# exactly like a synthetic row whose scorer had produced nothing — the exact-key columns
+# absent, their CSV cells blank, `cells_compared` read as 0 by any reader defaulting it,
+# and a mean over no observations read as `nan`. That reading was published as "the
+# reference corpora produced cost but no scored accuracy" for a grid in which all 2,280
+# reference rows carried a `weighted_accuracy`, and it left a documentation section
+# unrefreshed whose numbers were sitting in the artifact.
+#
+# So the row says which scorer ran (always, both paths) and, when the exact-key family
+# does not apply, why and which column carries this row's accuracy instead. The absent
+# keys stay absent rather than becoming present-and-null: presence-and-null is already
+# this harness's signal for "measured, nothing to join" (see `calibration_curve`), and
+# borrowing it here would trade one ambiguity for another.
+SCORED_EXACT_TRUTH = "exact_truth"
+SCORED_STACK_EVALUATION = "stack_evaluation"
+
+EXACT_TRUTH_UNAVAILABLE_REFERENCE = (
+    "no local per-cell truth: a reference corpus is a labelled test set on the stack, "
+    "so cells_compared / cell_accuracy / scalar_accuracy / completeness_recall do not "
+    "apply to this row and are absent, not zero. This row's accuracy against the "
+    "corpus labels is weighted_accuracy (with class_accuracy for classification), "
+    "scored by the stack's own evaluation."
+)
+
+
+def scored_against_keys(truth):
+    """The provenance pair every scored row carries, for a given truth file (#1364)."""
+    return {
+        "scored_against": SCORED_EXACT_TRUTH if truth else SCORED_STACK_EVALUATION,
+        "exact_truth_unavailable": (
+            None if truth else EXACT_TRUTH_UNAVAILABLE_REFERENCE
+        ),
     }
 
 
@@ -1066,6 +1305,10 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         ),
         "tokens": tok,
         "tokens_by_phase": tok_by_phase,
+        # Set here rather than inside either scorer so it survives the unread-sections
+        # path too: `unread_sections_row` deliberately returns ONLY its two bookkeeping
+        # keys, and a row that could not be read still has a knowable scorer (#1364).
+        **scored_against_keys(truth),
     }
     if truth:
         out.update(score_synthetic(bucket, doc_prefix, truth))

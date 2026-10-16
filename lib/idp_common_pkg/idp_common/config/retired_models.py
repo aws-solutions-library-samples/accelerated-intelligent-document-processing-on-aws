@@ -49,8 +49,9 @@ from typing import Any, Dict, Optional
 # be imported here (``config`` is imported BY ``bedrock``);
 # tests/unit/bedrock/test_region_prefix_parity.py asserts the two agree. ``au`` and
 # ``jp`` arrived with Claude Haiku 5.5, the first model offered here whose card
-# advertises those geo ids.
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|global|us-gov)\.")
+# advertises those geo ids; ``ca`` is the Canada geo profile
+# (``ca.amazon.nova-lite-v1:0``).
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|ca|global|us-gov)\.")
 
 
 #: Model id -> facts about its retirement.
@@ -130,6 +131,34 @@ RETIRED_MODELS: Dict[str, Dict[str, Any]] = {
             "--model-identifier anthropic.claude-opus-4-20250514-v1:0"
         ),
         "note": "confirmation date, not the EOL date; EOL in all three regions checked",
+    },
+    # Claude Sonnet 4, which moved to LEGACY and then reached the end-of-life date
+    # AWS had published for it. Its date has a different provenance from the
+    # entries above: those record the day retirement was CONFIRMED against the
+    # live API, while this one is the `modelLifecycle.endOfLifeTime` AWS published
+    # in advance, recorded in `LEGACY_EXAMPLES` in
+    # `scripts/tests/test_model_surface_consistency.py` while the model was still
+    # invocable and asserted there until the date arrived. It has not been
+    # re-confirmed against the API — run the command below to do that.
+    #
+    # It was removed from every selectable surface and every default ahead of the
+    # date. Moving it here is what completed the removal: the Converse cachePoint
+    # allowlist and the two BEDROCK_MODEL_*_QUOTA_CODES maps in template.yaml went
+    # with it. Its two pricing.yaml rows (us. and eu.) stay, because it was
+    # offered.
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": {
+        "was_offered": True,
+        "eol": "2026-10-14",
+        "verify": (
+            "aws bedrock get-foundation-model --region us-east-1 "
+            "--model-identifier anthropic.claude-sonnet-4-20250514-v1:0"
+        ),
+        "note": (
+            "endOfLifeTime 2026-10-14T08:00:00Z, published by AWS ahead of the "
+            "date and recorded in this repository's LEGACY register until it "
+            "expired; this is the published EOL date, NOT a confirmation date, "
+            "and the verify command has not been re-run since"
+        ),
     },
     # Never selectable here, so `check_retired_models.py` could not see it: that
     # script derives its universe from the template enums. It was reachable

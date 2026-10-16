@@ -235,6 +235,27 @@ The metering table now includes automated cost calculation capabilities:
   meters — `pages`, `documents`, `gb_seconds`, and Lambda `requests` — were not
   checked against their own services' price lists.
 
+  The two **prompt-cache** units are decided per **model** rather than per
+  service, because that is the level at which the question has an answer: AWS
+  prices a cache read at $0.625 per million tokens on Amazon Nova Premier and
+  publishes no cache dimension at all for Claude 3 Haiku, in any of the seventeen
+  regions it serves it from. Eleven shipped Bedrock entries omit at least one of
+  the two cache rates, and each omission now records, per unit, which price-list
+  model it was read against and whether AWS publishes a non-zero rate for the
+  dimension. Where AWS publishes none, the omission is a true `0.0`. Where AWS
+  **does** publish a rate, the unit is written as `NULL` and appears in the query
+  above — the omission is justified only by the model being unable to report the
+  unit on this code path, and a count that nevertheless turns up is a fact worth
+  seeing rather than a zero. A cache unit omitted from a Bedrock entry that has no
+  recorded basis — a pricing row added later, or your own edited pricing table —
+  is `NULL` for the same reason.
+
+  ⚠️ **The web UI's document cost table does not draw this distinction yet.** It
+  carries its own port of the cost lookup and still shows `$0.00` for a unit a
+  pricing entry omits, so a row this table records as `NULL` appears there as
+  free with no mark. Treat the `metering` table as the authority on which of the
+  two a `$0.00` is.
+
   Any *other* unit an entry omits is written as `NULL`, not `0.0`, and appears in
   the query above. That matters because Bedrock's `usage` block grows: a numeric
   field a future model returns reaches the metering table automatically, and if

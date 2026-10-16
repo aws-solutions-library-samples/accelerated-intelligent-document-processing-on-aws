@@ -41,6 +41,9 @@ _LOADERS = [
     # The ConfigSchema sweeps (sibling `order` uniqueness, and the IDPConfig <->
     # UI-schema parity gate that reuses this loader) parse both full templates.
     ("test_config_schema_order", "_CfnSafeLoader"),
+    # The CodeBuild Cognito grant sweep, which parses the SDLC pipeline template
+    # to read the RBAC test role's `Action` lists.
+    ("test_codebuild_cognito_grants", "CfnLoader"),
 ]
 
 

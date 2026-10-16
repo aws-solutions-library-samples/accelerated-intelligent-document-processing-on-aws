@@ -495,6 +495,9 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             # Same failure mode: guards AlertsTopicAdminEmailSubscription and
             # reads both AdminEmail and SuppressAdminInvite, all removed here.
             "ShouldSubscribeAdminToAlerts",
+            # Same failure mode: reads KnowledgeBaseModelId (removed above), and
+            # its only consumer is APIRESOLVERSTACK (also removed).
+            "UseCanadaKnowledgeBaseModel",
         }
 
         # ---- Rules to remove ----

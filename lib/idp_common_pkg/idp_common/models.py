@@ -40,6 +40,10 @@ class Status(Enum):
 
     PENDING_UPLOAD = "PENDING_UPLOAD"  # Pre-s3 upload state only applicable for documents uploaded via /Jobs API
     IN_PROGRESS = "IN_PROGRESS"  # Batch job file is being processed
+    MALWARE_SCANNING = "MALWARE_SCANNING"  # Uploaded, held at the ingest gate
+    # until GuardDuty Malware Protection reports a verdict. Only reachable when
+    # the MalwareScanning stack parameter is not DISABLED; no workflow has
+    # started, so there is no execution to abort and nothing to edit.
     QUEUED = "QUEUED"  # Initial state when document is added to queue
     RUNNING = "RUNNING"  # Step function workflow has started
     PREPROCESSING = "PREPROCESSING"  # Preprocessing hook (e.g. PII redaction)
@@ -63,6 +67,16 @@ class Status(Enum):
     REJECTED = (
         "REJECTED"  # Human reviewer rejected the document (terminal, not success)
     )
+    QUARANTINED = "QUARANTINED"  # GuardDuty Malware Protection reported
+    # THREATS_FOUND. Terminal: the document was never admitted to the pipeline,
+    # so it has no pages, no sections and no workflow execution. The threat name
+    # and the rest of the verdict live on the document's malware_scan_* fields,
+    # because ProcessingIssue is a Section field and this document has none.
+    MALWARE_SCAN_FAILED = "MALWARE_SCAN_FAILED"  # GuardDuty could not produce a
+    # verdict (SKIPPED or FAILED — password-protected file, size/archive quota,
+    # SSE-C, access denied, internal error) and the configured policy is to fail
+    # closed. Deliberately distinct from QUARANTINED: "we found malware" and "we
+    # could not look" call for different operator actions.
 
 
 #: Statuses a workflow can end on with SUCCEEDED while the document is not
@@ -752,6 +766,24 @@ class Document:
     # against allowedConfigVersions in the RBAC scope checks — a composite value
     # there would either bypass or break scope.
     config_revision: Optional[int] = None
+    # WHERE config_version came from — one of idp_common.config.prefix_mappings'
+    # SOURCE_* values. There were already three sources before prefix mappings
+    # existed (upload metadata, the active-profile pointer, an explicit reprocess
+    # request) and the document recorded none of them, so "why did this process
+    # under lending r7?" could only be answered by correlating logs across two
+    # Lambdas. A fourth source without provenance would make that worse.
+    config_source: Optional[str] = None
+    # The mapping prefix that decided it, when one did. Recorded even when the
+    # mapping LOST a precedence contest: "a mapping was consulted and deferred" is a
+    # different fact from "no mapping matched", and only the first explains a
+    # surprising profile.
+    config_mapping_prefix: Optional[str] = None
+    # Why a document was refused at ingest, for a mapping in `reject` conflict mode.
+    # Its own attribute because `errors` is deliberately not persisted (see
+    # idp_common.document_failure) and a reject happens before any section exists,
+    # so the ProcessingIssue channel is unavailable. Without this the person whose
+    # upload was refused sees a FAILED document and no reason anywhere.
+    config_assignment_error: Optional[str] = None
     submission_source: Optional[str] = None
     test_set_id: Optional[str] = None
     # Class every page must be treated as, instead of classifying. Set when a
@@ -767,6 +799,49 @@ class Document:
     evaluation_result: Any = None  # Holds the DocumentEvaluationResult object
     summarization_result: Any = None  # Holds the DocumentSummarizationResult object
     errors: List[str] = field(default_factory=list)
+
+    # Malware-scan verdict (GuardDuty Malware Protection for S3), recorded at the
+    # ingest gate for EVERY scanned document — the clean ones included. "The scan
+    # ran and found nothing" is the observation an auditor needs, and leaving it
+    # unrecorded makes an absent verdict ambiguous between "clean" and "never
+    # scanned". Every one of them is unset when the MalwareScanning stack
+    # parameter is DISABLED — `None`, except `malware_scan_reasons`, which is an
+    # empty list — so an existing deployment's documents are unchanged.
+    #
+    # These are document-level rather than `ProcessingIssue`s on purpose: a
+    # quarantined document never reached classification, so it has no sections to
+    # hang an issue on, and `ProcessingIssue` is a Section field in the API schema
+    # (see the reasoning in ``idp_common/document_failure.py``).
+    malware_scan_status: Optional[str] = (
+        None  # GuardDuty scanStatus: COMPLETED | SKIPPED | FAILED
+    )
+    malware_scan_result: Optional[str] = (
+        None  # scanResultStatus: NO_THREATS_FOUND | THREATS_FOUND | UNSUPPORTED | ACCESS_DENIED | FAILED
+    )
+    malware_scan_threat: Optional[str] = (
+        None  # threats[0].name — GuardDuty reports the FIRST detected threat only
+    )
+    malware_scan_reasons: List[str] = field(
+        default_factory=list
+    )  # statusReasons, e.g. ["PASSWORD_PROTECTED"]
+    malware_scan_time: Optional[str] = None  # ISO8601 time of the verdict event
+    #: Which *version of the object* the gate is waiting on, or got a verdict for.
+    #:
+    #: ⚠️ **This is what stops a clean verdict for one upload from admitting a
+    #: different one.** The input bucket is versioned and the document row is keyed
+    #: on the object KEY alone, so re-uploading the same filename while a scan is in
+    #: flight gives two uploads one row. Without this discriminator, v1's clean
+    #: verdict satisfies the gate's compare-and-set while the bucket's current
+    #: version is an unscanned v2 — which the pipeline then reads. v2's own verdict
+    #: arrives later, finds the row already admitted, and is discarded as a
+    #: duplicate. Same-key re-upload is a case this repository already designs for
+    #: (issue #719), so this is a live ordering, not a hypothetical one.
+    #:
+    #: Holds S3's `version-id` when the event carries one, else the object's ETag.
+    #: Both the upload event and the GuardDuty verdict are derived the same way, so
+    #: the two are comparable; a mismatch leaves the document waiting rather than
+    #: admitting it.
+    malware_scan_version_id: Optional[str] = None
 
     # HITL metadata
     hitl_metadata: List[HitlMetadata] = field(default_factory=list)
@@ -862,6 +937,9 @@ class Document:
             "trace_id": self.trace_id,
             "config_version": self.config_version,
             "config_revision": self.config_revision,
+            "config_source": self.config_source,
+            "config_mapping_prefix": self.config_mapping_prefix,
+            "config_assignment_error": self.config_assignment_error,
             "submission_source": self.submission_source,
             "test_set_id": self.test_set_id,
             # Carried across step boundaries: set before OCR, read at
@@ -975,6 +1053,23 @@ class Document:
                 "matched_page_ids": self.rule_validation_result.matched_page_ids,
             }
 
+        # Add the malware-scan verdict when there is one. Emitted only when set,
+        # so a document from a stack with scanning DISABLED serialises exactly as
+        # it did before — which matters because this dict is what the compressed
+        # working-bucket payload and every SQS message carry.
+        if self.malware_scan_status:
+            result["malware_scan_status"] = self.malware_scan_status
+        if self.malware_scan_result:
+            result["malware_scan_result"] = self.malware_scan_result
+        if self.malware_scan_threat:
+            result["malware_scan_threat"] = self.malware_scan_threat
+        if self.malware_scan_reasons:
+            result["malware_scan_reasons"] = list(self.malware_scan_reasons)
+        if self.malware_scan_time:
+            result["malware_scan_time"] = self.malware_scan_time
+        if self.malware_scan_version_id:
+            result["malware_scan_version_id"] = self.malware_scan_version_id
+
         # Add HITL metadata if it has any values
         if self.hitl_metadata:
             result["hitl_metadata"] = [
@@ -1018,6 +1113,9 @@ class Document:
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
             config_revision=coerce_revision(data.get("config_revision")),
+            config_source=data.get("config_source"),
+            config_mapping_prefix=data.get("config_mapping_prefix"),
+            config_assignment_error=data.get("config_assignment_error"),
             submission_source=data.get("submission_source"),
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
@@ -1084,6 +1182,17 @@ class Document:
             for pi in data.get("processing_issues", [])
             if isinstance(pi, dict)
         ]
+
+        # Malware-scan verdict. `or []` on the reasons so an absent key and an
+        # explicit empty list both read back as "no reasons", which is the same
+        # statement for this field — unlike the HITL review lists below, where the
+        # two differ.
+        document.malware_scan_status = data.get("malware_scan_status")
+        document.malware_scan_result = data.get("malware_scan_result")
+        document.malware_scan_threat = data.get("malware_scan_threat")
+        document.malware_scan_reasons = list(data.get("malware_scan_reasons") or [])
+        document.malware_scan_time = data.get("malware_scan_time")
+        document.malware_scan_version_id = data.get("malware_scan_version_id")
 
         # Convert HITL metadata if present
         hitl_metadata_data = data.get("hitl_metadata", [])
@@ -1403,6 +1512,11 @@ class Document:
                 # still honor the version the document was processed under.
                 "config_version": self.config_version,
                 "config_revision": self.config_revision,
+                # Provenance rides along for the same reason: a consumer reading the
+                # wrapper to decide what configuration to load should be able to say
+                # where that configuration came from without decompressing.
+                "config_source": self.config_source,
+                "config_mapping_prefix": self.config_mapping_prefix,
                 "compressed": True,
             }
 

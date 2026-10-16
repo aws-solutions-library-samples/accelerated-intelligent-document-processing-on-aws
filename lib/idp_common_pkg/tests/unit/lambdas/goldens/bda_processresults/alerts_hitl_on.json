@@ -4,7 +4,10 @@
   "document": {
    "completion_time": null,
    "confidence_alert_count": 1,
+   "config_assignment_error": null,
+   "config_mapping_prefix": null,
    "config_revision": null,
+   "config_source": null,
    "config_version": "default",
    "errors": [],
    "evaluation_report_uri": null,
@@ -81,7 +84,10 @@
    "document": {
     "completion_time": null,
     "confidence_alert_count": 0,
+    "config_assignment_error": null,
+    "config_mapping_prefix": null,
     "config_revision": null,
+    "config_source": null,
     "config_version": "default",
     "errors": [],
     "evaluation_report_uri": null,
@@ -117,7 +123,10 @@
    "document": {
     "completion_time": null,
     "confidence_alert_count": 1,
+    "config_assignment_error": null,
+    "config_mapping_prefix": null,
     "config_revision": null,
+    "config_source": null,
     "config_version": "default",
     "errors": [],
     "evaluation_report_uri": null,

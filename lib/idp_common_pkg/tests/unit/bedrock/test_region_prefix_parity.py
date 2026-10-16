@@ -3,8 +3,8 @@
 
 """One region-prefix rule, shared, and it must stay shared.
 
-Bedrock cross-region inference profiles carry one of seven geo prefixes — ``us.``,
-``eu.``, ``apac.``, ``au.``, ``jp.``, ``global.`` and ``us-gov.`` — and every capability gate in
+Bedrock cross-region inference profiles carry one of eight geo prefixes — ``us.``,
+``eu.``, ``apac.``, ``au.``, ``jp.``, ``ca.``, ``global.`` and ``us-gov.`` — and every capability gate in
 ``idp_common.bedrock.client`` answers by stripping that prefix and matching the base
 name against a set. Four sites used to hand-roll the strip, and three of the four
 listed only ``us``/``eu``/``global``.
@@ -33,7 +33,7 @@ exposed them: it is the first model offered here whose card advertises those two
 ``top_k`` and ``top_p`` went to a model that rejects both and every request 400'd.
 Every 4.7-or-later Claude was affected the same way, not just that one.
 
-There are two definitions of the seven prefixes and there cannot be one: ``config``
+There are two definitions of the eight prefixes and there cannot be one: ``config``
 imports ``bedrock``, so ``bedrock.model_utils`` cannot import
 ``config.retired_models``. This file is the substitute for that import.
 """
@@ -62,6 +62,7 @@ def test_the_two_definitions_name_the_same_prefixes():
         "apac",
         "au",
         "jp",
+        "ca",
         "global",
         "us-gov",
     }
@@ -107,6 +108,24 @@ _GATES = (
     (thinking_can_be_disabled, "anthropic.claude-opus-5-5", False),
     (is_claude_4_7_model, "anthropic.claude-opus-5", True),
     (strips_sampling_params, "anthropic.claude-sonnet-5", True),
+    # Sonnet 5.5's rows matter for a reason the Opus 5.5 rows do not cover: its base
+    # name is EXACT-matched in _CLAUDE_4_7_BASE_NAMES and in
+    # FORCED_TOOL_CHOICE_UNSUPPORTED, while "anthropic.claude-sonnet-5" is a prefix
+    # of it. So a prefix left out of REGION_PREFIXES fails permissively here in both
+    # directions at once — temperature/top_k sent to a model that rejects them, and a
+    # forced toolChoice sent to a model that 400s on it.
+    (is_claude_4_7_model, "anthropic.claude-sonnet-5-5", True),
+    (strips_sampling_params, "anthropic.claude-sonnet-5-5", True),
+    (is_claude_effort_model, "anthropic.claude-sonnet-5-5", True),
+    (supports_forced_tool_choice, "anthropic.claude-sonnet-5-5", False),
+    # True, and deliberately the opposite of the Opus 5.5 row above: thinking CAN be
+    # turned off on Sonnet 5.5 — just not with {"type": "disabled"}. The payload is
+    # what differs, and that is asserted in test_sonnet_5_5_capabilities.py.
+    (thinking_can_be_disabled, "anthropic.claude-sonnet-5-5", True),
+    # Sonnet 5 keeps the permissive forcing answer under every prefix. Paired with
+    # the Sonnet 5.5 row above so a gate widened to a shared "sonnet-5" stem — which
+    # is a substring of both — cannot make the two agree unnoticed.
+    (supports_forced_tool_choice, "anthropic.claude-sonnet-5", True),
 )
 
 

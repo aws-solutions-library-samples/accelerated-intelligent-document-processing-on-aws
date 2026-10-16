@@ -10,9 +10,12 @@ acts on rather than reads. `format_status_json` chooses the process exit code th
 the exit code the default (table) output exits with. A wrong code there is the
 difference between a CI pipeline passing and failing on a document that failed, so
 the exit code of every single-document and batch shape is asserted here, and the
-two functions are additionally compared against each other on the same input --
-they compute the same answer twice, by different rules, and they do not always
-agree. Where they disagree the current behaviour is pinned and the test says so.
+two functions are additionally compared against each other on the same input.
+Both now ask `derive_exit_code` for the answer, so the comparison is a guard on
+that staying true rather than a record of where they differ: it is exhaustive over
+every status the SDK's enum admits in every bucket, because the two divergences it
+caught last were in a list of status literals that was missing some, and a table of
+hand-picked cases is what let them sit.
 
 Two rendering conventions are used deliberately.
 
@@ -39,9 +42,12 @@ from rich.console import Console, RenderableType
 
 from idp_cli import display
 
-# The nine statuses `format_status_json` treats as in-progress, i.e. the ones for
-# which it emits `current_step`. `idp_cli.cli._batch_status_to_display_dicts`
-# carries the same list as the definition of its "running" bucket.
+# Nine statuses the SDK buckets as running. `format_status_json` consults no status
+# list -- `current_step` follows the `running` bucket, whose membership is
+# `idp_sdk.models.base.IN_FLIGHT_DOCUMENT_STATES` and is wider than these nine -- so
+# this tuple is a sample of that bucket for the per-status assertions below, not a
+# definition of anything. The capability tests at the end of the file are what cover
+# the bucket as a whole, from the enum.
 IN_PROGRESS_STATUSES = (
     "RUNNING",
     "CLASSIFYING",
@@ -662,6 +668,18 @@ def test_json_single_completed_document_exits_zero_and_carries_its_section_count
 
 @pytest.mark.unit
 def test_json_single_completed_document_defaults_its_section_count_to_zero():
+    """Both defaults are this module's; neither is reachable through the CLI.
+
+    `_batch_status_to_display_dicts` copies `doc.num_sections` and
+    `doc.duration_seconds or 0` unconditionally, so both keys are always present
+    in the dict `idp-cli status` hands over, and `num_sections` is `null` in it
+    for every status including `COMPLETED` -- the batched document query the CLI
+    uses never asks for a section count. So what is pinned here is the behaviour
+    for a second caller that omits the keys, which is a real guarantee about this
+    function and not a statement about the CLI's output. The sibling test for a
+    redacted document asserts the null instead, because there the subject is what
+    a caller sees.
+    """
     doc = _doc(status="COMPLETED")
     doc.pop("duration")
     payload = json.loads(
@@ -700,6 +718,14 @@ def test_json_a_terminal_failure_exits_one_and_carries_the_error(status):
 
 @pytest.mark.unit
 def test_json_a_failure_with_no_recorded_detail_still_names_a_step():
+    """`failed_step` is always this default; `"Unknown error"` never is.
+
+    `DocumentStatus` has no `failed_step` field, so the key never reaches this
+    function from the CLI and the default below is what a caller always sees.
+    `error` is the opposite case: the mapper writes `doc.error or ""`, so an
+    absent error arrives as an empty string and `"Unknown error"` is reachable
+    only for a caller that omits the key, as this test does.
+    """
     payload = json.loads(
         display.format_status_json(
             _status_data(total=1, failed=[_doc(status="FAILED")]),
@@ -715,6 +741,12 @@ def test_json_a_failure_with_no_recorded_detail_still_names_a_step():
 @pytest.mark.unit
 @pytest.mark.parametrize("status", IN_PROGRESS_STATUSES)
 def test_json_an_in_progress_status_exits_two_and_reports_the_current_step(status):
+    """The key is passed through when a caller supplies it.
+
+    `DocumentStatus` has no `current_step` field, so it never arrives from
+    `idp-cli status` and what that caller sees is the fallback below, an echo of
+    the document's own status. A caller that does supply one gets it.
+    """
     doc = _doc(status=status, current_step="Extraction")
     payload = json.loads(
         display.format_status_json(
@@ -742,14 +774,16 @@ def test_json_an_in_progress_document_with_no_step_repeats_its_status():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("status", ["QUEUED", "NOT_FOUND", "REDACTED_SUPERSEDED"])
-def test_json_a_status_outside_all_three_lists_exits_two_with_no_extra_field(status):
+def test_json_a_document_the_producer_queued_exits_two_with_no_extra_field(status):
     """
-    The three status lists are not exhaustive, and the fall-through answer is 2.
+    A queued document's outcome is not established, whatever its status says.
 
-    QUEUED is the ordinary case. NOT_FOUND and REDACTED_SUPERSEDED are the two
-    terminal statuses `idp_sdk`'s progress monitor produces that none of the three
-    lists names, so a caller polling for a non-2 exit code never gets one for
-    them; that is pinned rather than endorsed.
+    QUEUED is the ordinary case. The other two are the interesting ones: a
+    `NOT_FOUND` inside its grace window and a `REDACTED_SUPERSEDED` are both
+    terminal-looking strings, and what decides the answer here is that the
+    producer put the document in `queued` -- not a list of status literals this
+    module keeps. Each of these three in each of the other three buckets is
+    covered by `test_both_exit_code_paths_agree_on_every_document_state`.
     """
     doc = _doc(status=status)
     payload = json.loads(
@@ -766,14 +800,15 @@ def test_json_a_status_outside_all_three_lists_exits_two_with_no_extra_field(sta
 
 
 @pytest.mark.unit
-def test_json_bucket_precedence_is_completed_then_running_then_failed_then_queued():
+def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queued():
     """
     Only one bucket is read, so which one is checked first decides the answer.
 
     A document appears in exactly one bucket in production; this asserts the order
-    directly rather than inferring it, because the order here differs from the one
-    `show_final_status_summary` uses and that difference is what the agreement
-    tests below are about.
+    directly rather than inferring it, because it is the order the exit code is
+    derived in and all three single-document paths share it -- `format_status_json`
+    read completed, *running*, failed, queued, so a document in two buckets was
+    described by one path and scored by the other.
     """
     everywhere = _status_data(
         total=1,
@@ -789,10 +824,10 @@ def test_json_bucket_precedence_is_completed_then_running_then_failed_then_queue
 
     assert picked(everywhere) == "from-completed"
     everywhere["completed"] = []
-    assert picked(everywhere) == "from-running"
-    everywhere["running"] = []
     assert picked(everywhere) == "from-failed"
     everywhere["failed"] = []
+    assert picked(everywhere) == "from-running"
+    everywhere["running"] = []
     assert picked(everywhere) == "from-queued"
 
 
@@ -903,8 +938,15 @@ def test_summary_single_completed_document_returns_zero(pinned_display_console):
             _stats(total=1, completed=1, all_complete=True),
         )
 
+    rendered = capture.get()
     assert code == 0
-    assert "FINAL STATUS: COMPLETED | Duration: 7.2s | Exit Code: 0" in capture.get()
+    assert "FINAL STATUS: COMPLETED | Duration: 7.2s | Exit Code: 0" in rendered
+    # Exactly one verdict line. The single-document arm returns in the middle of
+    # the function and the batch arm below it prints a line of its own from the
+    # same `exit_code`, so falling through prints a second, contradictory summary
+    # ("ALL COMPLETED | Total: 1") under the right code -- which every assertion
+    # phrased as a substring would still pass.
+    assert rendered.count("FINAL STATUS") == 1, rendered
 
 
 @pytest.mark.unit
@@ -1021,8 +1063,9 @@ def test_summary_batch_still_running_returns_two_and_counts_what_finished(
 # `idp-cli status` calls `format_status_json` for `--format json` and
 # `show_final_status_summary` for the default table output, and exits with
 # whichever code it got. The same document must therefore produce the same code
-# from both, and for three of the four buckets it does. The exceptions are pinned
-# below.
+# from both, in every bucket and for every status. There are no pinned exceptions
+# left; the three tests that recorded one each assert the agreement instead, and
+# each keeps the input that used to diverge.
 
 
 def _both_codes(status_data, stats) -> tuple[int, int]:
@@ -1061,22 +1104,24 @@ def test_both_exit_code_paths_agree_on_the_ordinary_single_document_states(
 
 
 @pytest.mark.unit
-def test_an_aborted_document_gets_a_different_exit_code_from_each_output_format():
+def test_an_aborted_document_in_the_queued_bucket_agrees_across_both_paths():
     """
-    DEFECT (pinned, not fixed): `idp-cli status` on a single ABORTED document
-    exits 1 with `--format json` and 2 with the default table output.
+    The bucket decides, so a document the producer put in `queued` scores 2 in
+    both output formats whatever its status string says.
 
-    `_batch_status_to_display_dicts` in `cli.py` sorts a document into `completed`
-    on COMPLETED, into `failed` on exactly FAILED, into `running` on the nine
-    in-progress statuses, and everything else -- including ABORTED -- into
-    `queued`. `format_status_json` then reads the document's `status` field, sees
-    ABORTED in its failure list and answers 1. `show_final_status_summary` reads
-    the bucket instead, finds `completed` and `failed` empty, and answers 2.
+    This input used to be the clearest instance of #1344: `format_status_json`
+    read the `status` field, saw ABORTED in its own failure list and answered 1,
+    while `show_final_status_summary` read the bucket and answered 2. A script
+    looping on the default output until the code stopped being 2 never stopped,
+    and one reading the JSON reported the document as failed.
 
-    ABORTED is terminal, so the consequence is not a one-poll discrepancy: a
-    script looping on the default output until the exit code stops being 2 never
-    stops, and one that treats 2 as "keep waiting" reports a document a human
-    deliberately stopped as still processing.
+    The bucket shown here is the one `_batch_status_to_display_dicts` produced for
+    ABORTED when this divergence was found. It no longer does -- it classifies
+    through `idp_sdk`, which buckets ABORTED as `failed` -- and the test is kept
+    on the original input anyway, because the guarantee is that the two paths
+    agree about *whatever* bucket the producer chose, not that one particular
+    producer chooses well. The ABORTED-as-failed case is covered by the
+    enum-wide test below.
     """
     status_data = _status_data(
         total=1,
@@ -1086,8 +1131,7 @@ def test_an_aborted_document_gets_a_different_exit_code_from_each_output_format(
 
     from_json, from_summary = _both_codes(status_data, stats)
 
-    assert from_json == 1
-    assert from_summary == 2
+    assert from_json == from_summary == 2
 
 
 @pytest.mark.unit
@@ -1111,17 +1155,16 @@ def test_a_single_document_lookup_that_found_nothing_agrees_across_both_paths():
 
 
 @pytest.mark.unit
-def test_the_two_paths_read_different_buckets_first_when_a_document_is_in_two():
+def test_the_two_paths_read_the_same_bucket_first_when_a_document_is_in_two():
     """
-    Latent, not reachable through `cli.py` today: the precedence orders differ.
+    Not reachable through `cli.py` today, and pinned because it used to diverge.
 
-    `format_status_json` checks completed, running, failed, queued;
-    `show_final_status_summary` checks completed, failed, then running and queued.
-    A document listed in both `running` and `failed` therefore exits 2 from the
-    JSON path and 1 from the table path. `_batch_status_to_display_dicts` puts
-    each document in exactly one bucket, so this cannot happen there -- it is
-    pinned so that a second caller building `status_data` by hand finds the
-    divergence in a test rather than in a pipeline.
+    `format_status_json` checked completed, *running*, failed, queued while
+    `show_final_status_summary` checked completed, failed, running, queued, so a
+    document listed in both `running` and `failed` exited 2 from the JSON path and
+    1 from the table path. `_batch_status_to_display_dicts` puts each document in
+    exactly one bucket, so this cannot arise there -- it is pinned so that a second
+    caller building `status_data` by hand finds one answer rather than two.
     """
     status_data = _status_data(
         total=1,
@@ -1131,8 +1174,11 @@ def test_the_two_paths_read_different_buckets_first_when_a_document_is_in_two():
 
     from_json, from_summary = _both_codes(status_data, _stats(total=1))
 
-    assert from_json == 2
-    assert from_summary == 1
+    assert from_json == from_summary == 1
+    payload = json.loads(display.format_status_json(status_data, _stats(total=1)))
+    assert payload["error"] == "boom", (
+        "the payload must describe the document the code was derived from"
+    )
 
 
 @pytest.mark.unit
@@ -1210,6 +1256,227 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
 
     # The loop has to have run; a generator that produced nothing would pass.
     assert checked == 192
+
+
+# ---------------------------------------------------------------------------
+# #1344: no status literal can make the two paths disagree
+#
+# The three tests above compare the two paths on inputs chosen by hand, which is
+# how the ABORTED and settled-NOT_FOUND divergences survived being looked at: a
+# table of cases only covers the statuses whoever wrote it thought of, and the
+# defect was in a list of status literals that was missing some. So the property
+# asserted here is a capability -- *no* status the enum admits, in *any* bucket,
+# can make the two output formats disagree -- and the status universe is read off
+# `idp_sdk.models.DocumentState`, which is the authority `cli.py` validates
+# against and the one that grows when the pipeline gains a stage.
+# ---------------------------------------------------------------------------
+
+
+def _document_states() -> list[str]:
+    """Every document status the SDK admits, as the strings `cli.py` passes on.
+
+    From the enum rather than from a list here: a list would be this suite's
+    belief about the pipeline's states, and the three that were missing from the
+    equivalent list inside `display.py` are exactly the defect (#1344).
+    """
+    from idp_sdk.models import DocumentState
+
+    return [state.value for state in DocumentState]
+
+
+def _bucket_names() -> list[str]:
+    from idp_sdk.models import DocumentBucket
+
+    return [bucket.value for bucket in DocumentBucket]
+
+
+@pytest.mark.unit
+def test_the_status_and_bucket_universes_are_not_empty():
+    """A derived list that came back empty would collect as a skip, not a failure.
+
+    `parametrize` over an empty sequence is reported as skipped, so the two
+    exhaustive tests below would silently stop asserting anything if the import
+    moved or the enums were renamed.
+    """
+    assert len(_document_states()) >= 20, _document_states()
+    assert len(_bucket_names()) == 4, _bucket_names()
+    # The statuses whose bucket is not a function of the string, named so that a
+    # rename of any of them fails here rather than quietly leaving the sweep
+    # below covering a smaller universe than it claims.
+    for interesting in ("NOT_FOUND", "ABORTED", "REDACTED_SUPERSEDED", "COMPLETED"):
+        assert interesting in _document_states()
+
+
+@pytest.mark.unit
+def test_the_display_bucket_order_names_exactly_the_sdk_buckets():
+    """`display.py` spells the four bucket keys; a typo would skip a bucket.
+
+    `_single_document` walks `_BUCKETS_IN_PRECEDENCE_ORDER` and reads
+    `status_data.get(name)`, so a misspelled entry is not an error -- it makes
+    that bucket invisible and the document's outcome "not established". The names
+    are not imported, because this module depends on nothing outside `rich`, so
+    the agreement is asserted instead.
+    """
+    assert set(display._BUCKETS_IN_PRECEDENCE_ORDER) == set(_bucket_names())
+    assert len(display._BUCKETS_IN_PRECEDENCE_ORDER) == 4
+    # Precedence, not just membership: a completed document outranks a failed one.
+    assert display._BUCKETS_IN_PRECEDENCE_ORDER[:2] == ("completed", "failed")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", _document_states())
+@pytest.mark.parametrize("bucket", _bucket_names())
+def test_both_exit_code_paths_agree_on_every_document_state(bucket, status):
+    """Every (bucket, status) pair the SDK can produce, not a chosen sample.
+
+    `idp-cli status` exits with `format_status_json`'s code for `--format json`
+    and `show_final_status_summary`'s for the default output, and a caller gating
+    on one of them must not be told something different by the other. Both are
+    additionally compared against `derive_exit_code`, which is the rule's single
+    statement.
+    """
+    status_data = _status_data(total=1)
+    status_data[bucket] = [_doc(status=status)]
+    stats = _stats(total=1, all_complete=bucket in ("completed", "failed"))
+    stats[bucket] = 1
+
+    from_json, from_summary = _both_codes(status_data, stats)
+    derived = display.derive_exit_code(status_data, stats)
+
+    assert from_json == from_summary == derived, (
+        f"{status} in the {bucket!r} bucket: json={from_json} "
+        f"table={from_summary} derive_exit_code={derived}"
+    )
+    # And the answer is the bucket's, so agreement on a wrong value cannot pass.
+    assert derived == {"completed": 0, "failed": 1}.get(bucket, 2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", _document_states())
+def test_a_failed_document_carries_its_error_whatever_its_status_string_is(status):
+    """The other half of #1344: the explanation was dropped, not just the code.
+
+    A settled `NOT_FOUND` is in the `failed` bucket and its error says the
+    document has no tracking row -- which is the only thing that explains the
+    verdict to whoever reads the JSON. That key was emitted only for the two
+    literals `FAILED` and `ABORTED`, so for every other status the payload
+    reported a failure with no reason in it.
+
+    What this function decides is whether the key is emitted, not what is in it.
+    The value is the producer's: `_batch_status_to_display_dicts` writes
+    `doc.error or ""`, so a status the SDK recorded no error for arrives as an
+    empty string and the `"Unknown error"` default below is unreachable through
+    that caller. `failed_step` has no field on `DocumentStatus` at all, so it is
+    always this function's default -- asserted as such rather than as information.
+    """
+    doc = _doc(status=status, error="Document not found in tracking table")
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, failed=[doc]), _stats(total=1, failed=1)
+        )
+    )
+
+    assert payload["exit_code"] == 1
+    assert payload["error"] == "Document not found in tracking table"
+    assert payload["failed_step"] == "Unknown"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status_data", "expected"),
+    [
+        ({"total": 1, "completed": [{"document_id": "d", "status": "COMPLETED"}]}, 0),
+        ({"total": 1, "failed": [{"document_id": "d", "status": "FAILED"}]}, 1),
+        ({"total": 1, "running": [{"document_id": "d", "status": "RUNNING"}]}, 2),
+        ({"total": 1}, 2),
+    ],
+)
+def test_a_status_data_dict_missing_some_bucket_keys_still_gets_one_answer(
+    status_data, expected
+):
+    """All three paths read the buckets through one resolver, which uses `.get`.
+
+    `cli.py` always supplies all four keys, so this is about a second caller
+    building `status_data` by hand -- and what it buys is that an absent key reads
+    as an empty bucket rather than raising `KeyError` from inside whichever of the
+    three paths happened to be called. Each of the three used to index the dict
+    directly, so the same partial input raised from `--format json` and from the
+    table output and was handled by neither.
+
+    It is also the only input that distinguishes the resolver from three correct
+    hand-written bucket walks, so without it the consolidation is unobservable and
+    a later edit can quietly put one of them back.
+    """
+    stats = _stats(total=1, all_complete=expected in (0, 1))
+
+    assert display.derive_exit_code(status_data, stats) == expected
+    from_json, from_summary = _both_codes(status_data, stats)
+    assert from_json == from_summary == expected
+
+
+@pytest.mark.unit
+def test_a_settled_not_found_document_reports_a_failure_the_caller_can_read():
+    """The case the report measured, end to end through the JSON payload.
+
+    Past `NOT_FOUND_GRACE_SECONDS` the SDK buckets a document with no tracking
+    row as `failed`, because QueueSender writes that row and one that never got
+    it will never process. `--format json` answered `exit_code: 2` -- this CLI's
+    code for "still processing, keep waiting" -- and omitted the error, so an
+    automation polled forever on a document that will never acquire a row while
+    the table output correctly reported it failed.
+    """
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(
+                total=1,
+                failed=[
+                    _doc(
+                        status="NOT_FOUND",
+                        error="Document not found in tracking table",
+                    )
+                ],
+            ),
+            _stats(total=1, failed=1, all_complete=True),
+        )
+    )
+
+    assert payload["exit_code"] == 1
+    assert payload["status"] == "NOT_FOUND"
+    assert payload["error"] == "Document not found in tracking table"
+
+
+@pytest.mark.unit
+def test_a_redacted_superseded_document_is_reported_as_the_success_it_is():
+    """The second row the report measured: terminal, successful, exited 2.
+
+    A preprocessing hook replaced the original with a redacted copy, which is the
+    requested outcome -- `idp_sdk` buckets it as `completed` for that reason. The
+    JSON path answered 2 because the string is not `COMPLETED`.
+
+    `num_sections` is asserted as **null**, which is what the producer chain
+    actually yields: `_batch_status_to_display_dicts` copies `doc.num_sections`
+    unconditionally, and on the path every ordinary `idp-cli status` takes --
+    `idp_sdk`'s batched document query -- nothing sets it for any status, so the
+    key arrives present and `None` and `display.py`'s `0` default is never
+    reached. (The monitor's per-document fallback, used after a batched call
+    fails, sets it for a literal `COMPLETED` and for nothing else.) Asserting `0`
+    here passes -- the `_doc` fixture omits the key -- and what it pins is the
+    fixture's omission rather than anything a caller can observe.
+    """
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(
+                total=1,
+                completed=[_doc(status="REDACTED_SUPERSEDED", num_sections=None)],
+            ),
+            _stats(total=1, completed=1, all_complete=True),
+        )
+    )
+
+    assert payload["exit_code"] == 0
+    assert payload["status"] == "REDACTED_SUPERSEDED"
+    assert "num_sections" in payload
+    assert payload["num_sections"] is None
 
 
 # --- REJECTED (IDP-0002 D1): terminal, not success, reported by name ---------

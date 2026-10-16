@@ -1358,6 +1358,30 @@ Resources:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
             BucketName: !Ref OutputBucketName
+        # Purge ALL object versions under a deleted document's prefix. The output
+        # bucket is versioning-enabled and document version history pins prior runs'
+        # bytes as noncurrent versions, so delete_single_document enumerates them with
+        # a list_object_versions paginator and deletes them by VersionId. Neither
+        # action is in SAM's S3CrudPolicy above, which grants s3:ListBucket and
+        # s3:DeleteObject — the unversioned forms. Mirrors the grant on
+        # DocumentVersionsResolverFunction, which walks the same bucket for the same
+        # reason.
+        - Statement:
+            - Effect: Allow
+              Action:
+                # ListBucketVersions: ListObjectVersions enumerates the noncurrent
+                # versions and delete markers to purge. Without it the enumeration is
+                # refused and no output bytes are reclaimed.
+                - s3:ListBucketVersions
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}"
+            - Effect: Allow
+              Action:
+                # DeleteObjectVersion: deleting a specific VersionId needs this, not
+                # s3:DeleteObject. DeleteObjects reports a refusal per key in its
+                # Errors array with an HTTP 200, so without this the purge is denied
+                # silently rather than raising.
+                - s3:DeleteObjectVersion
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
         - Statement:
             - Effect: Allow
               Action:
@@ -2070,6 +2094,10 @@ Resources:
           WORKING_BUCKET: !Ref WorkingBucketName
           INPUT_BUCKET: !Ref InputBucketName
           OUTPUT_BUCKET: !Ref OutputBucketName
+          # RBAC: updateDocumentSections admits Annotator, and the resolver then
+          # confines an Annotator to the test sets in their allowedTestSets, which
+          # `testset_scope` resolves from the UsersTable EmailIndex.
+          USERS_TABLE_NAME: !Ref UsersTableName
       LoggingConfig:
         LogGroup: !Ref ProcessChangesResolverFunctionLogGroup
       Policies:
@@ -2081,6 +2109,20 @@ Resources:
             BucketName: !Ref OutputBucketName
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucketName
+        # Read-only access on UsersTable + EmailIndex so the resolver can look up
+        # the caller's allowedTestSets and enforce per-test-set annotation scope on
+        # updateDocumentSections. Without this the lookup fails with AccessDenied —
+        # which this path turns into a DENIAL, not into an unrestricted caller, so
+        # the failure mode is every scoped read refused rather than a silent scope
+        # bypass.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - Statement:
             - Effect: Allow
               Action:
@@ -2267,6 +2309,12 @@ Resources:
           # the parent template; an empty value denies a non-admin caller, because
           # a scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          # The config prefix mappings, so a reprocess with no explicit profile
+          # re-resolves them — which is how an operator re-runs a backlog under a
+          # new profile. This resolver had no ConfigurationTable grant at all
+          # before; see `_version_for_document` for why the mapping is consulted
+          # only AFTER a scoped caller's pin.
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           # Namespace for the ``StaleOutputPurgeFailed`` metric emitted
           # on partial-purge failure — parity with queue_sender's #719
           # telemetry so operators can alarm on both ingest and
@@ -2282,7 +2330,6 @@ Resources:
           # a reviewer holding its claim (Inbox).
           HITL_TABLE_NAME: !Ref HITLTableName
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
-          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
       LoggingConfig:
         LogGroup: !Ref ReprocessDocumentResolverFunctionLogGroup
       Policies:
@@ -2321,11 +2368,9 @@ Resources:
               Resource:
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
-            - Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+        # Read-only: this resolver reads the prefix mappings, never writes them.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTableName
         - SQSSendMessagePolicy:
             QueueName: !Ref DocumentQueueName
         - S3ReadPolicy:
@@ -2995,6 +3040,18 @@ Resources:
       Description: Lambda function to return signed upload URL via GraphQL API
       MemorySize: 512
       Timeout: 60
+      Layers:
+        # Needed for idp_common.config.prefix_mappings and idp_common.config_scope:
+        # this resolver decides which Configuration Profile a destination implies and
+        # whether the caller may write into it, and that rule is enforced in four
+        # deploy artifacts. The alternative for a layerless function is to vendor a
+        # committed copy, which several resolvers here still do; that would put a
+        # security-critical matcher behind a drift guard instead of behind one
+        # implementation, and a scope matcher that drifts between call sites is
+        # itself the privilege-escalation bug idp_common.config_scope exists to
+        # prevent. So this function takes the layer and imports s3_targets and
+        # log_sanitizer from it rather than keeping copies.
+        - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -3011,6 +3068,32 @@ Resources:
           OUTPUT_BUCKET: !Ref OutputBucketName
           EVALUATION_BASELINE_BUCKET: !Ref EvaluationBaselineBucketName
           TEST_SET_BUCKET: !Ref TestSetBucketName
+          # The config prefix mappings live in the ConfigurationTable, keyed
+          # ConfigPrefixMap#__index. Read here so the resolver can tell which
+          # Configuration Profile a destination prefix implies BEFORE it mints a
+          # presigned POST — which is what lets it refuse a destination outside the
+          # caller's scope, and refuse one a `reject` mapping would fail at ingest.
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          # RBAC: resolve the caller's allowedConfigVersions so the RESOLVED profile
+          # can be scope-checked. Always wired by the parent template; an empty
+          # value DENIES a caller rather than reading as unrestricted, because a
+          # scope that cannot be evaluated is not a caller without restrictions.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          # Namespace for ``PrefixMappingLookupFailed``. This is the THIRD emitter
+          # of that metric, and it is the one that matters most for authorization:
+          # the mapping set is read twice for one document, here and again by
+          # QueueSender seconds later, by two different roles. If this read fails
+          # and QueueSender's succeeds, the upload is scope-checked against an
+          # UNMAPPED destination and then assigned the mapping's profile at ingest,
+          # which can place a scoped caller's document outside their own scope. The
+          # fail-open is still the right trade -- refusing every upload because a
+          # routing table blipped is an outage of the UI's primary action -- but the
+          # window has to be visible, so it is alarmed rather than only logged.
+          # ``!Ref StackName`` (the parameter from the root template), NOT
+          # ``!Ref AWS::StackName``: this is a nested template, so the
+          # pseudo-parameter resolves to the generated nested stack name and the
+          # datum would land in a namespace no alarm reads.
+          METRIC_NAMESPACE: !Ref StackName
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
       LoggingConfig:
         LogGroup: !Ref UploadResolverFunctionLogGroup
@@ -3034,6 +3117,26 @@ Resources:
         # back to the TestSetBucket via uploadDocument's presigned POST.
         - S3WritePolicy:
             BucketName: !Ref TestSetBucketName
+        # Read-only on both tables. This resolver only ever READS the prefix
+        # mappings and the caller's scope — mapping CRUD is Admin-only and lives in
+        # the configuration resolver — so a write grant here would be a way to edit
+        # the deployment's routing policy from the upload path.
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigurationTableName
+        # Emit ``PrefixMappingLookupFailed`` when the mapping read fails here, so
+        # the degraded-enforcement window described above is alarmed rather than
+        # buried in an ERROR log. Namespace-scoped, so this Lambda cannot write
+        # under any other stack's metrics.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter, NOT ``!Ref AWS::StackName``
+                  # (nested template) -- see the METRIC_NAMESPACE comment above.
+                  cloudwatch:namespace: !Ref StackName
         - Statement:
             - Effect: Allow
               Action:
@@ -3043,6 +3146,15 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !Ref CustomerManagedEncryptionKeyArn
+            # RBAC: read-only lookup of the caller's `allowedConfigVersions`, via
+            # the UsersTable `SUB#` pointer item (GetItem) and `EmailIndex` (Query).
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
   ListDocumentsByDateRangeResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

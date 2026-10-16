@@ -356,7 +356,10 @@ def handler(event, context):
         # WARNING: this can only fire in the commercial partition (the resource
         # is gated to `aws`), where the likeliest cause is a regression in the
         # project config rather than a regional capability gap — so it must be
-        # visible even though the deploy is allowed to succeed.
+        # visible even though the deploy is allowed to succeed. Known, expected
+        # exception: ca-central-1, where BDA's synchronous API rejects the SYNC
+        # document project, so Canada stacks log this line by design (see
+        # docs/canada-region-model-support.md).
         logger.error(
             "Bedrock Data Automation rejected the stack-scoped OCR project as "
             "unsupported in this region (%s); returning empty ProjectArn. The "

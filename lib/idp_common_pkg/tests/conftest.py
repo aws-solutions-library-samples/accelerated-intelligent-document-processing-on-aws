@@ -8,6 +8,8 @@ Pytest configuration file for the IDP Common package tests.
 import importlib
 import os
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 from unittest.mock import MagicMock
@@ -141,6 +143,46 @@ def aws_credentials():
         "us-east-1"  # Also set AWS_REGION for code that checks this variable
     )
 
+
+# --- No outbound AWS from this suite -----------------------------------------
+# The credential fixture above makes the credentials harmless; this makes the request
+# not happen, and both are wanted because they fail in different directions. A
+# placeholder credential still produces a *signed request to a real endpoint*, which
+# is rejected rather than prevented and which the code under test then swallows.
+#
+# Measured in #1398 over this package alone: 343 requests reached botocore's real send
+# in one `pytest -m "not integration"` — 320 CloudWatch `PutMetricData`, the rest S3,
+# SSM and Secrets Manager — with no test failing and nothing reported. One of them was
+# signed with a real-shaped key even under the stripped runner, because
+# `patch.dict(os.environ, ..., clear=True)` erases the two pins no unset can replace.
+# The placeholders this file installs are deliberate (#988) and are exactly what the
+# other 342 signed with, so stripping the environment cannot reach them.
+#
+# One definition, walked up to rather than copied: scripts/tests/no_outbound_aws.py
+# carries the seam, the measurements and the ``integration``-marker carve-out, which
+# is the same split `real_aws_credentials_for_integration_tests` below makes.
+def _no_outbound_aws_fixture():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    for ancestor in _Path(__file__).resolve().parents:
+        helper = ancestor / "scripts" / "tests"
+        if not (helper / "no_outbound_aws.py").is_file():
+            continue
+        _sys.path.insert(0, str(helper))
+        try:
+            from no_outbound_aws import fixture
+
+            return fixture()
+        finally:
+            _sys.path.pop(0)
+    raise RuntimeError(
+        "scripts/tests/no_outbound_aws.py not found above this file; it carries the "
+        "control that stops this suite transacting with a real AWS account (#1398)"
+    )
+
+
+no_outbound_aws = _no_outbound_aws_fixture()
 
 # ---------------------------------------------------------------------------
 # Integration-tier credential reconciliation
@@ -360,3 +402,135 @@ def real_aws_credentials_for_integration_tests(request):
             os.environ.pop(var, None)
         os.environ.update({k: v for k, v in saved.items() if v is not None})
         reset_cached_aws_clients()
+
+
+# ---------------------------------------------------------------------------
+# How long a unit test may spend in a real `time.sleep`
+# ---------------------------------------------------------------------------
+# A unit test that reaches an unmocked retry or poll ladder does not fail. It
+# WAITS — for as long as the ladder's own timeout — and then usually passes,
+# because the caller treats the resulting timeout as a tolerable error and
+# records it rather than raising. Nothing reports anything unusual; the only
+# symptom is a suite that goes quiet and stays there.
+#
+# Two tests in `tests/unit/lambdas/test_data_mart_rollup.py` were in that state
+# (#1380). Each patched one boundary of `_run_reconcile` and left the other
+# real, so the call reached `_wait_for_athena` against a MagicMock Athena client
+# that never reports a terminal state, slept 1 s per poll to the function's
+# `timeout_sec: int = 300` default, raised `TimeoutError`, and had it caught by
+# the production code's own `except Exception`. 300.1 s per test, measured
+# serially, against 1.2 s for the other 197 tests in that module combined.
+#
+# The shape generalises past those two: a poll or backoff default measured in
+# minutes is correct for the Lambda that contains it (this one has a 900 s
+# timeout) and is wrong by three orders of magnitude for a unit test, and
+# nothing about an incomplete mock announces which one is running. So the
+# budget below is a tripwire on the SYMPTOM rather than on any one ladder: the
+# first sleep that would carry a test past it fails the test, before sleeping,
+# naming the remedy.
+#
+# It intercepts `time.sleep` on the `time` module, so it sees a caller that did
+# `import time; time.sleep(...)` — which is every ladder in this repository —
+# and not one that bound the function with `from time import sleep`. Sleeps on
+# other threads are counted against the same budget without a lock, since the
+# figure is a budget rather than an assertion about concurrency.
+#
+# ⚠️ **A sleep in a FORKED CHILD is served, not budgeted**, and the pid check
+# that does that is not a technicality. `tests/unit/rule_validation/
+# test_rule_validation_chunking.py` provokes a child that never finishes, by
+# asking it to sleep for 30 s and killing it after 1 — so the 30 s is never
+# spent, and the parent's own `join(timeout)` is what bounds the cost. A fork
+# inherits this wrapper, and `pytest.fail` in a child is not a test failure:
+# it is a non-zero exit, which that harness reads as the child having DIED
+# rather than having hung. Budgeting the child therefore turned a passing
+# test into a wrong answer about a distinction it exists to draw. What this
+# gives up is a ladder reached inside a child the parent joins with no
+# timeout at all; that waits as long as it likes, as it did before.
+#
+# `integration`-marked tests wait on real AWS and are keyed off this the same
+# way they are keyed off the sentinel credentials above: by marker, not by
+# directory, because the marker is what says a test calls AWS.
+
+#: Seconds of real `time.sleep` one unit test may spend in total.
+#:
+#: Set on a measurement rather than by feel: with the budget temporarily at
+#: 0.25 s, nothing in this package's ~11,200 unit tests crosses it, so 1.0 is
+#: four times the largest request any test makes today and three hundred times
+#: under the poll ladder that prompted this. Raise it only against a
+#: measurement, and prefer patching `time.sleep` in the test that needs the
+#: room — the message below says so, because that is almost always the answer.
+#:
+#: The accounting is on the seconds a test ASKS for, not the seconds that
+#: elapse, so this cannot go flaky on a loaded machine: the verdict is the same
+#: on an idle host and a saturated one.
+_SLEEP_BUDGET_SEC = 1.0
+
+
+@dataclass
+class SleepBudget:
+    """Per-test sleep accounting, yielded by :func:`bounded_real_sleep`.
+
+    ``limit`` is read on every `time.sleep` call rather than captured, so a
+    test that needs a different bound for its own duration can set it — which
+    is how ``test_suite_hygiene.py`` drives the cumulative path without
+    actually waiting out the budget to prove it.
+    """
+
+    limit: float
+    spent: float = 0.0
+
+
+@pytest.fixture(autouse=True)
+def bounded_real_sleep(request, monkeypatch):
+    """Fail a unit test that spends more than `_SLEEP_BUDGET_SEC` asleep.
+
+    Fails on the sleep that would cross the budget, BEFORE that sleep runs, so
+    the test costs the budget and not the ladder's timeout.
+
+    The failure is raised with `pytest.fail`, whose exception derives from
+    `BaseException` and not from `Exception`. That is load-bearing rather than
+    incidental: the call path this was written for sits inside a production
+    `except Exception` that files the error in a result dict and returns
+    normally, so an `Exception` here would be caught by the code under test and
+    the run would get faster while staying just as silent.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        yield None
+        return
+
+    real_sleep = time.sleep
+    budget = SleepBudget(limit=_SLEEP_BUDGET_SEC)
+    owner_pid = os.getpid()
+
+    def _budgeted_sleep(seconds):
+        if os.getpid() != owner_pid:
+            # A forked child. Its lifetime belongs to whatever joined it, and a
+            # `pytest.fail` here would reach the parent as an exit status.
+            real_sleep(seconds)
+            return
+        try:
+            requested = float(seconds)
+        except (TypeError, ValueError):
+            # Not a number — let the real `time.sleep` raise about it.
+            real_sleep(seconds)
+            return
+        if requested > 0 and budget.spent + requested > budget.limit:
+            pytest.fail(
+                f"This unit test asked to sleep {requested:g}s on top of "
+                f"{budget.spent:g}s already slept, which is past the "
+                f"{budget.limit:g}s sleep budget for a unit test.\n"
+                f"Almost always this means the test reached a real retry or "
+                f"poll ladder because a mock does not cover the whole call "
+                f"graph — the test would otherwise have waited out that "
+                f"ladder's timeout and then passed, reporting nothing (#1380).\n"
+                f"Patch the boundary the test does not intend to exercise. If "
+                f"the backoff itself is what is under test, patch `time.sleep` "
+                f"in the test and assert on the delays it was asked for, "
+                f"rather than spending them.",
+                pytrace=False,
+            )
+        budget.spent += max(requested, 0.0)
+        real_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", _budgeted_sleep)
+    yield budget

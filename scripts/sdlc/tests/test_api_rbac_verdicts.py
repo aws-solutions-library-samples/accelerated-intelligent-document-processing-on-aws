@@ -368,7 +368,10 @@ OPS = {
     "getConfigVersions": {"groups": "ANY", "args": {}},
     "updateAgentJobStatus": {"groups": "IAM_ONLY", "args": {}},
 }
-TOKENS = {r: f"tok-{r}" for r in h.ROLES}
+# Every principal the matrix drives, not just the group roles: the groupless
+# caller is one of them (#1065), and a token map built from ROLES alone would
+# make the matrix raise rather than drive it.
+TOKENS = {r: f"tok-{r}" for r in h.MATRIX_PRINCIPALS}
 CTX = {"api_base": API, "circuit_breaker": False}
 
 
@@ -380,7 +383,11 @@ class TestATimingOutDeploymentIsNotAGreenRun:
         allowed-role and ANY-auth cell reported a pass and the process exited 0.
         """
         monkeypatch.setattr(
-            h, "call", lambda api_base, field, args, token: (0, None, None, "<timeout>")
+            h,
+            "call",
+            lambda api_base, field, args, token: h.ApiResult(
+                0, None, None, "<timeout>"
+            ),
         )
         results = []
 
@@ -401,7 +408,9 @@ class TestATimingOutDeploymentIsNotAGreenRun:
         monkeypatch.setattr(
             h,
             "call",
-            lambda api_base, field, args, token: (500, "InternalError", None, "rid"),
+            lambda api_base, field, args, token: h.ApiResult(
+                500, "InternalError", None, "rid"
+            ),
         )
         results = []
 
@@ -417,13 +426,22 @@ class TestATimingOutDeploymentIsNotAGreenRun:
         def _call(api_base, field, args, token):
             allowed = OPS[field]["groups"]
             if token is None:
-                return 401, None, None, "rid"
+                return h.ApiResult(401, None, None, "rid")
             role = token.replace("tok-", "")
             if allowed == "ANY":
-                return 200, None, None, "rid"
+                return h.ApiResult(200, None, None, "rid")
             if allowed == "IAM_ONLY" or role not in allowed:
-                return 403, "Unauthorized", None, "rid"
-            return 200, None, None, "rid"
+                # Labelled with the control that really answers: the dispatcher's
+                # field-level group floor runs before routing, so a caller its
+                # policy excludes never reaches a resolver.
+                return h.ApiResult(
+                    403,
+                    "Unauthorized",
+                    None,
+                    "rid",
+                    control=h.CONTROL_GROUP_FLOOR,
+                )
+            return h.ApiResult(200, None, None, "rid")
 
         monkeypatch.setattr(h, "call", _call)
         results = []
@@ -604,7 +622,9 @@ class TestTheUnauthCellClassifiesInconclusiveResults:
         self, monkeypatch, capsys
     ):
         monkeypatch.setattr(
-            h, "call", lambda api_base, field, args, token: (0, None, None, "rid")
+            h,
+            "call",
+            lambda api_base, field, args, token: h.ApiResult(0, None, None, "rid"),
         )
         results = []
 

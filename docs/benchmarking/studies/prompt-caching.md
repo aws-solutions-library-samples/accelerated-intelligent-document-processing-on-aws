@@ -71,10 +71,21 @@ customisation rather than a live problem: a hand-written prompt with five
 `us.amazon.nova-2-lite-v1:0`, same sweep: **every** prefix tested cached, including
 the smallest (a 355-token prefix produced `cacheWrite: 355`). A write only happens
 when the minimum is met, so **Nova's minimum is ≤355 tokens** — well below anything
-these presets produce. Combined with Nova's price multipliers in `pricing.yaml`
-(read **0.25×**, write **1.0×**, versus Claude's 0.1× / 1.25×), Nova has neither
-failure mode: it always caches, and a write that is never read costs exactly what an
-uncached read would have cost. **Both mechanisms in this page are Claude-specific.**
+these presets produce. Combined with Nova's rates in `pricing.yaml` (read
+**0.25×** input, and the write **free** — AWS publishes every Nova cache-write
+dimension at exactly $0.00, where Claude's is 0.1× / 1.25×), Nova has neither
+failure mode: it always caches, and a write that is never read costs **nothing at
+all**, so there is no break-even prefix length to reason about on these models.
+**Both mechanisms in this page are Claude-specific.**
+
+Note the asymmetry that makes this safe to rely on rather than merely cheap.
+`cacheWriteInputTokens` is *disjoint* from `inputTokens` in Bedrock's usage block
+— the cached prefix leaves the input count rather than being reported in both — so
+a free write really is free and not a discount on something still being billed.
+Measured on `us.amazon.nova-lite-v1:0`: the same ~39k-token prefix reports
+`inputTokens: 39011` with no cache point and `inputTokens: 10` plus
+`cacheWriteInputTokens: 39001` with one, `totalTokens` identical at 39,013 either
+way. See `tests/unit/reporting/test_nova_cache_write_pricing.py`.
 
 This matters for scoping: `ocr-benchmark` **as shipped** pins
 `extraction.model: us.amazon.nova-2-lite-v1:0` and therefore does *not* hit the

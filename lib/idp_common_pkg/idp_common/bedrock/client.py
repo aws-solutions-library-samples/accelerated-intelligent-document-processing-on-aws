@@ -26,13 +26,31 @@ from botocore.exceptions import (
 )
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
+# The invocation's wall clock. Every ladder in this module backs off and retries
+# inside a Lambda that will be killed on a fixed deadline, so both of these are
+# needed here: a sleep must not outlive the invocation, and an attempt the size of
+# the one that just failed must not be BEGUN when what remains cannot hold it. The
+# rule has one implementation, in a standard-library-only leaf module, shared with
+# the streamed agentic ladder's decorators in ``utils.bedrock_utils``.
+#
+# It is not imported FROM ``utils.bedrock_utils``, which also exports it, because of
+# what that costs at cold start: ``utils/__init__`` imports
+# ``idp_common.config.models``, whose package ``__init__`` reaches back here through
+# ``configuration_manager`` -> ``merge_utils``. Measured, ``import idp_common.bedrock``
+# goes from 526 modules in 0.15 s to 968 in 1.00 s, and starts requiring
+# ``idp_common.config`` — which is the import a lean handler pays for before its
+# handler body runs, and one of the two chains
+# ``tests/unit/test_import_surface_region_free.py`` exists to keep thin.
+from idp_common.lambda_deadline import (
+    attempt_cannot_finish,
+    clamp_sleep_to_budgets,
+    remaining_invocation_seconds,
+)
+
 # The shard invocation's time budget. Imported rather than restated, because this
 # client's read timeout is one of its terms and a term written in two places is
 # exactly how the budget stopped adding up (#1014). ``timeout_budget`` is a leaf
-# module that imports nothing, which matters here: importing from
-# ``idp_common.utils`` instead would build an SSM client at module scope and make
-# ``import idp_common.config`` — which reaches this module via ``merge_utils`` —
-# require an AWS region before any handler code runs.
+# module that imports nothing, for the same reason as above.
 from idp_common.timeout_budget import (
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
     CONFIDENCE_READ_TIMEOUT_SECONDS,
@@ -148,6 +166,14 @@ _CLAUDE_4_7_BASE_NAMES = {
     # top_p=0.0, so Sonnet 5 must be treated like the sampling-param-stripped models
     # (this is a deliberate deviation from Sonnet 4.6, which still accepts them).
     "anthropic.claude-sonnet-5",
+    # Claude Sonnet 5.5. The entry is REQUIRED, not redundant: this set is matched
+    # EXACTLY on the base name (see is_claude_4_7_model), so "claude-sonnet-5" does
+    # not cover "claude-sonnet-5-5" — the same trap the Opus 5.5 comment above
+    # names. Verified live on Bedrock Converse (us.anthropic.claude-sonnet-5-5,
+    # us-east-1, 2026-10-14): each of `temperature`, `top_p` and `top_k` comes back
+    # "is deprecated for this model". IDP's default decoding config sets top_k=5 /
+    # top_p=0.0, so without this entry every Sonnet 5.5 request 400s.
+    "anthropic.claude-sonnet-5-5",
     # Claude Haiku 5.5 joins the set, and this is the first Haiku to do so —
     # Haiku 4.5 still accepts all three parameters, so "it's a Haiku" is not the
     # rule. Verified live on Bedrock Converse (us.anthropic.claude-haiku-5-5,
@@ -222,6 +248,18 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     # "anthropic.claude-opus-5". Relying on that would make the set silently
     # wrong for any future Opus 5.x that does NOT take effort.
     "anthropic.claude-opus-5-5",
+    # Claude Sonnet 5.5, and redundant-by-prefix in the same way: the lookup is
+    # `base.startswith(name)`, so "anthropic.claude-sonnet-5-5" already matched via
+    # "anthropic.claude-sonnet-5". Listed for the same reason as Opus 5.5 — a future
+    # Sonnet 5.x that does NOT take effort has to be decided here rather than
+    # inheriting a match. Verified live on Bedrock Converse
+    # (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14): all five of
+    # low/medium/high/xhigh/max are accepted, and "max" measurably spent more output
+    # tokens on the same prompt. Its default is "high" per the Bedrock model card
+    # ("effort level configurable - low, medium, high, xhigh, max; default: high"),
+    # read rather than measured since Converse reports no effort back — note that is
+    # the ordinary default, NOT the "medium" that Opus 5.5 and Haiku 5.5 carry.
+    "anthropic.claude-sonnet-5-5",
     "anthropic.claude-fable-5",
     # Claude Haiku 5.5 is the FIRST Haiku to accept effort — Haiku 4.5 rejects it
     # with a 400, and that rejection is the reason the comment above names Haiku
@@ -253,22 +291,68 @@ _CLAUDE_EFFORT_BASE_NAMES = {
 # ``thinking = {"type": "disabled"}`` (verified live, us.anthropic.claude-haiku-5-5,
 # us-west-2, 2026-10-08) and so is deliberately absent, even though it shares Opus
 # 5.5's sampling-parameter surface and its effort control.
+#
+# Claude Sonnet 5.5 is absent too, and for a THIRD reason that neither of the other
+# two illustrates: thinking can be turned off on it, but not with this payload — see
+# _THINKING_DISABLE_PAYLOAD_OVERRIDES below. Adding it here would read as "effort is
+# the only control", which is false for it.
 _THINKING_ALWAYS_ON_BASE_NAMES = {
     "anthropic.claude-opus-5-5",
 }
 
+#: ``thinking`` payload that turns thinking off, for models where it is NOT the
+#: ordinary ``{"type": "disabled"}``.
+#:
+#: Claude Sonnet 5.5 is the first model here that needs this. Verified live on
+#: Bedrock Converse (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14):
+#: ``{"type": "disabled"}`` is rejected with 'To turn thinking off on this model,
+#: send "thinking": {"type": "between_tools"} instead of {"type": "disabled"}', and
+#: ``{"type": "between_tools"}`` is accepted. So the model is neither
+#: thinking-always-on (Opus 5.5) nor ordinary (Haiku 5.5): it is a third answer, and
+#: a boolean cannot carry it. ``thinking_can_be_disabled`` would be False for it
+#: under its own documented contract while being a misleading statement of fact, so
+#: the spelling lives here and the boolean keeps meaning what its name says.
+_THINKING_DISABLE_PAYLOAD_OVERRIDES: Dict[str, Dict[str, str]] = {
+    "anthropic.claude-sonnet-5-5": {"type": "between_tools"},
+}
+
 
 def thinking_can_be_disabled(model_id: str) -> bool:
-    """False if ``model_id`` rejects ``thinking: {"type": "disabled"}``.
+    """False if thinking cannot be turned off on ``model_id`` at all.
 
     Lower ``output_config.effort`` is the only way to reduce thinking spend on
     such a model.
+
+    ⚠️ A True answer does NOT mean ``{"type": "disabled"}`` is the payload to send —
+    on Claude Sonnet 5.5 that exact value is rejected and ``{"type":
+    "between_tools"}`` is what works. Call :func:`thinking_disable_payload` for the
+    value rather than constructing one.
     """
     if not model_id:
         return True
     return _strip_region_and_1m(resolve_model_id_from_arn(model_id)) not in (
         _THINKING_ALWAYS_ON_BASE_NAMES
     )
+
+
+def thinking_disable_payload(model_id: str) -> Optional[Dict[str, str]]:
+    """The ``thinking`` field that turns thinking off on ``model_id``.
+
+    Returns None when thinking cannot be turned off at any effort level (see
+    :func:`thinking_can_be_disabled`), otherwise the payload to put in
+    ``additionalModelRequestFields["thinking"]``.
+
+    This file's Converse path never sends a ``thinking`` field, so nothing here
+    currently builds such a request — this exists so a caller that wants to disable
+    thinking asks once instead of discovering the 400 in production.
+    """
+    if not model_id:
+        return {"type": "disabled"}
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
+    if base in _THINKING_ALWAYS_ON_BASE_NAMES:
+        return None
+    return _THINKING_DISABLE_PAYLOAD_OVERRIDES.get(base, {"type": "disabled"})
+
 
 # Effort levels accepted by Claude models. There are now THREE vocabularies on
 # this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
@@ -602,12 +686,22 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-opus-5-5",
     "us.anthropic.claude-opus-5-5:1m",
     "us.anthropic.claude-opus-4-1-20250805-v1:0",
-    "us.anthropic.claude-sonnet-4-20250514-v1:0",
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-sonnet-4-6",
     "us.anthropic.claude-sonnet-4-6:1m",
     "us.anthropic.claude-sonnet-5",
     "us.anthropic.claude-sonnet-5:1m",
+    # Claude Sonnet 5.5. Explicit caching confirmed live rather than read off the
+    # card: a cachePoint after a 513-token text block wrote 513 tokens
+    # (cacheWriteInputTokens), and 508 tokens wrote nothing (us-east-1,
+    # 2026-10-14) — so the card's 512-token minimum is the real floor, which is
+    # HALF Sonnet 5's 1,024 (see prompt_cache.py; measured as a pair, Sonnet 5 wrote
+    # nothing at 825 tokens and 1,223 at 1,223). Like Haiku 5.5 the id carries no
+    # date or ``-v1:0`` suffix and has no ``:1m`` twin:
+    # ``us.anthropic.claude-sonnet-5-5:1m`` is not an id Bedrock knows ("The
+    # provided model identifier is invalid"), because the 1M window is this model's
+    # default rather than an opt-in.
+    "us.anthropic.claude-sonnet-5-5",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Claude Haiku 5.5. Explicit caching confirmed live rather than inferred from
     # the model card: a >512-token system prefix followed by a cachePoint block
@@ -621,12 +715,12 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.amazon.nova-pro-v1:0",
     "us.amazon.nova-2-lite-v1:0",
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "eu.anthropic.claude-sonnet-4-20250514-v1:0",
     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "eu.anthropic.claude-sonnet-4-6",
     "eu.anthropic.claude-sonnet-4-6:1m",
     "eu.anthropic.claude-sonnet-5",
     "eu.anthropic.claude-sonnet-5:1m",
+    "eu.anthropic.claude-sonnet-5-5",
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "eu.anthropic.claude-haiku-5-5",
     "eu.anthropic.claude-opus-4-5-20251101-v1:0",
@@ -645,6 +739,11 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "eu.amazon.nova-2-lite-v1:0",
     "eu.amazon.nova-2-lite-v1:0:priority",
     "eu.amazon.nova-2-lite-v1:0:flex",
+    # Canada geo profile of Nova Lite. Measured in ca-central-1 on 2026-10-12: a
+    # 7,530-token system prompt followed by a cachePoint wrote 7,530 tokens
+    # (cacheWriteInputTokens) and an identical second call read 7,530
+    # (cacheReadInputTokens).
+    "ca.amazon.nova-lite-v1:0",
     "global.amazon.nova-2-lite-v1:0",
     "global.amazon.nova-2-lite-v1:0:priority",
     "global.amazon.nova-2-lite-v1:0:flex",
@@ -655,6 +754,7 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.anthropic.claude-sonnet-4-6:1m",
     "global.anthropic.claude-sonnet-5",
     "global.anthropic.claude-sonnet-5:1m",
+    "global.anthropic.claude-sonnet-5-5",
     "global.anthropic.claude-opus-4-5-20251101-v1:0",
     "global.anthropic.claude-opus-4-6-v1",
     "global.anthropic.claude-opus-4-6-v1:1m",
@@ -678,13 +778,21 @@ CACHEPOINT_SUPPORTED_MODELS = [
 # a 400. Before it, every Converse-reachable family accepted all three modes, so
 # one gate covered both and this comment said so.
 #
+# ⚠️ Nor is the forcing answer a property of the FAMILY, which is the next thing a
+# reader assumes once one model splits the two questions. Claude Sonnet 5.5 rejects
+# forcing while Claude Sonnet 5 accepts it, so the Sonnet family now spans both
+# answers exactly as the Opus family does, and only an exact base-name lookup gets
+# that right (``FORCED_TOOL_CHOICE_UNSUPPORTED`` below).
+#
 # Verified live across the other currently selectable families (Claude
 # 3.5/3.7/4.x/5 and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig``
 # AND all three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the
-# Converse API, and actually emit the ``toolUse`` block. So for THIS gate the only
-# real question remains "does this model reach Converse at all", and exactly two
-# routes in invoke_model do not. They are named here so the exclusions are
-# discoverable and testable rather than buried in an `if`.
+# Converse API, and actually emit the ``toolUse`` block. The two 5.5 models above
+# are the exceptions to the forcing half of that, and to that half only: both still
+# carry a ``toolConfig``. So for THIS gate the only real question remains "does this
+# model reach Converse at all", and exactly two routes in invoke_model do not. They
+# are named here so the exclusions are discoverable and testable rather than buried
+# in an `if`.
 #
 # NOTE: OpenAI GPT-6 Astra is deliberately NOT one of them. It reaches Converse
 # and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
@@ -758,9 +866,22 @@ def supports_tool_config(model_id: str) -> bool:
 # equivalent and must fall back to the prose schema — which
 # ``forced_tool.should_force_tool`` already knows how to do, recording the reason in
 # the section's audit metadata rather than skipping silently.
+# Claude Sonnet 5.5 is the second entry, and the one that shows this is not an
+# Opus-only quirk. Verified live on Bedrock Converse
+# (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14) with the same three
+# requests: ``auto`` answered with stopReason ``tool_use`` and a toolUse block,
+# while ``{"any": {}}`` and ``{"tool": {"name": ...}}`` both returned the identical
+# ValidationException Opus 5.5 gives. The key is an EXACT base name, so
+# "anthropic.claude-sonnet-5" does not shadow it and Sonnet 5 — which does accept
+# both forcing modes — keeps the permissive answer.
 FORCED_TOOL_CHOICE_UNSUPPORTED: Dict[str, str] = {
     "anthropic.claude-opus-5-5": (
         "Claude Opus 5.5 accepts a Converse toolConfig but rejects a forced "
+        'toolChoice: \'tool_choice: type "tool" and "any" are not supported for '
+        "this model.' Use toolChoice auto and steer from the prompt"
+    ),
+    "anthropic.claude-sonnet-5-5": (
+        "Claude Sonnet 5.5 accepts a Converse toolConfig but rejects a forced "
         'toolChoice: \'tool_choice: type "tool" and "any" are not supported for '
         "this model.' Use toolChoice auto and steer from the prompt"
     ),
@@ -794,9 +915,25 @@ def supports_forced_tool_choice(model_id: str) -> bool:
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
 # e.g., "us.anthropic.claude-sonnet-4-6" -> "anthropic.claude-sonnet-4-6"
 # and "eu.amazon.nova-2-lite-v1:0:priority" -> "amazon.nova-2-lite-v1:0"
+#
+# The prefix set is _REGION_PREFIXES, not a local tuple. A hand-rolled ("us",
+# "eu", "global") here silently ignored every other geo an entry can carry, so
+# the `ca.`, `apac.`, `au.`, `jp.` or `us-gov.` spelling of a cachePoint-capable
+# model contributed no base name — and BedrockClient._is_model_cachepoint_supported
+# resolves an inference-profile ARN to its foundation model and looks the result
+# up in THIS set, so such a model would quietly lose prompt caching when it is
+# named by ARN.
+#
+# Latent when ca.amazon.nova-lite-v1:0 was added (its base is already seeded by
+# the us. twin, so the set is the same 23 names either way); the first model
+# offered under a geo prefix with no us. twin is what would have made it real.
+#
+# The tier/version suffix handling is deliberately NOT _strip_region_and_1m():
+# that helper strips `:1m`, which here must be KEPT, since a 1m profile is a
+# separate entry in the list above.
 for _model_id in CACHEPOINT_SUPPORTED_MODELS:
     _parts = _model_id.split(".", 1)
-    if len(_parts) == 2 and _parts[0] in ("us", "eu", "global"):
+    if len(_parts) == 2 and _parts[0] in _REGION_PREFIXES:
         _base = _parts[1]
         # Strip tier suffixes (:priority, :flex) but keep version suffixes (:0, :1m)
         if _base.endswith(":priority") or _base.endswith(":flex"):
@@ -1909,6 +2046,7 @@ class BedrockClient:
         request_start_time: float,
         last_exception: Optional[Exception] = None,
         context: str = "Unspecified",
+        worst_attempt_seconds: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Recursive helper method to handle retries for Bedrock invocation.
@@ -1919,6 +2057,11 @@ class BedrockClient:
             max_retries: Maximum number of retry attempts
             request_start_time: Time when the original request started
             last_exception: The last exception encountered (for final error reporting)
+            worst_attempt_seconds: The costliest attempt this ladder has measured so
+                far. Threaded through the recursion because the budget gate below is
+                asked about the worst attempt rather than the last one -- a cheap
+                failure in the middle of a ladder must not re-license an expensive
+                attempt. See lambda_deadline.attempt_cannot_finish.
 
         Returns:
             Bedrock response object with metering information
@@ -1926,6 +2069,10 @@ class BedrockClient:
         Raises:
             Exception: The last exception encountered if max retries are exceeded
         """
+        # Bound before the try, so the except handlers can always measure how long
+        # the attempt they are handling cost. Reassigned immediately before the API
+        # call, which is the duration the budget gate below is about.
+        attempt_start_time = time.time()
         try:
             # Create a copy of the messages to sanitize for logging
             sanitized_params = copy.deepcopy(converse_params)
@@ -2064,8 +2211,20 @@ class BedrockClient:
                     self._put_metric("BedrockMaxRetriesExceeded", 1)
                     raise
 
-                # Calculate backoff time
-                backoff = self._calculate_backoff(retry_count)
+                # Calculate backoff time, never sleeping past the end of this
+                # invocation.
+                backoff = self._backoff_within_invocation(retry_count)
+
+                # Refuse to begin an attempt this invocation cannot hold. The cost is
+                # the WORST attempt measured so far, not the last one, plus the backoff
+                # about to be slept -- both come out of the same budget, and a cheap
+                # throttle between two expensive stalls must not reset the comparison.
+                worst = max(worst_attempt_seconds, time.time() - attempt_start_time)
+                if attempt_cannot_finish(worst + backoff, "Bedrock converse"):
+                    self._put_metric("BedrockRequestsFailed", 1)
+                    self._put_metric("BedrockRetryAbandonedOutOfTime", 1)
+                    raise
+
                 logger.warning(
                     f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
@@ -2084,6 +2243,7 @@ class BedrockClient:
                     request_start_time=request_start_time,
                     last_exception=e,
                     context=context,
+                    worst_attempt_seconds=worst,
                 )
             else:
                 # Self-heal an over-limit maxTokens request. There is no AWS API
@@ -2100,6 +2260,13 @@ class BedrockClient:
                 if discovered_limit is not None and self._apply_max_tokens_limit(
                     converse_params, discovered_limit
                 ):
+                    # Deliberately NOT gated on the invocation budget. The attempt it
+                    # repeats is a ValidationException refused in milliseconds, so the
+                    # gate could only ever fire here with the deadline already past —
+                    # and the thing it would refuse is the clamp that makes a
+                    # newly-added model work at all, re-raised as a ValidationException
+                    # the caller classifies as deterministic. A cheap retry that
+                    # usually succeeds is worth more than a marginally earlier failure.
                     logger.warning(
                         "maxTokens exceeded model limit for %s; Bedrock reports "
                         "%d. Clamping and retrying. Update model_config_limits.yaml.",
@@ -2114,6 +2281,10 @@ class BedrockClient:
                         request_start_time=request_start_time,
                         last_exception=e,
                         context=context,
+                        worst_attempt_seconds=max(
+                            worst_attempt_seconds,
+                            time.time() - attempt_start_time,
+                        ),
                     )
 
                 # Include model_id: errors like ResourceNotFoundException
@@ -2150,8 +2321,21 @@ class BedrockClient:
                 self._put_metric("BedrockMaxRetriesExceeded", 1)
                 raise
 
-            # Calculate backoff time
-            backoff = self._calculate_backoff(retry_count)
+            # Calculate backoff time, never sleeping past the end of this invocation.
+            backoff = self._backoff_within_invocation(retry_count)
+
+            # This is the branch the ladder spent a whole invocation in: a read
+            # timeout costs the client's full read_timeout, and three of those fill a
+            # 900 s function, so by the third the remaining time cannot hold a fourth.
+            # Refuse it and raise the timeout, which the handlers classify as
+            # transient and the state machine retries with its own budget — rather
+            # than starting an attempt that can only end on the wall clock.
+            worst = max(worst_attempt_seconds, time.time() - attempt_start_time)
+            if attempt_cannot_finish(worst + backoff, "Bedrock converse"):
+                self._put_metric("BedrockRequestsFailed", 1)
+                self._put_metric("BedrockRetryAbandonedOutOfTime", 1)
+                raise
+
             logger.warning(
                 f"Bedrock timeout occurred (attempt {retry_count + 1}/{max_retries}). "
                 f"Error: {error_message}. "
@@ -2170,6 +2354,7 @@ class BedrockClient:
                 request_start_time=request_start_time,
                 last_exception=e,
                 context=context,
+                worst_attempt_seconds=worst,
             )
 
         except Exception as e:
@@ -2415,6 +2600,7 @@ class BedrockClient:
         retry_count: int,
         max_retries: int,
         last_exception: Optional[Exception] = None,
+        worst_attempt_seconds: float = 0.0,
     ) -> List[float]:
         """
         Recursive helper method to handle retries for embedding generation.
@@ -2433,6 +2619,9 @@ class BedrockClient:
         Raises:
             Exception: The last exception encountered if max retries are exceeded
         """
+        # Bound before the try so the handler can measure the attempt it is handling;
+        # reassigned immediately before the API call.
+        attempt_start_time = time.time()
         try:
             logger.info(
                 f"Bedrock embedding request attempt {retry_count + 1}/{max_retries}:"
@@ -2523,8 +2712,23 @@ class BedrockClient:
                     self._put_metric("BedrockEmbeddingMaxRetriesExceeded", 1)
                     raise
 
-                # Calculate backoff time
-                backoff = self._calculate_backoff(retry_count)
+                # Calculate backoff time, never sleeping past the end of this
+                # invocation. An embedding request is short, so what bites on this
+                # ladder is the sleep rather than the attempt: seven retries at a
+                # 300 s cap is most of a Lambda spent asleep on a throttle.
+                backoff = self._backoff_within_invocation(retry_count)
+
+                # The same gate as the generation ladder, on the same rule. It is
+                # unlikely to fire here precisely because the attempts are cheap, and
+                # an exemption would be the wrong shape: this ladder also retries
+                # ``ReadTimeout`` and ``TimeoutError``, and an embedding call that
+                # does stall gets the same protection as a generation one.
+                worst = max(worst_attempt_seconds, time.time() - attempt_start_time)
+                if attempt_cannot_finish(worst + backoff, "Bedrock embedding"):
+                    self._put_metric("BedrockEmbeddingRequestsFailed", 1)
+                    self._put_metric("BedrockEmbeddingRetryAbandonedOutOfTime", 1)
+                    raise
+
                 logger.warning(
                     f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
@@ -2542,6 +2746,7 @@ class BedrockClient:
                     retry_count=retry_count + 1,
                     max_retries=max_retries,
                     last_exception=e,
+                    worst_attempt_seconds=worst,
                 )
             else:
                 logger.error(
@@ -2963,6 +3168,7 @@ class BedrockClient:
         request_start_time: float,
         last_exception: Optional[Exception] = None,
         context: str = "Unspecified",
+        worst_attempt_seconds: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Invoke Lambda hook with retry logic for transient failures.
@@ -2982,6 +3188,9 @@ class BedrockClient:
         Raises:
             Exception: If invocation fails after all retries
         """
+        # Bound before the try so the handlers can measure the attempt they are
+        # handling; reassigned immediately before the invoke.
+        attempt_start_time = time.time()
         try:
             logger.info(
                 f"LambdaHook request attempt {retry_count + 1}/{max_retries}: "
@@ -3014,7 +3223,24 @@ class BedrockClient:
 
                 # Retry on unhandled errors (transient issues)
                 if function_error == "Unhandled" and retry_count < max_retries:
-                    backoff = self._calculate_backoff(retry_count)
+                    backoff = self._backoff_within_invocation(retry_count)
+                    # A hook invocation is the most expensive attempt this client
+                    # makes: ``lambda_client`` waits 840 s for one, so two of them
+                    # exceed the 900 s caller, and every attempt re-runs whatever the
+                    # hook charges for. Raising here is caught by this method's own
+                    # ``except Exception`` below, which does not retry a
+                    # ``RuntimeError`` — the same route the exhausted path takes.
+                    worst = max(worst_attempt_seconds, duration)
+                    if attempt_cannot_finish(worst + backoff, "LambdaHook"):
+                        # ``LambdaHookRequestsFailed`` is NOT emitted here: this raise
+                        # is caught by this method's own ``except Exception`` below,
+                        # which declines to retry a ``RuntimeError`` and emits it on
+                        # the way out. Emitting it at both points counted one failed
+                        # request twice.
+                        self._put_metric("LambdaHookRetryAbandonedOutOfTime", 1)
+                        raise RuntimeError(
+                            f"LambdaHook function error: {error_message}"
+                        )
                     logger.warning(
                         f"LambdaHook transient error, retrying in {backoff:.2f}s"
                     )
@@ -3026,6 +3252,7 @@ class BedrockClient:
                         max_retries=max_retries,
                         request_start_time=request_start_time,
                         context=context,
+                        worst_attempt_seconds=worst,
                     )
 
                 self._put_metric("LambdaHookRequestsFailed", 1)
@@ -3092,7 +3319,12 @@ class BedrockClient:
 
             if error_code in retryable_errors and retry_count < max_retries:
                 self._put_metric("LambdaHookThrottles", 1)
-                backoff = self._calculate_backoff(retry_count)
+                backoff = self._backoff_within_invocation(retry_count)
+                worst = max(worst_attempt_seconds, time.time() - attempt_start_time)
+                if attempt_cannot_finish(worst + backoff, "LambdaHook"):
+                    self._put_metric("LambdaHookRequestsFailed", 1)
+                    self._put_metric("LambdaHookRetryAbandonedOutOfTime", 1)
+                    raise
                 logger.warning(
                     f"LambdaHook throttled ({error_code}), retrying in {backoff:.2f}s"
                 )
@@ -3105,6 +3337,7 @@ class BedrockClient:
                     request_start_time=request_start_time,
                     last_exception=e,
                     context=context,
+                    worst_attempt_seconds=worst,
                 )
             else:
                 logger.error(f"LambdaHook error: {error_code} - {error_message}")
@@ -3114,7 +3347,15 @@ class BedrockClient:
         except Exception as e:
             error_message = str(e)
             if "RuntimeError" not in type(e).__name__ and retry_count < max_retries:
-                backoff = self._calculate_backoff(retry_count)
+                backoff = self._backoff_within_invocation(retry_count)
+                # This is the branch a read timeout lands in, and ``lambda_client``
+                # waits 840 s for one. Nominally eight of those is 6,720 s inside a
+                # 900 s caller, each re-running the hook's paid work.
+                worst = max(worst_attempt_seconds, time.time() - attempt_start_time)
+                if attempt_cannot_finish(worst + backoff, "LambdaHook"):
+                    self._put_metric("LambdaHookRequestsFailed", 1)
+                    self._put_metric("LambdaHookRetryAbandonedOutOfTime", 1)
+                    raise
                 logger.warning(
                     f"LambdaHook unexpected error, retrying in {backoff:.2f}s: {error_message}"
                 )
@@ -3127,6 +3368,7 @@ class BedrockClient:
                     request_start_time=request_start_time,
                     last_exception=e,
                     context=context,
+                    worst_attempt_seconds=worst,
                 )
 
             logger.error(f"LambdaHook failed: {error_message}", exc_info=True)
@@ -3150,6 +3392,48 @@ class BedrockClient:
         jitter = random.random()  # nosec B311 - retry jitter
 
         return backoff_seconds + jitter
+
+    def _backoff_within_invocation(self, retry_count: int) -> float:
+        """:meth:`_calculate_backoff`, shortened so the sleep stays in this invocation.
+
+        The ladder is seven retries deep doubling from ``initial_backoff``, so its
+        sleeps run 2, 4, 8, 16, 32, 64, 128 s plus up to a second of jitter each —
+        254.0 to 261.0 s in total, more than a quarter of a 900 s Lambda and spent
+        making no progress. (``max_backoff`` is 300 s and never binds at seven
+        retries: it would first apply at the eighth, one past the end. It bounds the
+        ladder only if ``max_retries`` is raised.) Sleeping past the deadline is worse
+        than useless: the function is killed mid-sleep, which Step Functions
+        classifies as deterministic (``Sandbox.Timedout``, ``MaxAttempts: 1`` since
+        #917) rather than as the transient failure it is.
+
+        Returns 0.0 when nothing is left to spend, which means the next attempt goes
+        out immediately. That is the deliberate asymmetry the deadline bound has
+        everywhere in this codebase: proximity to the wall shortens sleeps, it does
+        not by itself end a ladder, because a cheap attempt may still succeed. What
+        ends a ladder is an attempt whose own measured cost no longer fits
+        (:func:`~idp_common.lambda_deadline.attempt_cannot_finish`), and the callers
+        below ask that separately.
+
+        Outside Lambda, and in any invocation where no handler published a deadline,
+        this returns :meth:`_calculate_backoff` unchanged.
+        """
+        requested = self._calculate_backoff(retry_count)
+        allowed = clamp_sleep_to_budgets(requested)
+        if allowed < requested:
+            remaining = remaining_invocation_seconds()
+            # Says what it did and nothing about what happens next. This line is
+            # emitted BEFORE the caller asks whether the next attempt fits, so any
+            # sentence about where the saved time goes is a claim this function is not
+            # in a position to make — and it sat directly above "another one cannot
+            # finish" in the log whenever the gate then refused.
+            logger.warning(
+                "Shortening Bedrock retry backoff from %.1fs to %.1fs to stay inside "
+                "this invocation (%s left).",
+                requested,
+                allowed,
+                f"{remaining:.1f}s" if remaining is not None else "unknown",
+            )
+        return allowed
 
     def _put_metric(
         self, metric_name: str, value: Union[int, float], unit: str = "Count"

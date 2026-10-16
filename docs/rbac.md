@@ -509,7 +509,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 107 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 123 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 26 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -543,6 +543,18 @@ that read "employee personal information (name, address, Social Security Number)
 pay period dates") to `getStepFunctionExecution` (317,614 bytes of execution input
 and step history) with no prior knowledge of the deployment.
 
+**That refusal is asserted against a deployed stack, per operation.** `make
+api-test` creates one temporary Cognito user per group **and one in no group at
+all**, and drives every operation as each of them: the groupless caller must be
+refused by every policy except the 8 `ANY` ones, and the refusal must carry
+`authzControl: "api-group-floor"` — a refusal attributed to a per-object control
+instead means the floor let a caller it must refuse reach a resolver, and is
+reported as a failure rather than a pass. The five group users include `Annotator`,
+whose access is scoped per object, so the harness seeds its `allowedTestSets` with
+the ids the requests name; the three review mutations keep driving the per-object
+refusal, since on those the only argument that control admits would be a real
+document in a real test set.
+
 `ANY_GROUP` is written as a sentinel rather than as the five group names because
 the policy is about the *vocabulary*, not about five particular names:
 `scripts/sdlc/generate_api_rbac_manifest.py` resolves it against the
@@ -575,24 +587,31 @@ private to their submitter or to a tenant, group membership is the wrong axis.
 directly.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a **single**
 `authenticated` role with **no `RoleMappings`**, so group membership plays no part
 in which role a signed-in user assumes. That role, `CognitoAuthorizedRole`, grants
-`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input and Output
-buckets, plus five KMS actions on the customer-managed key
+`s3:GetObject` and `s3:GetObjectVersion` on the Input and Output buckets, plus five
+KMS actions on the customer-managed key
 (`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) — to **every**
 authenticated user, including one in no group. This is the production read path, not
 a theoretical one: `FileViewer` defaults to `presignVia = 'client'`, and the page
 thumbnails, the page-image viewer and the document export all sign S3 GETs in the
-browser with those credentials. No `ANY` operation returns an object key any more,
-but that is not what bounds the role: `s3:ListBucket` on it enumerates the buckets
-directly, so key discovery is self-contained on the S3 side and needs no API call at
-all.
+browser with those credentials.
+
+The grant is **object read only**, and that bounds the vector without closing it.
+Both actions authorize against a key — and the policy's `Resource` list names object
+ARNs alone — so a direct read needs a key the caller already holds; the role carries
+no `s3:ListBucket`, so it cannot produce one, and no `ANY` operation returns an
+object key either. What remains is that the operations which do return keys are
+`ANY_GROUP`, so any one of the five groups supplies them, and the caller then reads
+the bytes with no resolver in the path and no per-document check anywhere. A caller
+in **no** group has to arrive with a key by some other route.
 
 ⚠️ **The two buckets the scope axes partition are deliberately absent from that
 role**, and that is what makes `allowedConfigVersions` and `allowedTestSets` hold
 off the API as well as on it. The Configuration bucket holds every profile's
-revision history, so a browser-credential read of it — with `s3:ListBucket`, so
-without needing to know the profile names — would defeat the profile scope
-outright. The Test Set bucket has never been on the role. Both are reachable only
-through `getFileContents` / `getFilePresignedUrl`, which check the key against the
+revision history, so a browser-credential read of it would defeat the profile scope
+outright — and while it was on the role the grant still carried `s3:ListBucket`, so
+the profile names did not even have to be known. The Test Set bucket has never been
+on the role. Both are reachable only through `getFileContents` /
+`getFilePresignedUrl`, which check the key against the
 caller's scope. `scripts/tests/test_browser_s3_grants.py` pins which buckets the
 role may name, so the set cannot grow back unnoticed.
 
@@ -702,6 +721,8 @@ enforcement itself is Layer 2.
 | `deleteConfigVersion` | Admin |
 | `deleteConfigProfileRevision` | Admin |
 | `restoreConfigProfileRevision`, `labelConfigProfileRevision` | Admin, Author |
+| `listConfigPrefixMappings`, `putConfigPrefixMapping`, `deleteConfigPrefixMapping` | Admin. A prefix mapping *assigns* a Configuration Profile to everything arriving under an S3 prefix, so writing one decides which scoped users can see those documents — the same side of the line as minting a profile, not the same side as editing one's content |
+| `resolveConfigPrefixMapping` | Admin, Author. A read-only dry run ("what would this key process under?") serving the upload form, so Author is the lowest role that can use it — a Viewer cannot upload. **Scope-filtered**: a caller outside the resolved profile's scope is told the destination is out of scope and nothing else — not the profile's name, not the revision, and not the **mapping prefix**. The `reason` field is returned, carrying one fixed sentence that names none of those, because it is what the upload panel renders as the whole body of its alert. The prefix is withheld because the caller supplied a *key*, so returning the mapping that governs it reveals where the boundary sits, and a probe at a time that reconstructs the routing policy `listConfigPrefixMappings` is Admin-only to protect. The subject of the check is every profile the answer could *disclose*, not the one it selected — a refusal names the mapped profile in its reason while resolving to no profile at all, and metadata precedence resolves to the caller's own in-scope profile while explaining that it beat the mapping's |
 | `createUser`, `updateUser`, `deleteUser` | Admin |
 | `updatePricing`, `restoreDefaultPricing` | Admin |
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
@@ -779,9 +800,62 @@ server faults is masked by them, and a caller probing for reachable resources
 inflates the fault signal instead of the authorization-denial signal. Refusals and
 faults have to be separable to be alarmable.
 
-So, for any refusal you add: raise `PermissionError` for an authorization refusal,
-`ValueError` for a bad argument, and `ResourceNotFound` for an object that does not
-exist — a not-found raised as a `ValueError` answers 400, which is the inverse of
+#### Which control refused — `errors[0].authzControl`
+
+Every authorization refusal arrives as **403** with `errorType: "Unauthorized"`, and
+two controls that answer opposite questions produce it:
+
+| Question | Control | Label |
+|---|---|---|
+| "do this caller's **groups** admit this operation?" | the field-level floor in `authz.py` — including an undeclared field and an `IAM_ONLY` operation | `api-group-floor` |
+| "may this caller reach the **object** they named?" | a per-object control inside a resolver: the bucket allow-list, the write-once key rule, a chat session they do not own, a document selection that is unfinished or out of their configuration scope | `resource` |
+| neither is established | a resolver refusal that did not declare which control it was — every resolver's own group check is in this category today | `resolver` |
+| an invocation asserted its own `identity` | `normalize_event`, reachable only with `lambda:InvokeFunction` on the dispatcher | `unverified-identity` |
+
+The two were indistinguishable in the response, which made one shape carry two
+opposite verdicts about the group check. The live RBAC matrix drives every operation
+with deliberately bogus arguments, so it provokes the second while asserting the
+first, and eight cells of one run reported three per-object controls working
+correctly as group-authorization failures — publishing `RBAC dynamic — FAIL ❌` for a
+release whose authorization was fine
+([#1308](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1308)).
+
+`authzControl` names the control, and it is **additive**: the status, the
+`errorType` and the message are unchanged, and a consumer that does not read the
+field sees exactly what it saw before. The label is attributed from **control flow**
+and the exception **class**, never from the message — ⚠️ the message cannot carry
+this. Resolver group refusals are worded `Unauthorized: <op> requires <groups>
+group`, but so are several per-object ones (`Unauthorized: session not found for
+this user.`, `Unauthorized: your configuration scope could not be verified`) and one
+that is not an authorization refusal at all (`Unauthorized: uploads are not
+configured for this deployment.`), so matching on prose classifies by the sentence a
+resolver author happened to write.
+
+**To declare a per-object refusal, raise `ResourceAccessDenied`**
+(`idp_common.api_adapter`, a `PermissionError` subclass, so every mapping that keyed
+on `PermissionError` still applies). It is recognised by **class name** across the
+invoke boundary like `ResourceNotFound`, so a resolver with no `idp_common` layer may
+declare its own class of that name — the read-path copy of the S3 helper does. Keep
+the `Unauthorized` message prefix, which is what maps the refusal to 403 rather than
+500 on a dispatcher that predates the class.
+
+⚠️ **An unlabelled refusal is read as the strict verdict, not the lenient one.** A
+403 that is not positively attributed to a per-object control is treated as a group
+refusal by every consumer, so forgetting to raise the class costs a visible failure
+rather than a silent pass. The polarity has to be this way round: defaulting to
+`resource` would let a genuine group-check regression inside a resolver read as a
+known coverage gap. Two kinds of refusal are therefore still unattributed **by
+design** — a resolver's own group check, which is a group decision, and the per-object
+controls the live matrix cannot currently reach (`key_scope`'s refusals, the
+config-version scope refusals in the reprocess, upload and list paths, and the
+in-band `{success:false,error:{type:"Unauthorized"}}` 200 the configuration and sync
+resolvers return, which the dispatcher passes through and never sees).
+
+So, for any refusal you add: raise `PermissionError` for an authorization refusal
+about the caller's groups — or `ResourceAccessDenied`, its subclass, when the
+decision is about the **object** the caller named, so the refusal carries the label
+the section above describes — `ValueError` for a bad argument, and
+`ResourceNotFound` for an object that does not exist — a not-found raised as a `ValueError` answers 400, which is the inverse of
 the convention and is not caught by the reintroduction guard (it matches only a bare
 `Exception`). Do not let a catch-all re-wrap any of the three.
 Log a denial at **WARNING** with a "Denied"/"Forbidden"/"Rejecting" verb and no
@@ -844,7 +918,7 @@ The UI adapts based on the user's role and scope:
 
 ## User Management
 
-Admins can create users with any of the four roles via the User Management page. Each user is:
+Admins can create users with any of the five roles via the User Management page. Each user is:
 1. Created in DynamoDB (source of truth)
 2. Synced to Cognito (for authentication)
 3. Added to the appropriate Cognito group (for authorization)
@@ -925,4 +999,5 @@ To add a new role:
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.
 - **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before config-version stamping; reprocessing them under a profile in that user's scope restores visibility.
 - **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via the "Create Config Version" modal), the config-version scope IS enforced — the Author can only target versions within their scope.
+- **A principal with `s3:PutObject` on the Input bucket chooses its own Configuration Profile.** `uploadDocument` and `uploadSampleDocument` now scope-check the **resolved** profile — covering both the `version` argument and the destination prefix once [prefix mappings](configuration-profiles.md) are in use — but that check lives in the API layer, and a write that does not go through the API never reaches it. An S3 replication rule, a partner role, an appliance, or the SDK running with its own credentials picks its own prefix and its own `x-amz-meta-config-version`, and nothing in this product sees the request. Bound this with the IAM policy on whatever writes to that bucket; the admin UI's mapping table is a routing policy, not an ingest boundary.
 - These limitations are tracked for Phase 3 implementation.

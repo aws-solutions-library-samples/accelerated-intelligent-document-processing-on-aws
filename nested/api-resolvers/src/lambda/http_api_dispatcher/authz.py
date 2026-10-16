@@ -124,6 +124,29 @@ _UNDECLARED = object()
 DENY_ALL_MARKER = "API_RBAC_MANIFEST_UNAVAILABLE"
 
 
+class GroupFloorDenied(PermissionError):
+    """This module's own refusal: the caller's GROUPS do not admit the field.
+
+    A subclass of ``PermissionError``, so the status and body the client sees are
+    unchanged — 403 with ``errorType: "Unauthorized"``, which is what the UI keys
+    on. What the class adds is that the dispatcher can tell a refusal raised *here*
+    apart from one raised inside a resolver, from control flow rather than from the
+    message, and label it in the response (``errors[0].authzControl``).
+
+    That distinction is not cosmetic. Both layers refuse with ``PermissionError``
+    and both arrive as ``403/Unauthorized``, so a single response shape carried two
+    opposite meanings: "the group floor refused this caller" and "the group floor
+    admitted this caller and a per-object control refused the thing they named".
+    The live RBAC matrix read the second as the first and reported eight correct
+    per-object refusals as group-authorization failures (issue #1308).
+
+    ``enforce`` raises this for all three of its refusals — undeclared field,
+    ``IAM_ONLY`` operation, group mismatch — because all three are decisions about
+    the *field and the caller*, which is the axis the label names. The messages are
+    unchanged; a reader who distinguished them by message still can.
+    """
+
+
 def _validated_policy(field: str, policy: object) -> Union[str, List[str]]:
     """Return ``policy`` if ``enforce`` can evaluate it; raise ``ValueError`` if not.
 
@@ -239,10 +262,12 @@ def caller_groups(event: Dict[str, Any]) -> List[str]:
 def enforce(field: str, event: Dict[str, Any]) -> None:
     """Raise ``PermissionError`` unless the caller may invoke ``field``.
 
-    ``PermissionError`` is the dispatcher's existing authorization-denial idiom:
-    the handler already maps it to 403 with ``errorType: "Unauthorized"``, which
-    is what the UI keys on, so a denial here is indistinguishable to the client
-    from a denial raised inside a resolver.
+    Raises :class:`GroupFloorDenied`, a ``PermissionError`` subclass:
+    ``PermissionError`` is the dispatcher's existing authorization-denial idiom and
+    the handler already maps it to 403 with ``errorType: "Unauthorized"``, which is
+    what the UI keys on. The subclass is what lets the dispatcher say *which layer*
+    refused — see that class — without changing the status, the ``errorType`` or
+    the message.
     """
     required = REQUIRED_GROUPS.get(field, _UNDECLARED)
 
@@ -256,11 +281,11 @@ def enforce(field: str, event: Dict[str, Any]) -> None:
             "scripts/api_rbac_expectations.yaml and regenerate the manifest.",
             field,
         )
-        raise PermissionError(f"Unauthorized: {field} is not an authorized operation")
+        raise GroupFloorDenied(f"Unauthorized: {field} is not an authorized operation")
 
     if required == _IAM_ONLY:
         logger.warning("Denied %s: IAM-only operation invoked by a Cognito caller", field)
-        raise PermissionError(f"Unauthorized: {field} is not callable via the API")
+        raise GroupFloorDenied(f"Unauthorized: {field} is not callable via the API")
 
     if required == _ANY:
         # Any authenticated caller. Authentication itself is established by the
@@ -281,6 +306,6 @@ def enforce(field: str, event: Dict[str, Any]) -> None:
             groups,
             sorted(required),
         )
-        raise PermissionError(
+        raise GroupFloorDenied(
             f"Unauthorized: {field} requires one of {sorted(required)}"
         )

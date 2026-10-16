@@ -21,6 +21,8 @@ import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { getStepFunctionExecution } from '../../graphql/generated';
+import { getMalwareScanView } from '../common/malware-scan';
+import type { MalwareScanFields } from '../common/malware-scan';
 import FlowDiagram from './FlowDiagram';
 import StepDetails from './StepDetails';
 
@@ -70,7 +72,61 @@ interface StepFunctionFlowViewerProps {
   visible: boolean;
   onDismiss: () => void;
   mergedConfig?: StepConfig | null;
+  /**
+   * The document's malware-scan fields, when this deployment scans uploads.
+   *
+   * The gate is NOT a Step Functions state — it runs before the execution
+   * starts, so an infected file never occupies a concurrency slot and its bytes
+   * never reach OCR or Bedrock — which means it appears in no execution history
+   * and the diagram would silently omit the one step that decided whether this
+   * document ran at all. Passing the verdict in lets it be drawn as the first
+   * step, where a reader expects to find it.
+   */
+  malwareScan?: MalwareScanFields | null;
 }
+
+/** The leading synthetic step, built from the document's own verdict. */
+const MALWARE_SCAN_STEP_NAME = 'Malware Scan';
+
+export const buildMalwareScanStep = (scan?: MalwareScanFields | null): Step | null => {
+  if (!scan) return null;
+  const view = getMalwareScanView(scan);
+  if (view.outcome === 'none') return null;
+
+  // Mapped to the vocabulary the real steps use, so every status-driven branch
+  // in this component and in FlowDiagram treats it like any other step.
+  //
+  // ⚠️ **Only two of the four outcomes are reachable here**, and that is on
+  // purpose. The viewer renders only when `executionArn` is set (see
+  // `DocumentPanel.tsx`), and a document reaches this view only once a workflow
+  // has run — so a `QUARANTINED` or `MALWARE_SCANNING` document never opens the
+  // viewer at all. The two reachable cases are `clean` and the admitted
+  // unscannable path (the config allows it under policy), and both are
+  // successful first steps: the document went through. The `label` already
+  // conveys the "admitted unscanned" caveat, so a red step would read as a
+  // failure the document plainly did not have.
+  const status = {
+    clean: 'SUCCEEDED',
+    unscannable: 'SUCCEEDED',
+    // Not reachable, but mapped for completeness. The gate's refusal path is
+    // surfaced by the detail-panel banner and the status badge, not here.
+    threat: 'FAILED',
+    pending: 'RUNNING',
+  }[view.outcome];
+
+  return {
+    name: MALWARE_SCAN_STEP_NAME,
+    type: 'Task',
+    status,
+    startDate: scan.malwareScanTime,
+    stopDate: scan.malwareScanTime,
+    isMainStep: true,
+    // `output` rather than `error` even for a refusal: `error` is rendered as an
+    // execution failure, and this execution did not fail — for a refused
+    // document it never started. The detail panel's alert carries the remedy.
+    output: view.detail,
+  };
+};
 
 // Helper function to check if a step is disabled based on configuration
 const isStepDisabled = (stepName: string, config: StepConfig | null | undefined): boolean => {
@@ -101,6 +157,7 @@ const StepFunctionFlowViewer = ({
   visible,
   onDismiss,
   mergedConfig = null,
+  malwareScan = null,
 }: StepFunctionFlowViewerProps): React.JSX.Element => {
   const [selectedStep, setSelectedStep] = useState<Step | null>(null);
   const [data, setData] = useState<ExecutionData | null>(null);
@@ -175,7 +232,11 @@ const StepFunctionFlowViewer = ({
         const enhancedSteps = processStepFunctionStepsData(
           ((resultData as Record<string, unknown>).getStepFunctionExecution as Record<string, unknown>).steps as Step[],
         );
-        setProcessedSteps(enhancedSteps);
+        // Prepended, not appended: the gate runs before the execution exists, so
+        // first is where it belongs chronologically and where a reader looks for
+        // "was this document allowed in".
+        const malwareStep = buildMalwareScanStep(malwareScan);
+        setProcessedSteps(malwareStep ? [malwareStep, ...enhancedSteps] : enhancedSteps);
 
         // If there's a failed step and no step is currently selected, select the first failed step
         if (!selectedStep) {

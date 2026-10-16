@@ -17,6 +17,7 @@ This directory covers **validating** a release. For the procedure that **publish
 
 | Release | Verdict | Record |
 |---------|---------|--------|
+| **v0.6.11** | ✅ Ship — **7 of 8 tiers pass** against the **published** artifact (UX review NOT RUN, no browser on the host); 18 findings, **none introduced by this release**. Two passes in one record: a prerelease pass, then a published-artifact pass that closed both items the first deferred. The 342-run A/B shows **0 regressions, 0 improvements**; the upgrade changed nothing in extracted values (control-verified); the guidance refresh **completed** — 2,628 runs / 4,794 rows, the first full one since v0.6.7. Most consequential finding is pre-existing: on an 800-row document in simple mode the **shipped default returns 335 of 800 rows while reporting success 13/13**, and advanced mode returns 800/800 for every selectable model | [v0.6.11.md](./v0.6.11.md) |
 | **v0.6.9** | ✅ Ship — 11 of 12 tiers pass (UX review NOT RUN, no browser available); 2 findings in the solution, both fixed — including the optional deployment role being unable to create the solution's first nested stack, found and fixed here | [v0.6.9.md](./v0.6.9.md) |
 | **v0.6.8** | ✅ Ship — 18 of 18 tiers pass (typecheck baseline unchanged); 4 findings, none in shipped product code — one account quota, three test-tooling (two false-red gates, one unrepeatable test) | [v0.6.8.md](./v0.6.8.md) |
 | **v0.6.6** | ✅ Ship — 14 of 14 tiers pass; 3 findings, none in shipped product code | [v0.6.6.md](./v0.6.6.md) |

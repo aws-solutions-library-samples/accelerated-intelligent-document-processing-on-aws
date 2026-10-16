@@ -115,6 +115,9 @@
       "Reviewer",
       "Viewer"
     ],
+    "deleteConfigPrefixMapping": [
+      "Admin"
+    ],
     "deleteConfigProfileRevision": [
       "Admin"
     ],
@@ -360,6 +363,9 @@
     ],
     "listCatalogFeatures": "ANY",
     "listChatSessions": "ANY",
+    "listConfigPrefixMappings": [
+      "Admin"
+    ],
     "listConfigProfileRevisions": [
       "Admin",
       "Author",
@@ -480,6 +486,9 @@
       "Admin",
       "Author"
     ],
+    "putConfigPrefixMapping": [
+      "Admin"
+    ],
     "queryKnowledgeBase": [
       "Admin",
       "Annotator",
@@ -520,6 +529,10 @@
     ],
     "resetTestSetLabels": [
       "Admin"
+    ],
+    "resolveConfigPrefixMapping": [
+      "Admin",
+      "Author"
     ],
     "restoreConfigProfileRevision": [
       "Admin",

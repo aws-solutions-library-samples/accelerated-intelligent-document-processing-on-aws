@@ -259,6 +259,7 @@ export default defineConfig({
           label: "Planning & Security",
           items: [
             { label: "Threat Model", slug: "threat-model" },
+            { label: "Malware Scanning", slug: "malware-scanning" },
             {
               label: "Well-Architected Review",
               slug: "well-architected",
@@ -285,6 +286,10 @@ export default defineConfig({
             {
               label: "EU Region Model Support",
               slug: "eu-region-model-support",
+            },
+            {
+              label: "Canada (Central) Model Support",
+              slug: "canada-region-model-support",
             },
             { label: "OpenAI Models", slug: "openai-models" },
             { label: "xAI Grok Models", slug: "grok-models" },

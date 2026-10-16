@@ -241,7 +241,20 @@ def restore_auth_flows(ctx):
 def create_cognito_user(ctx, email, group, password):
     """Create a confirmed Cognito user with a permanent password and add it to
     a group. admin-create-user is tolerant of a pre-existing user (the caller
-    typically uses a random per-run email)."""
+    typically uses a random per-run email).
+
+    ``group=None`` (or ``""``) creates the user and adds it to **no** group. That
+    is a real principal this user pool produces rather than a test convenience:
+    with ``AllowedSignUpEmailDomain`` set the pool permits self-service sign-up, so
+    anyone at that domain holds a valid token whose ``cognito:groups`` claim is
+    empty, and a half-finished onboarding leaves the same thing behind. It is the
+    caller the ``ANY_GROUP`` policy exists to refuse.
+
+    ⚠️ A groupless user is only groupless if the group add really was skipped, and
+    a caller that silently acquired a group would make every refusal assertion
+    about it pass for the wrong reason. Callers should read the membership back
+    with :func:`cognito_groups_for_user` rather than trusting this.
+    """
     subprocess.run(  # nosec B603 - admin-create-user may 'fail' if user exists
         [
             AWS_BIN,
@@ -274,6 +287,8 @@ def create_cognito_user(ctx, email, group, password):
         "--permanent",
         region=ctx["region"],
     )
+    if not group:
+        return
     aws(
         "cognito-idp",
         "admin-add-user-to-group",
@@ -284,6 +299,34 @@ def create_cognito_user(ctx, email, group, password):
         "--group-name",
         group,
         region=ctx["region"],
+    )
+
+
+def cognito_groups_for_user(ctx, email):
+    """The group names this user actually holds, read back from the pool.
+
+    Used to verify what :func:`create_cognito_user` produced, in both directions: a
+    groupless principal must hold none, and a role principal must hold exactly the
+    one it was created for. ``admin-add-user-to-group`` is a separate API call from
+    ``admin-create-user``, so "created" and "in the intended group" are two facts,
+    and an authorization matrix that assumes the second from the first reports the
+    wrong role's verdict under the right role's name.
+
+    Raises on a failed read rather than returning an empty list: "no groups" is the
+    exact answer a groupless check wants to see, so handing it back for a call that
+    did not complete would be the one wrong default available here.
+    """
+    resp = aws(
+        "cognito-idp",
+        "admin-list-groups-for-user",
+        "--user-pool-id",
+        ctx["user_pool"],
+        "--username",
+        email,
+        region=ctx["region"],
+    )
+    return sorted(
+        str(g.get("GroupName") or "") for g in (resp or {}).get("Groups") or []
     )
 
 

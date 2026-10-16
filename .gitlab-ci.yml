@@ -41,19 +41,29 @@ default:
 #
 # The cost of the split, stated plainly: the Python environment is now built in
 # four jobs instead of one, so the pipeline burns MORE runner minutes than it did
-# to finish in less wall-clock time. Each job installs only what it needs — only
-# `unit_tests` gets away without Node, and `ui_tests` skips the Python packages —
-# which keeps that bill down, but it is a real trade, not a free win.
+# to finish in less wall-clock time. Each job installs only what it needs —
+# `ui_tests` skips the Python packages entirely — which keeps that bill down, but
+# it is a real trade, not a free win.
 #
 # ⚠️ Trimming a toolchain out of a job is NOT the free saving it looks like, and
-# the way to find out is to read the SUITES rather than the `script:` block.
-# `package_tests` was written without Node on the reasoning that pytest does not
-# need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyright
-# live, so a suite whose name says nothing about types reaches an npm package.
+# the way to find out is to read the SUITES rather than the `script:` block. Twice
+# over, in opposite directions. `package_tests` was written without Node on the
+# reasoning that pytest does not need it, and went red: `test_pyright_config.py`
+# runs basedpyright live, so a suite whose name says nothing about types reaches an
+# npm package. And the two jobs that run `scripts/tests` were written without the
+# UI's npm dependencies, which did NOT go red — `test_ui_test_discovery.py` skipped
+# the three assertions that need them and the job exited 0, so the calibration of
+# that module's literals ran on developer machines and in neither CI (#1390). A
+# missing toolchain is the cheap failure; a toolchain whose absence is answered
+# with a skip is the expensive one.
 stages:
   - fast_checks
   - deployment_validation
   - integration_tests
+  # Runs on a scheduled pipeline whatever happened upstream, so that a nightly
+  # which never reached the deploy stage is still reported. See
+  # nightly_notification.
+  - notify
 
 # ---------------------------------------------------------------------------
 # Shared setup fragments.
@@ -91,6 +101,12 @@ stages:
   - pip install uv
   - uv venv .venv
   - source .venv/bin/activate
+  # Pinned: ruff gates every Python file via `make lint-cicd`, and an unpinned
+  # linter can red-line develop with no code change when a release promotes a
+  # check to ERROR class or changes `ruff format` output. Keep in step with
+  # RUFF_VERSION in the Makefile, which is the single source of truth — the
+  # Makefile installs this version, the GitHub composite action installs it, and
+  # scripts/tests/test_ci_gate_parity.py fails if any of the three drift.
   - uv pip install 'ruff==0.15.13'
   # Needed by publish.py for test imports
   - uv pip install typer rich boto3
@@ -101,8 +117,15 @@ stages:
   # Fail the build if any first-party package came from an index, not source.
   - python3 scripts/check_first_party_deps.py
 
-# Node 22.14.0, pinned. Only the jobs that need it install it — the two pytest
-# jobs do not, which is most of what keeps the split's runner-minute cost down.
+# Node 22.14.0, pinned. Only the jobs that need it install it — the four
+# `fast_checks` gate jobs, and the five AWS-facing ones below do not. Only
+# `ui_tests` needs it for a reason its own `script:` block shows. The two that
+# run `scripts/tests` — `unit_tests` and `package_tests` — need it for three
+# modules in there: test_pyright_config.py runs
+# basedpyright, an npm package; test_ux_recorder.py runs the recorder's
+# cursor-overlay JavaScript under node; and test_ui_test_discovery.py consults the
+# installed Vitest. All three fail in CI rather than skipping when their toolchain
+# is missing, which is deliberate — see the npm lines in those jobs.
 #
 # Pick the tarball matching the runner arch: the size:2xlarge pool is arm64, and a
 # hardcoded x64 binary fails with "Syntax error: ')' unexpected".
@@ -263,9 +286,42 @@ unit_tests:
     - size:2xlarge
     - arch:arm64
 
+  # For the UI dependencies the `scripts` suite needs — see the npm line in
+  # before_script. Same key and path as the other three jobs that declare it.
+  cache:
+    key:
+      files:
+        - src/ui/package-lock.json
+    paths:
+      - src/ui/node_modules/
+
   before_script:
-    # No Node: nothing in this job needs it.
     - *python_setup
+    # ⚠️ Node and the pinned cfn-lint are load-bearing here, and neither is visible
+    # from any line in the `script:` block. This job needed neither until the coverage
+    # producer below started re-running the `scripts` and `idp_sdk` suites in order to
+    # measure them, which drags their toolchain requirements into this job wholesale:
+    # `scripts/tests/test_ux_recorder.py` runs the recorder's cursor-overlay
+    # JavaScript under node and FAILS rather than skipping without it, and
+    # `scripts/tests/test_pyright_config.py` runs basedpyright live. `package_tests`
+    # carries the same two for the same two reasons. Read the suites, not the script
+    # block.
+    - *node_setup
+    - npm install -g basedpyright
+    # PINNING, not availability — same reasoning as on `package_tests`: cfn-lint
+    # arrives transitively via moto either way, and what the cfn-lint-gated
+    # assertions in `lib/idp_sdk/tests/unit/` would otherwise run against is whatever
+    # that open range resolves to. Keep in step with CFN_LINT_VERSION.
+    - pip install 'cfn-lint==1.51.0'
+    # The UI's npm dependencies, needed here for the same reason as the two above
+    # and discoverable the same way: `make coverage-all-cicd` below re-runs the
+    # `scripts` suite in order to measure it, and
+    # `scripts/tests/test_ui_test_discovery.py` calibrates its hand-written copies
+    # of Vitest's naming convention against the installed Vitest. Those three
+    # assertions used to skip wherever the UI dependencies were absent, which was
+    # every job but `ui_tests` (#1390); the module now fails instead, so this job
+    # needs them to pass as well as to check anything.
+    - cd src/ui && npm ci --prefer-offline --no-audit && cd ../..
 
   script:
     # SKIP_INSTALL=1: idp_common[test] already installed via uv above (avoids a
@@ -276,11 +332,21 @@ unit_tests:
     # on the command line twice, which pytest answers by collecting NOTHING and
     # exiting 5 -- loud rather than silent, but a broken job either way.
     - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
+    # The line above writes ONE of the ratchet's nine trees. Without the next step the
+    # other eight resolve to no report at all, so the ratchet named them as
+    # "not checked" and exited 0 — advisory-but-passing over exactly the trees where
+    # coverage had actually been lost, including this repository's own hook guards
+    # (issue #1256). Trees are measured concurrently and `idp_common` is skipped
+    # because the line above already produced its report; the ratchet below still
+    # requires it by name.
+    - make coverage-all-cicd
     # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
-    # line above: it reads the coverage report that step writes. This ordering is
-    # also why the two steps could not be split into separate JOBS without passing
-    # the report between them as an artifact.
-    - make check-coverage-debt
+    # two lines above: it reads the coverage reports those steps write, which is also
+    # why none of the three could be split into separate JOBS without passing the
+    # reports between them as artifacts. `--require-all-trees` (inside the -cicd
+    # target) is what makes a tree with no report red BY NAME instead of named and
+    # passed.
+    - make check-coverage-debt-cicd
 
   # COVERAGE IS REPORTED, NOT ENFORCED. There is deliberately no `coverage:`
   # minimum here, for the same reason GitHub's report sets fail_below_min: false:
@@ -313,6 +379,22 @@ package_tests:
     - size:2xlarge
     - arch:arm64
 
+  # Same key and same path as `static_checks` and `ui_tests`, so the `npm ci` in
+  # before_script restores from whatever those two last pushed for this lockfile.
+  # The install is kept anyway rather than relying on the cache alone: a cache is
+  # a performance assumption, not a guarantee — the first pipeline after a
+  # lockfile change has no entry for the new key at all, and within one pipeline
+  # these jobs run in parallel so nothing orders this one after a producer. With
+  # `npm ci` the dependencies are there unconditionally and the cache only decides
+  # whether it takes 10 seconds or 60; without it, the suites below would go back
+  # to skipping on a cold key, which is the failure this is fixing.
+  cache:
+    key:
+      files:
+        - src/ui/package-lock.json
+    paths:
+      - src/ui/node_modules/
+
   before_script:
     - *python_setup
     # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
@@ -323,7 +405,10 @@ package_tests:
     # packages, rather than trusting that the config looks right. That is the whole
     # point of the check (see the typecheck notes in CLAUDE.md), so the answer is to
     # give this job the tool, not to let the probe skip when it is absent.
-    # basedpyright ships as an npm package, hence Node.
+    # basedpyright ships as an npm package, hence Node. Node is also needed on its
+    # own account: `test_ux_recorder.py` runs the recorder's cursor-overlay
+    # JavaScript under node to check that a click is never labelled by what was
+    # typed, and fails in CI when node is missing.
     - *node_setup
     - npm install -g basedpyright
     # ⚠️ This is about PINNING, not availability. cfn-lint arrives transitively
@@ -335,6 +420,19 @@ package_tests:
     # those assertions measuring the same linter `make cfn-lint` uses rather than
     # coinciding with it by luck. Keep in step with CFN_LINT_VERSION.
     - pip install 'cfn-lint==1.51.0'
+    # ⚠️ A THIRD toolchain this job's `script:` block does not show, and the same
+    # lesson as the two above. `scripts/tests/test_ui_test_discovery.py` checks its
+    # hand-written copies of Vitest's naming convention against the installed
+    # Vitest — `vitest list --filesOnly`, `defaultInclude`, and the expanded
+    # extension set against picomatch — and those three need the UI's npm
+    # dependencies, which were installed only in `ui_tests`. So they SKIPPED here,
+    # on both platforms, and a skip is not a failure: the job exited 0 and the
+    # literals that are the *input* to that module's gate assertions were
+    # calibrated against nothing but a developer's machine (#1390). The module now
+    # fails rather than skips when it finds them missing under CI, so this line is
+    # load-bearing for the job staying green as well as for the check meaning
+    # anything.
+    - cd src/ui && npm ci --prefer-offline --no-audit && cd ../..
 
   script:
     - make test-packages-cicd
@@ -507,6 +605,28 @@ integration_tests:
     - python3 scripts/sdlc/integration_test_deployment.py
 
   after_script:
+    # ⚠️ RE-CREDENTIAL FIRST. Everything below runs on the JOB's credentials,
+    # which the runner's credential vendor mints BEFORE the job starts and which
+    # AWS hard-caps at 1h for a chained assume. This job routinely runs 58-63
+    # minutes, so whether after_script has working credentials at all was a coin
+    # flip decided by how long the deploy took. The monitor persists each
+    # session it mints (AFTER_SCRIPT_CREDS_FILE in
+    # scripts/sdlc/integration_test_deployment.py, written at startup and on
+    # every 50-min refresh), and sourcing it is what makes the log capture below
+    # independent of the job's own credential lifetime. after_script cannot
+    # re-assume the role itself: that call needs live credentials, which is
+    # exactly what it has run out of.
+    #
+    # Absent (the script died before the monitor started, or the self-assume
+    # failed), we fall through on the ambient creds — the pre-fix behaviour.
+    - |
+      if [ -f "aws_after_script_creds.env" ]; then
+        . ./aws_after_script_creds.env
+        echo "🔑 Sourced the monitor's refreshed credentials for log capture"
+      else
+        echo "ℹ️ No persisted credentials — using the job's own (expired past ~1h)"
+      fi
+
     # Display CodeBuild logs directly in GitLab runner console
     - |
       if [ -f "pipeline_execution_id.txt" ]; then
@@ -523,16 +643,36 @@ integration_tests:
         # left no record of what it ran, and GitLab then warned about all three
         # missing artifacts. Observed on execution 0eeaf069 (job 28681138), whose
         # BuildAction id resolved fine when queried a few minutes later.
+        #
+        # ⚠️ KEEP THE STDERR. This loop used to send it to /dev/null, which made
+        # a dead credential look exactly like that race — the 2026-10-11 nightly
+        # (job 30872567) spent all 12 attempts re-sending an ExpiredToken and
+        # then reported "no logs were fetched" for a run that passed 12/12.
+        # Retrying cannot fix a credential, so those errors break the loop
+        # immediately and are carried into the artifact instead of being hidden.
         BUILD_ID=""
+        RESOLVE_ERR=""
         for attempt in $(seq 1 12); do
-          BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>/dev/null || echo "")
-          if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
-            [ "$attempt" -gt 1 ] && echo "Resolved CodeBuild id on attempt $attempt"
-            break
+          if BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>resolve_err.txt); then
+            if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
+              [ "$attempt" -gt 1 ] && echo "Resolved CodeBuild id on attempt $attempt"
+              break
+            fi
+            echo "CodeBuild action-execution record not queryable yet (attempt $attempt/12); waiting 5s..."
+          else
+            RESOLVE_ERR=$(tr -d '\r' < resolve_err.txt | grep -v '^$' | tail -2 | tr '\n' ' ')
+            BUILD_ID=""
+            echo "⚠️ list-action-executions FAILED (attempt $attempt/12): $RESOLVE_ERR"
+            case "$RESOLVE_ERR" in
+              *ExpiredToken*|*RequestExpired*|*InvalidClientTokenId*|*UnrecognizedClientException*|*AccessDenied*|*NoCredentialProviders*|*Unable\ to\ locate\ credentials*)
+                echo "   ↳ This is a CREDENTIAL failure, not eventual consistency — retrying cannot help. Stopping."
+                break
+                ;;
+            esac
           fi
-          echo "CodeBuild action-execution record not queryable yet (attempt $attempt/12); waiting 5s..."
           sleep 5
         done
+        rm -f resolve_err.txt
 
         if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
           echo "CodeBuild ID: $BUILD_ID"
@@ -608,10 +748,25 @@ integration_tests:
             printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>No ZAP DAST report for this run: the zapdast probe was skipped (IDP_TEST_ZAP=false or the probe did not run).</p>\n' > zap-report.html
           fi
         else
-          echo "⚠️ Could not resolve the CodeBuild execution for $EXECUTION_ID after 12 attempts (~60s)."
+          echo "⚠️ Could not resolve the CodeBuild execution for $EXECUTION_ID."
           echo "   The build itself is unaffected — this only costs the log/summary artifacts."
           echo "   Look it up manually: aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID"
-          printf 'Could not resolve the CodeBuild execution for pipeline execution %s after 12 attempts (~60s).\nNo logs were fetched. The build result itself is reported by the job status above.\n' "$EXECUTION_ID" > codebuild_logs.txt
+          # Name WHICH failure this was. "after 12 attempts (~60s)" on its own
+          # reads as an eventual-consistency race and sent triage down that path
+          # for a credential expiry; the two need different fixes.
+          {
+            printf 'Could not resolve the CodeBuild execution for pipeline execution %s.\n' "$EXECUTION_ID"
+            if [ -n "$RESOLVE_ERR" ]; then
+              printf '\nThe AWS CLI call itself failed: %s\n' "$RESOLVE_ERR"
+              printf 'That is an API/credential failure, NOT the eventual-consistency race\n'
+              printf 'the retry loop exists for. If it mentions an expired token, the job\n'
+              printf 'outlived its 1h credentials and did not source the persisted session.\n'
+            else
+              printf '\nThe query succeeded but returned no BuildAction record after 12\n'
+              printf 'attempts (~60s) — the eventual-consistency race.\n'
+            fi
+            printf '\nNo logs were fetched. The build result itself is reported by the job status above.\n'
+          } > codebuild_logs.txt
           cp codebuild_logs.txt deployment_summary.txt
           printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>Not collected: the CodeBuild execution could not be resolved.</p>\n' > zap-report.html
         fi
@@ -678,25 +833,46 @@ integration_tests:
 
       job_status, job_url, sha = sys.argv[1:4]
       ok = job_status == "success"
+      # ⚠️ A green job is NOT the same claim as "the suite passed".
+      # integration_test_deployment.py exits 0 on the HANDOFF path too (the
+      # monitor stopped before the pipeline reached a terminal state, on the
+      # 110-min deadline or on a credential expiry it could not refresh), and it
+      # drops this marker when it does. Reporting that as ✅ PASSED asserts
+      # something nobody checked.
+      handed_off = pathlib.Path("monitor_handoff.txt").is_file()
 
       summary = ""
       p = pathlib.Path("deployment_summary.txt")
       if p.is_file():
           summary = p.read_text(errors="replace").strip()
-      # A Slack message caps at 4000 characters and the whole post is rejected past
-      # it, so truncate rather than lose the notification. The rest is in the job
-      # artifacts, which the message links to.
-      if len(summary) > 2000:
-          summary = summary[:2000] + "\n… (truncated — full summary in the job artifacts)"
       if not summary:
           summary = "(no deployment summary was produced — see the job log)"
+      # A Slack message caps at 4000 characters and the whole post is rejected past
+      # it, so truncate rather than lose the notification. The rest is in the job
+      # artifacts, which the message links to. Truncate AFTER the notes below are
+      # attached, so a long summary can never push the handoff warning off the end
+      # — that warning is the part a reader most needs.
       if not ok:
           summary += ("\n\nTriage by bisecting the day's merges: the pipeline's own "
                       "commit is not necessarily the cause.")
+      elif handed_off:
+          summary = (
+              pathlib.Path("monitor_handoff.txt").read_text(errors="replace").strip()
+              + "\n\n" + summary
+          )
+      if len(summary) > 2000:
+          summary = summary[:2000] + "\n… (truncated — full summary in the job artifacts)"
+
+      if not ok:
+          status = "❌ FAILED"
+      elif handed_off:
+          status = "⚠️ UNVERIFIED (monitor handed off)"
+      else:
+          status = "✅ PASSED"
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
-          "status": "✅ PASSED" if ok else "❌ FAILED",
+          "status": status,
           "commit": sha[:8],
           "job_url": job_url,
           "summary": summary,
@@ -708,10 +884,20 @@ integration_tests:
         if curl -sS --fail -X POST -H 'Content-type: application/json' \
              --data @slack-payload.json "$SLACK_WEBHOOK_URL" >/dev/null; then
           echo "💬 Nightly result posted to Slack"
+          # Tell nightly_notification (the always-run job in the `notify` stage)
+          # that the channel already has this run's result, so it stays quiet.
+          # Written ONLY on a successful post: if the post failed, the channel
+          # has nothing and the fallback should try again.
+          : > slack_posted.txt
         else
           echo "⚠️ Slack post failed (HTTP error or bad webhook) — deploy result unaffected"
         fi
       fi
+
+    # Shred the persisted session. It is not in `artifacts:` (that list is
+    # explicit paths), but a GitLab runner can reuse a workspace between jobs,
+    # and the next job's deployment zip is built from this directory.
+    - rm -f aws_after_script_creds.env
 
   artifacts:
     when: always
@@ -722,6 +908,9 @@ integration_tests:
       # ZAP DAST HTML report, if the zapdast probe ran (best effort — the
       # after_script copies it out of S3; absent runs just have no file).
       - zap-report.html
+      # Present only when the Slack post above SUCCEEDED. nightly_notification
+      # reads it to decide whether the channel already has this run's result.
+      - slack_posted.txt
     expire_in: 1 week
 
 srt_security_review:
@@ -755,7 +944,7 @@ srt_security_review:
     - apt-get update -y
     - apt-get install curl python3-pip -y
     # Install Python dependencies for SRT setup script
-    - pip install --upgrade pip
+    - pip install --upgrade pip PyYAML
 
   script:
     - echo "Running SRT (Sample Security Review Tool) security assessment..."
@@ -993,3 +1182,132 @@ ai_mr_review:
     paths:
       - ai-reviews/
     expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# The nightly result reaches Slack even when the deploy stage never ran.
+#
+# ⚠️ WHY THIS JOB EXISTS, AND WHY THE FIX IS NOT MORE LOGIC IN integration_tests.
+# The Slack post lives in integration_tests' after_script, which means it can
+# only describe outcomes it is positioned to see. On 2026-10-14 the 20:03 run
+# failed in `package_tests` — Claude Sonnet 4 reached the end-of-life date AWS
+# published for it, so the LEGACY expiry alarm in
+# scripts/tests/test_model_surface_consistency.py fired with no code change at
+# all. GitLab then SKIPPED deployment_validation and integration_tests, so the
+# after_script never ran and the channel got NOTHING.
+#
+# That is the worst available shape: a silent nightly is indistinguishable from
+# a nightly nobody scheduled, and the whole point of the post is that somebody
+# has to watch this run. No amount of extra branching inside integration_tests
+# can cover it, because the job does not execute.
+#
+# It is the same defect class as the ✅ PASSED-on-handoff bug fixed earlier: a
+# notifier that reports the status of the thing it happens to be attached to
+# rather than the status of the run.
+#
+# ⚠️ NO `needs:`, DELIBERATELY. `needs` on a skipped job skips the dependent job
+# too, which would reproduce the exact silence this exists to remove. Without
+# `needs` the job downloads artifacts from every earlier-stage job that ran, and
+# simply finds none when integration_tests was skipped — which is the signal it
+# keys on.
+nightly_notification:
+  stage: notify
+  # `when: always` is what makes this run after a failed or skipped upstream
+  # stage; the source check keeps it to the scheduled run, matching the post in
+  # integration_tests (a manually clicked deploy is watched by whoever clicked
+  # it). allow_failure so a notification problem can never be the thing that
+  # reddens a nightly.
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: always
+      allow_failure: true
+    - when: never
+  # No checkout needed: the script is inline and everything it reads is an
+  # artifact. This also keeps the job to a few seconds.
+  variables:
+    GIT_STRATEGY: none
+  script:
+    # ⚠️ Posted with urllib, not curl. curl is NOT in the python:3.13-bookworm
+    # image — integration_tests apt-installs it in before_script, which this job
+    # deliberately does not have. A `curl: command not found` here would restore
+    # the silence this job exists to remove.
+    - |
+      if [ -z "$SLACK_WEBHOOK_URL" ]; then
+        echo "ℹ️ SLACK_WEBHOOK_URL not set — nothing to post"
+        exit 0
+      fi
+      if [ -f slack_posted.txt ]; then
+        echo "✅ integration_tests already posted this run's result — staying quiet"
+        exit 0
+      fi
+      echo "⚠️ No Slack post was made by integration_tests — posting the fallback"
+      python3 - "$CI_PIPELINE_URL" "$CI_COMMIT_SHA" "$SLACK_WEBHOOK_URL" <<'PY'
+      import json
+      import pathlib
+      import sys
+      import urllib.error
+      import urllib.request
+
+      pipeline_url, sha, webhook = sys.argv[1:4]
+
+      # Two distinct situations reach this job, and they need different words.
+      #
+      #   * deployment_summary.txt present — integration_tests RAN and produced a
+      #     summary, but its own post did not succeed (bad webhook, HTTP error,
+      #     or the job was cancelled/timed out before finishing after_script).
+      #     The summary is the valuable part, so send it.
+      #   * absent — the pipeline never reached the deploy stage. Nothing was
+      #     deployed and nothing was tested, and saying so plainly is the whole
+      #     job. Do NOT guess which upstream job failed: enumerating them needs
+      #     an API token this job has no reason to hold, and a wrong guess in a
+      #     channel is worse than a pipeline link.
+      summary_path = pathlib.Path("deployment_summary.txt")
+      if summary_path.is_file():
+          status = "⚠️ RESULT NOT DELIVERED"
+          body = (
+              "The deploy ran but its own Slack post did not succeed, so this is "
+              "a replacement carrying the summary it would have sent.\n\n"
+              + summary_path.read_text(errors="replace").strip()
+          )
+      else:
+          status = "❌ FAILED BEFORE THE DEPLOY"
+          body = (
+              "This nightly did not reach the deploy stage, so NOTHING was "
+              "deployed and no integration test ran. An earlier stage failed and "
+              "GitLab skipped the rest of the pipeline.\n\n"
+              "There is no deployment summary for this run. Open the pipeline to "
+              "see which job failed — a failure here is usually a check that is "
+              "independent of the deploy, including a dated expiry alarm that can "
+              "fire with no code change at all."
+          )
+
+      if len(body) > 2000:
+          body = body[:2000] + "\n… (truncated — the rest is in the job artifacts)"
+
+      # Same flat, all-string contract as the post in integration_tests: these
+      # four keys are declared on the Slack Workflow Builder trigger as Text, and
+      # renaming one here posts a blank variable rather than failing.
+      payload = json.dumps(
+          {
+              "status": status,
+              "commit": sha[:8],
+              "job_url": pipeline_url,
+              "summary": body,
+          }
+      ).encode()
+
+      request = urllib.request.Request(
+          webhook,
+          data=payload,
+          headers={"Content-Type": "application/json"},
+          method="POST",
+      )
+      try:
+          # nosec B310 - webhook is an https URL from a masked CI variable
+          with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+              print(f"💬 Fallback nightly notification posted to Slack ({response.status})")
+      except (urllib.error.URLError, OSError) as exc:
+          # Never fail the job for this. The pipeline's own verdict is already
+          # red; adding a second red mark for the notification would only
+          # obscure which one matters.
+          print(f"⚠️ Fallback Slack post failed: {exc}")
+      PY

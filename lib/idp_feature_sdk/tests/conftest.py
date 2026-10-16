@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from textwrap import dedent
 
+import aws_hermetic
 import boto3
 import pytest
 from moto import mock_aws
@@ -35,6 +36,62 @@ RICH_TEST_WIDTH = "200"
 # missed it. pytest imports conftest before the test modules that import the CLI, which
 # makes this the last point that is still early enough.
 os.environ["COLUMNS"] = RICH_TEST_WIDTH
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_aws(monkeypatch):
+    """Give every test in this package the AWS environment a CI runner has.
+
+    Autouse rather than opt-in, because the tests that most needed it were the
+    ones that asked for no AWS fixture at all: `apply_public_artifacts_policy`
+    is handed a stub S3 client by a test with no moto and no credentials in
+    sight, and the bare `boto3.client(...)` it used to build inside signed a
+    request to the public STS endpoint with whatever the machine could resolve.
+    An opt-in fixture cannot reach a call a test does not know it is making.
+
+    What this takes away, and why clearing the environment variables is not
+    enough on its own, is written out in `aws_hermetic`.
+    """
+    aws_hermetic.apply(monkeypatch)
+    yield
+    # Also on the way out: a session built under the placeholders above must not
+    # outlive them and be reused by whatever runs next in this worker.
+    aws_hermetic.reset_default_session()
+
+
+@pytest.fixture(autouse=True)
+def _no_outbound_http(monkeypatch):
+    """Fail loudly if a test reaches the network, naming the URL it tried.
+
+    The fixture above makes the credentials harmless; this makes the request not
+    happen. Both are wanted, because they fail in different directions: a
+    placeholder credential still produces a signed request to a real endpoint,
+    and a credential-neutralising fixture that is one day edited wrongly goes
+    quiet rather than red.
+
+    `lib/idp_cli_pkg/tests/conftest.py` carries the same fixture, and its
+    reasoning applies here unchanged — this package publishes artifacts, writes
+    bucket policies and creates and updates CloudFormation stacks, so a test
+    that builds a real client by accident does not fail, it succeeds against
+    whatever account is reachable.
+
+    The seam is `botocore.httpsession.URLLib3Session.send`, the single point
+    every botocore request passes through on its way out. `moto` short-circuits
+    earlier, on botocore's `before-send` event, so a `mock_aws` test never
+    reaches this and needs no exemption; a hand-rolled stub client never reaches
+    it either. What does reach it is exactly the mistake worth catching.
+    """
+    from botocore.httpsession import URLLib3Session
+
+    def _refuse(self, request):
+        raise RuntimeError(
+            "This test attempted a real network request to "
+            f"{getattr(request, 'url', '<unknown>')}. Use moto (mock_aws) or "
+            "patch the client; see the _no_outbound_http fixture in "
+            "tests/conftest.py."
+        )
+
+    monkeypatch.setattr(URLLib3Session, "send", _refuse)
 
 
 @pytest.fixture(autouse=True)

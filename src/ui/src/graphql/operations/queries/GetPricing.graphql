@@ -3,6 +3,7 @@ query GetPricing {
     success
     pricing
     defaultPricing
+    nonChargeableUnits
     error {
       type
       message

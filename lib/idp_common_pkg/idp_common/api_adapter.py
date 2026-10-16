@@ -134,6 +134,59 @@ class ResourceNotFound(Exception):
     """
 
 
+class ResourceAccessDenied(PermissionError):
+    """A refusal by a **per-object** control, not by the caller's group.
+
+    The caller holds a group the operation admits — they passed the dispatcher's
+    field-level floor and the resolver's own group check — and were then refused
+    because of the *object* they named: a bucket outside the deployment's
+    allow-list, a key outside their configuration-profile scope, a chat session
+    they do not own, a document selection that is unfinished or out of scope.
+
+    A subclass of :class:`PermissionError`, so the status and the body the client
+    sees are unchanged: **403** with ``errorType: "Unauthorized"``. What changes is
+    that the dispatcher can label *which control* refused, in
+    ``errors[0].authzControl``.
+
+    WHY A SEPARATE CLASS IS NEEDED AT ALL
+    -------------------------------------
+    Both layers refuse with ``PermissionError``, and the dispatcher maps both to the
+    same 403 with the same ``errorType``. So ``403/Unauthorized`` means two opposite
+    things — "this caller's **group** does not admit this operation" and "this
+    caller's group was fine and the **object** was refused" — and nothing in the
+    response told them apart. For the live RBAC harness those are opposite verdicts
+    about the control under test: the first is the group floor working (or, for a
+    caller the policy admits, failing), the second says nothing about the group
+    floor either way. Eight cells of the group matrix read the second as the first
+    and reported it as a hard authorization failure (issue #1308).
+
+    The message prose cannot carry the distinction. Resolver group refusals are
+    worded ``"Unauthorized: <op> requires <groups> group"``, but so are several
+    per-object ones — ``"Unauthorized: session not found for this user."``,
+    ``"Unauthorized: your configuration scope could not be verified"`` — and one
+    that is not an authorization refusal at all
+    (``"Unauthorized: uploads are not configured for this deployment."``). Matching
+    on prose would classify by the sentence a resolver author happened to write.
+
+    RECOGNISED BY CLASS NAME, like :class:`ResourceNotFound`
+    -------------------------------------------------------
+    A resolver reached through ``lambda:Invoke`` surfaces its exception as the
+    ``errorType`` **string** in the invoke response; the class object never crosses
+    that boundary. A resolver Lambda with no ``idp_common`` dependency may therefore
+    declare its own ``ResourceAccessDenied`` locally and get the same mapping. This
+    class is the canonical one; prefer importing it.
+
+    FAIL-CLOSED FOR THE HARNESS
+    ---------------------------
+    An **unlabelled** resolver refusal is read as the strict verdict, not the
+    lenient one: the harness treats a 403 it cannot positively attribute to a
+    per-object control as a group refusal, so forgetting to raise this class costs
+    a visible failure rather than a silent pass. The polarity has to be this way
+    round — defaulting to "resource" would let a genuine group-check regression in a
+    resolver read as a known coverage gap.
+    """
+
+
 class _DecimalEncoder(json.JSONEncoder):
     """Encode DynamoDB ``Decimal`` values as int/float for JSON responses."""
 

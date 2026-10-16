@@ -16,6 +16,48 @@ import boto3
 
 logger = logging.getLogger(__name__)
 
+#: Statuses the malware-scanning ingest gate puts a document in, and the reason
+#: reprocessing each one is refused.
+#:
+#: Kept as a mapping of status VALUE to message, keyed on the string rather than
+#: on the ``Status`` enum, because this module imports ``idp_common`` lazily
+#: through a path shim and must not fail at import time on a machine where that
+#: package is absent. ``scripts/tests/test_reprocess_paths_agree.py`` checks this
+#: set against the resolver's ``_REPROCESS_REFUSED_STATUSES`` so the two doors
+#: cannot drift apart.
+_MALWARE_GATE_REFUSALS = {
+    "MALWARE_SCANNING": (
+        "the malware scan is still in progress, so nothing has decided whether "
+        "this file is safe. Reprocessing now would start the workflow "
+        "immediately. Retry once the verdict arrives."
+    ),
+    "QUARANTINED": (
+        "Amazon GuardDuty found malware in this document and it was refused at "
+        "ingest. Reprocessing it would push known malware into OCR and Bedrock. "
+        "Delete it instead."
+    ),
+    "MALWARE_SCAN_FAILED": (
+        "this document could not be malware-scanned and was refused at ingest. "
+        "Reprocessing it would process a file nothing has cleared. If it is a "
+        "legitimate document GuardDuty could not read, such as a "
+        "password-protected PDF, re-upload an unprotected copy."
+    ),
+}
+
+
+def _malware_gate_refusal(document):
+    """The reason this document must not be reprocessed, or None.
+
+    Reads the status defensively — ``document.status`` may be an enum member or
+    the bare string depending on how the row was loaded — because getting this
+    wrong in the permissive direction reopens the gate.
+    """
+    status = getattr(document, "status", None)
+    status = getattr(status, "value", status)
+    if status is None:
+        return None
+    return _MALWARE_GATE_REFUSALS.get(str(status).upper())
+
 
 def _get_idp_common_path() -> str:
     """
@@ -156,6 +198,26 @@ class RerunProcessor:
                     results["documents_failed"] += 1
                     results["failed_documents"].append(
                         {"object_key": object_key, "error": "Document not found"}
+                    )
+                    continue
+
+                # ⚠️ The malware gate's second door. This function is the single
+                # chokepoint for `idp-cli reprocess`, `documents.reprocess()` and
+                # `batches.reprocess()`, and it does NOT go through the reprocess
+                # API resolver where the equivalent guard lives — it reads the row
+                # and sends to SQS itself, client-side. Without this check the
+                # whole gate is bypassable from the CLI, and `--batch-id` makes it
+                # worse by re-queueing every document in a batch unattended, so a
+                # quarantined file rides along with its clean siblings.
+                #
+                # Skipped-and-reported rather than raised: this is a loop over
+                # many documents and one refused file must not abandon the rest.
+                refusal = _malware_gate_refusal(document)
+                if refusal:
+                    logger.error(f"Refusing to reprocess {object_key}: {refusal}")
+                    results["documents_failed"] += 1
+                    results["failed_documents"].append(
+                        {"object_key": object_key, "error": refusal}
                     )
                     continue
 

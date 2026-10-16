@@ -23,7 +23,7 @@ invocation, and the shard died on the wall clock with ``Sandbox.Timedout`` — e
 the outcome above. The document passed at 600s and failed every CI run after the cut.
 
 So the read timeout is sized for the work, and the bound is on the **ladder**:
-``_attempt_cannot_finish`` refuses to begin an attempt the size of the one that just
+``attempt_cannot_finish`` refuses to begin an attempt the size of the one that just
 failed when the remaining invocation cannot hold it, and raises instead. The tests
 below assert that property behaviourally, the weaker arithmetic that still has to
 hold (one agentic stall plus all the backoff leaves room to RETURN), and that the
@@ -92,7 +92,7 @@ def _section_states() -> dict[str, Any]:
 # for the invocation to RETURN — to unwind the ladder, persist the shard's failure
 # and raise, rather than be killed mid-flight. It is not room for another full call:
 # whether another attempt is affordable is decided at run time from what the last one
-# measured (``_attempt_cannot_finish``), which is the bound that replaced summing the
+# measured (``attempt_cannot_finish``), which is the bound that replaced summing the
 # constants. It is sized as the deadline reserve plus the same again for the unwind.
 _MIN_MARGIN_TO_RETURN_SECONDS = 60.0
 
@@ -129,13 +129,16 @@ def test_one_agentic_stall_plus_all_backoff_still_leaves_room_to_return():
 def test_the_confidence_client_can_still_overrun_and_that_is_recorded_not_hidden():
     """The term the ladder's bound does NOT cover, stated as a quantity.
 
-    A shard running confidence in ``separate`` mode can stall on a second client:
-    the non-streamed ``converse`` in ``bedrock/client.py``, whose own ladder is not
-    deadline-aware (see the test at the end of this file). So the two read timeouts
-    CAN together exceed the invocation, and that is a known residual rather than
-    something the arithmetic above denies. Asserting it keeps the residual honest: if
-    the numbers ever do fit, the caveat in ``timeout_budget`` and
-    ``utils/README.md`` is stale and should be deleted rather than left to mislead.
+    A shard running confidence in ``separate`` mode can stall on a second client: the
+    non-streamed ``converse`` in ``bedrock/client.py``. Both ladders now refuse to
+    BEGIN an attempt the remaining invocation cannot hold, but neither can refuse its
+    FIRST one — nothing has been measured at that point — so one full stall on each
+    can still together exceed the invocation. That residual is a known quantity rather
+    than something the arithmetic above denies.
+
+    Asserting it keeps the residual honest: if the numbers ever do fit, the caveat in
+    ``timeout_budget`` and ``utils/README.md`` is stale and should be deleted rather
+    than left to mislead.
     """
     both_clients = BOTOCORE_TOTAL_MAX_ATTEMPTS * (
         AGENT_READ_TIMEOUT_SECONDS + CONFIDENCE_READ_TIMEOUT_SECONDS
@@ -233,23 +236,22 @@ def test_the_extraction_code_actually_defaults_to_this_read_timeout():
 
 
 @pytest.mark.unit
-def test_the_unbounded_confidence_retry_ladder_is_pinned_not_forgotten():
-    """One exposure the budget above does NOT close, recorded so it cannot drift.
+def test_the_confidence_retry_ladder_is_bounded_by_the_gate_not_by_the_constants():
+    """``bedrock/client.py``'s own ladder still does not fit, and no longer needs to.
 
-    ``bedrock/client.py``'s ``_invoke_with_retry`` retries a read timeout on its own
-    application-level ladder — ``max_retries`` attempts, backing off
-    ``initial_backoff`` doubling to ``max_backoff`` — and unlike
-    ``invoke_agent_with_retry`` it never consults
-    ``get_lambda_deadline_epoch``. So on the separate-confidence shard path it can
-    overrun the invocation by itself whatever the constants above say, and the
-    inequality is a bound on ONE stalled call per client, not on that ladder.
+    Its nominal worst case is far outside one invocation — eight attempts at
+    ``CONFIDENCE_READ_TIMEOUT_SECONDS`` plus its backoff — so no inequality over
+    these constants can bound it, and the three attempts that fill a 900 s function
+    are a property of the ladder rather than of the numbers. What keeps it inside the
+    invocation is the same gate the agentic ladder uses: it consults the deadline at
+    every retry decision and refuses to begin an attempt the remaining time cannot
+    hold (#1362).
 
-    Making it deadline-aware changes behaviour for every non-agentic path
-    (classification, simple extraction, summarization, assessment), so it is out of
-    scope here. This test pins its two numbers and the resulting nominal worst case
-    so the exposure is a recorded quantity rather than an unnoticed one: if either
-    moves, or if the ladder gains a deadline check that makes this obsolete, the
-    failure message says what to re-derive.
+    This test pins both halves, because each is useless without the other: the
+    arithmetic that still does not close, and the gate that is therefore load-bearing.
+    What the gate DOES is asserted behaviourally in
+    ``tests/unit/bedrock/test_invocation_budget_guard.py``; what is asserted here is
+    that it is reached from this module's budget at all.
     """
     from idp_common.bedrock import client as bedrock_client
 
@@ -268,15 +270,13 @@ def test_the_unbounded_confidence_retry_ladder_is_pinned_not_forgotten():
     nominal_worst_case = attempts * CONFIDENCE_READ_TIMEOUT_SECONDS + sleeping
     assert nominal_worst_case > LAMBDA_MAX_TIMEOUT_SECONDS, (
         "the BedrockClient ladder's nominal worst case now fits inside one "
-        f"invocation ({nominal_worst_case}s vs {LAMBDA_MAX_TIMEOUT_SECONDS}s). If "
-        "that is because the ladder became deadline-aware, fold it into the "
-        "inequality above and delete this test; if it is a coincidence of the "
-        "numbers, re-derive it."
+        f"invocation ({nominal_worst_case}s vs {LAMBDA_MAX_TIMEOUT_SECONDS}s), so "
+        "the sentence above about why the gate is load-bearing needs re-deriving."
     )
-    assert not _consults_the_deadline(bedrock_client), (
-        "BedrockClient now consults the Lambda deadline, so the exposure this test "
-        "records is closed. Fold the ladder into the budget inequality above and "
-        "delete this test rather than leaving a stale caveat in the docs."
+    assert _consults_the_deadline(bedrock_client), (
+        "BedrockClient no longer consults the Lambda deadline, so nothing bounds a "
+        "ladder whose nominal worst case is "
+        f"{nominal_worst_case}s inside a {LAMBDA_MAX_TIMEOUT_SECONDS}s function."
     )
 
 

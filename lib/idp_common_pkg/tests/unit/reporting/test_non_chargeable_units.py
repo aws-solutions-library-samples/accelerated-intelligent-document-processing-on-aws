@@ -148,32 +148,57 @@ EXPECTED_WRITER_UNITS = {
     },
 }
 
-#: How many entries the declaration holds. Pinned, so a seventh free unit is a
+#: How many entries the declaration holds. Pinned, so a fifth free unit is a
 #: deliberate edit here with its sourcing reviewed beside it, rather than a line
 #: added to a list. This is the count ratchet named in
 #: ``scripts/tests/gate_exemptions.json``.
-DECLARED_ENTRY_COUNT = 6
+#:
+#: It fell from 6 to 4 when the two Bedrock cache units left this declaration.
+#: They were never properly members: whether a prompt-cache read is chargeable is
+#: a property of the **model** — AWS prices one on Nova Premier and publishes no
+#: such dimension for Claude 3 Haiku in any region — so one service-wide entry
+#: priced a cache read at $0.00 on eleven different models' behalf, nine of them
+#: with no recorded basis. They are now
+#: ``metering_units.EXPECTED_CACHE_UNIT_OMISSIONS``, one entry per pricing key and
+#: unit, owned by ``test_cache_unit_omission_basis.py``. See issue #1206.
+DECLARED_ENTRY_COUNT = 4
 
 #: How many shipped pricing entries each declaration currently shields — the
 #: number of ``<service>/...`` rows in ``config_library/pricing.yaml`` that omit
 #: that unit. Pinned because non-vacuity alone only asks for *one*: without this,
-#: pricing ``totalTokens`` on 96 of the 97 Bedrock entries would leave the
+#: pricing ``totalTokens`` on 97 of the 98 Bedrock entries would leave the
 #: shielded count at 1 with the suite green, and the declaration would be doing
 #: almost nothing while still reading as a live decision.
 #:
-#: The two 97s moved from 94 when Claude Haiku 5.5 added ``us.``/``eu.``/``global.``
-#: Bedrock entries. Audited rather than bumped: all three price input, output and
-#: both cache dimensions and none prices ``totalTokens`` or ``requests`` — which is
-#: the correct shape, since input and output are each already billed so totalTokens
-#: would double-charge them, and on-demand Bedrock bills no per-request dimension.
-#: The ``cacheReadInputTokens`` / ``cacheWriteInputTokens`` counts deliberately stay
-#: at 11 for the same reason: the three entries carry both rates, so they are not
-#: shielded by those declarations.
+#: The two counts moved from 94 to 97 when Claude Haiku 5.5 added
+#: ``us.``/``eu.``/``global.`` Bedrock entries. Audited rather than bumped: all three
+#: price input, output and both cache dimensions and none prices ``totalTokens`` or
+#: ``requests`` — which is the correct shape, since input and output are each already
+#: billed so totalTokens would double-charge them, and on-demand Bedrock bills no
+#: per-request dimension.
+#:
+#: 97 -> 98 when the Canada geo profile ``ca.amazon.nova-lite-v1:0`` gained its
+#: Bedrock entry, audited the same way: it prices input, output and both cache
+#: dimensions and neither ``totalTokens`` nor ``requests``.
+#:
+#: 98 -> 101 when Claude Sonnet 5.5 added ``us.``/``eu.``/``global.`` Bedrock
+#: entries, audited the same way again: each of the three prices ``inputTokens``,
+#: ``outputTokens``, ``cacheReadInputTokens`` and ``cacheWriteInputTokens``, and
+#: none prices ``totalTokens`` or ``requests``. There is no fourth entry to count,
+#: because this model has no ``:1m`` variant — 1M is its default window and
+#: ``us.anthropic.claude-sonnet-5-5:1m`` is not an id Bedrock accepts.
+#:
+#: The two ``cacheReadInputTokens`` / ``cacheWriteInputTokens`` rows are gone
+#: rather than renumbered, because those units are no longer declared at service
+#: scope at all — see :data:`DECLARED_ENTRY_COUNT`. The equivalent per-member
+#: ratchet for them now lives in ``test_cache_unit_omission_basis.py``, which
+#: derives the universe from ``config_library/pricing.yaml`` instead of pinning a
+#: count: a Bedrock entry that omits a cache unit has to name the price-list
+#: model it was read against, so the shielded set is closed by construction and a
+#: number to keep in step would be redundant.
 EXPECTED_SHIELDED_SITES = {
-    ("bedrock", "totalTokens"): 97,
-    ("bedrock", "requests"): 97,
-    ("bedrock", "cacheReadInputTokens"): 11,
-    ("bedrock", "cacheWriteInputTokens"): 11,
+    ("bedrock", "totalTokens"): 101,
+    ("bedrock", "requests"): 101,
     ("lambda_hook", "totalTokens"): 2,
     ("lambda_hook", "requests"): 2,
 }

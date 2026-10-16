@@ -591,6 +591,95 @@ class TestAnUndeclaredUnitIsReportedRatherThanPricedAtZero:
             priced = lib.price_metering({f"Extraction/{REAL_MODEL}": {unit: 5000}})
             assert not priced.complete, f"{unit} priced silently"
 
+    def test_a_cache_unit_on_an_unregistered_bedrock_entry_is_reported(
+        self, read_metering, monkeypatch
+    ):
+        """The harness half of the #1206 fix, measured through ``price_metering``.
+
+        The two cache units used to be declared non-chargeable for the whole
+        ``bedrock`` service, so a cache read metered against **any** Bedrock entry
+        that omitted the rate cost exactly $0.00 here and in the product's cost
+        report — one justification covering eleven different models, nine of which
+        recorded no basis at all. They are now declared per pricing key in
+        ``metering_units.EXPECTED_CACHE_UNIT_OMISSIONS``, so a key the register does
+        not name is reported.
+
+        The entry is injected into ``lib.PRICING`` rather than named from the
+        shipped file, and it has to be: the point is the class — a pricing entry
+        added later, or a user's own table edited through the UI pricing editor —
+        and by construction no shipped entry is in that state once the register is
+        complete. It carries real input and output rates so that what is being
+        measured is the **unit** axis and not #1146's entry axis, which reports a
+        metering key no pricing entry matches at all.
+        ``lib/idp_common_pkg/tests/unit/reporting/test_cache_unit_omission_basis.py``
+        enumerates the shipped instances from ``pricing.yaml``.
+        """
+        from idp_common.metering_units import UNKNOWN, classify_absent_unit
+
+        key = "bedrock/vendor.unregistered-model-v1:0"
+        monkeypatch.setitem(
+            lib.PRICING, key, {"inputTokens": 1e-6, "outputTokens": 5e-6}
+        )
+
+        for unit in ("cacheReadInputTokens", "cacheWriteInputTokens"):
+            assert classify_absent_unit(key, unit, 5000) == UNKNOWN
+            priced = lib.price_metering(
+                read_metering({f"Extraction/{key}": {"inputTokens": 1000, unit: 5000}})
+            )
+            assert not priced.complete, f"{unit} priced silently on {key}"
+            assert unit in priced.why
+            # The entry itself resolved, so this is the unit axis: the priced part
+            # of the row is still in partial_total.
+            assert priced.partial_total == pytest.approx(1000 * 1e-6)
+
+        # REAL_MODEL prices both cache units, so the same map on it is complete —
+        # which is what stops this test passing because cache units are reported
+        # everywhere.
+        for unit in ("cacheReadInputTokens", "cacheWriteInputTokens"):
+            assert lib.price_metering(
+                read_metering({f"Extraction/{REAL_MODEL}": {unit: 5000}})
+            ).complete
+
+    def test_the_unpriced_reason_names_the_register_that_governs_the_unit(
+        self, read_metering, monkeypatch
+    ):
+        """The harness half of the same check — the text, not just the verdict.
+
+        Both implementations used to name ``NON_CHARGEABLE_METERING_UNITS`` for
+        every unpriced unit, including the two cache ones, which told the reader
+        to declare a cache unit free for the whole ``bedrock`` service — the
+        construct #1206 removes. The non-cache row is the control: without it this
+        would pass for an implementation that names the cache register
+        unconditionally.
+        """
+        key = "bedrock/vendor.unregistered-model-v1:0"
+        monkeypatch.setitem(
+            lib.PRICING, key, {"inputTokens": 1e-6, "outputTokens": 5e-6}
+        )
+        cases = {
+            "cacheReadInputTokens": "EXPECTED_CACHE_UNIT_OMISSIONS",
+            "cacheWriteInputTokens": "EXPECTED_CACHE_UNIT_OMISSIONS",
+            "reasoningTokens": "NON_CHARGEABLE_METERING_UNITS",
+        }
+        for unit, expected in cases.items():
+            priced = lib.price_metering(
+                read_metering({f"Extraction/{key}": {unit: 5000}})
+            )
+            assert not priced.complete
+            assert expected in priced.why, (
+                f"the unpriced reason for {unit!r} does not name {expected}: "
+                f"{priced.why!r}"
+            )
+            other = (
+                "NON_CHARGEABLE_METERING_UNITS"
+                if expected == "EXPECTED_CACHE_UNIT_OMISSIONS"
+                else "EXPECTED_CACHE_UNIT_OMISSIONS"
+            )
+            assert other not in priced.why, (
+                f"the unpriced reason for {unit!r} names {other}, the register "
+                "that does not govern this unit"
+            )
+
     def test_a_zero_count_of_an_undeclared_unit_is_not_reported(self, read_metering):
         """Arithmetic: 0 x any rate is 0, so there is no spend to hide.
 
