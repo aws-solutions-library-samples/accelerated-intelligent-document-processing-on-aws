@@ -609,10 +609,10 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
-  Queues** (one per test set), each listing Queue, Items, Assigned and Priority with an
+  Queues** (one per test set), each listing Queue, Items, Pending, Assigned, In progress, Annotators and Priority with an
   actions menu. Admins create, edit and delete
   Production queues here, setting each one's name, priority, time limit, eligible
-  Annotators, checklist and reject reasons. On each queue's page, Admins select
+  Annotators and reject reasons. On each queue's page, Admins select
   items and **Assign** them to an Annotator, **Unassign** them, or **Move** them to
   another queue (for example **Escalation**).
 - **My Work › Tasks** lists everything assigned to you, both Production review items

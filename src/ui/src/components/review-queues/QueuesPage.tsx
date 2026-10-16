@@ -270,6 +270,19 @@ const QueuesPage = (): React.JSX.Element => {
 
   // -------------------------------------------------------------- render
   const countCell = (n: number | undefined) => (n == null ? '—' : n);
+  /**
+   * The queue's eligible Annotators (from its Settings; none set means any Annotator),
+   * then how many of them have documents assigned. The names show on hover.
+   */
+  const annotatorsCell = (eligible: readonly string[] | null | undefined, assigned: React.ReactNode): React.ReactNode => {
+    const names = eligible ?? [];
+    return (
+      <span title={names.length ? names.join(', ') : 'Any Annotator can be assigned'}>
+        {names.length ? `${names.length} eligible` : 'Any'} · {assigned} assigned
+      </span>
+    );
+  };
+  const eligibleCount = (eligible: readonly string[] | null | undefined): number => eligible?.length ?? 0;
   /** Assigned items no Annotator has started (no draft saved yet). */
   const notStarted = (row: ProductionRow): number | undefined =>
     row.health ? Math.max(0, row.health.summary.claimed - (row.health.summary.inProgress ?? 0)) : undefined;
@@ -320,8 +333,8 @@ const QueuesPage = (): React.JSX.Element => {
     {
       id: 'annotators',
       header: 'Annotators',
-      cell: (row) => countCell(row.health?.summary.annotators ?? undefined),
-      sortingComparator: (a, b) => (a.health?.summary.annotators ?? -1) - (b.health?.summary.annotators ?? -1),
+      cell: (row) => annotatorsCell(row.definition?.eligibleAnnotators, countCell(row.health?.summary.annotators ?? undefined)),
+      sortingComparator: (a, b) => eligibleCount(a.definition?.eligibleAnnotators) - eligibleCount(b.definition?.eligibleAnnotators),
     },
     {
       id: 'priority',
@@ -395,8 +408,8 @@ const QueuesPage = (): React.JSX.Element => {
     {
       id: 'annotators',
       header: 'Annotators',
-      cell: (row) => testSetCount(row, row.ref.annotators),
-      sortingComparator: (a, b) => (a.ref.annotators ?? -1) - (b.ref.annotators ?? -1),
+      cell: (row) => annotatorsCell(row.ref.eligibleAnnotators, testSetCount(row, row.ref.annotators)),
+      sortingComparator: (a, b) => eligibleCount(a.ref.eligibleAnnotators) - eligibleCount(b.ref.eligibleAnnotators),
     },
     {
       id: 'priority',
@@ -534,7 +547,13 @@ const QueuesPage = (): React.JSX.Element => {
         annotatorsLoading={annotatorsLoading}
         onDismiss={() => setEditing(null)}
         onSaved={(q) => {
-          if (q) setSuccessMessage(editing?.queue ? `Saved the queue ${q.name}.` : `Created the queue ${q.name}.`);
+          if (q) {
+            setSuccessMessage(editing?.queue ? `Saved the queue ${q.name}.` : `Created the queue ${q.name}.`);
+            // Show the saved definition at once; the reload below confirms it.
+            setDefinitions((defs) =>
+              defs && defs.some((d) => d.id === q.id) ? defs.map((d) => (d.id === q.id ? q : d)) : [...(defs ?? []), q],
+            );
+          }
           setEditing(null);
           void loadProduction();
         }}
@@ -569,8 +588,24 @@ const QueuesPage = (): React.JSX.Element => {
         annotators={annotators ?? []}
         annotatorsLoading={annotatorsLoading}
         onDismiss={() => setSettingsTarget(null)}
-        onSaved={() => {
+        onSaved={(_, saved) => {
           setSuccessMessage(`Saved the queue settings of ${settingsTarget?.name ?? 'the test set'}.`);
+          if (saved) {
+            // Show the saved settings at once; the reload below confirms them.
+            setTestSetRefs((refs) =>
+              (refs ?? []).map((r) =>
+                r.id === saved.testSetId
+                  ? {
+                      ...r,
+                      description: saved.description,
+                      priority: saved.priority,
+                      claimLeaseMinutes: saved.claimLeaseMinutes,
+                      eligibleAnnotators: saved.eligibleAnnotators ? [...saved.eligibleAnnotators] : [],
+                    }
+                  : r,
+              ),
+            );
+          }
           setSettingsTarget(null);
           void loadTestSets();
         }}

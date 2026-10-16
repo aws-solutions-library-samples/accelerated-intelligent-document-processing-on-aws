@@ -118,7 +118,6 @@ offers **Delete**. Each queue's page has a **Settings** button too.
 | Priority | Higher-priority queues are listed first (0–100) | `50` |
 | Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080) | `60` |
 | Eligible Annotators | The Annotators its items may be assigned to; leave it empty to allow every Annotator | empty |
-| Checklist | An advisory checklist shown with every item | empty |
 | Reject reasons | The reasons offered when an item is rejected | five common reasons |
 
 **Default** and **Escalation** queues are created automatically on a new stack.
@@ -132,7 +131,7 @@ Both tables, **Production Queues** and **Test Studio Queues**, show for each que
 | Pending | Not yet assigned |
 | Assigned | Assigned to an Annotator who hasn't saved any work on it yet |
 | In progress | Assigned, and the Annotator has saved work (a draft, or some reviewed sections) |
-| Annotators | How many different Annotators hold the queue's assigned items |
+| Annotators | The queue's Eligible Annotators (their count, or **Any** when none are set; the names on hover), then how many different Annotators hold its assigned items. A change in Settings shows as soon as the dialog closes |
 | Priority | The queue's priority (test sets have none) |
 
 The same counts appear at the top of each queue's page.
@@ -161,8 +160,8 @@ labels and completes it. A document with no labels yet needs draft labels first.
 Assigning a document also gives the Annotator access to that test set.
 
 A Test Studio queue's **Settings** are the production settings less the id, name and
-reject reasons: description, priority, time limit (the reminder), Eligible
-Annotators and checklist. They are kept with the test set.
+reject reasons: description, priority, time limit (the reminder) and Eligible
+Annotators. They are kept with the test set.
 
 A Test Studio queue loads quickly because each document's summary (label source,
 alert count, lowest confidence, classes, sections, assignee, reviewed) is kept in

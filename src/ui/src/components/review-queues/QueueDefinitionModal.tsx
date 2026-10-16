@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT-0
 //
 // HITL › Queue Management: create or edit one system-wide production queue — its
-// name, priority, reminder time limit, eligible Annotators, checklist and reject
-// reasons — or edit a Test Studio queue's settings (the same, less the id, name and
-// reject reasons, which a test set doesn't have).
+// name, priority, reminder time limit, eligible Annotators and reject reasons — or
+// edit a Test Studio queue's settings (the same, less the id, name and reject
+// reasons, which a test set doesn't have). A queue's stored checklist is kept as it
+// is; the dialog doesn't edit it.
 import React, { useEffect, useState } from 'react';
 import type { MultiselectProps } from '@cloudscape-design/components';
 import {
@@ -53,8 +54,8 @@ interface QueueDefinitionModalProps {
   annotators: readonly string[];
   annotatorsLoading: boolean;
   onDismiss: () => void;
-  /** The saved production queue; nothing for a Test Studio queue. */
-  onSaved: (queue?: ReviewQueueDefinition) => void;
+  /** The saved production queue, or the saved settings of a Test Studio queue. */
+  onSaved: (queue?: ReviewQueueDefinition, testSetSettings?: TestSetQueueTarget) => void;
 }
 
 interface ListEntry {
@@ -120,7 +121,8 @@ const QueueDefinitionModal = ({
   const [priority, setPriority] = useState('0');
   const [timeLimit, setTimeLimit] = useState(String(DEFAULT_TIME_LIMIT_MINUTES));
   const [eligible, setEligible] = useState<readonly MultiselectProps.Option[]>([]);
-  const [checklist, setChecklist] = useState<ListEntry[]>([]);
+  // Not edited here; saved back unchanged.
+  const [checklist, setChecklist] = useState<string[]>([]);
   const [rejectReasons, setRejectReasons] = useState<ListEntry[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -134,7 +136,7 @@ const QueueDefinitionModal = ({
     setPriority(String(testSet?.priority ?? queue?.priority ?? 0));
     setTimeLimit(String(testSet?.claimLeaseMinutes ?? queue?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES));
     setEligible((testSet?.eligibleAnnotators ?? queue?.eligibleAnnotators ?? []).map((e) => ({ value: e, label: e })));
-    setChecklist(toEntries(testSet?.checklist ?? queue?.checklist));
+    setChecklist([...(testSet?.checklist ?? queue?.checklist ?? [])]);
     setRejectReasons(toEntries(queue?.rejectReasons));
     setSubmitted(false);
     setError(null);
@@ -168,16 +170,23 @@ const QueueDefinitionModal = ({
     setSaving(true);
     setError(null);
     if (testSet) {
+      const eligibleAnnotators = eligible.map((o) => o.value as string);
       try {
         await updateTestSetQueue({
           testSetId: testSet.testSetId,
           description: description.trim(),
           priority: priorityNumber,
           timeLimitMinutes: timeLimitNumber,
-          eligibleAnnotators: eligible.map((o) => o.value as string),
-          checklist: fromEntries(checklist),
+          eligibleAnnotators,
+          checklist,
         });
-        onSaved();
+        onSaved(undefined, {
+          ...testSet,
+          description: description.trim(),
+          priority: priorityNumber,
+          claimLeaseMinutes: timeLimitNumber,
+          eligibleAnnotators,
+        });
       } catch (err) {
         setError(describeApiError(err, 'save the queue settings'));
       } finally {
@@ -192,7 +201,7 @@ const QueueDefinitionModal = ({
       priority: priorityNumber,
       timeLimitMinutes: timeLimitNumber,
       eligibleAnnotators: eligible.map((o) => o.value as string),
-      checklist: fromEntries(checklist),
+      checklist,
       rejectReasons: fromEntries(rejectReasons),
     };
     try {
@@ -209,7 +218,7 @@ const QueueDefinitionModal = ({
       visible={visible}
       onDismiss={onDismiss}
       size="large"
-      header={creating ? 'Create queue' : `Queue settings: ${testSet?.name ?? queue?.name ?? ''}`}
+      header={creating ? 'Create queue' : `Queue Settings: ${testSet?.name ?? queue?.name ?? ''}`}
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
@@ -248,12 +257,19 @@ const QueueDefinitionModal = ({
                 <Input value={name} placeholder="e.g. High-value claims" onChange={({ detail }) => setName(detail.value)} />
               </FormField>
             )}
-            <FormField label="Priority" description="Higher numbers are worked first." errorText={submitted ? priorityError : undefined}>
+            {/* One-line descriptions keep the two inputs level; the detail is under each input. */}
+            <FormField
+              label="Priority"
+              description="Higher numbers are worked first."
+              constraintText="A whole number."
+              errorText={submitted ? priorityError : undefined}
+            >
               <Input type="number" inputMode="numeric" value={priority} onChange={({ detail }) => setPriority(detail.value)} />
             </FormField>
             <FormField
               label="Time limit (minutes)"
-              description="An assigned item still open after this long sends its Annotator a reminder. Assignments don't expire."
+              description="When the Annotator is reminded."
+              constraintText={`An item still open after this long sends one reminder; assignments don't expire. 1 to ${MAX_TIME_LIMIT_MINUTES}.`}
               errorText={submitted ? timeLimitError : undefined}
             >
               <Input type="number" inputMode="numeric" value={timeLimit} onChange={({ detail }) => setTimeLimit(detail.value)} />
@@ -278,14 +294,6 @@ const QueueDefinitionModal = ({
               empty="No Annotator users. Add one in User Management."
             />
           </FormField>
-          <ListEditor
-            label="Checklist"
-            description="Steps the Annotator confirms before completing an item."
-            addLabel="Add checklist step"
-            entries={checklist}
-            onChange={setChecklist}
-            placeholder="e.g. Totals match the line items"
-          />
           {!testSet && (
             <ListEditor
               label="Reject reasons"
