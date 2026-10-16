@@ -1675,9 +1675,10 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch):
 #
 # Which sweeps these cases drive is derived from STARTUP_SWEEPS: every member but
 # the ones `_sweeps_that_never_read_the_set` names, each with its reason. That
-# split is held against the module's source by
-# `test_every_startup_sweep_reads_the_set_or_says_why_it_does_not`, so a sweep
-# added to Step 0 later fails until somebody decides which side it is on.
+# split, and the list the cases are parametrized over, are held against the
+# module's source by `test_every_startup_sweep_reads_the_set_or_says_why_it_does_not`,
+# so a sweep added to Step 0 later fails until somebody decides which side it is
+# on, and a list narrowed by hand fails there too.
 #
 # Every case lists the long-lived stack's resources BESIDE another stack's and
 # asserts that other stack is still reaped: a sweep that stopped reaping
@@ -1723,7 +1724,9 @@ def _long_lived_sweeps():
     Derived rather than listed, so a sweep added to the registry later is
     driven by every case below, and fails them until the long-lived stack's
     resources are written for it in `_resources_of`, unless it is named in
-    `_sweeps_that_never_read_the_set` instead.
+    `_sweeps_that_never_read_the_set` instead. Held to exactly the sweeps that
+    read the set by `test_every_startup_sweep_reads_the_set_or_says_why_it_does_not`,
+    so a list written here by hand fails there, naming the sweep it dropped.
     """
     never = _sweeps_that_never_read_the_set()
     return [sweep for sweep in _sweep_names() if sweep not in never]
@@ -1920,6 +1923,12 @@ def test_every_startup_sweep_reads_the_set_or_says_why_it_does_not():
     `_resources_of` — whether it consults the set and has those written for it,
     or is named with the reason it has nothing of that stack's to take. A sweep
     that stops consulting the set fails here the same way.
+
+    The list those cases are parametrized over, `_long_lived_sweeps()`, is held
+    to the same answer, because the split above is only as good as the list
+    that drives them: one written by hand that drops a sweep reading the set
+    leaves that sweep with no long-lived case at all, and every other check
+    here still passes.
     """
     functions = _top_level_functions(ast.parse(HARNESS.read_text(encoding="utf-8")))
 
@@ -1963,6 +1972,15 @@ def test_every_startup_sweep_reads_the_set_or_says_why_it_does_not():
         "two sweeps give the same reason for leaving the set unread, so one "
         "sentence is standing in for two members"
     )
+    driven = set(_long_lived_sweeps())
+    assert driven == reading, (
+        f"the long-lived cases below drive {sorted(driven)}, not the sweeps that "
+        f"read SWEEP_EXEMPT_STACK_NAMES, {sorted(reading)}; they differ in "
+        f"{sorted(driven ^ reading)}. One missing from the first consults the set "
+        f"with no case holding it to that, and one extra is driven against a set "
+        f"it never reads: _long_lived_sweeps derives its list from STARTUP_SWEEPS, "
+        f"and is not to be written by hand"
+    )
 
 
 @pytest.mark.parametrize(
@@ -2003,6 +2021,7 @@ def test_only_the_stack_and_names_under_it_match(cbd, name, named_for_it):
         (f"{LONG_LIVED_STACK}-test-iam", False),
         (f"{LONG_LIVED_STACK}-iam-test", False),
         (f"{LONG_LIVED_STACK}-feature-confbench-testset", False),
+        (f"{LONG_LIVED_STACK}-VPCEndpoints", False),
         ("idp-ux-nightly2", False),
         ("idp-ux-nightly2-iam", False),
     ],
@@ -2015,9 +2034,12 @@ def test_the_stack_sweep_spares_the_stack_and_its_pre_stack_and_nothing_else(
     The stack sweep asks only about top-level stacks, so the long-lived stack's
     nested stacks never reach this, and any other top-level stack named
     `idp-ux-nightly-<x>` is a stack of its own: a throwaway named after the
-    long-lived one, or a feature extension installed into it under the default
-    stack name `<host>-feature-<id>`. Spared by a prefix match, either would
-    hold its IAM roles until somebody removed it by hand.
+    long-lived one, a feature extension installed into it under the default
+    stack name `<host>-feature-<id>`, or the endpoints stack
+    `scripts/deploy-vpc-endpoints.py` deploys for it under the default
+    `<host>-VPCEndpoints`. Spared by a prefix match, each would stand until
+    somebody removed it by hand, and a throwaway would hold its IAM roles all
+    that time.
     """
     assert cbd._is_exempt_stack_or_pre_stack(name) is spared
 

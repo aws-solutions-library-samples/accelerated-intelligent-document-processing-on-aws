@@ -1386,11 +1386,18 @@ than reported on that line.
 
 Four routes can still take part of that stack:
 
-- The stack reaper spares two names, not a prefix, so a feature extension
-  installed into that stack under its default stack name,
-  `idp-ux-nightly-feature-<id>` — the name `idp-feature-cli deploy` and a
-  console install from the web UI both propose — is reaped once it passes that
-  reaper's age gate. Give one a stack name that does not start `idp-`.
+- The stack reaper spares two names, not a prefix, so a stack deployed beside
+  that stack under its default name is reaped once it passes that reaper's age
+  gate: a feature extension, `idp-ux-nightly-feature-<id>` — the name
+  `idp-feature-cli deploy` and a console install from the web UI both propose —
+  and the endpoints stack `scripts/deploy-vpc-endpoints.py` deploys for a
+  private network, `idp-ux-nightly-VPCEndpoints`. Give either a stack name that
+  does not start `idp-` (`--stack-name` for the first, `--endpoints-stack-name`
+  for the second). For a feature extension that has a cost:
+  `getFeatureLaunchUrl` may call `DescribeStacks` only on
+  `idp-ux-nightly-feature-*`, so the web UI's link for updating a renamed one
+  falls back to the create form, which fails for a stack that already exists;
+  `idp-feature-cli deploy --stack-name` still updates it.
 - The apigw test-VPC reaper does not consult the set, so an
   `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
   reaper's age gate. Nothing creates one for that stack.
@@ -1416,15 +1423,19 @@ Four routes can still take part of that stack:
   `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and keep
   any custom configuration outside an `idp-*` bucket.
 
-Two consequences follow: nothing reaps a leftover of that stack's own that the
+Three consequences follow. Nothing reaps a leftover of that stack's own that the
 reapers spare by name — a bucket an update orphaned, or the stack or its
-pre-stack left in `DELETE_FAILED` — so one is removed by hand; and naming
-another stack here means changing the pinned set in
-`scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its entry in
-`scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails that
-same module until it either consults the set or is named there with its reason
-for not doing so, so whether it can take that stack is decided when it is
-written.
+pre-stack left in `DELETE_FAILED` — so one is removed by hand. A stack the stack
+reaper does take under an `idp-ux-nightly-*` name leaves behind every bucket its
+template marks `Retain` or `RetainExceptOnCreate`, empty or not, because that
+reaper deletes with a plain `DeleteStack`; those buckets are named
+`idp-ux-nightly-<x>-…`, so the bucket reaper spares them too, and they are
+removed by hand as well. And naming another stack here means changing the
+pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its entry
+in `scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails
+that same module until it either consults the set or is named there with its
+reason for not doing so, so whether it can take that stack is decided when it
+is written.
 
 ## Success Criteria
 

@@ -8995,9 +8995,7 @@ def main():
     # leaked test VPCs exhaust the VPC quota, and leaked -iam stacks' roles
     # exhaust the RolesPerAccount quota (which failed every deploy once ~600
     # roles had accumulated). All are age-gated so a concurrent pipeline's
-    # in-flight run is never touched, and the stack, bucket, role, policy and
-    # BDA sweeps leave a SWEEP_EXEMPT_STACK_NAMES stack and its `-iam`
-    # pre-stack standing at any age, the last four with everything named for it.
+    # in-flight run is never touched.
     #
     # Every sweep's outcome is BOUND here rather than printed and forgotten: a
     # sweep whose enumeration failed considered nothing, and a `⚠️` on an
