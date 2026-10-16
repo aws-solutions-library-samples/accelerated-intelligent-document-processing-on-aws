@@ -186,6 +186,7 @@ echo "Generating Node dependency manifest..."
 NODE_LOCKFILES=(
     "$REPO_ROOT/src/ui/package-lock.json"
     "$REPO_ROOT/docs-site/package-lock.json"
+    "$REPO_ROOT/scripts/ux_runner/package-lock.json"
 )
 
 {

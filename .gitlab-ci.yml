@@ -60,6 +60,12 @@ stages:
   - fast_checks
   - deployment_validation
   - integration_tests
+  # Advisory UX test of a merge request's web UI (ux_test_build, ai_ux_test).
+  # After the deploy stages so nothing in them waits on it; both jobs set
+  # `needs`, so they start as soon as the pipeline is created whatever stage
+  # they are in. Not a gate, and not in fast_checks, whose jobs are the
+  # no-AWS gates and all carry `needs: []`.
+  - ux_review
   # Runs on a scheduled pipeline whatever happened upstream, so that a nightly
   # which never reached the deploy stage is still reported. See
   # nightly_notification.
@@ -1181,6 +1187,204 @@ ai_mr_review:
     when: always
     paths:
       - ai-reviews/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# Advisory UX test of a merge request's web UI, with a narrated video added to
+# the ai_mr_review note for the same head. NOT A GATE: `allow_failure: true` on
+# both jobs, and neither is in test_ci_gate_parity.py's SHARED_GATES. See
+# footnote ³ in scripts/sdlc/docs/CI_TEST_COVERAGE.md and
+# .claude/skills/ux-test-ci.md.
+#
+# ⚠️ TWO JOBS, because the browser job must not run MR code. Chrome's DevTools
+# port is unauthenticated, so the MR's build (npm ci with its lifecycle scripts,
+# and vite with its config) runs in ux_test_build, and reaches ai_ux_test only as
+# static files that the egress proxy serves at http://localhost:3000.
+#
+# AUTOMATIC on non-Draft MRs to develop that change src/ui/, with identical rules
+# on both jobs. If they differed, `needs: [ux_test_build]` could name a job absent
+# from the pipeline and break pipeline creation on every MR. `interruptible`
+# bounds a push burst. ai_ux_test is idempotent per head SHA, and
+# `resource_group: ux_test_stack` serialises runs against the shared review stack.
+#
+# Requires masked, NOT protected CI variables (a protected variable is absent
+# from MR pipelines): UX_TEST_UI_ENV, UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID,
+# plus GITLAB_REVIEW_TOKEN, which is shared with ai_mr_review. Without them the
+# jobs print SKIPPED: and exit 0.
+# ---------------------------------------------------------------------------
+ux_test_build:
+  stage: ux_review
+  interruptible: true
+  timeout: 20m
+  # A UI build that fails here also fails static_checks' `make ui-build-only`,
+  # which is the gate; this job must not add a second red mark for it.
+  allow_failure: true
+  tags:
+    - size:large
+  rules: &ux_test_rules
+    # Ordered before the catch-all so a Draft falls through to `never`, as in
+    # ai_mr_review. `changes` is what keeps the job off non-UI MRs.
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
+      changes:
+        paths:
+          - src/ui/**/*
+        compare_to: refs/heads/develop
+      when: on_success
+    - when: never
+  needs: []
+  variables:
+    # The merge base with develop, which ui_change.py diffs against.
+    GIT_DEPTH: 0
+  cache:
+    key:
+      files:
+        - src/ui/package-lock.json
+    paths:
+      - src/ui/node_modules/
+  before_script:
+    - apt-get update -y
+    - apt-get install curl git -y
+    - *node_setup
+  script:
+    - python3 scripts/ux_runner/ui_change.py --target-branch "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}" --out ui-change.json
+    - |
+      if python3 -c 'import json, sys; sys.exit(0 if json.load(open("ui-change.json"))["skip"] else 1)'; then
+        echo "Only tests changed under src/ui; nothing to build."
+        exit 0
+      fi
+      if [ -z "${UX_TEST_UI_ENV:-}" ]; then
+        echo "SKIPPED: UX_TEST_UI_ENV is not set, so the MR's UI cannot be built against the review stack."
+        exit 0
+      fi
+      printf '%s' "$UX_TEST_UI_ENV" | base64 -d > src/ui/.env.production.local
+      cd src/ui && npm ci --prefer-offline --no-audit && npm run build:only
+  artifacts:
+    paths:
+      - src/ui/build/
+      - ui-change.json
+    expire_in: 1 day
+
+ai_ux_test:
+  stage: ux_review
+  interruptible: true
+  # Install about 5 min, plus a session bounded to 25 min, plus render and post.
+  # The job's AWS credentials are a chained session capped at 1h, which is why
+  # claude and render get freshly minted, scoped sessions (account.py).
+  timeout: 60m
+  allow_failure: true
+  resource_group: ux_test_stack
+  tags:
+    - size:large
+  rules: *ux_test_rules
+  needs:
+    - job: ux_test_build
+      artifacts: true
+  variables:
+    # Bedrock inference-profile id; the GitLab role grants the Opus family only.
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
+    AWS_REGION: "us-east-1"
+    GIT_DEPTH: 0
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+  before_script:
+    # ⚠️ SET THE MODES, DO NOT INHERIT THEM. A GitLab Docker executor runs a job
+    # at umask 0000 by default, and Chrome runs as uxbrowser with --no-sandbox,
+    # so one renderer bug is code running as that uid. Under 0000 the harness,
+    # its bytecode, the toolchain, the recorder's session and socket and the
+    # artifact directory would all be writable by it, and root runs and reads
+    # them later in this job. before_script and script share one shell, so this
+    # holds for every command below, and ai_ux_test.py sets the same umask itself.
+    - umask 022
+    # ⚠️ THE STEPS THAT RUN THIRD-PARTY CODE INHERIT NONE OF THE JOB'S SECRETS.
+    #
+    # apt (its packages' maintainer scripts) and install.sh (pip, `npm ci` and
+    # the npm packages' own install scripts) need neither the GitLab token, the
+    # persona passwords, the stack's UI env nor an AWS credential, so they run
+    # under this function, which hands on an environment built from nothing: the
+    # search path, the home directory, a locale, the proxy variables when the
+    # runner sets them, and install.sh's prefix. An allowlist, because a denylist
+    # passes every variable nobody named: CI_REPOSITORY_URL carries the job token,
+    # and every unprotected project variable reaches every MR job. It keeps the
+    # secrets out of a package script's environment and its logs; it does not
+    # stop a hostile package, which runs as root beside this shell and could read
+    # its /proc/<pid>/environ and the checkout's .git/config. What guards against
+    # that is that each download is checked before it is used: install.sh checks
+    # the Chrome for Testing zip and the Node tarball against the sha256 it records
+    # for each architecture, installs the Python packages with pip
+    # --require-hashes from the digests in requirements.txt and the npm packages
+    # from the lockfile's integrity hashes, and apt checks its repositories'
+    # signatures. npm's upgrade of itself is checked only against what the npm
+    # registry publishes for that version. before_script and script share one
+    # shell, so the function is defined once.
+    - |
+      without_job_secrets() {
+        env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 \
+          ${http_proxy:+http_proxy="$http_proxy"} \
+          ${https_proxy:+https_proxy="$https_proxy"} \
+          ${no_proxy:+no_proxy="$no_proxy"} \
+          ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} \
+          ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} \
+          ${NO_PROXY:+NO_PROXY="$NO_PROXY"} \
+          ${UX_RUNNER_PREFIX:+UX_RUNNER_PREFIX="$UX_RUNNER_PREFIX"} \
+          "$@"
+      }
+    - without_job_secrets apt-get update -y
+    - without_job_secrets apt-get install curl git -y
+    # ⚠️ EXTRACT THE HARNESS FROM THE TARGET BRANCH, AND FAIL CLOSED.
+    #
+    # This checkout is the MR, so its copy of the harness (the tool lists, the
+    # egress allowlist, the environment allowlist, the prompt) is
+    # author-controlled. `git archive` into a fresh directory, rather than
+    # `git checkout FETCH_HEAD -- ...` in place, because an in-place checkout
+    # leaves MR-added files beside the pinned ones, and Python resolves imports
+    # from the script's own directory first: an MR adding scripts/sdlc/json.py
+    # would run in this job, beside an AWS credential and GITLAB_REVIEW_TOKEN.
+    # The fetch names refs/heads/ so a tag called like the branch cannot stand in
+    # for it. The extracted tree is made writable by root alone. Everything below
+    # runs from $UX_HARNESS_DIR, the toolchain install from inside it, and Python
+    # runs it with -B, so no bytecode is written into it for root to read back;
+    # nothing runs from the checkout. The MR that adds this job cannot exercise
+    # it, which is the same trade ai_mr_review makes, except that this one
+    # refuses rather than warns.
+    - |
+      TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
+      git fetch -q origin "refs/heads/$TARGET"
+      UX_HARNESS="scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+      rm -rf "$UX_HARNESS_DIR" && mkdir -p "$UX_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/ux-harness.tar FETCH_HEAD -- $UX_HARNESS && tar -xf /tmp/ux-harness.tar -C "$UX_HARNESS_DIR" && chmod -R go-w "$UX_HARNESS_DIR"; then
+        echo "UX harness pinned to origin/$TARGET in $UX_HARNESS_DIR: $UX_HARNESS"
+      else
+        echo "❌ Could not pin the UX harness to origin/$TARGET — it does not carry"
+        echo "   all of: $UX_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the harness, its tool lists and its egress allowlist the MR's own."
+        echo "   Expected only on the MR that adds the UX test."
+        exit 1
+      fi
+    # The checkout was made by the runner at its own umask, and once Chrome runs
+    # the browser's uid must not be able to rename or replace anything in it that
+    # root writes into or the proxy serves (ux-tests, src/ui/build), so the whole
+    # tree is made writable by root alone before any of this job's Python runs.
+    - chmod -R go-w "$CI_PROJECT_DIR"
+    # The artifact directory sits in the checkout, which could hold `ux-tests` as
+    # a symlink, and the harness writes into it as root, so it starts fresh:
+    # `rm -rf` removes a symlink itself, not what it points at.
+    - rm -rf ux-tests && mkdir ux-tests
+    # About a minute: test-only, already-tested, Draft and missing-precondition
+    # heads stop here, before the toolchain install.
+    - python3 -B "$UX_HARNESS_DIR/scripts/sdlc/ai_ux_test.py" --mr "$CI_MERGE_REQUEST_IID" --precheck --artifact-dir ux-tests
+    - if [ -f ux-tests/proceed ]; then (cd "$UX_HARNESS_DIR" && without_job_secrets bash "$UX_HARNESS_DIR/scripts/ux_runner/install.sh"); fi
+  script:
+    - |
+      if [ ! -f ux-tests/proceed ]; then
+        echo "Nothing to UX-test for this head; see the precheck line above."
+        exit 0
+      fi
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" ux-tests "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      python3 -B "$UX_HARNESS_DIR/scripts/sdlc/ai_ux_test.py" --mr "$CI_MERGE_REQUEST_IID" --inputs ux-tests/inputs.json --artifact-dir ux-tests
+  artifacts:
+    when: always
+    paths:
+      - ux-tests/
     expire_in: 1 week
 
 # ---------------------------------------------------------------------------

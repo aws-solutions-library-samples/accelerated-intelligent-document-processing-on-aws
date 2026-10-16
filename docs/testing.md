@@ -492,10 +492,22 @@ text from the page. **A recording of a live stack shows real documents and
 nothing is redacted: never commit the session directory or attach any of it to a
 pull request.** The one exception is a finished product-demo video its author chooses
 to publish: the author uploads that `demo.mp4`, and nothing else from the session, to
-get its asset URL for the demo videos page. What a click label can hold is set out under Privacy in
+get its asset URL for the demo videos page. The MR UX test's mp4 of the CI review
+stack, which holds only shipped example data, is the other. What a click label can
+hold is set out under Privacy in
 [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md#privacy).
 Details:
 [`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy).
+
+**On a merge request the same review runs unattended.** When a non-Draft MR to
+`develop` changes `src/ui/`, the advisory `ai_ux_test` job tests the MR's UI build in
+a confined headless browser against the long-lived review stack `idp-ux-nightly`, and
+appends its findings and a narrated video to the automated code-review comment for
+that commit. It gates nothing. `make ai-ux-test-local MR=<iid>` runs the same test in
+Docker as a dry run, and `make ai-ux-browser` starts only the confined browser, with
+DevTools on `127.0.0.1:9222`, for an interactive session on a machine with no local
+Chrome. Contract:
+[`ux-test-ci`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-ci.md).
 
 ## 7. Benchmarks
 

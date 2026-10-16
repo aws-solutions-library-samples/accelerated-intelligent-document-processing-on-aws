@@ -2674,6 +2674,56 @@
         "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
       ]
     },
+    "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox the advisory MR UX test's Claude Code session runs inside, granting twelve chrome-devtools-mcp navigation, input, snapshot and screenshot tools and the four recorder tools of scripts/ux_recorder_mcp.py",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "A capability grant, not a gate exemption: it is what the UX session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, so every tool that server offers is either granted here or denied by name in EXPERT_DISALLOWED_TOOLS, and a tool added by a version bump fails the closure until somebody decides which. Same shape as scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/ux_runner/tool_profiles.py::EXPERT_DISALLOWED_TOOLS"
+      ]
+    },
+    "scripts/ux_runner/tool_profiles.py::EXPERT_DISALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing; it is the deny half of the same sandbox, and every entry REMOVES a capability",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "Discovered through its attached comment rather than its name, which the polarity guard correctly refuses to read as an allowlist. Every entry removes a capability: the eight Claude Code built-ins scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS denies and seven more that read, search, delegate or ask, as backup rather than the CLI's whole built-in set, which the session's --tools '' removes outright; and the chrome-devtools-mcp tools that run page JavaScript, upload a file, open, close or switch a tab, change the viewport or device, profile the page, or read console and network traffic. A missing entry is the risk and an extra one is free, so the ratchet is an audited count: changing the list is a deliberate edit, which is the moment to ask whether it still denies everything that could act outside the recorded tab.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/ux_runner/tool_profiles.py::EXPERT_ALLOWED_TOOLS"
+      ]
+    },
+    "scripts/ux_runner/agent.py::CHILD_ENV_ALLOWLIST": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it names the only variables copied from the job's environment into the UX session's claude process, which otherwise receives the harness's fixed settings and a Bedrock-scoped AWS session",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
+      "reason": "An allowlist rather than ai_mr_review's denylist, because the UX job's environment holds GITLAB_REVIEW_TOKEN, the persona passwords in UX_TEST_PERSONAS and the job's own AWS credential, and a denylist passes every variable nobody thought to name. Pinned to its exact members, and the test builds the environment from a parent holding every ai_mr_review.SECRET_ENV_KEYS name, the UX_TEST_* variables and proxy variables, and asserts none of them comes through.",
+      "memberKind": "environment variable name"
+    },
+    "scripts/ux_test_proxy.py::EGRESS_ALLOWED_STATIC_HOSTS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the part of the UX browser's egress allowlist that is not derived from the review stack's own UI environment",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_test_proxy.py",
+      "reason": "The confined Chrome's only network path is this proxy, which tunnels CONNECT only to the hosts the stack's UI environment names (its Cognito pools, SSM, execute-api and Function URL hosts, and its buckets by exact name) plus this list. One member, cdn.jsdelivr.net, from which @monaco-editor/react loads the editor at run time. Pinned to its exact members, because a host added here becomes reachable by the MR's own UI code running in that browser, so adding one is a deliberate edit to the pin rather than a one-word change.",
+      "memberKind": "CONNECT host:port"
+    },
     "lib/idp_common_pkg/idp_common/metering_units.py::NON_CHARGEABLE_METERING_UNITS": {
       "kind": "exemption",
       "memberKind": "metering unit, scoped to the leading component of a pricing key (the service)",

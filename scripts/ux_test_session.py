@@ -20,10 +20,22 @@ this stack's pool" rather than two that drift.
 
 Usage:
   ./scripts/ux_test_session.py setup <STACK_NAME> [--group Admin] [--region us-east-1]
+  ./scripts/ux_test_session.py setup <STACK_NAME> --group Admin --long-lived [--rotate]
   ./scripts/ux_test_session.py teardown <STACK_NAME> --email <email> [--region us-east-1]
 
 ``setup`` prints a JSON blob with url / email / password / group. ``teardown``
 deletes the user.
+
+``--long-lived`` is the one exception to "throwaway", and exists for the CI review
+stack the unattended MR UX test signs in to (``.claude/skills/ux-test-ci.md``). It
+creates ``ux-persona-<group>@example.invalid``, a fixed name, so the masked CI
+variable ``UX_TEST_PERSONAS`` can hold its password from one run to the next, and
+prints the entry to merge into that variable. The ``--stale`` sweep matches only
+``ux-test-`` and so can never select a persona. Two refusals keep the variable and
+the pool in step: setup will not set a new password on an existing persona without
+``--rotate``, because that breaks the variable until somebody updates it, and
+teardown will not delete one without ``--long-lived``. Annotator is refused for
+now, because an annotator also needs a UsersTable row this option does not create.
 
 The app client's auth flows are deliberately NOT modified. Setting a known
 password non-interactively needs only ``admin-set-user-password --permanent``,
@@ -156,9 +168,139 @@ def _resolve_or_explain(stack: str, region: str):
         raise SystemExit("\n".join(lines)) from err
 
 
+#: The username prefix of a long-lived persona. Disjoint from UX_TEST_PREFIX, the
+#: only prefix the --stale sweep matches, so no sweep can ever select a persona.
+UX_PERSONA_PREFIX = "ux-persona-"
+
+
+def persona_email(group: str) -> str:
+    """The fixed address of the long-lived persona for one Cognito group.
+
+    Fixed rather than random, so the CI variable holding its password names the
+    same user on every run, and a second setup finds the first persona instead of
+    leaving two. The reserved .invalid domain still means no invite can reach a
+    real mailbox.
+    """
+    return f"{UX_PERSONA_PREFIX}{group.lower()}@example.invalid"
+
+
+def persona_display_name(group: str) -> tuple[str, str]:
+    """The (given_name, family_name) a group's persona is shown by in the UI.
+
+    The top navigation shows the ID token's given and family names when it carries
+    them, and the sign-in address otherwise, on every page. The unattended MR UX
+    test records those pages and hands their snapshots to a model, and the address
+    is the persona's sign-in name, so the persona gets a name of its own instead.
+    The app client reads both attributes, so the token carries them.
+    """
+    return "UX", f"Persona {group}"
+
+
+def _name_persona(ctx: dict, email: str, group: str) -> None:
+    """Give the persona its display name; the attributes are standard ones."""
+    given, family = persona_display_name(group)
+    aws(
+        "cognito-idp",
+        "admin-update-user-attributes",
+        "--user-pool-id",
+        ctx["user_pool"],
+        "--username",
+        email,
+        "--user-attributes",
+        json.dumps(
+            [
+                {"Name": "given_name", "Value": given},
+                {"Name": "family_name", "Value": family},
+            ]
+        ),
+        region=ctx["region"],
+    )
+
+
+def _user_exists(ctx: dict, email: str) -> bool:
+    """Whether the stack's user pool already holds `email`.
+
+    Only Cognito's UserNotFoundException means no. Any other failure, a denial, a
+    throttle or the wrong pool, stops the command: read as absence, it would send
+    an existing persona down the create path, which sets a new password on it and
+    silently breaks UX_TEST_PERSONAS.
+    """
+    try:
+        aws(
+            "cognito-idp",
+            "admin-get-user",
+            "--user-pool-id",
+            ctx["user_pool"],
+            "--username",
+            email,
+            region=ctx["region"],
+        )
+    except RuntimeError as err:
+        if "UserNotFoundException" in str(err):
+            return False
+        raise SystemExit(f"Could not tell whether {email} exists: {err}") from err
+    return True
+
+
+def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
+    """Create a group's long-lived persona and print its UX_TEST_PERSONAS entry.
+
+    The persona is the account the unattended MR UX test signs in as, so its
+    password has to live in a masked CI variable rather than in a session that
+    ends. Setting a new password on an existing persona is therefore an explicit
+    act, --rotate, because until the variable is updated every MR UX test fails to
+    sign in. Annotator is refused: an annotator needs a UsersTable row as well as
+    the group, and this option creates only the Cognito user. The persona is given
+    a display name (:func:`persona_display_name`), so the UI's top bar shows that
+    rather than the sign-in address. An existing persona is given it too before
+    the refusal, since naming does not touch the password: one made before the
+    display name existed would otherwise keep showing its address.
+    """
+    if args.group == "Annotator":
+        supported = ", ".join(group for group in VALID_GROUPS if group != "Annotator")
+        raise SystemExit(
+            "--long-lived does not support Annotator yet: an annotator also needs a "
+            f"UsersTable row, which this option does not create. Use one of "
+            f"{supported}."
+        )
+    email = persona_email(args.group)
+    if _user_exists(ctx, email) and getattr(args, "rotate", False) is not True:
+        _name_persona(ctx, email, args.group)
+        shown = " ".join(persona_display_name(args.group))
+        raise SystemExit(
+            f"{email} already exists in {args.stack}; its display name is now "
+            f"{shown!r} and its password is unchanged. That password lives in the CI "
+            "variable UX_TEST_PERSONAS, and setting a new one breaks that variable "
+            "until it is updated. Re-run with --rotate to do that deliberately."
+        )
+    password = _password()
+    create_cognito_user(ctx, email, args.group, password)
+    _name_persona(ctx, email, args.group)
+
+    session = {
+        "url": url,
+        "email": email,
+        "password": password,
+        "display_name": " ".join(persona_display_name(args.group)),
+        "group": args.group,
+        "stack": args.stack,
+        "region": args.region,
+        "persona": {args.group: {"username": email, "password": password}},
+        "next": (
+            "merge this entry into the JSON object of every persona, base64 it, and "
+            "store it as the masked CI variable UX_TEST_PERSONAS"
+        ),
+    }
+    print(json.dumps(session, indent=2))
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     ctx = _resolve_or_explain(args.stack, args.region)
     url = _web_url(args.stack, args.region)
+
+    if getattr(args, "long_lived", False) is True:
+        return _setup_long_lived(args, ctx, url)
 
     email = f"ux-test-{secrets.token_hex(4)}@example.invalid"
     password = _password()
@@ -231,6 +373,26 @@ def _stale_ux_users(ctx, older_than_hours: float) -> list:
 
 
 def cmd_teardown(args: argparse.Namespace) -> int:
+    """Delete one user, or sweep abandoned throwaway ones with --stale.
+
+    A long-lived persona is refused without --long-lived, before any AWS call. Its
+    password lives in the CI variable UX_TEST_PERSONAS, so deleting it breaks the
+    MR UX test until the persona is recreated and the variable updated, and a
+    teardown command copied from a throwaway session must not be how that happens.
+    The prefix is compared case-blind because the pool's usernames are.
+    """
+    email = getattr(args, "email", None)
+    if (
+        isinstance(email, str)
+        and email.lower().startswith(UX_PERSONA_PREFIX)
+        and getattr(args, "long_lived", False) is not True
+    ):
+        raise SystemExit(
+            f"{email} is a long-lived persona, not a throwaway session: its "
+            "password lives in the CI variable UX_TEST_PERSONAS, and deleting it "
+            "breaks the MR UX test until it is recreated and the variable updated. "
+            "Pass --long-lived to delete it deliberately."
+        )
     ctx = _resolve_or_explain(args.stack, args.region)
 
     # --stale exists because the weak point of this script is structural, not a
@@ -272,6 +434,23 @@ def main() -> int:
     setup.add_argument("stack")
     setup.add_argument("--group", default="Admin", choices=VALID_GROUPS)
     setup.add_argument("--region", default="us-east-1")
+    setup.add_argument(
+        "--long-lived",
+        action="store_true",
+        help=(
+            "Instead of a throwaway user, create the group's standing persona "
+            "ux-persona-<group>@example.invalid for the CI review stack, and print "
+            "its UX_TEST_PERSONAS entry. Not for Annotator"
+        ),
+    )
+    setup.add_argument(
+        "--rotate",
+        action="store_true",
+        help=(
+            "With --long-lived, set a new password on a persona that already "
+            "exists. UX_TEST_PERSONAS is broken until it is updated"
+        ),
+    )
     setup.set_defaults(func=cmd_setup)
 
     teardown = sub.add_parser("teardown", help="Delete the throwaway user")
@@ -292,6 +471,14 @@ def main() -> int:
         ),
     )
     teardown.add_argument("--region", default="us-east-1")
+    teardown.add_argument(
+        "--long-lived",
+        action="store_true",
+        help=(
+            "Required to delete a ux-persona-* user, whose password the CI "
+            "variable UX_TEST_PERSONAS holds"
+        ),
+    )
     teardown.set_defaults(func=cmd_teardown)
 
     args = parser.parse_args()

@@ -1,0 +1,28 @@
+{
+  "URLBlocklist": ["file://*", "chrome://*", "devtools://*"],
+  "ProxySettings": {
+    "ProxyMode": "fixed_servers",
+    "ProxyServer": "http://127.0.0.1:3128",
+    "ProxyBypassList": "<-loopback>"
+  },
+  "DnsOverHttpsMode": "off",
+  "BuiltInDnsClientEnabled": false,
+  "NetworkPredictionOptions": 2,
+  "WebRtcIPHandling": "disable_non_proxied_udp",
+  "QuicAllowed": false,
+  "BackgroundModeEnabled": false,
+  "MetricsReportingEnabled": false,
+  "SafeBrowsingProtectionLevel": 0,
+  "SearchSuggestEnabled": false,
+  "SyncDisabled": true,
+  "BrowserSignin": 0,
+  "ComponentUpdatesEnabled": false,
+  "SpellcheckEnabled": false,
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "TranslateEnabled": false,
+  "DownloadRestrictions": 3,
+  "AllowFileSelectionDialogs": false,
+  "ExtensionInstallBlocklist": ["*"]
+}

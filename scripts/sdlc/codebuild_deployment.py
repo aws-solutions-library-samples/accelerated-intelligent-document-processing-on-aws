@@ -17,7 +17,9 @@ import tempfile
 import threading
 import time
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 from textwrap import dedent
 
@@ -942,6 +944,37 @@ MANAGED_STACK_NAME_PREFIX = "idp"
 # create_iam_resources) because test_step13_permission_boundaries asserts against
 # the boundary that stack actually deployed with.
 SHARED_BOUNDARY_POLICY_NAME = "idp-cicd-shared-PermissionsBoundary"
+
+#: The long-lived review stack the MR UX test (scripts/sdlc/ai_ux_test.py) runs
+#: against, updated in place by the SCHEDULED build only. The Step 0 sweeps leave
+#: it standing because it is a member of SWEEP_EXEMPT_STACK_NAMES; a test pins that
+#: membership, so renaming one without the other fails.
+UX_NIGHTLY_STACK_NAME = "idp-ux-nightly"
+#: Written at the zip root by scripts/sdlc/integration_test_deployment.py: the one
+#: fact CodeBuild cannot otherwise see, namely which GitLab pipeline source started
+#: the run. Read fail-closed.
+CI_RUN_OPTIONS_FILE = "ci_run_options.json"
+#: How long after main() starts it will wait for the update before reporting it as
+#: still running. CloudFormation carries on server-side either way. It counts from
+#: main()'s start, and the two bounds it must stay inside count from earlier ones:
+#: CodeBuild's 120-minute project timeout from the build's start, and the GitLab
+#: monitor's 110-minute handoff (MONITOR_HANDOFF_SECONDS) from the monitor's, both
+#: before the pipeline's source stage, the build's provisioning and its install
+#: phase, none of which main() sees. So a slow update leaves the verdict alone only
+#: while those phases, plus what main() does after the join, fit in the 20 minutes
+#: left below the handoff. Nothing measures that allowance;
+#: test_ux_nightly_update.py pins the headroom, so narrowing it is deliberate.
+UX_NIGHTLY_JOIN_DEADLINE_SECONDS = 90 * 60
+#: The timeout on the update's `idp-cli deploy --wait`, inside the deadline above.
+UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS = 85 * 60
+#: Set to false/0/no/off, or to an empty value, to turn the update off without a
+#: commit; unset, the schedule decides. An empty value is off, as it is for
+#: IDP_KEEP_FAILED_STACK, so an entry declared with a blank value cannot leave the
+#: update running. The CodeBuild project is CloudFormation-managed
+#: (scripts/sdlc/cfn/codepipeline-s3.yml), so a value set on it by hand is lost
+#: the next time that template's environment is updated; declared in the
+#: template's EnvironmentVariables, it lasts.
+UX_NIGHTLY_DISABLE_ENV = "IDP_UX_NIGHTLY_UPDATE"
 
 
 def _ensure_boundary_policy(iam_client, account_id, policy_name):
@@ -8247,6 +8280,345 @@ def run_variant_probes(admin_email, template_url, probes=None):
     return results
 
 
+#: The stack states an in-place update can start from. Any other settled state
+#: needs an operator first, so the update reports it instead of trying.
+_UX_NIGHTLY_UPDATABLE_STATUSES = frozenset(
+    {"CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"}
+)
+#: Where update_ux_nightly_stack decided its outcome, as the summary row names it.
+_UX_NIGHTLY_PHASES = frozenset({"precheck", "iam", "stack", "thread"})
+#: A CloudFormation StackStatus in the only shape the summary row prints one.
+_UX_NIGHTLY_STATUS_RE = re.compile(r"[A-Z_]{1,64}")
+#: CloudFormation's answer to an update that would change nothing. On the -iam
+#: refresh it arrives as an exception, and from `idp-cli deploy` as a non-zero exit
+#: whose output carries it, which is the night the stack is already current.
+_UX_NIGHTLY_NO_UPDATES = "No updates are to be performed"
+#: The summary row for each outcome: the status row() renders it with, and fixed
+#: text whose slots are filled only from sanitised fields, so no exception text or
+#: URL can reach the table the GitLab job reads its verdict from. Keyed by state,
+#: or by state and reason for a skip.
+_UX_NIGHTLY_ROW_TEXT = {
+    "updated": (
+        "passed",
+        "Updated in place to tonight's template — {status} in {minutes} min",
+    ),
+    "up_to_date": ("passed", "Already on tonight's template — nothing to update"),
+    "not_requested": ("skipped", "Not updated — not a scheduled develop run"),
+    "skipped/not_deployed": (
+        "skipped",
+        "Not updated — the stack is not deployed in this account",
+    ),
+    "skipped/busy": (
+        "skipped",
+        "Not updated — another operation was in progress ({status})",
+    ),
+    "skipped/boundary_not_its_own": (
+        "warning",
+        "Not updated — its permissions boundary is neither its own nor the shared one",
+    ),
+    "failed": (
+        "warning",
+        "Update did not complete — {status} after {minutes} min ({phase})",
+    ),
+    "running": (
+        "warning",
+        "Still updating when the run ended — {minutes} min so far; "
+        "CloudFormation carries on",
+    ),
+    "not_started": ("cancelled", "Not started (publish failed)"),
+}
+_UX_NIGHTLY_UNREPORTED_ROW = ("cancelled", "Not reported")
+
+
+def read_ci_run_options(path: str = CI_RUN_OPTIONS_FILE) -> dict:
+    """The options integration_test_deployment.py wrote at the zip root, or {}.
+
+    Fail-closed by construction. A missing, unreadable or malformed file, or one
+    holding anything but a JSON object, reads as no options, and no options is a
+    run that leaves the review stack alone. The file decides only whether an
+    advisory update happens, so the default that changes nothing is the safe one.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            options = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return options if isinstance(options, dict) else {}
+
+
+def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> bool:
+    """Whether this run updates UX_NIGHTLY_STACK_NAME in place.
+
+    Only the nightly schedule on develop does. The MR and develop buttons run the
+    same build, and the review stack must neither take a template from an unmerged
+    branch nor move twice in a night, so the pipeline source and the ref both have
+    to say so. UX_NIGHTLY_DISABLE_ENV set to a false or an empty value in the
+    build's environment turns the update off without a commit (its comment says
+    where it lasts); unset, the schedule decides.
+    """
+    env = os.environ if environ is None else environ
+    switch = str(env.get(UX_NIGHTLY_DISABLE_ENV, "true")).strip().lower()
+    if switch in ("", "0", "false", "no", "off"):
+        return False
+    return (
+        isinstance(options, dict)
+        and options.get("pipeline_source") == "schedule"
+        and options.get("ref") == "develop"
+    )
+
+
+def _is_stack_gone(exc: Exception) -> bool:
+    """Whether a DescribeStacks failure says the stack does not exist.
+
+    The code and the message together, for the reason _STACK_GONE_MESSAGE gives:
+    ValidationError is CloudFormation's catch-all 400, so a malformed request
+    carries the same code, and only the message says the stack is absent. Every
+    other failure, a throttle or a denial included, is not an answer about it.
+    """
+    code = _aws_error_code(exc)
+    return code == _STACK_GONE_ERROR_CODE and _STACK_GONE_MESSAGE in str(exc)
+
+
+def _described_parameter(stack: dict, key: str) -> str:
+    """One parameter's value off a DescribeStacks entry, or "" when it has none."""
+    for parameter in stack.get("Parameters") or []:
+        if parameter.get("ParameterKey") == key:
+            return str(parameter.get("ParameterValue") or "")
+    return ""
+
+
+def update_ux_nightly_stack(template_url: str) -> dict:
+    """Update UX_NIGHTLY_STACK_NAME in place to tonight's template. Never raises.
+
+    The thread main() submits beside the primary suite on the scheduled run. The
+    stack is long-lived and shared, so two rules shape everything here: it only
+    ever moves the stack forward, and nothing it does can reach the run's verdict.
+
+    So it opts its thread out of the fail-fast kill sweep, because a primary-suite
+    failure must not kill an update of a different stack mid-flight. It deletes
+    nothing and calls none of this module's teardown paths, because the stack has
+    to outlive every run, and it never disables the stack's CloudFront
+    distribution, because every run's teardown deletes disabled distributions
+    whichever stack owns them. Its result is a counts-only outcome for
+    ux_nightly_row, and an unexpected exception anywhere is one more outcome,
+    `failed` in phase `thread`, rather than a traceback in a worker.
+
+    Before deploying it checks two things idp-cli does not. The stack must be
+    settled, because `idp-cli deploy` against a stack with an operation in progress
+    switches to monitoring it, and can exit 0 without applying tonight's template. And
+    it must run under its own -iam pre-stack and boundary or the shared ones, never
+    a run's, because a run's are deleted at that run's teardown. The -iam template
+    is then refreshed in place: create_iam_resources is create-only, so the role
+    would otherwise never gain a permission granted after the stack was first
+    deployed.
+
+    The deploy passes no --custom-config, which would upload a local file to an
+    idp-cli-config-* bucket the bucket sweep reaps, and no --admin-email, which the
+    update path does not need; parameters keep their previous values. Success is
+    read back off the stack, by status and by LastUpdatedTime, rather than off the
+    exit code, since an exit of 0 alone can mean nothing was applied.
+    """
+    _thread_local.never_abort = True
+    started_mono = time.monotonic()
+    started_utc = datetime.now(timezone.utc)
+
+    def outcome(
+        state: str, reason: str = "", phase: str = "", status: str = ""
+    ) -> dict:
+        return {
+            "state": state,
+            "reason": reason,
+            "phase": phase,
+            "status": status,
+            "minutes": round((time.monotonic() - started_mono) / 60, 1),
+        }
+
+    iam_stack_name = f"{UX_NIGHTLY_STACK_NAME}-iam"
+    try:
+        cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+        try:
+            stack = cf.describe_stacks(StackName=UX_NIGHTLY_STACK_NAME)["Stacks"][0]
+        except Exception as e:  # noqa: BLE001
+            if _is_stack_gone(e):
+                return outcome("skipped", reason="not_deployed", phase="precheck")
+            print(f"⚠️ {UX_NIGHTLY_STACK_NAME}: could not read the stack: {e}")
+            return outcome("failed", phase="precheck")
+        status = str(stack.get("StackStatus", ""))
+        if status.endswith("_IN_PROGRESS"):
+            return outcome("skipped", reason="busy", phase="precheck", status=status)
+        if status not in _UX_NIGHTLY_UPDATABLE_STATUSES:
+            return outcome("failed", phase="precheck", status=status)
+
+        boundary = _described_parameter(stack, "PermissionsBoundaryArn")
+        try:
+            iam_stack = cf.describe_stacks(StackName=iam_stack_name)["Stacks"][0]
+        except Exception as e:  # noqa: BLE001
+            if _is_stack_gone(e):
+                return outcome(
+                    "skipped", reason="boundary_not_its_own", phase="precheck"
+                )
+            print(f"⚠️ Could not read {iam_stack_name}: {e}")
+            return outcome("failed", phase="precheck")
+        created_boundary = _described_parameter(
+            iam_stack, "CreatedRolePermissionsBoundaryArn"
+        )
+        policy_name = boundary.partition(":policy/")[2]
+        its_own = policy_name in (
+            f"{UX_NIGHTLY_STACK_NAME}-PermissionsBoundary",
+            SHARED_BOUNDARY_POLICY_NAME,
+        )
+        if not (boundary and created_boundary == boundary and its_own):
+            return outcome("skipped", reason="boundary_not_its_own", phase="precheck")
+
+        try:
+            with open(
+                "iam-roles/cloudformation-management/"
+                "IDP-Cloudformation-Service-Role.yaml",
+                encoding="utf-8",
+            ) as handle:
+                body = handle.read()
+            cf.update_stack(
+                StackName=iam_stack_name,
+                TemplateBody=body,
+                Capabilities=["CAPABILITY_NAMED_IAM"],
+                Parameters=[
+                    {
+                        "ParameterKey": "CreatedRolePermissionsBoundaryArn",
+                        "UsePreviousValue": True,
+                    },
+                    {
+                        "ParameterKey": "ServiceRolePermissionsBoundaryArn",
+                        "UsePreviousValue": True,
+                    },
+                    {
+                        "ParameterKey": "ManagedStackNamePrefix",
+                        "UsePreviousValue": True,
+                    },
+                ],
+            )
+        except Exception as e:  # noqa: BLE001
+            if _UX_NIGHTLY_NO_UPDATES not in str(e):
+                print(f"⚠️ {iam_stack_name} template not refreshed: {e}")
+                return outcome("failed", phase="iam")
+        else:
+            try:
+                cf.get_waiter("stack_update_complete").wait(
+                    StackName=iam_stack_name,
+                    WaiterConfig={"MaxAttempts": 60, "Delay": 15},
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️ {iam_stack_name} update did not complete: {e}")
+                return outcome("failed", phase="iam")
+
+        role_arn = _stack_output(cf, iam_stack_name, "ServiceRoleArn")
+        if not role_arn:
+            print(f"⚠️ {iam_stack_name} has no ServiceRoleArn output")
+            return outcome("failed", phase="iam")
+
+        result = run_command(
+            f"idp-cli deploy --stack-name {UX_NIGHTLY_STACK_NAME} "
+            f"--template-url {template_url} --role-arn {role_arn} --wait",
+            check=False,
+            timeout=UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS,
+        )
+
+        after = cf.describe_stacks(StackName=UX_NIGHTLY_STACK_NAME)["Stacks"][0]
+        status = str(after.get("StackStatus", ""))
+        updated_at = after.get("LastUpdatedTime")
+        if isinstance(updated_at, datetime) and updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        fresh = isinstance(updated_at, datetime) and updated_at >= started_utc
+        if status == "UPDATE_COMPLETE" and fresh:
+            return outcome("updated", status=status)
+        output = " ".join(f"{result.stdout or ''} {result.stderr or ''}".split())
+        if not fresh and (result.returncode == 0 or _UX_NIGHTLY_NO_UPDATES in output):
+            return outcome("up_to_date", status=status)
+        return outcome("failed", phase="stack", status=status)
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ {UX_NIGHTLY_STACK_NAME}: update raised {type(e).__name__}: {e}")
+        return outcome("failed", phase="thread")
+
+
+def join_ux_nightly_update(
+    future: Future,
+    executor: ThreadPoolExecutor,
+    *,
+    started: float,
+    clock: Callable[[], float] = time.monotonic,
+    deadline: float = UX_NIGHTLY_JOIN_DEADLINE_SECONDS,
+) -> dict:
+    """The update's outcome, waiting at most until `deadline` after `started`.
+
+    Counted from main()'s start rather than from this call, so however long the
+    primary suite took, the wait never runs past UX_NIGHTLY_JOIN_DEADLINE_SECONDS
+    after main() began. CodeBuild's timeout and the GitLab monitor's handoff count
+    from earlier starts, so this keeps a slow update from reaching them only within
+    the allowance the constant's comment describes. An update still going at the
+    deadline is reported as `running` and
+    left alone: CloudFormation carries it on server-side, and the thread ends with
+    the process at os._exit.
+
+    Never raises, and shuts the executor down without waiting on every path,
+    because waiting is the very join this bounds. `clock` is injectable so the
+    bound is testable without sleeping.
+    """
+    remaining = max(0.0, deadline - (clock() - started))
+    try:
+        outcome = future.result(timeout=remaining)
+    except FuturesTimeoutError:
+        executor.shutdown(wait=False)
+        return {"state": "running", "minutes": round((clock() - started) / 60, 1)}
+    except Exception:  # noqa: BLE001
+        executor.shutdown(wait=False)
+        return {"state": "failed", "phase": "thread"}
+    executor.shutdown(wait=False)
+    if isinstance(outcome, dict):
+        return outcome
+    return {"state": "failed", "phase": "thread"}
+
+
+def ux_nightly_row(outcome: dict | None) -> tuple[str, str]:
+    """(status, text) for the UX review stack's summary row. Never raises.
+
+    The row sits in the table fetch_summary_verdict scans for `OVERALL: PASS` and
+    `OVERALL: FAIL`, so its text comes from _UX_NIGHTLY_ROW_TEXT alone and every
+    slot is sanitised: the status to a bare upper-case word that cannot spell
+    OVERALL, the phase to its fixed set, and the minutes to a number. No exception
+    text and no URL is ever included, so nothing the update ran into can forge or
+    bury the verdict line, and a malformed outcome renders as not reported rather
+    than raising while the summary is built.
+    """
+    if not isinstance(outcome, dict):
+        return _UX_NIGHTLY_UNREPORTED_ROW
+    state = outcome.get("state")
+    reason = outcome.get("reason")
+    if state == "skipped" and isinstance(reason, str):
+        state = f"skipped/{reason}"
+    entry = _UX_NIGHTLY_ROW_TEXT.get(state) if isinstance(state, str) else None
+    if entry is None:
+        return _UX_NIGHTLY_UNREPORTED_ROW
+    status = outcome.get("status")
+    if not (
+        isinstance(status, str)
+        and _UX_NIGHTLY_STATUS_RE.fullmatch(status)
+        and "OVERALL" not in status
+    ):
+        status = "UNKNOWN"
+    phase = outcome.get("phase")
+    if not (isinstance(phase, str) and phase in _UX_NIGHTLY_PHASES):
+        phase = "unknown"
+    minutes = outcome.get("minutes")
+    if (
+        isinstance(minutes, bool)
+        or not isinstance(minutes, (int, float))
+        or not -1e6 < minutes < 1e6
+    ):
+        minutes = 0.0
+    row_status, template = entry
+    text = template.format(status=status, phase=phase, minutes=f"{minutes:.1f}")
+    return row_status, text
+
+
 def publish_summary_to_s3(summary_text):
     """Upload the deployment summary to the SDLC source bucket.
 
@@ -8275,6 +8647,7 @@ def build_consolidated_summary(
     probe_results,
     publish_success,
     startup_sweep_findings=None,
+    ux_nightly_update=None,
 ):
     """Build the deterministic end-of-run status table for EVERY test.
 
@@ -8284,6 +8657,13 @@ def build_consolidated_summary(
     suite's per-step results (from result["step_results"]), and each
     deployment-variant probe. The Bedrock pass/fail narrative is layered on top
     of this, not instead of it.
+
+    `ux_nightly_update` is the outcome of the in-place update of
+    UX_NIGHTLY_STACK_NAME, from join_ux_nightly_update, rendered as one row of
+    its own after the probes by ux_nightly_row. It never reaches `overall_ok`:
+    that stack is a shared review fixture, not something this run tested, so its
+    update is reported and is never part of the verdict. `None`, which every
+    caller but main()'s final one passes, renders no section at all.
 
     `startup_sweep_findings` maps a STARTUP_SWEEPS `func` to that sweep's return
     value. Per sweep: an empty list renders a passed row; a non-empty one renders
@@ -8297,6 +8677,11 @@ def build_consolidated_summary(
     on failure — and a sweep that could not enumerate its targets reaped nothing
     on every run behind a `⚠️` in a six-figure-line log (#1391, #1434).
 
+    A `warning` row is reported without failing the table. A Step 0 sweep whose
+    `fails_run` is False uses it, and so does the UX review stack's in-place
+    update, so the row says what happened while the verdict stays what the
+    deploy and the suite made it.
+
     Returns the summary text; the caller prints and uploads it.
     """
     lines = []
@@ -8306,9 +8691,6 @@ def build_consolidated_summary(
         icon = {
             "passed": "✅",
             "failed": "❌",
-            # Reported without failing the table. Used only by a Step 0 sweep
-            # whose `fails_run` is False, so the row says what happened while
-            # the verdict stays what the deploy and the suite made it.
             "warning": "⚠️",
             "skipped": "⏭️",
             "cancelled": "⚪",
@@ -8423,6 +8805,15 @@ def build_consolidated_summary(
                 lines.append(row("failed", name, pr.get("error", "Unknown error")))
                 overall_ok = False
 
+    if ux_nightly_update is not None:
+        lines.append("")
+        lines.append(
+            f"🌙 UX review stack ({UX_NIGHTLY_STACK_NAME}, updated in place — "
+            "never part of the verdict)"
+        )
+        status, text = ux_nightly_row(ux_nightly_update)
+        lines.append(row(status, text))
+
     header = "🎉 OVERALL: PASS" if overall_ok else "💥 OVERALL: FAIL"
     banner = "=" * 72
     return "\n".join(
@@ -8458,6 +8849,7 @@ def main():
     # a local transcript, which is what the end-of-build failure analysis reads
     # instead of racing CloudWatch for its own output.
     transcript_path = install_suite_transcript()
+    main_started = time.monotonic()
 
     print("Starting CodeBuild deployment process...")
 
@@ -8527,6 +8919,13 @@ def main():
         "cleanup_stale_ci_diagnostics": diagnostics_sweep_findings,
     }
 
+    ux_nightly_requested = ux_nightly_update_requested(read_ci_run_options())
+    ux_nightly_outcome = (
+        {"state": "not_started"} if ux_nightly_requested else {"state": "not_requested"}
+    )
+    ux_nightly_future = None
+    ux_nightly_executor = None
+
     # Step 1: Publish templates to S3
     try:
         template_url = publish_templates()
@@ -8583,6 +8982,16 @@ def main():
             )
         else:
             print("ℹ️ Skipping deployment-variant probes (disabled)")
+
+        if ux_nightly_requested:
+            print(
+                f"\n🌙 Updating {UX_NIGHTLY_STACK_NAME} in place to tonight's "
+                "template, alongside the suite...\n"
+            )
+            ux_nightly_executor = ThreadPoolExecutor(max_workers=1)
+            ux_nightly_future = ux_nightly_executor.submit(
+                update_ux_nightly_stack, template_url
+            )
 
         # Step 2b: Deploy + test the primary shared stack (runs concurrently
         # with the APIGW thread above).
@@ -8743,6 +9152,12 @@ def main():
                     f"{probe_summary}"
                 )
 
+        if ux_nightly_future is not None:
+            ux_nightly_outcome = join_ux_nightly_update(
+                ux_nightly_future, ux_nightly_executor, started=main_started
+            )
+            print(f"🌙 {UX_NIGHTLY_STACK_NAME}: {ux_nightly_outcome.get('state')}")
+
     # Fold the headless-template gate (Step 1a) into the verdict. Applied HERE,
     # not at the check itself, because stack_success is assigned (not and-ed) by
     # the primary suite above, so an early False would be overwritten.
@@ -8812,7 +9227,12 @@ def main():
     # status" view), then the Bedrock pass/fail narrative(s). Both are uploaded
     # to S3 so the GitLab job can fetch the full report.
     consolidated = build_consolidated_summary(
-        stack_name, result, probe_results, publish_success, startup_sweep_findings
+        stack_name,
+        result,
+        probe_results,
+        publish_success,
+        startup_sweep_findings,
+        ux_nightly_update=ux_nightly_outcome,
     )
     print(f"\n{consolidated}\n")
 

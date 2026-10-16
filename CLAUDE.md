@@ -435,11 +435,14 @@ own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
 maintained definition of that path list, but it now gates nothing and is
 documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
-Of the jobs that run only on GitLab, one is left to describe here and it is not a
-gate, so the parity assertion is unaffected by it: `deployment_validation` (the pre-deploy IAM check, which
-belongs to the deploy path above, and which is nightly-only for the same reason —
-note the *check itself* still runs on every MR as the last step of `static_checks`,
-where it needs no credentials).
+Of what runs only on GitLab, two things are left to describe here, and neither is
+a gate, so the parity assertion is unaffected by them. `deployment_validation` is
+the pre-deploy IAM check, which belongs to the deploy path above and is
+nightly-only for the same reason — note the *check itself* still runs on every MR
+as the last step of `static_checks`, where it needs no credentials. The advisory
+MR UX test is the other: `ux_test_build` and `ai_ux_test`, which run on a non-Draft
+MR to `develop` that changes `src/ui/`, are both `allow_failure: true` and absent
+from `SHARED_GATES` (footnote ³ in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`).
 
 ### The advisory AI review runs on both platforms
 
@@ -1459,6 +1462,7 @@ that domain:
 | `.claude/skills/api-rbac-test.md` | Verifying API authorization (Cognito groups + config-version scope) via `make api-test` / `make api-test-static`; adding a new API operation |
 | `.claude/skills/live-auth-checks.md` | Changing the Cognito pre-token IdP group-mapping trigger, `getStepFunctionExecution`, or `UserPoolClient` attribute permissions — `make live-auth-checks` (throwaway resources, no stack) and `make verify-idp-federation` (a real federated sign-in via a throwaway OIDC provider). Includes the Cognito behaviours the docs get wrong |
 | `.claude/skills/ux-test.md` | Browser-driven UX testing of the web UI against a live stack (`make ux-test`) — functional pass/fail per flow **plus** usability findings. The only test layer here that opens a browser; flows live in `scripts/ux_flows.yaml`. Optionally **recorded** as a narrated, captioned mp4 via `scripts/ux_recorder.py` (Polly generative voice, idle time compressed) |
+| `.claude/skills/ux-test-ci.md` | The **unattended** contract for the MR UX test, used by `scripts/sdlc/ai_ux_test.py` (CI job `ai_ux_test`; `make ai-ux-test-local MR=<iid>` runs it in Docker as a dry run). The harness prepares the confined browser, the sign-in and the recording; the scope arrives in the prompt; the model holds only browser and recorder tools; the shared review stack is looked at but never written to; and everything the MR shows is untrusted. It defers to `ux-test.md` for every criterion |
 | `.claude/skills/product-demo.md` | Recording a **product demo video** of changelog entries, a PR/MR or a named feature against a live stack, for the team or `docs/demo-videos.md`. Proposes three storyboards, records the one the user picks with `scripts/ux_recorder.py start --kind demo` (narrated, captioned mp4 ending on a Key-takeaways card), drafts the docs entry; confirmed storyboards live in `scripts/demo_storyboards.yaml`. Sibling of `ux-test.md`: that one judges the UI, this one shows it |
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |

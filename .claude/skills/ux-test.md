@@ -274,6 +274,13 @@ with nothing redacted: a password revealed by a show-password toggle is in the
 video. Polly receives only the narration text you wrote; frames never leave the
 machine.
 
+The one exception is the unattended MR UX test ([`ux-test-ci.md`](ux-test-ci.md)):
+its recording of the CI review stack `idp-ux-nightly`, which holds only shipped
+example data, is uploaded to the merge request as the finished mp4, and nothing
+else from the session goes with it. Its narration, captions and chapter labels are
+redacted before render reads them; its frames are uploaded as they were recorded,
+unredacted.
+
 Each click is also logged, with a label, in `events.jsonl` and `timeline.json`,
 and `render` prints the same labels in its click table and quotes them in its
 warnings. A click on a form field, an editable region (`contenteditable`, or a

@@ -94,14 +94,17 @@ payload-robustness corpus covers that goal directly. See
 
 ## Pipeline stages & triggers
 
-The GitLab pipeline has three stages. Everything a merge request runs is in the
-first one; the two AWS stages are **nightly plus a manual button**.
+The GitLab pipeline's stages are below. Every gate a merge request runs is in the
+first one; the two deploy stages are **nightly plus a manual button**, and the
+advisory `ux_review` stage runs only on a merge request that changes `src/ui/`.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
 | **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
+| **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only |
+| **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
 
 ⚠️ **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
 hosting, Jobs API) do not run in this job**, and moving it to a nightly schedule
@@ -279,13 +282,13 @@ GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
-| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests |
-|-------|:---:|:---:|:---:|:---:|
-| Push to any branch, **no MR** | ✅ | — | — | — |
-| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) |
-| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** |
-| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ |
+| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests | ux_test_build / ai_ux_test³ |
+|-------|:---:|:---:|:---:|:---:|:---:|
+| Push to any branch, **no MR** | ✅ | — | — | — | — |
+| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) | — |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) | ✅ auto if `src/ui/` changed |
+| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** | — |
+| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied
@@ -437,6 +440,268 @@ review without posting it, or `make ai-mr-review-local MR=<iid>` from a laptop,
 which takes the MR head from git over SSH because this instance's REST API sits
 behind federated sign-in and a token alone cannot reach it. The unattended
 contract is `.claude/skills/pr-review-ci.md`.
+
+³ **`ux_test_build` and `ai_ux_test` are advisory, are not gates, and run
+automatically.** On a non-Draft MR to `develop` that changes `src/ui/`, the pair tests
+the MR's web UI in a confined headless browser against the long-lived review stack
+`idp-ux-nightly`, then appends the findings and a narrated video to the `ai_mr_review`
+note for the same head. Both jobs are `allow_failure: true`, absent from
+`test_ci_gate_parity.py`'s `SHARED_GATES`, and `interruptible`, so a push mid-run
+cancels the run. `ai_ux_test` is idempotent per head SHA, and
+`resource_group: ux_test_stack` runs one at a time against the shared stack. The entry
+point is `scripts/sdlc/ai_ux_test.py`, the unattended contract is
+`.claude/skills/ux-test-ci.md`, and `scripts/tests/test_ux_test_ci_jobs.py` pins the
+two jobs' shape.
+
+**Why two jobs.** Chrome's DevTools port is unauthenticated, so no MR code may run in
+the job that drives the browser. `ux_test_build` runs the MR's `npm ci` (with its
+lifecycle scripts) and `vite build` (with its config) into `src/ui/build/`, and
+`ai_ux_test` receives only those static files, which its egress proxy serves at
+`http://localhost:3000`. The build job also writes `ui-change.json`, but it is the
+job that ran MR code, so `ai_ux_test` classifies the change again from git and
+treats that file as diagnostics only.
+
+**What `ai_ux_test` does**, in order:
+
+1. extracts the harness from the target branch with `git archive` into
+   `/tmp/ux-harness`, and exits 1 rather than run the checkout's own copy when that
+   fails;
+2. prechecks in about a minute on a bare `python3`, so a Draft, a test-only change, a
+   head that already has its section, a missing UI build or a missing CI variable
+   stops here, before the toolchain install;
+3. installs the pinned toolchain from `scripts/ux_runner/install.sh`, started inside
+   the extracted harness with none of the job's secrets in its environment;
+4. checks that its AWS credentials reach the expected account;
+5. starts the stdlib egress proxy `scripts/ux_test_proxy.py` as uid `uxproxy`, and
+   Chrome for Testing headless as uid `uxbrowser`, with the hardened flags and the
+   managed policy, and starts the socket audit of Chrome's uid at the same moment;
+6. verifies that the policy is in force and that the browser's traffic reaches the
+   proxy, then signs the persona in over DevTools and checks that the signed-in
+   page's viewport is 1600×1000, all before recording starts;
+7. starts `scripts/ux_recorder.py`, then runs `claude -p` with the prompt on stdin, in
+   its own process group, holding only `chrome-devtools-mcp`'s navigation, input,
+   snapshot and screenshot tools and the four tools of the recorder's stdio adapter
+   `scripts/ux_recorder_mcp.py` (mark, note, pause and resume);
+8. stops the recorder, terminates Chrome and only then takes the socket audit's last
+   pass, stops the proxy, and renders the narrated mp4 in a child process of its own
+   (Amazon Polly, voice Ruth, with a private render log);
+9. appends the UX section, with the uploaded video, to the `ai_mr_review` note for
+   that head SHA (PUT), then replies once in its thread.
+
+**The security design, as the code enforces it.**
+
+- The harness is extracted from the target branch with `git archive` into a fresh
+  directory rather than checked out in place, because an in-place checkout leaves
+  MR-added files beside the pinned ones and Python resolves imports from the
+  script's own directory first. It fails closed, so the MR that adds the UX test
+  cannot exercise it: the trade `ai_mr_review` makes, except that this job refuses
+  where that one warns. The fetch names `refs/heads/<target>`, so a tag called like
+  the branch cannot stand in for it.
+- Modes are set, never inherited. A GitLab Docker executor runs a job at umask
+  0000 by default, and Chrome runs as `uxbrowser` with `--no-sandbox`, so a renderer
+  bug is code running as that uid. The job sets umask 022 as its first command, and
+  `install.sh` and `ai_ux_test.py` set it again themselves; it makes the extracted
+  harness and the whole checkout writable by root alone before any of its Python
+  runs; and it runs `ai_ux_test.py` with `-B`, so no bytecode is written into the
+  pinned harness for root to read back. The egress proxy keeps the build's real
+  path from start-up and clears group and other write bits on it, so the browser's
+  uid can neither change what is served nor move the site elsewhere.
+- apt (with its packages' maintainer scripts) and `install.sh` (pip, `npm ci` and the
+  npm packages' own install scripts) do not inherit the job's secrets: they run
+  under `env -i` with only the search path, the home directory, a locale, the proxy
+  variables and `install.sh`'s prefix. An allowlist, because a denylist passes every
+  variable nobody named; `CI_REPOSITORY_URL`, for one, carries the job token. That
+  keeps the secrets out of a package script's environment and logs, not out of a
+  hostile package's reach: it runs as root beside the job's shell, and could read
+  that shell's `/proc/<pid>/environ` and the checkout's `.git/config`. What guards
+  against a hostile package is that each download is checked before it is used:
+  `install.sh` checks the Chrome for Testing zip and the Node tarball against the
+  sha256 it records for each architecture, installs the Python packages with
+  `pip --require-hashes` from the digests in `requirements.txt`, which a test pins
+  to `lib/idp_common_pkg/uv.lock`'s, and the npm packages from the lockfile's
+  integrity hashes, and apt checks its repositories' signatures. npm's upgrade of
+  itself to the pinned version is the one download checked only against what the
+  npm registry publishes for it. `install.sh` also changes into an empty
+  directory of its own and runs Python isolated (`-I`) before any `python3` or
+  `npm`, so nothing at the checkout's root can shadow a module or a registry
+  setting.
+- The artifact directory `ux-tests` is recreated before the harness writes into it,
+  and the harness refuses it, and any artifact file in it, when it is a symlink:
+  it sits in the MR's checkout, and the harness writes there as root.
+- The egress proxy is Chrome's only network path. It tunnels `CONNECT` only to
+  port 443 of the review stack's own hosts, named exactly (its Cognito, SSM, API
+  and Function URL hosts, and its buckets by exact name, never by a name prefix,
+  on their regional S3 hosts and, in the commercial partition, the global ones the
+  backend presigns its file URLs with), plus one static host, and only when every
+  address the name resolves to is public. Instance metadata, the DevTools port and
+  private addresses are refused, and every refusal is logged to `refusals.jsonl`,
+  a request the proxy cannot parse included. The proxy also bounds how many
+  connections are open at once and how long and how large a request head may be,
+  so a slow or malformed client cannot hold it. Its working directory is
+  `uxproxy`'s, so the harness reads its ready file, refusal log, stats and log
+  back the way it reads render's outputs: only as regular files of that uid,
+  opened without following a link or waiting on a pipe, and bounded in size. The note's caveats count only what
+  the page itself caused to be refused; Chrome's own background requests and the
+  proxy self-test are counted apart in `summary.json` (`egress.by_origin`).
+- The managed policy (`scripts/ux_runner/chrome_policy.json`) and the Chrome flags
+  fix that proxy, block `file://`, `chrome://` and `devtools://`, and turn off
+  DNS-over-HTTPS, QUIC, WebRTC's non-proxied UDP, downloads, extensions, sync,
+  browser sign-in, component updates and other background traffic. `chrome://`
+  matters because `chrome-devtools-mcp`'s own navigation allows `chrome://inspect`,
+  whose network-target discovery opens sockets outside the proxy. The run refuses to
+  start when the installed policy differs from the committed one.
+- Chrome runs as `uxbrowser` and the proxy as `uxproxy`, and a socket audit reads
+  `/proc/net` for every socket of Chrome's uid for the whole of Chrome's life: it
+  starts as Chrome is launched, so the sign-in on the MR's own login page is inside
+  it, and its last pass runs after Chrome has been terminated, which happens as soon
+  as the recorder stops, so render and the post never run beside a live signed-in
+  page. Terminating Chrome kills its process group and then every process its uid
+  still runs, so one that left the group with `setsid` cannot outlive the audit
+  either. It reads the TCP, UDP, UDP-Lite, ping and raw tables, and an unconnected
+  socket counts as harmless only when it is bound to loopback. Nothing is posted
+  when Chrome held any other socket, when a process of its uid had left its process
+  group, or when the audit was unavailable, which includes an audit in which no
+  pass saw a single socket of Chrome's uid.
+- The proxy confines Chrome as configured, not a subverted one: a renderer the MR's
+  page compromises runs as `uxbrowser` and can open sockets of its own to anything
+  the job container can reach, which the proxy never sees and the audit only
+  samples. And DevTools and the proxy are loopback-only because each job has a
+  network namespace of its own; a runner that runs jobs with host networking shares
+  that loopback with every job on the host.
+- The persona is signed in over DevTools before the recorder starts, so its password
+  reaches neither the model nor the recording.
+- `claude` runs with `--tools ''` (no built-in tools), `--allowedTools` naming only
+  the browser and recorder tools, `--permission-mode manual`, `--strict-mcp-config`
+  and `--bare`. Its MCP servers start under `env -i`, and its own environment is
+  built from an allowlist that never holds `GITLAB_REVIEW_TOKEN` or the personas.
+- None of the granted browser tools runs script in the page. Denying
+  `evaluate_script` by name is not enough for that, because by default
+  `navigate_page` also takes an `initScript` and follows `javascript:` and `data:`
+  URLs; `chrome-devtools-mcp` runs with `--javascriptEvaluation=false`, which
+  removes the parameter and refuses those URLs.
+- `claude` gets a self-assumed AWS session whose policy allows only Bedrock model
+  invocation, and render one that allows only `polly:SynthesizeSpeech`, each minted
+  when it is needed. When `claude`'s assume is refused, `claude` uses the job's own
+  credentials instead, which a `WARNING:` line says before the session starts; when
+  render's is refused, render gets no credential at all and the video has no
+  narration. `summary.json` records it per consumer, for example
+  `credential_scope: {"claude": "ambient", "render": "unavailable"}`. A local run
+  on an SSO permission-set role or IAM-user keys cannot re-assume itself, so there
+  `claude` runs on the developer's own session and the video is unnarrated.
+- Render runs as a child process of its own (`ux_recorder.py render` under
+  `python3 -I`, in its own process group) and as a uid of its own, `uxrender`,
+  whose environment is the recorder's few variables, the region and that one
+  session. So the code that decodes the page's frames and speaks the narration is
+  handed neither the token, the personas nor the job's credentials, and cannot read
+  them from the orchestrator's `/proc/<pid>/environ` either, which `claude` and its
+  MCP servers, running as root, could; what keeps those from the model is that it
+  holds no tool that reads a file. The session directory is `uxrender`'s while
+  render runs, so the orchestrator reads its outputs back, the mp4 and the
+  chapter list, only as regular files of that uid directly in the directory,
+  opened without following a link, never blocking on a pipe and bounded in size;
+  anything else under those names is refused unread, and fails the run. Every
+  mark's spoken line and label is redacted before render speaks, captions or lists
+  it. The frames are uploaded as recorded: they show the review stack's shipped
+  example data, and in the top bar the long-lived persona's display name once the
+  page has loaded it, with its sign-in address before that on a full page load.
+- The prompt goes on stdin, never into argv, and every process runs in its own
+  process group, killed on a timeout and on a job cancel. Of what `claude`, render
+  and the recorder's subcommands print, the harness keeps each stream only up to a
+  fixed bound (`processes.MAX_OUTPUT_BYTES`) and reads and drops the rest, so a
+  child that floods its output fills neither the harness's memory nor, through
+  render's private log, the job's disk. git is read the same way in the precheck,
+  where the MR decides how much it prints: the `src/ui` diff is kept up to the
+  prompt's budget and only counted past it, and any other git command that prints
+  more than `ui_change.MAX_OUTPUT_BYTES` is refused.
+
+**Posting.** It edits only notes authored by the token's own user, which `GET /user`
+identifies, so a marker somebody else pastes neither suppresses a run nor gets
+edited. It appends to the `ai_mr_review` note for the same full head SHA and replies
+once in that note's thread. When no such note appears within 10 minutes, it posts a
+standalone note instead. The model's text reaches the note only as the fields of its
+JSON block, sanitised and bounded, so that it carries no mention, HTML, image, link,
+URL, math command, or issue, MR, epic, label, milestone, snippet, iteration or
+Jira-style reference that GitLab would act on, however it is spelled; a bare commit
+SHA is the one reference left as written. The section is redacted once more before
+it is posted, and that pass writes no link either. Every body is defused of quick
+actions. Within the token's own notes a marker
+counts only where the code review or this job writes one, so a marker the code
+review quotes from the MR neither picks the note nor marks a head as tested. An
+upload GitLab refuses or fails costs the section its video and nothing else: the
+findings are still posted, the note says the mp4 is in the job artifacts, and
+`summary.json` records why under `note.upload_error`.
+
+**Uploads accumulate.** When a newer head's section lands, the older note's video
+line is replaced by a superseded line, and the upload itself is **not** deleted:
+`GITLAB_REVIEW_TOKEN` keeps the least role that can create a note, deleting an upload
+needs Maintainer, and the variable is unprotected and visible to every MR pipeline.
+So each superseded mp4, tens of MB, stays reachable by its URL until somebody removes
+it by hand. The section's marker records `upload=<id>` for a later, separately
+authorised deletion change.
+
+**CI variables.** All four are masked and **not** protected, because a protected
+variable is absent from MR pipelines. Without them both jobs print `SKIPPED:` and
+exit 0.
+
+| Variable | What it holds |
+|---|---|
+| `UX_TEST_UI_ENV` | base64 of the review stack's `WebUITestEnvFile` output, plus an optional `UX_TEST_BUCKETS=` line of its exact bucket names; the egress rules come from it |
+| `UX_TEST_PERSONAS` | base64 of `{"<group>": {"username": …, "password": …}}`, from `scripts/ux_test_session.py setup idp-ux-nightly --group Admin --long-lived` |
+| `UX_TEST_AWS_ACCOUNT_ID` | the account the job's credentials must reach; only ever printed as its last four digits |
+| `GITLAB_REVIEW_TOKEN` | shared with `ai_mr_review`: a project access token with the least role that can create a note |
+
+⚠️ **The residual.** Masked, unprotected variables reach every job of an MR pipeline
+that runs MR code, `ux_test_build`, `unit_tests` and `ui_tests` included, and that
+includes the persona's password. An author with push access can also rewrite the
+job itself, since an MR pipeline runs the MR's own `.gitlab-ci.yml`, so pinning the
+harness protects against edits to the harness files and nothing more. The persona is
+a reviewer of shipped example data on a CI stack, not an operator account, and a
+fork's pipeline gets no masked variables, which is the bound `ai_mr_review` relies on
+as well.
+
+**Cost and time caps.** A $10 model budget and 150 turns per session, a 25-minute
+session inside a 60-minute job, and at most 3 flows: the change itself, plus up to
+two catalogue flows chosen by their `paths:` in `scripts/ux_flows.yaml`.
+
+**The Chrome for Testing pin.** `install.sh` pins Chrome for Testing by version and
+by the digest of each platform's zip, and `dep_audit` reads the UX toolchain's npm
+lockfile and its Python pins but not Chrome, so nothing prompts a bump and the
+browser the MR's code runs in gets no security fix until somebody moves the pin.
+Move it, as the comment above `CFT_VERSION` describes, whenever a Chrome Stable
+release fixes a High or Critical security bug, and at least once a month.
+
+**The review stack `idp-ux-nightly`, and its nightly update.**
+
+- The scheduled integration build updates the stack in place, on its own thread
+  beside the suite, only when `ci_run_options.json` says the run is the schedule on
+  `develop`, so never from the MR or `develop` manual buttons.
+  `scripts/sdlc/integration_test_deployment.py` writes that file at the root of the
+  deployment zip.
+- It refreshes the `idp-ux-nightly-iam` pre-stack's template first, because
+  `create_iam_resources` is create-only and the stack's service role would otherwise
+  never gain later permissions.
+- The result is a 🌙 row in the end-of-run summary. It is warn-only and never changes
+  the verdict. `IDP_UX_NIGHTLY_UPDATE` set to `false` (or `0`, `no`, `off`, or an
+  empty value) in the build's environment turns the update off. The `app-sdlc` CodeBuild project is CloudFormation-managed, so a value
+  set on the project by hand takes effect at once but is lost the next time
+  `scripts/sdlc/cfn/codepipeline-s3.yml` updates its environment; to keep it off,
+  declare it among that project's `EnvironmentVariables` in the template.
+- Deploy and update the stack through its own `idp-ux-nightly-iam` pre-stack and
+  boundary, or the shared `idp-cicd-shared-PermissionsBoundary`, never through a
+  run's; keep any custom configuration outside an `idp-*` bucket; and keep its
+  CloudFront distribution enabled. Why each of those matters, and how the Step 0
+  sweeps leave the stack standing, is under
+  [Startup reapers](#startup-reapers-converge-leaks-from-interrupted-prior-runs).
+
+**The Polly grant.** `polly:SynthesizeSpeech` is granted to the GitLab CI role in
+`scripts/sdlc/cfn/credential-vendor.yml`. Like the Bedrock grant, it reaches the live
+role only through a manual stack update; until then the video is rendered without
+narration and `summary.json` records `narration: unavailable (AccessDenied)`.
+
+**Local runs.** `make ai-ux-test-local MR=<iid>` runs the same test in Docker as a dry
+run, and `make ai-ux-browser` starts only the confined browser, with DevTools on
+`127.0.0.1:9222`; see
+[docs/testing.md](../../../docs/testing.md#the-ux-review-and-recording-it).
 
 Notes:
 - **Every push runs fast_checks** (all seven jobs), so lint/typecheck/unit and
