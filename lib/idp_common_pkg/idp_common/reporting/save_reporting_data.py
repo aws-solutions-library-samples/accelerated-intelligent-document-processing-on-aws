@@ -23,6 +23,7 @@ from idp_common.metering_units import (
     classify_absent_unit,
     pricing_key_service,
 )
+from idp_common.metrics import emit_document_cost_metrics
 from idp_common.models import Document
 from idp_common.s3 import get_json_content
 from idp_common.utils import parse_s3_uri
@@ -1242,6 +1243,22 @@ class SaveReportingData:
         # nothing declares as free (#1212). Naming only the service would report
         # the second case as though the whole model were unpriced.
         unpriced_rows = set()
+        # Running total of the per-row ``estimated_cost`` values below, for the
+        # ``DocumentEstimatedCost`` CloudWatch metric (GitHub issue #934 item 2).
+        # Accumulated from the SAME figure written to the parquet row, so the
+        # metric cannot drift from the Athena ledger; nothing is recomputed and no
+        # pricing decision is taken here.
+        #
+        # Starts at None and only becomes a number once a priced row is seen, so
+        # a document whose every row is unpriced emits NO cost datapoint rather
+        # than a 0.00 — the same NULL-not-zero rule the metering columns follow,
+        # and for the same reason: a zero there is indistinguishable from
+        # something genuinely free and silently understates spend.
+        # ``unpriced_row_count`` is counted separately from the ``unpriced_rows``
+        # set because that set is keyed on (service, unit) and so de-duplicates;
+        # the metric needs a row count.
+        priced_cost_total: Optional[float] = None
+        unpriced_row_count = 0
 
         for key, metrics in document.metering.items():
             # Split the key into context and service_api
@@ -1286,8 +1303,14 @@ class SaveReportingData:
                 if unit_cost is None:
                     unpriced_rows.add(f"{service_api} [{unit}]")
                     estimated_cost = None
+                    unpriced_row_count += 1
                 else:
                     estimated_cost = float_value * unit_cost
+                    priced_cost_total = (
+                        estimated_cost
+                        if priced_cost_total is None
+                        else priced_cost_total + estimated_cost
+                    )
 
                 metering_record = {
                     "document_id": document_id,
@@ -1315,6 +1338,17 @@ class SaveReportingData:
                 f"in idp_common.metering_units only with the AWS price-list "
                 f"reading that shows it is."
             )
+
+        # Emit the document's cost to CloudWatch so it can be alarmed on, which
+        # the parquet ledger cannot be. Deliberately BEFORE the parquet write and
+        # outside its success path: the spend happened whether or not the write
+        # succeeds, and a cost figure suppressed by a reporting-bucket failure is
+        # the one time you most want it. Fire-and-forget inside the helper, so a
+        # CloudWatch outage cannot fail this document's reporting.
+        emit_document_cost_metrics(
+            estimated_cost=priced_cost_total,
+            unpriced_row_count=unpriced_row_count,
+        )
 
         # Save metering data in Parquet format. Path is date+hour partitioned
         # so the tier picker's <2h tail query can prune to the current hour

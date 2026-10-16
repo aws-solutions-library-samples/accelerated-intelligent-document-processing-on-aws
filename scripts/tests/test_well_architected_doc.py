@@ -179,6 +179,9 @@ def _solution_templates() -> list[tuple[Path, str]]:
                 "dist",
                 "scratch",
                 ".claude",
+                # `.ai-review/base/` is the advisory reviewer's copy of the
+                # merge-base tree — the same hazard, written by our own tooling.
+                ".ai-review",
             }
             for p in rel.parts
         ):

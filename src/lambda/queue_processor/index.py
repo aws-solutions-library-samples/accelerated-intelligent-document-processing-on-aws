@@ -228,28 +228,67 @@ def update_counter(increment: bool = True) -> bool:
     the same shape the tracker's decrement uses, and deliberately conservative:
     the real conflict rate is unmeasured (this change is not deploy-validated).
 
+    Both directions are conditional, and on DIFFERENT conditions: the increment
+    refuses to cross ``MAX_CONCURRENT`` and the decrement refuses to cross zero.
+    Each supplies only the expression value its own condition references — see
+    the comment below, which is the defect that made that worth spelling out.
+
+    ⚠️ **The guard for THIS function is ``test_counter_decrement.py``, not the
+    whole-tree gate.** ``scripts/tests/test_dynamodb_unused_expression_values.py``
+    reports the defect class for every DynamoDB request in the repository, but it
+    deliberately does not read a value added by subscript — which is exactly how
+    the two branches below now add theirs, so this call site is outside its reach
+    by construction. The behavioural suite drives both directions against a real
+    expression engine instead. Do not read a green run of that gate as cover for
+    an edit here. Issue #1461 tracks teaching the gate this shape.
+
     Args:
         increment: Whether to increment (True) or decrement (False) the counter
 
     Returns:
-        bool: True if update successful, False if at limit
+        bool: True if the write landed. False if its condition refused it: at
+        ``MAX_CONCURRENT`` for an increment, at zero for a decrement. Callers
+        act on the increment's answer (it is the admission decision); a refused
+        decrement is logged, because the slot it would have released is not held
+        and there is nothing for the caller to do differently.
 
     Raises:
         ClientError: If DynamoDB operation fails
     """
     logger.info(f"Updating counter: increment={increment}, max={MAX_CONCURRENT}")
-    update_args = {
+    update_args: Dict[str, Any] = {
         "Key": {"counter_id": COUNTER_ID},
         "UpdateExpression": "ADD active_count :inc",
-        "ExpressionAttributeValues": {
-            ":inc": 1 if increment else -1,
-            ":max": MAX_CONCURRENT,
-        },
+        "ExpressionAttributeValues": {":inc": 1 if increment else -1},
         "ReturnValues": "UPDATED_NEW",
     }
 
+    # ``:max`` is supplied ONLY on the path that references it. DynamoDB rejects
+    # an UpdateItem carrying an expression value no expression mentions, with
+    # ``ValidationException: Value provided in ExpressionAttributeValues unused
+    # in expressions``. Supplying it unconditionally therefore made every
+    # DECREMENT fail — the increment path was fine, because its
+    # ``ConditionExpression`` referenced it — so both compensating decrements in
+    # ``process_message`` leaked a slot each time they ran, and a repeatedly
+    # redelivered message could walk the counter up to ``MAX_CONCURRENT`` and
+    # block admission entirely until ``reconcile_counter`` or an operator
+    # corrected it (issue #1358).
     if increment:
         update_args["ConditionExpression"] = "active_count < :max"
+        update_args["ExpressionAttributeValues"][":max"] = MAX_CONCURRENT
+    else:
+        # The same floor the tracker's decrement carries (issue #915), and it
+        # matters here for the first time: until the ``:max`` defect above was
+        # fixed this write never landed at all. ``ADD active_count :inc`` with
+        # ``:inc = -1`` is unconditional arithmetic, so a hand-back racing a
+        # ``reconcile_counter`` reset — or any decrement the counter has already
+        # accounted for — drives it NEGATIVE. Admission is ``active_count <
+        # :max``, so every unit below zero permanently raises the effective
+        # ceiling above MaxConcurrentWorkflows, and the only thing that notices
+        # is ``_repair_if_counter_was_negative`` on some later increment.
+        # Refusing the write is the safe direction: the slot stays released.
+        update_args["ConditionExpression"] = "active_count > :zero"
+        update_args["ExpressionAttributeValues"][":zero"] = 0
 
     last_conflict: Optional[ClientError] = None
     for attempt in range(1, COUNTER_CONFLICT_MAX_ATTEMPTS + 1):
@@ -266,7 +305,29 @@ def update_counter(increment: bool = True) -> bool:
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code")
             if code == "ConditionalCheckFailedException":
-                logger.warning("Concurrency limit reached")
+                # Direction-aware: the two paths now carry DIFFERENT conditions,
+                # and the same message for both would report a counter at its
+                # floor as a counter at its ceiling — the opposite reading, on
+                # the one log line an operator goes looking for when intake
+                # stops.
+                if increment:
+                    logger.warning("Concurrency limit reached")
+                else:
+                    # "not above zero" rather than "already 0": the condition
+                    # also fails on a counter that is NEGATIVE (from a release
+                    # before this floor existed, or from the tracker's path) and
+                    # on an absent item or attribute. All three mean the same
+                    # thing to the reader — there is no slot here to release.
+                    logger.warning(
+                        "Counter decrement refused: active_count is not above "
+                        "zero, so the slot this hand-back would release is not "
+                        "held. Leaving it rather than driving the counter "
+                        "negative, which would admit work above "
+                        "MaxConcurrentWorkflows. Investigate duplicate delivery "
+                        "of this message, or a counter edited out from under the "
+                        "stack."
+                    )
+                    _emit_concurrency_event_metric("ConcurrencyCounterUnderflow")
                 return False
             if code == "TransactionConflictException":
                 last_conflict = e
@@ -791,6 +852,43 @@ def _emit_counter_active_metric(active: int) -> None:
         )
     except Exception as e:  # never let telemetry break message processing
         logger.warning(f"Could not emit concurrency counter metric: {e}")
+
+
+def _emit_concurrency_event_metric(metric_name: str) -> None:
+    """Publish a single count for an exceptional concurrency-counter event.
+
+    Deliberately the same shape as the workflow tracker's ``_emit_event_metric``:
+    namespace is the stack name and there are no dimensions, so an alarm declared
+    without dimensions fires whichever function published. Two conditions use it.
+
+    ``ConcurrencyCounterUnderflow`` — a hand-back refused because the counter held
+    no slot. The tracker publishes the same name for the same condition on its own
+    decrement, so one alarm covers both and the operator question is identical
+    either way: a slot was released that nobody held.
+
+    ``ConcurrencyCounterUpdateFailed`` — the counter write RAISED, and the caller
+    logged it and carried on. #1358 was not unlogged — both call sites log at
+    ERROR with a traceback — it was UNALARMED: a ``ValidationException`` on every
+    decrement produced a log line and no datapoint, so nothing anyone watches
+    moved while the counter climbed. The refusal case above is now visible; this
+    makes the raising case visible too, which is the shape of the next variant
+    rather than of this one.
+
+    Never allowed to affect the write it reports on.
+    """
+    try:
+        boto3.client("cloudwatch").put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit {metric_name} metric: {e}")
 
 
 def _emit_circuit_breaker_check_failure(classification: str) -> None:
@@ -1468,6 +1566,12 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     logger.error(
                         f"Failed to decrement counter: {counter_error}", exc_info=True
                     )
+                    # Swallowing this is right — the execution exists and the
+                    # message must be acked. What #1358 lacked was not the log
+                    # line above (ERROR, with a traceback) but a DATAPOINT: no
+                    # metric moved while the counter climbed, so nothing anyone
+                    # watches showed the leak.
+                    _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
                 ack_message(receipt_handle)
                 return True, message_id
             workflow_started = True
@@ -1520,6 +1624,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                 logger.error(
                     f"Failed to decrement counter: {counter_error}", exc_info=True
                 )
+                _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
             return False, message_id
 
     except json.JSONDecodeError as e:

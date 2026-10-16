@@ -1632,34 +1632,75 @@ and that name carries none. The BDA reaper asks after the stack that the first
 three hyphen-separated parts of a name spell, so it spares `idp-ux-nightly-*`
 resources only while the stack's status is in that reaper's active set, and
 never spares the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`,
-whose first three parts spell no stack. The IAM-policy reaper deletes only
-run-prefixed names, so it already passed that stack's policies over. The stack,
-bucket, IAM-policy and BDA reapers therefore skip the stack and everything named
-`idp-ux-nightly-*` or `idp-ux-nightly_*` — its pre-stack, buckets, managed
-policies, BDA projects and blueprints — and each one's log line counts what it
-left. The match is the name, or the name followed by `-` or by `_` (which no
-CloudFormation stack name can contain), so a lookalike such as `idp-ux-nightly2`
-gets no such protection.
+whose first three parts spell no stack. The IAM-role and IAM-policy reapers
+delete only run-prefixed names, so they already passed that stack's roles and
+policies over. The stack reaper therefore skips `idp-ux-nightly` and its
+pre-stack, `idp-ux-nightly-iam`, and no other stack: it asks only about
+top-level stacks, so the stack's nested stacks never reach that check, and any
+other top-level `idp-ux-nightly-*` stack is a stack of its own, reaped once it
+passes the age gate. The bucket, IAM-role, IAM-policy and BDA reapers skip
+everything named `idp-ux-nightly-*` or `idp-ux-nightly_*` — the buckets, roles,
+managed policies, BDA projects and blueprints of the stack and its pre-stack —
+by matching the name, or the name followed by `-` or by `_` (which no
+CloudFormation stack name can contain), so a lookalike such as
+`idp-ux-nightly2` gets no such protection from any of the five. Each reaper's
+log line counts what it left. Those with an age gate ask before it: those gates
+keep an item the listing did not date and name it as one whose age could not
+be established, so a resource of that stack is counted as left for it rather
+than reported on that line.
 
-Three routes can still take part of that stack:
+Four routes can still take part of that stack:
 
+- The stack reaper spares two names, not a prefix, so a stack deployed beside
+  that stack under its default name is reaped once it passes that reaper's age
+  gate: a feature extension, `idp-ux-nightly-feature-<id>` — the name
+  `idp-feature-cli deploy` and a console install from the web UI both propose —
+  and the endpoints stack `scripts/deploy-vpc-endpoints.py` deploys for a
+  private network, `idp-ux-nightly-VPCEndpoints`. Give either a stack name that
+  does not start `idp-` (`--stack-name` for the first, `--endpoints-stack-name`
+  for the second). For a feature extension that has a cost:
+  `getFeatureLaunchUrl` may call `DescribeStacks` only on
+  `idp-ux-nightly-feature-*`, so the web UI's link for updating a renamed one
+  falls back to the create form, which fails for a stack that already exists;
+  `idp-feature-cli deploy --stack-name` still updates it.
 - The apigw test-VPC reaper does not consult the set, so an
   `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
   reaper's age gate. Nothing creates one for that stack.
 - Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
   disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
-  so that stack's distribution survives only while it stays enabled.
+  so that stack's distribution survives only while it stays enabled. The same
+  teardown tries to delete `idp-ux-nightly-security-headers-policy` whenever
+  that stack reads as failed (`UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`, or a
+  creation that failed or rolled back), which CloudFront refuses only while a
+  distribution still uses the policy.
 - The set protects names, not dependencies. A run's `-iam` service role and
-  permissions boundary go at that run's teardown, and the `idp-cli-config-*`
-  bucket that `idp-cli deploy --custom-config <local file>` uploads to goes once
-  it is older than the bucket reaper's age gate. So deploy the stack through its
-  own `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and
-  keep any custom configuration outside an `idp-*` bucket.
+  permissions boundary go at that run's teardown, which deletes every `idp-`
+  role that names the boundary before the boundary itself, so a stack deployed
+  under a run's boundary loses its own roles when that run ends. The region's
+  API Gateway logging role is an account setting naming the
+  `ApiGatewayCloudWatchRole` of the last stack to create one at `INFO` or
+  `DEBUG`. A run's teardown and the IAM-role reaper both delete a run's copy,
+  so if the setting names one, a stack running at `INFO` or `DEBUG` stops
+  getting API Gateway logs once that copy is gone. CI deploys at `WARN`, which
+  creates neither. The `idp-cli-config-*` bucket that
+  `idp-cli deploy --custom-config <local file>` uploads to goes once it is older
+  than the bucket reaper's age gate. So deploy the stack through its own
+  `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and keep
+  any custom configuration outside an `idp-*` bucket.
 
-Two consequences follow: nothing reaps what that stack leaks itself, so a
-leftover of its own is removed by hand; and naming another stack here means
-changing the pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py`
-and its entry in `scripts/tests/gate_exemptions.json`.
+Three consequences follow. Nothing reaps a leftover of that stack's own that the
+reapers spare by name — a bucket an update orphaned, or the stack or its
+pre-stack left in `DELETE_FAILED` — so one is removed by hand. A stack the stack
+reaper does take under an `idp-ux-nightly-*` name leaves behind every bucket its
+template marks `Retain` or `RetainExceptOnCreate`, empty or not, because that
+reaper deletes with a plain `DeleteStack`; those buckets are named
+`idp-ux-nightly-<x>-…`, so the bucket reaper spares them too, and they are
+removed by hand as well. And naming another stack here means changing the
+pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its entry
+in `scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails
+that same module until it either consults the set or is named there with its
+reason for not doing so, so whether it can take that stack is decided when it
+is written.
 
 ## Success Criteria
 

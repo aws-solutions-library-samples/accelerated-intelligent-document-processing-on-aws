@@ -181,6 +181,13 @@ DECLARED_ENTRY_COUNT = 4
 #: Bedrock entry, audited the same way: it prices input, output and both cache
 #: dimensions and neither ``totalTokens`` nor ``requests``.
 #:
+#: 98 -> 101 when Claude Sonnet 5.5 added ``us.``/``eu.``/``global.`` Bedrock
+#: entries, audited the same way again: each of the three prices ``inputTokens``,
+#: ``outputTokens``, ``cacheReadInputTokens`` and ``cacheWriteInputTokens``, and
+#: none prices ``totalTokens`` or ``requests``. There is no fourth entry to count,
+#: because this model has no ``:1m`` variant — 1M is its default window and
+#: ``us.anthropic.claude-sonnet-5-5:1m`` is not an id Bedrock accepts.
+#:
 #: The two ``cacheReadInputTokens`` / ``cacheWriteInputTokens`` rows are gone
 #: rather than renumbered, because those units are no longer declared at service
 #: scope at all — see :data:`DECLARED_ENTRY_COUNT`. The equivalent per-member
@@ -190,8 +197,8 @@ DECLARED_ENTRY_COUNT = 4
 #: model it was read against, so the shielded set is closed by construction and a
 #: number to keep in step would be redundant.
 EXPECTED_SHIELDED_SITES = {
-    ("bedrock", "totalTokens"): 98,
-    ("bedrock", "requests"): 98,
+    ("bedrock", "totalTokens"): 101,
+    ("bedrock", "requests"): 101,
     ("lambda_hook", "totalTokens"): 2,
     ("lambda_hook", "requests"): 2,
 }

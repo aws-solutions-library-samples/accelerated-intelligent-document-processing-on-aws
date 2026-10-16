@@ -6,9 +6,17 @@
 
 A ``<<CACHEPOINT>>`` only creates a cache entry if the prefix before it clears the
 model's **minimum cacheable prefix**, and that minimum is model-dependent and **not
-monotonic across generations**: 512 on Opus 5 / Fable 5, 1,024 on Sonnet 5 / Sonnet
-4.6 / Opus 4.8, 2,048 on Opus 4.7, and **4,096 on Opus 4.6 / Opus 4.5 / Haiku 4.5**.
-Below it there is no error and no metric — the request is simply billed at full input
+monotonic across generations** — the two Haikus are the smallest tier and the
+largest, and the two Sonnets are a tier apart, so neither the family name nor the
+major version predicts it. ``TIERS`` below is this file's copy of the table and
+``idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`` is the authority;
+the numbers are not restated in this docstring, because
+``benchmarks/tests/test_cache_minimum_parity.py`` compares only the assignment
+below and not this prose, so a second copy up here is one nothing keeps in step.
+(It locates that assignment by splitting the file on its opening marker, which is
+also why this paragraph must not spell that marker out — doing so splits the file
+here instead, and the parity check's own non-vacuity assertion catches it.)
+Below the minimum there is no error and no metric — the request is simply billed at full input
 price forever (see ``docs/benchmarking/studies/prompt-caching.md``).
 
 So "does my configuration benefit from prompt caching?" is a per-class **and**
@@ -46,7 +54,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 #: non-monotonicity this table exists to display: one family name, the smallest tier
 #: and the largest.
 TIERS = [
-    (512, "Opus 5, Opus 5.5, Fable 5, Haiku 5.5"),
+    (512, "Opus 5, Opus 5.5, Fable 5, Haiku 5.5, Sonnet 5.5"),
+    # Note Sonnet 5.5 is on the row ABOVE and Sonnet 5 on this one: the two Sonnets
+    # are a tier apart, so reading "Sonnet 5" here as covering both understates the
+    # newer model's caching by 2x.
     (1024, "Sonnet 5, Sonnet 4.6, Opus 4.8"),
     (2048, "Opus 4.7"),
     (4096, "Opus 4.6, Opus 4.5, Haiku 4.5"),

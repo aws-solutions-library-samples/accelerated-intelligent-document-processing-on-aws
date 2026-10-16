@@ -234,6 +234,9 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'us.anthropic.claude-sonnet-4-6:1m', value: 'us.anthropic.claude-sonnet-4-6:1m' },
   { label: 'us.anthropic.claude-sonnet-5', value: 'us.anthropic.claude-sonnet-5' },
   { label: 'us.anthropic.claude-sonnet-5:1m', value: 'us.anthropic.claude-sonnet-5:1m' },
+  // No ':1m' twin: 1M is Sonnet 5.5's default window and
+  // 'us.anthropic.claude-sonnet-5-5:1m' is not an id Bedrock accepts.
+  { label: 'us.anthropic.claude-sonnet-5-5', value: 'us.anthropic.claude-sonnet-5-5' },
   { label: 'us.anthropic.claude-opus-4-5-20251101-v1:0', value: 'us.anthropic.claude-opus-4-5-20251101-v1:0' },
   { label: 'us.anthropic.claude-opus-4-6-v1', value: 'us.anthropic.claude-opus-4-6-v1' },
   { label: 'us.anthropic.claude-opus-4-6-v1:1m', value: 'us.anthropic.claude-opus-4-6-v1:1m' },
@@ -268,6 +271,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'eu.anthropic.claude-sonnet-4-6:1m', value: 'eu.anthropic.claude-sonnet-4-6:1m' },
   { label: 'eu.anthropic.claude-sonnet-5', value: 'eu.anthropic.claude-sonnet-5' },
   { label: 'eu.anthropic.claude-sonnet-5:1m', value: 'eu.anthropic.claude-sonnet-5:1m' },
+  { label: 'eu.anthropic.claude-sonnet-5-5', value: 'eu.anthropic.claude-sonnet-5-5' },
   { label: 'eu.anthropic.claude-opus-4-5-20251101-v1:0', value: 'eu.anthropic.claude-opus-4-5-20251101-v1:0' },
   { label: 'eu.anthropic.claude-opus-4-6-v1', value: 'eu.anthropic.claude-opus-4-6-v1' },
   { label: 'eu.anthropic.claude-opus-4-6-v1:1m', value: 'eu.anthropic.claude-opus-4-6-v1:1m' },
@@ -295,6 +299,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'global.anthropic.claude-sonnet-4-6:1m', value: 'global.anthropic.claude-sonnet-4-6:1m' },
   { label: 'global.anthropic.claude-sonnet-5', value: 'global.anthropic.claude-sonnet-5' },
   { label: 'global.anthropic.claude-sonnet-5:1m', value: 'global.anthropic.claude-sonnet-5:1m' },
+  { label: 'global.anthropic.claude-sonnet-5-5', value: 'global.anthropic.claude-sonnet-5-5' },
   {
     label: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
     value: 'global.anthropic.claude-opus-4-5-20251101-v1:0',

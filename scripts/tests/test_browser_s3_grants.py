@@ -11,7 +11,7 @@ group check, no per-document check and no per-user scope check is available to a
 to it. That makes this one IAM policy, not the API surface, the boundary for anything
 it names, and it is why the list belongs under a gate rather than under review.
 
-Two things are pinned, in opposite directions.
+Three things are pinned, in different directions.
 
 **The Configuration bucket must not be there.** It holds
 ``config_revisions/<profile>/<nnnnnn>.json.gz`` — each configuration profile's full
@@ -33,6 +33,16 @@ removing them means redesigning the document read path rather than trimming a po
 issue #1033. Pinning the set is what stops it growing quietly: this test fails if a
 **third** bucket is added, which is the only way the residual can widen without anyone
 choosing to widen it.
+
+**No bucket may be enumerated, including those two.** The grant is object read only:
+``s3:GetObject`` and ``s3:GetObjectVersion``, which authorize on a key the caller
+already holds. ``s3:ListBucket`` produces keys instead of needing one, so it widens
+"read a document you have a key for" into "read every document", and it is the half of
+the residual that costs nothing to close — the browser issues no list request, since
+its only S3 dependency is ``@aws-sdk/s3-request-presigner`` and a presigned GET does
+not list. It is asserted for every bucket rather than only the partitioned ones, and
+the object-read actions are asserted **present** in the same breath, so this file
+cannot be satisfied by deleting the statement it reads.
 """
 
 from __future__ import annotations
@@ -42,7 +52,7 @@ import pytest
 # The policy parser is shared with `test_iam_prose_consistency.py`, which cross-checks
 # the documents against the same derived set. Two copies of a policy reader diverge,
 # and the copy that diverges is the one nobody re-reads.
-from browser_s3_policy import ROLE, role_s3_statements
+from browser_s3_policy import ROLE, granted_s3_actions, role_s3_statements
 from browser_s3_policy import buckets_named as _buckets_named
 from browser_s3_policy import is_wildcard_resource as _is_wildcard_resource
 from browser_s3_policy import resource_strings as _resource_strings
@@ -197,23 +207,98 @@ def test_the_resource_matcher_reads_every_cloudformation_idiom():
         assert not _is_wildcard_resource(specific), specific
 
 
-def test_list_bucket_is_confined_to_the_browser_readable_buckets(s3_statements):
+def test_no_browser_grant_allows_bucket_enumeration(s3_statements):
     """`s3:ListBucket` is the enumeration primitive, so it gets its own assertion.
 
-    Object read needs a key; listing produces the keys. A `ListBucket` on a bucket
-    whose objects are per-user partitioned removes the need to guess names at all,
-    which is what made the configuration axis reachable without a single API call.
+    Object read needs a key; listing produces the keys. That asymmetry is why this is
+    asserted for **every** bucket the role names rather than only for the two whose
+    objects are partitioned per user: on a partitioned bucket listing removes the need
+    to know a profile or test-set name at all, and on the document buckets it turns
+    "read a document whose key you hold" into "read every document", with no resolver
+    in the path to apply a check to either half.
+
+    The verb had no consumer. The browser holds no S3 API client — the only S3
+    dependency in `src/ui` is `@aws-sdk/s3-request-presigner`, which signs a GET, and a
+    presigned GET authorizes on the object. So nothing client-side issues a list
+    request, and removing it changes no data path. ⚠️ That absence of a call site is
+    not what bounds a grant, which is the point the Configuration-bucket paragraph in
+    `template.yaml` makes: the signed-in user holds the credentials and can call
+    whatever the role allows, so the grant is the boundary and this is what keeps it
+    off.
+
+    An action wildcard counts as a grant of it. `s3:*` and `*` reach `ListBucket`
+    without naming it, so a statement spelled that way would satisfy a literal
+    `"s3:ListBucket" in actions` test while granting exactly what this forbids.
     """
+    why = {
+        **BROWSER_FORBIDDEN_BUCKETS,
+        "InputBucket": (
+            "holds every uploaded source document; nothing records which documents are "
+            "whose, so there is no per-user axis a key check could consult"
+        ),
+        "OutputBucket": (
+            "holds every document's extracted output, page images and OCR text under "
+            "<document-key>/; same absent per-user axis"
+        ),
+    }
     for policy, statement in s3_statements:
         actions = {str(a) for a in _as_list(statement.get("Action"))}
-        if not ({"s3:ListBucket", "s3:*", "*"} & actions):
-            continue
-        # Compared on the DERIVED reference set, not on a `${Bucket}` substring: the
+        enumerating = {"s3:ListBucket", "s3:ListBucketVersions", "s3:*", "*"} & actions
+        # Reported on the DERIVED reference set, not on a `${Bucket}` substring: the
         # substring test saw only the `!Sub` spelling, so a `Ref` or a `Fn::GetAtt`
-        # list form granting ListBucket on a partitioned bucket read as clean.
-        enumerable = _buckets_named([(policy, statement)])
-        for bucket in sorted(BROWSER_FORBIDDEN_BUCKETS):
-            assert bucket not in enumerable, (
-                f"{ROLE}.{policy} lets the browser enumerate {bucket}: "
-                f"{BROWSER_FORBIDDEN_BUCKETS[bucket]}"
+        # list form granting ListBucket read as clean.
+        enumerable = _buckets_named([(policy, statement)]) if enumerating else set()
+        assert not enumerating, (
+            f"{ROLE}.{policy} grants {sorted(enumerating)}, which lets the browser "
+            f"enumerate {sorted(enumerable) or 'every bucket it names'}. Every "
+            "authenticated user assumes this role regardless of group and reaches it "
+            "with no resolver in the path, so listing hands any signed-in user the key "
+            "space of each bucket named: "
+            + "; ".join(f"{b} {why[b]}" for b in sorted(enumerable) if b in why)
+            + ". The UI needs no list request — it signs object GETs, which authorize "
+            "on the key — so route any genuine listing through a resolver that can "
+            "apply the caller's groups and scope."
+        )
+
+
+def test_the_object_read_grants_are_still_there(s3_statements):
+    """The other direction: this file must not be satisfiable by deleting the grant.
+
+    Every assertion above says what the role may NOT have, so all of them pass if the
+    `S3` policy is emptied or dropped — and `test_the_gate_sees_its_subject` only
+    requires that *some* S3 statement survives, which a KMS-only or a `ListBucket`-only
+    policy would. The UI's document reads are client-signed GETs, so a change that
+    removed these two actions would break page thumbnails, the page-image viewer, the
+    file viewer and export, and it would read here as a tightening.
+
+    ``s3:GetObjectVersion`` is named explicitly rather than folded into "some read
+    action": the browser fetches a past version's page images with a `?versionId=`
+    presigned URL, and without that action those loads return AccessDenied and render
+    blank, which is a silent failure in the UI rather than an error anyone sees.
+    """
+    granted = granted_s3_actions()
+    for action in ("s3:GetObject", "s3:GetObjectVersion"):
+        assert action in granted, (
+            f"{ROLE} no longer grants {action} (it grants {sorted(granted)}). The web "
+            "UI signs its document reads in the browser, so this is the grant those "
+            "reads depend on — if the read path moved behind a resolver, that is a "
+            "data-path change and this expectation should be rewritten deliberately "
+            "rather than found to have been dropped."
+        )
+
+    for bucket in sorted(PINNED_BROWSER_READABLE_BUCKETS):
+        object_scoped = [
+            statement
+            for policy, statement in s3_statements
+            if bucket in _buckets_named([(policy, statement)])
+            and any(
+                f"${{{bucket}}}/" in text or f"{bucket}.Arn/" in text
+                for text in _resource_strings(statement)
             )
+        ]
+        assert object_scoped, (
+            f"{ROLE} names {bucket} but no statement reaches its OBJECTS (a "
+            f"`${{{bucket}}}/*` resource). A bare bucket ARN authorizes bucket-level "
+            "actions only, so a grant that lost its `/*` form would leave the browser "
+            "unable to read anything while still naming the bucket."
+        )

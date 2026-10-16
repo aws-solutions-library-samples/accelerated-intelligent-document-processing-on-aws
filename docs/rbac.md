@@ -535,24 +535,31 @@ private to their submitter or to a tenant, group membership is the wrong axis.
 directly.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a **single**
 `authenticated` role with **no `RoleMappings`**, so group membership plays no part
 in which role a signed-in user assumes. That role, `CognitoAuthorizedRole`, grants
-`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input and Output
-buckets, plus five KMS actions on the customer-managed key
+`s3:GetObject` and `s3:GetObjectVersion` on the Input and Output buckets, plus five
+KMS actions on the customer-managed key
 (`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) — to **every**
 authenticated user, including one in no group. This is the production read path, not
 a theoretical one: `FileViewer` defaults to `presignVia = 'client'`, and the page
 thumbnails, the page-image viewer and the document export all sign S3 GETs in the
-browser with those credentials. No `ANY` operation returns an object key any more,
-but that is not what bounds the role: `s3:ListBucket` on it enumerates the buckets
-directly, so key discovery is self-contained on the S3 side and needs no API call at
-all.
+browser with those credentials.
+
+The grant is **object read only**, and that bounds the vector without closing it.
+Both actions authorize against a key — and the policy's `Resource` list names object
+ARNs alone — so a direct read needs a key the caller already holds; the role carries
+no `s3:ListBucket`, so it cannot produce one, and no `ANY` operation returns an
+object key either. What remains is that the operations which do return keys are
+`ANY_GROUP`, so any one of the five groups supplies them, and the caller then reads
+the bytes with no resolver in the path and no per-document check anywhere. A caller
+in **no** group has to arrive with a key by some other route.
 
 ⚠️ **The two buckets the scope axes partition are deliberately absent from that
 role**, and that is what makes `allowedConfigVersions` and `allowedTestSets` hold
 off the API as well as on it. The Configuration bucket holds every profile's
-revision history, so a browser-credential read of it — with `s3:ListBucket`, so
-without needing to know the profile names — would defeat the profile scope
-outright. The Test Set bucket has never been on the role. Both are reachable only
-through `getFileContents` / `getFilePresignedUrl`, which check the key against the
+revision history, so a browser-credential read of it would defeat the profile scope
+outright — and while it was on the role the grant still carried `s3:ListBucket`, so
+the profile names did not even have to be known. The Test Set bucket has never been
+on the role. Both are reachable only through `getFileContents` /
+`getFilePresignedUrl`, which check the key against the
 caller's scope. `scripts/tests/test_browser_s3_grants.py` pins which buckets the
 role may name, so the set cannot grow back unnoticed.
 

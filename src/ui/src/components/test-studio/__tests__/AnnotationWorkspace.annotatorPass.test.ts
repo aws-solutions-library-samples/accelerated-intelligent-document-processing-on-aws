@@ -35,12 +35,38 @@ const CURVE = readFileSync(
 );
 
 describe('reaching a document that has already been reviewed', () => {
+  // One definition, rendered in both places that offer the reveal — the rail and
+  // the "Queue complete" alert's action.
+  const reveal = SOURCE.slice(SOURCE.indexOf('const showReviewedControl ='), SOURCE.indexOf('const content = ('));
+
   it('offers the reveal while there is still other work, not only once the queue empties', () => {
     // The regression is positional: this control existed, but only as the `action` of
     // the "Queue complete" alert. Rendering it in the rail is what makes it reachable
     // at the moment it is needed.
     const rail = SOURCE.slice(SOURCE.indexOf('filteringPlaceholder="Find a document"'));
-    expect(rail).toMatch(/\{!showReviewed && \(\s*<Button variant="inline-link" onClick=\{\(\) => setShowReviewed\(true\)\}/);
+    expect(rail).toContain('{showReviewedControl}');
+    expect(reveal).toMatch(/<Button iconName="status-positive" onClick=\{\(\) => setShowReviewed\(true\)\}/);
+  });
+
+  it('renders the reveal as a control rather than as the filter box’s caption', () => {
+    // Reported on [#1321]: being in the rail is necessary and was not sufficient. As
+    // `variant="inline-link"` directly under the filter box it read as part of that
+    // box's caption — the place Cloudscape puts match counts — so an annotator
+    // looking for their reviewed documents did not find it.
+    expect(reveal).not.toContain('variant="inline-link"');
+  });
+
+  it('reports progress on both copies, since revealing them costs a queue reload', () => {
+    // Two claims, and they are separable. The rail control and the alert's action
+    // must be one component, so the two render sites cannot drift — the alert is the
+    // path an annotator who has finished the set takes, and a progress line present
+    // on only one of them is the dead-click symptom surviving where it was fixed.
+    // And revealing reviewed rows is a server round trip (the server omits them
+    // unless asked), so it has to say so rather than appear instant. The
+    // top-of-page spinner cannot cover that: it is gated on there being no queue
+    // yet, and by this point there is one.
+    expect(reveal).toContain('Loading reviewed documents');
+    expect(SOURCE).toContain('action={showReviewedControl}');
   });
 
   it('does not claim there is nothing to review when a filter is what emptied the list', () => {

@@ -79,9 +79,14 @@ describe('the authored-ground-truth alert agrees with the rest of the screen', (
 
 describe('one route to reviewed documents at a time', () => {
   it('offers Show reviewed documents once in the rail, not again inside the empty state', () => {
-    // Both showed at once when a search matched nothing. The rail link and the
-    // Queue complete alert's action are the two that remain.
-    const occurrences = SOURCE.split('setShowReviewed(true)').length - 1;
-    expect(occurrences).toBe(2);
+    // Both showed at once when a search matched nothing. The rail and the Queue
+    // complete alert's action are the two that remain — now one `showReviewedControl`
+    // rendered in both, so that the progress line cannot be fixed in one and left
+    // dead in the other. Counted so a third route still fails here: one definition,
+    // two render sites.
+    const definitions = SOURCE.split('setShowReviewed(true)').length - 1;
+    const renderSites = SOURCE.split('showReviewedControl}').length - 1;
+    expect(definitions).toBe(1);
+    expect(renderSites).toBe(2);
   });
 });

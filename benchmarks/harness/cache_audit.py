@@ -80,6 +80,15 @@ CACHE_MINIMUMS = {
     # a 500-token prefix does not cache and a 520-token one does
     # (us.anthropic.claude-haiku-5-5, us-west-2, 2026-10-08).
     "claude-haiku-5-5": 512,
+    # Sonnet 5.5 MUST precede "claude-sonnet-5" for the same reason Haiku 5.5
+    # precedes "claude-haiku-4-5", but the shadowing here is tighter: the shorter
+    # key is a SUBSTRING of this model's id, not merely a shared family stem, so
+    # below the next line this entry is unreachable and the scan prints 1,024 —
+    # double the real minimum — for every Sonnet 5.5 run. Measured live rather than
+    # inherited: a 513-token prefix caches and a 508-token one does not
+    # (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14), against Sonnet 5
+    # writing nothing at 825 tokens and 1,223 at 1,223 on the same calls.
+    "claude-sonnet-5-5": 512,
     "claude-opus-4-8": 1024,
     "claude-sonnet-5": 1024,
     "claude-sonnet-4-6": 1024,

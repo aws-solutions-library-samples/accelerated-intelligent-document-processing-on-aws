@@ -72,6 +72,7 @@ import importlib.util
 import subprocess
 from pathlib import Path
 
+import gate_premises
 import pytest
 import repo_files
 
@@ -94,8 +95,35 @@ def _run_all_tests_module():
     spec.loader.exec_module(module)
     return module
 
+
 #: Gitignored directories that can hold a whole copy of this tree.
-LOCAL_WORK_DIRS = ("scratch", ".claude")
+#:
+#: Local work is two of them; the third is written by this repository's own tooling
+#: and is derived from :data:`TREE_COPY_DIRS` below rather than restated, so adding
+#: an entry there makes every registered gate prune it without a second edit. That
+#: derivation is the point: `.ai-review` was first fixed for the git discovery route
+#: only, which left five filesystem-walking gates reading the merge-base copy — the
+#: instance-not-class shape the registry entry for TREE_COPY_DIRS argues against.
+_LOCAL_WORK_DIRS_PROPER = ("scratch", ".claude")
+
+#: Directories into which this repository's **own tooling** writes a whole second
+#: copy of the tree, each paired with the file that creates it.
+#:
+#: These are the case the git route does not cover for free. Discovering through
+#: ``repo_files.tracked_paths`` is stronger than any name list — but only because
+#: every such copy is gitignored, and ``tracked_paths`` lists ``--others``, so
+#: *untracked* is not enough. A tree copy in a directory nobody ignored is read as
+#: part of the branch by every gate that discovers through it.
+#:
+#: ``.ai-review/base/`` is the live example and the reason this is pinned: the
+#: advisory reviewer checks out the whole merge-base tree there, so inside a review
+#: worktree a repo-wide gate sees the state *before* the branch alongside the state
+#: after it, and a defect the branch FIXES is reported against it. The creating file
+#: is named so a rename there fails here rather than leaving a dead ignore rule.
+TREE_COPY_DIRS = ((".ai-review", "scripts/sdlc/ai_mr_review.py"),)
+
+#: Every directory a repo-walking gate must prune, local work plus tree copies.
+LOCAL_WORK_DIRS = _LOCAL_WORK_DIRS_PROPER + tuple(d for d, _ in TREE_COPY_DIRS)
 
 #: Gates that walk the repo and must therefore prune local work. Each entry is a
 #: filename in this directory. A gate added later that calls `rglob` on the repo
@@ -198,8 +226,7 @@ def test_the_tracked_helpers_fallback_walk_prunes_local_work(
         "fallback walk — the thing under test — would not run at all"
     )
     found = {
-        p.relative_to(root).as_posix()
-        for p in repo_files.tracked_paths(root, "*.py")
+        p.relative_to(root).as_posix() for p in repo_files.tracked_paths(root, "*.py")
     }
 
     assert "svc/handler.py" in found, (
@@ -349,6 +376,115 @@ def test_discovery_survives_a_checkout_under_a_local_work_dir(
         f"Discovering through git is not enough on its own here — an un-ignored "
         f"`scratch/` in a checkout is listed by `git ls-files --others` — so keep the "
         f"relative-path prune set as a second filter."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("directory, creator", TREE_COPY_DIRS)
+def test_a_tree_copy_directory_is_gitignored(directory: str, creator: str) -> None:
+    """The premise the git route rests on, computed rather than assumed.
+
+    Through ``gate_premises.vcs_ignored_build_output`` rather than a local
+    ``check-ignore`` call, because that predicate measures the half a bare probe
+    misses — that git tracks nothing *under* the path, which is what makes the
+    exclusion free — and it probes with a trailing slash, so a ``foo/`` rule is
+    not reported as absent merely because the directory is not on disk.
+    """
+    holds, detail = gate_premises.vcs_ignored_build_output(directory)
+    assert holds, (
+        f"{directory}/: {detail}. {creator} writes a whole copy of this tree "
+        f"there, and `repo_files.{TRACKED_HELPER}` lists `--others`, so every "
+        f"repo-wide gate that discovers through it then reads that second copy as "
+        f"part of the branch — including the pre-change state of files the branch "
+        f"fixes. Add `{directory}/` to .gitignore."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("directory, creator", TREE_COPY_DIRS)
+def test_a_tree_copy_directory_is_also_in_the_fallback_prune_list(
+    directory: str, creator: str
+) -> None:
+    """The non-git branch needs the same name, for the case it exists for.
+
+    Being gitignored settles the git route and nothing else. ``tracked_paths``
+    walks when its root is not a checkout top, and that walk is filtered only by
+    :data:`repo_files.FALLBACK_PRUNE_DIRS` — so a name present in one route and
+    absent from the other is covered exactly while the primary route works, which
+    is not what a fallback is for.
+    """
+    assert directory in repo_files.FALLBACK_PRUNE_DIRS, (
+        f"{directory!r} is gitignored but missing from "
+        f"repo_files.FALLBACK_PRUNE_DIRS, so the non-git walk still descends into "
+        f"the whole copy of the tree {creator} writes there. Both routes or "
+        f"neither: {sorted(repo_files.FALLBACK_PRUNE_DIRS)}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("directory, creator", TREE_COPY_DIRS)
+def test_the_file_that_writes_the_tree_copy_still_names_it(
+    directory: str, creator: str
+) -> None:
+    """A ratchet on the entry above: an ignore rule for a directory nothing writes
+    any more is dead, and a dead one pre-ignores whatever next takes the name."""
+    path = REPO_ROOT / creator
+    assert path.exists(), f"{creator} is registered here but does not exist"
+    assert directory in path.read_text(encoding="utf-8"), (
+        f"{creator} no longer mentions {directory!r}, so either it was renamed — in "
+        f"which case the .gitignore rule now protects nothing and the new name is "
+        f"unprotected — or the copy is no longer written and both this entry and "
+        f"the ignore rule should go."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("directory, creator", TREE_COPY_DIRS)
+def test_tracked_discovery_does_not_list_a_tree_copy(
+    directory: str, creator: str
+) -> None:
+    """The behavioural half: a real file under the directory, in this checkout.
+
+    The two assertions above read configuration. This one drives the helper the
+    gates actually call, because that is the thing whose answer matters, and
+    it is the assertion that fails on the state this was written for.
+
+    It writes a real ``.py`` into the checkout for the duration, which is the
+    concurrent-interference shape CLAUDE.md warns about for ``make srt-scan``
+    overlapping the offline suite. Checked rather than assumed: the probe is
+    gitignored, so ``ruff`` skips it natively, and ``basedpyright``'s ``include``
+    never reaches this directory — so neither whole-tree gate can see it. It is
+    removed in a ``finally``, along with the directories it had to create.
+
+    The window in which the file exists is **accepted**, not overlooked: every
+    gate that could read a stray ``.py`` honours the ignore file or never walks
+    here, and a hard-killed run leaves behind one gitignored file that the next
+    run of this test overwrites. The alternative — a synthetic checkout in
+    ``tmp_path`` — would assert against an ignore file this test wrote, which is
+    not the claim. The claim is about **this** repository's ``.gitignore``.
+    """
+    probe = REPO_ROOT / directory / "base" / "scripts" / "probe_tree_copy.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text("x = 1\n", encoding="utf-8")
+    try:
+        found = repo_files.tracked_paths(REPO_ROOT, "*.py")
+    finally:
+        # missing_ok: two concurrent runs of this suite in one checkout would
+        # otherwise have the second's `finally` raise FileNotFoundError and error
+        # a test that had already passed.
+        probe.unlink(missing_ok=True)
+        for parent in list(probe.parents):
+            if parent == REPO_ROOT:
+                break
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+
+    assert probe not in found, (
+        f"repo_files.{TRACKED_HELPER} listed a file under {directory}/, which "
+        f"{creator} fills with a whole copy of this tree. Every repo-wide gate "
+        f"discovering through it is then asserting over two trees at once."
     )
 
 

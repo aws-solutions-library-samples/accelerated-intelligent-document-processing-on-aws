@@ -534,6 +534,13 @@ _STANDARD_VISUAL_TOKEN_CAP = 1568
 # image (us-west-2, 2026-10-08). Getting this wrong understates an image-heavy
 # Haiku 5.5 request by ~3x, which is the direction that reads as "plenty of
 # context left" right up to the rejection.
+# Sonnet 5.5 is covered by the ``sonnet-5`` alternative below for the same reason
+# Opus 5.5 is covered by ``opus-5`` — substring — and that inheritance was CHECKED
+# rather than relied on, because this file is the one place a 5.5 model's answer has
+# differed from its 5.0 sibling four times over. Measured: one 2550x3301 page costs
+# 4,772 real input tokens on us.anthropic.claude-sonnet-5-5 (us-east-1,
+# 2026-10-14), against 4,768 for Sonnet 5 on the same image — the same
+# high-resolution tier, so no new alternative is needed here.
 # Deliberately a separate statement of the model set from
 # client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling
 # parameters" and "tokenizes images on the high-resolution tier" are different

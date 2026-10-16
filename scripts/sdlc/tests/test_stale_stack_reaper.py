@@ -12,6 +12,7 @@ ordering.
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 pytestmark = pytest.mark.unit
 
@@ -208,7 +209,17 @@ class _FakeCfnAndS3(_FakeCfn):
 
     def get_object(self, Bucket, Key):  # noqa: N803
         stack = Key.rsplit("/", 1)[-1].removesuffix(".json")
-        payload = json.dumps({"keep_until": self._markers[stack] or ""}).encode()
+        marker = self._markers[stack]
+        # An Exception value means the API call itself does not answer, which is
+        # a different fact from a body nobody can parse and must not be driven
+        # through the same door. `bytes` is a body returned verbatim, which is
+        # how a malformed one is expressed.
+        if isinstance(marker, Exception):
+            raise marker
+        if isinstance(marker, bytes):
+            payload = marker
+        else:
+            payload = json.dumps({"keep_until": marker or ""}).encode()
 
         class _B:
             def read(self):
@@ -340,3 +351,134 @@ def test_an_unparseable_marker_does_not_protect_its_stack(cbd, monkeypatch):
     )
     cbd.cleanup_stale_idp_stacks()
     assert fake.deleted == ["idp-0709-211927"]
+
+
+# ---------------------------------------------------------------------------
+# The two ways a marker read can fail are two different facts (#1445)
+#
+# A marker whose BODY cannot be understood is the case the expiry override is
+# right about: nobody can read it, and left in place it would pin a retention
+# slot forever. A marker whose READ did not answer is not that — it establishes
+# nothing about what the marker says, so expiring on it reaps a stack a failed
+# run deliberately asked to keep, which is the one thing retention exists for.
+# Both directions are driven, because a change that keeps everything makes the
+# retention half of this reaper inert.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"{not json at all", id="not-json"),
+        pytest.param(b'{"stack_name": "idp-0709-211927"}', id="no-keep-until"),
+        pytest.param(b'{"keep_until": "whenever"}', id="unparseable-instant"),
+    ],
+)
+def test_a_marker_body_that_cannot_be_parsed_still_expires(cbd, monkeypatch, body):
+    """Unchanged by the split: the answer arrived and is unusable."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install_with_markers(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927", old)],
+        {"idp-0709-211927": body},
+    )
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert fake.deleted == ["idp-0709-211927"]
+    assert fake.deleted_objects == ["ci-retained/idp-0709-211927.json"]
+    assert findings == []
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "not authorized"}},
+                "GetObject",
+            ),
+            "AccessDenied",
+            id="denied",
+        ),
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "ExpiredToken", "Message": "token expired"}},
+                "GetObject",
+            ),
+            "ExpiredToken",
+            id="expired-credentials",
+        ),
+        pytest.param(
+            ClientError(
+                {"Error": {"Code": "SlowDown", "Message": "please reduce"}},
+                "GetObject",
+            ),
+            "SlowDown",
+            id="retry-budget-exhausted",
+        ),
+        pytest.param(
+            EndpointConnectionError(endpoint_url="https://s3"),
+            "Could not connect",
+            id="no-route",
+        ),
+    ],
+)
+def test_a_marker_whose_read_did_not_answer_keeps_the_stack(
+    cbd, monkeypatch, capsys, error, expected
+):
+    """The stack is KEPT, counted, named — and the marker is left alone.
+
+    Kept even though it is older than the age gate, because the marker overrides
+    the gate in both directions and this one may say "keep until tomorrow". The
+    next run makes the same GetObject, so the retention slot still frees up.
+    """
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install_with_markers(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927", old), _summary("idp-0709-211927-iam", old)],
+        {"idp-0709-211927": error},
+    )
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert fake.deleted == []
+    assert fake.deleted_objects == []
+    # Reported in its own counter rather than as an incomplete sweep: every
+    # stack the listing returned was considered, and a red night's run over one
+    # skipped item would cost the row that reports a genuinely inert sweep.
+    assert findings == []
+    out = capsys.readouterr().out
+    assert "idp-0709-211927" in out
+    assert "retention marker could not be read" in out
+    # Carrying WHY, because a stack kept for a reason the log does not state is
+    # one nobody can act on — and "denied" and "the retry budget ran out" are
+    # different things to do next.
+    assert expected in out, out
+    assert cbd.SWEEP_NOT_COMPLETED not in out
+
+
+def test_one_unreadable_marker_does_not_protect_every_other_run(cbd, monkeypatch):
+    """Per run, not per sweep: the rest of the account is still reaped.
+
+    Keeping everything because one marker could not be read would make the
+    reaper inert, which is the defect in the other direction.
+    """
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install_with_markers(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927", old), _summary("idp-0808-120000", old)],
+        {
+            "idp-0709-211927": ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetObject"
+            ),
+            "idp-0808-120000": _ago(1),
+        },
+    )
+
+    assert cbd.cleanup_stale_idp_stacks() == []
+    assert fake.deleted == ["idp-0808-120000"]
+    assert fake.deleted_objects == ["ci-retained/idp-0808-120000.json"]

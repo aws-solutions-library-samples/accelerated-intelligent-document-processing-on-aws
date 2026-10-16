@@ -1878,8 +1878,8 @@ async def _invoke_agent_for_extraction(
                     "(requires Textract TABLES so OCR emits Markdown tables); "
                     "reduce attached page images; or use a larger-context model "
                     "(a ':1m' Claude variant, or one whose default window is "
-                    "already 1M such as Claude Haiku 5.5 — which has no ':1m' id "
-                    "precisely because it needs none). "
+                    "already 1M such as Claude Sonnet 5.5 or Claude Haiku 5.5 — "
+                    "neither has a ':1m' id, precisely because neither needs one). "
                     f"(underlying error: {e})"
                 ) from e
             if is_max_tokens_agent_error(e):

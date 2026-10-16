@@ -480,8 +480,19 @@ Parameters:
   MaxConcurrentWorkflows:
     Type: Number
     Default: 100
-    Description: Maximum number of concurrent workflow executions allowed
+    Description: >-
+      Maximum number of concurrent workflow executions allowed. The queue
+      processor admits a document only while the concurrency counter is below
+      this value, so it is the deployment's throughput ceiling and, because the
+      dominant cost here is per-document inference, its spend-rate ceiling too.
+      The upper bound of 10000 is a typo guard, not a capacity opinion: it is two
+      orders of magnitude above the default and far above what the pipeline can
+      sustain in a default account (each workflow holds several concurrent Lambda
+      invocations, and the account-level Lambda concurrency limit starts at
+      1000), so it rejects a slipped digit at submit time while leaving every
+      realistic value available.
     MinValue: 1
+    MaxValue: 10000
 
   DataRetentionInDays:
     Type: Number
@@ -9471,7 +9482,7 @@ Resources:
   ConcurrencyCounterUnderflowAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow tracker tried to release a concurrency slot that was not held (the counter was already 0). The decrement is refused rather than driving the counter negative, so admission control is intact — but a duplicate release means the same terminal execution was processed twice, or the counter was edited out from under the tracker. Check the WorkflowTracker logs for 'Concurrency counter was already 0' and correlate with WorkflowTrackerDLQAlarm and EventBridge redeliveries of WorkflowStateChangeRule."
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} tried to release a concurrency slot that was not held (the counter was not above 0). TWO functions publish this metric, so check both: the WorkflowTracker, on the terminal-event decrement, for 'Concurrency counter was already 0'; and the QueueProcessor, on a compensating hand-back after a duplicate message or a failed StartExecution, for 'Counter decrement refused'. The decrement is refused rather than driving the counter negative, so admission control is intact. Causes: a terminal event or an SQS message processed twice; the counter item edited out or never initialised, which stops admission entirely; or a RECONCILED line just before, which is benign and needs no action. See docs/monitoring.md for how to tell them apart."
       MetricName: ConcurrencyCounterUnderflow
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -9482,6 +9493,31 @@ Resources:
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       # Published only when the floor trips, so "no data" means it never did.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Issue #1358: the two compensating hand-backs in the queue processor catch and
+  # log a failed counter write and carry on, which is correct -- the execution
+  # exists, or the message is being retried -- but it is also what turned a
+  # ValidationException on EVERY decrement into a silent slot leak rather than an
+  # error. ConcurrencyCounterUnderflow covers the write that was REFUSED; this one
+  # covers the write that RAISED, which is the only remaining way for a hand-back
+  # to be lost with nothing moving that anyone is watching.
+  ConcurrencyDecrementFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} compensating concurrency hand-back could not be written. The QueueProcessor logs 'Failed to decrement counter' and continues by design, so without this the slot is leaked with no error anywhere -- each occurrence raises the counter permanently relative to the work actually running, and enough of them stop admission entirely. Read the exception in the QueueProcessor logs: a ValidationException means the request itself is malformed and EVERY hand-back is failing, a throttle or 5xx means retry pressure on the ConcurrencyTable. Correlate with ConcurrencyCounterDriftAlarm, which fires later on the same underlying leak."
+      MetricName: ConcurrencyCounterUpdateFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      # First occurrence: one lost hand-back is one leaked slot, and the defect
+      # this exists for failed every single time rather than intermittently.
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on a failure, so "no data" means there has not been one.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -10410,6 +10446,14 @@ Resources:
                       {
                         "stat": "Sum",
                         "label": "Underflows refused (a slot released that was not held)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyCounterUpdateFailed",
+                      {
+                        "stat": "Sum",
+                        "label": "Hand-backs lost (the counter write raised; each one leaks a slot)"
                       }
                     ],
                     [
@@ -11780,9 +11824,75 @@ Resources:
           MEDIUM_COMPLEXITY_MULTIPLIER: "1.5"
           # Token calculation
           MIN_TOKENS_PER_REQUEST: "500"
-          # Bedrock model quota codes (TPM and RPM)
-          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
-          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
+          # Bedrock model quota codes (TPM and RPM).
+          #
+          # ⚠️ A step model missing from BOTH maps is a hard failure, not a
+          # degraded estimate: calculate_capacity raises
+          # ValueError("TPM quota not available for model ...") for any configured
+          # model _lookup_quota misses, so Capacity Planning errors out rather than
+          # omitting a row. The maps are an incomplete subset of the picklists
+          # (Opus 5, Opus 5.5, Sonnet 4.6, Fable 5, Haiku 5.5, every openai.gpt-5.x
+          # id and every eu. id other than claude-sonnet-5-5 are absent), so that
+          # failure is reachable today
+          # for models other than the ones listed here — tracked separately rather
+          # than closed here.
+          #
+          # `eu.anthropic.claude-sonnet-5-5` IS present, and that is not a stand-in:
+          # Service Quotas codes are global identifiers whose VALUE is per-region, and
+          # L-94A31E46 "Cross-region model inference tokens per minute for Anthropic
+          # Claude Sonnet 5.5" is the same code in us-east-1, eu-west-1 and
+          # eu-central-1 (checked in all three on 2026-10-14), each returning that
+          # region's own limit. The name says "Cross-region" without naming a geo —
+          # the geo is whichever one the caller's region belongs to — and
+          # calculate_capacity builds its client as `boto3.client("service-quotas")`
+          # with no region override, so an EU stack's Lambda reads the EU value. This
+          # closes the eu. gap for THIS model only; the other absent ids above still
+          # need their own codes looked up. One consequence for a reader of the
+          # Capacity Planning tables: because the two keys carry the same code, the
+          # us. and eu. Sonnet 5.5 rows display the SAME number in any single-Region
+          # stack. That is the quota the Region actually has, not two measurements
+          # that happen to agree.
+          #
+          # ⚠️ Claude Sonnet 5.5 is in BOTH maps on purpose, and it is the one id
+          # where omitting it from the RPM map is WORSE than it looks. The RPM
+          # builder matches with `clean_mapping_key in clean_model_id`
+          # (generate_rpm_quota_codes), and "us.anthropic.claude-sonnet-5" is a
+          # substring of "us.anthropic.claude-sonnet-5-5" — so an absent Sonnet 5.5
+          # entry silently binds it to SONNET 5's quota code instead of raising, the
+          # way Haiku 5.5 (which has no substring parent) correctly does. An
+          # explicit entry is what stops a different model's number being used.
+          #
+          # ⚠️ A code added here must resolve in EVERY Region the stack is deployed
+          # to, and the blast radius is not one row: get_simple_quotas fetches every
+          # entry in both maps with get_service_quota and re-raises any
+          # non-throttling error, so one code that does not exist in the stack's
+          # Region fails the whole Capacity Planning response for every model. The
+          # two Sonnet 5.5 codes were therefore checked in more than the one Region
+          # they were read from — both resolve, at 6,000,000, in us-east-1,
+          # us-west-2, eu-west-1, eu-central-1, eu-west-2, ap-southeast-2 and
+          # ca-central-1 (2026-10-14). ca-west-1 is UNMEASURED: this account cannot
+          # reach it, and the same call fails identically there for the pre-existing
+          # Sonnet 5 code L-D4FBCF4E, so nothing about these rows is special to it.
+          # That gap sits inside one the repository already records rather than
+          # beside it: docs/canada-region-model-support.md states that ca-west-1 gets
+          # ca-central-1's handling and has not been validated, and lists four
+          # picklist ids that a live check on 2026-10-13 found uncallable there. A
+          # ca-west-1 deployment is the configuration to verify these codes from.
+          #
+          # TPM codes read live from Service Quotas in us-east-1 on 2026-10-14:
+          # L-94A31E46 "Cross-region model inference tokens per minute for Anthropic
+          # Claude Sonnet 5.5" and L-31AB82D0 for the global. profile, both
+          # defaulting to 6,000,000 — the same default as Sonnet 5's pair.
+          # AWS publishes NO requests-per-minute quota for Claude Sonnet 5.5, and
+          # none for Sonnet 5 either, which is why the Sonnet 5 row in the RPM map
+          # carries a tokens-per-minute code. Sonnet 5.5 follows that existing
+          # convention rather than inventing a second one; the value is as
+          # approximate as Sonnet 5's and is now at least attributed to the right
+          # model. ⚠️ So when reading Capacity Planning output: the RPM figure for
+          # EITHER Sonnet is derived from a tokens-per-minute quota and is
+          # approximate for both. The TPM figures are exact.
+          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
+          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
       Policies:
         - Statement:
             - Effect: Allow
@@ -13267,17 +13377,28 @@ Resources:
         # `page.ImageUri` (Output), `FileViewer` defaults to `presignVia: 'client'`
         # against `settings.InputBucket`, and `presignForExport` signs client-side
         # for exactly those two and routes every other bucket to the resolver.
-        # Narrowing those is the document-bucket half of this, which needs the read
-        # path redesigned rather than the grant trimmed
+        # Removing the buckets themselves is the document-bucket half of this, which
+        # needs the read path redesigned rather than the grant trimmed
         # ([#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
+        #
+        # What it grants on them is object read and nothing else: `s3:GetObject` and
+        # `s3:GetObjectVersion` authorize on a key the caller already holds.
+        # `s3:ListBucket` was granted here too and is not any more — it produces keys
+        # rather than needing one, so it widens "read a document you hold a key for"
+        # into "read every document", and on this role that reach belongs to every
+        # signed-in user with no resolver in the path to bound either half. It had no
+        # consumer: the browser issues no list request, since its only S3 dependency
+        # is `@aws-sdk/s3-request-presigner` and a presigned GET does not list. The
+        # Resource list is object ARNs only for the same reason — see the note on it
+        # below. `scripts/tests/test_browser_s3_grants.py` keeps the verb off.
         #
         # It does NOT name the Configuration bucket, and must not. That bucket holds
         # `config_revisions/<profile>/<nnnnnn>.json.gz` — every configuration
         # profile's full revision history, prompts and few-shot examples included —
         # and which profiles a user may see is their `allowedConfigVersions`, a
-        # per-user boundary no IAM grant on this shared role can express. Granted
-        # here it was also `s3:ListBucket`, so the profile names did not have to be
-        # known in advance.
+        # per-user boundary no IAM grant on this shared role can express. While it was
+        # named here the grant still carried `s3:ListBucket`, so the profile names did
+        # not have to be known in advance either.
         #
         # No UI code path reads it. What that rests on is the **call sites**, not on
         # the bucket name being unavailable: the browser holds no S3 API client at all
@@ -13307,11 +13428,12 @@ Resources:
                   # page images. Without it, versioned image loads get
                   # AccessDenied and render blank.
                   - "s3:GetObjectVersion"
-                  - "s3:ListBucket"
+                # Object ARNs only. Both actions above act on an object, so a bare
+                # bucket ARN authorizes nothing — it was here for s3:ListBucket, a
+                # bucket-level action, and is removed with it rather than left to read
+                # as a grant that does something.
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}"
                   - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}"
                   - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
               - Effect: Allow
                 Action:

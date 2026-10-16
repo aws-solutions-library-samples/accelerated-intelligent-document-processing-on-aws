@@ -7,8 +7,8 @@
 is easy to raise once and easy to lose quietly, which is why this gate has two halves
 that fail on different things.
 
-**It covers nine trees, not one.** Measuring them was the point: nobody knew `scripts/`
-was already at 81% across 33,000 statements, or that
+**It covers every tree in :data:`TREES`, not one.** Measuring them was the point: nobody
+knew `scripts/` was already at 81% across 33,000 statements, or that
 `feature-platform/main-stack-extensions` was at 95%, or that `idp_sdk` (36%) and
 `idp_cli` (27%) were the only genuinely low ones. An unmeasured tree is not a tree at 0%
 — it is a tree nobody can make a decision about, and this repository had six of them.
@@ -297,6 +297,32 @@ TREES: tuple[Tree, ...] = (
         ".",
         ("tests",),
     ),
+    # Two Lambda handler directories, registered individually rather than as the start
+    # of a fan-out.
+    #
+    # #1221 reports taking `src/lambda/complete_section_review` from 47% to 99% and
+    # `src/lambda/calculate_capacity` from 31% to 99%, and until these entries existed
+    # nothing held either figure: no handler directory was in this registry, so a later
+    # change could take both back down with every gate green. That is the failure the
+    # per-file baseline exists to prevent, on the tree it did not reach.
+    #
+    # ⚠️ **This is not a fan-out and must not be grown into one by addition.** Counting
+    # tracked, non-test `.py` attributed to the directory under a `src/lambda/` segment:
+    # 84 handler directories hold code, of which 82 hold a module named `index.py`.
+    # Registering them one `Tree` at a time would be a hand-written list that a newly
+    # added handler joins only when somebody notices, which is the shape #1227 is about.
+    # That issue's decided remedy is a **derived** fan-out — one logical tree over many
+    # pytest roots, membership computed from the handler directories, and a
+    # universe-closure ratchet with a pinned count so a directory added later fails
+    # rather than being absorbed. When that lands it subsumes these two: remove both
+    # entries and their baseline records drop out on the next write, because
+    # `write_baseline` carries over only the trees this registry names.
+    #
+    # Each is its own `Tree` rather than one covering `src/lambda`, for the reason every
+    # entry above is separate: both directories contain a module named `index.py`, as do
+    # 82 of the 84, so two in a single pytest process collide at collection.
+    Tree("complete_section_review", "src/lambda/complete_section_review", "."),
+    Tree("calculate_capacity", "src/lambda/calculate_capacity", "."),
 )
 
 TREES_BY_NAME = {tree.name: tree for tree in TREES}

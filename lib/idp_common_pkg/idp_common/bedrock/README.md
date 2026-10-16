@@ -119,12 +119,14 @@ Prompt caching is a powerful feature in Amazon Bedrock that significantly reduce
 
 CachePoint functionality is only available for specific Bedrock model IDs.
 `CACHEPOINT_SUPPORTED_MODELS` in `client.py` is the authoritative list; it
-currently covers the Claude Haiku 4.5 / Haiku 5.5 / Sonnet 4.x-5 / Opus 4.x-5 /
-Opus 5.5 families (including the `:1m` variants) and the Nova models — for example:
+currently covers the Claude Haiku 4.5 / Haiku 5.5 / Sonnet 4.x-5 / Sonnet 5.5 /
+Opus 4.x-5 / Opus 5.5 families (including the `:1m` variants) and the Nova
+models — for example:
 
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-sonnet-5-5`
 - `us.amazon.nova-lite-v1:0`
 - `us.amazon.nova-pro-v1:0`
 
@@ -604,16 +606,23 @@ routes in `invoke_model` bypass Converse and therefore **cannot**:
 **Can the call be FORCED?** (`supports_forced_tool_choice()` /
 `forced_tool_choice_unsupported_reason()`, keyed on `FORCED_TOOL_CHOICE_UNSUPPORTED`
 by base name so every region prefix, the `:1m` variant and an inference-profile ARN
-resolve to one entry.) This one **does** need an allow-list, because of one model:
+resolve to one entry.) This one **does** need a denylist, because of two models:
 
 | Model | Why |
 |---|---|
 | Claude Opus 5.5 (`anthropic.claude-opus-5-5`) | carries a `toolConfig` and answers `toolChoice: auto` with a `toolUse` block, but rejects `{"any": {}}` and `{"tool": {...}}`: `tool_choice: type "tool" and "any" are not supported for this model.` |
+| Claude Sonnet 5.5 (`anthropic.claude-sonnet-5-5`) | the identical behaviour and the identical error, verified live on Converse (`us.anthropic.claude-sonnet-5-5`, us-east-1, 2026-10-14). |
 
-It is a one-model list, and the model most likely to be added to it by assumption is
-**Claude Haiku 5.5** — it shares Opus 5.5's sampling-parameter rejections and its
-effort control, so "another 5.5" is the natural guess. It accepts both forcing modes
-and emits the `toolUse` block (verified live on Converse,
+⚠️ **The answer is not a property of the family, and Sonnet 5.5 is what proves it.**
+Claude **Sonnet 5** accepts both forcing modes, so the Sonnet family spans both
+answers exactly as the Opus family does. Since `claude-sonnet-5` is a *substring* of
+`claude-sonnet-5-5`, only the exact base-name lookup gets this right — a gate written
+against the shorter id would wrongly refuse forcing for Sonnet 5 too.
+
+The model most likely to be added to this list by assumption is **Claude Haiku
+5.5** — it shares both 5.5 models' sampling-parameter rejections and their effort
+control, so "another 5.5" is the natural guess. It accepts both forcing modes and
+emits the `toolUse` block (verified live on Converse,
 `us.anthropic.claude-haiku-5-5`, us-west-2, 2026-10-08), so it is deliberately
 absent.
 
@@ -637,7 +646,8 @@ what excludes them from Discovery. Use it the same way as the tool-config gate.
 
 **Inference-profile ARNs.** `is_grok_model()`, `is_astra_model()`,
 `strips_sampling_params()`, `is_claude_4_7_model()`, `is_claude_effort_model()`,
-`thinking_can_be_disabled()`, `forced_tool_choice_unsupported_reason()` and
+`thinking_can_be_disabled()`, `thinking_disable_payload()`,
+`forced_tool_choice_unsupported_reason()` and
 `document_blocks_unsupported_reason()` resolve
 inference-profile ARNs (via `resolve_model_id_from_arn`) before matching, so a
 config that names
@@ -763,10 +773,10 @@ Different Bedrock models implement these parameters with varying defaults, namin
   - Default values: temperature=1.0, top_p=0.999, top_k=250 (wide open)
   - Parameters use snake_case: `temperature`, `top_p`, `top_k`
   - Implementation: `top_k` is placed in `additionalModelRequestFields`
-  - **Reasoning effort** (Sonnet 5, Sonnet 4.6, Opus 4.5–4.8, Opus 5, Opus 5.5,
-    Fable 5, Haiku 5.5 — see `is_claude_effort_model()`, which is the authority;
-    every list of this set in the tree is a copy of it): `reasoning_effort`
-    (`low`/`medium`/`high`/`xhigh`/`max`) maps to
+  - **Reasoning effort** (Sonnet 5, Sonnet 5.5, Sonnet 4.6, Opus 4.5–4.8, Opus 5,
+    Opus 5.5, Fable 5, Haiku 5.5 — see `is_claude_effort_model()`, which is the
+    authority; every list of this set in the tree is a copy of it):
+    `reasoning_effort` (`low`/`medium`/`high`/`xhigh`/`max`) maps to
     `additionalModelRequestFields.output_config.effort`.
     Ignored for Sonnet 4.5 / Haiku 4.5 (they 400 on it). `budget_tokens` is
     rejected — use effort. Verified live: effort changes output-token spend.
@@ -775,13 +785,33 @@ Different Bedrock models implement these parameters with varying defaults, namin
     `medium`, like Opus 5.5). Unlike Opus 5.5, thinking can still be disabled on
     it — and the model card adds a constraint this client does not model: with
     thinking disabled the effort level is capped at `high`.
+
+    **Turning thinking OFF is three different answers across the three 5.5
+    models, so ask rather than construct the field.** `thinking_can_be_disabled()`
+    says whether it can be turned off at all, and `thinking_disable_payload()`
+    returns the value to send:
+
+    | Model | `thinking_can_be_disabled` | payload |
+    |---|---|---|
+    | Claude Opus 5.5 | `False` | none — effort is the only control |
+    | Claude Haiku 5.5 | `True` | `{"type": "disabled"}` |
+    | Claude Sonnet 5.5 | `True` | `{"type": "between_tools"}` |
+
     On **Opus 5.5** effort is the *only* thinking control: `thinking: {"type":
     "disabled"}` is rejected at every effort level (`"thinking.type.disabled" is
     not supported for this model`), so lowering effort is how you reduce thinking
-    spend there — ask `thinking_can_be_disabled(model_id)`. Its own default is
+    spend there. Its own default is
     `medium`, one level below the `high` the rest of the family defaults to, so
     leaving `reasoning_effort` unset is not the same choice on Opus 5.5 as it is on
     Opus 5.
+    On **Sonnet 5.5** thinking *can* be turned off, but only with
+    `{"type": "between_tools"}` — `{"type": "disabled"}` returns a 400 whose message
+    names the replacement (verified live, `us.anthropic.claude-sonnet-5-5`,
+    us-east-1, 2026-10-14). Its default effort is `high`, the ordinary one, **not**
+    the `medium` that Opus 5.5 and Haiku 5.5 carry. The Converse path in `client.py`
+    never sends a `thinking` field, so nothing in the product constructs any of
+    these requests today; the pair of functions exists so a caller that wants to
+    asks once instead of finding the 400 in production.
   - **max_tokens**: an OPTIONAL cap. It is `Optional[int]` in every service
     config (default `None`; an empty string in stored config also parses to
     `None`), and each service passes the value straight through. When `None`
