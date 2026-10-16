@@ -12,10 +12,11 @@ can do about anything a page talks it into is decided here, as two explicit list
   testing the UI does, plus the four tools of ``scripts/ux_recorder_mcp.py``
   that mark, note, pause and resume the recording;
 * :data:`EXPERT_DISALLOWED_TOOLS` denies, by name, the Claude Code built-ins
-  ``scripts/sdlc/ai_mr_review.py`` denies and seven more that read, search,
-  delegate or ask, and every chrome-devtools-mcp tool that runs page JavaScript,
-  uploads a file, opens, closes or switches a tab, changes the viewport or device,
-  profiles the page, or reads console or network traffic.
+  ``scripts/sdlc/ai_mr_review.py`` denies and seven more that read, search, keep
+  a task list, load a skill, delegate or ask, and every chrome-devtools-mcp tool
+  that runs page JavaScript, uploads a file, lists, opens, closes or switches
+  tabs, changes the viewport or device, profiles or audits the page, inspects an
+  element's CSS rules, or reads console or network traffic.
 
 Three things make the lists mean something, and none of them lives in this file
 alone: ``--permission-mode manual`` under ``-p`` refuses anything outside the
@@ -126,11 +127,12 @@ EXPERT_ALLOWED_TOOLS: tuple[str, ...] = (
 #: Named explicitly rather than left to the allowlist: the grant is a claim about
 #: what was thought of, and this is a claim about what must not happen however the
 #: session is talked into asking for it. First the built-ins ai_mr_review's
-#: DISALLOWED_TOOLS denies and seven more that read, search, delegate or ask: belt
-#: and braces, not the CLI's whole built-in set, which ``--tools ''`` removes
-#: outright. Then the chrome-devtools tools that run page JavaScript, upload a
-#: file, open, close or switch a tab, change the viewport or device (which would
-#: misplace the recorder's click markers), profile the page, or read console and
+#: DISALLOWED_TOOLS denies and seven more that read, search, keep a task list,
+#: load a skill, delegate or ask: belt and braces, not the CLI's whole built-in
+#: set, which ``--tools ''`` removes outright. Then the chrome-devtools tools that
+#: run page JavaScript, upload a file, list, open, close or switch tabs, change
+#: the viewport or device (which would misplace the recorder's click markers),
+#: profile or audit the page, inspect an element's CSS rules, or read console and
 #: network traffic.
 EXPERT_DISALLOWED_TOOLS: tuple[str, ...] = (
     "Bash",
