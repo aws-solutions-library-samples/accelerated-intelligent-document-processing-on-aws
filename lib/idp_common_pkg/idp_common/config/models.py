@@ -90,6 +90,32 @@ def _parse_required_int(v: Any, info: ValidationInfo, cls: type) -> int:
     return int(v)
 
 
+def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
+    """Parse a whole number from an int, a numeric string or an integral float.
+
+    The Configuration editor saves ``type: number`` fields as numbers, and stored
+    records are stringified (``"30"``, ``"30.0"``). Empty/None falls back to the
+    field's declared default. Fractions (``30.5``), non-numeric strings and
+    booleans are rejected with ``ValueError``.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return int(cls.model_fields[info.field_name].default)
+    if isinstance(v, bool):
+        raise ValueError("must be a whole number, not a boolean")
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            v = float(v.strip())
+        except ValueError:
+            raise ValueError(f"must be a whole number, got {v!r}") from None
+    if isinstance(v, float):
+        if not v.is_integer():
+            raise ValueError(f"must be a whole number, got {v!r}")
+        return int(v)
+    raise ValueError(f"must be a whole number, got {type(v).__name__}")
+
+
 class ImageConfig(BaseModel):
     """Image processing configuration"""
 
@@ -1032,6 +1058,121 @@ class GeometryConfig(BaseModel):
         return v_str
 
 
+class HITLNotificationsConfig(BaseModel):
+    """Inbox message retention and per-user cap (idp_common.notifications)."""
+
+    retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Days an Inbox message is kept before DynamoDB TTL removes it.",
+    )
+    max_per_user: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Messages kept per user; the oldest read message is removed first.",
+    )
+
+    @field_validator("retention_days", "max_per_user", mode="before")
+    @classmethod
+    def parse_whole_number(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_whole_number(v, info, cls)
+
+
+#: Cognito groups a review queue may list as members (IDP-0002 D2).
+REVIEW_QUEUE_MEMBER_GROUPS: Tuple[str, ...] = ("Annotator", "Admin")
+
+#: A queue id: starts with a letter or digit, then up to 63 of letters,
+#: digits, space, ``_``, ``.`` or ``-``. The id is what items, keys and the
+#: ``default_queue`` / ``escalation_queue`` settings refer to.
+REVIEW_QUEUE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$"
+#: Older name for :data:`REVIEW_QUEUE_ID_PATTERN` (a queue's name used to be its id).
+REVIEW_QUEUE_NAME_PATTERN = REVIEW_QUEUE_ID_PATTERN
+
+
+def review_queue_display_name(queue_id: str) -> str:
+    """A readable name for a queue id: ``"escalation"`` -> ``"Escalation"``."""
+    words = re.split(r"[\s_.-]+", queue_id.strip())
+    return " ".join(w[:1].upper() + w[1:] for w in words if w) or queue_id
+
+
+#: Reasons a reviewer can pick when rejecting a document, unless the profile
+#: sets its own ``hitl.review_queues.reject_reasons``.
+DEFAULT_REJECT_REASONS: Tuple[str, ...] = (
+    "Illegible or poor-quality document",
+    "Wrong document type",
+    "Pages missing or out of order",
+    "Duplicate document",
+    "Other (see note)",
+)
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+
+def _dedupe(values: List[str]) -> List[str]:
+    seen: set = set()
+    out: List[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _as_list(v: Any) -> List[Any]:
+    if v is None or v == "":
+        return []
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    raise ValueError(f"must be a list, got {type(v).__name__}")
+
+
+def _bounded_text_list(v: Any, *, what: str, max_len: int = 200) -> List[str]:
+    out = []
+    for item in _as_list(v):
+        text = str(item).strip()
+        if not 1 <= len(text) <= max_len:
+            raise ValueError(f"each {what} must be 1-{max_len} characters")
+        out.append(text)
+    return out
+
+
+class HITLReviewQueuesConfig(BaseModel):
+    """Review queues for low-confidence documents (``idp_common.review_queues``).
+
+    Queues are system-wide (defined once in HITL › Queue Management, see
+    ``idp_common.review_queues.queue_defs``); a profile only turns routing on and
+    names the queue its documents go to. Several profiles may share a queue.
+    Effective only when ``hitl.enabled`` is also true.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Route low-confidence documents to a review queue instead of Review Pending",
+    )
+    queue: str = Field(
+        default="default",
+        pattern=REVIEW_QUEUE_ID_PATTERN,
+        description="Id of the system-wide queue this profile's documents enter",
+    )
+
+    @field_validator("queue", mode="before")
+    @classmethod
+    def normalise_queue(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "default"
+        return v.strip().lower() if isinstance(v, str) else v
+
+    def cross_field_problems(self) -> List[str]:
+        """Problems that a configuration write must refuse. Empty when valid.
+
+        Whether the named queue exists is checked by the configuration editor
+        against the queue list; routing falls back to Default for an unknown id.
+        """
+        return []
+
+
 class HITLConfig(BaseModel):
     """Human-in-the-Loop review configuration (v0.6, top-level ``hitl``).
 
@@ -1050,6 +1191,17 @@ class HITLConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="Confidence threshold below which a field is flagged for review",
+    )
+    notifications: HITLNotificationsConfig = Field(
+        default_factory=HITLNotificationsConfig,
+        description="Inbox message retention and cap. Applies whether or not hitl.enabled is set.",
+    )
+    review_queues: HITLReviewQueuesConfig = Field(
+        default_factory=HITLReviewQueuesConfig,
+        description=(
+            "Review queues for low-confidence documents (idp_common.review_queues). "
+            "Effective only when hitl.enabled is true; only Admins may change it."
+        ),
     )
 
     @field_validator("confidence_threshold", mode="before")

@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/a1e9ce1a-1b2e-4e98-a387-d2e48d7e557d
 
 ## Roles
 
-Five roles are defined as Cognito User Pool groups:
+Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resources in `template.yaml`):
 
 | Role | Cognito Group | Description |
 |------|--------------|-------------|
@@ -28,7 +28,7 @@ Five roles are defined as Cognito User Pool groups:
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
 | **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Annotates ground truth for assigned test sets only. No access to the document list, configuration, or test sets outside its assignment. |
+| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (My Work: Inbox, Tasks, Favorites). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -50,6 +50,7 @@ nothing at all.
 | `estimateReviewEffort` | The "what your review is buying" panel in the workspace |
 | `reextractTestSetDocument` | Re-run extraction after correcting a document's class |
 | `claimReview` / `releaseReview` / `completeSectionReview` | Claim a document and save corrected labels |
+| `listInboxMessages` and the other Inbox operations | Their own Inbox messages and mute settings (every role has an Inbox) |
 
 Everything else in Test Studio — creating sets, publishing versions, generating
 draft labels, resetting labels, deleting — stays Admin/Author. `skipAllSectionsReview`
@@ -81,6 +82,51 @@ asymmetric on purpose: a populated scope is held for 5 minutes (bounding how lon
 revoked annotator keeps access), while an empty scope is held for only 10 seconds,
 so granting a new assignment takes effect almost immediately rather than leaving the
 user locked out for the full TTL.
+
+## Annotators and review queues
+
+[Review queues](./review-queues.md) are worked by Annotators, and an Admin assigns
+the work. Nobody claims an item themselves.
+
+- **What an Annotator can call.** `listMyReviewWork`, `getReviewItem`,
+  `saveReviewDraft`, `completeReviewItem` and `rejectReviewItem`, each only for
+  items assigned to them (otherwise `NOT_ASSIGNED`). It can also call
+  `listMyTestSetTasks` and the Test Studio annotation operations for the test sets
+  in its `allowedTestSets`. A test-set save, made with `updateTestSetDocumentSections`,
+  `completeSectionReview` or `saveTestSetDocumentSection` (documents with no review
+  copy, such as authored ground truth), and a `skipTestSetDocument`, are accepted only
+  from the document's assignee;
+  Admins and Authors are exempt. On top of that, it gets the `ANY_GROUP` operations every
+  role gets: its own profile, the Inbox and document reads.
+- **What is Admin-only.**
+  - Queue Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
+    `deleteReviewQueue`, `listTestSetQueues`, `updateTestSetQueue`, `listAnnotators`.
+  - Assignment: `reassignReviewItem` (assign), `forceReleaseReviewItem` (unassign),
+    `assignTestSetDocuments`, `unassignTestSetDocuments`.
+  - `moveReviewItem`, the queue listings, and the claim and lease operations.
+  - Changing `hitl.review_queues` in a profile.
+- **What scopes it.**
+  - Only members of the Cognito `Annotator` group can be assigned work; both the
+    production and the Test Studio assignment check the group, not the UsersTable
+    persona, so a user who is Admin and Annotator can be assigned.
+  - Assignment comes first: the owner key is taken from the verified claims, and an
+    item must be assigned to the caller.
+  - A queue's **Eligible Annotators** limits who its items can be assigned to.
+  - `allowedConfigVersions` limits which profiles' Production items an Annotator
+    can work.
+  - Assigning a Test Studio document adds its test set to the Annotator's
+    `allowedTestSets`.
+- **What the console shows.** A user whose only app group is `Annotator` sees
+  exactly My Work: Inbox, Tasks and Favorites. Users without `Annotator` have no
+  My Work and no Inbox (no navigation entry, no bell, no Inbox page). **HITL › Queue
+  Management** is Admin-only.
+- **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
+  `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`) are unchanged.
+  For every role, `completeSectionReview` and `processChanges` refuse documents that
+  are in a production review queue (`QUEUE_MANAGED`).
+- **Residual access.** Like every role, an Annotator can call `getDocument` and
+  read document objects through the identity pool's S3 grants, for keys it knows.
+  The review pages are a convenience, not the security boundary.
 
 ## Permission Matrix
 
@@ -135,6 +181,9 @@ CUSTOM MODEL FINE-TUNING
 
 CAPACITY PLANNING
   Calculate capacity              ✅      ✅       ❌        ✅
+
+INBOX
+  Own messages and preferences    ✅      ✅       ✅        ✅
 
 USER MANAGEMENT
   List all users                  ✅      ❌       ❌        ❌
@@ -460,8 +509,8 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 91 |
-| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 18 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 107 |
+| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 26 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
 
@@ -477,8 +526,11 @@ whichever role they were given". Every document read carries it (`getDocument`,
 `getDocumentVersion`, `compareDocumentVersions`, `getStepFunctionExecution`,
 `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), as do the chat
 transcript read `getChatMessages`, the processing-breaker badge
-`getCircuitBreakerStatus`, and three mutations (`deleteAgentJob`,
-`deleteChatSession`, `sendChatDocumentMessage`).
+`getCircuitBreakerStatus`, three mutations (`deleteAgentJob`,
+`deleteChatSession`, `sendChatDocumentMessage`), and the eight Inbox operations
+(`listInboxMessages`, `getInboxUnreadCount`, `getInboxPreferences`,
+`markInboxMessages`, `markAllInboxMessagesRead`, `deleteInboxMessages`,
+`clearReadInboxMessages`, `updateInboxPreferences`).
 
 That list includes the reads that return no extracted value themselves, because an
 object key, a section's `s3://` URI, a state machine execution ARN and a
@@ -544,7 +596,7 @@ through `getFileContents` / `getFilePresignedUrl`, which check the key against t
 caller's scope. `scripts/tests/test_browser_s3_grants.py` pins which buckets the
 role may name, so the set cannot grow back unnoticed.
 
-So the accurate statement of what `ANY_GROUP` buys is: **those eighteen API
+So the accurate statement of what `ANY_GROUP` buys is: **those 26 API
 operations** now refuse a caller in no group. The document bytes are not yet behind
 a group check, and putting them there means either group-scoped Identity Pool
 `RoleMappings` or narrowing that role and routing every read through a resolver —
@@ -664,6 +716,7 @@ enforcement itself is Layer 2.
 | `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
+| `markInboxMessages`, `markAllInboxMessagesRead`, `deleteInboxMessages`, `clearReadInboxMessages`, `updateInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |
 | `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in neither routing surface (`FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED`), so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
 
 > **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
@@ -694,6 +747,7 @@ enforcement itself is Layer 2.
 | `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
 | `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
 | `getMyProfile` | All authenticated |
+| `listInboxMessages`, `getInboxUnreadCount`, `getInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |
 
 **Note**: The `updateConfiguration` mutation is schema-level restricted to Admin+Author, but the resolver additionally enforces that `saveAsVersion` and `saveAsDefault` operations within that mutation are **Admin-only**.
 
@@ -854,7 +908,11 @@ To add a new role:
 4. Update the `VALID_PERSONAS` dict in `src/lambda/user_management/index.py`
 5. **Add the group name to `APP_GROUPS`** in `src/ui/src/hooks/use-user-role.ts`, then add its role detection there. ⚠️ `APP_GROUPS` is not cosmetic: `hasNoRole` is computed from it and gates the **whole application**, so a group the server has just granted the `ANY_GROUP` operations (step 3) but that is missing here would be shown "your account has not been granted access yet" and reach nothing. `src/ui/src/hooks/__tests__/use-user-role.appGroups.test.ts` fails when the list and `template.yaml` disagree, so this cannot be missed silently
 6. Add navigation items in `src/ui/src/components/genaiidp-layout/navigation.tsx`
-7. Pass the new group as an environment variable to the UserManagement Lambda
+7. Pass the new group as an environment variable to the UserManagement Lambda (and the UserSync function)
+8. Add an `ExternalIdP<Role>GroupName` parameter and its ParameterGroup entry, and map it in **both** pre-token trigger copies (inline in `template.yaml` and `src/lambda/external_idp_group_mapping/`)
+9. Add the role to the headless transform's strip lists if it only exists with a headed console
+10. Add the persona to the User Management picker, the top navigation's role display, the landing path and any `*Only` flag in `use-user-role.ts`
+11. Add it to the live RBAC and UX harness role lists, and document it here and in [external-idp.md](./external-idp.md)
 
 ## Known Limitations
 

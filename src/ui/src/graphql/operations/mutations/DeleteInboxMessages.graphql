@@ -1,0 +1,7 @@
+mutation DeleteInboxMessages($ids: [ID!]!) {
+  deleteInboxMessages(ids: $ids) {
+    updated
+    notFoundIds
+    unreadCount
+  }
+}

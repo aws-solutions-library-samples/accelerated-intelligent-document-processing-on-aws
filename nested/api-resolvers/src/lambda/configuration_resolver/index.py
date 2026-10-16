@@ -9,7 +9,10 @@ import re
 import boto3
 from pydantic import ValidationError
 
-from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.configuration_manager import (
+    ConfigurationManager,
+    ConfigurationValidationError,
+)
 from idp_common.config.constants import (
     CONFIG_TYPE_CONFIG,
     CONFIG_TYPE_DEFAULT_MODEL_CONFIG_LIMITS,
@@ -26,6 +29,11 @@ from idp_common.config_scope import (
     caller_sub_from_claims,
     resolve_allowed_config_versions,
     scope_allows,
+)
+from idp_common.review_queues.config_guard import (
+    ReviewQueuesAdminGuard,
+    unknown_queue_ids,
+    warnings_for,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -44,6 +52,28 @@ _USER_SCOPE_CACHE_TTL = 60  # seconds
 
 # Lazy-initialized RuleTranslator (reused across requests within same container)
 _rule_translator = None
+
+# Lazy-initialized queue definitions, for the unknown-queue warning
+_queue_defs = None
+
+
+def _queue_ids():
+    """Ids of the system-wide review queues (``QDEF`` items, cached briefly)."""
+    global _queue_defs
+    if not os.environ.get("HITL_TABLE_NAME"):
+        raise RuntimeError("HITL_TABLE_NAME is not set")
+    if _queue_defs is None:
+        from idp_common.review_queues.directory import QueueDirectory
+
+        _queue_defs = QueueDirectory().queue_defs
+    return [d.id for d in _queue_defs.list()]
+
+
+def _review_queues_guard(caller):
+    """The Admin-only write guard for ``hitl.review_queues`` (FR-4)."""
+    return ReviewQueuesAdminGuard(
+        is_admin=caller["is_admin"], caller_email=caller["email"]
+    )
 
 
 def _get_caller_info(event):
@@ -373,14 +403,25 @@ def handler(event, context):
                             "message": f"Access denied: '{operation_name}' is an Admin-only operation",
                         },
                     }
+            guard = _review_queues_guard(caller)
             success = manager.handle_update_custom_configuration(
-                custom_config, version, description, created_by=caller["email"]
+                custom_config,
+                version,
+                description,
+                created_by=caller["email"],
+                write_guard=guard,
+            )
+            warnings = (
+                warnings_for(unknown_queue_ids(guard.changes, _queue_ids))
+                if guard.changes
+                else []
             )
             return {
                 "success": success,
                 "message": "Configuration updated successfully"
                 if success
                 else "Configuration update failed",
+                "warnings": warnings,
             }
         elif operation == "setActiveVersion":
             args = event["arguments"]
@@ -459,7 +500,11 @@ def handler(event, context):
                 return handle_get_profile_revision(manager, profile, revision)
             if operation == "restoreConfigProfileRevision":
                 return handle_restore_profile_revision(
-                    manager, profile, revision, caller["email"]
+                    manager,
+                    profile,
+                    revision,
+                    caller["email"],
+                    write_guard=_review_queues_guard(caller),
                 )
             if operation == "labelConfigProfileRevision":
                 return handle_label_profile_revision(
@@ -509,6 +554,15 @@ def handler(event, context):
             return handle_generate_rule_json(rule_description.strip())
         else:
             raise Exception(f"Unsupported operation: {operation}")
+    except ConfigurationValidationError as e:
+        # A cross-field rule of hitl.review_queues (unique queue names, defined
+        # default and escalation queues). A deliberate refusal reported as data,
+        # like the inert-hook refusal below.
+        logger.error(f"Configuration validation refusal: {e}")
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except InertGatingHookError as e:
         # A deliberate refusal, not a fault: the configuration registers an
         # `onError: fail` pipeline hook at a point its processing mode can never
@@ -559,6 +613,10 @@ def handler(event, context):
                 },
             },
         }
+    except PermissionError:
+        # An authorization refusal (the Admin-only hitl.review_queues guard) must
+        # reach the dispatcher as 403, not become a 200 "UnexpectedError" payload.
+        raise
     except Exception as e:
         # Catch all other exceptions to prevent lambda failures
         logger.error(f"Unexpected error in {operation}: {str(e)}", exc_info=True)
@@ -1205,7 +1263,9 @@ def handle_get_config_versions(manager, allowed_versions=None):
         # Filter by user's allowed config versions if scope is set
         if allowed_versions:
             versions = [
-                v for v in versions if scope_allows(allowed_versions, v.get("versionName"))
+                v
+                for v in versions
+                if scope_allows(allowed_versions, v.get("versionName"))
             ]
             logger.info(
                 f"Filtered config versions by scope: {len(versions)} versions returned"
@@ -1240,7 +1300,10 @@ def handle_list_profile_revisions(manager, profile):
         logger.error(f"Error listing revisions for '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to list revisions: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to list revisions: {str(e)}",
+            },
         }
 
 
@@ -1270,27 +1333,40 @@ def handle_get_profile_revision(manager, profile, revision):
         }
 
 
-def handle_restore_profile_revision(manager, profile, revision, caller_email):
+def handle_restore_profile_revision(
+    manager, profile, revision, caller_email, write_guard=None
+):
     """
     Restore an earlier revision as the profile's current configuration.
 
     Restoring is a forward-only operation: the restored configuration is saved as
-    a NEW revision, so the state being replaced stays inspectable.
+    a NEW revision, so the state being replaced stays inspectable. ``write_guard``
+    refuses a non-Admin restore that changes ``hitl.review_queues``.
     """
     try:
-        new_revision = manager.restore_revision(profile, revision, created_by=caller_email)
+        new_revision = manager.restore_revision(
+            profile, revision, created_by=caller_email, write_guard=write_guard
+        )
         return {
             "success": True,
             "revision": new_revision,
             "message": f"Restored r{revision} as r{new_revision}",
         }
+    except PermissionError:
+        raise
     except ValueError as e:
-        return {"success": False, "error": {"type": "ValidationError", "message": str(e)}}
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except Exception as e:
         logger.error(f"Error restoring r{revision} of '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to restore revision: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to restore revision: {str(e)}",
+            },
         }
 
 
@@ -1299,12 +1375,18 @@ def handle_label_profile_revision(manager, profile, revision, label, notes):
     if label is not None and not validate_description(label):
         return {
             "success": False,
-            "error": {"type": "ValidationError", "message": "Label cannot exceed 200 characters"},
+            "error": {
+                "type": "ValidationError",
+                "message": "Label cannot exceed 200 characters",
+            },
         }
     if notes is not None and not validate_description(notes):
         return {
             "success": False,
-            "error": {"type": "ValidationError", "message": "Notes cannot exceed 200 characters"},
+            "error": {
+                "type": "ValidationError",
+                "message": "Notes cannot exceed 200 characters",
+            },
         }
     try:
         updated = manager.label_revision(profile, revision, label=label, notes=notes)
@@ -1321,7 +1403,10 @@ def handle_label_profile_revision(manager, profile, revision, label, notes):
         logger.error(f"Error labeling r{revision} of '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to label revision: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to label revision: {str(e)}",
+            },
         }
 
 
@@ -1339,12 +1424,18 @@ def handle_delete_profile_revision(manager, profile, revision):
             }
         return {"success": True, "message": f"Deleted r{revision}"}
     except ValueError as e:
-        return {"success": False, "error": {"type": "ValidationError", "message": str(e)}}
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except Exception as e:
         logger.error(f"Error deleting r{revision} of '{profile}': {e}")
         return {
             "success": False,
-            "error": {"type": "Error", "message": f"Failed to delete revision: {str(e)}"},
+            "error": {
+                "type": "Error",
+                "message": f"Failed to delete revision: {str(e)}",
+            },
         }
 
 

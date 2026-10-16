@@ -38,6 +38,13 @@ Parameters:
   TrackingTable:
     Type: String
 
+  HITLTableName:
+    Type: String
+    Default: ""
+    Description: >-
+      DynamoDB table holding HITL review queue items (idp_common.review_queues).
+      Empty (headless) keeps every profile on the legacy HITL flow.
+
   CustomerManagedEncryptionKeyArn:
     Type: String
 
@@ -298,6 +305,7 @@ Conditions:
   HasCustomExtractionModelARN:
     !Not [!Equals [!Ref CustomExtractionModelARN, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  HasHITLTable: !Not [!Equals [!Ref HITLTableName, ""]]
   IsECRImageScanningEnabled: !Equals [!Ref EnableECRImageScanning, "true"]
   IsPrivateApi: !Equals [!Ref UsePrivateApi, "true"]
   IsMLflowEnabled: !Equals [!Ref EnableMLflow, "true"]
@@ -2127,6 +2135,48 @@ Resources:
                 default: 0.8
                 order: 1
                 hideWhen: { field: "hitl.enabled", value: false }
+              notifications:
+                type: object
+                order: 2
+                sectionLabel: "Inbox messages"
+                description: "Retention and per-user cap for Inbox messages. Applies whether or not HITL review is enabled; changes apply to messages written after the change."
+                properties:
+                  retention_days:
+                    type: number
+                    title: "Retention (days)"
+                    description: "Days an Inbox message is kept before it is removed automatically."
+                    minimum: 1
+                    maximum: 365
+                    default: 30
+                    order: 0
+                  max_per_user:
+                    type: number
+                    title: "Messages kept per user"
+                    description: "When a new message exceeds this, the oldest read message is removed first; only if all are unread is the oldest unread removed."
+                    minimum: 1
+                    maximum: 200
+                    default: 50
+                    order: 1
+              review_queues:
+                type: object
+                order: 3
+                sectionLabel: "Review queues"
+                adminOnly: true
+                hideWhen: { field: "hitl.enabled", value: false }
+                description: "Route this profile's low-confidence documents to a review queue. Queues are system-wide: Admins create them in HITL › Queue Management and assign their items to Annotators. Only Admins may change these settings."
+                properties:
+                  enabled:
+                    type: boolean
+                    title: "Enable review queues"
+                    description: "Documents with low-confidence fields wait in the queue below instead of finishing, and use the review queues instead of Review Pending."
+                    default: false
+                    order: 0
+                  queue:
+                    type: string
+                    title: "Queue"
+                    description: "Id of the queue this profile's documents enter, as shown in HITL › Queue Management, e.g. default. Several profiles may share a queue; an unknown id falls back to the Default queue."
+                    default: "default"
+                    order: 1
           summarization:
             order: 7
             type: object
@@ -4267,14 +4317,33 @@ Resources:
           DOCUMENT_TRACKING_MODE: dynamodb
           DB_NAME: !Ref BDAMetadataTable
           WORKING_BUCKET: !Ref WorkingBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           # Read a pinned configuration revision's body when a document or
           # test run is pinned to one (config_revisions/ prefix).
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref BDAProcessResultsFunctionLogGroup
       Policies:
         - AWSLambdaBasicExecutionRole
+        # Review queues: ProcessResults writes the HOLDING item of a document it
+        # routes to a review queue, reads the item of a finalize run and its drafts.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
         - S3ReadPolicy:
             BucketName: !Ref InputBucket
         - S3CrudPolicy:
@@ -5528,10 +5597,28 @@ Resources:
           # Read a pinned configuration revision's body when a document or
           # test run is pinned to one (config_revisions/ prefix).
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref ProcessResultsFunctionLogGroup
       Policies:
         - AWSLambdaBasicExecutionRole
+        # Review queues: ProcessResults writes the HOLDING item of a document it
+        # routes to a review queue, reads the item of a finalize run and its drafts.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
         - !Ref LambdaECRAccessPolicy
         - S3ReadPolicy:
             BucketName: !Ref InputBucket

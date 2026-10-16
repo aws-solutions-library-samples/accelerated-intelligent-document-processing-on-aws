@@ -13,6 +13,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_common.api_adapter import ResourceNotFound  # type: ignore
+from idp_common.review_queues.statuses import (  # type: ignore
+    LEGACY_DONE,
+    LegacyHitlStatus,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -326,12 +330,7 @@ def send_test_run_to_review(args):
         # Never reopen a review that is already completed or skipped.
         alert_count = int(doc.get("ConfidenceAlertCount", 0) or 0)
         status = doc.get("HITLStatus", "")
-        if alert_count <= 0 or status in (
-            "Review Completed",
-            "Review Skipped",
-            "Completed",
-            "Skipped",
-        ):
+        if alert_count <= 0 or status in LEGACY_DONE:
             skipped += 1
             continue
 
@@ -342,7 +341,7 @@ def send_test_run_to_review(args):
             ),
             ExpressionAttributeValues={
                 ":t": True,
-                ":s": "PendingReview",
+                ":s": LegacyHitlStatus.PENDING_REVIEW.value,
                 ":tsid": run.get("TestSetId"),
             },
         )
@@ -738,9 +737,9 @@ def _json_default(value):
     # documented round-trip semantic) and a loud ``TypeError`` for
     # everything else — configs get their known types converted, and
     # genuinely-surprising types still raise where they should.
+    import base64 as _b64
     import datetime as _dt
     import uuid as _uuid
-    import base64 as _b64
 
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
         # ISO-8601 — read-back is a string, not a datetime; that mirrors

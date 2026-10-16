@@ -160,6 +160,18 @@ class TestHandler:
 
         assert "ZIP created" in response["body"]
 
+    def test_creates_zip_when_a_file_was_rejected(self, mock_s3, job_svc):
+        """REJECTED (a reviewer rejected the document) is terminal: the ZIP is built."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = {"a.pdf": "COMPLETED", "b.pdf": "REJECTED"}
+        mock_s3.list_objects_v2.return_value = {"Contents": [{"Key": "jobs/test-uuid/a.pdf"}]}
+        mock_s3.get_object.return_value = {"Body": MagicMock(read=lambda: b"content")}
+
+        response = handler(make_event("jobs/test-uuid/b.pdf"), None)
+
+        assert "ZIP created" in response["body"]
+
     def test_invalid_job_path(self, mock_s3, job_svc):
         """Test handler returns 400 for invalid job path format."""
         from index import handler

@@ -1,0 +1,7 @@
+mutation SkipTestSetDocument($testSetId: String!, $objectKey: String!) {
+  skipTestSetDocument(testSetId: $testSetId, objectKey: $objectKey) {
+    testSetId
+    objectKey
+    skipped
+  }
+}

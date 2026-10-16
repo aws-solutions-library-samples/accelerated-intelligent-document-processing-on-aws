@@ -32,6 +32,29 @@ AWS_BIN = os.environ.get("AWS_CLI_BIN") or (
     "/usr/local/bin/aws" if Path("/usr/local/bin/aws").exists() else "aws"
 )
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def template_group_names(template_path=None):
+    """Every Cognito group ``template.yaml`` creates, ``Admin`` first, then sorted.
+
+    The one place harnesses get their role list from, so a new group joins every
+    matrix and session tool without anyone editing a hardcoded list. It reuses
+    ``generate_api_rbac_manifest.cognito_group_names``, the extraction the
+    dispatcher's manifest is built with, loaded by path.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_rbac_manifest_generator",
+        _REPO_ROOT / "scripts" / "sdlc" / "generate_api_rbac_manifest.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    text = Path(template_path or _REPO_ROOT / "template.yaml").read_text()
+    return sorted(module.cognito_group_names(text), key=lambda n: (n != "Admin", n))
+
+
 # The one auth flow the token helpers add (and always remove) on the UI app
 # client so admin-initiate-auth can mint a token with just a username/password.
 ADMIN_AUTH_FLOW = "ALLOW_ADMIN_USER_PASSWORD_AUTH"

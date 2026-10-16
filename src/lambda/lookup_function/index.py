@@ -37,6 +37,32 @@ def calculate_durations(timestamps):
         logger.error(f"Error calculating durations: {e}", exc_info=True)
         return {}
 
+#: The consumer-facing review statuses (idp_common.review_queues.statuses.ReviewStatus).
+#: This function carries no idp_common layer, so the three values are listed here;
+#: test_lookup_function_review.py pins them to the enum.
+REVIEW_STATUS_VALUES = ("in_review", "complete", "rejected")
+
+
+def review_info(item):
+    """The document's review-queue status, or None when it was never routed.
+
+    Reads the tracking attributes the review queues write
+    (idp_common.review_queues.statuses.TRACKING_REVIEW_ATTRIBUTES).
+    """
+    status = item.get('HITLStatus')
+    if status not in REVIEW_STATUS_VALUES:
+        return None
+    return {
+        'status': status,
+        'queue': item.get('ReviewQueue'),
+        'cycleId': item.get('ReviewCycleId'),
+        'statusUri': item.get('ReviewStatusUri'),
+        'reviewedBy': item.get('HITLReviewedBy'),
+        'disposedAt': item.get('ReviewDisposedAt'),
+        'rejectReason': item.get('ReviewRejectReason'),
+    }
+
+
 def get_document_status(object_key, status_only=False):
     """
     Get status for a single document
@@ -77,7 +103,8 @@ def get_document_status(object_key, status_only=False):
             'timing': {
                 'timestamps': timestamps,
                 'elapsed': calculate_durations(timestamps)
-            }
+            },
+            'review': review_info(item),
         }
         
         # If status_only mode, skip expensive Step Functions queries

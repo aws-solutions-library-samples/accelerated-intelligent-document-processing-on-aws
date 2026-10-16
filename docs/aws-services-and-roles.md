@@ -18,7 +18,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
 | **Amazon S3** | Stores input documents, processed outputs, and web UI assets | ✓ | ✓ |
-| **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency | ✓ | ✓ |
+| **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency, stores each user's [Inbox](./web-ui.md#inbox) messages (`NotificationsTable`), and holds HITL review queues, assignments and Test Studio queue summaries (`HITLTable`) | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
 | **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
@@ -229,9 +229,10 @@ The solution creates various IAM roles to run different components of the system
 
 #### Web UI & API Roles
 * **API Dispatcher Role** (the single Lambda behind `POST /op/{field}`, which fans a request out to the per-field resolver Lambdas and serves the DynamoDB-direct fields in process):
-  * `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`
-  * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`
-  * `lambda:InvokeFunction` (only the resolver functions in its field → function map)
+  * SAM `DynamoDBCrudPolicy` on the Tracking, Discovery Tracking and Agent tables, for the DynamoDB-direct fields it serves itself
+  * `kms:Decrypt`, `kms:GenerateDataKey` on the customer-managed key that encrypts those tables
+  * `lambda:InvokeFunction` on the stack's resolver functions (by function-name prefix) and the main-stack resolver ARNs in its field → function map
+  * `ssm:GetParameter` on the stack's field → function map parameter, read at cold start
 
 * **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
@@ -243,6 +244,17 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
+
+* **Notifications Resolver Role** (API resolver Lambda that serves each user's own [Inbox](./web-ui.md#inbox)):
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
+* **Inbox producers** (none in this release). A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
+  * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
+  * read access to the Configuration table (for retention and the per-user cap)
+  * `cognito-idp:ListUsersInGroup` on the user pool, only when it posts to Cognito groups
+  * `cloudwatch:PutMetricData`
+  * KMS use of the customer-managed key that encrypts the table
 
 * **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
   * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.

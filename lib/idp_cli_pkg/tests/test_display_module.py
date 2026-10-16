@@ -1210,3 +1210,41 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
 
     # The loop has to have run; a generator that produced nothing would pass.
     assert checked == 192
+
+
+# --- REJECTED (IDP-0002 D1): terminal, not success, reported by name ---------
+
+
+@pytest.mark.unit
+def test_json_a_rejected_document_exits_one_and_keeps_its_status():
+    """A reviewer rejected it: exit 1 like a failure, but never shown as FAILED."""
+    doc = _doc(status="REJECTED", error="Rejected by reviewer")
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, failed=[doc]), _stats(total=1, failed=1)
+        )
+    )
+
+    assert payload["status"] == "REJECTED"
+    assert payload["exit_code"] == 1
+
+
+@pytest.mark.unit
+def test_summary_single_rejected_document_is_labelled_rejected(pinned_display_console):
+    with pinned_display_console.capture() as capture:
+        code = display.show_final_status_summary(
+            _status_data(total=1, failed=[_doc(status="REJECTED", duration=3.0)]),
+            _stats(total=1, failed=1, all_complete=True),
+        )
+
+    assert code == 1
+    assert "FINAL STATUS: REJECTED | Duration: 3.0s | Exit Code: 1" in capture.get()
+
+
+@pytest.mark.unit
+def test_failures_table_title_names_rejections():
+    table = display.create_failures_table(
+        _status_data(total=1, failed=[_doc(document_id="d", status="REJECTED")])
+    )
+
+    assert "Rejected / Failed Documents" in _render(table)

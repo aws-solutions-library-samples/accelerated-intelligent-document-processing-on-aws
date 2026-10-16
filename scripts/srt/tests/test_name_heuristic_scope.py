@@ -52,7 +52,7 @@ pytestmark = pytest.mark.unit
 #: nothing, a template that stops being found — fails here instead of quietly
 #: restoring the shape-only behaviour this exemption was narrowed to avoid. Bump it
 #: deliberately when a Lambda is added or removed.
-EXPECTED_PACKAGED_DIRS = 120
+EXPECTED_PACKAGED_DIRS = 123
 
 
 def _tracked(pattern: str) -> list[str]:

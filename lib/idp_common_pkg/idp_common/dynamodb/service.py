@@ -12,9 +12,10 @@ import datetime
 import json
 import logging
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from idp_common.dynamodb.client import DynamoDBClient
+from idp_common.dynamodb.ttl import calculate_ttl
 from idp_common.models import (
     Document,
     Page,
@@ -23,6 +24,7 @@ from idp_common.models import (
     Status,
     coerce_revision,
 )
+from idp_common.review_queues.statuses import LEGACY_PENDING
 
 logger = logging.getLogger(__name__)
 
@@ -442,7 +444,9 @@ class DocumentDynamoDBService:
         # Set workflow status based on document status
         if document.status == Status.FAILED:
             workflow_status = "FAILED"
-        elif document.status == Status.COMPLETED:
+        elif document.status in (Status.COMPLETED, Status.REJECTED):
+            # REJECTED is a terminal disposition reached by a successful
+            # finalize execution, not a processing failure.
             workflow_status = "SUCCEEDED"
         elif document.status == Status.ABORTED:
             workflow_status = "ABORTED"
@@ -629,8 +633,7 @@ class DocumentDynamoDBService:
             # Maintain sparse GSI attribute for pending review queries
             # "PendingReview" = initial trigger, "Review Pending" = after release_review,
             # "InProgress" = after claim_review
-            pending_statuses = ("PendingReview", "Review Pending", "InProgress")
-            if document.hitl_status in pending_statuses:
+            if document.hitl_status in LEGACY_PENDING:
                 set_expressions.append("#HITLPendingReview = :HITLPendingReview")
                 expression_names["#HITLPendingReview"] = "HITLPendingReview"
                 expression_values[":HITLPendingReview"] = "true"
@@ -722,8 +725,7 @@ class DocumentDynamoDBService:
         # Remove HITLPendingReview GSI attribute when review is completed/skipped
         remove_expressions = []
         if document.hitl_status:
-            pending_statuses = ("PendingReview", "Review Pending", "InProgress")
-            if document.hitl_status not in pending_statuses:
+            if document.hitl_status not in LEGACY_PENDING:
                 remove_expressions.append("HITLPendingReview")
         if remove_expressions:
             update_expression += " REMOVE " + ", ".join(remove_expressions)
@@ -1020,6 +1022,47 @@ class DocumentDynamoDBService:
 
         logger.info(f"Successfully updated document: {document.input_key}")
         return updated_document
+
+    def update_review_attributes(
+        self,
+        object_key: str,
+        set_attrs: Mapping[str, Any],
+        remove_attrs: Sequence[str] = (),
+    ) -> None:
+        """Targeted write of review-queue attributes on the tracking row.
+
+        One ``UpdateItem`` (``SET``/``REMOVE``) of only the named attributes, so
+        it never races the whole-document ``update_document`` over other fields.
+        Requires the row to exist (``attribute_exists(PK)``).
+        """
+        names: Dict[str, str] = {}
+        values: Dict[str, Any] = {}
+        sets = []
+        for i, (name, value) in enumerate(set_attrs.items()):
+            names[f"#s{i}"] = name
+            values[f":s{i}"] = value
+            sets.append(f"#s{i} = :s{i}")
+        removes = []
+        for i, name in enumerate(remove_attrs):
+            if name in set_attrs:
+                continue
+            names[f"#r{i}"] = name
+            removes.append(f"#r{i}")
+        parts = []
+        if sets:
+            parts.append("SET " + ", ".join(sets))
+        if removes:
+            parts.append("REMOVE " + ", ".join(removes))
+        if not parts:
+            return
+        self.client.update_item(
+            key={"PK": f"doc#{object_key}", "SK": "none"},
+            update_expression=" ".join(parts),
+            expression_attribute_names=names,
+            expression_attribute_values=values or None,
+            return_values="NONE",
+            condition_expression="attribute_exists(PK)",
+        )
 
     def get_document(self, object_key: str) -> Optional[Document]:
         """
@@ -1480,6 +1523,8 @@ class DocumentDynamoDBService:
         manifest_uri: str,
         file_count: int = 0,
         expires_after: Optional[int] = None,
+        *,
+        run_kind: Optional[str] = None,
     ) -> str:
         """
         Record an immutable run (version) item for a completed document and
@@ -1491,6 +1536,8 @@ class DocumentDynamoDBService:
             manifest_uri: S3 URI of the run's output-version manifest
             file_count: Number of output objects pinned by the manifest
             expires_after: Optional TTL timestamp (should match the doc item's)
+            run_kind: Optional ``RunKind`` (``review_phase1`` / ``review_final``
+                for the two runs of a review-queue document)
 
         Returns:
             The run_id of the created run item
@@ -1504,6 +1551,8 @@ class DocumentDynamoDBService:
             "ManifestUri": manifest_uri,
             "FileCount": file_count,
         }
+        if run_kind:
+            item["RunKind"] = run_kind
 
         # Snapshot of the run's metadata (mirrors the doc item's attributes so
         # the UI can render a prior version with the same code paths).
@@ -1713,5 +1762,4 @@ class DocumentDynamoDBService:
         Returns:
             Unix timestamp (seconds since epoch) for the expiration date
         """
-        expiration_date = datetime.datetime.now() + datetime.timedelta(days=days)
-        return int(expiration_date.timestamp())
+        return calculate_ttl(days)

@@ -1,0 +1,21 @@
+query ListTestSetQueues {
+  listTestSetQueues {
+    id
+    name
+    status
+    fileCount
+    reviewedDocs
+    pendingDocs
+    assignedDocs
+    inProgressDocs
+    annotators
+    summaryStatus
+    description
+    priority
+    eligibleAnnotators
+    checklist
+    claimLeaseMinutes
+    queueCountsAt
+    updatedAt
+  }
+}

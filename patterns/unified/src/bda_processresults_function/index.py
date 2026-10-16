@@ -15,6 +15,13 @@ from idp_common import metrics
 from idp_common.config import get_config
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, HitlMetadata, Page, Section, Status
+from idp_common.review_queues.routing import (
+    bda_segment_triggers,
+    review_mode,
+    route_for_review,
+)
+from idp_common.review_queues.statuses import LEGACY_DONE, LegacyHitlStatus
+from idp_common.review_queues.store import create_review_store
 from idp_common.s3 import get_s3_client, write_content
 from idp_common.utils import build_s3_uri, parse_confidence, parse_s3_uri
 
@@ -38,16 +45,40 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 s3_client = get_s3_client()
 
 
-def is_hitl_enabled(config_version=None, config_revision=None):
-    """Check if HITL is enabled from configuration."""
-    try:
-        config = get_config(as_model=True, version=config_version)
-        hitl_enabled = config.hitl.enabled
-        logger.info(f"HITL enabled from config: {hitl_enabled}")
-        return hitl_enabled
-    except Exception as e:
-        logger.warning(f"Failed to get HITL config: {e}", exc_info=True)
-        return False  # Default to disabled if config unavailable
+# Review queues (idp_common.review_queues): None when HITL_TABLE_NAME is
+# unset (headless), which keeps every profile on the legacy HITL flow.
+_REVIEW_STORE = create_review_store()
+
+
+def legacy_hitl_enabled(config, document=None):
+    """HITL on and handled by the legacy flow (review queues off for the profile).
+
+    Read from the configuration the handler already loaded (version and revision),
+    once per invocation.
+    """
+    hitl_enabled = bool(config is not None and config.hitl.enabled)
+    return hitl_enabled and review_mode(config, _REVIEW_STORE, document) == "legacy"
+
+
+def _apply_review(response, document, config, execution_arn, document_service=None):
+    """Review-queue routing for every return path (no keys added when it is off)."""
+    if review_mode(config, _REVIEW_STORE, document) != "queues":
+        return response
+    decision = route_for_review(
+        document,
+        config,
+        mode="bda",
+        execution_arn=execution_arn or "",
+        store=_REVIEW_STORE,
+        document_service=document_service,
+        output_bucket=document.output_bucket or os.environ.get("OUTPUT_BUCKET"),
+    )
+    response["hitl_triggered"] = False
+    if decision.hold:
+        response["review_hold"] = True
+    if decision.outcome:
+        response["review_outcome"] = decision.outcome
+    return response
 
 
 def is_rule_validation_enabled(config_version=None, config_revision=None):
@@ -1124,6 +1155,7 @@ def process_segments(
     now = datetime.datetime.now().isoformat()
     hitl_triggered = False
     overall_hitl_triggered = False
+    hitl_enabled = legacy_hitl_enabled(config, document)
 
     for record_number, segment in enumerate(segment_metadata, start=1):
         logger.info(f"Processing segment for execution id: {execution_id}")
@@ -1195,18 +1227,19 @@ def process_segments(
 
             # Check if any key-value or blueprint confidence is below threshold
             # Use confidence_threshold_alerts to determine if HITL should be triggered
-            if is_hitl_enabled(config_version, config_revision):
-                low_confidence = (
-                    len(confidence_threshold_alerts) > 0
-                    or float(bp_confidence) < confidence_threshold
-                )
+            low_confidence = bda_segment_triggers(
+                confidence_threshold_alerts,
+                bp_confidence,
+                confidence_threshold,
+                hitl_enabled=hitl_enabled,
+            )
+            if low_confidence is not None:
                 logger.info(
                     f"HITL enabled - confidence_threshold_alerts: {len(confidence_threshold_alerts)}, "
                     f"bp_confidence: {bp_confidence}, threshold: {confidence_threshold}, "
                     f"low_confidence: {low_confidence}"
                 )
             else:
-                low_confidence = None
                 logger.info("HITL disabled in configuration")
 
             logger.info(f"low_confidence: {low_confidence}")
@@ -1236,7 +1269,7 @@ def process_segments(
                 # HITL review will be handled via portal, not A2I
                 item.update({"hitl_corrected_result": custom_decimal_output})
         else:
-            if is_hitl_enabled(config_version, config_revision):
+            if hitl_enabled:
                 std_hitl = "true"
                 # std_hitl = None # HITL for standard output blueprint match is disabled until we have option to choose Blueprint in A2I
             else:
@@ -1347,7 +1380,7 @@ def handle_skip_bda(event):
     
     # Check if HITL should be triggered based on existing confidence alerts
     hitl_triggered = False
-    if is_hitl_enabled(config_version, config_revision):
+    if legacy_hitl_enabled(config, document):
         # Check each section for confidence alerts below threshold
         for section in document.sections:
             alerts = section.confidence_threshold_alerts or []
@@ -1379,6 +1412,9 @@ def handle_skip_bda(event):
         "skip_bda": True
     }
     
+    response = _apply_review(
+        response, document, config, event.get("execution_arn"), document_service
+    )
     logger.info(f"Skip BDA response: {json.dumps(response, default=str)}")
     return response
 
@@ -1426,17 +1462,27 @@ def handler(event, context):
         # Check if HITL review is needed
         config_version = getattr(document, 'config_version', None)
         config_revision = getattr(document, 'config_revision', None)
-        hitl_triggered = is_hitl_enabled(config_version, config_revision) and any(
+        try:
+            skip_config = get_config(
+                as_model=True, version=config_version, revision=config_revision
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get HITL config: {e}", exc_info=True)
+            skip_config = None  # HITL disabled if config unavailable
+        hitl_triggered = legacy_hitl_enabled(skip_config, document) and any(
             section.confidence_threshold_alerts for section in document.sections
         )
         
-        return {
+        response = {
             "document": document.serialize_document(working_bucket, "processresults_skip", logger),
             "hitl_triggered": hitl_triggered,
             "rule_validation_enabled": is_rule_validation_enabled(
                 config_version, config_revision
             ),
         }
+        return _apply_review(
+            response, document, skip_config, first_response.get("execution_arn")
+        )
     
     output_bucket = first_response.get("output_bucket")
 
@@ -1677,11 +1723,11 @@ def handler(event, context):
 
     # Set Review Status on document model if HITL review is needed
     # Only set to PendingReview if not already reviewed (preserve completed/skipped status on reprocess)
-    if hitl_triggered and document.sections:
+    if hitl_triggered and document.sections and legacy_hitl_enabled(config, document):
         existing_status = document.hitl_status
-        if existing_status not in ("Review Completed", "Review Skipped", "Completed", "Skipped"):
+        if existing_status not in LEGACY_DONE:
             hitl_sections_pending = [section.section_id for section in document.sections]
-            document.hitl_status = "PendingReview"
+            document.hitl_status = LegacyHitlStatus.PENDING_REVIEW.value
             document.hitl_triggered = True
             document.hitl_sections_pending = hitl_sections_pending
             document.hitl_sections_completed = []
@@ -1722,5 +1768,12 @@ def handler(event, context):
         "bda_response_count": len(bda_responses),
     }
 
+    response = _apply_review(
+        response,
+        document,
+        config,
+        first_response.get("execution_arn") or document.workflow_execution_arn,
+        document_service,
+    )
     logger.info(f"Response: {json.dumps(response, default=str)}")
     return response

@@ -563,18 +563,28 @@ class SaveReportingData:
                 )
                 return False
 
-    def save(self, document: Document, data_to_save: List[str]) -> List[Dict[str, Any]]:
+    def save(
+        self,
+        document: Document,
+        data_to_save: List[str],
+        *,
+        review: Any = None,
+    ) -> List[Dict[str, Any]]:
         """
         Save document data based on the data_to_save list.
 
         Args:
             document: Document object containing data to save
             data_to_save: List of data types to save
+            review: Optional ``idp_common.review_queues.models.ReviewReportingInfo``
+                for a document routed to a review queue. Only then do section
+                rows carry review columns and ``document_reviews`` get a row.
 
         Returns:
             List of results from each save operation
         """
         results = []
+        self._review = review
 
         # Process each data type based on data_to_save
         if "evaluation_results" in data_to_save:
@@ -601,6 +611,12 @@ class SaveReportingData:
             if result:
                 results.append(result)
 
+        if "document_reviews" in data_to_save and review is not None:
+            logger.info("Processing document review status")
+            result = self.save_document_reviews(document, review)
+            if result:
+                results.append(result)
+
         # Add more data types here as needed
         # if 'document_metadata' in data_to_save:
         #     logger.info("Processing document metadata")
@@ -609,6 +625,89 @@ class SaveReportingData:
         #         results.append(result)
 
         return results
+
+    def save_document_reviews(
+        self, document: Document, review: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Write the document's ``document_reviews`` row (latest status wins).
+
+        Key ``document_reviews/date=<d>/<escaped_doc_id>.parquet`` is
+        deterministic, so the finalize run's row overwrites the phase-1 row.
+        """
+        document_id = document.id or document.input_key or "unknown"
+        escaped_doc_id = re.sub(r"[/\\]", "_", document_id)
+        moment = None
+        if document.initial_event_time:
+            try:
+                moment = datetime.datetime.fromisoformat(
+                    document.initial_event_time.replace("Z", "+00:00")
+                )
+                if moment.tzinfo is not None:
+                    moment = moment.astimezone(datetime.timezone.utc).replace(
+                        tzinfo=None
+                    )
+            except (ValueError, TypeError):
+                moment = None
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        date_partition = (moment or now).strftime("%Y-%m-%d")
+
+        def ts(value: Optional[str]):
+            if not value:
+                return None
+            try:
+                parsed = datetime.datetime.fromisoformat(
+                    str(value).replace("Z", "+00:00")
+                )
+            except ValueError:
+                return None
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+            return parsed
+
+        record = {
+            "document_id": document_id,
+            "cycle_id": review.cycle_id,
+            "review_status": review.review_status,
+            "disposition": review.disposition,
+            "profile": review.profile,
+            "queue": review.queue,
+            "reviewer": review.reviewer,
+            "reviewed_at": ts(review.reviewed_at),
+            "enqueued_at": ts(review.enqueued_at),
+            "reason_count": int(review.reason_count or 0),
+            "top_reason_kind": review.top_reason_kind,
+            "reject_reason": review.reject_reason,
+            "escalated": bool(review.escalated),
+            "machine_run_id": review.machine_run_id,
+            "final_run_id": review.final_run_id,
+            "timestamp": now,
+        }
+        schema = pa.schema(
+            [
+                ("document_id", pa.string()),
+                ("cycle_id", pa.string()),
+                ("review_status", pa.string()),
+                ("disposition", pa.string()),
+                ("profile", pa.string()),
+                ("queue", pa.string()),
+                ("reviewer", pa.string()),
+                ("reviewed_at", pa.timestamp("ms")),
+                ("enqueued_at", pa.timestamp("ms")),
+                ("reason_count", pa.int32()),
+                ("top_reason_kind", pa.string()),
+                ("reject_reason", pa.string()),
+                ("escalated", pa.bool_()),
+                ("machine_run_id", pa.string()),
+                ("final_run_id", pa.string()),
+                ("timestamp", pa.timestamp("ms")),
+            ]
+        )
+        s3_key = f"document_reviews/date={date_partition}/{escaped_doc_id}.parquet"
+        self._save_records_as_parquet([record], s3_key, schema)
+        return {
+            "statusCode": 200,
+            "body": f"Saved document review row to s3://{self.reporting_bucket}/{s3_key}",
+        }
 
     def save_evaluation_results(self, document: Document) -> Optional[Dict[str, Any]]:
         """
@@ -1526,6 +1625,16 @@ class SaveReportingData:
                         "config_version": document.config_version or "default",
                     }
                     section_records.append(record)
+
+                # Review columns only for documents routed to a review queue,
+                # so rows of every other document are unchanged (add-only).
+                review = getattr(self, "_review", None)
+                if review is not None:
+                    for record in section_records:
+                        record["review_status"] = review.review_status
+                        record["reviewed_by"] = review.reviewer
+                        record["reviewed_at"] = review.reviewed_at
+                        record["review_queue"] = review.queue
 
                 if not section_records:
                     logger.warning(

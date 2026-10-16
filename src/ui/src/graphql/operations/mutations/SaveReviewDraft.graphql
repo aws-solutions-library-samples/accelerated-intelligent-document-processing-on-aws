@@ -1,0 +1,10 @@
+mutation SaveReviewDraft($objectKey: String!, $cycleId: String!, $sectionId: String!, $data: AWSJSON!, $baseRevision: Int) {
+  saveReviewDraft(objectKey: $objectKey, cycleId: $cycleId, sectionId: $sectionId, data: $data, baseRevision: $baseRevision) {
+    sectionId
+    revision
+    draftUri
+    updatedAt
+    leaseExpiresAt
+    changedFieldCount
+  }
+}

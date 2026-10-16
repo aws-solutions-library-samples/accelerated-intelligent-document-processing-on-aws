@@ -703,6 +703,7 @@ def delete_single_document(
     input_bucket: str,
     output_bucket: str,
     dry_run: bool = False,
+    review_store: Any = None,
 ) -> Dict[str, Any]:
     """
     Delete a single document and all its associated data.
@@ -714,6 +715,9 @@ def delete_single_document(
         input_bucket: Input S3 bucket name
         output_bucket: Output S3 bucket name
         dry_run: If True, only report what would be deleted
+        review_store: Optional ``idp_common.review_queues.store.ReviewStore``;
+            when given, the document's review item, drafts and history are purged
+            (a claimed owner's claim slot is released first)
 
     Returns:
         Dict with deletion results:
@@ -739,6 +743,7 @@ def delete_single_document(
             "list_entries": False,
             "document_record": False,
             "run_records": 0,
+            "review_items": 0,
         },
         "errors": [],
     }
@@ -817,6 +822,19 @@ def delete_single_document(
         logger.error(error_msg)
         result["errors"].append(error_msg)
 
+    # Purge the review-queue partition of the document (item, drafts, history).
+    if review_store is not None:
+        try:
+            from datetime import datetime, timezone
+
+            result["deleted"]["review_items"] = review_store.purge_document(
+                object_key, now_iso=datetime.now(timezone.utc).isoformat()
+            )
+        except Exception as e:
+            error_msg = f"Error purging review queue items: {str(e)}"
+            logger.error(error_msg)
+            result["errors"].append(error_msg)
+
     # Delete list entries
     list_entries_failed = False
     try:
@@ -879,6 +897,7 @@ def delete_documents(
     output_bucket: str,
     dry_run: bool = False,
     continue_on_error: bool = True,
+    review_store: Any = None,
 ) -> Dict[str, Any]:
     """
     Delete multiple documents and all their associated data.
@@ -912,6 +931,7 @@ def delete_documents(
                 input_bucket=input_bucket,
                 output_bucket=output_bucket,
                 dry_run=dry_run,
+                review_store=review_store,
             )
             results.append(result)
 

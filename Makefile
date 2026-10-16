@@ -954,6 +954,32 @@ endif
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
 
+# Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=<region>]
+# End-to-end Inbox check against a DEPLOYED stack: posts through
+# idp_common.notifications with local credentials (direct, group fan-out,
+# idempotency, dedupe), then reads back through the REST API with real ID tokens.
+# Creates and removes a temporary Cognito group, two temporary users and their
+# Inbox items, and restores the app client's auth flows. Exit 0 = PASS,
+# 1 = FAIL, 2 = a check errored or was skipped (never a pass).
+stacktest-inbox: ## Inbox live check: posts through idp_common.notifications and reads via the API (STACK_NAME=...; creates and removes temporary Cognito users and a group)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
+
+# Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
+# End-to-end review-queue check against a DEPLOYED stack: routes a sample document
+# under a temporary profile, claims it, saves a draft and completes it through
+# the REST API with a real QueueReviewer ID token, then waits for the finalize
+# run and the final review status object. Creates and removes a temporary
+# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
+# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
 # machines / IAM roles and deletes them again. Not in CI (they create IAM roles).

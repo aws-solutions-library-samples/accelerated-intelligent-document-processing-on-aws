@@ -16,3 +16,14 @@
 .idp-side-nav a[href='#/features'] {
   font-style: italic;
 }
+
+/* Text read by screen readers but not shown, e.g. the "unread" after the Inbox
+   badge count. */
+.idp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

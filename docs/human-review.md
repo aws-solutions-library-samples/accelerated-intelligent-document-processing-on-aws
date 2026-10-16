@@ -160,7 +160,7 @@ Documents progress through the following Review Status values:
 ### 1. Automatic Triggering
 
 HITL review is automatically triggered when:
-- HITL feature is enabled in your configuration (`assessment.enable_hitl = true`)
+- HITL is enabled in your configuration (`hitl.enabled: true`)
 - Extraction confidence score falls below the configured threshold
 - Document status is set to **Review Pending**
 
@@ -221,15 +221,21 @@ Web UI or in the configuration YAML — there is no deploy-time flag:
 
 1. Log in as an Admin user
 2. Navigate to **Configuration** in the Web UI
-3. Find the **Assessment & HITL Configuration** section
-4. Toggle **Enable Human-in-the-Loop (HITL) review** to enable/disable
+3. Find the **Human-in-the-Loop (HITL) Review (Optional)** section
+4. Turn **Enabled** on or off
 5. Click **Save** to apply changes
 
 #### Method 2: Configuration YAML (Initial Setup)
 
-Set the HITL fields under `assessment` in the configuration passed as
+Set the HITL fields under the top-level `hitl` key in the configuration passed as
 `CustomConfigPath` (or `idp-cli deploy --custom-config`), so a new stack comes up
-with HITL already on.
+with HITL already on:
+
+```yaml
+hitl:
+  enabled: true
+  confidence_threshold: 0.8
+```
 
 > The `EnableHITL` CloudFormation parameter was removed in v0.4.11. If you are
 > upgrading from before that release and had `EnableHITL=true`, re-enable HITL
@@ -241,8 +247,8 @@ with HITL already on.
 The confidence threshold determines when human review is triggered:
 
 1. Navigate to **Configuration** in the Web UI
-2. Find the **Assessment & HITL Configuration** section
-3. Set **HITL Confidence Threshold** (0.0-1.0):
+2. Find the **Human-in-the-Loop (HITL) Review (Optional)** section
+3. Set **Confidence threshold** (0.0-1.0, the `hitl.confidence_threshold` key):
    - `0.8` = 80% confidence threshold (recommended starting point)
    - Fields with confidence below this threshold trigger HITL review
 4. Click **Save** to apply changes

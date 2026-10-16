@@ -12,6 +12,7 @@ dispatcher code.
 """
 
 import importlib.util
+import json
 import socket
 import ssl
 import sys
@@ -1170,3 +1171,385 @@ def test_a_genuinely_closed_port_80_still_passes(monkeypatch):
     outcome, _ = sec._http_probe("host.example.invalid")
 
     assert outcome == sec.REFUSED
+
+
+# --------------------------------------------------------------------------- #
+# Inbox IDOR (2.1) — User B cannot read, mark or delete User A's Inbox messages
+# --------------------------------------------------------------------------- #
+INBOX_OWNER = "test-rbac-admin@example.invalid"
+
+
+class _FakeInboxApi:
+    """An in-memory stand-in for the Inbox operations behind ``call_body``.
+
+    Token ``"a"`` is the owner (Admin) and ``"b"`` is User B. By default it
+    behaves like the real resolver: every key comes from the caller, so User B
+    sees an empty partition, gets 404 for the owner's ids and 400 for a bad
+    cursor or an unknown argument. Each knob breaks one of those properties.
+    """
+
+    def __init__(self, **knobs):
+        self.messages = {}  # id -> {"title": str, "read": bool}
+        self.knobs = knobs
+        self.calls = []
+        self.cleaned = []
+
+    # -- harness hooks ------------------------------------------------------
+    def seed(self, notification_id, marker):
+        if self.knobs.get("seed_raises"):
+            raise RuntimeError("put-item failed")
+        if self.knobs.get("no_table"):
+            return None
+        self.messages[notification_id] = {"title": marker, "read": False}
+        return INBOX_OWNER
+
+    def cleanup(self, notification_id):
+        self.cleaned.append(notification_id)
+        self.messages.pop(notification_id, None)
+
+    # -- the API --------------------------------------------------------------
+    def _items(self):
+        return [
+            {"id": i, "title": m["title"], "read": m["read"]}
+            for i, m in self.messages.items()
+        ]
+
+    def _page(self, items):
+        unread = sum(1 for i in items if not i["read"])
+        return 200, json.dumps(
+            {"items": items, "nextToken": None, "unreadCount": unread}
+        )
+
+    def __call__(self, api_base, field, args, token):
+        self.calls.append((field, token, dict(args)))
+        override = self.knobs.get("status", {}).get((field, token, _case(args)))
+        if override is not None:
+            return override
+        owner = token == "a"  # nosec B105 - fake test token id, not a credential
+        if field == "listInboxMessages":
+            if "userId" in args and not self.knobs.get("accept_user_id"):
+                return 400, '{"errors":[{"errorType":"BadRequest"}]}'
+            if "nextToken" in args:
+                try:
+                    sec.notification_keys().decode_cursor(args["nextToken"])
+                except ValueError:
+                    if not self.knobs.get("accept_bad_cursor"):
+                        return 400, '{"errors":[{"errorType":"BadRequest"}]}'
+                if not owner and self.knobs.get("cursor_leak"):
+                    return self._page(self._items())
+                return self._page([])
+            if owner:
+                if self.knobs.get("owner_hidden"):
+                    return self._page([])
+                return self._page(self._items())
+            return self._page(self._items() if self.knobs.get("list_leak") else [])
+        if field == "markInboxMessages":
+            if owner or self.knobs.get("mark_leak"):
+                for i in args["ids"]:
+                    if i in self.messages:
+                        self.messages[i]["read"] = args["read"]
+                return 200, '{"updated":1,"notFoundIds":[],"unreadCount":0}'
+            return 404, '{"errors":[{"errorType":"ResourceNotFound"}]}'
+        if field == "deleteInboxMessages":
+            if owner or self.knobs.get("delete_leak"):
+                for i in args["ids"]:
+                    self.messages.pop(i, None)
+                return 200, '{"updated":1,"notFoundIds":[],"unreadCount":0}'
+            return 404, '{"errors":[{"errorType":"ResourceNotFound"}]}'
+        return 200, "{}"
+
+
+def _case(args):
+    """A short key naming which variant of a call this is, for status overrides."""
+    if "userId" in args:
+        return "userId"
+    if "nextToken" in args:
+        return "cursor"
+    return "plain"
+
+
+def _run_inbox(api, tokens=None):
+    rec = _Recorder()
+    results = []
+    sec.run_inbox_idor_suite(
+        CTX,
+        rec,
+        results,
+        tokens if tokens is not None else {"Admin": "a", "userB": "b"},
+        seed_fn=api.seed,
+        call_body=api,
+        cleanup_fn=api.cleanup,
+    )
+    return rec, results
+
+
+INBOX_PRINCIPALS = [
+    "inbox-owner(positive control)",
+    "userB(lists inbox)",
+    "userB(marks A's message)",
+    "inbox-owner(still unread)",
+    "userB(deletes A's message)",
+    "inbox-owner(still exists)",
+    "userB(cursor at A's id)",
+    "userB(invalid nextToken)",
+    "userB(unknown userId arg)",
+]
+
+
+def _outcome_of(rec, principal):
+    rows = [r for r in rec.rows if r["principal"] == principal]
+    assert len(rows) == 1, f"expected one row for {principal}, got {rows}"
+    return rows[0]["outcome"]
+
+
+class TestInboxIdorSuite:
+    def test_a_resolver_that_scopes_by_caller_passes_every_check(self):
+        api = _FakeInboxApi()
+
+        rec, results = _run_inbox(api)
+
+        assert [r["principal"] for r in rec.rows] == INBOX_PRINCIPALS
+        assert {r["outcome"] for r in rec.rows} == {"PASS"}
+        assert all(r["passed"] is True for r in rec.rows)
+        assert harness.hard_failures(results) == []
+
+    def test_the_seeded_item_is_cleaned_up_after_the_run(self):
+        api = _FakeInboxApi()
+
+        _run_inbox(api)
+
+        assert len(api.cleaned) == 1
+        assert api.messages == {}
+
+    def test_the_probes_target_the_seeded_id_and_a_cursor_naming_it(self):
+        api = _FakeInboxApi()
+
+        _run_inbox(api)
+
+        seeded_id = api.cleaned[0]
+        b_calls = [c for c in api.calls if c[1] == "b"]
+        mark = next(c for c in b_calls if c[0] == "markInboxMessages")
+        assert mark[2] == {"ids": [seeded_id], "read": True}
+        cursor_call = next(
+            c for c in b_calls if c[2].get("nextToken") not in (None, "not-a-valid-cursor")
+        )
+        decoded = sec.notification_keys().decode_cursor(cursor_call[2]["nextToken"])
+        assert decoded == seeded_id
+
+    def test_user_b_seeing_the_owner_message_in_their_list_is_a_fail(self):
+        api = _FakeInboxApi(list_leak=True)
+
+        rec, results = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(lists inbox)") == "FAIL"
+        assert "PRESENT (LEAK)" in next(
+            r["detail"] for r in rec.rows if r["principal"] == "userB(lists inbox)"
+        )
+        assert "ERROR" not in {r["outcome"] for r in rec.rows}
+        assert harness.hard_failures(results)
+
+    def test_user_b_marking_the_owner_message_is_a_fail_twice(self):
+        api = _FakeInboxApi(mark_leak=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(marks A's message)") == "FAIL"
+        assert _outcome_of(rec, "inbox-owner(still unread)") == "FAIL"
+
+    def test_user_b_deleting_the_owner_message_is_a_fail_twice(self):
+        api = _FakeInboxApi(delete_leak=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(deletes A's message)") == "FAIL"
+        assert _outcome_of(rec, "inbox-owner(still exists)") == "FAIL"
+
+    def test_a_cursor_that_reaches_the_owner_partition_is_a_fail(self):
+        api = _FakeInboxApi(cursor_leak=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(cursor at A's id)") == "FAIL"
+        assert _outcome_of(rec, "userB(lists inbox)") == "PASS"
+
+    def test_an_accepted_invalid_cursor_is_a_fail(self):
+        api = _FakeInboxApi(accept_bad_cursor=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(invalid nextToken)") == "FAIL"
+
+    def test_an_accepted_user_id_argument_is_a_fail(self):
+        api = _FakeInboxApi(accept_user_id=True)
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(unknown userId arg)") == "FAIL"
+
+    def test_a_failed_positive_control_is_an_error_and_runs_no_leak_check(self):
+        api = _FakeInboxApi(owner_hidden=True)
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "inbox-owner(positive control)"
+        assert rec.rows[0]["passed"] is False
+        assert not [c for c in api.calls if c[1] == "b"], (
+            "User B was probed although the owner could not see the seed"
+        )
+        assert harness.hard_failures(results) == rec.rows
+        assert len(api.cleaned) == 1
+
+    def test_a_missing_table_output_is_a_skip_not_a_pass(self):
+        api = _FakeInboxApi(no_table=True)
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert rec.rows[0]["passed"] is False
+        assert "NotificationsTableName" in rec.rows[0]["detail"]
+        assert api.calls == []
+        assert harness.hard_failures(results) == []
+
+    def test_a_seed_that_raises_is_an_error(self):
+        api = _FakeInboxApi(seed_raises=True)
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert harness.hard_failures(results) == rec.rows
+
+    def test_missing_preconditions_skip(self):
+        api = _FakeInboxApi()
+
+        rec, _ = _run_inbox(api, tokens={"Admin": "a"})
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert rec.rows[0]["passed"] is False
+        assert api.calls == []
+        assert api.cleaned == []
+
+    def test_a_mutation_probe_that_did_not_complete_is_an_error_not_a_pass(self):
+        api = _FakeInboxApi(
+            status={
+                ("markInboxMessages", "b", "plain"): (0, "<request error: timeout>"),
+                ("deleteInboxMessages", "b", "plain"): (502, "Bad Gateway"),
+            }
+        )
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(marks A's message)") == "ERROR"
+        assert _outcome_of(rec, "userB(deletes A's message)") == "ERROR"
+        assert _outcome_of(rec, "inbox-owner(still unread)") == "PASS"
+
+    def test_a_list_probe_that_did_not_complete_is_an_error(self):
+        api = _FakeInboxApi(
+            status={("listInboxMessages", "b", "plain"): (0, "<request error: x>")}
+        )
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(lists inbox)") == "ERROR"
+
+    def test_a_refused_user_b_list_is_a_fail_not_a_pass(self):
+        # An over-denial is not non-disclosure: User B's own Inbox must be served.
+        api = _FakeInboxApi(
+            status={("listInboxMessages", "b", "plain"): (403, '{"errors":[]}')}
+        )
+
+        rec, _ = _run_inbox(api)
+
+        assert _outcome_of(rec, "userB(lists inbox)") == "FAIL"
+
+    def test_the_four_outcomes_stay_distinct(self):
+        observed = {}
+        for name, knobs in {
+            "pass": {},
+            "fail": {"list_leak": True},
+            "error": {"owner_hidden": True},
+            "skip": {"no_table": True},
+        }.items():
+            rec, results = _run_inbox(_FakeInboxApi(**knobs))
+            outcomes = {r["outcome"] for r in rec.rows}
+            observed[name] = outcomes
+            blocking = bool(harness.hard_failures(results))
+            assert blocking is (name in ("fail", "error")), name
+            for row in rec.rows:
+                assert row["passed"] is (row["outcome"] == "PASS")
+
+        assert observed["pass"] == {"PASS"}
+        assert "FAIL" in observed["fail"] and "ERROR" not in observed["fail"]
+        assert observed["error"] == {"ERROR"}
+        assert observed["skip"] == {"SKIP"}
+
+
+class _FakeAwsCli:
+    """Records ``aws(...)`` calls made by the harness's Inbox seeding helpers."""
+
+    def __init__(self, table_output):
+        self.table_output = table_output
+        self.calls = []
+
+    def __call__(self, *args, region=None):
+        self.calls.append(args)
+        if args[:2] == ("cloudformation", "describe-stacks"):
+            return self.table_output
+        return None
+
+    def items_written(self):
+        return [
+            json.loads(a[a.index("--item") + 1])
+            for a in self.calls
+            if a[:2] == ("dynamodb", "put-item")
+        ]
+
+
+class TestInboxSeeding:
+    def _ctx(self):
+        return {"stack": "IDP1", "region": "us-west-2"}
+
+    def test_a_stack_without_the_output_seeds_nothing(self, monkeypatch):
+        fake = _FakeAwsCli("None")
+        monkeypatch.setattr(harness, "aws", fake)
+
+        owner = harness.seed_inbox_message(self._ctx(), "0" * 25, "m")
+
+        assert owner is None
+        assert fake.items_written() == []
+
+    def test_the_seeded_item_uses_the_service_layout(self, monkeypatch):
+        fake = _FakeAwsCli("IDP1-NotificationsTable-ABC")
+        monkeypatch.setattr(harness, "aws", fake)
+        keys = sec.notification_keys()
+        nid = keys.new_notification_id()
+        ctx = self._ctx()
+
+        owner = harness.seed_inbox_message(ctx, nid, "MARK")
+
+        assert owner == "test-rbac-admin@example.invalid"
+        (item,) = fake.items_written()
+        assert item["PK"] == {"S": keys.partition_key(owner)}
+        assert item["SK"] == {"S": keys.message_sk(nid)}
+        assert item["UnreadPK"] == item["PK"]
+        assert item["Title"] == {"S": "MARK"}
+        assert int(item["ExpiresAfter"]["N"]) > 0
+        assert "ReadAt" not in item
+
+    def test_cleanup_deletes_exactly_the_seeded_key(self, monkeypatch):
+        fake = _FakeAwsCli("IDP1-NotificationsTable-ABC")
+        monkeypatch.setattr(harness, "aws", fake)
+        keys = sec.notification_keys()
+        nid = keys.new_notification_id()
+        ctx = self._ctx()
+        harness.seed_inbox_message(ctx, nid, "MARK")
+
+        harness.cleanup_seeded_inbox_messages(ctx)
+
+        deletes = [a for a in fake.calls if a[:2] == ("dynamodb", "delete-item")]
+        assert len(deletes) == 1
+        key = json.loads(deletes[0][deletes[0].index("--key") + 1])
+        assert key == {
+            "PK": {"S": keys.partition_key("test-rbac-admin@example.invalid")},
+            "SK": {"S": keys.message_sk(nid)},
+        }

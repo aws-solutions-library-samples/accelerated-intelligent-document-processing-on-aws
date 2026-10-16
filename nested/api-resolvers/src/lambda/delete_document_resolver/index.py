@@ -26,6 +26,14 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
 
+# Review queues: a deleted document's review items are purged with it. None when
+# HITL_TABLE_NAME is unset; the store builds no client until it is used.
+_REVIEW_STORE = None
+if os.environ.get("HITL_TABLE_NAME"):
+    from idp_common.review_queues.store import create_review_store
+
+    _REVIEW_STORE = create_review_store()
+
 
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
@@ -78,6 +86,7 @@ def handler(event, context):
                 s3_client=s3,
                 input_bucket=input_bucket,
                 output_bucket=output_bucket,
+                review_store=_REVIEW_STORE,
             )
 
             if result["success"]:

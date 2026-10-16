@@ -7,7 +7,11 @@ import os
 import logging
 import zipfile
 from idp_common.job_service import create_job_service
-from idp_common.models import Status
+from idp_common.models import (
+    Status,
+    document_wrapper_status,
+    terminal_document_status,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from io import BytesIO
 
@@ -15,7 +19,12 @@ logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"]
-TERMINAL_STATUSES = {Status.COMPLETED.value, Status.FAILED.value, Status.ABORTED.value}
+TERMINAL_STATUSES = {
+    Status.COMPLETED.value,
+    Status.FAILED.value,
+    Status.ABORTED.value,
+    Status.REJECTED.value,
+}
 
 s3 = boto3.client("s3")
 job_service = create_job_service()
@@ -42,13 +51,14 @@ def handler(event, context):
     job_id, filename = parts[1], parts[2]
     workflow_status = event["detail"]["status"]
 
-    # Map workflow status to file status
-    if workflow_status == "SUCCEEDED":
-        file_status = Status.COMPLETED
-    elif workflow_status == "ABORTED":
-        file_status = Status.ABORTED
-    else:
-        file_status = Status.FAILED
+    # Map workflow status to file status. A SUCCEEDED run keeps a status the
+    # state machine put on the output wrapper: HITL_IN_PROGRESS (phase 1 ended at
+    # a review hold; not terminal, so the job ZIP waits for the review) or
+    # REJECTED (terminal).
+    output = event["detail"].get("output")
+    file_status = terminal_document_status(
+        workflow_status, document_wrapper_status(output)
+    )
 
     # Update job file status and get updated Files map
     files = job_service.update_file_status(job_id, filename, file_status)

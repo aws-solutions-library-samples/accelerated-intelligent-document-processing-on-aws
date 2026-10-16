@@ -56,3 +56,9 @@ describe('APP_GROUPS', () => {
     expect([...APP_GROUPS].sort()).toEqual(fromTemplate);
   });
 });
+
+describe('QueueReviewer flags', () => {
+  it('APP_GROUPS includes QueueReviewer', () => {
+    expect(APP_GROUPS).toContain('QueueReviewer');
+  });
+});

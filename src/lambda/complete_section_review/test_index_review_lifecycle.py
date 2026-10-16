@@ -318,7 +318,10 @@ def recorded(target, name):
         "skipAllSectionsReview",
     ],
 )
-@pytest.mark.parametrize("group", ["Viewer", "Author", "SomeOtherGroup"])
+# QueueReviewer works review queues only; the legacy HITL operations refuse it (FR-25).
+@pytest.mark.parametrize(
+    "group", ["Viewer", "Author", "SomeOtherGroup", "QueueReviewer"]
+)
 def test_a_caller_outside_the_three_review_groups_reaches_no_operation(
     mod, table, field_name, group
 ):

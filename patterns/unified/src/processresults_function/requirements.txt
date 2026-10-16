@@ -1,1 +1,1 @@
-../../lib/idp_common_pkg[core,docs_service]  # core utilities and document service with dependencies
+../../lib/idp_common_pkg[core,docs_service,review_queues]  # core utilities, document service and review queues with dependencies

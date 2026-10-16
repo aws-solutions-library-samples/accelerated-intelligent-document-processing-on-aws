@@ -8,11 +8,18 @@ This module provides classes and functions for interacting directly with DynamoD
 to store and retrieve document data, bypassing AppSync GraphQL API.
 """
 
-from idp_common.dynamodb.client import DynamoDBClient, DynamoDBError
+from idp_common.dynamodb.client import (
+    DynamoDBClient,
+    DynamoDBError,
+    DynamoDBTransactionCanceledError,
+)
 from idp_common.dynamodb.service import DocumentDynamoDBService
+from idp_common.dynamodb.ttl import calculate_ttl
 
 __all__ = [
     "DynamoDBClient",
     "DynamoDBError",
+    "DynamoDBTransactionCanceledError",
     "DocumentDynamoDBService",
+    "calculate_ttl",
 ]

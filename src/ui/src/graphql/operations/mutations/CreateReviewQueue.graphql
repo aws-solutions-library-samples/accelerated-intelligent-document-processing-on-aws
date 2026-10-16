@@ -1,0 +1,14 @@
+mutation CreateReviewQueue($input: ReviewQueueDefinitionInput!) {
+  createReviewQueue(input: $input) {
+    id
+    name
+    description
+    priority
+    checklist
+    rejectReasons
+    timeLimitMinutes
+    eligibleAnnotators
+    isDefaultQueue
+    isEscalationQueue
+  }
+}

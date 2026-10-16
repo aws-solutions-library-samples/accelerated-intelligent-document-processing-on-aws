@@ -59,6 +59,13 @@ classifiers = [
 # Core utilities only - minimal dependencies
 core = []
 
+# Inbox notifications (idp_common.notifications) - boto3 is a base dependency
+notifications = []
+
+# HITL review queues (idp_common.review_queues)
+# pydantic and boto3 are base dependencies
+review_queues = []
+
 # Development only dependencies
 dev = [
   "python-dotenv (>=1.1.0,<2.0.0)",

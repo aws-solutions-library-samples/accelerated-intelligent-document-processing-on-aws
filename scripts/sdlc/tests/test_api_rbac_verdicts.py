@@ -616,3 +616,16 @@ class TestTheUnauthCellClassifiesInconclusiveResults:
         unauth = [r for r in results if r["principal"] == "unauth"]
         assert unauth and unauth[0]["outcome"] == "ERROR"
         assert unauth[0]["inconclusive"] is True
+
+
+def test_live_matrix_roles_are_every_template_group():
+    """ROLES is read from template.yaml, so a new Cognito group joins the matrix."""
+    assert h.ROLES[0] == "Admin"
+    assert set(h.ROLES) == {
+        "Admin",
+        "Annotator",
+        "Author",
+        "QueueReviewer",
+        "Reviewer",
+        "Viewer",
+    }

@@ -31,6 +31,7 @@ ENV_VARS = {
     "AUTHOR_GROUP_NAME": "IdP-Authors",
     "REVIEWER_GROUP_NAME": "IdP-Reviewers",
     "ANNOTATOR_GROUP_NAME": "IdP-Annotators",
+    "QUEUEREVIEWER_GROUP_NAME": "IdP-Queue-Reviewers",
     "VIEWER_GROUP_NAME": "IdP-Viewers",
     "EXTERNAL_IDP_NAME": IDP_NAME,
     "LOG_LEVEL": "DEBUG",
@@ -969,8 +970,14 @@ class TestCognitoGroupCoverage:
         for mod in (load_standalone_copy(env), load_inline_copy(env)):
             assert "Annotator" not in mod.COGNITO_GROUPS
             assert "Annotator" not in set(mod.GROUP_MAPPING.values())
-            # The other four are unaffected.
-            assert mod.COGNITO_GROUPS == {"Admin", "Author", "Reviewer", "Viewer"}
+            # The others are unaffected.
+            assert mod.COGNITO_GROUPS == {
+                "Admin",
+                "Author",
+                "Reviewer",
+                "Viewer",
+                "QueueReviewer",
+            }
 
 
 @pytest.mark.unit

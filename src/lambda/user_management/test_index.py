@@ -256,6 +256,45 @@ class TestPersonaPrecedence:
         assert index._determine_persona_from_groups(groups) == "Annotator"
 
 
+class TestQueueReviewerPersona:
+    def test_queue_reviewer_is_a_valid_persona_with_its_group(self):
+        index = _load_index()
+        assert index.VALID_PERSONAS["QueueReviewer"] == "QueueReviewer"
+
+    def test_create_with_queue_reviewer_persona(self, users_table):
+        index = _load_index()
+        with (
+            patch.object(index, "sync_user_to_cognito") as sync,
+            patch.object(
+                index,
+                "_get_caller_identity",
+                return_value={
+                    "is_admin": True,
+                    "email": "admin@example.com",
+                    "username": "admin",
+                    "groups": ["Admin"],
+                },
+            ),
+        ):
+            result = index.create_user(
+                {"email": "qr@example.com", "persona": "QueueReviewer"}
+            )
+        assert result["persona"] == "QueueReviewer"
+        assert sync.call_args.args[2] == "QueueReviewer"
+
+    def test_precedence_after_reviewer_before_annotator(self):
+        index = _load_index()
+        pick = index._determine_persona_from_cognito_groups
+        assert pick(["Annotator", "QueueReviewer"]) == "QueueReviewer"
+        assert pick(["QueueReviewer", "Reviewer"]) == "Reviewer"
+        objects = [{"GroupName": "Annotator"}, {"GroupName": "QueueReviewer"}]
+        assert index._determine_persona_from_groups(objects) == "QueueReviewer"
+        assert (
+            index._determine_persona_from_groups([{"GroupName": "QueueReviewer"}, {"GroupName": "Reviewer"}])
+            == "Reviewer"
+        )
+
+
 class TestMissingCognitoSync:
     def test_create_rolls_back_dynamodb_when_cognito_fails(self, users_table):
         index = _load_index()

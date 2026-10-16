@@ -1,0 +1,39 @@
+mutation ClaimNextReviewItem($queueProfile: String, $queueName: String) {
+  claimNextReviewItem(queueProfile: $queueProfile, queueName: $queueName) {
+    item {
+      objectKey
+      cycleId
+      profile
+      queue
+      priority
+      state
+      reviewStatus
+      enqueuedAt
+      reasons {
+        kind
+        sectionId
+        field
+        label
+        score
+        threshold
+      }
+      reasonCount
+      sections
+      ownerEmail
+      claimedAt
+      leaseExpiresAt
+      isMine
+      hasDraft
+      draftUpdatedAt
+      draftUpdatedBy
+      escalated
+      escalationNote
+      disposition
+      disposedBy
+      disposedAt
+      rejectReason
+      version
+    }
+    reason
+  }
+}

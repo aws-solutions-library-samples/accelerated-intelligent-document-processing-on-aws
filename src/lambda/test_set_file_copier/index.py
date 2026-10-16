@@ -8,6 +8,15 @@ from datetime import datetime, timezone
 
 import boto3
 from botocore.exceptions import ClientError
+
+from idp_common.review_queues.test_set_docs import (  # type: ignore
+    TestSetDocStore,
+    mark_summaries_ready,
+    store_assigned_count,
+)
+from idp_common.review_queues.test_set_summaries import (  # type: ignore
+    summarize_test_set,
+)
 from idp_common.s3 import find_matching_files  # type: ignore
 
 logger = logging.getLogger()
@@ -26,6 +35,9 @@ def handler(event, context):
             message = json.loads(record["body"])
 
             test_set_id = message["testSetId"]
+            if message.get("action") == "summarize":
+                _build_summaries(test_set_id)
+                continue
             file_pattern = message.get("filePattern")
             object_keys = message.get("objectKeys")
             bucket_type = message["bucketType"]
@@ -199,6 +211,9 @@ def handler(event, context):
             logger.info(
                 f"Test set {test_set_id} file copying completed successfully: {len(files_to_copy)} files (total: {file_count})"
             )
+            # The queue page reads document summaries from DynamoDB; build them now,
+            # so the set's first open is as fast as every later one.
+            _build_summaries(test_set_id)
 
         except Exception as e:
             logger.error(f"Error processing test set {test_set_id}: {str(e)}")
@@ -208,6 +223,28 @@ def handler(event, context):
                 )
 
     return {"statusCode": 200}
+
+
+def _build_summaries(test_set_id):
+    """Write every document's summary (HITLTable ``TSDOC#``) from its labels.
+
+    Runs here, off the request path, because it reads each section's result.json:
+    a queue page then needs one DynamoDB Query. Best-effort: a failure leaves the
+    set ``BUILDING``, and the next reader requests the build again once it is stale.
+    """
+    table_name = os.environ.get("HITL_TABLE_NAME", "")
+    if not table_name:
+        return
+    try:
+        documents = summarize_test_set(s3, os.environ["TEST_SET_BUCKET"], test_set_id)
+        store = TestSetDocStore(dynamodb.Table(table_name))
+        count, reviewed = store.sync_set(test_set_id, documents)
+        tracking = dynamodb.Table(os.environ["TRACKING_TABLE"])
+        mark_summaries_ready(tracking, test_set_id, count, reviewed)
+        store_assigned_count(tracking, store, test_set_id)
+        logger.info(f"Summarized test set {test_set_id}: {count} documents")
+    except Exception as e:  # noqa: BLE001 — the copy itself succeeded
+        logger.error(f"Could not summarize test set {test_set_id}: {e}", exc_info=True)
 
 
 _NOT_FOUND_CODES = frozenset({"404", "NoSuchKey", "NotFound"})

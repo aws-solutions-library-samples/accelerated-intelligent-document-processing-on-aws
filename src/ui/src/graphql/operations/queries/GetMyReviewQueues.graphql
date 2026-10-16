@@ -1,0 +1,60 @@
+query GetMyReviewQueues($itemLimit: Int) {
+  getMyReviewQueues(itemLimit: $itemLimit) {
+    queues {
+      profile
+      name
+      displayName
+      description
+      priority
+      depth
+      unclaimed
+      claimed
+      claimedByMe
+      oldestEnqueuedAt
+      isDefaultQueue
+      isEscalationQueue
+      claimCap
+      checklist
+      definedInConfig
+    }
+    myClaimCount
+    enabledProfiles
+    items {
+      items {
+        objectKey
+        cycleId
+        profile
+        queue
+        priority
+        state
+        reviewStatus
+        enqueuedAt
+        reasons {
+          kind
+          sectionId
+          field
+          label
+          score
+          threshold
+        }
+        reasonCount
+        sections
+        ownerEmail
+        claimedAt
+        leaseExpiresAt
+        isMine
+        hasDraft
+        draftUpdatedAt
+        draftUpdatedBy
+        escalated
+        escalationNote
+        disposition
+        disposedBy
+        disposedAt
+        rejectReason
+        version
+      }
+      nextToken
+    }
+  }
+}

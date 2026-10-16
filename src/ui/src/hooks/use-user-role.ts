@@ -10,7 +10,8 @@ import { getMyProfile } from '../graphql/generated';
  *   Admin    - Full access to all operations
  *   Author   - Read + write (documents, configuration, tests, discovery)
  *   Reviewer - HITL review operations + limited document list (server-side filtered)
- *   Annotator- Ground-truth annotation of assigned test sets ONLY (least privilege)
+ *   Annotator- HITL work assigned by an Admin (production review items and test-set
+ *              documents) ONLY (least privilege)
  *   Viewer   - Read-only access to documents, config, agent chat, code explorer
  *
  * Users can be in multiple groups (union of permissions applies).
@@ -99,8 +100,9 @@ interface UserRoleReturn {
   /** True if user is ONLY in the Reviewer group (no Admin/Author/Viewer) */
   isReviewerOnly: boolean;
   /**
-   * True if user is ONLY in the Annotator group. These users get a single-link nav
-   * into their assigned test set's queue rather than the document list.
+   * True if Annotator is the user's only app group. These users get a minimal
+   * shell: My Work (Inbox, Tasks, Favorites) and the notifications bell, nothing
+   * else. A user who is Annotator plus any other app group gets the normal shell.
    */
   isAnnotatorOnly: boolean;
   /** True if user is ONLY in the Viewer group (no Admin/Author) */
@@ -290,7 +292,7 @@ const useUserRole = (): UserRoleReturn => {
 
   // Derived convenience flags
   const isReviewerOnly = isReviewer && !isAdmin && !isAuthor && !isViewer;
-  const isAnnotatorOnly = isAnnotator && !isAdmin && !isAuthor && !isReviewer && !isViewer;
+  const isAnnotatorOnly = isAnnotator && !groups.some((g) => g !== 'Annotator' && APP_GROUPS.includes(g));
   const isViewerOnly = isViewer && !isAdmin && !isAuthor;
   const canWrite = isAdmin || isAuthor;
   const canManageUsers = isAdmin;
@@ -304,7 +306,7 @@ const useUserRole = (): UserRoleReturn => {
   // empty one — see the `sessionError` note above.
   //
   // ⚠️ Because this gates the whole application, APP_GROUPS must list every group
-  // `template.yaml` creates. A sixth `AWS::Cognito::UserPoolGroup` omitted here
+  // `template.yaml` creates. An `AWS::Cognito::UserPoolGroup` omitted here
   // would be granted the `ANY_GROUP` operations by the server (the dispatcher's
   // manifest is generated from the template) and then be shown "your account has
   // not been granted access yet" by this flag — worse than the pre-existing

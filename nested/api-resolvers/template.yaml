@@ -42,6 +42,15 @@ Parameters:
   ChatSessionsTableName:
     Type: String
   
+  NotificationsTableName:
+    Type: String
+    Description: DynamoDB table holding each user's Inbox messages and preferences (idp_common.notifications)
+
+  HITLTableName:
+    Type: String
+    Default: ""
+    Description: DynamoDB table holding review queue items (idp_common.review_queues)
+  
   IdHelperChatMemoryTableName:
     Type: String
   
@@ -382,6 +391,7 @@ Mappings:
       Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
 
 Conditions:
+  HasHITLTable: !Not [!Equals [!Ref HITLTableName, ""]]
   HasS3EndpointUrl: !Not [!Equals [!Ref S3EndpointUrl, ""]]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
   HasGuardrail: !Equals [!Ref HasGuardrailConfig, "true"]
@@ -464,11 +474,38 @@ Resources:
           # with a 400 "DynamoDB table name must be provided". Masked under
           # AppSync (VTL). See ReprocessDocumentResolverFunction.
           TRACKING_TABLE: !Ref TrackingTableName
+          # Review queues: withdraw the review item of an aborted document and
+          # delete its review/status.json.
+          HITL_TABLE_NAME: !Ref HITLTableName
+          OUTPUT_BUCKET: !Ref OutputBucketName
       LoggingConfig:
         LogGroup: !Ref AbortWorkflowResolverFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Review queues: withdraw (abort, reprocess) or purge (delete) the
+        # document's review item, drafts and history.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*/review/status.json"
         - Statement:
             - Effect: Allow
               Action:
@@ -745,6 +782,9 @@ Resources:
           STACK_NAME: !Ref StackName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           USERS_TABLE_NAME: !Ref UsersTableName
+          # A save that points hitl.review_queues.queue at an unknown queue id is
+          # warned about; the queue definitions are read from HITLTable.
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref ConfigurationResolverFunctionLogGroup
       Policies:
@@ -806,6 +846,237 @@ Resources:
               Resource:
                 - !Ref UsersTableArn
                 - !Sub "${UsersTableArn}/index/*"
+        # The system-wide queue definitions (PK=QDEF): read for the unknown-queue
+        # warning; PutItem only seeds Default and Escalation on a stack with none.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:PutItem
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+  NotificationsResolverFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  ##########################################################################
+  # NotificationsResolverFunction (Inbox: the caller's own messages)
+  ##########################################################################
+  NotificationsResolverFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with DynamoDB via AWS APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency as it scales with UI polling demand"
+          - id: W12
+            reason: "Lambda requires CloudWatch logs permissions"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with DynamoDB via AWS APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales with UI polling demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only a table name, log level and stack name - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/notifications_resolver
+      Description: Serves the caller's own Inbox (list, unread count, read state, delete, preferences)
+      MemorySize: 512
+      Timeout: 30
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          METRIC_NAMESPACE: !Ref StackName
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+      LoggingConfig:
+        LogGroup: !Ref NotificationsResolverFunctionLogGroup
+      Policies:
+        - Statement:
+            # Reads, read-state updates, deletes (via BatchWriteItem) and the
+            # caller's preferences item. No DeleteItem, Cognito or config access.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+  ReviewQueuesResolverFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  ##########################################################################
+  # ReviewQueuesResolverFunction (HITL review queues: queue lists, claims,
+  # drafts, dispositions and the Admin supervisor view)
+  ##########################################################################
+  ReviewQueuesResolverFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with DynamoDB, S3, SQS and Cognito via AWS APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency as it scales with reviewer UI demand"
+          - id: W12
+            reason: "Lambda requires CloudWatch logs permissions"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales with reviewer UI demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names, log level and stack name - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/review_queues_resolver
+      Description: Serves review queues - queue lists, claims, drafts, dispositions and the Admin supervisor view
+      MemorySize: 512
+      Timeout: 30
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          METRIC_NAMESPACE: !Ref StackName
+          HITL_TABLE_NAME: !Ref HITLTableName
+          TRACKING_TABLE: !Ref TrackingTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          USERS_TABLE_NAME: !Ref UsersTableName
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          USER_POOL_ID: !Ref UserPoolId
+          QUEUE_URL: !Ref DocumentQueueUrl
+          WORKING_BUCKET: !Ref WorkingBucketName
+          INPUT_BUCKET: !Ref InputBucketName
+          OUTPUT_BUCKET: !Ref OutputBucketName
+      LoggingConfig:
+        LogGroup: !Ref ReviewQueuesResolverFunctionLogGroup
+      Policies:
+        - Statement:
+            # Queue items, drafts, history, claim counters and the registry.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+            # The tracking row (document loader, review attributes on withdraw),
+            # the queue configuration and the caller's allowedConfigVersions.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}"
+            # The queue directory lists configuration profiles (ConfigurationManager.list_config_versions).
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
+            # Inbox producer grants (idp_common/notifications/README.md).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            # Finalize messages on the DocumentQueue.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${DocumentQueueName}"
+            # Drafts and the status object (review/), section results for the
+            # draft diff base, and the finalize message body (working bucket).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*/review/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/*"
+            # Reassign eligibility and group fan-out of Inbox notices.
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminListGroupsForUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter (nested template).
+                  cloudwatch:namespace: !Ref StackName
   CopyToBaselineResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1059,11 +1330,30 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           INPUT_BUCKET: !Ref InputBucketName
           OUTPUT_BUCKET: !Ref OutputBucketName
+          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref DeleteDocumentResolverFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Review queues: withdraw (abort, reprocess) or purge (delete) the
+        # document's review item, drafts and history.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
         - S3CrudPolicy:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
@@ -1988,11 +2278,54 @@ Resources:
           # land in a different namespace than queue_sender's, defeating
           # the "single-alarm parity" this block sets up.
           METRIC_NAMESPACE: !Ref StackName
+          # Review queues: withdraw the review item before reprocessing, and tell
+          # a reviewer holding its claim (Inbox).
+          HITL_TABLE_NAME: !Ref HITLTableName
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
       LoggingConfig:
         LogGroup: !Ref ReprocessDocumentResolverFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Review queues: withdraw (abort, reprocess) or purge (delete) the
+        # document's review item, drafts and history.
+        - !If
+          - HasHITLTable
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+          - !Ref AWS::NoValue
+        # Inbox producer grants (idp_common/notifications/README.md).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
         - SQSSendMessagePolicy:
             QueueName: !Ref DocumentQueueName
         - S3ReadPolicy:
@@ -2519,6 +2852,13 @@ Resources:
           # stored on the user record. Without this the scope lookup returns
           # "unrestricted" and a scoped Annotator would be denied everything.
           USERS_TABLE_NAME: !Ref UsersTableName
+          # Inbox notices for Test Studio assignments (assigned, unassigned).
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          # Assignees must be in the Cognito Annotator group.
+          USER_POOL_ID: !Ref UserPoolId
+          # Each test set is a queue: its documents' summaries and assignments live
+          # in HITLTable (TSDOC#<testSetId>), the labels stay in S3.
+          HITL_TABLE_NAME: !Ref HITLTableName
           BASELINE_BUCKET: !If
             - ShouldCreateEvaluationBaselineBucket
             - !Ref EvaluationBaselineBucketName
@@ -2560,20 +2900,62 @@ Resources:
             - Effect: Allow
               Action: lambda:InvokeFunction
               Resource: !GetAtt TestRunnerFunction.Arn
-        # Read-only access on UsersTable + EmailIndex so the resolver can look up
-        # the caller's allowedTestSets and enforce per-test-set annotation scope.
-        # Unlike the config-version scope elsewhere, a failed lookup here denies a
-        # scoped Annotator rather than granting unrestricted access (an Annotator
-        # with no resolvable scope is refused), so a missing grant breaks the
-        # annotation queue loudly instead of silently widening access.
+        # UsersTable + EmailIndex: the resolver looks up the caller's
+        # allowedTestSets to enforce per-test-set annotation scope. Unlike the
+        # config-version scope elsewhere, a failed lookup here denies a scoped
+        # Annotator rather than granting unrestricted access, so a missing grant
+        # breaks the annotation queue loudly instead of silently widening access.
+        # UpdateItem: assigning a document to an Annotator adds its test set to
+        # that Annotator's allowedTestSets. PutItem: an Annotator added in Cognito
+        # directly gets their User Management record then.
         - Statement:
             - Effect: Allow
               Action:
                 - dynamodb:Query
                 - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
               Resource:
                 - !Ref UsersTableArn
                 - !Sub "${UsersTableArn}/index/*"
+        # An assignee must be in the Cognito Annotator group (looked up by email).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminListGroupsForUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+        # Test Studio document summaries and assignments (TSDOC# items) in
+        # HITLTable; OwnerIndex lists an Annotator's assigned documents.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:BatchWriteItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+        # Inbox producer grants (idp_common/notifications/README.md) for the
+        # assignment notices. Recipients are explicit users only, so no
+        # Cognito access.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
   UploadResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -2855,13 +3237,10 @@ Resources:
       Type: String
       Tier: Advanced
       # One canonical entry per unique resolver function only — NOT one per
-      # GraphQL field. Many fields share a resolver Lambda (e.g. 13 config
-      # fields all route to ConfigurationResolverFunction); duplicating the
-      # same ARN/name across every field name overflows the 8 KB Advanced-tier
-      # value limit once ARNs are resolved (worse in GovCloud, where
-      # arn:aws-us-gov:... is longer than arn:aws:...). Fields that share a
-      # resolver with a canonical field below are routed via FIELD_ALIASES in
-      # the dispatcher (index.py) instead of getting their own map entry.
+      # GraphQL field. Advanced-tier SSM value limit is 8,192 bytes; the
+      # resolved worst case is checked by
+      # scripts/tests/test_http_api_field_map_size.py. Route additional fields
+      # of an existing Lambda through FIELD_ALIASES in the dispatcher (index.py).
       Value: !Sub
         - |
           {
@@ -2880,11 +3259,13 @@ Resources:
             "getCircuitBreakerStatus": "${CircuitBreakerResolverFunctionArn}",
             "getDocumentCount": "${ListDocumentsGSIResolverFunction}",
             "getFileContents": "${GetFileContentsResolverFunction}",
+            "getMyReviewQueues": "${ReviewQueuesResolverFunction}",
             "getSampleDocumentUrl": "${GetSampleDocumentResolverFunction}",
             "getStepFunctionExecution": "${GetStepFunctionExecutionResolverFunction}",
             "listAvailableAgents": "${ListAvailableAgentsFunction}",
             "listChatSessions": "${ListAgentChatSessionsFunction}",
             "listDocumentsByDateRange": "${ListDocumentsByDateRangeResolverFunction}",
+            "listInboxMessages": "${NotificationsResolverFunction}",
             "processChanges": "${ProcessChangesResolverFunction}",
             "queryKnowledgeBase": "${QueryKnowledgeBaseResolverFunction}",
             "reprocessDocument": "${ReprocessDocumentResolverFunction}",

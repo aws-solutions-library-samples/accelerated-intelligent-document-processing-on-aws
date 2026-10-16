@@ -58,7 +58,8 @@ The main template handles all pattern-agnostic resources and infrastructure:
 
 - S3 Buckets (Input, Output, Working, Configuration, Evaluation Baseline)
 - SQS Queues and Dead Letter Queues
-- DynamoDB Tables (Execution Tracking, Concurrency, Configuration)
+- DynamoDB Tables (Execution Tracking, Concurrency, Configuration, and the Inbox
+  `NotificationsTable`)
 - Lambda Functions for:
   - Queue Processing
   - Queue Sending
@@ -66,6 +67,12 @@ The main template handles all pattern-agnostic resources and infrastructure:
   - Document Status Lookup
   - Evaluation
   - UI Integration and API Resolvers
+- The [Inbox](./web-ui.md#inbox) message store: `NotificationsTable` (one partition per
+  user, a sparse `UnreadIndex` for unread counts, DynamoDB TTL for retention), exported
+  to producers as the stack Output `NotificationsTableName`. Platform components post
+  through the `idp_common.notifications` service; the API resolvers stack's
+  Notifications resolver serves each user's own Inbox. Headless deployments omit the
+  table
 - CloudWatch Alarms and Dashboard
 - SNS Topics for Alerts
 - Web UI Infrastructure:

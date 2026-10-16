@@ -397,6 +397,17 @@ TIGHTENED_TO_ANY_GROUP = (
     # ...and this one for one field: `lastError` carries the pausing
     # administrator's email after a manual pause.
     "getCircuitBreakerStatus",
+    # The Inbox operations were declared ANY_GROUP from the start rather than
+    # tightened: each is self-scoped to the caller's verified identity, and every
+    # signed-in role has an Inbox, so an assigned group is the right floor.
+    "listInboxMessages",
+    "getInboxUnreadCount",
+    "getInboxPreferences",
+    "markInboxMessages",
+    "markAllInboxMessagesRead",
+    "deleteInboxMessages",
+    "clearReadInboxMessages",
+    "updateInboxPreferences",
 )
 
 

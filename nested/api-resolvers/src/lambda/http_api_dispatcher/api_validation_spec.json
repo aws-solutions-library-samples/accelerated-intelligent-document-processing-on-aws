@@ -193,6 +193,31 @@
         }
       ]
     },
+    "assignTestSetDocuments": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "objectKeys",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "assigneeEmail",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "autoDetectSections": {
       "args": [
         {
@@ -240,12 +265,48 @@
         }
       ]
     },
+    "claimNextReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "queueProfile",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "queueName",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "claimReview": {
       "args": [
         {
           "elem_non_null": false,
           "is_list": false,
           "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "claimReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
           "non_null": true,
           "type": "String"
         }
@@ -261,6 +322,9 @@
           "type": "String"
         }
       ]
+    },
+    "clearReadInboxMessages": {
+      "args": []
     },
     "compareDocumentVersions": {
       "args": [
@@ -294,6 +358,38 @@
           "is_list": true,
           "name": "testRunIds",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "completeReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "checklist",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -378,6 +474,17 @@
           "name": "input",
           "non_null": true,
           "type": "CreateFinetuningJobInput"
+        }
+      ]
+    },
+    "createReviewQueue": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "ReviewQueueDefinitionInput"
         }
       ]
     },
@@ -515,6 +622,28 @@
         }
       ]
     },
+    "deleteInboxMessages": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "ids",
+          "non_null": true,
+          "type": "ID"
+        }
+      ]
+    },
+    "deleteReviewQueue": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "id",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "deleteTestSets": {
       "args": [
         {
@@ -548,6 +677,31 @@
         }
       ]
     },
+    "escalateReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "estimateReviewEffort": {
       "args": [
         {
@@ -569,6 +723,24 @@
           "is_list": false,
           "name": "configVersion",
           "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "forceReleaseReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
           "type": "String"
         }
       ]
@@ -637,6 +809,20 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "includeCompleted",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "mineOnly",
           "non_null": false,
           "type": "Boolean"
         }
@@ -850,6 +1036,12 @@
         }
       ]
     },
+    "getInboxPreferences": {
+      "args": []
+    },
+    "getInboxUnreadCount": {
+      "args": []
+    },
     "getLatestPublishedVersion": {
       "args": []
     },
@@ -859,7 +1051,32 @@
     "getMyProfile": {
       "args": []
     },
+    "getMyReviewQueues": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "itemLimit",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
     "getPricing": {
+      "args": []
+    },
+    "getReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "getReviewQueuesOverview": {
       "args": []
     },
     "getSampleDocumentUrl": {
@@ -1033,6 +1250,9 @@
           "type": "String"
         }
       ]
+    },
+    "listAnnotators": {
+      "args": []
     },
     "listAvailableAgents": {
       "args": []
@@ -1254,14 +1474,165 @@
         }
       ]
     },
+    "listInboxMessages": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "read",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "types",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "severities",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "listInstalledFeatures": {
+      "args": []
+    },
+    "listMyReviewWork": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "listMyTestSetTasks": {
+      "args": []
+    },
+    "listReviewQueueItems": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "queueProfile",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "queueName",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "claimable",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "listReviewQueues": {
       "args": []
     },
     "listSampleDocuments": {
       "args": []
     },
+    "listTestSetQueues": {
+      "args": []
+    },
     "listUsers": {
       "args": []
+    },
+    "markAllInboxMessagesRead": {
+      "args": []
+    },
+    "markInboxMessages": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "ids",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "read",
+          "non_null": true,
+          "type": "Boolean"
+        }
+      ]
+    },
+    "moveReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "targetQueue",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
     },
     "openTestSetAnnotationDraft": {
       "args": [
@@ -1361,6 +1732,31 @@
         }
       ]
     },
+    "reassignReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "assigneeEmail",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "reextractTestSetDocument": {
       "args": [
         {
@@ -1394,12 +1790,62 @@
         }
       ]
     },
+    "rejectReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "releaseReview": {
       "args": [
         {
           "elem_non_null": false,
           "is_list": false,
           "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "releaseReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
           "non_null": true,
           "type": "String"
         }
@@ -1429,6 +1875,24 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "featureId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "renewReviewLease": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
           "non_null": true,
           "type": "String"
         }
@@ -1502,6 +1966,77 @@
           "name": "reason",
           "non_null": true,
           "type": "String"
+        }
+      ]
+    },
+    "saveReviewDraft": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "sectionId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "data",
+          "non_null": true,
+          "type": "AWSJSON"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "baseRevision",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
+    "saveTestSetDocumentSection": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "sectionId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "data",
+          "non_null": false,
+          "type": "AWSJSON"
         }
       ]
     },
@@ -1651,6 +2186,24 @@
         }
       ]
     },
+    "skipTestSetDocument": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "startMultiDocDiscovery": {
       "args": [
         {
@@ -1779,6 +2332,24 @@
           "is_list": false,
           "name": "syncMode",
           "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "unassignTestSetDocuments": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "objectKeys",
+          "non_null": true,
           "type": "String"
         }
       ]
@@ -2126,6 +2697,17 @@
         }
       ]
     },
+    "updateInboxPreferences": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "mutedTypes",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "updateModelConfigLimits": {
       "args": [
         {
@@ -2148,6 +2730,17 @@
         }
       ]
     },
+    "updateReviewQueue": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "ReviewQueueDefinitionInput"
+        }
+      ]
+    },
     "updateTestSet": {
       "args": [
         {
@@ -2167,6 +2760,17 @@
           "name": "input",
           "non_null": true,
           "type": "UpdateTestSetDocumentSectionsInput"
+        }
+      ]
+    },
+    "updateTestSetQueue": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "TestSetQueueSettingsInput"
         }
       ]
     },
@@ -2960,6 +3564,64 @@
         "type": "String"
       }
     ],
+    "ReviewQueueDefinitionInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "id",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "name",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "description",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "priority",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "checklist",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "rejectReasons",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "timeLimitMinutes",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "eligibleAnnotators",
+        "non_null": false,
+        "type": "String"
+      }
+    ],
     "SectionInput": [
       {
         "elem_non_null": false,
@@ -3090,6 +3752,50 @@
         "name": "fileSize",
         "non_null": true,
         "type": "Int"
+      }
+    ],
+    "TestSetQueueSettingsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "description",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "priority",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "timeLimitMinutes",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "eligibleAnnotators",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "checklist",
+        "non_null": false,
+        "type": "String"
       }
     ],
     "TestSetSectionGroupingInput": [
@@ -3491,6 +4197,13 @@
         "name": "documentClassType",
         "non_null": false,
         "type": "DocumentClassType"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "claimLeaseMinutes",
+        "non_null": false,
+        "type": "Int"
       }
     ]
   }

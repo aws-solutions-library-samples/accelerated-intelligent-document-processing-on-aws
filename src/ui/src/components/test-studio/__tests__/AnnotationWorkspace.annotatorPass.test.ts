@@ -18,13 +18,16 @@
  *    cold-start estimate is never rendered with the same authority as a measured
  *    one", and the headline number was the one place ignoring it.
  *
- * Asserted at source level, following the sibling editGating and versioning tests.
+ * The rail placement is asserted at source level; the copy and precision through the
+ * pure helpers in `annotation-edit-flags.ts`.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+
+import { REVIEWED_HIDDEN_HINT, estimateDecimals, formatPct, queueEmptyText } from '../annotation-edit-flags';
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
@@ -46,20 +49,26 @@ describe('reaching a document that has already been reviewed', () => {
   it('does not claim there is nothing to review when a filter is what emptied the list', () => {
     // "No documents to review." is false in that state: the documents are there, the
     // text just does not match one of them.
-    expect(SOURCE).toMatch(/queueFilter \? `No document matches "\$\{queueFilter\}"\.` : 'No documents to review\.'/);
+    expect(queueEmptyText('inv')).toBe('No document matches "inv".');
+    expect(queueEmptyText('')).toBe('No documents to review.');
   });
 
   it('says why a search can come up empty, since the likeliest reason is hidden by default', () => {
     // The whole sentence, not just "Reviewed documents are hidden": that phrase already
     // existed in this file as a comment explaining the default, so the looser pattern
     // passed against the unfixed source. Caught by revert-checking.
-    expect(SOURCE).toMatch(/Reviewed documents are hidden — show them to search those too\./);
+    expect(REVIEWED_HIDDEN_HINT).toBe('Reviewed documents are hidden — show them to search those too.');
+    expect(SOURCE).toMatch(/\{REVIEWED_HIDDEN_HINT\}/);
   });
 });
 
 describe('how precisely the label-accuracy estimate is printed', () => {
   it('spends a decimal place only on a curve measured on this set', () => {
-    expect(SOURCE).toMatch(/const estimateDecimals = impact\?\.estimateConfidence === 'measured' \? 1 : 0;/);
+    expect(estimateDecimals('measured')).toBe(1);
+    expect(estimateDecimals('prior')).toBe(0);
+    expect(estimateDecimals(undefined)).toBe(0);
+    expect(formatPct(0.9223, 1)).toBe('92.2%');
+    expect(formatPct(0.9223, 0)).toBe('92%');
   });
 
   it('applies it to both the headline and the projection under it', () => {

@@ -2830,6 +2830,7 @@ Resources:
         WorkingBucket: !Ref WorkingBucket
         OutputBucket: !Ref OutputBucket
         TrackingTable: !Ref TrackingTable
+        HITLTableName: !Ref HITLTable
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
@@ -2935,6 +2936,8 @@ Resources:
         AgentTableName: !Ref AgentTable
         ChatMessagesTableName: !Ref ChatMessagesTable
         ChatSessionsTableName: !Ref ChatSessionsTable
+        NotificationsTableName: !Ref NotificationsTable
+        HITLTableName: !Ref HITLTable
         IdHelperChatMemoryTableName: !Ref IdHelperChatMemoryTable
         DiscoveryTrackingTableName: !Ref DiscoveryTrackingTable
 
@@ -4429,6 +4432,13 @@ Resources:
     UpdateReplacePolicy: Retain
     DeletionPolicy: RetainExceptOnCreate
     Properties:
+      # Review queues: consumers trigger on <document>/review/status.json (the
+      # review status contract, idp_common/review_queues/README.md). Only two
+      # rules here match aws.s3, both filtered to other buckets, so this can't
+      # loop into queue_sender.
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders:
@@ -4689,6 +4699,82 @@ Resources:
               Type: int
             - Name: config_version
               Type: string
+          Compressed: true
+        PartitionKeys:
+          - Name: date
+            Type: string
+
+  # Review queues (idp_common.review_queues): one row per document routed to a
+  # review queue, overwritten as its review status changes (latest wins).
+  DocumentReviewsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ReportingDatabase
+      TableInput:
+        Name: "document_reviews"
+        Description: "Table for HITL review-queue status per document"
+        TableType: "EXTERNAL_TABLE"
+        Parameters:
+          classification: "parquet"
+          typeOfData: "file"
+          projection.enabled: "true"
+          projection.date.type: "date"
+          projection.date.format: "yyyy-MM-dd"
+          projection.date.range: "2024-01-01,2030-12-31"
+          projection.date.interval: "1"
+          projection.date.interval.unit: "DAYS"
+          storage.location.template: !Sub
+            - "s3://${Bucket}/document_reviews/date=${date}/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+              date: "${date}"
+        StorageDescriptor:
+          Location: !Sub
+            - "s3://${Bucket}/document_reviews/"
+            - Bucket: !If
+                - ShouldCreateReportingBucket
+                - !Ref ReportingBucket
+                - !Ref ReportingBucketName
+          InputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe"
+          Columns:
+            - Name: document_id
+              Type: string
+            - Name: cycle_id
+              Type: string
+            - Name: review_status
+              Type: string
+            - Name: disposition
+              Type: string
+            - Name: profile
+              Type: string
+            - Name: queue
+              Type: string
+            - Name: reviewer
+              Type: string
+            - Name: reviewed_at
+              Type: timestamp
+            - Name: enqueued_at
+              Type: timestamp
+            - Name: reason_count
+              Type: int
+            - Name: top_reason_kind
+              Type: string
+            - Name: reject_reason
+              Type: string
+            - Name: escalated
+              Type: boolean
+            - Name: machine_run_id
+              Type: string
+            - Name: final_run_id
+              Type: string
+            - Name: timestamp
+              Type: timestamp
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -8012,7 +8098,53 @@ Resources:
           CIRCUIT_BREAKER_ENABLED: !If [CircuitBreakerEnabledCondition, "true", "false"]
           CIRCUIT_BREAKER_MANAGER_ARN: !If [CircuitBreakerEnabledCondition, !GetAtt CircuitBreakerManagerFunction.Arn, ""]
           ALERTS_TOPIC_ARN: !If [CircuitBreakerEnabledCondition, !Ref AlertsTopic, ""]
+          # Review queues: activate an item when phase 1 ends, finalize it when
+          # the finalize run ends, and post the "items waiting" Inbox notice.
+          HITL_TABLE_NAME: !Ref HITLTable
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTable
+          USER_POOL_ID: !Ref UserPool
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
       Policies:
+        # Review queues: item activation and finalize writes (HITLTable).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt HITLTable.Arn
+                - !Sub "${HITLTable.Arn}/index/*"
+        # Inbox producer grants (idp_common/notifications/README.md, Producer IAM):
+        # the "items waiting" notice goes to the queue's member groups.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt NotificationsTable.Arn
+                - !Sub "${NotificationsTable.Arn}/index/UnreadIndex"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                # Scan: the queue directory lists configuration profiles.
+                - dynamodb:Scan
+              Resource: !GetAtt ConfigurationTable.Arn
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+              Resource: !GetAtt UserPool.Arn
         # httpapi: the doc service writes the TrackingTable directly.
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
@@ -9188,6 +9320,171 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: !Sub "events.${AWS::URLSuffix}"
       SourceArn: !GetAtt CircuitBreakerHealthCheckRule.Arn
+
+  ##########################################################################
+  # Review queue sweeper (idp_common.review_queues.sweeper): lease expiry and
+  # warnings, finalize heal (resend / retry / replay), registry member refresh.
+  ##########################################################################
+  ReviewQueueSweeperFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  ReviewQueueSweeperFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "cloudwatch:PutMetricData takes no resource-level permissions; it is scoped by namespace condition"
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: a scheduled sweep that runs again in 5 minutes"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names and settings - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      CodeUri: src/lambda/review_queue_sweeper/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Description: Review queue sweeper - lease expiry and warnings, finalize heal, registry refresh
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+      VpcConfig: !If
+        - DeployInVPC
+        - SubnetIds: !Ref PrivateSubnetIds
+          SecurityGroupIds:
+            - !Ref LambdaSecurityGroupId
+        - !If
+          - UsePrivateApi
+          - SubnetIds: !Ref LambdaSubnetIds
+            SecurityGroupIds:
+              - !Ref LambdaVpcSecurityGroup
+          - !Ref AWS::NoValue
+      LoggingConfig:
+        LogGroup: !Ref ReviewQueueSweeperFunctionLogGroup
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref AWS::StackName
+          METRIC_NAMESPACE: !Ref AWS::StackName
+          HITL_TABLE_NAME: !Ref HITLTable
+          DOCUMENT_TRACKING_MODE: "dynamodb"
+          TRACKING_TABLE: !Ref TrackingTable
+          WORKFLOW_TRACKER_FUNCTION_NAME: !Ref WorkflowTracker
+          STATE_MACHINE_ARN: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+          QUEUE_URL: !Ref DocumentQueue
+          WORKING_BUCKET: !Ref WorkingBucket
+          INPUT_BUCKET: !Ref InputBucket
+          OUTPUT_BUCKET: !Ref OutputBucket
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt HITLTable.Arn
+                - !Sub "${HITLTable.Arn}/index/*"
+            # Tracking row: existence check, finalize message body, withdraw.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt TrackingTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                # Scan: the queue directory lists configuration profiles.
+                - dynamodb:Scan
+              Resource: !GetAtt ConfigurationTable.Arn
+            - Effect: Allow
+              Action:
+                - states:DescribeExecution
+              Resource: !Sub
+                - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${StateMachineName}:*"
+                - StateMachineName: !GetAtt PATTERNSTACK.Outputs.StateMachineName
+            # Replay a lost terminal event to the WorkflowTracker.
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt WorkflowTracker.Arn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt DocumentQueue.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "${WorkingBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub "${OutputBucket.Arn}/*/review/status.json"
+            # Inbox producer grants (lease notices go to one user; no Cognito).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt NotificationsTable.Arn
+                - !Sub "${NotificationsTable.Arn}/index/UnreadIndex"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "cloudwatch:namespace": !Ref AWS::StackName
+
+  ReviewQueueSweepRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Review queue sweeper (lease expiry, finalize heal, registry refresh)
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: ReviewQueueSweeper
+          Arn: !GetAtt ReviewQueueSweeperFunction.Arn
+          Input: '{"source": "scheduled"}'
+
+  ReviewQueueSweepPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReviewQueueSweeperFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub "events.${AWS::URLSuffix}"
+      SourceArn: !GetAtt ReviewQueueSweepRule.Arn
 
   # This dasboard is merged with dashboard created by the pattern stack to create an overall dashboard
   MainTemplateSubsetDashboard:
@@ -10795,6 +11092,132 @@ Resources:
           KeyType: HASH
         - AttributeName: sessionId
           KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAfter
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  ##########################################################################
+  # DynamoDB Table for each user's Inbox messages and preferences
+  # (idp_common.notifications)
+  ##########################################################################
+
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: UnreadPK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # Final from day one: DynamoDB rejects changes to an existing GSI's keys or
+        # projection on stack update. Sparse: UnreadPK exists only while unread.
+        - IndexName: UnreadIndex
+          KeySchema:
+            - AttributeName: UnreadPK
+              KeyType: HASH
+            - AttributeName: SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - ExpiresAfter
+              - Type
+              - Severity
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAfter
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  # HITL review queues (idp_common.review_queues): one queue item per document in
+  # review, its drafts and history, per-reviewer claim counters and the queue
+  # registry. See lib/idp_common_pkg/idp_common/review_queues/README.md.
+  HITLTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: QueuePK
+          AttributeType: S
+        - AttributeName: QueueSK
+          AttributeType: S
+        - AttributeName: OpenPK
+          AttributeType: S
+        - AttributeName: OwnerPK
+          AttributeType: S
+        - AttributeName: OwnerSK
+          AttributeType: S
+        - AttributeName: SweepPK
+          AttributeType: S
+        - AttributeName: SweepSK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        # Final from day one: DynamoDB rejects changes to an existing GSI's keys or
+        # projection on stack update. All four are sparse.
+        # QueueIndex: every OPEN or CLAIMED item of a queue, oldest first.
+        - IndexName: QueueIndex
+          KeySchema:
+            - AttributeName: QueuePK
+              KeyType: HASH
+            - AttributeName: QueueSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # OpenIndex: the claimable (OPEN) items of a queue, oldest first.
+        - IndexName: OpenIndex
+          KeySchema:
+            - AttributeName: OpenPK
+              KeyType: HASH
+            - AttributeName: QueueSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # OwnerIndex: a reviewer's CLAIMED items (My Work), in claim order.
+        - IndexName: OwnerIndex
+          KeySchema:
+            - AttributeName: OwnerPK
+              KeyType: HASH
+            - AttributeName: OwnerSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # SweepIndex: items the sweeper must look at, by due time, in four shards.
+        - IndexName: SweepIndex
+          KeySchema:
+            - AttributeName: SweepPK
+              KeyType: HASH
+            - AttributeName: SweepSK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: ExpiresAfter
         Enabled: true
@@ -12819,6 +13242,9 @@ Resources:
             - !Ref EvaluationBaselineBucket
             - !Ref EvaluationBaselineBucketName
           TRACKING_TABLE: !Ref TrackingTable
+          # Each copy, and each "summarize" message, writes the set's document
+          # summaries (TSDOC# items) the Test Studio queue page reads.
+          HITL_TABLE_NAME: !Ref HITLTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTable
@@ -12831,6 +13257,15 @@ Resources:
               - !Ref EvaluationBaselineBucketName
         - S3CrudPolicy:
             BucketName: !Ref TestSetBucket
+        # Test Studio document summaries (TSDOC# items), kept in step with the labels.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt HITLTable.Arn
         - Statement:
             - Effect: Allow
               Action:
@@ -14359,7 +14794,10 @@ Resources:
         Variables:
           USER_POOL_ID: !Ref UserPool
           ADMIN_GROUP: !Ref AdminGroup
+          AUTHOR_GROUP: !Ref AuthorGroup
           REVIEWER_GROUP: !Ref ReviewerGroup
+          ANNOTATOR_GROUP: !Ref AnnotatorGroup
+          VIEWER_GROUP: !Ref ViewerGroup
       LoggingConfig:
         LogGroup: !Ref UserSyncFunctionLogGroup
       Policies:
@@ -14429,6 +14867,9 @@ Resources:
           # Annotator scope: review operations verify the document's test set is
           # in the caller's allowedTestSets, which is stored on the user record.
           USERS_TABLE_NAME: !Ref UsersTable
+          # A Test Studio save is accepted only from the document's assignee
+          # (TSDOC# item), and completing the document ends the assignment.
+          HITL_TABLE_NAME: !Ref HITLTable
       LoggingConfig:
         LogGroup: !Ref CompleteSectionReviewFunctionLogGroup
       Policies:
@@ -14453,6 +14894,15 @@ Resources:
               Resource:
                 - !GetAtt UsersTable.Arn
                 - !Sub "${UsersTable.Arn}/index/*"
+        # Test Studio assignment check and completion on the document's TSDOC# item,
+        # and the set's assigned-document recount (Query).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:Query
+              Resource: !GetAtt HITLTable.Arn
         - Statement:
             - Effect: Allow
               Action:
@@ -15384,3 +15834,18 @@ Outputs:
       without an Export cannot collide, and unlike the export it is readable from
       `describe-stacks` in every configuration.
     Value: !Ref TrackingTable
+  HITLTableName:
+    Description: >-
+      Name of the DynamoDB table holding HITL review queue items, drafts, history
+      and claim counters (idp_common.review_queues). Lambdas read it through their
+      HITL_TABLE_NAME environment variable. A plain Output with no
+      `Export`, readable from `describe-stacks`.
+    Value: !Ref HITLTable
+
+  NotificationsTableName:
+    Description: >-
+      Name of the DynamoDB table holding each user's Inbox messages and
+      preferences (idp_common.notifications). A Lambda that posts Inbox messages
+      reads it through its NOTIFICATIONS_TABLE_NAME environment variable. A plain
+      Output with no `Export`, readable from `describe-stacks`.
+    Value: !Ref NotificationsTable

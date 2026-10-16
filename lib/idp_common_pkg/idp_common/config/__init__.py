@@ -7,7 +7,11 @@ from typing import Dict, Any, Optional, Union, overload, Literal
 from botocore.exceptions import ClientError
 import logging
 from copy import deepcopy
-from .configuration_manager import ConfigurationManager
+from .configuration_manager import (
+    ConfigurationManager,
+    ConfigurationValidationError as ConfigurationValidationError,
+    WriteGuard as WriteGuard,
+)
 from .merge_utils import deep_update
 from .models import (
     IDPConfig,
@@ -70,11 +74,20 @@ class ConfigurationReader:
 
     @overload
     def get_configuration(
-        self, config_type: str, *, as_dict: Literal[False], version: Optional[str] = None
+        self,
+        config_type: str,
+        *,
+        as_dict: Literal[False],
+        version: Optional[str] = None,
     ) -> Optional[Union[IDPConfig, SchemaConfig, PricingConfig]]: ...
 
     def get_configuration(
-        self, config_type: str, *, as_dict: bool = True, as_model: bool = False, version: Optional[str] = None
+        self,
+        config_type: str,
+        *,
+        as_dict: bool = True,
+        as_model: bool = False,
+        version: Optional[str] = None,
     ) -> Optional[
         Union[
             Dict[str, Any],
@@ -99,7 +112,7 @@ class ConfigurationReader:
         # Handle parameter precedence: as_model overrides as_dict
         if as_model:
             as_dict = False
-        
+
         # ConfigurationManager now returns IDPConfig by default
         idp_config = self.manager.get_configuration(config_type, version=version)
 
@@ -114,7 +127,6 @@ class ConfigurationReader:
             return config_dict
 
         return idp_config
-
 
     def simple_merge(
         self, default: Dict[str, Any], custom: Dict[str, Any]
@@ -136,10 +148,14 @@ class ConfigurationReader:
 
         merged = deepcopy(default)
         return deep_update(merged, custom)
-    
+
     @overload
     def get_merged_configuration(
-        self, *, as_model: Literal[True], version: Optional[str] = None, revision: Optional[int] = None
+        self,
+        *,
+        as_model: Literal[True],
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
     ) -> IDPConfig: ...
 
     # `as_model` carries its default here, matching the implementation below and
@@ -148,11 +164,19 @@ class ConfigurationReader:
     # the documented dict default resolved to no overload at all.
     @overload
     def get_merged_configuration(
-        self, *, as_model: Literal[False] = False, version: Optional[str] = None, revision: Optional[int] = None
+        self,
+        *,
+        as_model: Literal[False] = False,
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
     ) -> Dict[str, Any]: ...
 
     def get_merged_configuration(
-        self, *, as_model: bool = False, version: Optional[str] = None, revision: Optional[int] = None
+        self,
+        *,
+        as_model: bool = False,
+        version: Optional[str] = None,
+        revision: Optional[int] = None,
     ) -> Union[IDPConfig, Dict[str, Any]]:
         """
         Get the full configuration for a version, ready for runtime processing.
@@ -176,7 +200,9 @@ class ConfigurationReader:
             # - An explicitly pinned revision: read that revision's body
             # - Full config format (new): direct read
             # - Legacy sparse format: merge with default + auto-migrate
-            config = self.manager.get_merged_configuration(version=version, revision=revision)
+            config = self.manager.get_merged_configuration(
+                version=version, revision=revision
+            )
 
             if config is None:
                 raise ValueError(f"Configuration not found for version: {version}")
@@ -190,6 +216,7 @@ class ConfigurationReader:
         except Exception as e:
             logger.error(f"Error getting merged configuration: {str(e)}")
             raise
+
 
 @overload
 def get_config(
@@ -254,4 +281,6 @@ def get_config(
         config_dict = config.to_dict(sagemaker_endpoint_name=endpoint)
     """
     reader = ConfigurationReader(table_name, region=region)
-    return reader.get_merged_configuration(as_model=as_model, version=version, revision=revision)
+    return reader.get_merged_configuration(
+        as_model=as_model, version=version, revision=revision
+    )

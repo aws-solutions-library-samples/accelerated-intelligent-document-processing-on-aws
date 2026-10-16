@@ -39,6 +39,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Extraction Scaling Guide](./extraction-scaling-guide.md) - Simple vs advanced (agentic) mode limits by document/list size; where each hits limits and how to choose
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
+- [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
 - [Criteria Validation](./criteria-validation.md) - Document validation against dynamic business rules using LLMs
 - [OCR Image Sizing Guide](./ocr-image-sizing-guide.md) - Optimizing image sizes for OCR processing

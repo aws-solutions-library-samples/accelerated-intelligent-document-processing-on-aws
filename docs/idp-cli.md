@@ -339,8 +339,9 @@ idp-cli deploy [OPTIONS]
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
 - `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
   setting rather than a stack parameter (the `EnableHITL` parameter was removed in
-  v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
-  Configuration**, or in the config YAML passed to `--custom-config`. The flag is
+  v0.4.11) — enable it in the Web UI under **Configuration → Human-in-the-Loop
+  (HITL) Review (Optional)**, or set `hitl.enabled` in the config YAML passed to
+  `--custom-config`. The flag is
   still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
   new pair starts at a comma or whitespace followed by `key=` (so a space-separated

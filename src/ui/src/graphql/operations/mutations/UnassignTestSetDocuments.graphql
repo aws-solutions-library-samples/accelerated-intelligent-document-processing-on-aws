@@ -1,0 +1,8 @@
+mutation UnassignTestSetDocuments($testSetId: String!, $objectKeys: [String!]!) {
+  unassignTestSetDocuments(testSetId: $testSetId, objectKeys: $objectKeys) {
+    testSetId
+    objectKey
+    assignedTo
+    assignedAt
+  }
+}

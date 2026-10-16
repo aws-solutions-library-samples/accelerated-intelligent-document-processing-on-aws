@@ -103,6 +103,7 @@ def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
     )
     table.add_column("Document ID", style="cyan", width=60)
     table.add_column("Status", width=10)
+    table.add_column("Review", width=10)
     table.add_column("Duration", justify="right", width=12)
 
     completed = status_data.get("completed", [])
@@ -128,10 +129,16 @@ def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
         if len(doc_id) > 58:
             doc_id = doc_id[:55] + "..."
 
-        table.add_row(doc_id, "✓ Success", f"{duration:.1f}s", style="green")
+        table.add_row(
+            doc_id,
+            "✓ Success",
+            doc.get("review_status") or "—",
+            f"{duration:.1f}s",
+            style="green",
+        )
 
     if not sorted_completed:
-        table.add_row("No completions yet", "", "", style="dim")
+        table.add_row("No completions yet", "", "", "", style="dim")
 
     return table
 
@@ -146,7 +153,9 @@ def create_failures_table(status_data: Dict) -> Table:
     Returns:
         Rich Table object
     """
-    table = Table(title="Failed Documents", show_header=True, header_style="bold red")
+    table = Table(
+        title="Rejected / Failed Documents", show_header=True, header_style="bold red"
+    )
     table.add_column("Document ID", style="cyan", width=60)
     table.add_column("Error", width=60)
 
@@ -389,12 +398,13 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
                 "duration": doc.get("duration", 0),
                 "start_time": doc.get("start_time", ""),
                 "end_time": doc.get("end_time", ""),
+                "review_status": doc.get("review_status"),
             }
 
             # Add status-specific fields
             if doc.get("status") == "COMPLETED":
                 result["num_sections"] = doc.get("num_sections", 0)
-            elif doc.get("status") in ["FAILED", "ABORTED"]:
+            elif doc.get("status") in ["FAILED", "ABORTED", "REJECTED"]:
                 result["error"] = doc.get("error", "Unknown error")
                 result["failed_step"] = doc.get("failed_step", "Unknown")
             elif doc.get("status") in [
@@ -413,7 +423,7 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
             # Determine exit code
             if doc.get("status") == "COMPLETED":
                 result["exit_code"] = 0
-            elif doc.get("status") in ["FAILED", "ABORTED"]:
+            elif doc.get("status") in ["FAILED", "ABORTED", "REJECTED"]:
                 result["exit_code"] = 1
             else:
                 result["exit_code"] = 2
@@ -517,7 +527,9 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
             status = "COMPLETED"
         elif status_data["failed"]:
             doc = status_data["failed"][0]
-            status = "FAILED"
+            # REJECTED (a reviewer rejected it) shares the failed bucket but is
+            # reported by name, never collapsed to FAILED.
+            status = "REJECTED" if doc.get("status") == "REJECTED" else "FAILED"
         else:
             # Running or queued
             if status_data["running"]:

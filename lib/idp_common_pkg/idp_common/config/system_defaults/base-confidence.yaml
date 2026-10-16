@@ -120,3 +120,14 @@ extraction:
 hitl:
   enabled: false
   confidence_threshold: "0.8"
+  # Inbox messages (idp_common.notifications). Read from the ACTIVE configuration
+  # profile and cached for about 60 seconds; a change applies to messages written after it.
+  notifications:
+    retention_days: 30  # Days an Inbox message is kept before DynamoDB TTL removes it (1-365)
+    max_per_user: 50    # Messages kept per user; the oldest read message is removed first (1-200)
+  # Review queues (idp_common.review_queues). When enabled (and hitl.enabled), documents with
+  # low-confidence fields wait in a queue instead of finishing; only Admins may change this block.
+  # Queues themselves are system-wide (HITL › Queue Management), not part of the profile.
+  review_queues:
+    enabled: false   # Route low-confidence documents to a review queue (replaces Review Pending for this profile)
+    queue: default   # Id of the queue this profile's documents enter; an unknown id falls back to default

@@ -118,8 +118,8 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: 23 Lambda functions
-across the two main templates — 8 in `template.yaml` and 15 in
+Distributed tracing is instrumented, not merely recommended: 24 Lambda functions
+across the two main templates — 9 in `template.yaml` and 15 in
 `patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
 optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
 section (`seller-entitlement-service` is the exception). In the two main templates the
@@ -216,7 +216,7 @@ bucket.
 `AdminCreateUserConfig.AllowAdminCreateUserOnly` at `true`: self-registration through the
 web UI is closed and an administrator has to create every user. Setting the parameter to a
 domain — or a comma-separated list of them — flips that flag to `false` and turns on public
-self-registration for anyone holding an address at those domains. The five
+self-registration for anyone holding an address at those domains. The six
 `AWS::Cognito::UserPoolGroup` resources are not assigned automatically, so a user who
 registers that way starts in no group at all; read that together with the authorization
 paragraph below, because a user in zero groups still reaches every operation declared
@@ -241,9 +241,9 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-119 operations. 109 of them require Cognito group membership and 2
+143 operations. 133 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
-principals, rejecting every Cognito caller. 18 of those accept any assigned group
+principals, rejecting every Cognito caller. 26 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
 the full list of groups `template.yaml` creates, so what they refuse is a caller an
 administrator has not placed in any group. That set is every document read
@@ -253,8 +253,11 @@ administrator has not placed in any group. That set is every document read
 `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), the chat transcript read
 `getChatMessages`, the processing-breaker badge `getCircuitBreakerStatus` (whose
 `lastError` carries the pausing administrator's email address after a manual pause), and
-three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`). The
-document reads include the ones that return no extracted
+three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`), and
+the eight Inbox operations (`listInboxMessages`, `getInboxUnreadCount`,
+`getInboxPreferences`, `markInboxMessages`, `markAllInboxMessagesRead`,
+`deleteInboxMessages`, `clearReadInboxMessages`, `updateInboxPreferences`), each scoped
+to the caller's own messages. The document reads include the ones that return no extracted
 value themselves, because an object key, a section's `s3://` URI, a state machine execution
 ARN and a model-written description of a page's contents are each a step of one chain that
 ends in extracted data, and that chain was measured composing end to end for a caller in no
@@ -325,7 +328,7 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 127 IAM policy statements are written against `Resource: "*"` — 53 in
+extensions, 129 IAM policy statements are written against `Resource: "*"` — 54 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
@@ -434,21 +437,21 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 326 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 334 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
 resources in the parent.
 
-**Durable state.** All thirteen S3 buckets have versioning enabled. Ten of the twelve
+**Durable state.** All thirteen S3 buckets have versioning enabled. Twelve of the fourteen
 DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
-twelve are ten in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+fourteen are twelve in `template.yaml`, one in `patterns/unified/template.yaml` and one in
 `nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
 ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
 from the true running-execution count rather than restored, and
 `ChatDocumentSessionsTable` holds per-session chat-ownership records under a short TTL, so
 losing it only forces users to start a new chat session. Counting the optional
-`feature-platform/` extensions raises the total to nineteen tables; all seven extension
+`feature-platform/` extensions raises the total to twenty-one tables; all seven extension
 tables have point-in-time recovery enabled.
 
 ### Review checklist
@@ -471,7 +474,7 @@ constitute one, because nothing in the stack replicates data across regions.
 
 - **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
   survive accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery**: ten of the twelve DynamoDB tables a default deployment
+- **Point-in-Time Recovery**: twelve of the fourteen DynamoDB tables a default deployment
   creates can be restored to any second within the retention window. The two without it are
   `ConcurrencyTable`, whose admission counter is reconciled from the true
   running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose

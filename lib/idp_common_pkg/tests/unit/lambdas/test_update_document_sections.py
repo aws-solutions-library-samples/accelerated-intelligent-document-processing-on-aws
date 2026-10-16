@@ -426,3 +426,17 @@ class TestPerOperationRbac:
 
         with pytest.raises(PermissionError, match="processChanges"):
             resolver.handler(event, None)
+
+
+@pytest.mark.unit
+class TestQueueReviewerRefused:
+    """A QueueReviewer-only caller works review queues, not these operations (FR-25)."""
+
+    def test_update_document_sections_refuses_queue_reviewer(self, resolver):
+        document = _document(resolver, [_section(resolver, "1", [1], "Invoice")])
+        event = _event(
+            sections=[{"sectionId": "1", "pageIds": ["1"]}], groups=("QueueReviewer",)
+        )
+
+        with pytest.raises(PermissionError, match="updateDocumentSections"):
+            _call(resolver, document, event)

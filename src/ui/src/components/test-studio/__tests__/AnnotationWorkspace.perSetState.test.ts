@@ -16,13 +16,16 @@
  * in a reset effect — and miss the next one added — the route remounts the component
  * per set, which drops all of it at once.
  *
- * Asserted at source level, following the sibling tests in this directory.
+ * The route is asserted at source level; the copy through the pure helpers in
+ * `annotation-edit-flags.ts`.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+
+import { draftBadgeHover, draftOpenedMessage, groundTruthAlertSuffix } from '../annotation-edit-flags';
 
 const HERE = join(__dirname, '..');
 const ROUTES = readFileSync(join(HERE, '..', '..', 'routes', 'TestStudioRoutes.tsx'), 'utf-8');
@@ -46,18 +49,18 @@ describe('what the reviewer sees when a transition opens', () => {
   it('confirms the commitment with what the server reports was preserved', () => {
     // The alert used to vanish and a small badge appear, and the server's
     // snapshotObjectCount went unread. Now the moment it happens is said out loud.
-    expect(SOURCE).toMatch(
-      /Version \$\{opened\.baseVersion\} preserved \(\$\{\(opened\.snapshotObjectCount \?\? 0\)\.toLocaleString\(\)\} objects\)/,
+    expect(draftOpenedMessage({ baseVersion: 1, draftVersion: 2, snapshotObjectCount: 1234 })).toBe(
+      `Version 1 preserved (${(1234).toLocaleString()} objects). Your corrections go into version 2.`,
     );
     expect(SOURCE).toMatch(/id: 'annotation-draft-opened'/);
   });
 
   it('says so differently when the transition was already open', () => {
-    expect(SOURCE).toMatch(/opened\.alreadyOpen\s*\?\s*`Version \$\{opened\.draftVersion\} was already open/);
+    expect(draftOpenedMessage({ baseVersion: 1, draftVersion: 2, alreadyOpen: true })).toMatch(/^Version 2 was already open/);
   });
 
   it('explains the badge on hover', () => {
-    expect(SOURCE).toMatch(/Corrections made here go into version \$\{draft\.draftVersion\}/);
+    expect(draftBadgeHover({ baseVersion: 1, draftVersion: 2 })).toMatch(/^Corrections made here go into version 2\./);
   });
 });
 
@@ -65,15 +68,16 @@ describe('the authored-ground-truth alert agrees with the rest of the screen', (
   it('does not promise editing before a transition is open', () => {
     // The editor is read-only until then, and this alert stacked directly under the
     // one saying so.
-    expect(SOURCE).toMatch(/canSaveDirectToBaseline\s*\?\s*draft\s*\?\s*' You can still correct it below/);
-    expect(SOURCE).toMatch(/' Use Start annotating, above, to correct it\.'/);
+    expect(groundTruthAlertSuffix(true, { baseVersion: 1, draftVersion: 2 })).toMatch(/^ You can still correct it below/);
+    expect(groundTruthAlertSuffix(true, null)).toBe(' Use Start annotating, above, to correct it.');
   });
 
   it('no longer claims the direct save records no review', () => {
     // The direct save writes reviewed-human and counts toward progress since the
     // provenance fix; the old copy contradicted it.
-    expect(SOURCE).not.toMatch(/rather than recording a review/);
-    expect(SOURCE).toMatch(/counts the document as reviewed/);
+    const copy = groundTruthAlertSuffix(true, { baseVersion: 1, draftVersion: 2 });
+    expect(copy).not.toMatch(/rather than recording a review/);
+    expect(copy).toMatch(/counts the document as reviewed/);
   });
 });
 

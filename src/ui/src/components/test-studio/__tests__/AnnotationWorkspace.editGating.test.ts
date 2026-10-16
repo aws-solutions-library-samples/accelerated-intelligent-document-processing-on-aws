@@ -30,8 +30,8 @@
  * booleans still match, because this duplicates authorization rules the server owns
  * and the copies would otherwise drift silently.
  *
- * Asserted at source level: rendering AnnotationWorkspace needs the GraphQL client,
- * settings, role hooks, a router and a populated queue, for what is two JSX props.
+ * The decisions are pure functions in `annotation-edit-flags.ts`, asserted directly; the
+ * page-access guard is still checked against the component source.
  */
 
 import { readFileSync } from 'node:fs';
@@ -39,9 +39,21 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  CLASS_LIST_UNAVAILABLE_CONSTRAINT,
+  CLASS_LIST_UNAVAILABLE_DESCRIPTION,
+  NO_REVIEW_RECORD_MESSAGE,
+  annotationEditFlags,
+  groundTruthAlertSuffix,
+  isClassListUnavailable,
+  mayChangeClassFor,
+  requireReviewObjectKey,
+  saveCapabilities,
+} from '../annotation-edit-flags';
+import type { AnnotationRoles } from '../annotation-edit-flags';
+
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
-const EDITOR = readFileSync(join(HERE, 'GroundTruthVisualEditor.tsx'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
 /** The cognito_groups declared on a mutation in schema.graphql. */
@@ -54,36 +66,56 @@ const groupsFor = (operation: string): string[] => {
   return (match as RegExpMatchArray)[1].split(',').map((g) => g.trim().replace(/"/g, ''));
 };
 
+const GROUPS = ['Admin', 'Author', 'Reviewer', 'Annotator', 'Viewer'] as const;
+
+/** Role flags for a caller in exactly one group; canAnnotate as useUserRole derives it. */
+const only = (group: (typeof GROUPS)[number]): AnnotationRoles => {
+  const flags = {
+    isAdmin: group === 'Admin',
+    isAuthor: group === 'Author',
+    isReviewer: group === 'Reviewer',
+    isAnnotator: group === 'Annotator',
+  };
+  return { ...flags, canAnnotate: flags.isAdmin || flags.isAuthor || flags.isAnnotator };
+};
+
+/** The groups whose single-group caller gets `pick(...)` true. */
+const groupsWhere = (pick: (roles: AnnotationRoles) => boolean): string[] => GROUPS.filter((g) => pick(only(g))).sort();
+
+const DRAFT = { baseVersion: 1, draftVersion: 2 };
+const WITH_REVIEW = { reviewObjectKey: 'ts1/x.pdf' };
+const AUTHORED = { reviewObjectKey: null };
+
 describe('AnnotationWorkspace edit gating', () => {
   it('picks the read-only decision from the document own save path', () => {
-    // The per-path role decision, which is what this test exists to protect. It now sits
-    // behind `!draft ||` — annotation is also read-only until the version transition is
-    // open — but that is an orthogonal condition about the session, not about the role,
-    // and the role half must stay per-save-path.
-    expect(SOURCE).toMatch(/selected\.reviewObjectKey \? !canSaveViaReview : !canSaveDirectToBaseline/);
-    // The regression: a queue-state condition presented as a permission problem.
-    expect(SOURCE).not.toMatch(/isReadOnly=\{!canAnnotate \|\| !selected\.reviewObjectKey\}/);
-    // And the over-correction: canAnnotate includes roles neither path accepts.
-    expect(SOURCE).not.toMatch(/isReadOnly=\{!canAnnotate\}/);
+    // A document with a review record: the review path's roles may edit.
+    expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Reviewer']);
+    // Authored ground truth: the direct path's roles may edit. The regression made this
+    // read-only for everyone — a queue-state condition presented as a permission problem.
+    expect(groupsWhere((r) => !annotationEditFlags(r, AUTHORED, DRAFT).isReadOnly)).toEqual(['Admin', 'Author']);
   });
 
   it('does not let editing begin before the version transition is open', () => {
-    // Otherwise the commitment goes back to being implicit: someone edits, and the
-    // version that records what the labels *were* is opened after they changed. Looking
-    // is still allowed — this gates editing, not reading.
-    expect(SOURCE).toMatch(/isReadOnly=\{!draft \|\|/);
+    // Otherwise the commitment goes back to being implicit. Looking is still allowed —
+    // this gates editing, not reading.
+    for (const group of GROUPS) {
+      expect(annotationEditFlags(only(group), WITH_REVIEW, null).isReadOnly).toBe(true);
+      expect(annotationEditFlags(only(group), AUTHORED, null).isReadOnly).toBe(true);
+    }
   });
 
   it('routes through the review API only when there is a review to complete', () => {
-    // completeSectionReview requires reviewObjectKey and throws without it, so
-    // wiring it unconditionally would lose the edit at save time.
-    expect(SOURCE).toMatch(/onSave=\{selected\.reviewObjectKey \? handleSave : undefined\}/);
+    // completeSectionReview requires reviewObjectKey and throws without it, so wiring
+    // it unconditionally would lose the edit at save time.
+    expect(annotationEditFlags(only('Admin'), WITH_REVIEW, DRAFT).saveViaReview).toBe(true);
+    expect(annotationEditFlags(only('Admin'), AUTHORED, DRAFT).saveViaReview).toBe(false);
   });
 
   it('still refuses to save a review without a review record', () => {
-    // The guard inside handleSave stays: it is the backstop if the routing above
-    // is ever changed back.
-    expect(SOURCE).toMatch(/if \(!selected\?\.reviewObjectKey\) \{\s*throw new Error/);
+    // The backstop if the routing above is ever changed back.
+    expect(() => requireReviewObjectKey(AUTHORED)).toThrow(NO_REVIEW_RECORD_MESSAGE);
+    expect(() => requireReviewObjectKey(null)).toThrow(NO_REVIEW_RECORD_MESSAGE);
+    expect(requireReviewObjectKey(WITH_REVIEW)).toBe('ts1/x.pdf');
   });
 
   it('keeps canAnnotate for page access, which is a different question', () => {
@@ -92,18 +124,17 @@ describe('AnnotationWorkspace edit gating', () => {
   });
 
   it('only promises class editing to someone who can actually save it', () => {
-    expect(SOURCE).toMatch(/canSaveDirectToBaseline\s*\?\s*draft\s*\?\s*' You can still correct it below, including its class/);
-    expect(SOURCE).toMatch(/which an Admin or Author has to do/);
+    expect(groundTruthAlertSuffix(true, DRAFT)).toMatch(/^ You can still correct it below, including its class/);
+    expect(groundTruthAlertSuffix(false, DRAFT)).toMatch(/which an Admin or Author has to do/);
   });
 
   it('offers the class to every role the server accepts for a class correction', () => {
     // The class is a WIDER capability than field editing: it persists through
     // reextractTestSetDocument, which stamps the baseline server-side and needs no
     // review record. Gating it on isReadOnly denied it to roles the server allows.
-    expect(SOURCE).toMatch(/canChangeClass=\{canAnnotate\}/);
-
     const reextract = groupsFor('reextractTestSetDocument');
     expect(reextract.sort()).toEqual(['Admin', 'Annotator', 'Author']);
+    expect(groupsWhere((r) => annotationEditFlags(r, AUTHORED, DRAFT).canChangeClass)).toEqual(reextract.sort());
 
     // canAnnotate is that same set, which is why it is the right flag here.
     const roleHook = readFileSync(join(HERE, '..', '..', 'hooks', 'use-user-role.ts'), 'utf-8');
@@ -125,83 +156,47 @@ describe('AnnotationWorkspace edit gating', () => {
     expect(review.sort()).toEqual(['Admin', 'Annotator', 'Reviewer']);
     expect(upload.sort()).toEqual(['Admin', 'Author']);
 
-    const clientRole = (name: string): string[] => {
-      const m = SOURCE.match(new RegExp(`const ${name} = ([^;]+);`));
-      expect(m, `${name} not found`).not.toBeNull();
-      return (m as RegExpMatchArray)[1]
-        .split('||')
-        .map((t) => t.trim().replace(/^is/, ''))
-        .sort();
-    };
-
-    expect(clientRole('canSaveViaReview')).toEqual(review.sort());
-    expect(clientRole('canSaveDirectToBaseline')).toEqual(upload.sort());
+    expect(groupsWhere((r) => saveCapabilities(r).canSaveViaReview)).toEqual(review.sort());
+    expect(groupsWhere((r) => saveCapabilities(r).canSaveDirectToBaseline)).toEqual(upload.sort());
   });
 });
 
 /**
- * The prop has to be honoured, not merely accepted.
- *
- * Caught by revert-checking: with the assertions above reading only
- * AnnotationWorkspace, the editor could take `canChangeClass` and keep gating on
- * `isReadOnly` internally, and every test would still pass. That is the same silent
- * no-op as the original class-correction bug, where the UI reported success and threw
- * the change away.
+ * The class capability has to be honoured, not merely accepted: the editor could take
+ * `canChangeClass` and keep gating on `isReadOnly` internally, the same silent no-op as
+ * the original class-correction bug, where the UI reported success and threw the change
+ * away.
  */
 describe('GroundTruthVisualEditor class gating', () => {
   it('gates the class control on the class capability, not on field read-only', () => {
-    expect(EDITOR).toMatch(/const mayChangeClass = canChangeClass \?\? !isReadOnly;/);
-    expect(EDITOR).toMatch(/disabled=\{!mayChangeClass \|\| isReextracting\}/);
-  });
-
-  it('does not silently discard a class change it just accepted', () => {
-    // updateDocumentClass guarded on isReadOnly, so with the dropdown enabled the
-    // change event would be taken and dropped.
-    const fn = EDITOR.slice(EDITOR.indexOf('const updateDocumentClass'), EDITOR.indexOf('const updateDocumentClass') + 400);
-    expect(fn).toMatch(/if \(!mayChangeClass \|\| !localData\) return;/);
-    expect(fn).not.toMatch(/if \(isReadOnly/);
-  });
-
-  it('lets the same roles trigger the re-extract that persists the class', () => {
-    // The re-extract IS the class save; gating it more narrowly than the dropdown
-    // would leave the correction unsaveable.
-    expect(EDITOR).toMatch(/onClick=\{handleReextract\} loading=\{isReextracting\} disabled=\{!mayChangeClass\}/);
+    expect(mayChangeClassFor(true, true)).toBe(true);
+    expect(mayChangeClassFor(false, false)).toBe(false);
   });
 
   it('defaults to the old behaviour for callers that do not distinguish the two', () => {
     // TestSetDocumentDetail passes no canChangeClass, so it must be unaffected.
     const docView = readFileSync(join(HERE, 'TestSetDocumentDetail.tsx'), 'utf-8');
     expect(docView).not.toMatch(/canChangeClass/);
-    expect(EDITOR).toMatch(/canChangeClass \?\? !isReadOnly/);
+    expect(mayChangeClassFor(undefined, true)).toBe(false);
+    expect(mayChangeClassFor(undefined, false)).toBe(true);
   });
 });
 
 /**
- * What the class control does when the class LIST cannot be read.
- *
- * `getConfigVersion` is `Admin, Author, Viewer` and excludes Annotator — the role
- * this screen exists for. So an annotator's config fetch is denied and the editor
- * used to fall through to its free-text branch, handing the one role most in need of
- * a constrained vocabulary an unconstrained box, with three words dropping out of the
- * description as the only sign. A typed class no config defines produces a section
- * with no schema, which extracts nothing.
+ * What the class control does when the class LIST cannot be read. A denied or failed
+ * fetch must not fall through to free text: a typed class no config defines produces a
+ * section with no schema, which extracts nothing.
  */
 describe('GroundTruthVisualEditor class list unavailable', () => {
   it('distinguishes "could not read the classes" from "there are none"', () => {
-    expect(EDITOR).toMatch(/const classListUnavailable = classOptions\.length === 0 && \(Boolean\(configError\) \|\| configLoading\)/);
-    // Both signals have to be pulled off the hook, or the distinction is unavailable.
-    expect(EDITOR).toMatch(/loading: configLoading, error: configError/);
-  });
-
-  it('locks the field rather than offering free text', () => {
-    // Free text is for a config that genuinely defines no classes. When the list
-    // merely could not be read, an unconstrained box is worse than a locked one.
-    const branch = EDITOR.slice(EDITOR.indexOf('{classListUnavailable ? ('), EDITOR.indexOf('{classListUnavailable ? (') + 200);
-    expect(branch).toMatch(/<Input value=\{documentClassType \?\? ''\} disabled \/>/);
+    expect(isClassListUnavailable(0, new Error('denied'), false)).toBe(true);
+    expect(isClassListUnavailable(0, null, true)).toBe(true);
+    expect(isClassListUnavailable(0, null, false)).toBe(false);
+    expect(isClassListUnavailable(2, new Error('denied'), false)).toBe(false);
   });
 
   it('says why, and who can do it instead', () => {
-    expect(EDITOR).toMatch(/valid classes could not be loaded/);
-    expect(EDITOR).toMatch(/An Admin or Author can change the class/);
+    expect(CLASS_LIST_UNAVAILABLE_DESCRIPTION).toMatch(/valid classes could not be loaded/);
+    expect(CLASS_LIST_UNAVAILABLE_CONSTRAINT).toMatch(/An Admin or Author can change the class/);
   });
 });

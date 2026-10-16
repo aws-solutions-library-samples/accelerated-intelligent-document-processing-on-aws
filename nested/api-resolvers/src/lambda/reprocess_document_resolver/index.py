@@ -35,6 +35,34 @@ cloudwatch = boto3.client("cloudwatch")
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 _dynamodb = boto3.resource("dynamodb")
 
+# Review queues: reprocessing withdraws the document's review (claim released,
+# status object deleted). Built on first use; None when no table is configured.
+_REVIEW_SERVICE_CACHE: dict = {}
+
+
+def _review_service():
+    if "svc" not in _REVIEW_SERVICE_CACHE:
+        if os.environ.get("HITL_TABLE_NAME"):
+            from idp_common.review_queues.service import create_review_queue_service
+
+            _REVIEW_SERVICE_CACHE["svc"] = create_review_queue_service()
+        else:
+            _REVIEW_SERVICE_CACHE["svc"] = None
+    return _REVIEW_SERVICE_CACHE["svc"]
+
+
+def _withdraw_review(object_key):
+    """Withdraw a live review item before a reprocess (the new run reroutes)."""
+    service = _review_service()
+    if service is None:
+        return
+    try:
+        service.withdraw(object_key, "reprocessed")
+    except Exception:
+        # The fresh run's routing supersedes a leftover item, so a failure here
+        # never blocks the reprocess; it is logged for the operator.
+        logger.error("Failed to withdraw the review item before reprocess", exc_info=True)
+
 
 # ----- Caller-scope enforcement for multi-user RBAC deployments ----------
 # See docs/rbac.md. When a customer assigns a non-admin user
@@ -399,6 +427,8 @@ def reprocess_document(object_key, version=None, revision=None):
         raise ValueError(
             f"Document {object_key} not found in S3 bucket {input_bucket}: {str(e)}"
         )
+
+    _withdraw_review(object_key)
 
     # Delete previous output data from S3 so the OCR retry-safe recovery
     # mechanism doesn't reinstall stale results from the previous run.

@@ -28,6 +28,7 @@ from idp_sdk.models import (
     DocumentStatus,
     ExecutionsStoppedResult,
     RerunStep,
+    ReviewInfo,
     StopWorkflowsResult,
 )
 
@@ -587,6 +588,8 @@ class BatchOperation:
                         num_pages=doc.get("num_pages"),
                         num_sections=doc.get("num_sections"),
                         error=doc.get("error"),
+                        review=ReviewInfo.from_lookup(doc.get("review")),
+                        review_status=(doc.get("review") or {}).get("status"),
                         # The bucket the monitor chose, carried on the document
                         # rather than left implicit in the aggregate counts. For
                         # a NOT_FOUND document inside the grace window it is the
@@ -679,7 +682,8 @@ class BatchOperation:
 
         types_list = file_types or ["all"]
         if "all" in types_list:
-            types_list = ["pages", "sections", "summary", "evaluation"]
+            # "review" brings <document>/review/status.json (review queues).
+            types_list = ["pages", "sections", "summary", "evaluation", "review"]
 
         result = processor.download_batch_results(
             batch_id=batch_id, output_dir=output_dir, file_types=types_list
@@ -865,6 +869,9 @@ class BatchOperation:
         dynamodb = boto3.resource("dynamodb", region_name=self._client._region)
         tracking_table = dynamodb.Table(documents_table_name)
         s3_client = boto3.client("s3", region_name=self._client._region)
+        from idp_sdk.operations.document import _review_store
+
+        review_store = _review_store(resources, self._client._region)
 
         try:
             if pattern:
@@ -898,6 +905,7 @@ class BatchOperation:
                 output_bucket=output_bucket,
                 dry_run=dry_run,
                 continue_on_error=continue_on_error,
+                review_store=review_store,
             )
 
             single_results = [
@@ -1127,6 +1135,26 @@ class BatchOperation:
                 status = "QUEUED"
             elif status_data.get("failed"):
                 status = "FAILED"
+            # A rejected document (review queues) sits in the failed bucket but
+            # has results; report it as REJECTED, never collapsed to FAILED.
+            entries = [
+                d
+                for bucket in status_data.values()
+                if isinstance(bucket, list)
+                for d in bucket
+            ]
+            if any(
+                d.get("status") == "REJECTED" for d in entries if isinstance(d, dict)
+            ):
+                status = "REJECTED"
+            review = next(
+                (
+                    d.get("review")
+                    for d in entries
+                    if isinstance(d, dict) and d.get("review")
+                ),
+                None,
+            )
 
             # Try to get results.json from S3
             document_class = None
@@ -1134,7 +1162,7 @@ class BatchOperation:
             confidence = None
             page_count = None
 
-            if status == "COMPLETED":
+            if status in ("COMPLETED", "REJECTED"):
                 try:
                     s3_key = f"{doc_id}/sections/{section_id}/result.json"
                     response = s3_client.get_object(Bucket=output_bucket, Key=s3_key)
@@ -1195,6 +1223,8 @@ class BatchOperation:
                 "confidence": confidence,
                 "page_count": page_count,
                 "status": status,
+                # in_review / complete / rejected (review queues); None if never routed.
+                "review_status": (review or {}).get("status"),
             }
         except Exception as e:
             logger.warning(f"Error retrieving metadata for {doc_id}: {e}")

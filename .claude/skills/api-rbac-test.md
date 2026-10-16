@@ -39,7 +39,7 @@ for APIs" checklist. Mapping (suite → checklist item), implemented in
 |---|----------------|-------|
 | 1 | Unauthenticated access denied | `run_group_matrix` (unauth cell) + `run_token_negatives` |
 | 2 / 2.2 | Authorization matrix, negative + positive; role X not authorized for API Y | `run_group_matrix` (every op × every role) |
-| 2.1 | IDOR — User A's data unreachable by User B | `run_idor_suite` (chat session ownership) |
+| 2.1 | IDOR — User A's data unreachable by User B | `run_idor_suite` (chat session ownership); `run_inbox_idor_suite` (Inbox ownership: another user's message id is not listed, marked or deleted) |
 | 2.1 | Caller-supplied resource reference bounded to the deployment and the caller's config scope | `run_caller_supplied_ref_suite` — `getStepFunctionExecution` must refuse an ARN naming another state machine, still serve this deployment's own, and refuse a config-scoped caller an out-of-scope execution. **Needs a processed document**, else all three SKIP (see below) |
 | 2.3 | Tokens rejected after expiry | `run_token_lifecycle_suite` (+ token negatives); real-expiry wait via `IDP_SECTEST_WAIT_EXPIRY=<seconds>` |
 | 2.4 | Tokens revoked after logout | `run_token_lifecycle_suite` — global sign-out then re-test; **stateless-JWT reuse is a documented gap** (`GAP-SEC-LOGOUT`, WARN — see AUTH.T10) |
@@ -89,13 +89,13 @@ Notes:
 - **Config-version scope denials are IN-BAND:** the configuration & sync
   resolvers return `{success:false, error:{type:"Unauthorized"}}` with **HTTP
   200** (NOT a 403). The harness treats an in-band `Unauthorized` as a denial.
-- **5 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Annotator(3) >
-  Viewer(4), defined in `template.yaml`. That template is where the group
+- **6 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Annotator(3) >
+  Viewer(4) > QueueReviewer(5), defined in `template.yaml`. That template is where the group
   vocabulary lives — `generate_api_rbac_manifest.py` reads it to resolve
   `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
   ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
   `scripts/test_api_rbac.py`) — **`Annotator` is not one** — and it creates **no
-  groupless user**. 18 operations are declared `ANY_GROUP` today, and "denied to a
+  groupless user**. 26 operations are declared `ANY_GROUP` today, and "denied to a
   caller in no group" — the whole point of that policy — is asserted offline only, in
   `test_http_api_dispatcher_authz.py`. The *mechanism* is live-proven: step 4 of the
   chain measured in
@@ -174,7 +174,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (119 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (143 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -321,9 +321,24 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 4. **Regenerate the dispatcher manifest:**
    `python3 scripts/sdlc/generate_api_rbac_manifest.py`, and commit the changed
    `nested/api-resolvers/src/lambda/http_api_dispatcher/api_rbac_manifest.json`.
-5. `make api-test-static` must be clean (it runs the manifest drift check too),
+5. **Route it.** A new resolver Lambda gets one key in
+   `HttpApiFieldFunctionMapParam` (`nested/api-resolvers/template.yaml`); a field
+   served by an existing Lambda goes in `FIELD_ALIASES`
+   (`http_api_dispatcher/index.py`) instead. An unrouted field is default-denied.
+   `scripts/tests/test_http_api_field_map_size.py` checks that the map's resolved
+   worst case still fits the 8,192-byte SSM Advanced-tier limit.
+6. **Regenerate the validation spec:**
+   `python3 scripts/sdlc/generate_api_validation_spec.py`, and commit the changed
+   `http_api_dispatcher/api_validation_spec.json` (the dispatcher's argument check).
+7. **Regenerate the UI types:** `make codegen` rewrites
+   `src/ui/src/graphql/generated/`; never hand-edit it.
+8. **Update the stated policy counts.** `scripts/tests/test_api_policy_counts_in_docs.py`
+   and `scripts/tests/test_well_architected_doc.py` compare every page that states
+   an operation or policy count against the expectations file; run them and fix the
+   prose they name.
+9. `make api-test-static` must be clean (it runs the manifest drift check too),
    then run `make api-test` live.
-6. If the op is **also** reachable off the REST route (a Function URL route, a
+10. If the op is **also** reachable off the REST route (a Function URL route, a
    direct `lambda:InvokeFunction` path), put the group check in the component
    that does the work and declare the route under `function_url_endpoints:` —
    otherwise S6 fails and the check covers only one path. The dispatcher's
@@ -340,7 +355,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 119 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 143 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,

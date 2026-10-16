@@ -1,7 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import hashlib
 import json
 import logging
 import os
@@ -17,10 +16,21 @@ from botocore.exceptions import BotoCoreError, ClientError
 from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
+from idp_common.utils.execution_names import (  # noqa: F401 — re-exported
+    _EXECUTION_NAME_MAX_LEN,
+    _EXECUTION_NAME_UNSAFE,
+    execution_name_for,
+)
+from idp_common.utils.execution_names import execution_arn_for as _execution_arn_for
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.transient_errors import is_transient_error
 
 patch_all()
+
+# Same pattern as idp_common.review_queues.finalize.FINALIZE_TOKEN_RE; kept local
+# here so the handler (and its hermetic tests, which stub idp_common) needs no
+# review_queues import on its hot path.
+_FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -102,14 +112,6 @@ COUNTER_CONFLICT_BASE_DELAY_SECONDS = float(
     os.environ.get("COUNTER_CONFLICT_BASE_DELAY_SECONDS", "0.2")
 )
 
-# Step Functions execution names: 1-80 chars, no whitespace, brackets, wildcards
-# or the characters " # % \ ^ | ~ ` $ & , ; : /. The name also becomes the last
-# ARN segment, which document_versions.build_run_id and the classification cache
-# key both take with ``split(":")[-1]``, so it is kept to a set that is safe in
-# an S3 key and a DynamoDB sort key as well.
-_EXECUTION_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-_EXECUTION_NAME_MAX_LEN = 80
-
 
 class ExecutionAlreadyStarted(Exception):
     """StartExecution was refused because this message already started a workflow.
@@ -128,50 +130,9 @@ class ExecutionAlreadyStarted(Exception):
         self.execution_arn = execution_arn
 
 
-def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
-    """Derive the idempotent execution name for one SQS message.
-
-    SQS is at-least-once: a message whose StartExecution succeeded is redelivered
-    whenever the invocation that handled it dies before it can report the batch
-    outcome (issue #904 saw one message delivered 24 times and started 6 times).
-    Step Functions refuses a second StartExecution with the same name for 90
-    days, so naming the execution after the message turns every redelivery into
-    a harmless ``ExecutionAlreadyExists``.
-
-    The message id, not the document, is the key: the same object re-uploaded,
-    reprocessed from the UI or re-run through the SDK is a NEW message and must
-    get a new execution, while every redelivery of one message carries the same
-    id. A human-readable prefix from the object's basename is kept so the
-    Step Functions console still reads like a document list.
-
-    Returns None when there is no message id (a direct invocation), in which case
-    Step Functions assigns a name and duplicate protection does not apply.
-    """
-    if not message_id:
-        return None
-    token = message_id
-    if _EXECUTION_NAME_UNSAFE.search(token) or len(token) > 64:
-        token = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
-    basename = (input_key or "").rsplit("/", 1)[-1]
-    prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
-    room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
-    prefix = prefix[:room].rstrip("-.")
-    # Preserve the "looks like a document list" property in the Step
-    # Functions console even for basenames that yield no allowed chars
-    # (e.g. all-emoji filenames, extension-only basenames like ``.pdf``).
-    # A bare token — 32-char sha1 or 36-char UUID — is uninformative and
-    # loses the browse-by-name affordance the prefix exists for. Fall
-    # back to a generic ``doc-`` prefix so the execution row still reads
-    # as "some document" rather than "some hash".
-    return f"{prefix}-{token}" if prefix else f"doc-{token}"
-
-
 def execution_arn_for(execution_name: str) -> str:
     """The ARN Step Functions gives an execution of our state machine by name."""
-    return (
-        state_machine_arn.replace(":stateMachine:", ":execution:", 1)
-        + f":{execution_name}"
-    )
+    return _execution_arn_for(state_machine_arn, execution_name)
 
 
 def ack_message(receipt_handle: str) -> bool:
@@ -796,9 +757,7 @@ def _emit_circuit_breaker_check_failure(classification: str) -> None:
             MetricData=[
                 {
                     "MetricName": "CircuitBreakerCheckFailed",
-                    "Dimensions": [
-                        {"Name": "Classification", "Value": classification}
-                    ],
+                    "Dimensions": [{"Name": "Classification", "Value": classification}],
                     "Value": 1,
                     "Unit": "Count",
                 }
@@ -961,7 +920,9 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
 
 
 def start_workflow(
-    document: Document, execution_name: Optional[str] = None
+    document: Document,
+    execution_name: Optional[str] = None,
+    review_finalize_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Start Step Functions workflow
@@ -971,6 +932,9 @@ def start_workflow(
         execution_name: Deterministic name for the execution (see
             ``execution_name_for``). None lets Step Functions pick one, which
             disables duplicate protection.
+        review_finalize_token: A review-queue finalize token; adds
+            ``review.finalizeToken`` to the input so the tracker recognises the
+            finalize run. None (every other message) leaves the input as before.
 
     Returns:
         Dict containing execution details
@@ -1108,6 +1072,8 @@ def start_workflow(
         compressed_document["use_bda"] = False
 
     event = {"document": compressed_document}
+    if review_finalize_token:
+        event["review"] = {"finalizeToken": review_finalize_token}
 
     logger.info(
         f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
@@ -1147,6 +1113,24 @@ def start_workflow(
         raise
 
 
+def review_finalize_token_of(record: Dict[str, Any]) -> Optional[str]:
+    """The ``ReviewFinalizeToken`` message attribute, when valid.
+
+    A review-queue finalize message names its execution from this token instead
+    of the message id, so a re-send by the sweeper collapses into
+    ``ExecutionAlreadyExists`` rather than starting a second finalize run. An
+    invalid value is ignored with a WARNING (today's naming applies).
+    """
+    attribute = (record.get("messageAttributes") or {}).get("ReviewFinalizeToken") or {}
+    token = attribute.get("stringValue")
+    if token is None:
+        return None
+    if isinstance(token, str) and _FINALIZE_TOKEN_RE.match(token):
+        return token
+    logger.warning("Ignoring an invalid ReviewFinalizeToken message attribute")
+    return None
+
+
 def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Process a single SQS message
@@ -1161,6 +1145,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     message = record["body"]
     message_id = record["messageId"]
+    finalize_token = review_finalize_token_of(record)
     receipt_handle = record.get("receiptHandle", "")
 
     try:
@@ -1248,7 +1233,9 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             # Start workflow with the document
             try:
                 execution = start_workflow(
-                    document, execution_name_for(object_key, message_id)
+                    document,
+                    execution_name_for(object_key, finalize_token or message_id),
+                    review_finalize_token=finalize_token,
                 )
             except ExecutionAlreadyStarted as dup:
                 # An earlier delivery of this same message already started the

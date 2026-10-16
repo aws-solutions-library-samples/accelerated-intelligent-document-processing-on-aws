@@ -10,6 +10,10 @@ import useInstalledFeatures from '../../hooks/use-installed-features';
 import useCatalogFeatures from '../../hooks/use-catalog-features';
 import { buildFeaturesNavSection, COMING_SOON_HREF } from './feature-platform-nav-items';
 import useLatestVersion from '../../hooks/use-latest-version';
+import useInbox from '../../hooks/use-inbox';
+import { buildInboxNavLink } from '../inbox/inbox-nav-link';
+import { useOptionalReviewWork } from '../../hooks/use-review-work';
+import { buildHitlNavSection, buildMyWorkNavSection } from './review-queues-nav-items';
 import './navigation.css';
 
 const isQuickStartWidgetEnabled = (): boolean => {
@@ -32,11 +36,12 @@ import {
   CAPACITY_PLANNING_PATH,
   CUSTOM_MODELS_PATH,
   FEATURES_PATH_PREFIX,
-  ANNOTATE_LANDING_PATH,
-  testSetAnnotateHref,
+  INBOX_PATH,
+  MY_TASKS_PATH,
+  MY_WORK_PATH,
+  FAVORITES_PATH,
+  REVIEW_QUEUES_PATH,
 } from '../../routes/constants';
-
-export const documentsNavHeader = { text: 'Tools', href: `#${DEFAULT_PATH}` };
 
 const NAV_HOTSPOTS: Record<string, string> = {
   [`#${DOCUMENTS_PATH}`]: 'nav-documents',
@@ -82,10 +87,30 @@ const withNavHotspots = (items: readonly SideNavigationProps.Item[]): SideNaviga
 
 // Full navigation items for Admin users (all features)
 export const adminNavItems = [
-  { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
-  { type: 'link', text: 'Upload Document(s)', href: `#${UPLOAD_DOCUMENT_PATH}` },
-  { type: 'link', text: 'Document KB', href: `#${DOCUMENTS_KB_QUERY_PATH}` },
-  { type: 'link', text: 'Agent Companion Chat', href: `#${AGENT_CHAT_PATH}` },
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [
+      { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
+      { type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Assistants',
+    items: [
+      { type: 'link', text: 'Knowledge Base', href: `#${DOCUMENTS_KB_QUERY_PATH}` },
+      { type: 'link', text: 'Agent Chat', href: `#${AGENT_CHAT_PATH}` },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Test Studio',
+    items: [
+      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
+      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
+    ],
+  },
   {
     type: 'section',
     text: 'Configuration',
@@ -97,14 +122,6 @@ export const adminNavItems = [
       { type: 'link', text: 'User Management', href: `#${USER_MANAGEMENT_PATH}` },
       { type: 'link', text: 'View / Edit Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View / Edit Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
-    ],
-  },
-  {
-    type: 'section',
-    text: 'Test Studio',
-    items: [
-      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
-      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
     ],
   },
   {
@@ -145,10 +162,24 @@ export const adminNavItems = [
   },
 ];
 
-// Author navigation: same as admin but without User Management, Document KB, or Agent Chat (not yet config-version scoped)
+// Author navigation: same as admin but without User Management or the Assistants section (Knowledge Base, Agent Chat) (not yet config-version scoped)
 export const authorNavItems = [
-  { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
-  { type: 'link', text: 'Upload Document(s)', href: `#${UPLOAD_DOCUMENT_PATH}` },
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [
+      { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
+      { type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Test Studio',
+    items: [
+      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
+      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
+    ],
+  },
   {
     type: 'section',
     text: 'Configuration',
@@ -159,14 +190,6 @@ export const authorNavItems = [
       { type: 'link', text: 'Capacity Planning', href: `#${CAPACITY_PLANNING_PATH}` },
       { type: 'link', text: 'View Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
-    ],
-  },
-  {
-    type: 'section',
-    text: 'Test Studio',
-    items: [
-      { type: 'link', text: 'Test Sets', href: `#${TEST_STUDIO_PATH}?tab=sets` },
-      { type: 'link', text: 'Test Executions', href: `#${TEST_STUDIO_PATH}?tab=executions` },
     ],
   },
   {
@@ -209,7 +232,11 @@ export const authorNavItems = [
 
 // Viewer navigation: read-only access to documents, config, capacity planning (no KB or Agent Chat — not yet config-version scoped)
 export const viewerNavItems = [
-  { type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` },
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }],
+  },
   {
     type: 'section',
     text: 'Configuration',
@@ -259,26 +286,13 @@ export const viewerNavItems = [
 ];
 
 // Limited navigation items for Reviewer-only users (HITL review only)
-export const reviewerNavItems = [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }];
-
-/**
- * Navigation for Annotator-only users: their assigned test set's queue and nothing
- * else. Built from the user's allowedTestSets so a single-set annotator lands
- * straight in the queue rather than on a chooser. With several sets, or none
- * resolved yet, falls back to the queue landing page, which handles both cases.
- */
-export const buildAnnotatorNavItems = (allowedTestSets: string[] | null): Array<Record<string, unknown>> => {
-  const items: Array<Record<string, unknown>> = [];
-  if (allowedTestSets && allowedTestSets.length === 1) {
-    items.push({ type: 'link', text: 'My annotation queue', href: testSetAnnotateHref(allowedTestSets[0]) });
-    // Kept even alongside the single-set shortcut: scope is fetched once on mount,
-    // so an annotator assigned a second set mid-session needs a way to reach it
-    // without reloading.
-    items.push({ type: 'link', text: 'All my assignments', href: `#${ANNOTATE_LANDING_PATH}` });
-    return items;
-  }
-  return [{ type: 'link', text: 'My annotation queues', href: `#${ANNOTATE_LANDING_PATH}` }];
-};
+export const reviewerNavItems = [
+  {
+    type: 'section',
+    text: 'Documents',
+    items: [{ type: 'link', text: 'Document List', href: `#${DOCUMENTS_PATH}` }],
+  },
+];
 
 // Keep for backward compatibility
 export const documentsNavItems = adminNavItems;
@@ -328,18 +342,21 @@ const buildCfnUpdateStackUrl = (region: string | undefined, stackName: string | 
   );
 };
 
-const Navigation = ({
-  header = documentsNavHeader,
-  items,
-  onFollowHandler = defaultOnFollowHandler,
-}: NavigationProps): React.JSX.Element => {
+const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
   const location = useLocation();
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isReviewerOnly, isAnnotatorOnly, isViewerOnly, allowedTestSets } = useUserRole();
+  const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isAnnotator } = useUserRole();
+  const reviewWork = useOptionalReviewWork();
+  const reviewCount = reviewWork?.count ?? null;
+  // My Work (Inbox, Tasks, Favorites) is for Annotators, who are assigned HITL work;
+  // nobody else has an Inbox. HITL › Queue Management is Admin-only.
+  const showMyWork = isAnnotator;
+  const showHitl = isAdmin;
   const { features: installedFeatures } = useInstalledFeatures();
   const { features: catalogFeatures } = useCatalogFeatures();
+  const { unreadCount } = useInbox();
 
   // Dynamic "Extensions" section: installed features plus catalog features
   // with showInNav !== false, ending with a "Browse catalog" link. Always
@@ -366,10 +383,22 @@ const Navigation = ({
     else if (isAuthor) roleItems = authorNavItems;
     else if (isViewerOnly) roleItems = viewerNavItems;
     else if (isReviewerOnly) roleItems = reviewerNavItems;
-    // Before the viewer fallback: an Annotator-only user must land in their queue,
-    // not on a document list they cannot read.
-    else if (isAnnotatorOnly) roleItems = buildAnnotatorNavItems(allowedTestSets);
     else roleItems = viewerNavItems; // Default: if user has Viewer + Reviewer, show viewer nav (union)
+
+    // My Work (with the Inbox) comes first, and only for Annotators.
+    if (showMyWork) {
+      const myWork = buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewCount);
+      roleItems = [myWork as unknown as Record<string, unknown>, ...roleItems];
+    }
+    if (showHitl) {
+      // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
+      const section = buildHitlNavSection() as unknown as Record<string, unknown>;
+      const isSection = (i: Record<string, unknown>, text: string) => i.type === 'section' && i.text === text;
+      const testStudioIdx = roleItems.findIndex((i) => isSection(i, 'Test Studio'));
+      const resourcesIdx = roleItems.findIndex((i) => isSection(i, 'Resources'));
+      const at = testStudioIdx >= 0 ? testStudioIdx + 1 : resourcesIdx >= 0 ? resourcesIdx : roleItems.length;
+      roleItems = [...roleItems.slice(0, at), section, ...roleItems.slice(at)];
+    }
 
     // Insert the dynamic Extensions section just before Resources
     // (or at the end if Resources isn't present, e.g. reviewer nav).
@@ -378,7 +407,7 @@ const Navigation = ({
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, isAnnotatorOnly, allowedTestSets, featuresSection]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, isReviewerOnly, featuresSection, unreadCount, showMyWork, showHitl, reviewCount]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -455,6 +484,9 @@ const Navigation = ({
     activeHref = `#${CONFIGURATION_PATH}`;
   } else if (path.includes(DOCUMENTS_KB_QUERY_PATH)) {
     activeHref = `#${DOCUMENTS_KB_QUERY_PATH}`;
+  } else if (path.includes(TEST_STUDIO_PATH) && path.includes('/annotate')) {
+    // Test-set annotation is HITL work.
+    activeHref = `#${REVIEW_QUEUES_PATH}`;
   } else if (path.includes(TEST_STUDIO_PATH)) {
     const urlParams = new URLSearchParams(location.search);
     const tab = urlParams.get('tab');
@@ -469,6 +501,14 @@ const Navigation = ({
     activeHref = `#${CUSTOM_MODELS_PATH}`;
   } else if (path.includes(CAPACITY_PLANNING_PATH)) {
     activeHref = `#${CAPACITY_PLANNING_PATH}`;
+  } else if (path.startsWith(FAVORITES_PATH)) {
+    activeHref = `#${FAVORITES_PATH}`;
+  } else if (path.startsWith(MY_WORK_PATH)) {
+    activeHref = `#${MY_TASKS_PATH}`;
+  } else if (path.startsWith(REVIEW_QUEUES_PATH)) {
+    activeHref = `#${REVIEW_QUEUES_PATH}`;
+  } else if (path.startsWith(INBOX_PATH)) {
+    activeHref = `#${INBOX_PATH}`;
   } else if (path.includes(DOCUMENTS_PATH)) {
     activeHref = `#${DOCUMENTS_PATH}`;
   } else if (path === AGENT_CHAT_PATH) {
@@ -570,10 +610,8 @@ const Navigation = ({
 
   return (
     <div className="idp-side-nav">
-      {/* Quick Start drives discovery and document upload, outside what an
-          Annotator is scoped to. Hidden rather than left to fail server-side, so the
-          UI does not advertise a capability the role does not have. */}
-      {isQuickStartWidgetEnabled() && !isAnnotatorOnly && (
+      {/* Annotator-only users get AnnotatorNavigation, which has no Quick Start. */}
+      {isQuickStartWidgetEnabled() && (
         <div className="nav-quick-start">
           <Hotspot hotspotId="nav-quick-start" side="right">
             <Button variant="primary" iconName="gen-ai" onClick={() => window.dispatchEvent(new CustomEvent('openQuickStart'))}>
@@ -582,14 +620,44 @@ const Navigation = ({
           </Hotspot>
         </div>
       )}
-      <SideNavigation
-        items={withNavHotspots(navigationItems)}
-        header={header || documentsNavHeader}
-        activeHref={activeHref}
-        onFollow={onFollowHandler}
-      />
+      <SideNavigation items={withNavHotspots(navigationItems)} header={header} activeHref={activeHref} onFollow={onFollowHandler} />
     </div>
   );
+};
+
+/**
+ * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Favorites) and
+ * nothing else. Mounts no feature, catalog or version hooks.
+ */
+const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
+  const location = useLocation();
+  const path = location.pathname;
+  const { unreadCount } = useInbox();
+  const reviewWork = useOptionalReviewWork();
+  const items: SideNavigationProps.Item[] = [buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewWork?.count ?? null)];
+  // The annotation screens (under /review-queues) are opened from Tasks.
+  let activeHref = `#${MY_TASKS_PATH}`;
+  if (path.startsWith(FAVORITES_PATH)) activeHref = `#${FAVORITES_PATH}`;
+  else if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
+  return (
+    <div className="idp-side-nav">
+      <SideNavigation items={items} activeHref={activeHref} onFollow={onFollowHandler} />
+    </div>
+  );
+};
+
+/** Picks the navigation for the caller's role; renders only a header until the role is known. */
+const Navigation = (props: NavigationProps): React.JSX.Element => {
+  const { loading, isAnnotatorOnly } = useUserRole();
+  if (loading) {
+    return (
+      <div className="idp-side-nav">
+        <SideNavigation items={[]} header={props.header} />
+      </div>
+    );
+  }
+  if (isAnnotatorOnly) return <AnnotatorNavigation {...props} />;
+  return <FullNavigation {...props} />;
 };
 
 export default Navigation;

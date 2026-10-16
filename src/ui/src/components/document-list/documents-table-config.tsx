@@ -19,9 +19,11 @@ import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
+import { renderObjectStatus } from '../common/object-status-renderer';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
+import { ABORTABLE_STATUSES } from '../common/document-statuses';
 
 export type { ConfigVersion };
 
@@ -200,7 +202,7 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'objectStatus',
     header: 'Status',
-    cell: (item) => item.objectStatus,
+    cell: (item) => renderObjectStatus(item.objectStatus),
     sortingField: 'objectStatus',
     width: 150,
   },
@@ -433,21 +435,6 @@ export const PERIODS_TO_LOAD_STORAGE_KEY = 'periodsToLoad';
 
 // local storage key to persist custom date range
 export const CUSTOM_DATE_RANGE_STORAGE_KEY = 'customDateRange';
-
-// Statuses that can be aborted
-const ABORTABLE_STATUSES = [
-  'QUEUED',
-  'RUNNING',
-  'PREPROCESSING',
-  'OCR',
-  'CLASSIFYING',
-  'EXTRACTING',
-  'ASSESSING',
-  'POSTPROCESSING',
-  'HITL_IN_PROGRESS',
-  'SUMMARIZING',
-  'EVALUATING',
-];
 
 /**
  * Switches the list between the two submission partitions. A two-state control

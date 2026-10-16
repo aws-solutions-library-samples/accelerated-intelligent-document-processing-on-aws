@@ -4,7 +4,7 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
@@ -650,9 +650,35 @@ class ConfigOperation:
                 version_created=version_created,
                 revision=revision,
                 error=None if success else "Upload failed",
+                warnings=self._review_queue_warnings(user_config, name),
             )
         except Exception as e:
             return ConfigUploadResult(success=False, error=str(e))
+
+    #: Shown when a profile enables review queues on a stack that has none.
+    REVIEW_QUEUES_HEADLESS_WARNING = (
+        "Review queues are enabled but this stack has no review queue table "
+        "(headless?); documents will use the legacy HITL flow."
+    )
+
+    def _review_queue_warnings(self, user_config: Any, stack_name: str) -> List[str]:
+        """Warn when ``hitl.review_queues`` is on but the stack can't run it."""
+        hitl = user_config.get("hitl") if isinstance(user_config, dict) else None
+        queues = hitl.get("review_queues") if isinstance(hitl, dict) else None
+        if not (
+            isinstance(queues, dict)
+            and str(hitl.get("enabled")).lower() == "true"
+            and str(queues.get("enabled")).lower() == "true"
+        ):
+            return []
+        try:
+            resources = self._client._get_stack_resources(stack_name)
+        except Exception:  # noqa: BLE001 — the warning is advisory
+            return []
+        if resources.get("HITLTable"):
+            return []
+        logger.warning(self.REVIEW_QUEUES_HEADLESS_WARNING)
+        return [self.REVIEW_QUEUES_HEADLESS_WARNING]
 
     def list(
         self,

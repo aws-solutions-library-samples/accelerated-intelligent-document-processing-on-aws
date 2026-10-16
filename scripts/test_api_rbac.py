@@ -60,7 +60,8 @@ USAGE
   ... --setup-only | --no-teardown | --teardown-only
 
 Requires: awscli v2 on PATH; credentials with Cognito admin + CloudFormation read
-+ DynamoDB read/write on the UsersTable (the deploy account creds are enough).
++ DynamoDB read/write on the UsersTable, AgentTable and NotificationsTable (the
+deploy account creds are enough).
 """
 
 import argparse
@@ -95,9 +96,12 @@ from rbac_common import (  # noqa: E402
     global_sign_out,
     resolve_stack,
     restore_auth_flows,
+    template_group_names,
 )
 
-ROLES = ["Admin", "Author", "Viewer", "Reviewer"]
+# Every Cognito group the stack creates (Admin first), read from template.yaml so
+# a new role joins the live matrix without editing a list here.
+ROLES = template_group_names()
 # A second, independent user for indirect-object-reference (IDOR) tests: proves
 # User B cannot reach User A's data. Created as an Author (a normal, non-admin
 # authenticated user).
@@ -573,6 +577,297 @@ def cleanup_seeded_agent_jobs(ctx):
             )
         except Exception:  # noqa: BLE001
             pass
+
+
+def _notifications_table_name(ctx):
+    """The parent stack's ``NotificationsTableName`` output (cached on ctx).
+
+    Empty when the stack predates the Inbox, which makes the Inbox IDOR suite
+    SKIP rather than pass.
+    """
+    if "_notifications_table" in ctx:
+        return ctx["_notifications_table"]
+    name = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs[?OutputKey=='NotificationsTableName'].OutputValue",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    name = (name or "").strip()
+    ctx["_notifications_table"] = "" if name in ("", "None") else name
+    return ctx["_notifications_table"]
+
+
+def seed_inbox_message(ctx, notification_id, marker):
+    """Seed an unread Inbox message OWNED BY the Admin test user, for the Inbox
+    IDOR suite. The item uses the layout ``idp_common.notifications`` writes:
+    ``PK=USER#<lowercased email>``, ``SK=N#<id>``, ``UnreadPK=PK`` while unread,
+    and a one-day ``ExpiresAfter``. The marker is the title, a field the API
+    returns, so a leak is visible.
+
+    Returns the owner's recipient key, or None when the stack has no
+    ``NotificationsTableName`` output (-> suite SKIPs). A failed write raises,
+    which the suite records as an ERROR: the table exists, so the check should
+    have run.
+    """
+    table = _notifications_table_name(ctx)
+    if not table:
+        return None
+    keys = sec.notification_keys()
+    owner = keys.normalize_recipient_key(test_email("Admin"))
+    pk = keys.partition_key(owner)
+    item = {
+        "PK": {"S": pk},
+        "SK": {"S": keys.message_sk(notification_id)},
+        "UnreadPK": {"S": pk},
+        "Type": {"S": "rbac.idor-probe"},
+        "Title": {"S": marker},
+        "Body": {"S": ""},
+        "Severity": {"S": "info"},
+        "Source": {"S": "rbac-harness"},
+        "CreatedAt": {
+            "S": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        },
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws(
+        "dynamodb",
+        "put-item",
+        "--table-name",
+        table,
+        "--item",
+        json.dumps(item),
+        region=ctx["region"],
+    )
+    ctx.setdefault("_seeded_inbox_messages", []).append((pk, notification_id))
+    return owner
+
+
+def _review_queue_table_name(ctx):
+    """The parent stack's ``HITLTableName`` output (cached on ctx).
+
+    Empty when the stack has no review queues (an older or headless stack),
+    which makes the review-queue IDOR suite SKIP rather than pass.
+    """
+    if "_review_table" in ctx:
+        return ctx["_review_table"]
+    name = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs[?OutputKey=='HITLTableName'].OutputValue",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    name = (name or "").strip()
+    ctx["_review_table"] = "" if name in ("", "None") else name
+    return ctx["_review_table"]
+
+
+REVIEW_IDOR_USERS = ("ReviewIdorA", "ReviewIdorB", "ReviewIdorC")
+
+
+def _tracking_table_name(ctx):
+    """Physical name of the stack's TrackingTable (cached on ctx)."""
+    if "_tracking_table" not in ctx:
+        name = aws(
+            "cloudformation",
+            "describe-stack-resource",
+            "--stack-name",
+            ctx["stack"],
+            "--logical-resource-id",
+            "TrackingTable",
+            "--query",
+            "StackResourceDetail.PhysicalResourceId",
+            "--output",
+            "text",
+            region=ctx["region"],
+        )
+        ctx["_tracking_table"] = (name or "").strip()
+    return ctx["_tracking_table"]
+
+
+def seed_review_item(ctx):
+    """Seed the review-queue IDOR fixture (see run_review_queue_idor_suite).
+
+    Creates Annotators A, B (members by email of a temporary profile's
+    ``default`` queue) and C (not a member), the profile, a tracking row and a
+    queue item CLAIMED by A under a 30-minute lease. Returns the fixture dict, or
+    None when the stack has no HITLTableName output.
+    """
+    table = _review_queue_table_name(ctx)
+    if not table:
+        return None
+    emails = {u: test_email(u) for u in REVIEW_IDOR_USERS}
+    for user in REVIEW_IDOR_USERS:
+        create_cognito_user(ctx, emails[user], "Annotator", TEST_PW)
+    ctx["_review_idor_users"] = list(emails.values())
+
+    profile = f"rbac-review-idor-{secrets.token_hex(4)}"
+    ctx["_review_idor_profile"] = profile
+    import tempfile
+
+    import yaml
+
+    from idp_sdk import IDPClient
+
+    config = {
+        "hitl": {
+            "enabled": True,
+            "review_queues": {
+                "enabled": True,
+                "default_queue": "default",
+                "escalation_queue": "escalation",
+                "queues": [
+                    {"name": "default", "member_groups": [], "member_emails": [emails["ReviewIdorA"], emails["ReviewIdorB"]]},
+                    {"name": "escalation", "member_groups": ["Admin"], "member_emails": []},
+                ],
+            },
+        }
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.safe_dump(config, f)
+        path = f.name
+    client = IDPClient(stack_name=ctx["stack"], region=ctx["region"])
+    upload = client.config.upload(path, config_profile=profile, validate=False)
+    if not upload.success:
+        raise RuntimeError(f"profile upload failed: {upload.error}")
+
+    object_key = f"rbac-review-idor/{secrets.token_hex(6)}.pdf"
+    now_ms = int(time.time() * 1000)
+    cycle_id = f"{now_ms:013d}{secrets.token_hex(4)}"
+    owner = emails["ReviewIdorA"].lower()
+    h16 = __import__("hashlib").sha256(object_key.encode()).hexdigest()[:16]
+    lease = now_ms + 30 * 60_000
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    item = {
+        "PK": {"S": f"DOC#{object_key}"},
+        "SK": {"S": "ITEM"},
+        "DocKey": {"S": object_key},
+        "CycleId": {"S": cycle_id},
+        "Profile": {"S": profile},
+        "Queue": {"S": "default"},
+        "State": {"S": "CLAIMED"},
+        "Version": {"N": "1"},
+        "Priority": {"N": "50"},
+        "EnqueuedAt": {"S": iso},
+        "EnqueuedAtMs": {"N": str(now_ms)},
+        "Sections": {"L": [{"S": "1"}]},
+        "OwnerKey": {"S": owner},
+        "OwnerEmail": {"S": owner},
+        "ClaimedAt": {"S": iso},
+        "ClaimedAtMs": {"N": str(now_ms)},
+        "LeaseExpiresAtMs": {"N": str(lease)},
+        "LeaseMinutes": {"N": "30"},
+        "QueuePK": {"S": f"Q#{profile}#default"},
+        "QueueSK": {"S": f"{now_ms:013d}#{h16}"},
+        "OwnerPK": {"S": f"R#{owner}"},
+        "OwnerSK": {"S": f"{now_ms:013d}#{h16}"},
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws("dynamodb", "put-item", "--table-name", table, "--item", json.dumps(item), region=ctx["region"])
+    tracking = _tracking_table_name(ctx)
+    if tracking:
+        row = {
+            "PK": {"S": f"doc#{object_key}"},
+            "SK": {"S": "none"},
+            "ObjectKey": {"S": object_key},
+            "ObjectStatus": {"S": "HITL_IN_PROGRESS"},
+            "HITLStatus": {"S": "in_review"},
+            "ConfigVersion": {"S": profile},
+            "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+        }
+        aws("dynamodb", "put-item", "--table-name", tracking, "--item", json.dumps(row), region=ctx["region"])
+    ctx["_review_idor_key"] = object_key
+    return {
+        "tokens": {
+            "A": get_id_token(ctx, emails["ReviewIdorA"], TEST_PW),
+            "B": get_id_token(ctx, emails["ReviewIdorB"], TEST_PW),
+            "C": get_id_token(ctx, emails["ReviewIdorC"], TEST_PW),
+        },
+        "object_key": object_key,
+        "cycle_id": cycle_id,
+    }
+
+
+def cleanup_review_item(ctx, seeded=None):
+    """Remove the review-queue IDOR fixture (best-effort, idempotent)."""
+    table = ctx.get("_review_table")
+    key = ctx.get("_review_idor_key")
+    if table and key:
+        for sk in ("ITEM",):
+            try:
+                aws(
+                    "dynamodb", "delete-item", "--table-name", table, "--key",
+                    json.dumps({"PK": {"S": f"DOC#{key}"}, "SK": {"S": sk}}),
+                    region=ctx["region"],
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  (review item cleanup error: {e})")
+    tracking = _tracking_table_name(ctx)
+    if tracking and key:
+        try:
+            aws(
+                "dynamodb", "delete-item", "--table-name", tracking, "--key",
+                json.dumps({"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}}),
+                region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (tracking row cleanup error: {e})")
+    profile = ctx.get("_review_idor_profile")
+    if profile:
+        try:
+            from idp_sdk import IDPClient
+
+            IDPClient(stack_name=ctx["stack"], region=ctx["region"]).config.delete(
+                config_profile=profile
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review profile cleanup error: {e})")
+    for email in ctx.get("_review_idor_users", []):
+        try:
+            delete_cognito_user(ctx, email)
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review user cleanup error: {e})")
+
+
+def cleanup_inbox_message(ctx, notification_id):
+    """Delete one seeded Inbox message (best-effort, idempotent)."""
+    table = ctx.get("_notifications_table")
+    if not table:
+        return
+    keys = sec.notification_keys()
+    for pk, seeded_id in ctx.get("_seeded_inbox_messages", []):
+        if seeded_id != notification_id:
+            continue
+        try:
+            aws(
+                "dynamodb",
+                "delete-item",
+                "--table-name",
+                table,
+                "--key",
+                json.dumps(
+                    {"PK": {"S": pk}, "SK": {"S": keys.message_sk(seeded_id)}}
+                ),
+                region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (cleanup_inbox_message failed: {e})")
+
+
+def cleanup_seeded_inbox_messages(ctx):
+    """Delete every Inbox message the suite seeded (best-effort)."""
+    for _pk, notification_id in list(ctx.get("_seeded_inbox_messages", [])):
+        cleanup_inbox_message(ctx, notification_id)
 
 
 # ----------------------------------------------------------------------------
@@ -1517,6 +1812,23 @@ def main():
             seed_fn=lambda jid, marker: seed_agent_job(ctx, jid, marker),
             call_body=call_body,
         )
+        sec.run_inbox_idor_suite(
+            ctx,
+            _record,
+            results,
+            tokens,
+            seed_fn=lambda nid, marker: seed_inbox_message(ctx, nid, marker),
+            call_body=call_body,
+            cleanup_fn=lambda nid: cleanup_inbox_message(ctx, nid),
+        )
+        sec.run_review_queue_idor_suite(
+            ctx,
+            _record,
+            results,
+            seed_fn=lambda: seed_review_item(ctx),
+            call_body=call_body,
+            cleanup_fn=lambda seeded: cleanup_review_item(ctx, seeded),
+        )
         sec.run_deleted_resource_suite(
             ctx, call, _record, results, tokens, call_body=call_body
         )
@@ -1580,6 +1892,7 @@ def main():
         # Always remove any agent-job rows the IDOR suite seeded (independent of
         # --no-teardown, which only preserves the Cognito users for debugging).
         cleanup_seeded_agent_jobs(ctx)
+        cleanup_seeded_inbox_messages(ctx)
         if args.no_teardown:
             print(f"--no-teardown: keeping test users (password: {TEST_PW})")
         else:

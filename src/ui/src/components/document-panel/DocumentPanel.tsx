@@ -47,6 +47,9 @@ import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-e
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
 import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
+import { normalizeHitlStatus } from '../common/review-status';
+import { reviewItemHref } from '../../routes/constants';
+import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
 // import { debugDocumentStructure } from '../common/debug-utils';
 
@@ -153,6 +156,8 @@ const logger = new ConsoleLogger('DocumentPanel');
 // Detail-view polling cadence under the HTTP API transport (no subscriptions).
 const USE_POLLING = true;
 const DOCUMENT_DETAIL_POLL_INTERVAL_MS = 4000;
+// A document waiting on a reviewer changes on human time, not processing time.
+const DOCUMENT_REVIEW_POLL_INTERVAL_MS = 30_000;
 
 // Component to display confidence alerts count only
 const ConfidenceAlertsSection = ({ sections, mergedConfig }: ConfidenceAlertsSectionProps): React.JSX.Element => {
@@ -536,21 +541,6 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
   );
 };
 
-// Statuses that can be aborted
-const ABORTABLE_STATUSES = [
-  'QUEUED',
-  'RUNNING',
-  'PREPROCESSING',
-  'OCR',
-  'CLASSIFYING',
-  'EXTRACTING',
-  'ASSESSING',
-  'POSTPROCESSING',
-  'HITL_IN_PROGRESS',
-  'SUMMARIZING',
-  'EVALUATING',
-];
-
 export const DocumentPanel = ({
   item,
   setToolsOpen,
@@ -581,7 +571,7 @@ export const DocumentPanel = ({
   const [downloadErrors, setDownloadErrors] = useState<ExportErrorEntry[]>([]);
   const [downloadAbortController, setDownloadAbortController] = useState<AbortController | null>(null);
   const { settings } = useSettingsContext();
-  const { currentCredentials } = useAppContext();
+  const { currentCredentials, setErrorMessage } = useAppContext();
   // Local state for document item to enable real-time updates
   const [localItem, setLocalItem] = useState(item);
 
@@ -616,7 +606,7 @@ export const DocumentPanel = ({
   // getDocumentDetailsFromIds, which merges into shared list state and flows back
   // as the `item` prop). Stops once the document reaches a terminal status.
   const detailStatus = (localItem?.objectStatus || '').toUpperCase();
-  const isTerminalStatus = ['COMPLETED', 'FAILED', 'ABORTED'].includes(detailStatus);
+  const isTerminalStatus = TERMINAL_STATUSES.includes(detailStatus);
   const pollDetail = useCallback(() => {
     if (!localItem?.objectKey || !getDocumentDetailsFromIds) return;
     if (isTerminalStatus) return;
@@ -627,7 +617,7 @@ export const DocumentPanel = ({
     // Suspend live polling while viewing a historical version so the snapshot
     // isn't overwritten by a live re-fetch.
     enabled: USE_POLLING && !!localItem?.objectKey && !isTerminalStatus && viewingRunId === null,
-    intervalMs: DOCUMENT_DETAIL_POLL_INTERVAL_MS,
+    intervalMs: SLOW_POLL_STATUSES.includes(detailStatus) ? DOCUMENT_REVIEW_POLL_INTERVAL_MS : DOCUMENT_DETAIL_POLL_INTERVAL_MS,
   });
 
   // When the open document transitions to a terminal status (typically detected
@@ -653,7 +643,7 @@ export const DocumentPanel = ({
   const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : 'default');
   // Use the separate fetch result only when the version differs; otherwise reuse the default config
   const documentVersionConfig = needsSeparateVersionFetch ? separateVersionConfig : mergedConfig;
-  const { isReviewer } = useUserRole();
+  const { isReviewer, isAdmin } = useUserRole();
 
   // Check if document can be aborted
   const canAbort = ABORTABLE_STATUSES.includes(localItem?.objectStatus);
@@ -663,8 +653,11 @@ export const DocumentPanel = ({
   const hitlStatusLower = localItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
   const isHitlSkipped = hitlStatusLower === 'skipped' || hitlStatusLower === 'reviewskipped';
   const isHitlCompleted = hitlStatusLower === 'completed' || hitlStatusLower === 'reviewcompleted';
-  const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped;
+  // A document in a review queue is reviewed from its queue item, not from here.
+  const hitlView = normalizeHitlStatus(localItem?.hitlStatus);
+  const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !hitlView.queueManaged;
   const showStartReview = isReviewer && hasPendingHITL && !hasReviewOwner;
+  const showOpenInQueue = hitlView.queueManaged && hitlView.kind === 'in_review' && isAdmin;
 
   // Handle Start Review button click
   const handleStartReview = async () => {
@@ -692,7 +685,7 @@ export const DocumentPanel = ({
       }
     } catch (error) {
       logger.error('Failed to claim review:', error);
-      alert(`Failed to start review: ${(error as Error).message || 'Unknown error'}`);
+      setErrorMessage(`Failed to start review: ${(error as Error).message || 'Unknown error'}`);
     } finally {
       setIsClaimingReview(false);
     }
@@ -824,6 +817,11 @@ export const DocumentPanel = ({
               variant="h2"
               actions={
                 <SpaceBetween direction="horizontal" size="xs">
+                  {showOpenInQueue && (
+                    <Button iconName="external" variant="primary" href={reviewItemHref(localItem.objectKey)}>
+                      Open in review queue
+                    </Button>
+                  )}
                   {showStartReview && (
                     <Button
                       iconName="user-profile"
