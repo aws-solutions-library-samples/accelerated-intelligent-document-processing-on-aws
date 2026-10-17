@@ -84,7 +84,9 @@ describe('reaching a document that has already been reviewed', () => {
     // existed in this file as a comment explaining the default, so the looser pattern
     // passed against the unfixed source. Caught by revert-checking.
     expect(REVIEWED_HIDDEN_HINT).toBe('Reviewed documents are hidden — show them to search those too.');
-    expect(SOURCE).toMatch(/\{REVIEWED_HIDDEN_HINT\}/);
+    // The queue table lists every document by default; the hint is for a status
+    // filter that hides reviewed ones, shown only when a search is what came up empty.
+    expect(SOURCE).toMatch(/\{queueFilter && !showReviewed && \(\s*<Box[^>]*>\s*\{REVIEWED_HIDDEN_HINT\}/);
   });
 });
 

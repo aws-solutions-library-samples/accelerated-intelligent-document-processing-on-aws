@@ -16,12 +16,14 @@
  * Nor can the fix be a single role predicate, because THREE server capabilities are
  * in play and no two accept the same groups:
  *
- *   change the class      -> reextractTestSetDocument -> Admin, Author, Annotator
- *   save fields (review)  -> completeSectionReview    -> Admin, Reviewer, Annotator
- *   save fields (direct)  -> uploadDocument           -> Admin, Author
+ *   change the class      -> reextractTestSetDocument   -> Admin, Author, Annotator
+ *   save fields (review)  -> completeSectionReview      -> Admin, Reviewer, Annotator
+ *   save fields (direct)  -> saveTestSetDocumentSection -> Admin, Author, Annotator
  *
- * So `Author` is refused the review save and `Annotator` the direct one, while the
- * class is open to all three. Gating everything on `canAnnotate` would have invited
+ * The direct save is the annotation screen's (TestSetAnnotation, via the test-set
+ * adapter). The ground-truth editor's own fallback, used by the document view, writes
+ * through `uploadDocument` (Admin, Author). So `Author` is refused the review save and
+ * `Reviewer` the direct one, while the class is open to Admin, Author and Annotator. Gating everything on `canAnnotate` would have invited
  * an Annotator to edit fields and lose them to an authorization error at save;
  * gating the class on the field-save flag denied it to roles the server accepts.
  * Hence a separate `canChangeClass`, and a read-only flag chosen per save path.
@@ -54,6 +56,8 @@ import type { AnnotationRoles } from '../annotation-edit-flags';
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
+const ADAPTER = readFileSync(join(HERE, '..', 'review-workspace', 'test-set-adapter.ts'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'review-workspace', 'TestSetAnnotation.tsx'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
 /** The cognito_groups declared on a mutation in schema.graphql. */
@@ -90,9 +94,10 @@ describe('AnnotationWorkspace edit gating', () => {
   it('picks the read-only decision from the document own save path', () => {
     // A document with a review record: the review path's roles may edit.
     expect(groupsWhere((r) => !annotationEditFlags(r, WITH_REVIEW, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Reviewer']);
-    // Authored ground truth: the direct path's roles may edit. The regression made this
+    // Authored ground truth: the direct path's roles may edit (saveTestSetDocumentSection,
+    // which accepts an Annotator for a document assigned to them). The regression made this
     // read-only for everyone — a queue-state condition presented as a permission problem.
-    expect(groupsWhere((r) => !annotationEditFlags(r, AUTHORED, DRAFT).isReadOnly)).toEqual(['Admin', 'Author']);
+    expect(groupsWhere((r) => !annotationEditFlags(r, AUTHORED, DRAFT).isReadOnly)).toEqual(['Admin', 'Annotator', 'Author']);
   });
 
   it('does not let editing begin before the version transition is open', () => {
@@ -119,13 +124,23 @@ describe('AnnotationWorkspace edit gating', () => {
   });
 
   it('keeps canAnnotate for page access, which is a different question', () => {
-    // Whether you may open this queue at all is still Admin | Author | Annotator.
+    // Whether you may open this queue, or one of its documents, at all is still
+    // Admin | Author | Annotator.
     expect(SOURCE).toMatch(/if \(!roleLoading && !canAnnotate\)/);
+    expect(SCREEN).toMatch(/if \(!roleLoading && !canAnnotate\)/);
   });
 
-  it('only promises class editing to someone who can actually save it', () => {
-    expect(groundTruthAlertSuffix(true, DRAFT)).toMatch(/^ You can still correct it below, including its class/);
-    expect(groundTruthAlertSuffix(false, DRAFT)).toMatch(/which an Admin or Author has to do/);
+  it('only promises editing to someone who can actually save it', () => {
+    // The annotation screen's alert already says "correct them if needed, then
+    // Complete"; the suffix tells a saver what saving does, and anyone else who can.
+    expect(groundTruthAlertSuffix(true, DRAFT)).toBe(
+      ' Saving a section, or Complete, writes the ground truth and counts the document as reviewed.',
+    );
+    const refused = groundTruthAlertSuffix(false, DRAFT);
+    expect(refused).toMatch(/an Admin or an Author can change it/);
+    expect(refused).not.toMatch(/Saving|Complete|correct it/);
+    // The same for someone who cannot save, whether or not a transition is open.
+    expect(groundTruthAlertSuffix(false, null)).toBe(refused);
   });
 
   it('offers the class to every role the server accepts for a class correction', () => {
@@ -149,15 +164,26 @@ describe('AnnotationWorkspace edit gating', () => {
 
   it("matches the schema's groups, so the duplicated rule cannot drift", () => {
     const review = groupsFor('completeSectionReview');
-    const upload = groupsFor('uploadDocument');
+    const direct = groupsFor('saveTestSetDocumentSection');
 
     // Documents the asymmetry that makes two predicates necessary. If either of
     // these ever changes, this test fails and points at the client copy below.
     expect(review.sort()).toEqual(['Admin', 'Annotator', 'Reviewer']);
-    expect(upload.sort()).toEqual(['Admin', 'Author']);
+    expect(direct.sort()).toEqual(['Admin', 'Annotator', 'Author']);
 
     expect(groupsWhere((r) => saveCapabilities(r).canSaveViaReview)).toEqual(review.sort());
-    expect(groupsWhere((r) => saveCapabilities(r).canSaveDirectToBaseline)).toEqual(upload.sort());
+    expect(groupsWhere((r) => saveCapabilities(r).canSaveDirectToBaseline)).toEqual(direct.sort());
+  });
+
+  it('saves the direct path through the mutation those groups describe', () => {
+    // canSaveDirectToBaseline mirrors saveTestSetDocumentSection only because the
+    // annotation screen always hands the editor its own save. If it stopped passing
+    // onSave, the editor would fall back to uploadDocument (Admin, Author) and an
+    // Annotator would lose the edit to an authorization error.
+    expect(groupsFor('uploadDocument').sort()).toEqual(['Admin', 'Author']);
+    expect(SCREEN).toMatch(/onSave=\{adapter\.saveSection\}/);
+    expect(ADAPTER).toMatch(/query: saveTestSetDocumentSection/);
+    expect(ADAPTER).not.toMatch(/uploadDocument/);
   });
 });
 

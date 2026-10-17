@@ -5,6 +5,9 @@
 // test-set adapter over the shared SectionEditor), Complete and Skip. Saving a section
 // marks it reviewed; Complete confirms the sections not saved yet, so "the labels
 // are correct" and "I corrected them" end the same way, and needs no edit first.
+// Complete, like editing, waits for Start annotating: confirming labels marks them
+// reviewed-human, which is the change a version transition brackets, so it is never
+// opened implicitly.
 // Skip gives the document back to its queue, unassigned and not reviewed, for another
 // Annotator to claim. The assignee works the document; an Admin or Author may too. An
 // Annotator listed on the set's queue can open any document read-only, and Claim an
@@ -40,6 +43,7 @@ import GroundTruthVisualEditor from '../test-studio/GroundTruthVisualEditor';
 import {
   DRAFT_PROMPT_BODY,
   DRAFT_PROMPT_HEADER,
+  START_ANNOTATING_FIRST_REASON,
   annotationEditFlags,
   draftBadgeHover,
   draftOpenedMessage,
@@ -133,8 +137,8 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   const sections = doc.sections ?? [];
   const remaining = sections.filter((s) => !savedSections.has(s.sectionId)).map((s) => s.sectionId);
 
-  // Complete needs no edit and no Start annotating first: it opens the version
-  // transition itself. Only the role half of the editor's read-only state applies.
+  // Complete needs no edit first, but it does need the version transition: it marks
+  // every section reviewed-human, so it waits for Start annotating like the editor.
   const roleCannotSave = editFlags.saveViaReview ? !editFlags.canSaveViaReview : !editFlags.canSaveDirectToBaseline;
   // A completed document still opens, so its labels can be read and corrected, but
   // its task is over: completing or skipping it again would end nothing. Skip now
@@ -153,6 +157,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
     if (!doc.reviewObjectKey && !doc.labelSource) completeReason = 'This document has no labels yet; Skip completes it';
     else if (roleCannotSave) completeReason = 'Your role cannot save these labels';
     else if (sections.length === 0) completeReason = 'This document has no sections; Skip completes it';
+    else if (!draft) completeReason = START_ANNOTATING_FIRST_REASON;
   }
 
   const handleOpenDraft = async () => {
@@ -194,8 +199,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
         exit(queuePath, `${objectKey} returned to the queue.`, workItemId);
         return;
       }
-      // Idempotent server-side: the version transition this completion belongs to.
-      if (!draft) await adapter.openDraft();
+      // Complete is disabled until Start annotating has opened the transition.
       await adapter.confirmSections(remaining);
       exit(queuePath, `${objectKey} is complete and marked reviewed.`, workItemId);
     } catch (err) {

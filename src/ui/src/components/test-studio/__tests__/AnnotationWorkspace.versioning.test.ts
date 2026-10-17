@@ -15,8 +15,11 @@
  *      the baselines are not re-snapshotted;
  *   3. the queue link names its transition, and a link from a closed one says so.
  *
- * The decisions are pure helpers in `annotation-edit-flags.ts`; the "never opened on
- * arrival" property is still checked against the component source.
+ * The decisions are pure helpers in `annotation-edit-flags.ts`. The rest is checked
+ * against the component source: the queue page (AnnotationWorkspace) carries the link
+ * and its stale-version warning, and the annotation screen (review-workspace's
+ * TestSetAnnotation, over the test-set adapter) carries the Start annotating prompt
+ * and the Complete action.
  */
 
 import { readFileSync } from 'node:fs';
@@ -27,6 +30,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DRAFT_PROMPT_BODY,
   DRAFT_PROMPT_HEADER,
+  START_ANNOTATING_FIRST_REASON,
   annotationQueueLink,
   currentDraft,
   documentActionState,
@@ -38,6 +42,8 @@ const UNCLAIMED = { reviewObjectKey: 'ts1/x.pdf', claimedByMe: false, reviewed: 
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
+const SCREEN = readFileSync(join(HERE, '..', 'review-workspace', 'TestSetAnnotation.tsx'), 'utf-8');
+const ADAPTER = readFileSync(join(HERE, '..', 'review-workspace', 'test-set-adapter.ts'), 'utf-8');
 const QUERY = readFileSync(join(HERE, '..', '..', 'graphql', 'operations', 'queries', 'GetAnnotationQueue.graphql'), 'utf-8');
 const SCHEMA = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
@@ -45,11 +51,18 @@ describe('AnnotationWorkspace version transition', () => {
   it('does not open a transition just by loading the page', () => {
     // openTestSetAnnotationDraft snapshots the baselines, so calling it to *discover*
     // whether a draft exists would commit on arrival — the exact behaviour being fixed.
-    // It may only be called from the explicit handler.
-    const calls = SOURCE.split('openTestSetAnnotationDraft').length - 1;
+    // It may only be called from the explicit handler. The queue page does not call it at
+    // all; the adapter wraps it once, and the screen calls that only from Start annotating.
+    expect(SOURCE).not.toMatch(/openTestSetAnnotationDraft|openDraft\(/);
+    const calls = ADAPTER.split('openTestSetAnnotationDraft').length - 1;
     // The import, the mutation call, and reading it off the response.
     expect(calls).toBeLessThanOrEqual(3);
-    expect(SOURCE).not.toMatch(/useEffect\([^)]*openDraft/);
+    expect(ADAPTER).not.toMatch(/useEffect\([^)]*openDraft/);
+    const screenCalls = SCREEN.match(/\bopenDraft\(\)/g) ?? [];
+    expect(screenCalls).toHaveLength(1);
+    expect(SCREEN).toMatch(
+      /const handleOpenDraft = async \(\) => \{\s*setIsOpeningDraft\(true\);\s*try \{\s*const opened = await adapter\.openDraft\(\);/,
+    );
   });
 
   it('reads an existing transition from the queue instead of probing for it', () => {
@@ -77,7 +90,9 @@ describe('AnnotationWorkspace version transition', () => {
     // The reassurance is the load-bearing half: the reason it is safe to agree is that
     // the current labels survive as something scoreable.
     expect(DRAFT_PROMPT_BODY).toMatch(/current labels are preserved/);
-    expect(SOURCE).toMatch(/Start annotating/);
+    // The annotation screen asks, with the prompt above, until a transition is open.
+    expect(SCREEN).toMatch(/\{!draft && \(\s*<Alert\s+type="info"\s+header=\{DRAFT_PROMPT_HEADER\}/);
+    expect(SCREEN).toMatch(/onClick=\{\(\) => void handleOpenDraft\(\)\}>\s*Start annotating/);
   });
 
   it('puts the transition in the queue link', () => {
@@ -96,7 +111,12 @@ describe('AnnotationWorkspace version transition', () => {
 
   it('warns when a link refers to a transition that has closed', () => {
     expect(staleLinkVersion('1', DRAFT)).toBe(1);
-    expect(SOURCE).toMatch(/which is closed/);
+    // The queue page, where Copy queue link points, reads ?v= and says so.
+    expect(SOURCE).toMatch(/searchParams\.get\('v'\)/);
+    expect(SOURCE).toMatch(/staleVersionFor\(requestedVersion, draft\)/);
+    expect(SOURCE).toMatch(
+      /\{staleLinkVersion && \(\s*<Alert type="warning" header=\{`This link refers to version \$\{staleLinkVersion\}, which is closed`\}>/,
+    );
     // Compared against the open draft, not merely "is a version present".
     expect(staleLinkVersion('2', DRAFT)).toBeNull();
     expect(staleLinkVersion('1', null)).toBeNull();
@@ -109,6 +129,19 @@ describe('AnnotationWorkspace version transition', () => {
     // Which version a correction landed in is the question asked later, when a run's
     // score is attributed to one.
     expect(SOURCE).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
+    expect(SCREEN).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
+  });
+
+  it('gates Complete on the annotation screen on the transition, and never opens one implicitly', () => {
+    // Complete confirms every section, which tags each reviewed-human: the same
+    // commitment as editing, so it waits for Start annotating rather than opening the
+    // transition on the user's behalf.
+    expect(START_ANNOTATING_FIRST_REASON).toMatch(/^Choose Start annotating first/);
+    expect(SCREEN).toMatch(/else if \(!draft\) completeReason = START_ANNOTATING_FIRST_REASON;/);
+    expect(SCREEN).toMatch(/completeDisabledReason: completeReason/);
+    const handler = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
+    expect(handler).toContain('adapter.confirmSections(remaining)');
+    expect(handler).not.toMatch(/openDraft/);
   });
 
   it('gates confirming labels on the transition, not only editing them', () => {

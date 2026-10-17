@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -104,7 +104,10 @@ const filterSelects = () => wrapper().findAllSelects().slice(-2);
 // "More actions" in the table header holds the list-wide actions.
 const moreActions = () => wrapper().findTable()!.findHeaderSlot()!.findButtonDropdown()!;
 const openMoreActions = () => act(() => moreActions().openDropdown());
-const rowMenu = (row: number) => table().findBodyCell(row, 8)!.findButtonDropdown()!;
+// Columns: selection, Received, Title, Type, Severity, Action.
+const SEVERITY_COLUMN = 5;
+const ACTION_COLUMN = 6;
+const rowMenu = (row: number) => table().findBodyCell(row, ACTION_COLUMN)!.findButtonDropdown()!;
 const selectRow = (index: number) => act(() => table().findRowSelectionArea(index)!.click());
 
 // Every modal stays mounted; the open one is the visible one.
@@ -296,9 +299,9 @@ describe('InboxPage', () => {
   it('sorts severity by rank, not alphabetically', async () => {
     renderPage();
     await loaded();
-    act(() => table().findColumnSortingArea(4)!.click());
+    act(() => table().findColumnSortingArea(SEVERITY_COLUMN)!.click());
     expect(rowTitles()).toEqual(['Message 2', 'Message 1', 'Message 3']);
-    act(() => table().findColumnSortingArea(4)!.click());
+    act(() => table().findColumnSortingArea(SEVERITY_COLUMN)!.click());
     expect(rowTitles()).toEqual(['Message 3', 'Message 1', 'Message 2']);
   });
 
@@ -318,12 +321,29 @@ describe('InboxPage', () => {
     expect(inbox.markMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('selects the Preferences tab from the ?tab=preferences deep link', async () => {
+  it('opens Inbox settings from the ?tab=preferences deep link, and closing it keeps the messages', async () => {
     renderPage('/inbox?tab=preferences');
-    const tabs = wrapper().findTabs()!;
-    expect(tabs.findActiveTab()!.getElement().textContent).toBe('Preferences');
-    expect(await screen.findByText('Message types')).toBeTruthy();
-    fireEvent.click(tabs.findTabLinkById('messages')!.getElement());
+    expect(openModal().findHeader().getElement().textContent).toBe('Inbox settings');
+    expect(await screen.findByText('A review was assigned to you')).toBeTruthy();
     await loaded();
+    act(() => openModal().findDismissButton().click());
+    expect(
+      wrapper()
+        .findAllModals()
+        .some((m) => m.isVisible()),
+    ).toBe(false);
+    expect(rowTitles()).toEqual(['Message 1', 'Message 2', 'Message 3']);
+  });
+
+  it('opens Inbox settings from the header settings button', async () => {
+    renderPage();
+    await loaded();
+    expect(
+      wrapper()
+        .findAllModals()
+        .some((m) => m.isVisible()),
+    ).toBe(false);
+    act(() => button('Inbox settings').click());
+    expect(openModal().findHeader().getElement().textContent).toBe('Inbox settings');
   });
 });

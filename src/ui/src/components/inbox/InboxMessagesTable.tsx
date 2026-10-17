@@ -31,7 +31,7 @@ import useInbox from '../../hooks/use-inbox';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { paginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
-import { NoDataState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
+import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
 import TruncatedText from '../common/TruncatedText';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import DeleteInboxMessagesModal from './DeleteInboxMessagesModal';
@@ -184,7 +184,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
     paginationProps,
   } = useCollection(filtered, {
     filtering: {
-      empty: <NoDataState />,
+      empty: <TableEmptyState resourceName="Message" title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />,
       noMatch: <TableNoMatchState onClearFilter={clearFilters} />,
     },
     pagination: { pageSize: preferences.pageSize },

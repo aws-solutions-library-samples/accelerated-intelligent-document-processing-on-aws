@@ -85,7 +85,7 @@ describe('InboxPreferences', () => {
 
     const call = graphqlMock.mock.calls.find(([args]) => (args as { query: string }).query.includes('updateInboxPreferences'));
     expect(call?.[0].variables).toEqual({ mutedTypes: ['review.assigned'] });
-    await waitFor(() => expect(app.setSuccessMessage).toHaveBeenCalledWith('Inbox preferences saved'));
+    await waitFor(() => expect(app.setSuccessMessage).toHaveBeenCalledWith('Inbox settings saved'));
     expect(saveButton().disabled).toBe(true);
   });
 

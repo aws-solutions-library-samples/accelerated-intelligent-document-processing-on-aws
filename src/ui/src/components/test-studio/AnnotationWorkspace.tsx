@@ -45,7 +45,7 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getAnnotationQueue, removeDocumentsFromTestSet } from '../../graphql/generated';
+import { estimateReviewEffort, getAnnotationQueue, removeDocumentsFromTestSet } from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
@@ -65,8 +65,17 @@ import {
 } from '../review-queues/reviewer-assignment';
 import AnnotationScreen from '../review-workspace/AnnotationScreen';
 import type { AnnotationQueue, QueueItem } from '../review-workspace/test-set-adapter';
-import { renderAlertCount, renderLabelSource } from './TestSetDetail';
-import { annotationQueueLink, currentDraft, draftBadgeHover, queueEmptyText } from './annotation-edit-flags';
+import { renderAlertCount, renderLabelSource, renderQualityTier } from './TestSetDetail';
+import {
+  REVIEWED_HIDDEN_HINT,
+  annotationQueueLink,
+  currentDraft,
+  draftBadgeHover,
+  estimateDecimals as decimalsFor,
+  formatPct,
+  queueEmptyText,
+  staleLinkVersion as staleVersionFor,
+} from './annotation-edit-flags';
 import { createLatestResponseGuard } from './latestResponseOnly';
 
 export type { QueueItem } from '../review-workspace/test-set-adapter';
@@ -122,6 +131,16 @@ const QUEUE_ROWS_PER_PAGE = 20;
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** What the review is buying: the set's estimated label accuracy, from estimateReviewEffort. */
+interface ReviewImpact {
+  baselineError: number;
+  residualError: number;
+  estimateConfidence: string;
+  qualityTier?: string | null;
+  qualityTierReason?: string | null;
+  totalObservations: number;
+}
+
 const AnnotationQueuePage = (): React.JSX.Element => {
   const { testSetId = '' } = useParams<{ testSetId: string }>();
   const navigate = useNavigate();
@@ -129,6 +148,8 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   // A link from before documents had their own page: ?doc=x.pdf[&field=...].
   const legacyDoc = searchParams.get('doc');
   const legacyField = searchParams.get('field');
+  // Which version transition a shared queue link belongs to (Copy queue link adds ?v=).
+  const requestedVersion = searchParams.get('v');
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { canAnnotate, isAdmin, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
@@ -157,12 +178,19 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   // Whether the queue in hand was read with reviewed documents included. The server
   // omits them unless asked, so revealing them costs a reload this tracks.
   const [queueIncludesReviewed, setQueueIncludesReviewed] = useState(false);
+  /**
+   * The set's estimated label accuracy. Review never rewrites a field's confidence;
+   * what it improves is the estimate, so this is what a reviewer's work is buying.
+   */
+  const [impact, setImpact] = useState<ReviewImpact | null>(null);
 
   /**
    * One guard per mounted page: `useRef(createLatestResponseGuard())` would build a
    * fresh guard on every render and discard all but the first.
    */
   const responseGuard = useMemo(createLatestResponseGuard, []);
+  /** The estimate's own guard, so it and the queue reload never cancel each other. */
+  const impactGuard = useMemo(createLatestResponseGuard, []);
 
   /**
    * How many foreground loads are in flight. A count rather than a flag because the
@@ -239,6 +267,31 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     },
     [testSetId, showReviewed, responseGuard],
   );
+
+  const loadImpact = useCallback(async () => {
+    if (!testSetId) return;
+    const isCurrentEstimate = impactGuard.claim();
+    try {
+      const response = await client.graphql({ query: estimateReviewEffort, variables: { testSetId } });
+      const est = response.data?.estimateReviewEffort;
+      if (!est || !isCurrentEstimate()) return;
+      setImpact({
+        baselineError: est.baselineError ?? 0,
+        residualError: est.residualError ?? 0,
+        estimateConfidence: est.estimateConfidence ?? 'prior',
+        qualityTier: est.qualityTier,
+        qualityTierReason: est.qualityTierReason,
+        totalObservations: est.calibration?.totalObservations ?? 0,
+      });
+    } catch (err) {
+      // Best-effort: the queue is fully usable without the estimate.
+      logger.debug('Could not load review impact:', err);
+    }
+  }, [testSetId, impactGuard]);
+
+  useEffect(() => {
+    void loadImpact();
+  }, [loadImpact]);
 
   useEffect(() => {
     if (legacyDoc) {
@@ -389,6 +442,10 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const progressPct = queue && queue.totalDocs > 0 ? Math.round((completedDocs / queue.totalDocs) * 100) : 0;
   const draft = currentDraft(queue, null);
   const queueLink = annotationQueueLink(window.location.origin, testSetAnnotateHref(testSetId), draft);
+  // A link from a transition that has since been published: still usable, but out of date.
+  const staleLinkVersion = staleVersionFor(requestedVersion, draft);
+  // Whole percent until the curve is measured on this set (see estimateDecimals).
+  const estimateDecimals = decimalsFor(impact?.estimateConfidence);
 
   /** Yes (with the assignee on hover) or No. */
   const renderAssigned = (item: QueueItem): React.ReactNode =>
@@ -542,6 +599,14 @@ const AnnotationQueuePage = (): React.JSX.Element => {
             {error}
           </Alert>
         )}
+        {/* Not an error, since the set is still annotatable, but working toward v5 while
+            believing you are adding to v2 is worth interrupting for. */}
+        {staleLinkVersion && (
+          <Alert type="warning" header={`This link refers to version ${staleLinkVersion}, which is closed`}>
+            That version has been published. You are now annotating toward version {draft?.draftVersion}; the link in your address bar is
+            out of date.{!isAnnotatorOnly && ' Use Copy queue link for the current one.'}
+          </Alert>
+        )}
 
         {queue && (
           <Container header={<Header variant="h2">Queue Progress</Header>}>
@@ -557,6 +622,34 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                 {metric('Assigned', assignedCount, 'assigned to an Annotator')}
                 {metric('Annotators', annotatorCount, 'Annotators with assigned documents')}
               </ColumnLayout>
+              {impact && (
+                <ColumnLayout columns={3} variant="text-grid">
+                  <div>
+                    <Box variant="awsui-key-label">Estimated label accuracy</Box>
+                    <Box fontSize="heading-m">{formatPct(1 - impact.baselineError, estimateDecimals)}</Box>
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      {impact.residualError < impact.baselineError
+                        ? `${formatPct(1 - impact.residualError, estimateDecimals)} after the recommended review`
+                        : 'reviewing more will refine this'}
+                    </Box>
+                  </div>
+                  <div>
+                    <Box variant="awsui-key-label">Evidence</Box>
+                    <Box fontSize="heading-m">{impact.totalObservations.toLocaleString()}</Box>
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      {/* `prior` means the number comes from other sets; reviewing changes that. */}
+                      {impact.estimateConfidence === 'prior'
+                        ? 'measurements — estimate still based on other sets'
+                        : `measurements — ${impact.estimateConfidence.replace('-', ' ')} on this set`}
+                    </Box>
+                  </div>
+                  <div>
+                    <Box variant="awsui-key-label">Quality</Box>
+                    {/* Shared with the Test Sets list: one vocabulary and color map. */}
+                    {renderQualityTier(impact.qualityTier, impact.qualityTierReason, 1 - impact.baselineError, estimateDecimals)}
+                  </div>
+                </ColumnLayout>
+              )}
               {/* Worst-first ordering only ranks the documents inspected so far. */}
               {queue.inspectedDocs != null && queue.inspectedDocs < queue.totalDocs && (
                 <Box fontSize="body-s" color="text-body-secondary">
@@ -735,11 +828,22 @@ const AnnotationQueuePage = (): React.JSX.Element => {
             ]}
             empty={
               <Box textAlign="center">
-                {queueFilter
-                  ? queueEmptyText(queueFilter)
-                  : statusFilter === DEFAULT_STATUS_FILTER
-                    ? 'No documents need review right now. Choose another status to see the rest of the set.'
-                    : 'No documents match this status.'}
+                <SpaceBetween size="xs">
+                  <Box>
+                    {queueFilter
+                      ? queueEmptyText(queueFilter)
+                      : statusFilter === DEFAULT_STATUS_FILTER
+                        ? 'No documents need review right now. Choose another status to see the rest of the set.'
+                        : 'No documents match this status.'}
+                  </Box>
+                  {/* A search can come up empty because the status filter hides reviewed
+                      documents; say so, since the reveal is in the filter bar above. */}
+                  {queueFilter && !showReviewed && (
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      {REVIEWED_HIDDEN_HINT}
+                    </Box>
+                  )}
+                </SpaceBetween>
               </Box>
             }
             pagination={
