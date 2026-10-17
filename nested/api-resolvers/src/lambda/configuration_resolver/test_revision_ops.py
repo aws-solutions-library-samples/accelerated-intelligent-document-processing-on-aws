@@ -92,9 +92,15 @@ class TestHappyPath:
         )
         assert result["success"] is True
         assert result["revision"] == 3
-        manager.restore_revision.assert_called_once_with(
-            "lending", 1, created_by="author@example.com"
-        )
+        manager.restore_revision.assert_called_once()
+        args, kwargs = manager.restore_revision.call_args
+        assert args == ("lending", 1)
+        assert kwargs["created_by"] == "author@example.com"
+        # A restore is a configuration write, so it carries the Admin-only
+        # hitl.review_queues guard for the caller (an Author here).
+        guard = kwargs["write_guard"]
+        assert isinstance(guard, index.ReviewQueuesAdminGuard)
+        assert (guard.is_admin, guard.caller_email) == (False, "author@example.com")
 
     def test_label_passes_label_and_notes_through(self, manager):
         result = index.handler(

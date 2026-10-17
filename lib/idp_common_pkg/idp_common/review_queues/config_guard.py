@@ -20,9 +20,6 @@ from idp_common.config.models import HITLReviewQueuesConfig, IDPConfig
 
 logger = logging.getLogger(__name__)
 
-#: At most this many added emails are looked up per save.
-MAX_EMAIL_LOOKUPS = 50
-
 ReviewQueuesChange = Tuple[str, dict, dict]
 
 

@@ -613,9 +613,9 @@ def handler(event, context):
         else:
             raise Exception(f"Unsupported operation: {operation}")
     except ConfigurationValidationError as e:
-        # A cross-field rule of hitl.review_queues (unique queue names, defined
-        # default and escalation queues). A deliberate refusal reported as data,
-        # like the inert-hook refusal below.
+        # A cross-field rule of hitl.review_queues
+        # (HITLReviewQueuesConfig.cross_field_problems). A deliberate refusal
+        # reported as data, like the inert-hook refusal below.
         logger.error(f"Configuration validation refusal: {e}")
         return {
             "success": False,
