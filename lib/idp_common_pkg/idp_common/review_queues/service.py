@@ -279,12 +279,8 @@ class ReviewQueueService:
             raise ReviewAccessDenied("ROLE", "only Admins can do this")
 
     def _rq(self, profile: str):
-        rq = self.directory.queues_config(profile)
-        if rq is None:
-            from idp_common.config.models import HITLReviewQueuesConfig
-
-            rq = HITLReviewQueuesConfig()
-        return rq
+        """The system-wide queue definitions (``QueuesView``); never ``None``."""
+        return self.directory.queues_config(profile)
 
     def _history(
         self,
@@ -875,7 +871,7 @@ class ReviewQueueService:
             doc_key=object_key,
             cycle_id=cycle_id,
             section_id=section_id,
-            s3_key=s3_key,
+            S3Key=s3_key,
             revision=revision,
             updated_by=caller.email,
             updated_at=now_iso,
