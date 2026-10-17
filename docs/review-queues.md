@@ -80,12 +80,10 @@ Inbox; other users have neither.
     draft as you type. The queue's checklist is advisory. **Complete** applies your
     corrections. **Reject** asks for a reason from the queue's list (plus an optional
     note) and keeps the machine output.
-  - **Test Studio item**: choose **Start annotating** to open the set's new version,
-    then correct the labels and choose **Complete**. You can also choose **Complete**
-    without changing anything, which confirms the labels as correct. Until
-    **Start annotating** has opened the version, the labels are read-only and
-    **Complete** is unavailable. Saving and versioning work exactly as in Test Studio
-    (see [Annotating creates a new version of the set](test-studio.md#annotating-creates-a-new-version-of-the-set)).
+  - **Test Studio item**: correct the labels and choose **Complete**. You can also
+    choose **Complete** without changing anything, which confirms the labels as
+    correct; it needs no **Start annotating** first. Saving and versioning work
+    exactly as in Test Studio.
   - **Skip**, on either kind of item, gives it back: it leaves your Tasks and goes
     back to its queue unassigned, where another Annotator can claim it. It isn't
     completed, and a Production item's draft is kept.

@@ -191,13 +191,6 @@ export const draftOpenedMessage = (opened: AnnotationDraft): string =>
 export const draftBadgeHover = (draft: AnnotationDraft): string =>
   `Corrections made here go into version ${draft.draftVersion}. Version ${draft.baseVersion}, the labels this set had before, is preserved and can still be scored against.`;
 
-/**
- * Why Complete is unavailable before the transition is open. Completing confirms every
- * section reviewed-human, the draft-machine -> reviewed-human change a version brackets,
- * so it must not open the transition implicitly.
- */
-export const START_ANNOTATING_FIRST_REASON = 'Choose Start annotating first: annotating this set creates a new version of it';
-
 export const DRAFT_PROMPT_HEADER = 'Annotating this set creates a new version of it';
 export const DRAFT_PROMPT_BODY =
   'Its current labels are preserved as a version you can go back to and score against, so a run that was measured against them stays reproducible. Your corrections go into the next version.';

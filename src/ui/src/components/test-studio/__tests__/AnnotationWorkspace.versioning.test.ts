@@ -30,7 +30,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DRAFT_PROMPT_BODY,
   DRAFT_PROMPT_HEADER,
-  START_ANNOTATING_FIRST_REASON,
   annotationQueueLink,
   currentDraft,
   documentActionState,
@@ -58,8 +57,10 @@ describe('AnnotationWorkspace version transition', () => {
     // The import, the mutation call, and reading it off the response.
     expect(calls).toBeLessThanOrEqual(3);
     expect(ADAPTER).not.toMatch(/useEffect\([^)]*openDraft/);
+    // Two explicit call sites on the screen: Start annotating, and Complete, which opens
+    // the transition itself when none is open (see the Complete test below).
     const screenCalls = SCREEN.match(/\bopenDraft\(\)/g) ?? [];
-    expect(screenCalls).toHaveLength(1);
+    expect(screenCalls).toHaveLength(2);
     expect(SCREEN).toMatch(
       /const handleOpenDraft = async \(\) => \{\s*setIsOpeningDraft\(true\);\s*try \{\s*const opened = await adapter\.openDraft\(\);/,
     );
@@ -132,16 +133,16 @@ describe('AnnotationWorkspace version transition', () => {
     expect(SCREEN).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
 
-  it('gates Complete on the annotation screen on the transition, and never opens one implicitly', () => {
-    // Complete confirms every section, which tags each reviewed-human: the same
-    // commitment as editing, so it waits for Start annotating rather than opening the
-    // transition on the user's behalf.
-    expect(START_ANNOTATING_FIRST_REASON).toMatch(/^Choose Start annotating first/);
-    expect(SCREEN).toMatch(/else if \(!draft\) completeReason = START_ANNOTATING_FIRST_REASON;/);
-    expect(SCREEN).toMatch(/completeDisabledReason: completeReason/);
+  it('lets Complete open the transition itself, only when none is open, and only on click', () => {
+    // HITL review queues (IDP-0002 R2-N): Complete needs no edit and no Start annotating
+    // first. Choosing it is the explicit act that opens the version transition, so the
+    // commitment is still never made on arrival - only from the Complete handler, and
+    // only when no transition is open yet, before the sections are confirmed.
     const handler = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
-    expect(handler).toContain('adapter.confirmSections(remaining)');
-    expect(handler).not.toMatch(/openDraft/);
+    expect(handler).toMatch(/if \(!draft\) await adapter\.openDraft\(\);\s*await adapter\.confirmSections\(remaining\);/);
+    // Only the role half of the editor's read-only state disables Complete.
+    expect(SCREEN).not.toMatch(/completeReason = [^;]*Start annotating/);
+    expect(SCREEN).toMatch(/completeDisabledReason: completeReason/);
   });
 
   it('gates confirming labels on the transition, not only editing them', () => {
