@@ -12,7 +12,7 @@ If you are evaluating whether to deploy or upgrade to a given release, this is t
 what was actually exercised against live AWS infrastructure, and what was found.
 
 This directory covers **validating** a release. For the procedure that **publishes** one —
-`scripts/aws-release.sh`, the three public buckets, and the failure/recovery paths — see the
+`scripts/aws-release.sh`, the four public buckets, and the failure/recovery paths — see the
 [Release Runbook](../release-runbook.md).
 
 | Release | Verdict | Record |

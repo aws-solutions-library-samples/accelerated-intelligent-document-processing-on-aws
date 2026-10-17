@@ -2372,7 +2372,7 @@ idp-cli remove-deleted-stack-resources [OPTIONS]
 
 This command safely identifies and removes ONLY resources belonging to IDP stacks that have been deleted:
 
-1. **Multi-region Stack Discovery** - Scans CloudFormation in multiple regions (us-east-1, us-west-2, eu-central-1 by default)
+1. **Multi-region Stack Discovery** - Scans CloudFormation in multiple regions. ⚠️ The CLI's own default is `us-east-1,us-west-2,eu-central-1` only — narrower than the SDK's `IDP_REGIONS` list, which `discover_idp_stacks` falls back to when called directly — so a stack deployed anywhere else, **`ca-central-1` included**, is not scanned unless you name it in `--check-stack-regions`
 2. **IDP Stack Identification** - Identifies IDP stacks by their Description ("AWS GenAI IDP Accelerator") or naming patterns (IDP-*, PATTERN1/2/3)
 3. **Active Stack Protection** - Tracks both ACTIVE and DELETED stacks; resources from active stacks are NEVER touched
 4. **Safe Cleanup** - Only targets resources belonging to stacks in DELETE_COMPLETE state
@@ -2400,7 +2400,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 - `--profile`: AWS profile to use
 - `--dry-run`: Preview changes without making them **(RECOMMENDED first step)**
 - `--yes`, `-y`: Auto-approve all deletions (skip confirmations)
-- `--check-stack-regions`: Comma-separated regions to check for stacks (default: us-east-1,us-west-2,eu-central-1)
+- `--check-stack-regions`: Comma-separated regions to check for stacks (default: `us-east-1,us-west-2,eu-central-1`). Pass `ca-central-1` explicitly to sweep a Canada deployment
 
 **Examples:**
 

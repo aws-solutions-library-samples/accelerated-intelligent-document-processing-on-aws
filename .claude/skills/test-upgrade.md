@@ -57,7 +57,13 @@ Canonical us-west-2 pattern:
 https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_<VERSION>.yaml
 ```
 Also available in `us-east-1` and `eu-central-1` (swap the region in both the
-host and the `aws-ml-blog-<region>` bucket).
+host and the `aws-ml-blog-<region>` bucket), and in `ca-central-1` for releases
+after 0.6.11 — where ⚠️ **the bucket is `aws-bigdata-blog-replica-ca-central-1`,
+not `aws-ml-blog-ca-central-1`**, which does not exist, so the swap-the-region
+rule does not produce Canada's URL. An upgrade test that spans that boundary
+cannot run in Canada at all, because the FROM release has no artifacts there. The
+grep above is the reliable answer for a given pair: a release whose `## Templates`
+block carries three URLs is one of those.
 
 > These are the **published** artifacts. To instead test an upgrade to
 > **local code**, build with `python3 publish.py <bucket-base> <prefix>

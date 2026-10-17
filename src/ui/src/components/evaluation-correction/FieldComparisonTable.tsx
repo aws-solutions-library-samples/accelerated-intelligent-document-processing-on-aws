@@ -4,6 +4,7 @@
 import React, { useState, useMemo } from 'react';
 import { Table, Box, Input, StatusIndicator, Toggle, SpaceBetween, Button } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import FieldGeometryAffordance from '../common/FieldGeometryAffordance';
 
 interface FlatField {
   path: (string | number)[];
@@ -22,6 +23,12 @@ interface BoundingBoxGeometry {
 interface FieldExplainabilityResult {
   confidence: number | null;
   geometry: BoundingBoxGeometry | null;
+  /**
+   * Whether `explainability_info` held an entry for the field at all, which is
+   * not the same as whether that entry carried a numeric confidence: this
+   * lookup populates `confidence` only for a number.
+   */
+  hasEntry: boolean;
 }
 
 interface ComparisonItem extends FlatField {
@@ -34,6 +41,8 @@ interface ComparisonItem extends FlatField {
   hasPredictedCorrection: boolean;
   confidence: number | null;
   geometry: BoundingBoxGeometry | null;
+  /** Whether `explainability_info` held an entry for the field at all. */
+  hasEntry: boolean;
 }
 
 interface CorrectionItem {
@@ -142,12 +151,12 @@ const _getValueByPath = (obj: unknown, path: (string | number)[], filterStructur
  * Gets confidence and geometry info for a field from explainability_info
  * Handles the nested structure of explainability data
  */
-const getFieldExplainabilityInfo = (
+export const getFieldExplainabilityInfo = (
   path: (string | number)[],
   explainabilityInfo: unknown[] | null | undefined,
 ): FieldExplainabilityResult => {
   if (!explainabilityInfo || !Array.isArray(explainabilityInfo) || !explainabilityInfo[0]) {
-    return { confidence: null, geometry: null };
+    return { confidence: null, geometry: null, hasEntry: false };
   }
 
   // Filter out structural keys from the path
@@ -200,7 +209,11 @@ const getFieldExplainabilityInfo = (
     }
   }
 
-  return { confidence, geometry };
+  // `Boolean(fieldInfo)`, not a constant: the navigation above nulls it out when
+  // the field has no entry, and claiming one anyway reports a never-assessed
+  // field as a value that could not be matched on the page — the opposite
+  // remedy, and the distinction this control exists to draw.
+  return { confidence, geometry, hasEntry: Boolean(fieldInfo) };
 };
 
 /**
@@ -295,16 +308,26 @@ const FieldComparisonTable = ({
         hasPredictedCorrection: !!predictedCorrection,
         confidence,
         geometry,
+        hasEntry: explainInfo.hasEntry,
       };
     });
+
+    // Whether this evaluation carries any box at all, taken BEFORE the filter.
+    // The filtered set is the wrong basis: with mismatches-only on and no
+    // mismatched field happening to be located, a flag over the visible rows
+    // would claim the document has no bounding boxes and blame
+    // `extraction.geometry.mode` — false, and unfalsifiable from the screen.
+    const anyLocated = items.some((item) => item.geometry);
 
     // Filter to mismatches only if requested
     if (showMismatchesOnly) {
       items = items.filter((item) => !item.isMatch);
     }
 
-    return items;
+    return { rows: items, anyLocated };
   }, [expectedData, predictedData, explainabilityInfo, corrections, showMismatchesOnly]);
+
+  const { rows: comparisonRows, anyLocated: anyFieldLocatable } = comparisonData;
 
   // Start editing a field
   const handleStartEdit = (pathString: string, source: string, currentValue: unknown) => {
@@ -474,25 +497,42 @@ const FieldComparisonTable = ({
     },
     {
       id: 'actions',
-      header: 'Actions',
+      header: 'On page',
+      /* The shared affordance, so this table answers the same question the field
+         editors do and in the same way. It replaces a control that was
+         `disabled={!item.geometry}` and otherwise silent: a greyed-out button
+         states that locating is unavailable without saying why, which on a row
+         whose prediction is empty is the one thing the reader needs to know
+         ([#1327]). The predicted value is what decides between the two reasons —
+         a box comes from matching what the model extracted, so an empty
+         prediction cannot be located whatever the baseline says.
+
+         `predictedValue`, deliberately, not `displayPredicted`: geometry is a
+         property of what extraction produced, not of what a reviewer has since
+         corrected. The consequence is worth knowing — a corrected row can display
+         a value and still explain that nothing was extracted — and it is the
+         honest reading, because the box that does not exist is the model's. */
       cell: (item: ComparisonItem) => (
-        <Button
-          variant="icon"
-          iconName="zoom-to-fit"
-          onClick={(e) => {
-            e.stopPropagation();
-            handleRowClick(item);
-          }}
-          disabled={!item.geometry}
-          ariaLabel="Focus on field in document"
+        <FieldGeometryAffordance
+          fieldKey={item.fieldName}
+          value={item.predictedValue}
+          geometry={item.geometry}
+          geometryAvailable={anyFieldLocatable}
+          /* Entry presence, not a confidence number. This lookup populates
+             `confidence` only for a numeric one, so a field whose entry exists
+             without one — assessed at a finer granularity, or from a run that
+             records confidence differently — would be reported as never
+             assessed, a stronger and different claim than unmatched. */
+          hasFieldData={Boolean(item.hasEntry)}
+          onLocate={() => handleRowClick(item)}
         />
       ),
-      width: 80,
+      width: 90,
     },
   ];
 
-  const mismatchCount = comparisonData.filter((item) => !item.isMatch).length;
-  const totalCount = comparisonData.length;
+  const mismatchCount = comparisonRows.filter((item) => !item.isMatch).length;
+  const totalCount = comparisonRows.length;
 
   return (
     <Box>
@@ -511,7 +551,7 @@ const FieldComparisonTable = ({
 
         <Table
           columnDefinitions={columnDefinitions}
-          items={comparisonData}
+          items={comparisonRows}
           sortingDisabled
           wrapLines
           stripedRows

@@ -760,6 +760,33 @@ type FilePresignedUrlResponse @aws_cognito_user_pools @aws_iam {
   size: Int!
 }
 
+# One object to presign, for the batch form below.
+input FilePresignRequest {
+  s3Uri: String!
+  # S3 object VersionId, to pin a past document version's artefact. Optional, and
+  # per entry rather than per request: a run manifest records a VersionId per key,
+  # so a document view signs a different one for each page.
+  versionId: String
+}
+
+# One presigned URL from the batch form. `s3Uri` is echoed so a caller can join the
+# results back to its own request without relying on list order.
+#
+# There is deliberately no `size` and no per-entry `error`. No `size` because the
+# batch handler issues no `head_object` — that is the only per-key network cost in
+# the operation, and its consumers discard both `size` and the stored content type.
+# No per-entry error because an authorization refusal fails the whole request: a
+# per-entry refusal would make one call an N-key authorization oracle.
+type FilePresignedUrl @aws_cognito_user_pools @aws_iam {
+  s3Uri: String!
+  presignedUrl: String!
+  contentType: String!
+}
+
+type FilePresignedUrlsResponse @aws_cognito_user_pools @aws_iam {
+  results: [FilePresignedUrl!]!
+}
+
 type StepFunctionExecutionStep @aws_cognito_user_pools @aws_iam {
   name: String!
   type: String!
@@ -2121,6 +2148,18 @@ type Query @aws_cognito_user_pools @aws_iam {
   # issues a capability — the URL carries its own authorization for the lifetime
   # of the signature — so it is the least able to rely on a later check.
   getFilePresignedUrl(s3Uri: String!, versionId: String): FilePresignedUrlResponse
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # The batch form of getFilePresignedUrl: one call for a whole document's page
+  # images rather than one per page. Same access model and the same three
+  # server-side controls (group floor, bucket allow-list, per-document scope),
+  # applied to every entry before any URL is minted. Exists because the Identity
+  # Pool's authenticated role no longer grants the document buckets, so the page
+  # image surfaces sign through this resolver instead of in the browser, and a
+  # per-page call would be a resolver invocation per page of every document view
+  # (#1033). The list is capped server-side — see MAX_BATCH_OBJECTS.
+  getFilePresignedUrls(files: [FilePresignRequest!]!): FilePresignedUrlsResponse
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )

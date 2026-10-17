@@ -8,8 +8,6 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import DOMPurify from 'dompurify';
 // Note: XLSX and mammoth imports removed since we're using download approach for Excel/Docx files
 import useSettingsContext from '../../contexts/settings';
-import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
-import useAppContext from '../../contexts/app';
 import { getFileContents, getFilePresignedUrl } from '../../graphql/generated';
 import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { useDocumentVersion } from '../../contexts/document-version';
@@ -18,21 +16,6 @@ interface FileViewerProps {
   objectKey: string;
   // Bucket holding the object; defaults to the stack's InputBucket.
   bucket?: string;
-  // How to mint the presigned GET URL for binary content.
-  //
-  // 'client' signs with the user's Cognito identity-pool credentials, which reach
-  // ONLY the Input and Output buckets. 'server' asks the getFilePresignedUrl
-  // resolver, whose bucket allow-list is wider — the TestSetBucket and the
-  // ConfigurationBucket among others — and which also applies the caller's
-  // per-user scope to the key.
-  //
-  // ⚠️ Any bucket other than Input or Output needs 'server'. The Configuration and
-  // Test Set buckets are deliberately absent from the identity-pool role, because
-  // their contents are partitioned per user (allowedConfigVersions,
-  // allowedTestSets) and one shared IAM role cannot express that. Client-signing a
-  // URL for either yields a 403 at fetch time — and adding them back to the role to
-  // "fix" that would reopen the scope bypass the resolver check exists to close.
-  presignVia?: 'client' | 'server';
 }
 
 const client = generateClient();
@@ -85,14 +68,25 @@ const detectFileType = (objectKey: string, contentType: string | null): string =
   return 'unknown';
 };
 
-const FileViewer = ({ objectKey, bucket, presignVia = 'client' }: FileViewerProps): React.JSX.Element => {
+/**
+ * Binary content is always presigned by the `getFilePresignedUrl` resolver.
+ *
+ * There is no client-signing option any more. The Cognito Identity Pool's
+ * authenticated role grants `s3:GetObject` on **no** bucket (issue #1033), so a
+ * URL signed with the browser's own credentials 403s at fetch time for every
+ * bucket this viewer is pointed at — including the Input and Output buckets,
+ * which it used to reach. The resolver holds the read access behind its own
+ * bucket allow-list and applies the caller's group floor and per-user key scope
+ * (allowedConfigVersions, allowedTestSets), which one shared IAM role cannot
+ * express.
+ */
+const FileViewer = ({ objectKey, bucket }: FileViewerProps): React.JSX.Element => {
   // Fetch pinned bytes when viewing a past document version.
   const { versionIdForUri } = useDocumentVersion();
   const [presignedUrl, setPresignedUrl] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [contentType, setContentType] = useState<string | null>(null);
   const { settings } = useSettingsContext();
-  const { currentCredentials } = useAppContext();
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [viewMethod, setViewMethod] = useState<'presigned' | 'content'>('presigned');
@@ -188,23 +182,16 @@ const FileViewer = ({ objectKey, bucket, presignVia = 'client' }: FileViewerProp
 
       // Generate presigned URL only if needed
       if (needsPresignedUrl) {
-        logger.info(`Generating presigned URL (${presignVia}) for:`, s3Url);
-        if (presignVia === 'server') {
-          const response = await client.graphql({
-            query: getFilePresignedUrl,
-            variables: { s3Uri: s3Url, versionId: versionIdForUri(s3Url) },
-          });
-          const url = response.data?.getFilePresignedUrl?.presignedUrl;
-          if (!url) {
-            throw new Error('No presigned URL returned by server');
-          }
-          setPresignedUrl(url);
-        } else {
-          const url = await generateS3PresignedUrl(s3Url, currentCredentials as Record<string, unknown>, {
-            versionId: versionIdForUri(s3Url),
-          });
-          setPresignedUrl(url);
+        logger.info('Generating presigned URL (server) for:', s3Url);
+        const response = await client.graphql({
+          query: getFilePresignedUrl,
+          variables: { s3Uri: s3Url, versionId: versionIdForUri(s3Url) },
+        });
+        const url = response.data?.getFilePresignedUrl?.presignedUrl;
+        if (!url) {
+          throw new Error('No presigned URL returned by server');
         }
+        setPresignedUrl(url);
       } else {
         logger.info('Using content-based viewing, no presigned URL needed');
       }

@@ -26,7 +26,7 @@ import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/
 import PageTextEditorModal from './PageTextEditorModal';
 import { processChanges } from '../../graphql/generated';
 import { useDocumentVersion } from '../../contexts/document-version';
-import usePageThumbnails from '../../hooks/use-page-thumbnails';
+import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
 
 const client = generateClient();
 const logger = new ConsoleLogger('PagesPanel');
@@ -282,7 +282,7 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
   // and disable editing (edits write to the current objects, not the snapshot).
   const { isHistorical } = useDocumentVersion();
   // Shared with the page-regrouping board, which needs the same signed thumbnails.
-  const thumbnailUrls = usePageThumbnails(pages);
+  const { urls: thumbnailUrls, failure: thumbnailFailure } = usePageThumbnails(pages);
 
   // Edit Mode should be disabled for reviewers until they click Start Review (claim the document)
   const hasReviewOwner = !!(documentItem?.hitlReviewOwner || documentItem?.hitlReviewOwnerEmail);
@@ -584,23 +584,33 @@ const PagesPanel = ({ pages, documentItem, classificationIndex = EMPTY_CLASSIFIC
           </Header>
         }
       >
-        <Table
-          columnDefinitions={columnDefinitions}
-          items={sortedItems}
-          {...collectionProps}
-          variant="embedded"
-          resizableColumns
-          stickyHeader
-          empty={
-            <Box textAlign="center" color="inherit">
-              <b>No pages</b>
-              <Box padding={{ bottom: 's' }} variant="p" color="inherit">
-                This document has no pages.
+        <SpaceBetween size="s">
+          {/* Signing page thumbnails is a server call now, and a refusal fails the
+              whole batch — so without this the Thumbnail column is simply empty and
+              says nothing about why. */}
+          {thumbnailFailure && (
+            <Alert type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'} header="Page thumbnails unavailable">
+              {THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]}
+            </Alert>
+          )}
+          <Table
+            columnDefinitions={columnDefinitions}
+            items={sortedItems}
+            {...collectionProps}
+            variant="embedded"
+            resizableColumns
+            stickyHeader
+            empty={
+              <Box textAlign="center" color="inherit">
+                <b>No pages</b>
+                <Box padding={{ bottom: 's' }} variant="p" color="inherit">
+                  This document has no pages.
+                </Box>
               </Box>
-            </Box>
-          }
-          wrapLines
-        />
+            }
+            wrapLines
+          />
+        </SpaceBetween>
       </Container>
 
       {/* Page Text Editor Modal */}

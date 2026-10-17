@@ -47,6 +47,7 @@ Every behavioural test drives the real functions against a synthetic report writ
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -57,6 +58,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import gate_premises
 import pytest
 import yaml
 
@@ -564,11 +566,636 @@ class TestTheHandlerDirectoriesWithCoverageToLose:
         )
 
 
+#: The Lambda handler directories the coverage baseline deliberately does not record.
+#:
+#: **Membership is derived, which is the requirement #1227 settles on**: a handler
+#: directory holding tracked code and no test file. Nothing is listed, so the first test
+#: written for one of these takes it out of this set and into the fan-out's measured
+#: roots, and a handler added with no test joins this set — in both directions without
+#: an edit here. The alternative, registering handlers one at a time, is a list a new
+#: handler joins only when somebody notices, which is the gap the issue is about.
+#:
+#: **What it turns off, for one member.** The coverage ratchet's per-file baseline. A
+#: file recorded at some percentage is held there; a file absent from the baseline is
+#: ratcheted at nothing, and every source file in one of these directories is absent.
+#:
+#: **The premise is computed, not asserted.** ``gate_premises.collects_zero_tests`` is
+#: run against every member by
+#: :func:`TestTheHandlerDirectoryUniverse.test_the_exempt_directory_really_collects_no_test`
+#: — a directory nothing collects has no suite to measure its coverage with, which is a
+#: property of that one directory rather than of the set. Derivation and premise are
+#: deliberately **different instruments**: the derivation asks git whether a test file is
+#: present, the predicate asks pytest whether anything collects. A directory holding a
+#: file named ``*_test.py`` would be untested to the first and collected by the second —
+#: pytest's default ``python_files`` matches that spelling and
+#: :func:`check_coverage_debt._looks_like_test` does not — and the disagreement then
+#: fails here loudly rather than quietly exempting a directory that has a suite.
+#:
+#: Two ratchets, both asked for when option B was chosen. ``EXEMPT_HANDLER_DIRECTORY_COUNT``
+#: pins the size, so a 46th arrival fails rather than being absorbed into an unmeasured
+#: set; and :func:`TestTheHandlerDirectoryUniverse.test_every_handler_directory_is_accounted_for`
+#: closes the universe, so a directory in neither this set nor the baseline fails.
+HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE: frozenset[str] = frozenset(
+    directory.path
+    for directory in ccd.handler_directories().values()
+    if not directory.tests
+)
+
+#: How many handler directories had no test when option B was implemented.
+#:
+#: Compared for **equality**, not as an upper bound, and the direction that matters is
+#: the one the maintainer asked for: a bound of ``<=`` lets the number fall as tests are
+#: written and then silently re-absorb that many new unmeasured handlers. Equality makes
+#: both directions a one-line edit a reviewer sees — downwards when a suite is written
+#: (which is the whole point of the number falling), upwards only with an explanation.
+#:
+#: 45, derived on 2026-10-15 from 84 handler directories holding tracked code: 38 with a
+#: suite the fan-out measures, 45 with none, and one (``src/lambda/ocr_benchmark_deployer``)
+#: that `scripts/run_all_tests.py` quarantines. The attribution rule that produces 84 is
+#: written out in :func:`check_coverage_debt.handler_directories`; a different rule gives
+#: a different number, which is why #1227 carries three.
+EXEMPT_HANDLER_DIRECTORY_COUNT = 45
+
+#: Source files inside a MEASURED handler directory that have no coverage floor,
+#: because coverage.py's file discovery cannot reach them. Keyed by path, with the reason.
+#:
+#: **Keyed by path rather than counted**, which is the difference between an exemption and
+#: a budget. A count pin passes when the audited file is replaced by a different one:
+#: measured, by deleting this entry's file and planting an unreachable module under
+#: another root, which a cardinality pin accepted while a different source file shipped
+#: unmeasured. The registry's rule is one entry, one member's worth of reason, and this is
+#: the shape that follows it.
+#:
+#: The premise is computed per member by
+#: `gate_premises.not_reachable_by_a_package_walk`, bound to the fan-out root the file
+#: sits under: coverage.py walks the measured source and recurses into a subdirectory only
+#: if it is an importable package, so a module below a non-package directory reaches the
+#: data only when something imports it and can be given no floor at all. The gate supplies
+#: the other half the predicate deliberately does not claim -- that nothing imports this
+#: one -- by deriving membership from the files that have no recorded floor.
+COVERAGE_UNREACHABLE_FILES_EXEMPT: dict[str, str] = {
+    "src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py": (
+        "A vendored copy whose original is `src/lambda/chat_with_document_processor/"
+        "index.py`, held in step with it by `src/lambda/chat_stream_processor/tests/"
+        "test_vendored_in_sync.py`, and imported by no test of its own. It sits in "
+        "`vendored/`, which is not a package, so coverage.py's walk over "
+        "`--cov=chat_stream_processor` never recurses to it -- measured both ways: "
+        "dropping an `__init__.py` into that directory puts the file in the report at "
+        "0.00% and moves the directory's figure from 58% to 43%. The remedy is therefore "
+        "in the tree rather than here: make `vendored/` a package, or have a test import "
+        "the module."
+    ),
+}
+
+
+def _handler_directories_with_recorded_coverage() -> frozenset[str]:
+    """Handler directories with at least one source file in the committed baseline.
+
+    The **enforced** half of the universe, and it is read from the baseline rather than
+    from :func:`check_coverage_debt.fanout_roots` on purpose. Deriving both halves from
+    one partition would make the closure assertion below tautological: it would compare
+    a set against itself and pass whatever the baseline contained. What has to be true is
+    that a directory with a suite actually has a recorded floor — which is the thing
+    #1227 is about, since #1221 took two directories to 99% with nothing holding either.
+    """
+    baseline = json.loads(ccd.BASELINE.read_text(encoding="utf-8"))
+    directories = set(ccd.handler_directories())
+    found: set[str] = set()
+    for tree in ccd.TREES:
+        root = ccd.tree_root(tree)
+        for key in baseline.get("trees", {}).get(tree.name, {}).get("files", {}):
+            try:
+                rel = (root / key).resolve().relative_to(REPO_ROOT)
+            except ValueError:  # pragma: no cover - a tree rooted outside the repo
+                continue
+            parent = str(rel.parent)
+            if parent in directories:
+                found.add(parent)
+    return frozenset(found)
+
+
+@pytest.mark.unit
+class TestTheHandlerDirectoryUniverse:
+    """#1227's fan-out: every handler directory is measured, exempt, or fails here.
+
+    The defect this closes is not the untested directories — it is that the **tested**
+    ones were ratcheted by nothing. No handler directory was in
+    :data:`check_coverage_debt.TREES` at all, so #1221's work on
+    ``complete_section_review`` and ``calculate_capacity`` could be undone with every
+    gate green. Two individual entries were a holding action; this class is what makes
+    the arrangement survive a handler being added.
+    """
+
+    def test_the_exempt_set_is_computed_and_not_a_list_of_names(self):
+        """ "Derived, not listed" is the first requirement, and nothing else here tests it.
+
+        Replacing the comprehension below with a ``frozenset`` of today's 45 path
+        literals passes every other assertion in this class: the count still matches, the
+        premise still holds for each, and the universe is still closed. It would simply
+        stop tracking the tree — which is the whole defect, and the state the repository's
+        other exemption lists were in.
+
+        So this reads the **declaration**, by parsing it. A substring search for
+        ``handler_directories`` would be satisfied by the docstring above it, which is
+        the same failure the registry meta-test's own predicate check ran into.
+
+        ⚠️ **What it covers is the declaration, which is narrower than "derived".** A
+        review defeated it in two lines by keeping the real derivation and intersecting
+        it with a sibling module-level tuple of today's 45 paths: no string literal is in
+        the declaration, ``handler_directories`` is still called, and the set is frozen.
+        That mutation is caught — but by
+        :func:`test_every_handler_directory_is_accounted_for`, which failed naming the
+        planted directory, not by this. So read this as refusing the *obvious* way to
+        re-list the set, with the closure assertion as the thing that actually holds the
+        property. Chasing every expression that could narrow a comprehension would mean
+        re-implementing taint analysis in a test.
+        """
+        module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        declarations = [
+            node
+            for node in module.body
+            if isinstance(node, ast.AnnAssign | ast.Assign)
+            for target in (
+                [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            )
+            if isinstance(target, ast.Name)
+            and target.id == "HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE"
+        ]
+        assert len(declarations) == 1, (
+            f"{len(declarations)} module-level declarations of the exempt set; the "
+            f"registry keys it by name, so exactly one has to be the authority"
+        )
+        value = declarations[0].value
+        literals = [
+            n.value
+            for n in ast.walk(value)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        ]
+        assert not literals, (
+            f"the exempt set names {literals} as string literal(s), so its membership is "
+            f"written down rather than derived from the tree. A listed exemption passes "
+            f"every other check here on the day it is written and stops tracking the "
+            f"repository immediately afterwards; deriving it is the requirement #1227 "
+            f"settles on."
+        )
+        derivation = {
+            n.func.attr
+            if isinstance(n.func, ast.Attribute)
+            else getattr(n.func, "id", "")
+            for n in ast.walk(value)
+            if isinstance(n, ast.Call)
+        }
+        assert "handler_directories" in derivation, (
+            f"the exempt set is built without calling check_coverage_debt."
+            f"handler_directories(); it calls {sorted(derivation)}. That function is the "
+            f"single authority for what a handler directory is -- shared with the "
+            f"fan-out and with #1442 -- and a second derivation beside it is a second "
+            f"attribution rule, which is how two universes come to disagree."
+        )
+
+    def test_the_exempt_set_is_not_empty(self):
+        """Non-vacuity, and it is not theoretical.
+
+        The per-member premise check below is parametrised over this set, and pytest
+        reports a parametrisation over an empty collection as a **skip** rather than a
+        failure — so a derivation that silently found nothing would turn the premise
+        check green while computing nothing.
+        """
+        assert HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE, (
+            "the derivation found no untested handler directory at all, which means the "
+            "attribution rule stopped matching rather than that every handler gained a "
+            "suite — 45 had none when this was written. Check "
+            "check_coverage_debt.handler_directories()."
+        )
+
+    def test_the_handler_universe_is_not_empty(self):
+        """The same guard one level up, on the universe every assertion here derives from.
+
+        Emptying ``handler_directories()`` would make the closure assertion compare two
+        empty sets and pass.
+        """
+        assert len(ccd.handler_directories()) >= 80, (
+            f"only {len(ccd.handler_directories())} handler directory(ies) discovered; "
+            f"84 held tracked code when this was written, so a much smaller number means "
+            f"the derivation broke rather than that the repository shrank"
+        )
+
+    def test_the_exempt_count_is_pinned(self):
+        """Count pinning: a 46th untested handler fails rather than being absorbed.
+
+        This is the ratchet the maintainer asked for by name when choosing option B over
+        baselining everything at 0.00. Without it, a derived exemption grows silently —
+        the derivation is what makes membership honest, and a pinned count is what makes
+        growth a decision.
+        """
+        found = sorted(HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE)
+        # The remedy differs by DIRECTION, so only the applicable one is printed. Both
+        # were printed at first, and the two read as contradictory advice on the case
+        # that actually occurs: a message telling the reader to lower the pin to 46 when
+        # 46 is what it just refused.
+        if len(found) > EXEMPT_HANDLER_DIRECTORY_COUNT:
+            remedy = (
+                f"{len(found) - EXEMPT_HANDLER_DIRECTORY_COUNT} handler directory(ies) "
+                f"arrived with no suite. Write one — the directory then joins the "
+                f"fan-out's measured roots automatically and leaves this set — or raise "
+                f"the pin deliberately, naming the directory and why it ships untested. "
+                f"The names are below; the new one is the one your change added, which "
+                f"is why they are not listed anywhere to diff against: membership is "
+                f"derived, and a committed list of 45 names is the thing this replaced."
+            )
+        else:
+            remedy = (
+                f"a suite was written for "
+                f"{EXEMPT_HANDLER_DIRECTORY_COUNT - len(found)} directory(ies), which is "
+                f"the point of this number falling. Lower the pin to {len(found)} in the "
+                f"same change, and record the directory's coverage: `python3 "
+                f"scripts/coverage_all.py --only <tree>` then `python3 "
+                f"scripts/check_coverage_debt.py --write-missing`."
+            )
+        assert len(found) == EXEMPT_HANDLER_DIRECTORY_COUNT, (
+            f"{len(found)} handler directory(ies) hold tracked code and no test file, "
+            f"where {EXEMPT_HANDLER_DIRECTORY_COUNT} were audited when the coverage "
+            f"fan-out landed. {remedy}\n  Current set: {found}"
+        )
+
+    @pytest.mark.parametrize(
+        "directory", sorted(HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE)
+    )
+    def test_the_exempt_directory_really_collects_no_test(self, directory):
+        """The premise, computed per member rather than stated once for the set.
+
+        ``collects_zero_tests`` is the authority here because the exemption's whole
+        claim is that there is no suite to measure the directory's coverage with. The
+        identical sentence has already been wrong once in this repository — a directory
+        excluded from every gate as collecting zero tests collects six, all passing — and
+        this set has 45 members, which is exactly the size at which one justification
+        read in aggregate passes while a member fails.
+        """
+        holds, explanation = gate_premises.collects_zero_tests(directory)
+        assert holds, (
+            f"{directory} is exempt from the coverage baseline on the premise that it "
+            f"has no suite, and {explanation}. If it collects tests, it belongs in the "
+            f"fan-out's measured roots: that happens automatically once git tracks a "
+            f"file check_coverage_debt._looks_like_test() recognises, so the usual cause "
+            f"is a test file named `*_test.py`, which pytest collects and that helper "
+            f"does not call a test. If collection ERRORED, the premise to record is the "
+            f"unavailable dependency, which is what scripts/run_all_tests.py's "
+            f"QUARANTINE already records for the one directory in that state."
+        )
+
+    def test_every_handler_directory_is_accounted_for(self):
+        """Universe closure: in the baseline, in the exemption, or quarantined — or fail.
+
+        The assertion that makes the exemption trustworthy at all, and the one that would
+        have caught #1227's own defect: a handler directory with a suite and no recorded
+        floor is in **neither** set and fails here by name. A new handler is therefore
+        unable to join an unmeasured set quietly, whichever of the three states it
+        arrives in.
+
+        The third bucket is consumed rather than authored. ``src/lambda/ocr_benchmark_deployer``
+        holds a suite whose collection errors because ``huggingface_hub`` is not a test
+        dependency, and `scripts/run_all_tests.py` already records that per directory
+        with the reason. Writing a second list here would be a second place for the same
+        judgement to go stale, so this reads that one; if the dependency ever becomes a
+        test dependency the entry goes away and the directory has to be measured like any
+        other.
+        """
+        universe = set(ccd.handler_directories())
+        enforced = _handler_directories_with_recorded_coverage()
+        exempt = HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE
+        quarantined = universe & ccd.quarantined_test_roots()
+
+        unaccounted = sorted(universe - enforced - exempt - quarantined)
+        assert not unaccounted, (
+            f"{len(unaccounted)} handler directory(ies) are in neither the coverage "
+            f"baseline nor the derived exemption nor the test-root quarantine, so "
+            f"nothing holds their coverage and nothing says why: {unaccounted}.\n"
+            f"If the directory has a suite, measure its tree "
+            f"(`python3 scripts/coverage_all.py --only "
+            f"{', --only '.join(sorted(t.name for t in ccd.TREES if t.fanout))}`) and "
+            f"record it with `python3 scripts/check_coverage_debt.py --write-missing`. "
+            f"If its suite cannot run here, say so in scripts/run_all_tests.py's "
+            f"QUARANTINE with the reason, per directory."
+        )
+
+        both = sorted(enforced & exempt)
+        assert not both, (
+            f"{both} are recorded in the coverage baseline AND derived as having no "
+            f"test. The two cannot both be true: a baselined file was measured, so "
+            f"something collected. The usual cause is a stale baseline entry for a "
+            f"directory whose suite was deleted — re-record with --write, which is the "
+            f"only mode that drops an entry."
+        )
+
+    def test_every_source_file_in_a_measured_root_has_a_floor_or_is_unreachable(self):
+        """Closure over **files**, not only over directories — which is the stronger half.
+
+        The directory closure above is satisfied by *one* recorded file per root, and
+        `check_tree`'s own unaccounted check only reports a file the report **mentions**,
+        which an unimported file never is. So a tracked source file inside a measured
+        root could sit with no floor and nothing saying so, which is the thing the
+        per-file baseline exists to prevent on the only tree it had not reached.
+
+        One file is in that state, and it is **named rather than counted**:
+        :data:`COVERAGE_UNREACHABLE_FILES_EXEMPT` is keyed by path and compared here as
+        an exact set, so a *different* unreachable file arriving fails even if the
+        audited one is removed in the same change — which a cardinality pin does not,
+        measured. The premise is computed per member by
+        :func:`gate_premises.not_reachable_by_a_package_walk`, and the entry is
+        registered in `scripts/tests/gate_exemptions.json`.
+        """
+        baseline = json.loads(ccd.BASELINE.read_text(encoding="utf-8"))
+        recorded: set[str] = set()
+        for tree in ccd.TREES:
+            root = ccd.tree_root(tree)
+            for key in baseline.get("trees", {}).get(tree.name, {}).get("files", {}):
+                try:
+                    recorded.add(str((root / key).resolve().relative_to(REPO_ROOT)))
+                except ValueError:  # pragma: no cover - a tree rooted outside the repo
+                    continue
+
+        universe = ccd.handler_directories()
+        roots = [
+            root for tree in ccd.TREES if tree.fanout for root in ccd.fanout_roots(tree)
+        ]
+        assert roots, "fanout_roots() derived no root, so this examines nothing"
+
+        unfloored = sorted(
+            rel
+            for root in roots
+            for rel in universe[root].sources
+            if rel not in recorded
+        )
+        exempt = sorted(COVERAGE_UNREACHABLE_FILES_EXEMPT)
+        assert unfloored == exempt, (
+            f"the source files in a MEASURED handler directory with no recorded floor "
+            f"are {unfloored}, where {exempt} is what was audited.\n"
+            f"  Unaccounted ({sorted(set(unfloored) - set(exempt))}): measure the tree "
+            f"and run `python3 scripts/check_coverage_debt.py --write-missing`. If "
+            f"coverage cannot reach the file at all, add it to "
+            f"COVERAGE_UNREACHABLE_FILES_EXEMPT with its reason and register the "
+            f"entry.\n"
+            f"  Stale ({sorted(set(exempt) - set(unfloored))}): the file now has a floor "
+            f"or is gone, so the entry shields nothing and pre-exempts whatever next "
+            f"occupies the path -- delete it."
+        )
+
+    @pytest.mark.parametrize("path", sorted(COVERAGE_UNREACHABLE_FILES_EXEMPT))
+    def test_an_unreachable_exempt_file_really_is_unreachable(self, path):
+        """The premise, computed per member against the root it is measured under.
+
+        Bound to that root rather than asked about the file's parent alone, because
+        coverage's walk *does* reach a file sitting directly in the measured source
+        whether or not that directory is a package -- only recursion needs one. A version
+        of this asking about the parent alone answers "unreachable" for every handler
+        module in the repository, since no handler directory is a package.
+        """
+        roots = [
+            root
+            for tree in ccd.TREES
+            if tree.fanout
+            for root in ccd.fanout_roots(tree)
+            if path.startswith(f"{root}/")
+        ]
+        assert len(roots) == 1, (
+            f"{path} is exempt from the coverage baseline as unreachable, but it is "
+            f"under {len(roots)} measured fan-out root(s) ({roots}). An exemption for a "
+            f"file no fan-out measures is an exemption from nothing."
+        )
+        holds, explanation = gate_premises.not_reachable_by_a_package_walk(
+            path, roots[0]
+        )
+        assert holds, (
+            f"{path} is exempt on the premise that coverage's file discovery cannot "
+            f"reach it from {roots[0]}, and {explanation}. If a package walk does reach "
+            f"it, the file is measurable and belongs in the baseline: measure the tree "
+            f"and run `python3 scripts/check_coverage_debt.py --write-missing`."
+        )
+        assert COVERAGE_UNREACHABLE_FILES_EXEMPT[path].strip(), (
+            f"{path} carries no reason. A path with no reason is a path nobody decided "
+            f"about."
+        )
+
+    def test_every_fanout_root_has_a_recorded_floor(self):
+        """The enforced half, stated as its own failure rather than folded into closure.
+
+        Closure above fails if a root is in no bucket; this fails with the *measured*
+        reason, which is the one a reader needs: the fan-out ran this directory and the
+        baseline records none of its files, so the ratchet compares nothing for it.
+        """
+        roots = {
+            root for tree in ccd.TREES if tree.fanout for root in ccd.fanout_roots(tree)
+        }
+        assert roots, "fanout_roots() derived no root for any fan-out tree"
+        unrecorded = sorted(roots - _handler_directories_with_recorded_coverage())
+        assert not unrecorded, (
+            f"{len(unrecorded)} fan-out root(s) have a suite and no file in the coverage "
+            f"baseline, so their coverage is unratcheted — which is precisely #1227: "
+            f"{unrecorded}. Measure the tree and run "
+            f"`python3 scripts/check_coverage_debt.py --write-missing`."
+        )
+
+    def test_every_handler_prefix_is_covered_by_a_fanout_tree(self):
+        """A third ``src/lambda`` prefix must fail rather than become invisible.
+
+        The prefixes are derived from the tree, and the registry names two of them. A
+        nested stack introducing a third would otherwise put every handler under it
+        outside the fan-out, outside the exemption's own derivation — which is scoped to
+        a prefix — and outside every figure, with nothing objecting.
+        """
+        prefixes = set(ccd.handler_prefixes())
+        assert prefixes, "no handler prefix discovered at all"
+        covered = {t.cwd.rstrip("/") for t in ccd.TREES if t.fanout}
+        missing = sorted(prefixes - covered)
+        assert not missing, (
+            f"these handler prefixes are covered by no fan-out tree, so every handler "
+            f"directory under them is measured by nothing: {missing}. Add a "
+            f"`Tree(<name>, <prefix>, '.', fanout=True)` to check_coverage_debt.TREES "
+            f"and record its baseline."
+        )
+        stray = sorted(covered - prefixes)
+        assert not stray, (
+            f"these fan-out trees name a prefix that holds no handler directory: "
+            f"{stray}. A fan-out over nothing measures nothing while reading as a "
+            f"registered tree."
+        )
+
+    def test_the_fanout_roots_are_exactly_the_tested_unquarantined_directories(self):
+        """The derivation, checked against the universe it is taken from.
+
+        Not a restatement of :func:`check_coverage_debt.fanout_roots`: it compares the
+        roots the runner will actually invoke against the three-way split of the
+        universe, so a derivation narrowed in either direction — a prefix filter that
+        stops matching, a quarantine read that returns everything — fails here rather
+        than silently measuring fewer directories than the closure believes.
+        """
+        universe = ccd.handler_directories()
+        quarantined = set(universe) & ccd.quarantined_test_roots()
+        expected = sorted(
+            path
+            for path, directory in universe.items()
+            if directory.tests and path not in quarantined
+        )
+        roots = sorted(
+            root for tree in ccd.TREES if tree.fanout for root in ccd.fanout_roots(tree)
+        )
+        assert roots == expected, (
+            f"the fan-out will invoke {len(roots)} root(s) where {len(expected)} handler "
+            f"directories hold a runnable suite. Not invoked: "
+            f"{sorted(set(expected) - set(roots))}; invoked but not expected: "
+            f"{sorted(set(roots) - set(expected))}."
+        )
+
+    def test_a_planted_handler_directory_reaches_the_universe_once_it_is_staged(
+        self, tmp_path, monkeypatch
+    ):
+        """The declared bound on the derivation, measured in both states.
+
+        A gate whose verdict changes at ``git add`` time is a real cost and the kind this
+        repository has been bitten by, so it is pinned rather than left to be discovered:
+        a planted handler is invisible while untracked and in the universe once staged.
+        The window is one ``git add`` wide, and the reason it is not closed with
+        ``--others`` is that :func:`check_coverage_debt.tracked_source_files` — where the
+        baseline's universe comes from — cannot see an untracked file either, and
+        ``write_baseline`` cannot record one. A derivation that saw them would admit a
+        fan-out root nothing could ever record.
+
+        Driven against a throwaway checkout, so the real tree is untouched.
+        """
+        handler = tmp_path / "src" / "lambda" / "planted"
+        handler.mkdir(parents=True)
+        (handler / "index.py").write_text("X = 1\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True
+        )
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+
+        assert "src/lambda/planted" not in ccd.handler_directories(), (
+            "an untracked handler is in the universe, so the derivation has started "
+            "reading the working tree rather than the index — which also means a "
+            "fan-out root can appear that write_baseline is unable to record"
+        )
+        subprocess.run(
+            ["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True
+        )
+        assert "src/lambda/planted" in ccd.handler_directories(), (
+            "a STAGED handler is still invisible, so a new untested handler would reach "
+            "a branch without the count pin ever firing — the window would then be a "
+            "whole commit wide rather than one `git add`"
+        )
+
+    def test_a_source_file_directly_under_the_prefix_is_not_a_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The attribution rule that decides the count, which the real tree cannot show.
+
+        Disabling this guard today changes no number, because the only Python directly
+        under either prefix is a `conftest.py` and the source filter drops it anyway. Put
+        a *non-test* module there and the two rules diverge: `src/lambda/shared.py`
+        becomes a handler "directory" named after a file, it has no suite, so it joins the
+        derived exemption and breaks the count pin — for a file, not a handler. That is
+        the artefact behind the figure the issue carries which is two higher than this
+        derivation's, and it is the kind of thing a downstream filter masks until the day
+        somebody adds a shared module.
+        """
+        prefix = tmp_path / "src" / "lambda"
+        (prefix / "handler").mkdir(parents=True)
+        (prefix / "handler" / "index.py").write_text("X = 1\n", encoding="utf-8")
+        (prefix / "shared.py").write_text("HELPER = True\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True
+        )
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        found = ccd.handler_directories()
+        assert sorted(found) == ["src/lambda/handler"], (
+            f"a module sitting directly under the prefix was attributed to a handler "
+            f"directory: {sorted(found)}. A path with nothing after the directory "
+            f"component names a FILE, and counting it inflates the universe, the exempt "
+            f"set and therefore the pinned count."
+        )
+        assert found["src/lambda/handler"].sources == (
+            "src/lambda/handler/index.py",
+        ), found["src/lambda/handler"]
+
+    def test_an_unreadable_quarantine_registry_raises_rather_than_returning_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """Fail closed, because the quiet direction here is the dangerous one.
+
+        An empty answer does not merely lose a judgement: the fan-out would then invoke
+        the one root whose collection errors, that error lands in the merged run record,
+        and `run_trust` refuses the **whole tree**. So one unreadable registry would take
+        a tree of 21 directories' coverage out of the gate, reported as a refusal nobody
+        would connect to this function.
+        """
+        registry = tmp_path / "run_all_tests.py"
+        registry.write_text("RUN_ROOTS = ['a']\n", encoding="utf-8")
+        monkeypatch.setattr(ccd, "RUN_ROOT_REGISTRY", registry)
+        with pytest.raises(AssertionError, match="QUARANTINE"):
+            ccd.quarantined_test_roots()
+
+        registry.write_text("QUARANTINE = {}\n", encoding="utf-8")
+        with pytest.raises(AssertionError, match="QUARANTINE"):
+            ccd.quarantined_test_roots()
+
+        registry.write_text("QUARANTINE = ['a']\n", encoding="utf-8")
+        with pytest.raises(AssertionError, match="QUARANTINE"):
+            ccd.quarantined_test_roots()
+
+    def test_a_directory_holding_only_tests_is_not_a_handler_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The source filter, which nothing in the real tree exercises.
+
+        Every directory under a `src/lambda/` prefix today holds at least one source
+        file, so dropping this filter changes no number here and survives every other
+        assertion in this class. It matters anyway and in the dangerous direction: such a
+        directory holds no source, so no file of it can ever be recorded, so it would sit
+        in the universe permanently unaccounted for — a gate red for a condition nobody
+        could clear, which is how a gate gets switched off.
+        """
+        bare = tmp_path / "src" / "lambda" / "tests_only"
+        bare.mkdir(parents=True)
+        (bare / "test_something.py").write_text(
+            "def test_x():\n    assert True\n", encoding="utf-8"
+        )
+        real = tmp_path / "src" / "lambda" / "with_code"
+        real.mkdir(parents=True)
+        (real / "index.py").write_text("X = 1\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True
+        )
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        found = ccd.handler_directories()
+        assert "src/lambda/with_code" in found, found
+        assert "src/lambda/tests_only" not in found, (
+            "a directory holding only test files is counted as a handler directory. It "
+            "has no source file, so the baseline can never record one, so it would be "
+            "unaccounted for in the closure ratchet forever."
+        )
+
+    def test_no_exempt_directory_is_also_a_fanout_root(self):
+        """The two sets the fan-out and the exemption are built from cannot overlap."""
+        roots = {
+            root for tree in ccd.TREES if tree.fanout for root in ccd.fanout_roots(tree)
+        }
+        overlap = sorted(roots & HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE)
+        assert not overlap, (
+            f"{overlap} are both measured by the fan-out and exempt from the baseline"
+        )
+
+
 def _fake_tree(tmp_path: Path, name: str = "faketree"):
     """A tree rooted in `tmp_path`, so `--write` cannot touch the real baseline.
 
     Registered by monkeypatching TREES, not by editing the real registry: these tests
-    exercise the orchestration, and doing that against the nine real trees would make
+    exercise the orchestration, and doing that against the real registry would make
     them depend on whichever reports happen to be lying around from the last run.
     """
     root = tmp_path / name
@@ -750,7 +1377,7 @@ class TestWriteBaseline:
         """The load-bearing property of `--write`.
 
         `make coverage-all --only one_tree` followed by `--write` must not erase the
-        other eight trees' baselines. If it did, the routine act of re-recording one
+        other trees' baselines. If it did, the routine act of re-recording one
         tree would silently un-ratchet everything else, and the next run would report
         no problems because there would be nothing left to compare against.
         """
@@ -1483,7 +2110,7 @@ class TestNothingMeasured:
     ):
         """A typo must not read as a met precondition.
 
-        `--require-tree=idp_commmon` against a list of nine trees is the shape that turns
+        `--require-tree=idp_commmon` against the registry's list is the shape that turns
         an assertion into decoration, and both CI configurations pass this flag from a
         string in a YAML file where nothing else would catch it.
         """
@@ -1514,7 +2141,7 @@ class TestWriteRefusesUntrustworthyInput:
         """Not "skips that tree": records nothing.
 
         `--write` regenerates the whole file, and the operator's next act is to commit it.
-        Recording the other eight trees while silently dropping the bad one would leave
+        Recording every other tree while silently dropping the bad one would leave
         the baseline half-refreshed and read as a success.
         """
         good, bad = _fake_tree(tmp_path, "good"), _fake_tree(tmp_path, "bad")
@@ -2025,7 +2652,7 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
     ):
         """Case 3, and the reason the derivation is inside the script.
 
-        The tree is **invented by this test** and named nothing like the nine real ones,
+        The tree is **invented by this test** and named nothing like the real ones,
         so the requirement cannot be satisfied by a list of today's names in a Makefile,
         a CI config or this module. If the derivation stopped reading `TREES`, a tree
         added to the registry and produced by nobody would be unratcheted while the gate

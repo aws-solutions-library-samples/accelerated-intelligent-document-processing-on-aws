@@ -1057,13 +1057,23 @@ class GeometryConfig(BaseModel):
     mode: str = Field(
         default="ocr_only",
         description=(
-            "How field bounding boxes are produced. 'ocr_only' (default): DO NOT "
-            "ask the model for boxes — derive geometry purely by matching each "
-            "extracted value to real OCR lines (pageData.json), disambiguating "
-            "repeated values by row order. Cheaper and more accurate than "
-            "LLM-estimated boxes. 'llm_grounded': the model emits boxes and OCR "
-            "grounding refines them. 'llm': use the model's boxes as-is with no "
-            "grounding. 'off': no geometry is produced at all."
+            "How field bounding boxes are produced. A box locates an extracted "
+            "VALUE on the page, so a field the model returned nothing for is never "
+            "located under any mode. "
+            "'ocr_only' (default): the model is not asked for boxes — each "
+            "extracted value is matched to real OCR lines (pageData.json), "
+            "repeated values disambiguated by row order. No added prompt tokens, "
+            "and more accurate than LLM-estimated boxes. "
+            "'llm_grounded': the model emits boxes and OCR grounding corrects "
+            "them; use this when values are not present verbatim in the OCR text "
+            "(reformatted dates, figures read off a chart) and ocr_only therefore "
+            "matches too little. "
+            "'llm': the model's boxes as-is. DISCOURAGED, and retained only for "
+            "compatibility — it sends the same prompt as llm_grounded and costs "
+            "the same, then skips the correction step, so there is no case where "
+            "it is the better of the two. "
+            "'off': no geometry at all; the viewers stop offering to show fields "
+            "on the page."
         ),
     )
     task_prompt_bbox: str = Field(

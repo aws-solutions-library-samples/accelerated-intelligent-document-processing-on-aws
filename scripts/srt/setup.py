@@ -60,15 +60,35 @@ def get_latest_release():
     unauthenticated GitHub API is limited to 60 requests/hour **per IP** — which
     hosted CI runners share, so on a busy runner pool the anonymous request
     returns 403 and the whole scan fails with "Failed to fetch latest release".
-    A token raises the limit to 5,000/hour for that token. GitHub Actions always
-    provides GITHUB_TOKEN; GitLab CI has no equivalent, so there the request
-    stays anonymous exactly as before.
+    A token raises the limit to 5,000/hour for that token.
+
+    Both CIs supply one, by different mechanisms. GitHub Actions mints a
+    per-run ``GITHUB_TOKEN``, which ``.github/workflows/security-checks.yml``
+    maps into the setup step's environment. GitLab has no equivalent, so there it
+    is a masked, unprotected project CI/CD variable of the same name — see the
+    note on ``srt_security_review`` in ``.gitlab-ci.yml``. Neither is a secret
+    worth guarding closely: the only request is a release lookup against a public
+    repository, so read-public-only is sufficient scope.
+
+    A missing or expired token fails setup rather than degrading the scan: the
+    release tag cannot be resolved, so nothing is downloaded and nothing is
+    scanned. The hint below names the variable for that reason.
     """
     url = "https://api.github.com/repos/aws-samples/sample-security-review-tool/releases/latest"
     headers = {"Accept": "application/vnd.github+json"}
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    # Report which budget the call is drawing on. A SUCCESSFUL anonymous request
+    # is indistinguishable from an authenticated one in the job log, so without
+    # this line a green run is consistent with the token never reaching the job —
+    # and the gap only surfaces later, on whichever busy runner spends the shared
+    # hourly budget first. The token is never printed, only whether one was found.
+    print(
+        "   GitHub release lookup: authenticated (5,000 req/hour for the token)"
+        if token
+        else "   GitHub release lookup: ANONYMOUS (60 req/hour shared per IP)"
+    )
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request) as response:  # nosec B310 - GitHub API URL is trusted
@@ -79,7 +99,19 @@ def get_latest_release():
         if not token:
             print(
                 "   Hint: unauthenticated GitHub API allows 60 requests/hour per "
-                "IP, which CI runners share. Set GITHUB_TOKEN to raise it."
+                "IP, which CI runners share. Set GITHUB_TOKEN to raise it. In "
+                "GitLab CI it is a masked, unprotected project CI/CD variable; in "
+                "GitHub Actions the workflow maps secrets.GITHUB_TOKEN."
+            )
+        else:
+            # A token was sent, so the shared-IP budget is not the constraint.
+            # The likely cause is a PAT that has expired or been revoked, which
+            # GitHub answers 401 "Bad credentials" for — distinguishable from the
+            # anonymous 403 above only by having read this line.
+            print(
+                "   Hint: a GITHUB_TOKEN was sent, so this is not the anonymous "
+                "rate limit. A 401 means the token is expired or revoked — issue a "
+                "new read-public-only token and update the CI/CD variable."
             )
         return None, None
 

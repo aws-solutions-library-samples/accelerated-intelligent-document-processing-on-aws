@@ -147,17 +147,19 @@ hostage to a few slow tests. Cutting it further means sharding it across several
 `make check-coverage-debt-cicd` can read a complete report — deliberately not done
 here, since the measured gain over the current shape is ~5 minutes.
 
-⚠️ **The coverage producer costs this job roughly another 16 minutes, and that is
-the price of the gate reading more than one tree.** `make coverage-all-cicd` runs
-before the ratchet in the same job, because the reports pass between the two steps
-through the workspace — splitting them would need artifacts, which is the same
-obstacle as sharding above. Eight trees are measured concurrently and the wall clock
-is **not** their sum: measured at nine trees, four at a time, 979s against roughly 33
-minutes sequential. What it cannot compress is `scripts`, which declares
-`Tree.serial` and takes ~16 minutes as a single process, so that tree alone sets the
-floor on every host and the concurrency's whole job is to hide the other seven behind
-it. `COVERAGE_CICD_JOBS` is the dial, bounded in the script by `cpus // 2`, so a
-4-CPU runner takes 2 at a time rather than obeying the 4 the Makefile asks for.
+⚠️ **The coverage producer costs this job a second block of time, and that is the
+price of the gate reading more than one tree.** `make coverage-all-cicd` runs before
+the ratchet in the same job, because the reports pass between the two steps through
+the workspace — splitting them would need artifacts, which is the same obstacle as
+sharding above. The trees are measured concurrently and the wall clock is **not**
+their sum: it is the slowest tree plus scheduling, so the figure to know is which
+tree that is, and it moves — re-measure rather than quoting one here. No tree
+declares `Tree.serial` any more; `scripts` did, on a belief about xdist and
+subprocesses that was measured down, and the Lambda handler fan-outs were tried with
+it and measured faster without. `COVERAGE_CICD_JOBS` is the dial, bounded in the
+script by `cpus // 2`, so a 4-CPU runner takes 2 at a time rather than obeying the 4
+the Makefile asks for. `--workers` is how to reproduce one tree's share by hand,
+since selecting a single tree otherwise hands it the whole machine.
 
 Read against the alternative rather than against the old number: the step this
 replaces compared **one** of nine trees and exited 0 over the other eight, so the

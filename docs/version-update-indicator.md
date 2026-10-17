@@ -54,8 +54,9 @@ The check is controlled by two CloudFormation parameters whose **defaults
 are auto-substituted by `idp-cli publish`** to point at the bucket and
 prefix you're publishing to. This means:
 
-- **For the public AWS release** (publishing to `aws-ml-blog-<region>` /
-  `artifacts/genai-idp`): the indicator works out of the box for every
+- **For the public AWS release** (publishing to that region's release bucket —
+  `aws-ml-blog-<region>`, or `aws-bigdata-blog-replica-ca-central-1` in Canada —
+  under `artifacts/genai-idp`): the indicator works out of the box for every
   customer who deploys the published template — no manual stack
   parameters needed.
 - **For private/forked builds** (publishing to your own bucket via

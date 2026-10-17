@@ -642,13 +642,91 @@ def collects_zero_tests(member: str) -> Verdict:
     return (False, f"{member} collects {collected} test(s), which nothing runs")
 
 
+def not_reachable_by_a_package_walk(member: str, root: str) -> Verdict:
+    r"""A directory between ``root`` and this file is not a package, so a walk misses it.
+
+    The premise for excluding a **tracked source file a tool cannot discover**, as
+    opposed to one it discovers and measures badly. coverage.py's own file discovery
+    walks the measured source and recurses into a subdirectory only if that directory is
+    an importable package — so a module below a non-package directory reaches the
+    coverage data only when something imports it, and therefore cannot be given a floor
+    at all.
+
+    Measured both ways rather than read off coverage.py's implementation, twice. In an
+    isolated probe: a package holding ``mod.py`` plus ``sub/{imported,never_imported}.py``
+    with no ``__init__.py`` in ``sub/`` reports ``mod.py`` at 0% and omits
+    ``never_imported.py`` entirely; adding the ``__init__.py`` puts it in the report at
+    0%. And on the one real instance, ``src/lambda/chat_stream_processor/vendored/``,
+    exactly the same both ways.
+
+    ⚠️ ``root`` is required and the predicate is wrong without it. The walk **does**
+    reach files sitting directly in the measured source, whether or not that directory is
+    a package — it is only *recursion* that needs one — so a version asking about the
+    file's parent alone answers True for every handler module in this repository, since
+    no handler directory is a package. Every directory strictly below ``root`` and down
+    to the file's own is checked, because a non-package directory stops the walk there
+    and everything beneath it is unreachable too.
+
+    ⚠️ One input makes it answer **unsoundly**, and it is named rather than left latent:
+    an ``__init__.py`` that exists on disk but is untracked. The walk reaches the file;
+    this says it cannot. Reproduced with ``**/__init__.py`` gitignored. There is no
+    instance -- every ``__init__.py`` under either handler prefix is tracked -- and it is
+    the same bound :func:`check_coverage_debt.handler_directories` already declares, since
+    git is the authority throughout. The opposite direction is benign: a filename
+    coverage.py's own ``^[^.#~!$@%^&*()+=,]+\.pyw?$`` filter rejects (``my.helper.py``)
+    is called reachable while the walk skips it, which makes the owning gate demand a
+    floor nothing can record -- loud rather than silent.
+
+    Deliberately narrow in two further directions. It requires the file to be
+    **tracked**, so an exemption for something that ships nowhere must use
+    :func:`file_absent_or_untracked` instead. And it says nothing about whether a test
+    imports the file: a module below a non-package directory that something *does* import
+    is discovered and measurable, so the exemption would be unsound — checking that the
+    file is absent from the report is the owning gate's half.
+    """
+    target = _normalise(member)
+    base = _normalise(root)
+    if not is_tracked(target):
+        return (False, f"git does not track {member}, so nothing ships from this path")
+    try:
+        relative = Path(target).relative_to(base)
+    except ValueError:
+        return (False, f"{member} is not under {root}, so that walk never considers it")
+    # The file's own name is not a directory, and `base` itself needs no `__init__.py`:
+    # the walk starts there.
+    directories = list(relative.parents)[:-1]
+    if not directories:
+        return (
+            False,
+            f"{member} sits directly in {root}, which the walk reaches without "
+            "recursing, so a missing __init__.py there changes nothing",
+        )
+    for directory in reversed(directories):
+        absolute = Path(base) / directory
+        if not is_tracked(str(absolute / "__init__.py")):
+            return (
+                True,
+                f"{absolute} holds no __init__.py, so a package walk from {root} does "
+                f"not recurse into it and never reaches {member} -- the file can only be "
+                "measured if something imports it",
+            )
+    return (
+        False,
+        f"every directory between {root} and {member} is an importable package, so a "
+        "walk reaches it; if it has no floor, that is because nothing recorded one "
+        "rather than because nothing can",
+    )
+
+
 #: Predicates a registry entry may name, by the exact string it names them with.
 #: ``JUDGEMENT`` is deliberately absent: it is not a predicate, it is the recorded
 #: admission that there is no predicate, and the registry treats it separately.
 #
-#: ``installer_manifest_pins_parameter`` takes the parameter name as a second
-#: argument, so a caller binds it rather than calling it bare. It is listed here
-#: because the registry names predicates by string and must be able to resolve it.
+#: Two take a second argument, so a caller binds them rather than calling them bare:
+#: ``installer_manifest_pins_parameter`` needs the parameter name, and
+#: ``not_reachable_by_a_package_walk`` needs the root the walk starts from -- without
+#: which it answers the wrong question, as its own docstring measures. Both are listed
+#: here because the registry names predicates by string and must be able to resolve them.
 PREDICATES = {
     "not_a_nested_stack_of_parent": not_a_nested_stack_of_parent,
     "built_separately_from_main_stack": built_separately_from_main_stack,
@@ -657,6 +735,7 @@ PREDICATES = {
     "vcs_ignored_generated_filename": vcs_ignored_generated_filename,
     "installer_manifest_pins_parameter": installer_manifest_pins_parameter,
     "collects_zero_tests": collects_zero_tests,
+    "not_reachable_by_a_package_walk": not_reachable_by_a_package_walk,
 }
 
 #: The marker an entry uses instead of a predicate when its premise genuinely

@@ -1345,7 +1345,9 @@ unchanged and the standalone Assessment step runs as the fallback (no regression
 Under `geometry.mode: llm`/`llm_grounded` the bbox block is appended to the TopK
 prompt, so a candidate may also carry `bbox`/`page`; the resolver carries those onto
 the confidence leaf for the shared grounding path (under pure `llm` — no OCR
-grounding — this is the only box source).
+grounding — this is the only box source). `llm` is **discouraged**: it costs the
+same as `llm_grounded` and skips the correction step, so prefer `llm_grounded`
+wherever LLM boxes are wanted at all.
 
 Advanced (agentic) integrated mode can opt into the same top-K elicitation via the
 hidden experimental knob `extraction.agentic.integrated_confidence_strategy: topk`
@@ -1815,7 +1817,9 @@ extraction:
     model: us.anthropic.claude-haiku-4-5-20251001-v1:0
     list_batch_size: 25               # rows scored per inference (agentic in-shard)
   geometry:
-    mode: ocr_only                    # ocr_only (default) | llm_grounded | llm | off
+    mode: ocr_only                    # ocr_only (default) | llm_grounded | off
+                                      # ('llm' also accepted, but discouraged: same
+                                      #  prompt and cost as llm_grounded, no grounding)
   agentic:
     enabled: true
     max_concurrent_batches: 4         # sharded; confidence scoring runs per-shard

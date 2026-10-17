@@ -11,8 +11,9 @@ at all*, the ones that decide whether a failed run is distinguishable from a cle
 the one that decides whether a report describes the subprocesses the suite started.
 
 Most of these tests run no pytest: `subprocess.run` is replaced, and what is asserted is
-the command line that would have been issued. Running the nine real suites here would take
-minutes and would assert nothing about the command construction that is the point. The
+the command line that would have been issued. Running the real suite of every tree in
+the registry here would take minutes and would assert nothing about the command
+construction that is the point. The
 exception is the subprocess-instrumentation class at the end, which runs a real pytest over
 a purpose-built probe package, because the property there is what a child process inherits
 and no command line shows it.
@@ -27,7 +28,8 @@ success would let a partial report be recorded as a measurement.
 **A tree whose tests failed is named.** Its report still exists and still parses, and its
 numbers will be uniformly and inexplicably low, because the tests that would have covered
 those lines never ran. That has been mistaken for a real regression before, so the run says
-which trees to distrust rather than printing nine figures that all look equally solid.
+which trees to distrust rather than printing per-tree figures that all look equally
+solid.
 """
 
 from __future__ import annotations
@@ -508,14 +510,25 @@ class TestASerialTreeIsNeverRunInParallel:
         `Tree.serial` stays as a capability -- the synthetic trees earlier in
         this class cover both directions of it -- and if a tree ever needs it
         again, the failure here is where the measurement gets asked for.
+
+        ⚠️ **A fan-out tree is not an exception to this, which was the intuition
+        and is measured to be wrong.** The argument for making the two handler
+        fan-outs serial is that their work is many small pytest roots, so a root
+        costs process startup rather than test execution and xdist only adds a
+        second layer of it. At the `-n 4` those trees actually get in CI, three
+        paired samples each: a wash on `api_resolvers` (median 66.1s serial
+        against 68.5s) and ~24% **faster** parallel on `src_lambda` (122.8s
+        against 93.3s), with all 87 of that tree's files identical to the
+        hundredth across all six cells. The figures are at the entry.
         """
         serial_trees = [tree.name for tree in ccd.TREES if tree.serial]
         assert serial_trees == [], (
             f"{serial_trees} declare serial=True. Serial is the expensive option: "
             "it cost 29 of the 34 minutes of the `unit_tests` job when `scripts` "
             "was the only one of nine. Record at the entry what the serial run "
-            "buys -- the measurement `Tree.serial` describes -- and then update "
-            "this test deliberately."
+            "buys -- the measurement `Tree.serial` describes, taken at the worker "
+            "count CI gives that tree rather than at whatever `--only` hands it -- "
+            "and then update this test deliberately."
         )
 
     def test_the_scripts_tree_runs_in_parallel_in_the_real_registry(self):
@@ -526,6 +539,594 @@ class TestASerialTreeIsNeverRunInParallel:
         pipeline nobody is timing.
         """
         assert ccd.TREES_BY_NAME["scripts"].serial is False
+
+
+def _handler_tree(
+    tmp_path: Path, *, untested: int = 0, tests: bool = True
+) -> "ccd.Tree":
+    """A real ``src/lambda`` prefix with two handler roots, in a real git checkout.
+
+    Both roots hold a module named ``index.py`` and import it as ``from index import``,
+    which is the whole reason a fan-out exists rather than one invocation — so the
+    collision this arrangement avoids is *in the fixture* rather than asserted about the
+    production tree. ``untested`` adds handler directories with code and no test, which
+    is what the derived exemption is made of.
+
+    A git checkout because :func:`check_coverage_debt.handler_directories` discovers
+    through ``git ls-files``: a fixture that wrote files and never committed them would
+    make every derivation here return nothing, and a parametrisation over nothing is a
+    pytest **skip**.
+    """
+    prefix = tmp_path / "src" / "lambda"
+    for index in range(2):
+        root = prefix / f"handler_{index}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "index.py").write_text(
+            f"def handler(event, context):\n    return {index}\n", encoding="utf-8"
+        )
+        if tests:
+            (root / "test_index.py").write_text(
+                "from index import handler\n"
+                "\n"
+                "\n"
+                "def test_handler():\n"
+                f"    assert handler(None, None) == {index}\n",
+                encoding="utf-8",
+            )
+    for index in range(untested):
+        root = prefix / f"bare_{index}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "index.py").write_text("UNREACHED = True\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    return ccd.Tree("handlers", "src/lambda", ".", fanout=True)
+
+
+@pytest.mark.unit
+class TestTheFanOut:
+    """One logical tree over many pytest roots, driven end to end.
+
+    Every assertion here runs the **real** `run_fanout` against a real pytest over a
+    real two-root checkout, because the three things that can go wrong are all invisible
+    to a mocked `subprocess.run`: whether the coverage of the second root survives the
+    first (``--cov-append`` plus one absolute ``COVERAGE_FILE``), whether the rendered
+    report's keys come out in the form the ratchet resolves, and whether one merged run
+    record can still refuse the tree when one root's suite fails.
+    """
+
+    def _measure(self, monkeypatch, tmp_path, **kwargs):
+        tree = _handler_tree(tmp_path, **kwargs)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(ccd, "TREES", (tree,))
+        monkeypatch.setattr(ccd, "TREES_BY_NAME", {tree.name: tree})
+        return tree, cov_all.run(tree, sys.executable, parallel=False)
+
+    def test_two_roots_in_one_pytest_process_really_do_collide(self, tmp_path):
+        """The premise of the whole arrangement, measured rather than asserted in prose.
+
+        82 of the repository's handler directories contain a module named `index.py`.
+        If collecting two of them together worked, a fan-out would be pure cost — so the
+        fixture reproduces the collision with the real pytest, and this is the test that
+        fails if some future pytest makes the fan-out unnecessary.
+        """
+        _handler_tree(tmp_path)
+        combined = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "handler_0",
+                "handler_1",
+            ],
+            cwd=tmp_path / "src" / "lambda",
+            capture_output=True,
+            text=True,
+        )
+        assert combined.returncode != 0, (
+            "two handler directories each holding `index.py` collected cleanly in one "
+            "pytest process, so the import collision the fan-out exists for no longer "
+            f"happens:\n{combined.stdout}{combined.stderr}"
+        )
+        assert "import file mismatch" in (
+            combined.stdout + combined.stderr
+        ).lower() or ("index" in (combined.stdout + combined.stderr)), (
+            combined.stdout + combined.stderr
+        )
+
+    def test_every_roots_coverage_survives_into_one_report(self, monkeypatch, tmp_path):
+        """The append, which is the one thing a per-root report cannot give.
+
+        Each root is measured by its own process, so without `--cov-append` into one
+        absolute `COVERAGE_FILE` the last root's data is all that is left — and the
+        symptom is a report that looks perfectly healthy while describing one directory
+        under a tree name claiming all of them.
+        """
+        tree, (name, code, total, output) = self._measure(monkeypatch, tmp_path)
+        assert code == 0, output
+        assert name == "handlers"
+        report = ccd.report_path(tree)
+        assert report.is_file(), output
+        measured = ccd.read_report(report, ccd.tree_root(tree))
+        assert {"handler_0/index.py", "handler_1/index.py"} <= set(measured), (
+            f"the rendered report mentions {sorted(measured)}; both roots' handlers must "
+            f"be in it, keyed relative to the PREFIX, which is the form the baseline and "
+            f"`tracked_source_files` both speak"
+        )
+        assert measured["handler_0/index.py"] == 100.0
+        assert measured["handler_1/index.py"] == 100.0
+        assert total is not None and total > 0
+
+    def test_a_directory_with_no_test_contributes_nothing_to_the_report(
+        self, monkeypatch, tmp_path
+    ):
+        """The scope decision that makes this option B rather than option A.
+
+        Each root bounds `--cov` to its own directory, so a handler nothing collects is
+        absent from the report and therefore from the baseline — ratcheted at nothing,
+        and visible as such. Pointing `--cov` at the whole prefix instead would record
+        every untested handler at 0.00, which is the wider option that was not chosen;
+        this is the assertion that fails if somebody makes that one-token change.
+        """
+        tree, (_, code, _, output) = self._measure(monkeypatch, tmp_path, untested=3)
+        assert code == 0, output
+        measured = ccd.read_report(ccd.report_path(tree), ccd.tree_root(tree))
+        absorbed = sorted(p for p in measured if p.startswith("bare_"))
+        assert not absorbed, (
+            f"the report mentions {absorbed}, which no test collects. Recording them "
+            f"would put a 0.00 floor under every untested handler in the repository — "
+            f"the option #1227 decided against — and a 0% floor cannot regress."
+        )
+
+    def test_the_merged_run_record_vouches_for_every_root(self, monkeypatch, tmp_path):
+        """One record beside the report, summing every root, read by the real gate.
+
+        `run_trust` reads a single file and sums over its `<testsuite>` elements, so a
+        fan-out that wrote one record per root would leave the tree permanently
+        unverified — which is a refusal, not a pass, and would have made this whole
+        change red rather than wrong.
+        """
+        tree, (_, code, _, output) = self._measure(monkeypatch, tmp_path)
+        assert code == 0, output
+        trust = ccd.run_trust(ccd.report_path(tree))
+        assert trust.state == "clean", trust.detail
+        assert trust.collected == 2, (
+            f"the merged record reports {trust.collected} test(s) collected where the "
+            f"two roots have one each, so it describes some of the run rather than all "
+            f"of it: {trust.detail}"
+        )
+        assert trust.skipped == 0, trust.detail
+
+    def test_one_failing_root_refuses_the_whole_tree(self, monkeypatch, tmp_path):
+        """A failure in any root must reach the ratchet, not be averaged away.
+
+        This is the direction a merge can silently lose. The report a half-failed fan-out
+        renders is well-formed and its numbers are artefacts, and the gate's own printed
+        remedy would record them permanently — so the merged record has to carry the
+        failure through.
+        """
+        tree = _handler_tree(tmp_path)
+        (tmp_path / "src" / "lambda" / "handler_1" / "test_index.py").write_text(
+            "def test_broken():\n    assert False\n", encoding="utf-8"
+        )
+        subprocess.run(
+            ["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True
+        )
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(ccd, "TREES", (tree,))
+        name, code, _, output = cov_all.run(tree, sys.executable, parallel=False)
+        assert code != 0, (
+            f"a root whose suite failed left the fan-out reporting success: {output}"
+        )
+        trust = ccd.run_trust(ccd.report_path(tree))
+        assert trust.state == "errored", (
+            f"the merged record reads as {trust.state!r}, so the ratchet would compare a "
+            f"report whose figures are artefacts of a run that did not finish: "
+            f"{trust.detail}"
+        )
+
+    def test_one_invocation_per_root_each_with_its_own_junitxml(
+        self, monkeypatch, tmp_path
+    ):
+        """Read off the commands actually issued, per root, rather than from the source.
+
+        A grep for `--junitxml` passes on a line computing one path for every root, and
+        the merge would then vouch for whichever root wrote last.
+        """
+        tree = _handler_tree(tmp_path, untested=2)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        issued: list[list[str]] = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            # ⚠️ `git` passes THROUGH. `coverage_all.subprocess` and
+            # `check_coverage_debt.subprocess` are the same module object, so patching
+            # `run` on it also replaces the one `fanout_roots` derives its roots with --
+            # and a stub returning a `CompletedProcess` with `stdout=None` makes that
+            # derivation raise rather than return nothing, which is at least loud. A
+            # blanket stub here measured the stub.
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, **kwargs)
+            issued.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        cov_all.run(tree, sys.executable, parallel=False)
+        pytest_calls = [c for c in issued if "pytest" in c]
+        assert len(pytest_calls) == 2, (
+            f"{len(pytest_calls)} pytest invocation(s) for a prefix holding two tested "
+            f"handlers and two untested ones: {pytest_calls}"
+        )
+        records = {
+            arg.split("=", 1)[1]
+            for cmd in pytest_calls
+            for arg in cmd
+            if arg.startswith("--junitxml=")
+        }
+        assert len(records) == 2, f"roots share a run record path: {sorted(records)}"
+        covered = {
+            arg.split("=", 1)[1]
+            for cmd in pytest_calls
+            for arg in cmd
+            if arg.startswith("--cov=")
+        }
+        assert covered == {"handler_0", "handler_1"}, (
+            f"--cov is {sorted(covered)}; bounding it to anything wider pulls the "
+            f"untested handlers into the report at 0.00"
+        )
+        assert all("--cov-append" in cmd for cmd in pytest_calls)
+        assert all("-n" not in cmd for cmd in pytest_calls), (
+            "a fan-out invoked with parallel=False asked for xdist workers; `--serial` "
+            "is the escape hatch and it has to actually change the flags"
+        )
+        rendered = [c for c in issued if "coverage" in c and "xml" in c]
+        assert len(rendered) == 1, (
+            f"the report must be rendered ONCE from the combined data, not per root: "
+            f"{rendered}"
+        )
+
+    def test_a_fanout_tree_with_no_root_refuses_rather_than_reporting_zero(
+        self, monkeypatch, tmp_path
+    ):
+        """A derivation that found nothing must not look like a measured tree.
+
+        An empty report here would be handed to the ratchet, which would then name every
+        recorded file in the tree as having vanished — a confident page of findings
+        caused by a broken derivation.
+        """
+        tree = _handler_tree(tmp_path, tests=False)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        # An earlier successful run's pair, which is the state that makes this sharper
+        # than the render-failure case: BOTH files are stale, so their mtimes agree with
+        # each other and the pairing window cannot see it. Measured before the fix:
+        # `run_trust` returned `clean` and reported the earlier run's test count.
+        report = ccd.report_path(tree)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            '<?xml version="1.0" ?><coverage line-rate="0.9"/>', encoding="utf-8"
+        )
+        ccd.run_record_path(report).write_text(
+            '<?xml version="1.0" ?><testsuite tests="5" errors="0" failures="0"/>',
+            encoding="utf-8",
+        )
+        name, code, total, output = cov_all.run(tree, sys.executable, parallel=False)
+        assert code == 2, output
+        assert total is None
+        assert "derived no pytest root" in output, output
+        assert not report.is_file(), (
+            "an earlier run's report survived a tree measured over nothing, so the "
+            "ratchet reads a full verdict about that earlier run — and because its "
+            "record is stale too, the mtime pairing agrees and cannot see it"
+        )
+        assert not ccd.run_record_path(report).is_file(), (
+            "the stale record survived, so it would vouch for whatever report appears "
+            "next"
+        )
+
+    def test_the_merged_record_is_not_written_when_no_root_wrote_one(self, tmp_path):
+        """An empty record must not replace a good one from an earlier real run.
+
+        Two suites in this repository drive `run` over the REAL registry with
+        `subprocess.run` mocked, so no root writes a record and the destination is a real
+        path beside a real report. Writing `<testsuites/>` there would turn a measured
+        tree into an unverified one for whoever ran the ratchet next.
+        """
+        destination = tmp_path / "coverage-x-results.xml"
+        destination.write_text(
+            '<?xml version="1.0" ?><testsuite tests="7" errors="0" failures="0"/>',
+            encoding="utf-8",
+        )
+        before = destination.read_text(encoding="utf-8")
+        assert cov_all._merge_run_records([tmp_path / "absent.xml"], destination) == 0
+        assert destination.read_text(encoding="utf-8") == before
+
+    def test_the_fanout_run_carries_the_first_party_pin(self, monkeypatch, tmp_path):
+        """#1094 on the fan-out path, which is not covered by the pin on the other one.
+
+        `import idp_common` follows the editable-install pointer in site-packages, not
+        the checkout a suite lives in, and this environment's pointer is into a sibling
+        worktree. So an unpinned invocation measures a **different tree** and reads green
+        doing it — and these figures are a ratchet's input that `--write` records
+        permanently. Dropping the pin from `run_fanout` is invisible to every assertion
+        about the non-fan-out `run`, which is why this one reads the environment the
+        fan-out's pytest actually receives.
+        """
+        tree = _handler_tree(tmp_path)
+        _fake_lib_package(tmp_path, "idp_probe_pkg")
+        subprocess.run(
+            ["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True
+        )
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        real_run = subprocess.run
+        envs: list[dict[str, str]] = []
+
+        def fake_run(cmd, cwd=None, env=None, **kwargs):
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, env=env, **kwargs)
+            envs.append(dict(env or {}))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        cov_all.run(tree, sys.executable, parallel=False)
+        expected = str(tmp_path / "lib" / "idp_probe_pkg")
+        assert envs, "no invocation was captured, so this asserts nothing"
+        for env in envs:
+            assert expected in env.get("PYTHONPATH", "").split(":"), (
+                f"a fan-out invocation carries PYTHONPATH={env.get('PYTHONPATH')!r}, "
+                f"which does not pin {expected}. Without it the run can measure another "
+                f"checkout entirely and report a figure about that tree (#1094)."
+            )
+
+    def test_a_render_failure_makes_the_tree_fail_and_says_so(
+        self, monkeypatch, tmp_path
+    ):
+        """`coverage xml` failing must not read as a measured tree.
+
+        It is the one step after every root has passed, so without this the roots are all
+        green, the exit code is 0, and the only symptom is a report that is not there —
+        which the ratchet reports as an unmeasured tree rather than as a producer that
+        failed, pointing the reader at the wrong half.
+        """
+        tree = _handler_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        real_run = subprocess.run
+
+        def fake_run(cmd, cwd=None, env=None, **kwargs):
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, env=env, **kwargs)
+            if "coverage" in cmd and "xml" in cmd:
+                return subprocess.CompletedProcess(cmd, 3, "", "no data to report")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        _, code, total, output = cov_all.run(
+            tree, sys.executable, parallel=False, capture=True
+        )
+        assert code != 0, (
+            "every root passed and the render failed, and the tree reported success — so "
+            f"`coverage_all.py` exits 0 with no report for it: {output}"
+        )
+        assert total is None
+        assert "coverage xml failed" in output and tree.name in output, output
+
+    def test_a_render_failure_leaves_no_report_for_a_fresh_record_to_vouch_for(
+        self, monkeypatch, tmp_path
+    ):
+        """The one pairing `run_trust` cannot detect, which the fan-out could create.
+
+        That comparison is `abs(record.mtime - report.mtime)` against a 600-second
+        window, so it is **symmetric**: what it rules out is the two being far apart, not
+        a direction. Either pairing inside the window reads as one run — measured, by
+        setting the mtimes both ways and calling `run_trust`, which answered `clean` for
+        both and `unverified` for both at 1200s. A fan-out whose render fails after its
+        roots pass is how the fresh-record-beside-stale-report half arises. The producer's
+        own non-zero exit does stop the ratchet in CI, where the two are consecutive steps
+        of one job; what it does not stop is a developer who runs the producer, does not
+        look at its exit status, and then runs the gate.
+
+        So the stale report is removed and no record is written: the tree becomes
+        **unmeasured**, which `--require-all-trees` refuses by name.
+        """
+        tree = _handler_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        report = ccd.report_path(tree)
+        record = ccd.run_record_path(report)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            '<?xml version="1.0" ?><coverage line-rate="0.99"/>', encoding="utf-8"
+        )
+        record.write_text(
+            '<?xml version="1.0" ?><testsuite tests="9" errors="0" failures="0"/>',
+            encoding="utf-8",
+        )
+        old_record = record.read_text(encoding="utf-8")
+        real_run = subprocess.run
+
+        def fake_run(cmd, cwd=None, env=None, **kwargs):
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, env=env, **kwargs)
+            if "coverage" in cmd and "xml" in cmd:
+                return subprocess.CompletedProcess(cmd, 3, "", "no data to report")
+            # ⚠️ The roots WRITE their records, which is what a real root does. Without
+            # these three lines the second assertion below cannot fail: `_merge_run_records`
+            # finds nothing readable and declines to write for its own reason, so the
+            # `else:` this test exists to pin can be removed with the suite staying green.
+            # Measured both arms after adding them.
+            Path(
+                next(a for a in cmd if a.startswith("--junitxml=")).split("=", 1)[1]
+            ).write_text(
+                '<?xml version="1.0" ?><testsuite tests="1" errors="0" failures="0"/>',
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        cov_all.run(tree, sys.executable, parallel=False, capture=True)
+        assert not report.is_file(), (
+            "the stale report survived a failed render, so a record written now would "
+            "pair with it inside the 600s window and the ratchet would reach a full "
+            "verdict about an earlier run's measurement"
+        )
+        assert record.read_text(encoding="utf-8") == old_record, (
+            "the record was rewritten although the render failed"
+        )
+
+    def test_a_root_whose_run_record_is_unreadable_fails_the_tree(
+        self, monkeypatch, tmp_path
+    ):
+        """A merged record describing a fraction of the run must not read as finished.
+
+        If a root's JUnit is lost while its coverage data survives, the report is
+        complete, every file is at its floor and the ratchet passes — on a record
+        vouching for part of the suite. `conditions.collected` is the only trace and the
+        gate never compares it (only `skipped` drift, and only beside a finding that
+        already exists), so the producer is the only place that can see this.
+        """
+        tree = _handler_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        real_run = subprocess.run
+        seen: list[Path] = []
+
+        def fake_run(cmd, cwd=None, env=None, **kwargs):
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, env=env, **kwargs)
+            if "coverage" in cmd and "xml" in cmd:
+                Path(cmd[cmd.index("-o") + 1]).write_text(
+                    '<?xml version="1.0" ?><coverage line-rate="0.5"/>',
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            # One root writes its record; the other does not, which is the shape a
+            # truncated write leaves.
+            target = Path(
+                next(a for a in cmd if a.startswith("--junitxml=")).split("=")[1]
+            )
+            if not seen:
+                target.write_text(
+                    '<?xml version="1.0" ?><testsuite tests="1" errors="0" '
+                    'failures="0"/>',
+                    encoding="utf-8",
+                )
+            seen.append(target)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        _, code, _, output = cov_all.run(
+            tree, sys.executable, parallel=False, capture=True
+        )
+        assert len(seen) == 2, seen
+        assert code != 0, (
+            f"one of two roots wrote no run record and the tree reported success, so the "
+            f"merged record vouches for half the run while reading as finished: {output}"
+        )
+        assert "vouches for a fraction" in output, output
+
+    def test_the_work_directory_is_per_invocation(self, monkeypatch, tmp_path):
+        """Two invocations must not be able to delete each other's coverage data.
+
+        A fixed directory cleared on entry was doing exactly that, and the path that
+        triggered it was not a second run but a **passing unit test**: two suites here
+        drive this producer over the real registry with `subprocess.run` mocked, and
+        `shutil.rmtree` is not `subprocess.run`. A live 17-root measurement was emptied
+        by one such test and then exited 0, rendering 66.72% against a recorded 69.23%
+        and reading as `clean` on a record covering 371 of 639 tests.
+
+        Asserted on the directory the invocation actually uses — read out of
+        `COVERAGE_FILE` — because that is what decides it, and on the tree being left
+        clean afterwards.
+        """
+        tree = _handler_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        real_run = subprocess.run
+        data_files: set[str] = set()
+
+        def fake_run(cmd, cwd=None, env=None, **kwargs):
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, env=env, **kwargs)
+            data_files.add((env or {}).get("COVERAGE_FILE", ""))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        cov_all.run(tree, sys.executable, parallel=False, capture=True)
+        first = set(data_files)
+        data_files.clear()
+        cov_all.run(tree, sys.executable, parallel=False, capture=True)
+        assert len(first) == 1 and len(data_files) == 1, (first, data_files)
+        assert first != data_files, (
+            f"both invocations used the same coverage data file ({first}), so one "
+            f"clearing it destroys the other's measurement"
+        )
+        left = sorted(
+            p.name
+            for p in ccd.report_path(tree).parent.iterdir()
+            if p.name.startswith(cov_all.FANOUT_WORK_PREFIX)
+        )
+        assert not left, f"working directories accumulated in the tree: {left}"
+
+    def test_the_refusal_reaches_a_developer_who_is_not_capturing(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """With `--jobs 1` nothing captures, so a returned string nobody prints is silent.
+
+        The refusal is the only output a tree measured over nothing produces, and the
+        sequential path is the one a developer uses when watching a single tree.
+        """
+        tree = _handler_tree(tmp_path, tests=False)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        cov_all.run(tree, sys.executable, parallel=False, capture=False)
+        assert "derived no pytest root" in capsys.readouterr().out
+
+    def test_a_parallel_fanout_tree_does_ask_for_the_worker_share(
+        self, monkeypatch, tmp_path
+    ):
+        """The worker count a fan-out root is given, read off the command.
+
+        This is the live path -- neither fan-out tree declares `serial`, measured -- and
+        the absence of `-n` under `--serial` is asserted elsewhere. Both directions are
+        covered because the flag is an escape hatch whose whole value is that it changes
+        the flags.
+        """
+        tree = ccd.Tree("handlers", "src/lambda", ".", fanout=True)
+        _handler_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        real_run = subprocess.run
+        issued: list[list[str]] = []
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            if cmd and cmd[0] == "git":
+                return real_run(cmd, cwd=cwd, **kwargs)
+            issued.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(cov_all.subprocess, "run", fake_run)
+        cov_all.run(tree, sys.executable, parallel=True, workers=3)
+        pytest_calls = [c for c in issued if "pytest" in c]
+        assert pytest_calls, "no pytest invocation was issued"
+        for cmd in pytest_calls:
+            assert cmd[cmd.index("-n") + 1] == "3", cmd
+
+    def test_the_real_registry_has_fanout_trees_with_derived_roots(self):
+        """Non-vacuity against the real tree, since every case above is synthetic."""
+        fanout = [t for t in ccd.TREES if t.fanout]
+        assert fanout, "no fan-out tree in the real registry"
+        for tree in fanout:
+            assert len(ccd.fanout_roots(tree)) >= 10, (
+                f"{tree.name} derived {len(ccd.fanout_roots(tree))} root(s); 17 and 21 "
+                f"were derived when the fan-out landed"
+            )
 
 
 def _probe_tree(tmp_path: Path, name: str = "probe"):
@@ -838,6 +1439,77 @@ class TestTheWorkerBudgetUnderConcurrency:
         assert cov_all.main() == 0
         assert "1 at a time" in capsys.readouterr().out
 
+    def test_one_tree_alone_gets_the_whole_host_unless_workers_is_given(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The reason `--workers` exists, with the default it overrides measured beside it.
+
+        `--only` clamps `--jobs` to the number of trees selected, so one tree collapses
+        it to 1 and the share for one job is the entire machine. A figure taken that way
+        describes a worker count no CI run uses, and it is routinely compared against one
+        that does — which is how two incomparable numbers end up in the same table. The
+        remedy used to be narrowing what `cpu_count()` sees with `taskset`, a step
+        outside the tool.
+        """
+        monkeypatch.setattr(cov_all, "cpu_count", lambda: 16)
+        trees = [_fake_tree(tmp_path, "only")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        assert "16 xdist worker(s)" in capsys.readouterr().out
+        assert rec.cmd_for("only")[rec.cmd_for("only").index("-n") + 1] == "16"
+
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--workers", "4"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        assert "4 xdist worker(s) each" in out and "on 16 CPU(s)" in out, out
+        assert "--workers overrides the derived share" in out, out
+        assert rec.cmd_for("only")[rec.cmd_for("only").index("-n") + 1] == "4"
+
+    def test_serial_does_not_announce_a_worker_count_it_will_not_use(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """`--serial` passes no `-n`, so naming a share is the misreport `--workers` bans.
+
+        The banner printed the derived share unconditionally, including under the one
+        flag that guarantees nothing uses it — which is verbatim the "two numbers that
+        look comparable and are not" failure the `--serial`/`--workers` refusal cites as
+        its own justification.
+        """
+        monkeypatch.setattr(cov_all, "cpu_count", lambda: 16)
+        trees = [_fake_tree(tmp_path, "only")]
+        _install(monkeypatch, tmp_path, trees, _Recorder())
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--serial"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        assert "no -n at all (--serial)" in out, out
+        assert "xdist worker(s)" not in out.split("\n")[0], out.split("\n")[0]
+
+    def test_serial_and_workers_together_are_refused(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Refused rather than resolved either way: there is no reading of both."""
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path, "a")], rec)
+        monkeypatch.setattr(
+            sys, "argv", ["coverage_all.py", "--serial", "--workers", "4"]
+        )
+        assert cov_all.main() == 2
+        assert rec.calls == [], "nothing should have been run"
+        assert "name a share nothing uses" in capsys.readouterr().out
+
+    def test_workers_below_one_is_refused_rather_than_clamped(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path, "a")], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--workers", "0"])
+        assert cov_all.main() == 2
+        assert rec.calls == [], "nothing should have been run"
+
     def test_jobs_below_one_is_refused_rather_than_clamped(
         self, monkeypatch, tmp_path, capsys
     ):
@@ -854,11 +1526,11 @@ class TestTheWorkerBudgetUnderConcurrency:
     ):
         """The asymmetry survives concurrency, which is the whole reason for it.
 
-        `scripts` declares serial because xdist under-collects a suite driving its
-        subject as a subprocess. Concurrency exists to hide that tree's 16 minutes
-        behind the others — so a budget that handed it workers would be the change that
-        defeats its own purpose, silently, by reporting falls in files whose suites are
-        green.
+        `Tree.serial` is a per-entry declaration that a tree declines `-n`, and no
+        registry tree makes it today — so this drives a synthetic one. The asymmetry is
+        what matters: `--serial` can force a parallel tree serial, and nothing can force
+        a declared-serial tree parallel, because a budget that handed it workers would
+        defeat the declaration silently.
         """
         ser = ccd.Tree("ser", "ser", "pkg", (), serial=True)
         par = ccd.Tree("par", "par", "pkg", (), serial=False)

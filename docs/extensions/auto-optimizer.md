@@ -59,7 +59,7 @@ The Auto Optimizer system is scientifically validated in [this paper submitted t
 
 The Auto Optimizer is a paid extension to the IDP Accelerator, available as a subscription on [AWS Marketplace](https://aws.amazon.com/marketplace/pp/prodview-44jb64lvdxr3y). It is in **beta**: subscribing means accepting the beta licence terms shown on the listing, and it is labelled **Auto Optimizer (Beta)** in the IDP web UI until it reaches general availability.
 
-It is published for the same Regions as the accelerator's own templates — **us-east-1**, **us-west-2**, and **eu-central-1**. Your IDP Accelerator stack has to run in one of them; an extension page in any other Region says so instead of offering an install.
+It is published for **us-east-1**, **us-west-2** and **eu-central-1** only — a smaller set than the Regions the accelerator itself is published to, which also include **ca-central-1**. Your IDP Accelerator stack has to run in one of the three; an extension page in any other Region, Canada included, says so instead of offering an install.
 
 Once installed, it appears under **Extensions** in the IDP web UI navigation.
 

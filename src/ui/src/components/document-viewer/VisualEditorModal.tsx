@@ -9,7 +9,6 @@ import {
   Modal,
   Box,
   SpaceBetween,
-  Container,
   Header,
   Spinner,
   Button,
@@ -40,8 +39,6 @@ const logger = new ConsoleLogger('VisualEditorModal');
 // Extended Box props to allow native HTML attributes that Cloudscape passes through at runtime
 type ExtendedBoxProps = BoxProps & React.HTMLAttributes<HTMLDivElement>;
 const ExtBox = Box as React.ComponentType<ExtendedBoxProps>;
-
-
 
 interface VisualEditorModalProps {
   visible: boolean;
@@ -1028,73 +1025,112 @@ const VisualEditorModal = ({
                     overflow: 'hidden',
                   }}
                 >
-                  <Container
-                    header={
-                      <Header
-                        variant="h3"
-                        actions={
-                          <SpaceBetween direction="horizontal" size="xs" alignItems="center">
-                            {/* Expand/Collapse controls */}
-                            <Button variant="normal" onClick={handleExpandAll}>
-                              + Expand All
-                            </Button>
-                            <Button variant="normal" onClick={handleCollapseAll}>
-                              − Collapse All
-                            </Button>
-                            {/* Filter dropdown */}
-                            <select
-                              value={filterMode}
-                              onChange={(e) => setFilterMode(e.target.value)}
-                              style={{
-                                padding: '4px 8px',
-                                borderRadius: '4px',
-                                border: '1px solid #ccc',
-                              }}
-                            >
-                              <option value="none">Show All</option>
-                              <option value="confidence-alerts">Confidence Alerts Only</option>
-                              <option value="eval-mismatches" disabled={!showEvaluation}>
-                                Eval Mismatches Only
-                              </option>
-                            </select>
-                            {/* Evaluation toggle */}
-                            {(isBaselineAvailable || loadingEvaluation) && (
-                              <>
-                                {loadingEvaluation && <Spinner {...({ size: 'small' } as Record<string, unknown>)} />}
-                                <Toggle
-                                  checked={showEvaluation}
-                                  onChange={({ detail }) => {
-                                    setShowEvaluation(detail.checked);
-                                    // Reset filter when turning off evaluation
-                                    if (!detail.checked) {
-                                      setFilterMode('none');
-                                    }
-                                  }}
-                                  disabled={loadingEvaluation || !baselineData}
-                                >
-                                  Show Evaluation
-                                </Toggle>
-                              </>
-                            )}
-                          </SpaceBetween>
-                        }
-                      >
-                        Document Data
-                      </Header>
-                    }
+                  {/* A plain bordered box rather than Cloudscape Container, for the
+                      reason the pages pane beside it already is: Container takes its
+                      height from its content, so the scrolling list below could only
+                      be sized by naming a figure — and wherever the header plus that
+                      figure exceeded this pane, which clips with `overflow: hidden`,
+                      what fell outside the visible area was the end of the list AND
+                      this box's own bottom border. As a flex column with
+                      `minHeight: 0` the list takes the leftover space at any
+                      viewport height, and nothing is guessed. */}
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      border: '1px solid #c6c6cd',
+                      borderRadius: '16px',
+                      padding: '12px',
+                      boxSizing: 'border-box',
+                    }}
                   >
+                    <Header
+                      variant="h3"
+                      actions={
+                        <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+                          {/* Expand/Collapse controls */}
+                          <Button variant="normal" onClick={handleExpandAll}>
+                            + Expand All
+                          </Button>
+                          <Button variant="normal" onClick={handleCollapseAll}>
+                            − Collapse All
+                          </Button>
+                          {/* Filter dropdown */}
+                          <select
+                            value={filterMode}
+                            onChange={(e) => setFilterMode(e.target.value)}
+                            style={{
+                              padding: '4px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid #ccc',
+                            }}
+                          >
+                            <option value="none">Show All</option>
+                            <option value="confidence-alerts">Confidence Alerts Only</option>
+                            <option value="eval-mismatches" disabled={!showEvaluation}>
+                              Eval Mismatches Only
+                            </option>
+                          </select>
+                          {/* Evaluation toggle */}
+                          {(isBaselineAvailable || loadingEvaluation) && (
+                            <>
+                              {loadingEvaluation && <Spinner {...({ size: 'small' } as Record<string, unknown>)} />}
+                              <Toggle
+                                checked={showEvaluation}
+                                onChange={({ detail }) => {
+                                  setShowEvaluation(detail.checked);
+                                  // Reset filter when turning off evaluation
+                                  if (!detail.checked) {
+                                    setFilterMode('none');
+                                  }
+                                }}
+                                disabled={loadingEvaluation || !baselineData}
+                              >
+                                Show Evaluation
+                              </Toggle>
+                            </>
+                          )}
+                        </SpaceBetween>
+                      }
+                    >
+                      Document Data
+                    </Header>
                     <div
                       style={{
                         flex: 1,
+                        minHeight: 0,
                         overflowY: 'auto',
                         overflowX: 'hidden',
-                        padding: '16px',
+                        paddingTop: '8px',
                         boxSizing: 'border-box',
-                        maxHeight: '550px',
-                        minHeight: '350px',
+                        /* `flex: 1` with `minHeight: 0`, and no height of its own.
+                           The parent is now a flex column inside a pane of definite
+                           height, so this box gets exactly what is left after the
+                           header — which is what makes the list scrollable to its
+                           end at every viewport size.
+
+                           `minHeight: 0` is the load-bearing half: a flex item's
+                           default `min-height: auto` refuses to shrink below its
+                           content, so without it this box grows to fit the fields
+                           and pushes its own bottom, and the border below it, past
+                           the clipping pane.
+
+                           Previously a hard 550px with no working flex parent, so
+                           wherever the header plus 550px exceeded the row, the
+                           bottom of this box sat inside the clipped region: it
+                           scrolled to its own end with the last rows
+                           never becoming visible, which reads as a field list that
+                           simply stops — and on a document whose last rows are
+                           nested list items, as a missing control. */
                       }}
                     >
-                      <ExtBox style={{ minHeight: 'fit-content' }}>
+                      {/* No `minHeight: 'fit-content'` here. On the scrolling box's
+                          own child that is the same refusal-to-shrink as above, one
+                          level down, and it is what kept the content taller than the
+                          box that is supposed to scroll it. */}
+                      <ExtBox>
                         {/* Read-only is the default here; without this the greyed
                             inputs read as broken rather than as a mode. */}
                         {isReadOnly && (
@@ -1316,7 +1352,7 @@ const VisualEditorModal = ({
                         )}
                       </ExtBox>
                     </div>
-                  </Container>
+                  </div>
                 </div>
               </div>
             ),
