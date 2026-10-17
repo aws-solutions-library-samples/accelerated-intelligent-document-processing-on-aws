@@ -1603,12 +1603,17 @@ group attributes and list items recursively.
 
 `extraction.geometry.mode` controls where field bounding boxes come from:
 
-| `geometry.mode` | Source of boxes | Notes |
+A box locates an **extracted value** on the page, so a field the model returned
+nothing for is never located — under any mode. That accounts for most missing
+boxes in practice, and the viewers now say so per field (see
+[What the viewers show](#what-the-viewers-show)).
+
+| `geometry.mode` | Source of boxes | When to choose it |
 |---|---|---|
-| **`ocr_only`** *(default)* | Real OCR lines only | Model is **not** asked for boxes; cheapest and most accurate |
-| **`llm_grounded`** | LLM estimates, grounded in OCR | Model emits boxes; service replaces them with real OCR boxes where the value matches |
-| **`llm`** | LLM estimates as-is | Escape hatch; no grounding |
-| **`off`** | None | No geometry produced |
+| **`ocr_only`** *(default)* | Real OCR lines only | Almost always. The model is **not** asked for boxes, so no added prompt tokens, and OCR boxes beat LLM-estimated ones |
+| **`llm_grounded`** | LLM estimates, corrected against OCR | When values are not present verbatim in the OCR text — reformatted dates, figures read off a chart — so `ocr_only` matches too little |
+| **`llm`** | LLM estimates as-is | ⚠️ **Discouraged.** Same prompt and cost as `llm_grounded`, then skips the correction, so it is never the better of the two. Retained for existing configurations |
+| **`off`** | None | No geometry produced. The viewers stop offering to locate fields and say why, scoped to the section rather than blaming the document or the mode |
 
 ```yaml
 extraction:
@@ -1621,6 +1626,46 @@ extraction:
 > **v0.6 rename.** The LLM-box modes were previously `llm_with_ocr_grounding` /
 > `llm_only`, and the legacy `assessment.ground_geometry_in_ocr: false` maps to
 > `llm`. Old configs are migrated on read.
+
+### What the viewers show
+
+Wherever extracted fields are displayed — the document viewer, the human-review
+editor, Test Studio's ground-truth editor and the evaluation-correction table —
+each field carries one of two controls, so you can tell before clicking whether
+that field can be located on the page image. Neither is about the value, which is
+displayed either way — they are about whether its *position* is known:
+
+| control | meaning |
+|---|---|
+| 🔍 **Highlight _field_ on the page image** | The field has a bounding box. Activating it outlines the value on the page image. |
+| ⓘ **Why _field_ has no bounding box** | The explanation names which of the four causes applies, since they have different remedies. |
+
+The causes, which have different remedies:
+
+- **No value was extracted.** There is nothing to locate. This is the common case,
+  and it is not a geometry problem — if the field should have a value, the thing to
+  look at is the extraction prompt or the document.
+- **No confidence or bounding-box data was recorded for the field.** The assessment
+  step covered some of the section's fields and not this one, so nothing was ever
+  looked for. Checking the value against the page cannot reveal this, which is why
+  it is stated separately: a packet section displaying ten fields with entries for
+  three is an ordinary shape.
+- **A value that could not be matched to anything on the page.** The field *does*
+  carry assessment data, and matching found nothing. Under `ocr_only` that means
+  the value is not present verbatim in the OCR text, which happens when extraction
+  canonicalizes it (a reformatted date) or infers it from elsewhere. `llm_grounded`
+  is the mode that addresses this class.
+- **No field in the section has one.** The cause is shared by every row rather
+  than being about any one value. ⚠️ It is reported about the **section**, not the
+  document or the configuration: one section of a packet can come back with no
+  boxes while its siblings have them under the same `geometry.mode`, so neither
+  can be concluded from the viewer.
+
+A section also states its coverage up front — *"6 of 10 fields have a bounding
+box"* — so the split is visible without hovering every row. The denominator is the
+fields the section **displays**, which is not always the number the assessment
+recorded data for: a field with no entry still has a row, still carries a control,
+and still counts.
 
 ### `ocr_only` (default) — OCR grounding via `pageData.json`
 

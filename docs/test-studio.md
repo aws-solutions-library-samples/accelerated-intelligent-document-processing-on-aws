@@ -984,9 +984,11 @@ not hide the confidence of the others.
 navigation as well as closing the tab — clicking a nav link with corrections
 pending used to discard them silently.
 
-Each field also carries a **Show &lt;field&gt; on the page** button, which highlights
-where the value was read from. That was previously available only by clicking the
-field, with no visible affordance and no keyboard equivalent.
+Each field carries a **Highlight &lt;field&gt; on the page image** button where a
+bounding box was recorded, which outlines where the value was read from; where
+none was, the same slot explains why. Locating a value was previously available
+only by clicking the field, with no visible affordance and no keyboard
+equivalent.
 
 ## How much review is enough?
 
