@@ -22,7 +22,7 @@
 > `template.yaml`, `nested/api-resolvers/template.yaml`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor
 > source rather than edited in place. The main user pool has **five** groups (an
-> `Annotator` group scoped by `allowedTestSets`); **159** operations are routable
+> `Annotator` group scoped by `allowedTestSets`); **160** operations are routable
 > through the dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover,
 > including the absence of a default deny at the dispatcher; §5.2 covers the two
@@ -279,24 +279,24 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
 
-**159 operations** are routable — 42 mapped directly by the
+**160 operations** are routable — 42 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **107** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **108** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 160, not 159, because one field (`getCircuitBreakerStatus`)
+three sets sum to 161, not 160, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 159, which is exactly the number of entries in
+union is 160, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
 | Admin + Author | 42 |
-| Admin only | 44 |
+| Admin only | 38 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 26 |
 | Admin + Author + Viewer | 15 |
 | Any authenticated user, group or no group (`ANY`) | 8 |
 | Admin + Annotator + Author | 10 |
-| Admin + Annotator | 5 |
+| Admin + Annotator | 12 |
 | Admin + Annotator + Reviewer | 4 |
 | Admin + Reviewer | 2 |
 | Admin + Annotator + Author + Viewer | 1 |

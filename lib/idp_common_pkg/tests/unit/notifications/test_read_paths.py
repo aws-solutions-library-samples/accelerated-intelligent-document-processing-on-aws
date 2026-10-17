@@ -68,6 +68,19 @@ class TestList:
         page = service.list_messages(ALICE, read=True)
         assert page.items == [] and page.unread_count == 2
 
+    def test_list_unread_count_does_not_lag_a_mark_read(self, make_service, test_type):
+        """The badges show this count, and the UI lists right after marking read.
+
+        The UnreadIndex GSI lags that write, so a count read from it put the old
+        number back on the badge. Simulated by an index that still reports the
+        message as unread.
+        """
+        service = make_service()
+        msg = _post(service)
+        service.mark(ALICE, [msg], read=True)
+        with mock.patch.object(service.store, "unread_count_index", return_value=1):
+            assert service.list_messages(ALICE).unread_count == 0
+
     def test_expired_excluded_from_list_and_both_counts(
         self, make_service, test_type, clock
     ):

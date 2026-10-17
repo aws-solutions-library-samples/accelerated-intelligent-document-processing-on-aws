@@ -262,7 +262,12 @@ class ReviewQueueService:
             raise ReviewAccessDenied(
                 "OUT_OF_SCOPE", "the item's profile is outside your scope"
             )
-        if not self.directory.is_member(caller, record.profile, record.queue):
+        # The holder keeps their own item even when the queue no longer lists them
+        # (an assignment made before they were taken off the list).
+        is_holder = record.state == CLAIMED and record.owner_key == caller.reviewer_key
+        if not is_holder and not self.directory.is_member(
+            caller, record.profile, record.queue
+        ):
             logger.warning("Rejecting review-queue access: NOT_A_MEMBER")
             raise ReviewAccessDenied(
                 "NOT_A_MEMBER", "you are not a member of this queue"
@@ -648,6 +653,11 @@ class ReviewQueueService:
         new = old.model_copy(deep=True)
         reclaim = old.state == CLAIMED and old.owner_key
         self._claim_fields(new, caller, rq.lease_minutes, now_ms, now_iso)
+        # A claim is the Annotator assigning the item to themselves: like an Admin
+        # assignment it never expires, and the queue's time limit sends a reminder.
+        definition = rq.queue(old.queue)
+        time_limit = definition.time_limit_minutes if definition else 60
+        new.sweep_at_ms = now_ms + time_limit * 60_000
         extra = [
             self.store.counter_txn_item(
                 caller.reviewer_key, 1, cap=rq.max_claims_per_reviewer, now_iso=now_iso

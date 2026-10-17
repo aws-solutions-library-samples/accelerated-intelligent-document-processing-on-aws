@@ -5,8 +5,8 @@
 
 Queues are system-wide definitions in HITLTable (:mod:`.queue_defs`), not
 part of any configuration profile. Their work goes to Annotators: an Admin works
-every queue, and an Annotator works a queue whose ``eligible_annotators`` is empty
-or names them. Reads fail closed: a definition read failure raises
+every queue, and an Annotator works only a queue whose ``eligible_annotators``
+names them. Reads fail closed: a definition read failure raises
 ``ReviewAccessDenied("CONFIG_UNAVAILABLE")``.
 """
 

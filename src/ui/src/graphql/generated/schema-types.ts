@@ -896,6 +896,7 @@ export type Mutation = {
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
+  claimTestSetDocument?: Maybe<TestSetDocumentAssignment>;
   clearDraftLabels?: Maybe<TestSet>;
   clearReadInboxMessages?: Maybe<InboxMutationResult>;
   completeReviewItem?: Maybe<ReviewItem>;
@@ -1112,6 +1113,12 @@ export type MutationClaimReviewArgs = {
 export type MutationClaimReviewItemArgs = {
   cycleId: Scalars['String']['input'];
   objectKey: Scalars['String']['input'];
+};
+
+
+export type MutationClaimTestSetDocumentArgs = {
+  objectKey: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
 };
 
 

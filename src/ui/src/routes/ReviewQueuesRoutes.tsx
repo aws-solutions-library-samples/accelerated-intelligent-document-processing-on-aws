@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 //
 // /review-queues: the annotation screens for one item (Admin and Annotator; Inbox
-// notification links point here) and HITL › Queue Management (Admin only).
+// notification links point here), each queue's page (Admin, and the Annotators listed
+// on it, who reach it from My Work › Queues) and HITL › Queue Management (Admin only).
 import React from 'react';
 import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
@@ -16,9 +17,17 @@ import AnnotationScreen from '../components/review-workspace/AnnotationScreen';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
 import useUserRole from '../hooks/use-user-role';
 import RequireRole from './RequireRole';
-import { MY_TASKS_PATH, REVIEW_QUEUES_PATH, productionQueuePath, testSetQueuePath } from './constants';
+import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, productionQueuePath, testSetQueuePath } from './constants';
 
 const MY_WORK_ROOT: BreadcrumbGroupProps.Item = { text: 'My Work', href: `#${MY_TASKS_PATH}` };
+const MY_QUEUES_CRUMB: BreadcrumbGroupProps.Item = { text: 'Queues', href: `#${MY_QUEUES_PATH}` };
+
+/** A queue's page: Queue Management › <queue> for an Admin, My Work › Queues › <queue> for an Annotator. */
+const useQueueCrumbs = (queueCrumb: BreadcrumbGroupProps.Item) => {
+  const { isAdmin } = useUserRole();
+  if (isAdmin) return { root: undefined, crumbs: [queueCrumb] };
+  return { root: MY_WORK_ROOT, crumbs: [MY_QUEUES_CRUMB, queueCrumb] };
+};
 
 /**
  * An Annotator reaches the annotation screens from My Work › Tasks, an Admin from
@@ -52,14 +61,15 @@ const TestSetItemPage = (): React.JSX.Element => {
 };
 
 /**
- * A test set's queue page (Admin). Keyed on the set so moving between sets remounts
- * the workspace: its per-set state — above all the opened version transition — must
- * never carry over to another set.
+ * A test set's queue page (Admin, and the Annotators listed on it). Keyed on the set
+ * so moving between sets remounts the workspace: its per-set state — above all the
+ * opened version transition — must never carry over to another set.
  */
 const TestSetQueuePage = (): React.JSX.Element => {
   const { testSetId = '' } = useParams();
+  const { root, crumbs } = useQueueCrumbs({ text: `Test set: ${testSetId}`, href: '#' });
   return (
-    <ReviewQueuesLayout crumbs={[{ text: `Test set: ${testSetId}`, href: '#' }]}>
+    <ReviewQueuesLayout root={root} crumbs={crumbs}>
       <AnnotationWorkspace key={testSetId} mode="queue" />
     </ReviewQueuesLayout>
   );
@@ -67,8 +77,9 @@ const TestSetQueuePage = (): React.JSX.Element => {
 
 const ProductionQueuePage = (): React.JSX.Element => {
   const { queue = '' } = useParams();
+  const { root, crumbs } = useQueueCrumbs({ text: decodeURIComponent(queue), href: '#' });
   return (
-    <ReviewQueuesLayout crumbs={[{ text: decodeURIComponent(queue), href: '#' }]}>
+    <ReviewQueuesLayout root={root} crumbs={crumbs}>
       <ReviewQueuePage />
     </ReviewQueuesLayout>
   );
@@ -98,9 +109,6 @@ const QueueManagementRoutes = (): React.JSX.Element => (
           </ReviewQueuesLayout>
         }
       />
-      <Route path="queues/:queue" element={<ProductionQueuePage />} />
-      <Route path="queues/:profile/:queue" element={<LegacyProductionQueueRedirect />} />
-      <Route path="test-sets/:testSetId" element={<TestSetQueuePage />} />
       {/* Queue health is part of Queue Management and each queue's page. */}
       <Route path="supervise" element={<Navigate to={REVIEW_QUEUES_PATH} replace />} />
       <Route path="*" element={<Navigate to={REVIEW_QUEUES_PATH} replace />} />
@@ -126,6 +134,31 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
         element={
           <RequireRole roles={['Admin', 'Annotator']}>
             <TestSetItemPage />
+          </RequireRole>
+        }
+      />
+      {/* A queue's page: Admins, and Annotators from My Work › Queues (the API refuses an unlisted queue). */}
+      <Route
+        path="queues/:queue"
+        element={
+          <RequireRole roles={['Admin', 'Annotator']}>
+            <ProductionQueuePage />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="queues/:profile/:queue"
+        element={
+          <RequireRole roles={['Admin', 'Annotator']}>
+            <LegacyProductionQueueRedirect />
+          </RequireRole>
+        }
+      />
+      <Route
+        path="test-sets/:testSetId"
+        element={
+          <RequireRole roles={['Admin', 'Annotator']}>
+            <TestSetQueuePage />
           </RequireRole>
         }
       />

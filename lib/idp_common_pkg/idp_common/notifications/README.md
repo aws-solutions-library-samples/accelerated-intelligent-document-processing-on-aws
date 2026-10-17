@@ -38,7 +38,10 @@ One DynamoDB table, `NotificationsTable`, with one partition per recipient
 | Preferences | `PREFS` | `MutedTypes`, `UpdatedAt` |
 
 The sparse GSI `UnreadIndex` (HASH `UnreadPK`, RANGE `SK`, INCLUDE
-`ExpiresAfter`, `Type`, `Severity`) gives a single-partition unread count. Items
+`ExpiresAfter`, `Type`, `Severity`) gives a single-partition unread count, which
+`getInboxUnreadCount` returns. `listInboxMessages` and the mutations return the
+exact count from the base table instead: the UI lists again straight after the
+caller's own mark or delete, and the GSI lags that write. Items
 expire through DynamoDB TTL on `ExpiresAfter`; reads also filter
 `ExpiresAfter > now`, so an expired item that TTL has not yet deleted is never
 listed or counted.

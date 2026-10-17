@@ -312,6 +312,24 @@
         }
       ]
     },
+    "claimTestSetDocument": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "testSetId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "clearDraftLabels": {
       "args": [
         {

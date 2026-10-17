@@ -280,7 +280,7 @@ const QueueDefinitionModal = ({
           </FormField>
           <FormField
             label="Eligible Annotators"
-            description="Who this queue's items may be assigned to. Leave empty to allow every Annotator."
+            description="The Annotators who work this queue: they see it in My Work › Queues, claim its items and can be assigned them. With none listed, only Admins work it."
             stretch
           >
             <Multiselect
@@ -290,7 +290,7 @@ const QueueDefinitionModal = ({
               filteringType="auto"
               statusType={annotatorsLoading ? 'loading' : 'finished'}
               loadingText="Loading Annotators"
-              placeholder="Any Annotator"
+              placeholder="None (Admins only)"
               empty="No Annotator users. Add one in User Management."
             />
           </FormField>

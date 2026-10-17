@@ -4,9 +4,11 @@
 // HITL › Queue Management: the system-wide queue definitions, the Annotators work is
 // assigned to, and assigning Test Studio documents. Production items are assigned
 // with reassignReviewItem and unassigned with forceReleaseReviewItem (review-api.ts).
+// A queue is worked by the Annotators listed on it; Annotators claim its documents.
 import { generateClient } from '../../api/client-shim';
 import {
   assignTestSetDocuments as assignTestSetDocumentsMutation,
+  claimTestSetDocument as claimTestSetDocumentMutation,
   createReviewQueue as createReviewQueueMutation,
   deleteReviewQueue as deleteReviewQueueMutation,
   listMyTestSetTasks as listMyTestSetTasksQuery,
@@ -39,13 +41,13 @@ export const listAnnotatorEmails = async (): Promise<string[]> => {
   return (r.data?.listAnnotators ?? []).filter((e): e is string => !!e);
 };
 
-/** Annotators a queue's items may go to: its eligible list, or every Annotator when empty. */
+/** Annotators a queue's items may go to: the ones listed on it (an empty list means none). */
 export const eligibleAnnotators = (
   annotators: readonly string[],
   queue?: Pick<ReviewQueueDefinition, 'eligibleAnnotators'> | null,
 ): string[] => {
   const eligible = new Set((queue?.eligibleAnnotators ?? []).map((e) => e.toLowerCase()));
-  return eligible.size === 0 ? [...annotators] : annotators.filter((e) => eligible.has(e.toLowerCase()));
+  return annotators.filter((e) => eligible.has(e.toLowerCase()));
 };
 
 // ------------------------------------------------------------- queue definitions
@@ -89,7 +91,21 @@ export const unassignTestSetDocuments = async (testSetId: string, objectKeys: st
   return (r.data?.unassignTestSetDocuments ?? []).filter((a): a is TestSetDocumentAssignment => !!a);
 };
 
-/** Every test set as a Test Studio queue, with its stored counts (one DynamoDB-only call). */
+/**
+ * Claim one unassigned, unreviewed Test Studio document: it is assigned to the caller
+ * (no expiry) and shows in My Work › Tasks. Only an Annotator listed on the set's queue may.
+ */
+export const claimTestSetDocument = async (testSetId: string, objectKey: string): Promise<TestSetDocumentAssignment> => {
+  const r = await client.graphql({ query: claimTestSetDocumentMutation, variables: { testSetId, objectKey } });
+  const a = r.data?.claimTestSetDocument;
+  if (!a) throw new Error('claimTestSetDocument returned no result');
+  return a;
+};
+
+/**
+ * The Test Studio queues, with their stored counts (one DynamoDB-only call). An Admin
+ * gets every test set; an Annotator only the sets whose queue lists them.
+ */
 export const listTestSetQueues = async (): Promise<TestSetQueueSummary[]> => {
   const r = await client.graphql({ query: listTestSetQueuesQuery });
   return (r.data?.listTestSetQueues ?? []).filter((q): q is TestSetQueueSummary => !!q);

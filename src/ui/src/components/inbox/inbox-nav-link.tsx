@@ -13,7 +13,7 @@ export const buildInboxNavLink = (unreadCount: number | null): SideNavigationPro
   if (n > 0) {
     link.info = (
       <span>
-        <Badge color="red">{n > 99 ? '99+' : n}</Badge>
+        <Badge color="blue">{n > 99 ? '99+' : n}</Badge>
         <span className="idp-visually-hidden"> unread</span>
       </span>
     );

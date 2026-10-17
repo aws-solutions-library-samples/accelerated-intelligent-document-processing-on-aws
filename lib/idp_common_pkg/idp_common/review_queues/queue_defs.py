@@ -70,7 +70,7 @@ class QueueDefinition(BaseModel):
     )
     #: When an assigned item is still open after this long, its Annotator is reminded.
     time_limit_minutes: int = Field(default=DEFAULT_TIME_LIMIT_MINUTES, ge=1, le=10080)
-    #: Annotators (by email) this queue's work may be assigned to; empty = any Annotator.
+    #: Annotators (by email) who work this queue; empty = none (Admins only).
     eligible_annotators: List[str] = Field(default_factory=list, max_length=200)
 
     @field_validator("id", mode="before")
@@ -114,7 +114,9 @@ class QueueDefinition(BaseModel):
         return list(self.eligible_annotators)
 
     def allows(self, email: str) -> bool:
-        return not self.eligible_annotators or email.lower() in self.eligible_annotators
+        # Only the listed Annotators work a queue; an empty list means none (Admins
+        # still work every queue, see QueueDirectory.is_member).
+        return email.lower() in self.eligible_annotators
 
     def to_item(self) -> dict[str, Any]:
         return {

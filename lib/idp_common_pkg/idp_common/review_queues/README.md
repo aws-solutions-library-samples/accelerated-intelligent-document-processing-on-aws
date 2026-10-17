@@ -102,30 +102,41 @@ document's completion when the finalize run ends.
   `listReviewQueues`, `createReviewQueue`, `updateReviewQueue` and
   `deleteReviewQueue`. Default and Escalation can't be deleted, and nor can a queue
   that still holds items.
-- Nobody claims work. An Admin assigns an item to an Annotator with
-  `reassignReviewItem` and unassigns it with `forceReleaseReviewItem`. The assignee
-  must be in the `Annotator` group and allowed by the queue's
-  `eligible_annotators`. Internally, an assignment is a claim whose lease is
-  `ASSIGNMENT_LEASE_MINUTES` (ten years), so it never expires, and the per-reviewer
-  cap is lifted to `ASSIGNMENT_CAP`.
+- A queue's `eligible_annotators` is its membership (`QueueDefinition.allows`): an
+  Annotator works only the queues that list them, and an empty list means none.
+  Admins work every queue (`QueueDirectory.is_member`).
+- Work reaches an Annotator two ways. They **claim** an item from one of their
+  queues (`claimReviewItem`, `claimNextReviewItem`), or an Admin assigns it with
+  `reassignReviewItem` (and unassigns it with `forceReleaseReviewItem`). Either way
+  the holder must be in the `Annotator` group and on the queue's list. Internally,
+  both are a claim whose lease is `ASSIGNMENT_LEASE_MINUTES` (ten years), so it
+  never expires, and the per-reviewer cap is lifted to `ASSIGNMENT_CAP`.
 - The queue's `time_limit_minutes` schedules one `review.task_reminder` to the
-  assignee if the item is still open after that long. The item stays assigned.
-- An Annotator may open, save, complete and reject only the items assigned to
-  them. Their `allowedConfigVersions` still filters items by profile.
-- Admins still have `claimReviewItem`, `claimNextReviewItem`, `renewReviewLease`,
-  `releaseReviewItem` and `escalateReviewItem` (an Admin's claim takes the same
-  non-expiring lease). The web UI doesn't use them.
+  holder if the item is still open after that long. The item stays assigned.
+- **Skip** is `releaseReviewItem` by the holder: the item goes back to the queue
+  `OPEN`, unassigned, with its draft kept.
+- An Annotator listed on a queue may open its items read-only (`getReviewItem`);
+  saving, completing and rejecting need the claim. The holder keeps access to their
+  item even after being taken off the list. `allowedConfigVersions` still filters
+  items by profile.
+- Admins also have `renewReviewLease` and `escalateReviewItem`. The web UI doesn't
+  use them.
 - **Test Studio** queues are the test sets. `test_set_docs.TestSetDocStore` holds
   each document's summary and assignment (`assignTestSetDocuments`,
-  `unassignTestSetDocuments`, `listMyTestSetTasks`). While a document is assigned,
+  `unassignTestSetDocuments`, `claimTestSetDocument`, `listMyTestSetTasks`). A
+  set's queue is worked by the Annotators in its `QueueEligibleAnnotators`; listing
+  one adds the set to their `allowedTestSets`. `claimTestSetDocument` is
+  `assign(..., only_if_unassigned=True)`: it fails `ALREADY_CLAIMED` or
+  `ALREADY_REVIEWED` instead of overriding. While a document is assigned,
   it carries `OwnerPK=RT#<annotator>`, so My Work › Tasks is one `OwnerIndex`
   Query, and `SweepPK=TS` at the set's time limit for the reminder. When every
   section is reviewed, `complete_section_review` ends the assignment.
-  `skipTestSetDocument` (`mark_skipped`) completes the task without a review: it
-  sets `Skipped`, `SkippedBy` and `SkippedAtMs`, ends the assignment and leaves the
-  labels alone. Summary rebuilds keep it, `assign` clears it, and
-  `assignment_counts` and `getAnnotationQueue`'s `completedDocs` treat a skipped
-  document as completed.
+  `skipTestSetDocument` (`unassign`) hands the document back: the assignment ends,
+  the document is unassigned again and still counts as remaining, and its labels
+  are left alone. Documents skipped before this behaviour carry `Skipped`,
+  `SkippedBy` and `SkippedAtMs` (`mark_skipped`); summary rebuilds keep those,
+  `assign` clears them, and `assignment_counts` and `getAnnotationQueue`'s
+  `completedDocs` still treat such a document as completed.
 - **Summary builds** never run in a queue request. `request_summaries` marks the
   set's metadata `SummaryStatus=BUILDING` (conditionally, so concurrent readers send
   one request; a build older than 15 minutes is requested again) and sends
@@ -134,7 +145,9 @@ document's completion when the finalize run ends.
   `SummaryStatus=READY`, `SummaryCount` and the reviewed count. Until then
   `getAnnotationQueue` returns the summaries written so far with
   `summaryStatus: BUILDING`.
-- **Queue Management's Test Studio list** is `listTestSetQueues`: one DynamoDB read
+- **The Test Studio queue list** is `listTestSetQueues` (every set for an Admin in
+  Queue Management, only the sets listing the caller for an Annotator in My Work ›
+  Queues): one DynamoDB read
   of the sets' metadata items, with the counts the build, assignments and reviews
   keep there (`fileCount`, `QueueReviewedDocs`, `QueueAssignedDocs` via
   `store_assigned_count`). It reads no labels and no queues.

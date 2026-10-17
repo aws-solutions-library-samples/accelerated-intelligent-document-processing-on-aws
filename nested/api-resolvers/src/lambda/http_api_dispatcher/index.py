@@ -269,6 +269,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "listTestSetQueues": "addDocumentsToTestSet",
     "saveTestSetDocumentSection": "addDocumentsToTestSet",
     "skipTestSetDocument": "addDocumentsToTestSet",
+    "claimTestSetDocument": "addDocumentsToTestSet",
     "updateTestSetQueue": "addDocumentsToTestSet",
     # Single hop to a real SSM map entry (aliases do not chain). Advanced-tier
     # SSM value limit is 8,192 bytes; the resolved worst case is checked by

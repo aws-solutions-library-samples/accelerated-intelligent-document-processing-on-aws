@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // HITL › Queue Management: assign the selected items (production or Test Studio) to
-// one Annotator. Annotators never claim work themselves.
+// one of the Annotators listed on their queue.
 import React, { useEffect, useState } from 'react';
 import type { SelectProps } from '@cloudscape-design/components';
 import { Box, Button, FormField, Modal, Select, SpaceBetween } from '@cloudscape-design/components';
@@ -78,7 +78,7 @@ const AssignModal = ({
             filteringType="auto"
             statusType={candidatesLoading ? 'loading' : 'finished'}
             loadingText="Loading Annotators"
-            empty="No Annotator users. Add one in User Management."
+            empty="No Annotators are listed on this queue. Add them under Eligible Annotators in the queue's Settings."
             placeholder="Choose an Annotator"
           />
         </FormField>

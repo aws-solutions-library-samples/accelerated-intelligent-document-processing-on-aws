@@ -641,7 +641,7 @@ production documents held in review queues, and test sets that need ground truth
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
 - **Navigation.** A user whose only role is Annotator sees exactly **My Work**
-  (**Inbox**, **Tasks**, **Favorites**). Other users have no My Work and no Inbox.
+  (**Inbox**, **Tasks**, **Queues**, **Favorites**). Other users have no My Work and no Inbox.
   They see the usual sections their roles
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
@@ -649,12 +649,17 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   Queues** (one per test set), each listing Queue, Items, Pending, Assigned, In progress, Annotators and Priority with an
   actions menu. Admins create, edit and delete
   Production queues here, setting each one's name, priority, time limit, eligible
-  Annotators and reject reasons. On each queue's page, Admins select
+  Annotators (who works the queue) and reject reasons. On each queue's page, Admins select
   items and **Assign** them to an Annotator, **Unassign** them, or **Move** them to
   another queue (for example **Escalation**).
+- **My Work › Queues** lists the queues you're listed on. On a queue's page you can
+  open any item read-only and **Claim** one nobody holds, which assigns it to you.
 - **My Work › Tasks** lists everything assigned to you, both Production review items
   and Test Studio documents, with their document, source, queue and age. Selecting
-  one opens it. **Favorites** lists the queues, test sets and documents you starred.
+  one opens it. The **Tasks** badge counts them; completing, rejecting or skipping an
+  item removes it from the list and the count straight away (**Skip** gives the item
+  back to its queue, unassigned and not completed), and work assigned to you by an
+  Admin appears within about 30 seconds. **Favorites** lists the queues, test sets and documents you starred.
 - **The annotation screen** is the same for every item, whether you open it from
   Tasks, an Inbox message or Queue Management. Production documents are at
   `#/review-queues/items/<document>` and test-set documents at
@@ -699,7 +704,9 @@ it is not stored and not counted. Turning a type back on affects new messages on
 **How quickly messages appear.** The bell, the navigation badge and the Inbox page
 share one check for new messages, about every 60 seconds while the browser tab is
 visible. Checking pauses while the tab is hidden and resumes when you return to it.
-New messages update the badges and never raise a pop-up notification.
+New messages update the badges and never raise a pop-up notification. Your own
+actions (marking messages read or unread, deleting them) update the unread count
+on the bell and the navigation badge straight away.
 
 **Retention.** Messages are kept for a limited time and up to a per-user cap; when
 the cap is reached, the oldest read messages are removed first. Administrators set

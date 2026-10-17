@@ -306,11 +306,10 @@ ANNOTATOR_ALLOWED_FIELDS = (
 # with their baselines. Authors still create sets from a zip, by generation, or
 # empty.
 ADMIN_ONLY_FIELDS = (
-    # Admins assign test-set documents to Annotators; nobody claims one themselves.
+    # Admins assign test-set documents to any listed Annotator.
     "assignTestSetDocuments",
     "unassignTestSetDocuments",
-    # HITL › Queue Management's Test Studio list and queue settings (Admin-only page).
-    "listTestSetQueues",
+    # HITL › Queue Management's Test Studio queue settings (Admin-only page).
     "updateTestSetQueue",
     "resetTestSetLabels",
     "listBucketFiles",
@@ -318,6 +317,14 @@ ADMIN_ONLY_FIELDS = (
     "addDocumentsToTestSet",
 )
 
+
+# Admin and Annotator, not Author: the Test Studio queues (Admins see every set, an
+# Annotator only the sets whose queue lists them: My Work › Queues), and an
+# Annotator claiming a document of such a set, which assigns it to them.
+ADMIN_AND_ANNOTATOR_FIELDS = (
+    "listTestSetQueues",
+    "claimTestSetDocument",
+)
 
 #: Operations slower than this are logged at WARNING, so slow pages can be traced.
 SLOW_OP_MS = 3000
@@ -348,6 +355,8 @@ def _dispatch(event, context):
     if is_appsync_invoke:
         if field_name in ADMIN_ONLY_FIELDS:
             allowed_groups = ["Admin"]
+        elif field_name in ADMIN_AND_ANNOTATOR_FIELDS:
+            allowed_groups = ["Admin", "Annotator"]
         else:
             allowed_groups = ["Admin", "Author"]
             if field_name in ANNOTATOR_ALLOWED_FIELDS:
@@ -408,7 +417,9 @@ def _dispatch(event, context):
     elif field_name == "getTestSets":
         return get_test_sets()
     elif field_name == "listTestSetQueues":
-        return list_test_set_queues()
+        return list_test_set_queues(event)
+    elif field_name == "claimTestSetDocument":
+        return claim_test_set_document(event["arguments"], event)
     elif field_name == "updateTestSetQueue":
         return update_test_set_queue(event["arguments"])
     elif field_name == "saveTestSetDocumentSection":
@@ -2692,8 +2703,7 @@ def _grant_test_set_to_annotator(email, test_set_id, meta=None):
     """An Annotator assigned a document of a set may open that set.
 
     The assignee must be in the Cognito Annotator group (the source of truth, as for
-    production items) and, when the set's queue names eligible Annotators, one of
-    them. Adds the set to their ``allowedTestSets`` on every UsersTable record for
+    production items) and listed on the set's queue. Adds the set to their ``allowedTestSets`` on every UsersTable record for
     the email, creating the record when the user was added in Cognito directly and
     has none yet. Raises ValueError with the reason when the user can't be assigned.
     """
@@ -2703,13 +2713,20 @@ def _grant_test_set_to_annotator(email, test_set_id, meta=None):
     account = cognito_account(pool, email)
     if not account or ANNOTATOR_GROUP not in account["groups"]:
         raise ValueError("ASSIGNEE_NOT_ELIGIBLE: the user isn't in the Annotator group")
-    eligible = [
-        str(e).lower() for e in ((meta or {}).get("QueueEligibleAnnotators") or [])
-    ]
-    if eligible and email not in eligible:
+    if email not in _queue_annotators(meta):
         raise ValueError(
-            "ASSIGNEE_NOT_ELIGIBLE: the Annotator isn't eligible for this queue"
+            "ASSIGNEE_NOT_ELIGIBLE: the Annotator isn't listed on this queue"
         )
+    _grant_allowed_test_set(email, test_set_id, account)
+
+
+def _queue_annotators(meta):
+    """The Annotators (lower-case emails) listed on a test set's queue."""
+    return [str(e).lower() for e in ((meta or {}).get("QueueEligibleAnnotators") or [])]
+
+
+def _grant_allowed_test_set(email, test_set_id, account):
+    """Add the set to every UsersTable record for the email (creating one if needed)."""
     table_name = os.environ.get("USERS_TABLE_NAME", "")
     if not table_name:
         raise ValueError("The users table is not configured")
@@ -3009,8 +3026,13 @@ def get_annotation_queue(args, event=None):
     # claim, so a mixed set cannot reach 100% here. Excluding it instead would report
     # an uploaded set as fully annotated, which
     # test_uploaded_ground_truth_is_not_counted_as_review_work forbids.
+    # A lookup by objectKey is the annotation screen opening one document, not a
+    # "next in queue" list, so a completed document is returned with its state.
+    # Filtering it out made a reviewed document read as "not in the test set".
     queue = [
-        e for e in entries if include_completed or not (e["reviewed"] or e["skipped"])
+        e
+        for e in entries
+        if include_completed or only_object_key or not (e["reviewed"] or e["skipped"])
     ]
 
     # The open transition, so the workspace does not have to call the mutation to discover
@@ -4706,13 +4728,12 @@ def save_test_set_document_section(args, event=None):
 
 
 def skip_test_set_document(args, event=None):
-    """Complete a test-set document's task without reviewing its labels.
+    """Hand a test-set document back to its queue without reviewing it.
 
-    The document is recorded as skipped (by the caller, from the verified token), its
-    assignment ends so it leaves the Annotator's Tasks, and it counts as completed in
-    the queue's progress. Its labels are not touched or stamped reviewed. Assigning
-    it again reopens the task. The handler has already checked set scope and the
-    assignee.
+    The caller's assignment ends, so the document leaves their Tasks and goes back
+    to the queue unassigned, where another Annotator can claim it. It is not
+    completed: its labels are untouched and it still counts as remaining. The
+    handler has already checked set scope and the assignee.
     """
     test_set_id = args.get("testSetId") or ""
     object_key = args.get("objectKey") or ""
@@ -4722,10 +4743,56 @@ def skip_test_set_document(args, event=None):
         raise ValueError("Invalid object key")
     caller = (caller_email(event) or "").lower()
     store = _doc_store()
-    store.mark_skipped(test_set_id, object_key, caller)
+    store.unassign(test_set_id, object_key)
     store_assigned_count(_get_tracking_table(), store, test_set_id)
     logger.info(f"skipTestSetDocument {test_set_id}/{object_key} by {caller}")
     return {"testSetId": test_set_id, "objectKey": object_key, "skipped": True}
+
+
+def claim_test_set_document(args, event=None):
+    """An Annotator takes a document of a set whose queue lists them.
+
+    The document must be unassigned and not yet reviewed. It is assigned to the
+    caller exactly as an Admin assignment would (no expiry; the set's time limit
+    schedules a reminder), so it appears in their My Work › Tasks.
+    """
+    test_set_id = args.get("testSetId") or ""
+    object_key = args.get("objectKey") or ""
+    if not validate_test_set_name(test_set_id):
+        raise ValueError("Invalid test set id")
+    if not object_key or ".." in object_key or object_key.startswith("/"):
+        raise ValueError("Invalid object key")
+    caller = (caller_email(event) or "").lower()
+    if not caller or not _caller_in_groups(event, (ANNOTATOR_GROUP,)):
+        logger.warning("Rejecting claimTestSetDocument: caller is not an Annotator")
+        raise PermissionError("NOT_ELIGIBLE: only Annotators take test-set documents")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if not meta:
+        raise ResourceNotFound(f"Test set '{test_set_id}' not found")
+    if caller not in _queue_annotators(meta):
+        logger.warning(
+            "Rejecting claimTestSetDocument: caller isn't listed on the queue"
+        )
+        raise PermissionError("NOT_ELIGIBLE: you aren't listed on this queue")
+    store = _doc_store()
+    if store.get(test_set_id, object_key) is None:
+        _refresh_summary(test_set_id, object_key)
+    doc = store.assign(
+        test_set_id,
+        object_key,
+        caller,
+        assigned_by=caller,
+        time_limit=time_limit_minutes(meta),
+        only_if_unassigned=True,
+    )
+    store_assigned_count(_get_tracking_table(), store, test_set_id)
+    logger.info(f"claimTestSetDocument {test_set_id}/{object_key} by {caller}")
+    return {
+        "testSetId": doc["testSetId"],
+        "objectKey": doc["objectKey"],
+        "assignedTo": doc.get("assignedTo"),
+        "assignedAt": doc.get("assignedAt"),
+    }
 
 
 #: Test Studio queue settings kept on the set's metadata item.
@@ -4753,8 +4820,10 @@ def _queue_settings_view(item):
 def update_test_set_queue(args):
     """Admin: a test set's queue settings (HITL › Queue Management › Settings).
 
-    Description, priority (0-100), the reminder time limit, the Annotators its
-    documents may be assigned to (empty: any Annotator) and an advisory checklist.
+    Description, priority (0-100), the reminder time limit, the Annotators who work
+    the queue (empty: none, only Admins) and an advisory checklist. Each newly listed
+    Annotator is given access to the set (``allowedTestSets``), as an assignment does,
+    so they can open it from My Work › Queues.
     """
     data = args.get("input") or {}
     test_set_id = data.get("testSetId") or ""
@@ -4764,6 +4833,7 @@ def update_test_set_queue(args):
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
     values = {}
+    added = []
     if "description" in data:
         values["description"] = str(data.get("description") or "").strip()[:300]
     if data.get("priority") is not None:
@@ -4784,6 +4854,7 @@ def update_test_set_queue(args):
         if len(emails) > 200:
             raise ValueError("eligibleAnnotators lists at most 200 Annotators")
         values["eligibleAnnotators"] = emails
+        added = [e for e in emails if e not in _queue_annotators(meta)]
     if "checklist" in data:
         items = [
             str(c).strip()[:200] for c in data.get("checklist") or [] if str(c).strip()
@@ -4793,6 +4864,10 @@ def update_test_set_queue(args):
         values["checklist"] = items
     if not values:
         raise ValueError("Nothing to update")
+    # Before the write, so a listed user who isn't an Annotator refuses the save.
+    new_list = {"QueueEligibleAnnotators": values.get("eligibleAnnotators") or []}
+    for email in added:
+        _grant_test_set_to_annotator(email, test_set_id, new_list)
     names = {f"#a{i}": _QUEUE_SETTING_ATTRS[k] for i, k in enumerate(values)}
     exprs = {f":v{i}": v for i, v in enumerate(values.values())}
     db_client.update_item(
@@ -4807,18 +4882,25 @@ def update_test_set_queue(args):
     return {"testSetId": test_set_id, **_queue_settings_view(meta or {})}
 
 
-def list_test_set_queues():
-    """HITL › Queue Management: every test set as a Test Studio queue, from DynamoDB.
+def list_test_set_queues(event=None):
+    """Test Studio queues: every set for an Admin (HITL › Queue Management), and for
+    an Annotator only the sets whose queue lists them (My Work › Queues).
 
     One read of the sets' metadata items, which carry the counts kept by the
     background summary build, assignments and completed reviews. No S3 reads, and no
     per-set queue reads, so the list appears at once. Sets with no summaries yet are
     queued for a background build.
     """
+    caller = (caller_email(event) or "").lower() if event else ""
+    only_listed = bool(event and event.get("identity")) and not _caller_in_groups(
+        event, ("Admin",)
+    )
     out = []
     for item in _load_test_set_records():
         test_set_id = item.get("id") or str(item.get("PK", "")).replace("testset#", "")
         if not test_set_id:
+            continue
+        if only_listed and caller not in _queue_annotators(item):
             continue
         status, _count = _ensure_summaries(test_set_id, item)
         out.append(

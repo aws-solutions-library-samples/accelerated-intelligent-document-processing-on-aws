@@ -291,7 +291,11 @@ class NotificationService:
             next_token=encode_cursor(messages[-1].id)
             if has_more and messages
             else None,
-            unread_count=self.store.unread_count_index(pk, now),
+            # Exact, not the UnreadIndex count: this is what the badges show, and
+            # the UI lists again right after the caller's own mark/delete. The GSI
+            # lags those writes, so it put the old count back on the badge. The
+            # per-user cap keeps this one-partition query small.
+            unread_count=self.store.unread_count_consistent(pk, now),
         )
 
     def unread_count(self, rk: str, *, consistent: bool = False) -> int:

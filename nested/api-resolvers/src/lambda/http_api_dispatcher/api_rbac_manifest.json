@@ -42,7 +42,8 @@
     ],
     "checkFeatureEntitlement": "ANY",
     "claimNextReviewItem": [
-      "Admin"
+      "Admin",
+      "Annotator"
     ],
     "claimReview": [
       "Admin",
@@ -50,7 +51,12 @@
       "Reviewer"
     ],
     "claimReviewItem": [
-      "Admin"
+      "Admin",
+      "Annotator"
+    ],
+    "claimTestSetDocument": [
+      "Admin",
+      "Annotator"
     ],
     "clearDraftLabels": [
       "Admin",
@@ -290,7 +296,8 @@
     ],
     "getMyProfile": "ANY",
     "getMyReviewQueues": [
-      "Admin"
+      "Admin",
+      "Annotator"
     ],
     "getPricing": [
       "Admin",
@@ -434,7 +441,8 @@
       "Author"
     ],
     "listReviewQueueItems": [
-      "Admin"
+      "Admin",
+      "Annotator"
     ],
     "listReviewQueues": [
       "Admin"
@@ -445,7 +453,8 @@
       "Viewer"
     ],
     "listTestSetQueues": [
-      "Admin"
+      "Admin",
+      "Annotator"
     ],
     "listUsers": [
       "Admin"
@@ -514,7 +523,8 @@
       "Reviewer"
     ],
     "releaseReviewItem": [
-      "Admin"
+      "Admin",
+      "Annotator"
     ],
     "removeDocumentsFromTestSet": [
       "Admin",

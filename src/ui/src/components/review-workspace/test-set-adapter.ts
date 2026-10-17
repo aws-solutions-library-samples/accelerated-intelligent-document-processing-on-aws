@@ -4,7 +4,7 @@
 // The Test Studio adapter of the annotation screen: loads one test-set document's
 // queue row, opens the set's version transition, saves a section through the review
 // API, and completes the document by confirming the sections not saved yet, or skips
-// it (the task completes without a review).
+// it (gives it back to its queue, unassigned and not reviewed).
 //
 // A document with a review record (a draft-labeled pipeline copy) saves through
 // completeSectionReview, which tags the label reviewed-human, records provenance and
@@ -38,7 +38,7 @@ export type AnnotationQueue = NonNullable<GetAnnotationQueueQuery['getAnnotation
 export type QueueItem = AnnotationQueue['documents'][number];
 
 export const NOT_ASSIGNED_MESSAGE =
-  'This document is not assigned to you. Ask an Admin to assign it to your account, then open it from My Work › Tasks.';
+  "You can't open this document. Only the Annotators listed on its test set's queue can; ask an Admin to list you.";
 
 export interface TestSetAnnotation {
   queue: AnnotationQueue | null;
@@ -54,7 +54,7 @@ export interface TestSetAnnotation {
   saveSection: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
   /** Confirm sections unchanged, one at a time; each counts as reviewed. */
   confirmSections: (sectionIds: string[]) => Promise<void>;
-  /** Complete the task without reviewing the labels; the assignment ends. */
+  /** Give the document back to its queue: the assignment ends and it is not reviewed. */
   skip: () => Promise<void>;
 }
 

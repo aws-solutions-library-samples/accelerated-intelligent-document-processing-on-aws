@@ -85,41 +85,51 @@ user locked out for the full TTL.
 
 ## Annotators and review queues
 
-[Review queues](./review-queues.md) are worked by Annotators, and an Admin assigns
-the work. Nobody claims an item themselves.
+[Review queues](./review-queues.md) are worked by the Annotators listed on them. An
+Annotator claims an item from one of their queues, or an Admin assigns it to them.
 
-- **What an Annotator can call.** `listMyReviewWork`, `getReviewItem`,
-  `saveReviewDraft`, `completeReviewItem` and `rejectReviewItem`, each only for
-  items assigned to them (otherwise `NOT_ASSIGNED`). It can also call
-  `listMyTestSetTasks` and the Test Studio annotation operations for the test sets
-  in its `allowedTestSets`. A test-set save, made with `updateTestSetDocumentSections`,
-  `completeSectionReview` or `saveTestSetDocumentSection` (documents with no review
-  copy, such as authored ground truth), and a `skipTestSetDocument`, are accepted only
-  from the document's assignee;
-  Admins and Authors are exempt. On top of that, it gets the `ANY_GROUP` operations every
-  role gets: its own profile, the Inbox and document reads.
+- **What an Annotator can call.**
+  - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,
+    `claimNextReviewItem` and `releaseReviewItem` (Skip) for Production queues, and
+    `listTestSetQueues` and `claimTestSetDocument` for Test Studio queues. Each is
+    limited to the queues that list the caller (otherwise `NOT_A_MEMBER` or
+    `NOT_ELIGIBLE`), and only the holder may release an item (`NOT_LEASE_HOLDER`).
+  - Their work: `listMyReviewWork`, `getReviewItem`, `saveReviewDraft`,
+    `completeReviewItem` and `rejectReviewItem`. `getReviewItem` is read-only for an
+    item the caller doesn't hold; saving and the dispositions need the claim.
+  - `listMyTestSetTasks` and the Test Studio annotation operations for the test sets
+    in its `allowedTestSets`. A test-set save, made with `updateTestSetDocumentSections`,
+    `completeSectionReview` or `saveTestSetDocumentSection` (documents with no review
+    copy, such as authored ground truth), and a `skipTestSetDocument`, are accepted
+    only from the document's assignee; Admins and Authors are exempt.
+  - The `ANY_GROUP` operations every role gets: its own profile, the Inbox and
+    document reads.
 - **What is Admin-only.**
   - Queue Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
-    `deleteReviewQueue`, `listTestSetQueues`, `updateTestSetQueue`, `listAnnotators`.
+    `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
+    `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
   - Assignment: `reassignReviewItem` (assign), `forceReleaseReviewItem` (unassign),
     `assignTestSetDocuments`, `unassignTestSetDocuments`.
-  - `moveReviewItem`, the queue listings, and the claim and lease operations.
+  - `moveReviewItem`, `escalateReviewItem` and `renewReviewLease`.
   - Changing `hitl.review_queues` in a profile.
 - **What scopes it.**
-  - Only members of the Cognito `Annotator` group can be assigned work; both the
-    production and the Test Studio assignment check the group, not the UsersTable
-    persona, so a user who is Admin and Annotator can be assigned.
-  - Assignment comes first: the owner key is taken from the verified claims, and an
-    item must be assigned to the caller.
-  - A queue's **Eligible Annotators** limits who its items can be assigned to.
+  - A queue's **Eligible Annotators** list is its membership: an Annotator sees,
+    claims and is assigned only in queues that list them. An empty list means no
+    Annotators; Admins work every queue.
+  - Only members of the Cognito `Annotator` group can claim or be assigned work;
+    both the production and the Test Studio checks use the group, not the
+    UsersTable persona, so a user who is Admin and Annotator can be assigned.
+  - The owner key is taken from the verified claims. An Annotator keeps the items
+    they hold even after being taken off a queue's list.
   - `allowedConfigVersions` limits which profiles' Production items an Annotator
     can work.
-  - Assigning a Test Studio document adds its test set to the Annotator's
-    `allowedTestSets`.
+  - Listing an Annotator on a Test Studio queue, or assigning them one of its
+    documents, adds the test set to their `allowedTestSets`. Taking them off the
+    list doesn't remove it.
 - **What the console shows.** A user whose only app group is `Annotator` sees
-  exactly My Work: Inbox, Tasks and Favorites. Users without `Annotator` have no
-  My Work and no Inbox (no navigation entry, no bell, no Inbox page). **HITL › Queue
-  Management** is Admin-only.
+  exactly My Work: Inbox, Tasks, Queues and Favorites. Users without `Annotator` have
+  no My Work and no Inbox (no navigation entry, no bell, no Inbox page). **HITL ›
+  Queue Management** is Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`) are unchanged.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
@@ -509,7 +519,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 123 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 124 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 26 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |

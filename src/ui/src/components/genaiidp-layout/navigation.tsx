@@ -38,6 +38,7 @@ import {
   CUSTOM_MODELS_PATH,
   FEATURES_PATH_PREFIX,
   INBOX_PATH,
+  MY_QUEUES_PATH,
   MY_TASKS_PATH,
   MY_WORK_PATH,
   FAVORITES_PATH,
@@ -511,6 +512,8 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     activeHref = `#${CAPACITY_PLANNING_PATH}`;
   } else if (path.startsWith(FAVORITES_PATH)) {
     activeHref = `#${FAVORITES_PATH}`;
+  } else if (path.startsWith(MY_QUEUES_PATH)) {
+    activeHref = `#${MY_QUEUES_PATH}`;
   } else if (path.startsWith(MY_WORK_PATH)) {
     activeHref = `#${MY_TASKS_PATH}`;
   } else if (path.startsWith(REVIEW_QUEUES_PATH)) {
@@ -634,8 +637,8 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
 };
 
 /**
- * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Favorites) and
- * nothing else. Mounts no feature, catalog or version hooks.
+ * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Queues, Favorites)
+ * and nothing else. Mounts no feature, catalog or version hooks.
  */
 const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
   const location = useLocation();
@@ -643,10 +646,13 @@ const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: Navig
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
   const items: SideNavigationProps.Item[] = [buildMyWorkNavSection(buildInboxNavLink(unreadCount), reviewWork?.count ?? null)];
-  // The annotation screens (under /review-queues) are opened from Tasks.
+  // The annotation screens (under /review-queues/.../items) are opened from Tasks; a
+  // queue's own page (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
   if (path.startsWith(FAVORITES_PATH)) activeHref = `#${FAVORITES_PATH}`;
   else if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
+  else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
+    activeHref = `#${MY_QUEUES_PATH}`;
   return (
     <div className="idp-side-nav">
       <SideNavigation items={items} activeHref={activeHref} onFollow={onFollowHandler} />

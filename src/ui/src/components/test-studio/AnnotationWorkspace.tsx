@@ -7,9 +7,12 @@
  *
  * Worst-first: documents are ordered by confidence-alert count so each review removes
  * the most expected error. The page shows the team's progress and, for an Admin,
- * assigns documents to Annotators (an assignment does not expire) and sets how long
- * an assigned document waits before its Annotator is reminded. Each row opens the
- * annotation screen (AnnotationScreen), where documents are annotated.
+ * assigns documents to the Annotators listed on the queue (an assignment does not
+ * expire) and sets how long an assigned document waits before its Annotator is
+ * reminded. A listed Annotator (from My Work › Queues) claims an unassigned document
+ * instead, which assigns it to them. Each row opens the annotation screen
+ * (AnnotationScreen), where documents are annotated (read-only unless assigned to
+ * the viewer).
  *
  * The URL is safe to share: it only navigates, and every operation is authorized
  * server-side against the caller's allowedTestSets.
@@ -45,6 +48,7 @@ import { generateClient } from '../../api/client-shim';
 import { getAnnotationQueue, removeDocumentsFromTestSet } from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
+import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { testSetAnnotateHref, testSetItemPath, testSetQueuePath } from '../../routes/constants';
@@ -54,6 +58,7 @@ import QueueDefinitionModal from '../review-queues/QueueDefinitionModal';
 import type { TestSetQueueTarget } from '../review-queues/QueueDefinitionModal';
 import {
   assignTestSetDocuments,
+  claimTestSetDocument,
   listAnnotatorEmails,
   listTestSetQueues,
   unassignTestSetDocuments,
@@ -126,7 +131,10 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const legacyField = searchParams.get('field');
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
-  const { canAnnotate, isAdmin, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const { canAnnotate, isAdmin, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const reviewWork = useOptionalReviewWork();
+  // A non-Admin Annotator claims documents rather than assigning them.
+  const claimsWork = isAnnotator && !isAdmin;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);
@@ -141,6 +149,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const [candidates, setCandidates] = useState<string[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [bulkBusy, setBulkBusy] = useState<'assign' | 'unassign' | null>(null);
+  const [claimingKey, setClaimingKey] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
   const [deleting, setDeleting] = useState<QueueItem | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -291,9 +300,9 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     setCandidatesLoading(true);
     try {
       const [annotatorEmails, sets] = await Promise.all([listAnnotatorEmails(), listTestSetQueues()]);
-      // Only the Annotators this queue's settings allow (empty: any Annotator).
+      // Only the Annotators listed on this queue (none listed: no Annotator, Admins only).
       const eligible = new Set((sets.find((t) => t.id === testSetId)?.eligibleAnnotators ?? []).map((e) => e.toLowerCase()));
-      setCandidates(eligible.size ? annotatorEmails.filter((e) => eligible.has(e.toLowerCase())) : annotatorEmails);
+      setCandidates(annotatorEmails.filter((e) => eligible.has(e.toLowerCase())));
     } catch (err) {
       setErrorMessage(describeApiError(err, 'list the Annotators'));
     } finally {
@@ -337,6 +346,24 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     }
   };
 
+  /** Claim one document: it is assigned to the caller and shows in My Work › Tasks. */
+  const handleClaim = async (item: QueueItem) => {
+    setClaimingKey(item.objectKey);
+    reviewWork?.beginMutation();
+    try {
+      await claimTestSetDocument(testSetId, item.objectKey);
+      setSuccessMessage(`Claimed ${item.objectKey}. Work it in My Work › Tasks.`);
+    } catch (err) {
+      setErrorMessage(describeApiError(err, 'claim the document'));
+    } finally {
+      setClaimingKey(null);
+    }
+    await Promise.all([loadQueue(), reviewWork?.refresh()]);
+  };
+
+  /** Whether a document can be claimed: nobody holds it and its task isn't complete. */
+  const isClaimable = (item: QueueItem): boolean => !item.assignedTo && !isDone(item);
+
   /** The set's queue settings, read fresh so the dialog never edits stale values. */
   const openSettings = async () => {
     try {
@@ -370,6 +397,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const onRowAction = (item: QueueItem, action: string) => {
     if (action === 'view') navigate(`${testSetItemPath(testSetId, item.objectKey)}?view=source`);
     else if (action === 'annotate') navigate(testSetItemPath(testSetId, item.objectKey));
+    else if (action === 'claim') void handleClaim(item);
     else if (action === 'assign') {
       setSelectedRows([item]);
       void openAssign();
@@ -594,7 +622,9 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                 description={
                   isAdmin
                     ? 'Worst-first: the documents with the most confidence alerts come first. Select documents to assign them to an Annotator.'
-                    : 'Worst-first: the documents with the most confidence alerts come first.'
+                    : claimsWork
+                      ? 'Worst-first: the documents with the most confidence alerts come first. Claim a document that is not assigned yet to work it in My Work › Tasks.'
+                      : 'Worst-first: the documents with the most confidence alerts come first.'
                 }
                 actions={
                   isAdmin && (
@@ -669,9 +699,28 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                     variant="inline-icon"
                     ariaLabel={`Actions for ${item.objectKey}`}
                     expandToViewport
+                    loading={claimingKey === item.objectKey}
                     items={[
                       { id: 'view', text: 'View' },
                       { id: 'annotate', text: 'Annotate' },
+                      ...(claimsWork
+                        ? [
+                            {
+                              id: 'claim',
+                              text: 'Claim',
+                              disabled: !isClaimable(item) || claimingKey !== null,
+                              disabledReason: item.claimedByMe
+                                ? 'This document is assigned to you'
+                                : item.assignedTo
+                                  ? `Assigned to ${item.assignedTo}`
+                                  : isDone(item)
+                                    ? 'This document is complete'
+                                    : claimingKey !== null
+                                      ? 'Claiming…'
+                                      : undefined,
+                            },
+                          ]
+                        : []),
                       ...(isAdmin
                         ? [
                             { id: 'assign', text: item.assignedTo ? 'Reassign' : 'Assign' },

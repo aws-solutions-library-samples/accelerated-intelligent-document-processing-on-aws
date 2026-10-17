@@ -12,16 +12,21 @@ import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { MY_TASKS_PATH } from '../../routes/constants';
 
-/** Returns `exit(queuePath, message)`: show the message, refresh My Work and navigate. */
-const useAnnotationExit = (): ((queuePath: string, message: string) => void) => {
+/**
+ * Returns `exit(queuePath, message, workItemId)`: show the message, drop the finished
+ * item from My Work (so the Tasks badge updates now, not on a later poll), refresh
+ * My Work and navigate. `workItemId` is the item's WorkItem.id.
+ */
+const useAnnotationExit = (): ((queuePath: string, message: string, workItemId: string) => void) => {
   const navigate = useNavigate();
   const { setSuccessMessage } = useAppContext();
   const reviewWork = useOptionalReviewWork();
   const { isAdmin, isAnnotator } = useUserRole();
 
   return useCallback(
-    (queuePath: string, message: string) => {
+    (queuePath: string, message: string, workItemId: string) => {
       setSuccessMessage(message);
+      reviewWork?.settle(workItemId);
       void reviewWork?.refresh();
       navigate(isAnnotator && !isAdmin ? MY_TASKS_PATH : queuePath);
     },

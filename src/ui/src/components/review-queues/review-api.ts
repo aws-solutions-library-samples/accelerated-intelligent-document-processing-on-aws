@@ -5,6 +5,8 @@
 import { generateClient } from '../../api/client-shim';
 import { extractGraphQLErrorMessage } from '../../hooks/utils/graphql-error';
 import {
+  claimNextReviewItem as claimNextReviewItemMutation,
+  claimReviewItem as claimReviewItemMutation,
   completeReviewItem as completeReviewItemMutation,
   forceReleaseReviewItem as forceReleaseReviewItemMutation,
   getMyReviewQueues as getMyReviewQueuesQuery,
@@ -14,9 +16,11 @@ import {
   moveReviewItem as moveReviewItemMutation,
   reassignReviewItem as reassignReviewItemMutation,
   rejectReviewItem as rejectReviewItemMutation,
+  releaseReviewItem as releaseReviewItemMutation,
   saveReviewDraft as saveReviewDraftMutation,
 } from '../../graphql/generated';
 import type {
+  ClaimNextResult,
   MyReviewQueues,
   ReviewDraft,
   ReviewItem,
@@ -86,6 +90,24 @@ export const completeItem = async (item: ItemRef, checklist?: boolean[], note?: 
 export const rejectItem = async (item: ItemRef, reason: string, note?: string): Promise<ReviewItem> => {
   const r = await client.graphql({ query: rejectReviewItemMutation, variables: { ...ref(item), reason, note } });
   return required(r.data?.rejectReviewItem, 'rejectReviewItem');
+};
+
+/** Claim an open item: it is assigned to the caller (no expiry) and shows in My Work › Tasks. */
+export const claimItem = async (item: ItemRef): Promise<ReviewItem> => {
+  const r = await client.graphql({ query: claimReviewItemMutation, variables: ref(item) });
+  return required(r.data?.claimReviewItem, 'claimReviewItem');
+};
+
+/** Claim the next open item of a queue; `item` is null with a `reason` (EMPTY, CONTENDED, CAP_REACHED) when none was claimed. */
+export const claimNextItem = async (queueName: string): Promise<ClaimNextResult> => {
+  const r = await client.graphql({ query: claimNextReviewItemMutation, variables: { queueName } });
+  return required(r.data?.claimNextReviewItem, 'claimNextReviewItem');
+};
+
+/** Skip: give a held item back to its queue, unassigned (the draft is kept). Holder only. */
+export const releaseItem = async (item: ItemRef): Promise<ReviewItem> => {
+  const r = await client.graphql({ query: releaseReviewItemMutation, variables: ref(item) });
+  return required(r.data?.releaseReviewItem, 'releaseReviewItem');
 };
 
 export const forceReleaseItem = async (item: ItemRef): Promise<ReviewItem> => {

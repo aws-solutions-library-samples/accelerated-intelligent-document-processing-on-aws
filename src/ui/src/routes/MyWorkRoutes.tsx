@@ -1,7 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// My Work (Annotators): the caller's Tasks (items assigned to them) and Favorites.
+// My Work (Annotators): the caller's Tasks (items assigned to them), Queues (the
+// queues that list them) and Favorites.
 // Inbox, the third page of the section, keeps its own route.
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
@@ -10,8 +11,9 @@ import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
 import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
 import MyTasksPage from '../components/review-queues/MyTasksPage';
 import FavoritesPage from '../components/review-queues/FavoritesPage';
+import MyQueuesPage from '../components/review-queues/MyQueuesPage';
 import RequireRole from './RequireRole';
-import { FAVORITES_PATH, MY_TASKS_PATH } from './constants';
+import { FAVORITES_PATH, MY_QUEUES_PATH, MY_TASKS_PATH } from './constants';
 
 const ROOT = { text: 'My Work', href: `#${MY_TASKS_PATH}` };
 
@@ -25,6 +27,14 @@ const MyWorkRoutes = (): React.JSX.Element => (
           element={
             <ReviewQueuesLayout root={ROOT} crumbs={[{ text: 'Tasks', href: `#${MY_TASKS_PATH}` }]}>
               <MyTasksPage />
+            </ReviewQueuesLayout>
+          }
+        />
+        <Route
+          path="queues"
+          element={
+            <ReviewQueuesLayout root={ROOT} crumbs={[{ text: 'Queues', href: `#${MY_QUEUES_PATH}` }]}>
+              <MyQueuesPage />
             </ReviewQueuesLayout>
           }
         />

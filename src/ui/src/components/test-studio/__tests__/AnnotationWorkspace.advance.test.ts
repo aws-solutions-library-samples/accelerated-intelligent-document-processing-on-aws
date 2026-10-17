@@ -79,8 +79,9 @@ describe('leaving a document does not wait for the queue reload', () => {
   });
 
   it('does not report a skipped document as reviewed', () => {
-    // A skip is not a verdict.
-    expect(handleAction).toContain('is complete (skipped).');
+    // A skip is not a verdict: it gives the document back to its queue.
+    expect(handleAction).toContain('returned to the queue.');
+    expect(handleAction).not.toContain('is complete (skipped).');
   });
 });
 

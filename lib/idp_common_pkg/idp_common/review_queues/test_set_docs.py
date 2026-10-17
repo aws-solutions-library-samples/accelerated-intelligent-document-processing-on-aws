@@ -285,10 +285,24 @@ class TestSetDocStore:
         *,
         assigned_by: str,
         time_limit: int,
+        only_if_unassigned: bool = False,
     ) -> dict:
+        """Assign a document; ``only_if_unassigned`` is a claim by the Annotator.
+
+        A claim succeeds only while nobody holds the document and it isn't reviewed
+        yet, and raises :class:`TestSetAssignmentError` otherwise.
+        """
         email = assignee_email.strip().lower()
         rk = _reviewer_key(email)
         at = now_ms()
+        condition = "attribute_exists(PK)"
+        extra_values: dict = {}
+        if only_if_unassigned:
+            condition += (
+                " AND attribute_not_exists(Assignee)"
+                " AND (attribute_not_exists(Reviewed) OR Reviewed = :f)"
+            )
+            extra_values[":f"] = False
         try:
             response = self.table.update_item(
                 Key=keys.tsdoc_key(test_set_id, object_key),
@@ -299,8 +313,9 @@ class TestSetDocStore:
                     # Assigning a skipped document again reopens its task.
                     "REMOVE Skipped, SkippedBy, SkippedAtMs"
                 ),
-                ConditionExpression="attribute_exists(PK)",
+                ConditionExpression=condition,
                 ExpressionAttributeValues={
+                    **extra_values,
                     ":e": email,
                     ":k": rk,
                     ":at": at,
@@ -316,8 +331,19 @@ class TestSetDocStore:
             )
         except Exception as exc:  # noqa: BLE001
             if _conditional_failed(exc):
-                raise ValueError(
-                    f"Document '{object_key}' is not in this test set"
+                current = (
+                    self.get(test_set_id, object_key) if only_if_unassigned else None
+                )
+                if current is None:
+                    raise ValueError(
+                        f"Document '{object_key}' is not in this test set"
+                    ) from None
+                if current.get("reviewed"):
+                    raise TestSetAssignmentError(
+                        "ALREADY_REVIEWED: this document is already reviewed"
+                    ) from None
+                raise TestSetAssignmentError(
+                    f"ALREADY_CLAIMED: this document is assigned to {current.get('assignedTo')}"
                 ) from None
             raise
         return self.view(response["Attributes"])
@@ -346,7 +372,7 @@ class TestSetDocStore:
         assignee = (doc or {}).get("assignedTo")
         if not assignee:
             raise TestSetAssignmentError(
-                "NOT_ASSIGNED: this document isn't assigned to you; ask an Admin to assign it"
+                "NOT_ASSIGNED: this document isn't assigned to you; claim it from My Work › Queues or ask an Admin to assign it"
             )
         if assignee != (caller or "").lower():
             raise TestSetAssignmentError(f"Document is assigned to {assignee}")

@@ -703,7 +703,7 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKeys: ["__x__"], assigneeEmail: "nobody@example.com" }
     note: >-
-      Assigns test-set documents to an Annotator (the assignee must hold the Annotator persona) and adds the set to their allowedTestSets. Admin only.
+      Assigns test-set documents to an Annotator listed on the set's queue (the assignee must hold the Annotator persona) and adds the set to their allowedTestSets. Admin only.
   unassignTestSetDocuments:
     groups: [Admin]
     kind: mutation
@@ -717,7 +717,15 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
-      Completes a test-set document's task without reviewing its labels (skipped); the assignment ends. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
+      Hands a test-set document back to its queue: the assignment ends and the document is unassigned again, not completed. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
+
+  claimTestSetDocument:
+    groups: [Admin, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
+    note: >-
+      An Annotator listed on the set's queue assigns one of its unassigned, unreviewed documents to themselves. The caller must be in the Annotator group (an Admin who isn't is refused NOT_ELIGIBLE) and listed on the queue; a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
   saveTestSetDocumentSection:
     groups: [Admin, Author, Annotator]
     kind: mutation
@@ -733,12 +741,12 @@ operations:
     note: >-
       Sets a test set's queue settings (description, priority, reminder time limit, eligible Annotators, checklist). Admin only.
   listTestSetQueues:
-    groups: [Admin]
+    groups: [Admin, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}
     note: >-
-      Lists every test set as a Test Studio queue with its stored counts, from DynamoDB metadata only. Admin only.
+      Lists test sets as Test Studio queues with their stored counts, from DynamoDB metadata only: every set for an Admin, only the sets whose queue lists the caller for an Annotator.
   listMyTestSetTasks:
     groups: [Admin, Author, Annotator]
     kind: read
@@ -1239,23 +1247,23 @@ operations:
   # an allowed role gets a benign 404 (ITEM_NOT_FOUND); claimNextReviewItem names
   # an undefined queue (400).
   getMyReviewQueues:
-    groups: [Admin]
+    groups: [Admin, Annotator]
     kind: read
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { itemLimit: 1 }
     note: >-
-      Lists every queue with its depth and the caller's own items. Admin only.
+      Lists the queues the caller works with their depth and the caller's own items: every queue for an Admin, the queues that list them for an Annotator (My Work › Queues).
   listReviewQueueItems:
-    groups: [Admin]
+    groups: [Admin, Annotator]
     kind: read
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { limit: 1 }
     note: >-
-      Lists a queue's items in priority then FIFO order. Admin only.
+      Lists a queue's items in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER).
   listMyReviewWork:
     groups: [Admin, Annotator]
     kind: read
@@ -1275,23 +1283,23 @@ operations:
     note: >-
       One queue item, its reasons, drafts and history. An Annotator may open only an item assigned to them (NOT_ASSIGNED otherwise) whose profile is in their allowedConfigVersions. A nonexistent key is a benign 404.
   claimReviewItem:
-    groups: [Admin]
+    groups: [Admin, Annotator]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__", cycleId: "000000000000000000000" }
     note: >-
-      Takes one queue item for the caller; the claim is one conditional write. Admin only (Annotators are assigned work, never claim it).
+      Takes one queue item for the caller, assigning it to them (no expiry); the claim is one conditional write. An Annotator may claim only in a queue that lists them (NOT_A_MEMBER).
   claimNextReviewItem:
-    groups: [Admin]
+    groups: [Admin, Annotator]
     kind: mutation
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { queueProfile: "__x__", queueName: "__x__" }
     note: >-
-      Takes the next eligible item of a queue; an undefined queue is a benign 400 (UNKNOWN_QUEUE). Admin only.
+      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them.
   renewReviewLease:
     groups: [Admin]
     kind: mutation
@@ -1302,14 +1310,14 @@ operations:
     note: >-
       Extends the caller's own hold; the owner is checked inside the write condition. Admin only.
   releaseReviewItem:
-    groups: [Admin]
+    groups: [Admin, Annotator]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__", cycleId: "000000000000000000000" }
     note: >-
-      Returns the caller's own item to its queue, keeping the draft. Admin only.
+      Returns the caller's own item to its queue, keeping the draft (Skip). Only the holder may release (NOT_LEASE_HOLDER).
   saveReviewDraft:
     groups: [Admin, Annotator]
     kind: mutation

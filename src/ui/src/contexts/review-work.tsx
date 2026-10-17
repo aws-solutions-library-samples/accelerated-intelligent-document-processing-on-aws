@@ -20,6 +20,12 @@ const client = generateClient();
 const logger = new ConsoleLogger('ReviewWorkProvider');
 
 export const REVIEW_WORK_POLL_INTERVAL_MS = 30_000;
+/**
+ * How long a finished item stays hidden while the server catches up. The task
+ * lists read a GSI, which lags the write that ended the assignment, so a poll
+ * straight after Complete can still return the item.
+ */
+export const SETTLED_HIDE_MS = 120_000;
 
 export interface ReviewWorkContextValue {
   /** Production review items assigned to the caller. */
@@ -36,6 +42,11 @@ export interface ReviewWorkContextValue {
   refreshTestSetTasks: () => Promise<void>;
   /** Discard polls started before now (call before a mutation). */
   beginMutation: () => void;
+  /**
+   * Drop a finished work item (WorkItem.id) from My Work now, and keep it out of
+   * polls until the server stops returning it (at most SETTLED_HIDE_MS).
+   */
+  settle: (workItemId: string) => void;
 }
 
 export const ReviewWorkContext = createContext<ReviewWorkContextValue | null>(null);
@@ -50,10 +61,35 @@ interface State {
 
 const INITIAL: State = { myItems: [], testSetTasks: null, count: null, loaded: false, pollError: null };
 
+const productionId = (item: ReviewItem): string => `p:${item.objectKey}`;
+
+/** The state with the settled items removed and the count recomputed. */
+const withoutSettled = (s: State, settled: ReadonlySet<string>): State => {
+  if (settled.size === 0) return s;
+  const myItems = s.myItems.filter((i) => !settled.has(productionId(i)));
+  const testSetTasks = s.testSetTasks?.filter((t) => !settled.has(t.id)) ?? null;
+  return { ...s, myItems, testSetTasks, count: s.count == null ? null : myItems.length + (testSetTasks?.length ?? 0) };
+};
+
 export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [state, setState] = useState<State>(INITIAL);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const epochRef = useRef(0);
+  // Finished work item ids, with when they stop being hidden.
+  const settledRef = useRef<Map<string, number>>(new Map());
+
+  /**
+   * Settled ids still to hide. Forgets one once it expires, or once a successful
+   * response for its source (`p:` production, `t:` Test Studio) leaves it out.
+   */
+  const activeSettled = (returned: ReadonlySet<string>, answered: ReadonlySet<string>): ReadonlySet<string> => {
+    const now = Date.now();
+    for (const [id, until] of settledRef.current) {
+      const caughtUp = answered.has(id.slice(0, 2)) && !returned.has(id);
+      if (until <= now || caughtUp) settledRef.current.delete(id);
+    }
+    return new Set(settledRef.current.keys());
+  };
 
   const poll = useCallback((): Promise<void> => {
     if (inFlightRef.current) return inFlightRef.current;
@@ -70,13 +106,20 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
           const testSetTasks = testSets.status === 'fulfilled' ? testSets.value.map(fromTestSetTask) : prev.testSetTasks;
           const failure = production.status === 'rejected' ? production.reason : testSets.status === 'rejected' ? testSets.reason : null;
           if (failure) logger.error('My Work poll failed', failure);
-          return {
-            myItems,
-            testSetTasks: testSetTasks ?? (failure ? [] : null),
-            count: myItems.length + (testSetTasks?.length ?? 0),
-            loaded: true,
-            pollError: failure,
-          };
+          const returned = new Set([...myItems.map(productionId), ...(testSetTasks ?? []).map((t) => t.id)]);
+          const answered = new Set<string>();
+          if (production.status === 'fulfilled') answered.add('p:');
+          if (testSets.status === 'fulfilled') answered.add('t:');
+          return withoutSettled(
+            {
+              myItems,
+              testSetTasks: testSetTasks ?? (failure ? [] : null),
+              count: myItems.length + (testSetTasks?.length ?? 0),
+              loaded: true,
+              pollError: failure,
+            },
+            activeSettled(returned, answered),
+          );
         });
       } finally {
         inFlightRef.current = null;
@@ -98,14 +141,20 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
     epochRef.current += 1;
   }, []);
 
+  const settle = useCallback((workItemId: string) => {
+    settledRef.current.set(workItemId, Date.now() + SETTLED_HIDE_MS);
+    setState((prev) => withoutSettled(prev, new Set([workItemId])));
+  }, []);
+
   const value = useMemo<ReviewWorkContextValue>(
     () => ({
       ...state,
       refresh,
       refreshTestSetTasks: refresh,
       beginMutation,
+      settle,
     }),
-    [state, refresh, beginMutation],
+    [state, refresh, beginMutation, settle],
   );
 
   return <ReviewWorkContext.Provider value={value}>{children}</ReviewWorkContext.Provider>;

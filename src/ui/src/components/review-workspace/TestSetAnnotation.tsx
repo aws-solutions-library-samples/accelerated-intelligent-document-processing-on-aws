@@ -5,8 +5,10 @@
 // test-set adapter over the shared SectionEditor), Complete and Skip. Saving a section
 // marks it reviewed; Complete confirms the sections not saved yet, so "the labels
 // are correct" and "I corrected them" end the same way, and needs no edit first.
-// Skip completes the task without reviewing the labels. The assignee works the
-// document; an Admin or Author may too. Nothing here claims or releases.
+// Skip gives the document back to its queue, unassigned and not reviewed, for another
+// Annotator to claim. The assignee works the document; an Admin or Author may too. An
+// Annotator listed on the set's queue can open any document read-only, and Claim an
+// unassigned one to work it.
 import React, { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -26,12 +28,14 @@ import {
 
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
+import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { MY_TASKS_PATH, testSetAnnotateHref, testSetItemPath, testSetQueuePath } from '../../routes/constants';
+import { MY_QUEUES_PATH, testSetAnnotateHref, testSetItemPath, testSetQueuePath } from '../../routes/constants';
 import FileViewer from '../document-viewer/FileViewer';
 import FavoriteButton from '../review-queues/FavoriteButton';
 import ReviewPresence from '../review-queues/ReviewPresence';
+import { claimTestSetDocument } from '../review-queues/reviewer-assignment';
 import GroundTruthVisualEditor from '../test-studio/GroundTruthVisualEditor';
 import {
   DRAFT_PROMPT_BODY,
@@ -60,6 +64,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   const { settings } = useSettingsContext();
   const { isAdmin, isAuthor, isReviewer, isAnnotator, canAnnotate, loading: roleLoading } = useUserRole();
   const exit = useAnnotationExit();
+  const reviewWork = useOptionalReviewWork();
   const [searchParams] = useSearchParams();
   const focusField = searchParams.get('field');
   // ?view=source (the queue's View action) opens on the source document.
@@ -72,6 +77,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
 
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
   const queuePath = testSetQueuePath(testSetId);
+  const workItemId = `t:${testSetId}:${objectKey}`;
 
   const buildFieldLink = useCallback(
     (fieldPath: string) => `${window.location.origin}/${testSetAnnotateHref(testSetId, objectKey)}?field=${encodeURIComponent(fieldPath)}`,
@@ -92,13 +98,13 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
     return (
       <Alert
         type={notAssigned ? 'warning' : 'error'}
-        header={notAssigned ? 'This document is not assigned to you' : "Couldn't open this document"}
+        header={notAssigned ? "You can't open this document" : "Couldn't open this document"}
         action={!notAssigned && <Button onClick={() => void reload()}>Retry</Button>}
       >
         {notAssigned ? (
           <>
-            An Admin assigns Test Studio documents to Annotators. Your assigned documents are in{' '}
-            <Link href={`#${MY_TASKS_PATH}`}>My Work › Tasks</Link>.
+            Only the Annotators listed on this test set&apos;s queue can open its documents. The queues that list you are in{' '}
+            <Link href={`#${MY_QUEUES_PATH}`}>My Work › Queues</Link>.
           </>
         ) : (
           loadError
@@ -130,8 +136,16 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   // Complete needs no edit and no Start annotating first: it opens the version
   // transition itself. Only the role half of the editor's read-only state applies.
   const roleCannotSave = editFlags.saveViaReview ? !editFlags.canSaveViaReview : !editFlags.canSaveDirectToBaseline;
+  // A completed document still opens, so its labels can be read and corrected, but
+  // its task is over: completing or skipping it again would end nothing. Skip now
+  // returns a document to its queue; `skipped` marks one skipped before that, which
+  // still counts as complete.
+  const isComplete = doc.reviewed || !!doc.skipped;
+  // An Annotator (not an Admin, who assigns from the queue) claims a document nobody holds.
+  const canClaim = isAnnotator && !isAdmin && !doc.assignedTo && !isComplete;
   let skipReason: string | undefined;
-  if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
+  if (isComplete) skipReason = doc.reviewed ? 'This document is already reviewed' : 'This document was already skipped';
+  else if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
   else if (dirty) skipReason = 'Save or discard your changes first';
   else if (loading) skipReason = 'Loading…';
   let completeReason: string | undefined = skipReason;
@@ -153,18 +167,37 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
     }
   };
 
+  /** Claim: the document is assigned to the caller; reload so the screen becomes editable. */
+  const handleClaim = async () => {
+    setBusy('claim');
+    reviewWork?.beginMutation();
+    try {
+      await claimTestSetDocument(testSetId, objectKey);
+      setSuccessMessage(`Claimed ${objectKey}. It is in My Work › Tasks.`);
+    } catch (err) {
+      setErrorMessage(describeApiError(err, 'claim this document'));
+    } finally {
+      setBusy(null);
+    }
+    await Promise.all([reload(), reviewWork?.refresh()]);
+  };
+
   const handleAction = async (action: AnnotationAction) => {
+    if (action === 'claim') {
+      await handleClaim();
+      return;
+    }
     setBusy(action);
     try {
       if (action === 'skip') {
         await adapter.skip();
-        exit(queuePath, `${objectKey} is complete (skipped).`);
+        exit(queuePath, `${objectKey} returned to the queue.`, workItemId);
         return;
       }
       // Idempotent server-side: the version transition this completion belongs to.
       if (!draft) await adapter.openDraft();
       await adapter.confirmSections(remaining);
-      exit(queuePath, `${objectKey} is complete and marked reviewed.`);
+      exit(queuePath, `${objectKey} is complete and marked reviewed.`, workItemId);
     } catch (err) {
       setErrorMessage(describeApiError(err, action === 'skip' ? 'skip this document' : 'complete this document'));
       void reload();
@@ -180,7 +213,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
     setSavedSections(next);
     // Saving the last section reviews the document, which ends its assignment.
     if (sections.every((s) => next.has(s.sectionId))) {
-      exit(queuePath, `Saved. ${objectKey} is marked reviewed.`);
+      exit(queuePath, `Saved. ${objectKey} is marked reviewed.`, workItemId);
       return;
     }
     setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Complete.`);
@@ -191,7 +224,12 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       {!testSetBucket && <Alert type="error">TestSetBucket is not configured in settings.</Alert>}
       {!mayWork && (
         <Alert type="info">
-          View only. {doc.assignedTo ? `This document is assigned to ${doc.assignedTo}.` : 'It is not assigned to you.'}
+          View only.{' '}
+          {doc.assignedTo
+            ? `This document is assigned to ${doc.assignedTo}.`
+            : canClaim
+              ? 'Claim this document to work on it; it is then assigned to you and shows in My Work › Tasks.'
+              : 'It is not assigned to you.'}
         </Alert>
       )}
       {mayWork && !doc.claimedByMe && (
@@ -235,7 +273,9 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       badges={
         <>
           <Badge color="grey">Test Studio</Badge>
-          <StatusIndicator type={doc.reviewed ? 'success' : 'pending'}>{doc.reviewed ? 'Reviewed' : 'To review'}</StatusIndicator>
+          <StatusIndicator type={doc.reviewed ? 'success' : doc.skipped ? 'stopped' : 'pending'}>
+            {doc.reviewed ? 'Reviewed' : doc.skipped ? 'Skipped' : 'To review'}
+          </StatusIndicator>
           <FavoriteButton
             favorite={{
               id: `test-set-item:${testSetId}/${objectKey}`,
@@ -268,6 +308,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
         showReject: false,
         showSkip: true,
         skipDisabledReason: skipReason,
+        showClaim: canClaim,
         busy,
         onAction: (action) => void handleAction(action),
       }}

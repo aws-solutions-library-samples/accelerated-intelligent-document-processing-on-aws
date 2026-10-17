@@ -2892,6 +2892,37 @@ class TestTestSetResolver:
         )
         assert len(withall["documents"]) == 2
 
+    def test_a_document_opened_by_key_is_returned_once_reviewed(self, labeling_env):
+        """The annotation screen opens one document by key; a reviewed one must load.
+
+        Filtering it out like a "next in queue" entry made the screen report the
+        document as no longer in the test set right after it was annotated.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/done.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/done.pdf/sections/1/result.json",
+            Body=json.dumps({"labelSource": "reviewed-human"}).encode(),
+        )
+        store = MagicMock()
+        store.get.return_value = {}
+
+        with (
+            patch.object(
+                test_set_index, "_ensure_summaries", return_value=("READY", 1)
+            ),
+            patch.object(test_set_index, "_doc_store", return_value=store),
+        ):
+            queue = test_set_index.get_annotation_queue(
+                {"testSetId": "ts1", "objectKey": "done.pdf"}, None
+            )
+
+        (opened,) = queue["documents"]
+        assert opened["objectKey"] == "done.pdf"
+        assert opened["reviewed"] is True
+
     def test_annotation_queue_reflects_another_annotators_claim(self, labeling_env):
         """A claimed doc must drop out of everyone else's 'next in queue'."""
         table, s3 = labeling_env
@@ -9715,3 +9746,140 @@ class TestDocumentSearchCoversTheWholeSet:
             {"testSetId": "ts1", "search": "x" * test_set_index._SEARCH_MAX_LENGTH}
         )
         assert at_limit["matchCount"] == 0
+
+
+@pytest.fixture
+def queue_claim_env():
+    """Moto tracking table plus HITLTable with a set listing one Annotator."""
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).parent / "review_queues"))
+    from _table import create_review_table
+
+    from idp_common.review_queues.test_set_docs import TestSetDocStore
+
+    region_env = {
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_REGION": "us-east-1",
+        "TRACKING_TABLE": "test-table",
+    }
+    with mock_aws(), patch.dict(os.environ, region_env):
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.create_table(
+            TableName="test-table",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        store = TestSetDocStore(ddb.Table(create_review_table()))
+        _seed_test_set(
+            table, "listed", name="Listed", QueueEligibleAnnotators=["ann@example.com"]
+        )
+        _seed_test_set(table, "unlisted", name="Unlisted")
+        store.upsert_many(
+            "listed",
+            [
+                {
+                    "objectKey": k,
+                    "inputKey": f"listed/input/{k}",
+                    "labelSource": "draft-machine",
+                }
+                for k in ("free.pdf", "mine.pdf")
+            ],
+        )
+        test_set_index._tracking_table = None
+        with (
+            _db_client_on(table),
+            patch.object(test_set_index, "_doc_store", return_value=store),
+            patch.object(test_set_index, "_get_tracking_table", return_value=table),
+            patch.object(
+                test_set_index, "_ensure_summaries", return_value=("READY", 2)
+            ),
+            patch.object(test_set_index, "_refresh_summary"),
+        ):
+            yield table, store
+        test_set_index._tracking_table = None
+
+
+def _caller(email, *groups):
+    return {"identity": {"claims": {"cognito:groups": list(groups), "email": email}}}
+
+
+@pytest.mark.unit
+class TestTestSetQueueClaims:
+    """My Work › Queues for Test Studio: listing, claiming and skipping."""
+
+    def test_an_annotator_lists_only_the_sets_that_list_them(self, queue_claim_env):
+        ids = [
+            q["id"]
+            for q in test_set_index.list_test_set_queues(
+                _caller("ann@example.com", "Annotator")
+            )
+        ]
+        assert ids == ["listed"]
+
+    def test_an_admin_lists_every_set(self, queue_claim_env):
+        ids = {
+            q["id"]
+            for q in test_set_index.list_test_set_queues(
+                _caller("admin@example.com", "Admin")
+            )
+        }
+        assert ids == {"listed", "unlisted"}
+
+    def test_a_listed_annotator_claims_a_document(self, queue_claim_env):
+        _, store = queue_claim_env
+        result = test_set_index.claim_test_set_document(
+            {"testSetId": "listed", "objectKey": "free.pdf"},
+            _caller("ann@example.com", "Annotator"),
+        )
+        assert result["assignedTo"] == "ann@example.com"
+        assert [d["objectKey"] for d in store.assigned_to("ann@example.com")] == [
+            "free.pdf"
+        ]
+
+    def test_an_unlisted_annotator_is_refused(self, queue_claim_env):
+        with pytest.raises(PermissionError, match="NOT_ELIGIBLE"):
+            test_set_index.claim_test_set_document(
+                {"testSetId": "listed", "objectKey": "free.pdf"},
+                _caller("other@example.com", "Annotator"),
+            )
+
+    def test_an_admin_who_is_not_an_annotator_is_refused(self, queue_claim_env):
+        with pytest.raises(PermissionError, match="NOT_ELIGIBLE"):
+            test_set_index.claim_test_set_document(
+                {"testSetId": "listed", "objectKey": "free.pdf"},
+                _caller("ann@example.com", "Admin"),
+            )
+
+    def test_skip_puts_the_document_back_unassigned_and_not_complete(
+        self, queue_claim_env
+    ):
+        _, store = queue_claim_env
+        store.assign(
+            "listed", "mine.pdf", "ann@example.com", assigned_by="a", time_limit=5
+        )
+
+        test_set_index.skip_test_set_document(
+            {"testSetId": "listed", "objectKey": "mine.pdf"},
+            _caller("ann@example.com", "Annotator"),
+        )
+
+        doc = store.get("listed", "mine.pdf")
+        assert doc["assignedTo"] is None
+        assert doc["skipped"] is False and doc["reviewed"] is False
+        # Back in the queue: another listed Annotator can claim it.
+        store.assign(
+            "listed",
+            "mine.pdf",
+            "b@example.com",
+            assigned_by="b",
+            time_limit=5,
+            only_if_unassigned=True,
+        )

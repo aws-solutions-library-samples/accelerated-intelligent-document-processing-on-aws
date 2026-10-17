@@ -60,6 +60,16 @@ interface TestSetRow {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/**
+ * How many Annotators are listed on a queue (its Eligible Annotators, from its
+ * Settings), with their names on hover. Only they work the queue; none listed means
+ * only Admins do.
+ */
+export const AnnotatorsCell = ({ eligible }: { eligible: readonly string[] | null | undefined }): React.JSX.Element => {
+  const names = eligible ?? [];
+  return <span title={names.length ? names.join(', ') : 'No Annotators listed'}>{names.length}</span>;
+};
+
 const QueuesPage = (): React.JSX.Element => {
   const navigate = useNavigate();
   const { setSuccessMessage } = useAppContext();
@@ -270,18 +280,6 @@ const QueuesPage = (): React.JSX.Element => {
 
   // -------------------------------------------------------------- render
   const countCell = (n: number | undefined) => (n == null ? '—' : n);
-  /**
-   * The queue's eligible Annotators (from its Settings; none set means any Annotator),
-   * then how many of them have documents assigned. The names show on hover.
-   */
-  const annotatorsCell = (eligible: readonly string[] | null | undefined, assigned: React.ReactNode): React.ReactNode => {
-    const names = eligible ?? [];
-    return (
-      <span title={names.length ? names.join(', ') : 'Any Annotator can be assigned'}>
-        {names.length ? `${names.length} eligible` : 'Any'} · {assigned} assigned
-      </span>
-    );
-  };
   const eligibleCount = (eligible: readonly string[] | null | undefined): number => eligible?.length ?? 0;
   /** Assigned items no Annotator has started (no draft saved yet). */
   const notStarted = (row: ProductionRow): number | undefined =>
@@ -333,7 +331,7 @@ const QueuesPage = (): React.JSX.Element => {
     {
       id: 'annotators',
       header: 'Annotators',
-      cell: (row) => annotatorsCell(row.definition?.eligibleAnnotators, countCell(row.health?.summary.annotators ?? undefined)),
+      cell: (row) => <AnnotatorsCell eligible={row.definition?.eligibleAnnotators} />,
       sortingComparator: (a, b) => eligibleCount(a.definition?.eligibleAnnotators) - eligibleCount(b.definition?.eligibleAnnotators),
     },
     {
@@ -408,7 +406,7 @@ const QueuesPage = (): React.JSX.Element => {
     {
       id: 'annotators',
       header: 'Annotators',
-      cell: (row) => annotatorsCell(row.ref.eligibleAnnotators, testSetCount(row, row.ref.annotators)),
+      cell: (row) => <AnnotatorsCell eligible={row.ref.eligibleAnnotators} />,
       sortingComparator: (a, b) => eligibleCount(a.ref.eligibleAnnotators) - eligibleCount(b.ref.eligibleAnnotators),
     },
     {
@@ -446,7 +444,7 @@ const QueuesPage = (): React.JSX.Element => {
       header={
         <Header
           variant="h1"
-          description="Define the production review queues and assign their documents to Annotators. Each test set is also a Test Studio queue."
+          description="Define the production review queues, list the Annotators who work each one, and assign their documents. Each test set is also a Test Studio queue."
           actions={
             <Button iconName="refresh" loading={anyLoading} onClick={() => void refresh()} ariaLabel="Refresh queues">
               Refresh

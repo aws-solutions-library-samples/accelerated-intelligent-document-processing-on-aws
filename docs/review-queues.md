@@ -51,7 +51,8 @@ a profile that leaves them off keeps the existing
 
    Its status becomes `HITL_IN_PROGRESS` ("In review"), and the machine output is
    kept as the run's manifest. Admins see it waiting in HITL › Queue Management.
-3. An Admin assigns it to an Annotator, who completes or rejects it.
+3. An Annotator listed on the queue claims it, or an Admin assigns it to one, and
+   the Annotator completes or rejects it.
    - **Complete** applies the corrections, and the document ends `COMPLETED`.
    - **Reject** ends it `REJECTED`, with the machine output unchanged.
 4. Summarization, evaluation, rule validation and the post-processing hooks run in
@@ -59,14 +60,18 @@ a profile that leaves them off keeps the existing
 
 ## Annotator guide
 
-An Annotator sees only **My Work** (**Inbox**, **Tasks** and **Favorites**) and the
-notifications bell. Only Annotators have My Work and an Inbox; other users have
-neither.
+An Annotator sees only **My Work** (**Inbox**, **Tasks**, **Queues** and
+**Favorites**) and the notifications bell. Only Annotators have My Work and an
+Inbox; other users have neither.
 
-- **Tasks** lists everything assigned to you: Production review items and Test Studio
-  documents, each with its document, source, queue and age. Its badge counts both.
-  You can't claim work yourself. An Admin assigns it, and you get an Inbox message
-  when they do.
+- **Queues** lists the Production and Test Studio queues you're listed on (a queue's
+  **Eligible Annotators**). Open one to see its items. You can open any item
+  read-only, and **Claim** one that nobody holds: it's assigned to you and appears
+  in your Tasks. Items someone else holds stay view-only.
+- **Tasks** lists everything assigned to you, whether you claimed it or an Admin
+  assigned it: Production review items and Test Studio documents, each with its
+  document, source, queue and age. Its badge counts both. You get an Inbox message
+  when an Admin assigns you work.
 - Select an item to open it in the **annotation screen**. Production and Test Studio
   items use the same screen, whether you open them from Tasks, an Inbox message or
   Queue Management. The document's page images are shown beside its fields.
@@ -77,13 +82,14 @@ neither.
     note) and keeps the machine output.
   - **Test Studio item**: correct the labels and choose **Complete**. You can also
     choose **Complete** without changing anything, which confirms the labels as
-    correct; it needs no **Start annotating** first. **Skip** completes the task
-    without reviewing the labels, which stay as they are. Saving and versioning work
+    correct; it needs no **Start annotating** first. Saving and versioning work
     exactly as in Test Studio.
-- When you complete or skip an item, it leaves your Tasks and the queue's progress
-  counts it as completed. A skipped Test Studio document is not marked reviewed;
-  assigning it again reopens it. The server refuses a save, a complete, a skip or a
-  reject from anyone other than the item's assignee, except an Admin.
+  - **Skip**, on either kind of item, gives it back: it leaves your Tasks and goes
+    back to its queue unassigned, where another Annotator can claim it. It isn't
+    completed, and a Production item's draft is kept.
+- When you complete an item, it leaves your Tasks and the queue's progress counts it
+  as completed. The server refuses a save, a complete, a skip or a reject from
+  anyone other than the item's assignee, except an Admin.
 - An assignment doesn't expire. If the queue's time limit passes while the item is
   still open, you get one **still to complete** reminder in the Inbox.
 
@@ -101,10 +107,12 @@ in review.
 joins it when User Management gives them the Annotator role, or when the external
 identity provider maps them to it (`ExternalIdPAnnotatorGroupName`, see
 [external-idp.md](./external-idp.md)). A user may hold Annotator alongside another
-role, Admin for example. The Assign dialog lists the group's enabled members; a
-queue's **Eligible Annotators** setting narrows that list for its items. A user added
-to the group in Cognito directly can be assigned work at once: their User Management
-record is created when their first Test Studio document is assigned.
+role, Admin for example. A queue's **Eligible Annotators** setting is who works it:
+only the Annotators listed there see the queue in My Work › Queues, can claim its
+items, and can be assigned them. A queue with nobody listed has no Annotators until
+you add some. Listing an Annotator on a Test Studio queue also gives them access to
+that test set. A user added to the group in Cognito directly can be listed at once:
+their User Management record is created when they're first given a test set.
 
 Each row's actions menu offers **View** and **Settings**; a production queue also
 offers **Delete**. Each queue's page has a **Settings** button too.
@@ -117,11 +125,12 @@ offers **Delete**. Each queue's page has a **Settings** button too.
 | Name, description | What Admins and Annotators see; the name defaults from the id | — |
 | Priority | Higher-priority queues are listed first (0–100) | `50` |
 | Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080) | `60` |
-| Eligible Annotators | The Annotators its items may be assigned to; leave it empty to allow every Annotator | empty |
+| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Empty means none (only Admins) | empty |
 | Reject reasons | The reasons offered when an item is rejected | five common reasons |
 
-**Default** and **Escalation** queues are created automatically on a new stack.
-Neither can be deleted, and nor can a queue that still holds items.
+**Default** and **Escalation** queues are created automatically on a new stack,
+with nobody listed: add Annotators to them in **Settings** before Annotators can work
+them. Neither can be deleted, and nor can a queue that still holds items.
 
 Both tables, **Production Queues** and **Test Studio Queues**, show for each queue:
 
@@ -131,14 +140,14 @@ Both tables, **Production Queues** and **Test Studio Queues**, show for each que
 | Pending | Not yet assigned |
 | Assigned | Assigned to an Annotator who hasn't saved any work on it yet |
 | In progress | Assigned, and the Annotator has saved work (a draft, or some reviewed sections) |
-| Annotators | The queue's Eligible Annotators (their count, or **Any** when none are set; the names on hover), then how many different Annotators hold its assigned items. A change in Settings shows as soon as the dialog closes |
+| Annotators | How many Annotators are listed in the queue's Eligible Annotators (the names on hover). A change in Settings shows as soon as the dialog closes |
 | Priority | The queue's priority (test sets have none) |
 
 The same counts appear at the top of each queue's page.
 
 To work a queue, open its page, select items, and choose one of:
 
-- **Assign to…** picks an eligible Annotator. The item appears in their Tasks and
+- **Assign to…** picks one of the queue's Annotators. The item appears in their Tasks and
   they get an Inbox message. Assigning an item that already has an assignee
   reassigns it.
 - **Unassign** returns the item to the queue. Its draft is kept, and the former
@@ -148,7 +157,7 @@ To work a queue, open its page, select items, and choose one of:
 
 **Test Studio queues** come from test sets: each test set is a queue, created and
 deleted with the set. Its page shows **Queue Progress**: a progress bar plus
-**Status** (percent of documents completed: reviewed or skipped), **Pending**, **Assigned** and
+**Status** (percent of documents reviewed), **Pending**, **Assigned** and
 **Annotators**. Below that are the draft-labeling status, the ground-truth version
 being annotated toward, and every document, worst first, with columns **Document**,
 **Labels**, **Confidence** and **Assigned** (Yes or No; the assignee shows on hover).

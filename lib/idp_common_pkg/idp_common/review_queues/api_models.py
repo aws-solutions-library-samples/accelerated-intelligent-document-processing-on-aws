@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from idp_common.config.models import REVIEW_QUEUE_NAME_PATTERN
@@ -205,14 +205,11 @@ class ItemKeyArgs(_Args):
 
 
 class ClaimNextArgs(_Args):
+    # Queues are system-wide, so a queue is named by queueName alone. queueProfile
+    # is still accepted, and ignored, for callers written when queues belonged to a
+    # configuration profile.
     queue_profile: Optional[str] = Field(default=None, min_length=1, max_length=256)
     queue_name: Optional[str] = Field(default=None, pattern=REVIEW_QUEUE_NAME_PATTERN)
-
-    @model_validator(mode="after")
-    def both_or_neither(self):
-        if (self.queue_profile is None) != (self.queue_name is None):
-            raise ValueError("queueProfile and queueName go together")
-        return self
 
 
 class ListQueueItemsArgs(ClaimNextArgs):

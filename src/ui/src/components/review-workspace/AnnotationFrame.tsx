@@ -2,15 +2,19 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The frame of the annotation screen, the same for production and Test Studio items:
-// the title row with the item's facts, the action bar (Complete, plus Reject for
-// production and Skip for Test Studio), notices, the task context and the editor. Every disabled action says
-// why on hover.
+// the title row with the item's facts, the action bar (Claim for an Annotator viewing
+// an unassigned item; otherwise Complete, plus Reject for production, and Skip, which
+// gives the item back to its queue), notices, the task context and the editor. Every
+// disabled action says why on hover.
 import React from 'react';
 import { Button, Header, SpaceBetween } from '@cloudscape-design/components';
 
 import ReviewWorkspaceLayout from './ReviewWorkspaceLayout';
 
-export type AnnotationAction = 'complete' | 'reject' | 'skip';
+export type AnnotationAction = 'complete' | 'reject' | 'skip' | 'claim';
+
+/** Hover text of Skip while it is available. */
+export const SKIP_HINT = 'Give this item back to its queue unassigned; another Annotator can claim it';
 
 export interface AnnotationActionsProps {
   /** Why Complete is unavailable; undefined when it is available. */
@@ -20,9 +24,14 @@ export interface AnnotationActionsProps {
   /** Offer Reject (production items only). */
   showReject: boolean;
   rejectDisabledReason?: string;
-  /** Offer Skip: complete the task without reviewing (Test Studio items). */
+  /** Offer Skip: give the item back to its queue, unassigned and not completed. */
   showSkip?: boolean;
   skipDisabledReason?: string;
+  /**
+   * Offer Claim (an Annotator viewing an unassigned item): assigns the item to them,
+   * after which it can be worked. Shown instead of the other actions.
+   */
+  showClaim?: boolean;
   busy: AnnotationAction | null;
   onAction: (action: AnnotationAction) => void;
 }
@@ -34,10 +43,20 @@ const AnnotationActions = ({
   rejectDisabledReason,
   showSkip = false,
   skipDisabledReason,
+  showClaim = false,
   busy,
   onAction,
 }: AnnotationActionsProps): React.JSX.Element => {
   const working = busy !== null ? 'Working…' : undefined;
+  if (showClaim) {
+    return (
+      <span title={working ? undefined : 'Assign this item to you, then work it here or from My Work › Tasks'}>
+        <Button variant="primary" disabled={!!working && busy !== 'claim'} loading={busy === 'claim'} onClick={() => onAction('claim')}>
+          Claim
+        </Button>
+      </span>
+    );
+  }
   const completeReason = working ?? completeDisabledReason;
   const rejectReason = working ?? rejectDisabledReason;
   const skipReason = working ?? skipDisabledReason;
@@ -49,7 +68,7 @@ const AnnotationActions = ({
         </Button>
       )}
       {showSkip && (
-        <span title={skipReason ? undefined : 'Complete the task without reviewing the labels'}>
+        <span title={skipReason ? undefined : SKIP_HINT}>
           <Button disabled={!!skipReason} disabledReason={skipReason} loading={busy === 'skip'} onClick={() => onAction('skip')}>
             Skip
           </Button>

@@ -896,6 +896,7 @@ export type Mutation = {
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
+  claimTestSetDocument?: Maybe<TestSetDocumentAssignment>;
   clearDraftLabels?: Maybe<TestSet>;
   clearReadInboxMessages?: Maybe<InboxMutationResult>;
   completeReviewItem?: Maybe<ReviewItem>;
@@ -1112,6 +1113,12 @@ export type MutationClaimReviewArgs = {
 export type MutationClaimReviewItemArgs = {
   cycleId: Scalars['String']['input'];
   objectKey: Scalars['String']['input'];
+};
+
+
+export type MutationClaimTestSetDocumentArgs = {
+  objectKey: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
 };
 
 
@@ -3025,6 +3032,14 @@ export type ClaimReviewItemMutationVariables = Exact<{
 
 
 export type ClaimReviewItemMutation = { claimReviewItem?: { objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> } | null };
+
+export type ClaimTestSetDocumentMutationVariables = Exact<{
+  testSetId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+}>;
+
+
+export type ClaimTestSetDocumentMutation = { claimTestSetDocument?: { testSetId: string, objectKey: string, assignedTo?: string | null, assignedAt?: string | null } | null };
 
 export type ClearDraftLabelsMutationVariables = Exact<{
   testSetId: Scalars['String']['input'];

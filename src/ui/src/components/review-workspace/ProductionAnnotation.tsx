@@ -2,22 +2,25 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The annotation screen for a production review item: the shared SectionEditor over
-// the item's sections, edits autosaved as drafts, then Complete or Reject. The
-// assignee edits; an Admin may too. Nothing here claims, renews or releases.
+// the item's sections, edits autosaved as drafts, then Complete, Reject or Skip (give
+// the item back to its queue; the draft is kept). The assignee edits; an Admin may
+// too. Any Annotator listed on the item's queue can open it read-only, and Claim an
+// unassigned item to work it.
 import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Alert, Box, Button, Container, Link, SpaceBetween, Spinner, StatusIndicator } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
+import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { MY_TASKS_PATH, productionQueuePath, reviewItemHref } from '../../routes/constants';
+import { MY_QUEUES_PATH, productionQueuePath, reviewItemHref } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import FavoriteButton from '../review-queues/FavoriteButton';
 import RejectModal from '../review-queues/RejectModal';
 import ReviewPresence from '../review-queues/ReviewPresence';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
-import { documentName, reviewErrorCode } from '../review-queues/review-api';
+import { claimItem, documentName, releaseItem, reviewErrorCode } from '../review-queues/review-api';
 import AnnotationFrame from './AnnotationFrame';
 import type { AnnotationAction } from './AnnotationFrame';
 import SectionEditor from './SectionEditor';
@@ -27,8 +30,9 @@ import useAnnotationExit from './use-annotation-exit';
 const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.Element => {
   const adapter = useProductionAnnotation(objectKey);
   const { detail, loadError, reload } = adapter;
-  const { setErrorMessage } = useAppContext();
-  const { isAdmin } = useUserRole();
+  const { setErrorMessage, setSuccessMessage } = useAppContext();
+  const { isAdmin, isAnnotator } = useUserRole();
+  const reviewWork = useOptionalReviewWork();
   const exit = useAnnotationExit();
   const [searchParams] = useSearchParams();
   const focusField = searchParams.get('field');
@@ -47,16 +51,18 @@ const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.E
   );
 
   if (loadError && !detail) {
-    const notAssigned = reviewErrorCode(loadError) === 'NOT_ASSIGNED';
+    const code = reviewErrorCode(loadError);
+    const notAssigned = code === 'NOT_ASSIGNED' || code === 'NOT_A_MEMBER';
     return (
       <Alert
         type={notAssigned ? 'warning' : 'error'}
-        header={notAssigned ? 'This item is not assigned to you' : "Couldn't open this review item"}
+        header={notAssigned ? "You can't open this review item" : "Couldn't open this review item"}
         action={!notAssigned && <Button onClick={() => void reload()}>Retry</Button>}
       >
         {notAssigned ? (
           <>
-            An Admin assigns review items to Annotators. Your assigned items are in <Link href={`#${MY_TASKS_PATH}`}>My Work › Tasks</Link>.
+            Only the Annotators listed on this item&apos;s queue can open it. The queues that list you are in{' '}
+            <Link href={`#${MY_QUEUES_PATH}`}>My Work › Queues</Link>.
           </>
         ) : (
           describeApiError(loadError, 'load the review item')
@@ -80,6 +86,8 @@ const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.E
   const assignee = assigned ? item.ownerEmail : null;
   const assignedToMe = assigned && item.isMine;
   const canEdit = !terminal && (assignedToMe || isAdmin);
+  // An Annotator (not an Admin, who assigns from the queue) claims an item waiting for review.
+  const canClaim = isAnnotator && !isAdmin && item.state === QueueItemState.OPEN;
 
   let lockedReason: string | undefined;
   if (terminal) lockedReason = `This item is ${stateView.label.toLowerCase()}`;
@@ -109,15 +117,42 @@ const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.E
       setRejecting(true);
       return;
     }
+    if (action === 'claim') {
+      reviewWork?.beginMutation();
+      const ok = await run(
+        'claim',
+        async () => {
+          await claimItem(item);
+        },
+        'claim the item',
+      );
+      if (ok) {
+        setSuccessMessage(`Claimed ${name}. It is in My Work › Tasks.`);
+        await reload();
+      }
+      void reviewWork?.refresh();
+      return;
+    }
+    if (action === 'skip') {
+      const ok = await run(
+        'skip',
+        async () => {
+          await releaseItem(item);
+        },
+        'skip the item',
+      );
+      if (ok) exit(queuePath, `${name} returned to the queue.`, `p:${objectKey}`);
+      return;
+    }
     const ok = await run('complete', () => adapter.complete(detail.checklist.length ? checklist : undefined), 'complete the review');
-    if (ok) exit(queuePath, `Completed ${name}. Your corrections are being applied.`);
+    if (ok) exit(queuePath, `Completed ${name}. Your corrections are being applied.`, `p:${objectKey}`);
   };
 
   const confirmReject = async (reason: string, note: string | undefined) => {
     const ok = await run('reject', () => adapter.reject(reason, note), 'reject the document');
     if (ok) {
       setRejecting(false);
-      exit(queuePath, `Rejected ${name}.`);
+      exit(queuePath, `Rejected ${name}.`, `p:${objectKey}`);
     }
   };
 
@@ -137,7 +172,15 @@ const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.E
             : 'Not assigned to an Annotator yet. As an Admin you can edit and complete it, or assign it from its queue.'}
         </Alert>
       )}
-      {!terminal && !canEdit && <Alert type="info">{`View only.${assignee ? ` This item is assigned to ${assignee}.` : ''}`}</Alert>}
+      {!terminal && !canEdit && (
+        <Alert type="info">
+          {assignee
+            ? `View only. This item is assigned to ${assignee}.`
+            : canClaim
+              ? 'View only. Claim this item to work on it; it is then assigned to you and shows in My Work › Tasks.'
+              : 'View only.'}
+        </Alert>
+      )}
     </>
   );
 
@@ -171,6 +214,10 @@ const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.E
           completeHint: unticked.length > 0 ? `Not yet ticked: ${unticked.join('; ')}` : 'Apply your corrections and finish the review',
           showReject: true,
           rejectDisabledReason: lockedReason ?? (detail.rejectReasons.length === 0 ? 'This queue defines no reject reasons' : undefined),
+          // Skip gives the item back to its queue: only its holder can.
+          showSkip: assignedToMe,
+          skipDisabledReason: dirty ? 'Saving your latest edits…' : undefined,
+          showClaim: canClaim,
           busy,
           onAction: (action) => void handleAction(action),
         }}

@@ -65,8 +65,8 @@ _SERVICE = create_review_queue_service()
 _DYNAMODB = boto3.resource("dynamodb")
 _SCOPE_CACHE: dict = {}
 
-# Annotators work the items an Admin assigned to them; Admins manage the queues
-# and assign the work. Nobody claims an item themselves.
+# Annotators work the queues that list them: they claim items (or an Admin assigns
+# them) and work their own. Admins manage the queues and assign the work.
 _WORKERS = frozenset({"Admin", "Annotator"})
 _ADMIN = frozenset({"Admin"})
 
@@ -77,12 +77,15 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "saveReviewDraft": _WORKERS,
     "completeReviewItem": _WORKERS,
     "rejectReviewItem": _WORKERS,
-    "getMyReviewQueues": _ADMIN,
-    "listReviewQueueItems": _ADMIN,
-    "claimReviewItem": _ADMIN,
-    "claimNextReviewItem": _ADMIN,
+    # My Work › Queues: an Annotator lists the queues that list them, opens their
+    # items, claims one (assigning it to themselves) and releases it (Skip). The
+    # service limits each to the queues the caller is listed on.
+    "getMyReviewQueues": _WORKERS,
+    "listReviewQueueItems": _WORKERS,
+    "claimReviewItem": _WORKERS,
+    "claimNextReviewItem": _WORKERS,
+    "releaseReviewItem": _WORKERS,
     "renewReviewLease": _ADMIN,
-    "releaseReviewItem": _ADMIN,
     "escalateReviewItem": _ADMIN,
     "getReviewQueuesOverview": _ADMIN,
     "forceReleaseReviewItem": _ADMIN,
@@ -176,11 +179,9 @@ def _my_work(c, args):
 
 def _get_item(c, args):
     a = ItemKeyArgs.model_validate(args)
+    # The service admits the item's holder and the Annotators its queue lists; for
+    # anyone but the holder it is read-only (drafts and dispositions need the claim).
     detail = _SERVICE.get_item_detail(c, a.object_key)
-    # An Annotator opens only the items assigned to them.
-    if not c.is_admin and not detail.item.is_mine:
-        logger.warning("Rejecting review-queue request code=NOT_ASSIGNED")
-        raise PermissionError("NOT_ASSIGNED: this item isn't assigned to you")
     return _dump(detail)
 
 
