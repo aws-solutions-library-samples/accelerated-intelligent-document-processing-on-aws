@@ -61,6 +61,7 @@ from idp_common.review_queues.test_set_summaries import (  # type: ignore
 )
 from idp_common.s3 import find_matching_files  # type: ignore
 from idp_common.testset_scope import (  # type: ignore
+    TestSetAccessDenied,
     assert_can_access_test_set,
     caller_email,
     clear_scope_cache,
@@ -292,8 +293,9 @@ ANNOTATOR_ALLOWED_FIELDS = (
     # them — and it is the operation that preserves the labels being edited away from.
     # Per-set scope asserted in the dispatch below.
     "openTestSetAnnotationDraft",
-    # The documents assigned to the caller, across sets (My Work › Tasks). Returns
-    # only the caller's own assignments, so it needs no per-set scope.
+    # The documents assigned to the caller, across sets (My Work › Tasks). An
+    # assignment can outlive the caller's scope, so the handler drops every set
+    # assert_can_access_test_set refuses.
     "listMyTestSetTasks",
 )
 
@@ -2847,22 +2849,40 @@ def test_set_assignment(field_name, args, event):
 
 
 def list_my_test_set_tasks(event):
-    """The Test Studio documents assigned to the caller, across every set (one Query)."""
+    """The Test Studio documents assigned to the caller, across every set (one Query).
+
+    Only sets the caller may still open: an assignment outlives the Annotator's
+    ``allowedTestSets`` scope (an Admin can narrow it without unassigning), and
+    the rows carry the document's name and classes, so a set the caller lost
+    access to is left out rather than listed.
+    """
     caller = (caller_email(event) or "").lower()
     if not caller:
         return []
-    return [
-        {
-            "testSetId": d["testSetId"],
-            "objectKey": d["objectKey"],
-            "assignedTo": d.get("assignedTo"),
-            "assignedAt": d.get("assignedAt"),
-            "labelSource": d.get("labelSource"),
-            "alertCount": d.get("alertCount"),
-            "documentClasses": d.get("documentClasses") or [],
-        }
-        for d in _doc_store().assigned_to(caller)
-    ]
+    access = {}
+    tasks = []
+    for d in _doc_store().assigned_to(caller):
+        test_set_id = d["testSetId"]
+        if test_set_id not in access:
+            try:
+                assert_can_access_test_set(event, test_set_id)
+                access[test_set_id] = True
+            except TestSetAccessDenied:
+                access[test_set_id] = False
+        if not access[test_set_id]:
+            continue
+        tasks.append(
+            {
+                "testSetId": test_set_id,
+                "objectKey": d["objectKey"],
+                "assignedTo": d.get("assignedTo"),
+                "assignedAt": d.get("assignedAt"),
+                "labelSource": d.get("labelSource"),
+                "alertCount": d.get("alertCount"),
+                "documentClasses": d.get("documentClasses") or [],
+            }
+        )
+    return tasks
 
 
 def get_annotation_queue(args, event=None):
@@ -2880,8 +2900,8 @@ def get_annotation_queue(args, event=None):
     test_set_id = args["testSetId"]
     limit = max(1, min(int(args.get("limit") or 50), 200))
     include_completed = bool(args.get("includeCompleted"))
-    # Fast paths for one document's workspace and for "my claims": neither needs the
-    # worst-first ranking, which reads every document's sections from S3.
+    # objectKey opens one document's workspace, the only path here that reads labels
+    # from S3; mineOnly keeps the caller's own assignments.
     only_object_key = args.get("objectKey") or None
     mine_only = bool(args.get("mineOnly"))
 
@@ -3022,9 +3042,9 @@ def get_annotation_queue(args, event=None):
     reviewed_count = sum(1 for e in entries if e["reviewed"])
     completed_count = sum(1 for e in entries if e["reviewed"] or e["skipped"])
     inspected = len(entries)
-    # The set's real size, not the inspected page: the page is capped, so counting it
-    # would report a 2000-document set as the cap and claim "0 remaining" while most
-    # of the set was untouched.
+    # The set's real size, not the summaries listed: while a build is still running
+    # only some documents have one, so counting them would claim "0 remaining" while
+    # most of the set was untouched.
     total = int(meta.get("fileCount", 0) or 0) or inspected
     # Authored ground truth counts toward totalDocs but has no pipeline copy to
     # claim, so a mixed set cannot reach 100% here. Excluding it instead would report
@@ -3058,7 +3078,7 @@ def get_annotation_queue(args, event=None):
         "completedDocs": completed_count,
         "draftVersion": draft_version,
         "baseVersion": draft_version - 1 if draft_version else None,
-        # Documents beyond the inspected page are unreviewed, so they count here.
+        # Documents with no summary yet are unreviewed, so they count here.
         "remainingDocs": max(0, total - completed_count),
         "claimedByOthers": sum(
             1
@@ -3090,42 +3110,6 @@ def get_annotation_queue(args, event=None):
         f"{result['claimedByOthers']} claimed by others"
     )
     return result
-
-
-def _collect_queue_documents(test_set_id, deadline):
-    """Documents in the set with their label metadata, up to the queue cap.
-
-    Capped and time-bounded because each page reads every section on it from S3,
-    which outlasts the dispatcher on a set of multi-section packets. A short queue
-    is workable, since annotators take documents from the front; a timeout means the
-    workspace cannot open. inspectedDocs reports how much was ranked.
-
-    ``deadline`` is the request's, set before the label-job harvest, so the time the
-    harvest spends comes out of this budget rather than being added to it.
-    """
-    documents = []
-    next_token = None
-    while len(documents) < MAX_DOCS_FOR_ESTIMATE:
-        page = get_test_set_documents(
-            {
-                "testSetId": test_set_id,
-                "limit": min(200, MAX_DOCS_FOR_ESTIMATE - len(documents)),
-                "nextToken": next_token,
-            },
-            deadline=deadline,
-        )
-        documents.extend(page.get("documents") or [])
-        next_token = page.get("nextToken")
-        if not next_token:
-            break
-        if time.monotonic() > deadline:
-            logger.warning(
-                f"getAnnotationQueue({test_set_id}): stopped collecting at "
-                f"{len(documents)} document(s) after "
-                f"{SAMPLING_TIME_BUDGET_SECONDS}s"
-            )
-            break
-    return documents
 
 
 def _claim_state_for_documents(test_set_id, meta, documents):
@@ -3468,8 +3452,9 @@ MAX_DOCS_FOR_ESTIMATE = 200
 
 # Deadline on the reads behind any operation that samples the document list, so a
 # slow set yields a narrower sample rather than a timeout. Shared by the estimator
-# and the annotation queue. It is checked before every section read, not only
-# between pages, because the cap above makes the sample a single page.
+# and the annotation queue's single-document lookup (objectKey); the queue itself
+# reads summaries from DynamoDB and no labels. It is checked before every section
+# read, not only between pages, because the cap above makes the sample a single page.
 #
 # It has to expire inside the dispatcher's 20s (_RESOLVER_READ_TIMEOUT_SECONDS in
 # http_api_dispatcher): past that the caller already has a 504, however narrow the
@@ -3496,7 +3481,8 @@ HARVEST_TIME_BUDGET_SECONDS = 20
 
 # The annotation queue's harvest share of its own request. Kept well under
 # SAMPLING_TIME_BUDGET_SECONDS, which the queue measures from before the harvest, so
-# a harvest that uses all of its share still leaves the queue time to be read.
+# a harvest that uses all of its share still leaves a single-document lookup time to
+# read the document's sections.
 QUEUE_HARVEST_TIME_BUDGET_SECONDS = 4
 
 # Document states the pipeline never leaves. A labeling job waiting on one of
