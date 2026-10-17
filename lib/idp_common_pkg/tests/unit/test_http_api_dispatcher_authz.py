@@ -377,6 +377,13 @@ TIGHTENED_TO_ANY_GROUP = (
     # document content, and the means of obtaining it
     "getFileContents",
     "getFilePresignedUrl",
+    # The batch presign form. It is the ONLY way the web UI obtains a page-image
+    # URL now that the Identity Pool's authenticated role grants the document
+    # buckets nothing (#1033), so this entry is what refuses a self-registered
+    # caller in no group the document bytes they used to be able to read directly
+    # from S3 with their own credentials. Declaring it `ANY` would put that hole
+    # back behind an operation instead of behind an IAM policy.
+    "getFilePresignedUrls",
     "getDocument",
     "getDocumentVersion",
     "compareDocumentVersions",

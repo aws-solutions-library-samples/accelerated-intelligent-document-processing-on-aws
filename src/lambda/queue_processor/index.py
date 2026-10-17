@@ -194,14 +194,16 @@ def update_counter(increment: bool = True) -> bool:
     Each supplies only the expression value its own condition references — see
     the comment below, which is the defect that made that worth spelling out.
 
-    ⚠️ **The guard for THIS function is ``test_counter_decrement.py``, not the
-    whole-tree gate.** ``scripts/tests/test_dynamodb_unused_expression_values.py``
-    reports the defect class for every DynamoDB request in the repository, but it
-    deliberately does not read a value added by subscript — which is exactly how
-    the two branches below now add theirs, so this call site is outside its reach
-    by construction. The behavioural suite drives both directions against a real
-    expression engine instead. Do not read a green run of that gate as cover for
-    an edit here. Issue #1461 tracks teaching the gate this shape.
+    Two guards cover this function, and they prove different things.
+    ``scripts/tests/test_dynamodb_unused_expression_values.py`` reads the pairing
+    below out of the source: a value supplied in a branch needs an expression
+    referencing it in that branch or above it, so hoisting either
+    ``ExpressionAttributeValues`` line out of its ``if`` fails that gate (#1461 —
+    it used to decline this shape, which left the call site it was written for
+    outside its reach). ``test_counter_decrement.py`` drives both directions
+    against a real expression engine, which is what catches a defect no source
+    reading can see — the condition itself being wrong, or the wrong value
+    reaching it.
 
     Args:
         increment: Whether to increment (True) or decrement (False) the counter

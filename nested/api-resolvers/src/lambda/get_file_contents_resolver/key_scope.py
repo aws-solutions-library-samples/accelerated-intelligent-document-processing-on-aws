@@ -83,7 +83,7 @@ TEST_SET = "test-set"
 _REVISION_KEY_RE = re.compile(r"^config_revisions/([^/]+)/")
 
 # The S3 prefix the revision store writes under, on its own, for the near-miss check
-# in `_assert_canonical_key`.
+# in `assert_canonical_key`.
 _REVISION_PREFIX = "config_revisions"
 
 # The character class `ConfigRevisionStore._safe_profile` enforces on every profile
@@ -143,7 +143,7 @@ def _dynamodb_resource():
     return _dynamodb
 
 
-def _assert_canonical_key(key: str) -> None:
+def assert_canonical_key(key: str) -> None:
     """Refuse a key in a partitioned bucket that is not in canonical form.
 
     Raises ``ValueError`` — a 400 — for a leading ``/``, an internal ``//``, or a ``.``
@@ -247,7 +247,7 @@ def scope_subject(
                 raise ValueError("Invalid S3 URI: key is not in canonical form")
             return CONFIG_PROFILE, profile
 
-        _assert_canonical_key(key)
+        assert_canonical_key(key)
 
         # Anything else under the revision prefix is not a revision body — a key of the
         # wrong depth, or the prefix with nothing after it. Refused rather than read as
@@ -281,7 +281,7 @@ def scope_subject(
         return None
 
     if test_set_bucket and bucket == test_set_bucket:
-        _assert_canonical_key(key)
+        assert_canonical_key(key)
         match = _TEST_SET_KEY_RE.match(key)
         if match:
             return TEST_SET, match.group(1)

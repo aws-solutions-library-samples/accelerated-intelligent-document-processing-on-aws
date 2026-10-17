@@ -16,9 +16,14 @@ import { render, screen } from '@testing-library/react';
 vi.mock('../../../api/client-shim', () => ({
   generateClient: () => ({ graphql: vi.fn() }),
 }));
-// Thumbnail presigning is irrelevant here and errors on dummy creds; stub it.
-vi.mock('../../common/generate-s3-presigned-url', () => ({
-  default: vi.fn().mockResolvedValue('https://example/thumb.jpg'),
+// Thumbnail presigning is irrelevant here; stub the batch resolver call.
+vi.mock('../../../api/presign-batch', () => ({
+  presignBatch: vi.fn(async (requests: Array<{ s3Uri: string }>) => ({
+    get: (s3Uri: string) => (requests.some((r) => r.s3Uri === s3Uri) ? 'https://example/thumb.jpg' : undefined),
+    size: requests.length,
+    failed: false,
+    accessDenied: false,
+  })),
 }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ currentCredentials: {} }) }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));

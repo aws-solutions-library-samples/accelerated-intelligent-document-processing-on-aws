@@ -161,7 +161,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | UI.T03 | UI API abuse (REST dispatcher) | Tampering, ID, DoS | 6 (High) |
 | UI.T04 | Hosting origin misconfiguration (CloudFront / API Gateway S3 proxy) | ID | 2 (Low) |
 | UI.T05 | Client-side configuration exposure | ID | 2 (Low) |
-| UI.T06 | Object reads are not scoped per document (both per-user scope axes are enforced on the key) | ID, EoP | 6 (High) |
+| UI.T06 | Object reads carry no document **ownership** axis (both per-user axes are enforced on the key, and the owning document's configuration profile on the document buckets) | ID, EoP | 6 (High) |
 | UI.T07 | Security-header / CSP divergence between hosting modes | Tampering, ID | 3 (Medium) |
 
 ### RPT — Reporting & Analytics (8 threats)

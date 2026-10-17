@@ -107,12 +107,13 @@ checkout and neither restores `test-reports/` from a cache or an artifact — bu
 tree keeps whatever the last run wrote. A blanket age limit is the wrong fix: after
 `make coverage-all`, one tree failing its suite makes `--write` refuse everything, and the
 correct recovery is to re-run that one tree and record again, which depends on the other
-eight reports still being accepted an hour later. Freshness therefore has to be something
+trees' reports still being accepted an hour later. Freshness therefore has to be something
 a caller asks for, not a deadline the gate imposes.
 
-Partial measurement is still a pass: one tree measured and eight unmeasured exits 0 and
-names the eight, which is the ordinary local case (`make test-cicd -C lib/idp_common_pkg`
-measures `idp_common` alone) and the CI case as well.
+Partial measurement is still a pass: one tree measured and the rest unmeasured exits 0
+and names the unmeasured ones, which is the ordinary local case
+(`make test-cicd -C lib/idp_common_pkg` measures `idp_common` alone) and the CI case as
+well.
 
 ## What it is not
 
@@ -153,6 +154,7 @@ combination now agrees.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import subprocess
 import sys
@@ -182,6 +184,28 @@ class Tree(NamedTuple):
     cov: str
     #: Extra pytest arguments this tree needs (a marker filter, an explicit test path).
     args: tuple[str, ...] = ()
+    #: One logical tree over MANY pytest roots: :attr:`cwd` is a prefix whose handler
+    #: subdirectories are each invoked separately, their coverage appended into one data
+    #: file and rendered as one report.
+    #:
+    #: ⚠️ **This is not an optimisation knob and the fan-out is not optional for these
+    #: trees.** 82 of the handler directories under a ``src/lambda/`` segment contain a
+    #: module named ``index.py``, so two of them collected by one pytest process are an
+    #: import collision — the same collision that makes every other entry in this
+    #: registry a separate invocation, except that here it is 38 roots rather than two
+    #: packages. :func:`fanout_roots` derives which subdirectories those are, so a
+    #: handler added next month joins the measured set without any edit here; that
+    #: derivation is the point of the flag, and registering handlers one ``Tree`` at a
+    #: time was the alternative issue #1227 rejected.
+    #:
+    #: ⚠️ **A fan-out tree's recorded ``total`` describes only the files some test
+    #: imported**, because each root's invocation bounds ``--cov`` to its own directory
+    #: and a directory nothing collects contributes nothing to the data file. It is an
+    #: aggregate over the measured roots *including their own test modules*, which is
+    #: exactly the figure #1221 was read as a per-file floor and is two points above the
+    #: per-file truth for one of its files. Read a floor off the per-file baseline, never
+    #: off this number.
+    fanout: bool = False
     #: Measure this tree WITHOUT `-n auto`.
     #:
     #: **What under-collects the coverage of a suite that drives the code under test as a
@@ -218,11 +242,204 @@ class Tree(NamedTuple):
     #: part of the figure.
     #:
     #: What this flag is for, then, is cost and caution: it keeps a tree on the
-    #: measurement conditions its recorded baseline was taken under. `scripts` stays
-    #: serial because its recorded figures come from a serial run and whether the
-    #: whole-tree total differs under `-n auto` has not been measured since subprocess
-    #: collection was restored. Flipping it is a decision for whoever measures both.
+    #: measurement conditions its recorded baseline was taken under.
+    #:
+    #: ⚠️ **No entry declares it, and both attempts to justify one were measured down.**
+    #: `scripts` carried it on the subprocess belief above, and `-n 4` turned out
+    #: identical to serial per file; the two Lambda handler fan-outs were then declared
+    #: serial on the argument that many small pytest roots cannot use workers, and at the
+    #: share CI gives a tree that is a wash on one and ~24% faster in parallel on the
+    #: other, every file identical. So the bar for declaring it is a **paired**
+    #: measurement at the worker count CI actually gives that tree, compared per file --
+    #: not at whatever `--only` hands it, which is the whole machine and is how the
+    #: second wrong answer was reached. `coverage_all.py --workers N` is how to ask for
+    #: the right one.
     serial: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# The Lambda handler directories, derived
+# --------------------------------------------------------------------------- #
+#
+# Shared by three consumers that would otherwise each grow their own copy of "what is a
+# handler directory": the fan-out this registry runs, the universe-closure ratchet in
+# `scripts/tests/test_coverage_debt.py`, and -- the reason it is a public helper rather
+# than a private one -- issue #1442, which is about the same two trees sitting outside a
+# different registry. Both lists were previously grown by noticing gaps.
+
+
+#: The two path segments that mark a Lambda handler tree: ``<prefix>/src/lambda/<dir>``.
+#:
+#: The *prefixes* are derived rather than listed (:func:`handler_prefixes`), so a third
+#: one appearing under some new nested stack is found rather than silently uncovered —
+#: and :func:`check_coverage_debt` has no say in whether it is measured: a prefix no
+#: fan-out tree covers fails the closure ratchet.
+HANDLER_SEGMENTS = ("src", "lambda")
+
+
+class HandlerDirectory(NamedTuple):
+    """One Lambda handler directory and the tracked Python attributed to it."""
+
+    #: Repo-relative POSIX path, e.g. ``src/lambda/calculate_capacity``.
+    path: str
+    #: Tracked non-test ``.py`` under it, repo-relative.
+    sources: tuple[str, ...]
+    #: Tracked test ``.py`` under it, repo-relative.
+    tests: tuple[str, ...]
+
+    @property
+    def prefix(self) -> str:
+        """The ``<...>/src/lambda`` prefix this directory sits directly under."""
+        return str(Path(self.path).parent)
+
+
+def _tracked_python() -> tuple[str, ...]:
+    out = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return tuple(sorted(out))
+
+
+def handler_directories() -> dict[str, HandlerDirectory]:
+    """Every Lambda handler directory holding tracked code, keyed by repo-relative path.
+
+    **The attribution rule, stated because it decides the count.** For every tracked
+    ``.py`` whose path contains two *adjacent* segments ``src`` and ``lambda``, the file
+    is attributed to the directory immediately under that pair —
+    ``<prefix>/src/lambda/<dir>``. A path with nothing after ``<dir>`` names a **file**
+    directly under the prefix (``src/lambda/conftest.py``) and is attributed to no
+    directory; counting those as directories is what produces a figure two higher than
+    this one, and it is the difference between the 86 quoted in #1227 and the 84 here.
+    A file is a test file by the gate's own :func:`_looks_like_test`, so the universe
+    this returns and the universe the baseline speaks cannot disagree by having two
+    rules. Only directories with at least one *source* file are returned: a prefix whose
+    only Python is a ``conftest.py`` is not a handler.
+
+    Discovery is ``git ls-files``, never a directory walk. A walk picks up
+    ``__pycache__`` and ``.aws-sam/`` copies, which is how a sibling gate came to report
+    a build artifact as a resolver directory.
+
+    ⚠️ **The index is the authority, so a brand-new handler is invisible until it is
+    ``git add``ed**, and that bound is deliberate rather than overlooked. Measured: a
+    planted ``src/lambda/<new>/index.py`` leaves the closure and count ratchets green
+    while untracked and fails the count pin the moment it is staged. ``--others`` would
+    close that window, and it is not taken because this helper has to speak the same
+    language as :func:`tracked_source_files`, which is where the coverage **baseline's**
+    universe comes from: ``write_baseline`` can only record a tracked path, so a
+    derivation that saw untracked files would put a fan-out root into the universe that
+    nothing could ever record, and the gate would be unsatisfiable rather than merely
+    quiet. The window is one ``git add`` wide, not one commit, and nothing reaches a
+    branch through it.
+    """
+    found: dict[str, dict[str, list[str]]] = {}
+    for rel in _tracked_python():
+        parts = rel.split("/")
+        for index in range(len(parts) - len(HANDLER_SEGMENTS)):
+            if tuple(parts[index : index + 2]) != HANDLER_SEGMENTS:
+                continue
+            if len(parts) <= index + 3:
+                # A file directly under the prefix, not a handler directory.
+                break
+            directory = "/".join(parts[: index + 3])
+            bucket = found.setdefault(directory, {"sources": [], "tests": []})
+            bucket["tests" if _looks_like_test(rel) else "sources"].append(rel)
+            break
+    return {
+        path: HandlerDirectory(
+            path, tuple(sorted(bucket["sources"])), tuple(sorted(bucket["tests"]))
+        )
+        for path, bucket in sorted(found.items())
+        if bucket["sources"]
+    }
+
+
+def handler_prefixes() -> tuple[str, ...]:
+    """Every ``<...>/src/lambda`` prefix that holds a handler directory, sorted."""
+    return tuple(sorted({d.prefix for d in handler_directories().values()}))
+
+
+#: Where the repository's own test-root registry lives. Read as **source**, never
+#: imported: `run_all_tests.py` manipulates `sys.path` and imports three siblings at
+#: module scope, and a production gate that cannot be read without running that is a
+#: gate with an import graph nobody expects. `exemption_discovery.py` reads source for
+#: the same class of reason.
+RUN_ROOT_REGISTRY = REPO_ROOT / "scripts" / "run_all_tests.py"
+
+
+def quarantined_test_roots() -> frozenset[str]:
+    """Directories ``scripts/run_all_tests.py`` records as not runnable in a shared gate.
+
+    Consumed rather than duplicated. One handler directory is in that state today —
+    ``src/lambda/ocr_benchmark_deployer``, whose suite imports ``huggingface_hub``, which
+    is not a test dependency — and its collection therefore **errors** rather than
+    finding nothing. That distinction matters twice over: :func:`fanout_roots` must not
+    invoke it, because one erroring root puts an ``<error>`` in the fan-out tree's run
+    record and :func:`run_trust` then refuses the whole tree; and the closure ratchet
+    must not treat it as untested, because the tests exist and the honest statement is
+    that this environment cannot run them.
+
+    Deriving it from that registry rather than writing a second list here is the whole
+    point: the reason is already authored there, per directory, and if
+    ``huggingface_hub`` becomes a test dependency the entry goes away and this directory
+    then has to be measured like any other.
+    """
+    tree = ast.parse(RUN_ROOT_REGISTRY.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "QUARANTINE" for t in node.targets
+        ):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            break
+        keys = [
+            key.value
+            for key in node.value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        ]
+        if not keys:
+            break
+        return frozenset(keys)
+    raise AssertionError(
+        # `relative_to` is NOT used here. It raises for a path outside the repo, and the
+        # one caller that supplies such a path is the test that drives this failure --
+        # so the refusal would be replaced by a ValueError from its own message, which is
+        # the shape of bug where a guard reports something other than what it caught.
+        f"{RUN_ROOT_REGISTRY} declares no module-level "
+        "QUARANTINE dict of string keys. It is the authority for which test roots are "
+        "not runnable in a shared gate, and reading nothing from it would silently make "
+        "the coverage fan-out invoke a root whose collection errors — which refuses the "
+        "whole tree rather than one directory."
+    )
+
+
+def fanout_roots(tree: Tree) -> tuple[str, ...]:
+    """The pytest roots one fan-out tree is measured over, repo-relative and sorted.
+
+    Derived, which is the requirement #1227 settles on: the handler directories under
+    this tree's prefix that hold **tests**, less those the test-root registry
+    quarantines. So writing the first test for a handler puts it in the measured set,
+    and adding a handler with no test leaves it out — in both directions without an edit
+    here, and in both directions visible to the closure ratchet rather than absorbed.
+
+    Returns ``()`` for a tree that is not a fan-out, so a caller can ask unconditionally.
+    """
+    if not tree.fanout:
+        return ()
+    prefix = tree.cwd.rstrip("/")
+    quarantined = quarantined_test_roots()
+    return tuple(
+        directory.path
+        for directory in handler_directories().values()
+        if directory.prefix == prefix
+        and directory.tests
+        and directory.path not in quarantined
+    )
 
 
 #: Every tree with a coverage figure. Ordered largest-first so the slow ones start early
@@ -278,6 +495,51 @@ TREES: tuple[Tree, ...] = (
         # of a 34-minute `unit_tests` job, 84% of the job, as the only serial tree
         # of nine.
     ),
+    # The two Lambda handler trees, each one logical tree over many pytest roots.
+    #
+    # These replace two entries that named `src/lambda/complete_section_review` and
+    # `src/lambda/calculate_capacity` individually — #1221 took both to 99% and nothing
+    # held either figure, so they were registered as a holding action while the fan-out
+    # was decided. Registering handlers one `Tree` at a time is a hand-written list that
+    # a newly added handler joins only when somebody notices, which is the gap #1227 is
+    # about; these two entries cover every handler directory under their prefix that has
+    # a suite, derived per run by `fanout_roots`, and the ones that do not are a derived
+    # exemption with a universe-closure ratchet and a pinned count in
+    # `scripts/tests/test_coverage_debt.py`.
+    #
+    # The prefixes are not hand-picked either: `handler_prefixes()` derives them from the
+    # tree, and a prefix no fan-out tree here covers fails that ratchet rather than
+    # becoming an unmeasured surface.
+    #
+    # `cov="."` with the prefix as `cwd` is what makes `tracked_source_files` speak the
+    # same `<dir>/<file>` keys the report does — which is also what lets
+    # `HANDLER_COVERAGE_FLOORS_FROM_1221` keep holding #1221's four files by path across
+    # this reshaping, without being rewritten.
+    # NEITHER declares `serial`, and that is a measurement rather than a default.
+    #
+    # ⚠️ **The intuition that a fan-out cannot use xdist is wrong, and it was mine.** The
+    # argument is that the work is many small pytest roots, so what a root costs is
+    # process startup rather than test execution and xdist only adds a second layer of
+    # it. Measured at `-n 4` -- the share `coverage-all-cicd` gives a tree on a 16-vCPU
+    # runner -- three paired samples per tree, alternating, 1607 and 639 tests collected
+    # and 0 skipped in **every** cell:
+    #   src_lambda      serial  110.7 / 122.8 / 130.1   median 122.8
+    #                   -n 4     69.3 /  93.3 /  98.3   median  93.3
+    #   api_resolvers   serial   63.2 /  66.1 /  76.1   median  66.1
+    #                   -n 4     52.7 /  68.5 /  69.7   median  68.5
+    # So it is a wash on the smaller tree and ~24% off the larger one, which has the 383-
+    # and 100-test roots that can actually fill four workers.
+    #
+    # And it costs nothing in stability at that worker count: compared PER FILE, which is
+    # the granularity the ratchet reads, **all 87 of `src_lambda`'s files are identical to
+    # the hundredth across all six cells**, and both trees' totals are identical in every
+    # cell. An earlier pass of this measurement did find two files moving -- but it
+    # compared against `-n 16`, which is what `--only <one tree>` hands a tree when
+    # `--jobs` collapses to 1, so it was the trap the `scripts` entry above describes:
+    # a measurement of a configuration nothing runs. `--workers` exists so that is not
+    # the easy invocation any more.
+    Tree("src_lambda", "src/lambda", ".", fanout=True),
+    Tree("api_resolvers", "nested/api-resolvers/src/lambda", ".", fanout=True),
     Tree("idp_sdk", "lib/idp_sdk", "idp_sdk", ("-m", "not integration")),
     Tree("main_stack_extensions", "feature-platform/main-stack-extensions", "."),
     Tree("idp_cli", "lib/idp_cli_pkg", "idp_cli"),
@@ -297,32 +559,6 @@ TREES: tuple[Tree, ...] = (
         ".",
         ("tests",),
     ),
-    # Two Lambda handler directories, registered individually rather than as the start
-    # of a fan-out.
-    #
-    # #1221 reports taking `src/lambda/complete_section_review` from 47% to 99% and
-    # `src/lambda/calculate_capacity` from 31% to 99%, and until these entries existed
-    # nothing held either figure: no handler directory was in this registry, so a later
-    # change could take both back down with every gate green. That is the failure the
-    # per-file baseline exists to prevent, on the tree it did not reach.
-    #
-    # ⚠️ **This is not a fan-out and must not be grown into one by addition.** Counting
-    # tracked, non-test `.py` attributed to the directory under a `src/lambda/` segment:
-    # 84 handler directories hold code, of which 82 hold a module named `index.py`.
-    # Registering them one `Tree` at a time would be a hand-written list that a newly
-    # added handler joins only when somebody notices, which is the shape #1227 is about.
-    # That issue's decided remedy is a **derived** fan-out — one logical tree over many
-    # pytest roots, membership computed from the handler directories, and a
-    # universe-closure ratchet with a pinned count so a directory added later fails
-    # rather than being absorbed. When that lands it subsumes these two: remove both
-    # entries and their baseline records drop out on the next write, because
-    # `write_baseline` carries over only the trees this registry names.
-    #
-    # Each is its own `Tree` rather than one covering `src/lambda`, for the reason every
-    # entry above is separate: both directories contain a module named `index.py`, as do
-    # 82 of the 84, so two in a single pytest process collide at collection.
-    Tree("complete_section_review", "src/lambda/complete_section_review", "."),
-    Tree("calculate_capacity", "src/lambda/calculate_capacity", "."),
 )
 
 TREES_BY_NAME = {tree.name: tree for tree in TREES}
@@ -1100,7 +1336,7 @@ def main() -> int:
 
     if args.require_all_trees:
         # Derived from the registry, never enumerated by the caller. A Makefile or CI
-        # config listing the nine names would be a second copy of TREES, and the copy
+        # config listing them would be a second copy of TREES, and the copy
         # that goes stale is the one deciding what this gate is allowed to skip -- so a
         # tree added to the registry and forgotten there would be unratcheted while the
         # gate reported that every tree was required. Issue #1256.

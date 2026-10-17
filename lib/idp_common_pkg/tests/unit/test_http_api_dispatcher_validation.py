@@ -418,7 +418,7 @@ def test_empty_args_accepted_unless_non_null_required(validation, spec):
 
 def test_required_arg_count_is_stable(spec):
     """Guardrail so a schema change that alters the required-arg surface is
-    visible in the diff (138 fields require a non-null arg as of this spec — the
+    visible in the diff (139 fields require a non-null arg as of this spec — the
     test-set lifecycle ops getTestSetVersions/publishTestSetVersion/
     removeDocumentsFromTestSet/sendTestRunToReview added 91–94, the
     draft-labeling ops generateDraftLabels/getDraftLabelJob added 95–96,
@@ -434,15 +434,16 @@ def test_required_arg_count_is_stable(spec):
     addDocumentsToTestSetByKey the 112th, the three config-prefix-mapping ops
     that take a required argument — putConfigPrefixMapping (prefix,
     configProfile), deleteConfigPrefixMapping (prefix) and
-    resolveConfigPrefixMapping (objectKey) — 113–115 (listConfigPrefixMappings
-    takes no arguments at all, so it is deliberately not among them), and the
-    Inbox ops (markInboxMessages, deleteInboxMessages, updateInboxPreferences)
-    plus the review-queue operations (getReviewItem, claimReviewItem,
-    renewReviewLease, releaseReviewItem, saveReviewDraft, completeReviewItem,
-    rejectReviewItem, escalateReviewItem, forceReleaseReviewItem,
-    reassignReviewItem, moveReviewItem and the rest of that family) 116–137, and
-    claimTestSetDocument the 138th)."""
+    resolveConfigPrefixMapping (objectKey) — 113–115, getFilePresignedUrls the
+    116th, whose `files: [FilePresignRequest!]!` is the first non-null LIST
+    argument on this surface (listConfigPrefixMappings takes no arguments at all,
+    so it is deliberately not among them), the Inbox ops (markInboxMessages,
+    deleteInboxMessages, updateInboxPreferences) plus the review-queue operations
+    (getReviewItem, claimReviewItem, renewReviewLease, releaseReviewItem,
+    saveReviewDraft, completeReviewItem, rejectReviewItem, escalateReviewItem,
+    forceReleaseReviewItem, reassignReviewItem, moveReviewItem and the rest of
+    that family) 117–138, and claimTestSetDocument the 139th)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 138
+    assert len(required) == 139

@@ -3,9 +3,10 @@
 
 import JSZip from 'jszip';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import { generateClient } from '../../api/client-shim';
+import { presignBatch, presignedUrlsNeedRefresh, type PresignBatchResult } from '../../api/presign-batch';
 import { getFilePresignedUrl } from '../../graphql/generated';
+import { FILE_ACCESS_DENIED_MESSAGE } from '../../hooks/utils/graphql-error';
 
 const logger = new ConsoleLogger('document-export');
 
@@ -219,23 +220,25 @@ const presignViaResolver = async (s3Uri: string): Promise<string> => {
 };
 
 /**
- * Resolve a fetchable URL for an export asset.
+ * Resolve a fetchable URL for an export asset — always through the resolver.
  *
- * Client-side signing is used for the buckets the browser's Cognito identity
- * role actually grants (`OutputBucket`, `InputBucket`) because it costs no extra
- * round trip. Everything else — notably the **EvaluationBaselineBucket**, which
- * that role deliberately does not grant — is signed by the backend resolver;
- * signing those client-side yields a presigned URL that 403s at fetch time.
+ * Every bucket goes the same way, including the Output and Input buckets, which
+ * used to be signed in-browser because the Cognito identity role granted them
+ * and the local signing cost no round trip. That role now grants `s3:GetObject`
+ * on **no** bucket (issue #1033), so a client-signed URL 403s at fetch time for
+ * every bucket an export touches and there is nothing left for the branch to
+ * choose between. The resolver holds the read access behind its own allow-list
+ * and applies the caller's group floor and per-document scope.
+ *
+ * The trailing two parameters are now unused — hence the `_` names — and are kept
+ * so the `ExportOptions.presignFn` seam and its one caller keep their shape;
+ * narrowing that seam is a separate change with its own callers to touch.
  */
 export const presignForExport = async (
   uri: string,
-  credentials: Record<string, unknown>,
-  settings: ExportSettings | undefined | null,
-): Promise<string> => {
-  const bucket = parseS3Uri(uri)?.bucket;
-  const browserSignable = !!bucket && (bucket === settings?.OutputBucket || bucket === settings?.InputBucket);
-  return browserSignable ? generateS3PresignedUrl(uri, credentials) : presignViaResolver(uri);
-};
+  _credentials?: Record<string, unknown>,
+  _settings?: ExportSettings | undefined | null,
+): Promise<string> => presignViaResolver(uri);
 
 // ---------------------------------------------------------------------------
 // Planning
@@ -397,6 +400,17 @@ interface PreparedDocument {
   manifestFiles: Array<{ path: string; uri?: string; bytes?: number }>;
   errors: ExportErrorEntry[];
   pendingFetches: number;
+  /** URLs pre-signed for this document's assets in one call. Unset when a `presignFn` override is in play. */
+  presigned?: PresignBatchResult;
+  /**
+   * The re-sign currently in flight for this document, if any.
+   *
+   * A document has as many fetch tasks as assets — ~115 for a 27-page document — and
+   * several of them are in the worker pool at once. Without a shared promise here,
+   * every task that found the map stale would start its own re-sign, which is the
+   * per-asset signing loop this batching removed, reintroduced on a timer.
+   */
+  resigning?: Promise<void>;
 }
 
 /**
@@ -510,6 +524,87 @@ export const exportDocuments = async (
     }
   }
 
+  /**
+   * Re-sign one document's assets when the URLs minted for it are nearing expiry.
+   *
+   * **Why the export needs this at all.** A presigned URL lives 300 s
+   * (`_PRESIGNED_URL_EXPIRY_SECONDS` in the resolver). The pre-sign pass below mints
+   * every URL for every selected document and *completes before the first byte is
+   * fetched*, so the last asset of a bulk export is fetched however long the whole
+   * run takes. A page of results is tens of documents, a 27-page document is ~115
+   * assets and source PDFs are multi-megabyte, so crossing 300 s at
+   * {@link DEFAULT_FETCH_CONCURRENCY} is ordinary rather than pathological. The
+   * symptom is the hard kind to diagnose: the archive completes, with `HTTP 403`
+   * entries in `manifest.json` for its later objects and nothing saying why. There is
+   * no bound on the window — only the number of assets and the size of the bytes,
+   * both unbounded — so the check has to be at the point of use.
+   *
+   * **Per document**, for the same reason the pre-sign pass is per document: the
+   * resolver refuses a batch spanning more than `document_scope.MAX_DOCUMENT_LOOKUPS`
+   * (64) distinct documents.
+   *
+   * **Once per document, not once per asset.** The staleness check is what keeps a
+   * long run to one extra call per 240 s rather than one per asset, and `resigning`
+   * is what keeps concurrent tasks for the same document to one call rather than one
+   * each. It is cleared when the call settles, so an export long enough to cross the
+   * threshold twice re-signs twice.
+   *
+   * **A failed re-sign is adopted, not discarded.** The new result replaces the old
+   * map even when it signed nothing, so the existing per-asset surface below reports
+   * it — the access-denied copy on a refusal — and the export still finishes with
+   * per-entry manifest errors instead of throwing everything away. Keeping the old
+   * map as a fallback was the alternative and is worse twice over: its remaining life
+   * has already been judged too short to fetch with, and `presignedUrlsNeedRefresh`
+   * would still call it stale, so every remaining task would retry the refusal. A
+   * refused or empty result is not stale by that predicate (`size === 0`), so
+   * adopting it also ends the retrying.
+   *
+   * No `throwIfAborted()` here, deliberately: this runs *inside* the fetch thunk's
+   * `try`, which converts what it catches into a soft per-asset error, so an abort
+   * raised here would be recorded as a fetch failure instead of stopping the export.
+   * The thunk already checks for an abort immediately before calling this.
+   */
+  const refreshIfStale = async (entry: PreparedDocument): Promise<void> => {
+    if (entry.resigning) {
+      await entry.resigning;
+      return;
+    }
+    if (!entry.presigned || !presignedUrlsNeedRefresh(entry.presigned)) return;
+    const uris = [...new Set(entry.plan.fetchTasks.map((task) => task.uri))];
+    if (uris.length === 0) return;
+    logger.debug(`Re-signing ${uris.length} asset URL(s) for ${entry.key}: the pre-signed set is nearing expiry`);
+    entry.resigning = (async () => {
+      try {
+        entry.presigned = await presignBatch(uris.map((s3Uri) => ({ s3Uri })));
+      } finally {
+        entry.resigning = undefined;
+      }
+    })();
+    await entry.resigning;
+  };
+
+  /**
+   * The fetchable URL for one asset: from its document's batch when it is there,
+   * otherwise the single-object form.
+   *
+   * The fallback exists for a URI the batch did not return while the call itself
+   * succeeded — the single form then produces a precise per-asset error, which the
+   * manifest records. It is deliberately NOT taken when the batch call *failed*: a
+   * refusal applies to every object in it, so retrying each one singly would spend
+   * exactly the round trips this batching removes and arrive at the same answer.
+   */
+  const resolveUrl = async (entry: PreparedDocument, uri: string): Promise<string> => {
+    // Before the map is read, never after: a URL handed to `fetch` after expiry is a
+    // 403 the archive records as an unexplained per-entry error.
+    await refreshIfStale(entry);
+    const batched = entry.presigned?.get(uri);
+    if (batched) return batched;
+    if (entry.presigned?.failed) {
+      throw new Error(entry.presigned.accessDenied ? FILE_ACCESS_DENIED_MESSAGE : `Could not presign ${uri}`);
+    }
+    return presign(uri, credentials as Record<string, unknown>);
+  };
+
   const allTasks = prepared.flatMap((entry) => entry.plan.fetchTasks.map((task) => ({ entry, task })));
   const totalSteps = allTasks.length + 1; // +1 for the zip-generation step
   let completed = 0;
@@ -534,11 +629,42 @@ export const exportDocuments = async (
   throwIfAborted();
   emit(allTasks.length === 0 ? 'Generating archive…' : progressLabel(allTasks[0].entry, allTasks[0].task.zipPath));
 
+  // Pre-sign each document's assets in ONE call rather than one per asset. The
+  // single-object form also issues a `head_object` per call, so a 27-page
+  // "Download All" was ~115 authorised round trips where the retired client-signed
+  // path made none.
+  //
+  // ⚠️ Per DOCUMENT, not across the selection: the resolver refuses a batch
+  // spanning more than `document_scope.MAX_DOCUMENT_LOOKUPS` (64) distinct
+  // documents with a 400, which a bulk export of a full page of results would
+  // cross. Export pins no object versions, so every request here is a bare key.
+  //
+  // Skipped entirely when `presignFn` is injected: that override IS the signing
+  // seam, and pre-signing behind it would sign through a route the caller did not
+  // ask for.
+  //
+  // Runs after the first `emit` so a bulk export shows a label during it rather
+  // than an idle bar: for a large selection this is one round trip per document
+  // before any bytes are fetched.
+  if (!opts.presignFn && allTasks.length > 0) {
+    emit('Preparing download…');
+    await runWithConcurrency(
+      prepared.map((entry) => async () => {
+        throwIfAborted();
+        const uris = [...new Set(entry.plan.fetchTasks.map((task) => task.uri))];
+        if (uris.length === 0) return;
+        entry.presigned = await presignBatch(uris.map((s3Uri) => ({ s3Uri })));
+      }),
+      opts.concurrency ?? DEFAULT_FETCH_CONCURRENCY,
+    );
+    throwIfAborted();
+  }
+
   await runWithConcurrency(
     allTasks.map(({ entry, task }) => async () => {
       throwIfAborted();
       try {
-        const url = await presign(task.uri, credentials as Record<string, unknown>);
+        const url = await resolveUrl(entry, task.uri);
         const resp = await doFetch(url);
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status} ${resp.statusText}`);

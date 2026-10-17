@@ -21,6 +21,7 @@ import concurrent.futures
 import json
 import logging
 import re
+import time
 from typing import Any, Optional
 
 from idp_common.evaluation.curve_store import field_child_path, list_child_path
@@ -234,8 +235,11 @@ def alert_counts(explainability_info, inference_result=None):
 
 
 def attach_label_metadata(
-    s3_client: Any, test_set_bucket: str, documents: list[dict]
-) -> None:
+    s3_client: Any,
+    test_set_bucket: str,
+    documents: list[dict],
+    deadline: float | None = None,
+) -> int:
     """Add labelSource, alert counts and minConfidence to each document on a page.
 
     Label state lives inside each section's baseline result.json, so those are read
@@ -248,6 +252,12 @@ def attach_label_metadata(
 
     Best-effort per section: an unreadable result.json is skipped rather than failing
     the listing.
+
+    ``deadline`` is a ``time.monotonic()`` value after which no further section is
+    read, except the first document's, so a page always yields at least one
+    document. Returns how many leading documents the deadline skipped no section of,
+    which is all of them when it never passed. A section whose read failed was
+    attempted, and counts as best-effort above.
     """
     tasks = []
     for doc in documents:
@@ -260,15 +270,23 @@ def attach_label_metadata(
             doc["confidenceThreshold"] = None
             doc["alertCount"] = None
             doc["fieldCount"] = None
-        return
+        return len(documents)
 
-    def read(key):
+    def read(task):
+        doc, section = task
+        if (
+            deadline is not None
+            and doc is not documents[0]
+            and time.monotonic() > deadline
+        ):
+            return doc, section, None, False
+        key = section["baselineKey"]
         try:
             body = s3_client.get_object(Bucket=test_set_bucket, Key=key)["Body"].read()
-            return json.loads(body)
+            return doc, section, json.loads(body), True
         except Exception as e:  # noqa: BLE001 — best-effort enrichment
             logger.warning(f"Could not read baseline label {key}: {e}")
-            return None
+            return doc, section, None, True
 
     per_doc = {
         id(doc): {
@@ -287,11 +305,14 @@ def attach_label_metadata(
         }
         for doc, _ in tasks
     }
+    unread_docs = set()
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(len(tasks), 16)
     ) as executor:
-        results = executor.map(lambda t: (t[0], t[1], read(t[1]["baselineKey"])), tasks)
-        for doc, section, result in results:
+        for doc, section, result, attempted in executor.map(read, tasks):
+            if not attempted:
+                unread_docs.add(id(doc))
+                continue
             if not result:
                 continue
             # The section's OWN class, distinct from the document-level
@@ -393,6 +414,11 @@ def attach_label_metadata(
         else:
             doc["alertCount"] = None
             doc["fieldCount"] = None
+
+    return next(
+        (i for i, doc in enumerate(documents) if id(doc) in unread_docs),
+        len(documents),
+    )
 
 
 def _section_sort_key(section: dict) -> tuple:

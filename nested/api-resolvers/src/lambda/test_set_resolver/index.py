@@ -219,7 +219,7 @@ _SNAPSHOT_CONCURRENCY = 16
 # the LIST pagination, the reservation, the version write and the pointer writes.
 #
 # What that arithmetic omits is the cost most likely to bind, and the reason the figure stays
-# unverified: at MemorySize 256 this function has a fraction of a vCPU, and sixteen Python
+# unverified: at MemorySize 1024 this function has about 0.6 vCPU, and sixteen Python
 # threads share one GIL, so 3000 SigV4 signings and response parses are **client-side CPU**
 # rather than network latency the fan-out can hide. Measure before raising it. If a real set
 # needs more, the lever is memory — which buys CPU — or the asynchronous snapshot the refusal
@@ -1929,7 +1929,9 @@ def _harvest_active_label_job(test_set_id, meta):
     not fail the queue, which still works for already-labeled documents.
 
     All in-flight jobs share one time budget, since the caller is a single request
-    and copying results is S3-bound.
+    and copying results is S3-bound. That budget is the queue's share of its own
+    request, so the harvest stops in time for the queue to be read after it; the
+    workspace re-reads the queue while a job runs, and each read continues it.
     """
     # Every non-terminal job, not just the one the set's pointer names: a
     # one-document re-extract repoints it, and harvesting only the pointer would
@@ -1948,7 +1950,7 @@ def _harvest_active_label_job(test_set_id, meta):
             {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(pointer)}
         )
 
-    deadline = time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
+    deadline = time.monotonic() + QUEUE_HARVEST_TIME_BUDGET_SECONDS
     harvested = []
     for job in jobs:
         try:
@@ -2896,6 +2898,7 @@ def get_annotation_queue(args, event=None):
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
+    deadline = time.monotonic() + SAMPLING_TIME_BUDGET_SECONDS
     label_job = _harvest_active_label_job(test_set_id, meta)
     summary_status, summary_count = _ensure_summaries(test_set_id, meta)
 
@@ -2906,7 +2909,8 @@ def get_annotation_queue(args, event=None):
         # needs them), which also refreshes its summary.
         documents = (
             get_test_set_documents(
-                {"testSetId": test_set_id, "objectKey": only_object_key, "limit": 1}
+                {"testSetId": test_set_id, "objectKey": only_object_key, "limit": 1},
+                deadline=deadline,
             ).get("documents")
             or []
         )
@@ -3086,6 +3090,42 @@ def get_annotation_queue(args, event=None):
         f"{result['claimedByOthers']} claimed by others"
     )
     return result
+
+
+def _collect_queue_documents(test_set_id, deadline):
+    """Documents in the set with their label metadata, up to the queue cap.
+
+    Capped and time-bounded because each page reads every section on it from S3,
+    which outlasts the dispatcher on a set of multi-section packets. A short queue
+    is workable, since annotators take documents from the front; a timeout means the
+    workspace cannot open. inspectedDocs reports how much was ranked.
+
+    ``deadline`` is the request's, set before the label-job harvest, so the time the
+    harvest spends comes out of this budget rather than being added to it.
+    """
+    documents = []
+    next_token = None
+    while len(documents) < MAX_DOCS_FOR_ESTIMATE:
+        page = get_test_set_documents(
+            {
+                "testSetId": test_set_id,
+                "limit": min(200, MAX_DOCS_FOR_ESTIMATE - len(documents)),
+                "nextToken": next_token,
+            },
+            deadline=deadline,
+        )
+        documents.extend(page.get("documents") or [])
+        next_token = page.get("nextToken")
+        if not next_token:
+            break
+        if time.monotonic() > deadline:
+            logger.warning(
+                f"getAnnotationQueue({test_set_id}): stopped collecting at "
+                f"{len(documents)} document(s) after "
+                f"{SAMPLING_TIME_BUDGET_SECONDS}s"
+            )
+            break
+    return documents
 
 
 def _claim_state_for_documents(test_set_id, meta, documents):
@@ -3417,18 +3457,32 @@ def estimate_review_effort(args):
     return result
 
 
-# Cap on how many documents the estimator reads confidences for. Each document's
-# sections are read from S3, costing ~24s per 200-document page, so a larger cap
-# needs several pages and exceeds the resolver's 60s timeout. 200 keeps the call
-# inside one page and already pins the curve (10 reliability bins; document shape is
-# measured from at most 20 sections). The cost is a wider docs-to-review range on
-# very large sets, which sampledDocs and estimateConfidence report.
+# Cap on how many documents the estimator reads confidences for. Every section on a
+# page is read from S3, so a page costs in proportion to its sections rather than its
+# documents: at 256 MB, 8-10s for 200 single-section documents and ~26s for 200
+# four-section packets. 200 keeps the call inside one page and already pins the curve
+# (10 reliability bins; document shape is measured from at most 20 sections). The
+# cost is a wider docs-to-review range on very large sets, which sampledDocs and
+# estimateConfidence report.
 MAX_DOCS_FOR_ESTIMATE = 200
 
-# Hard stop for any operation that pages the document list, independent of the
-# document cap: a set whose pages are unusually slow must yield a narrower sample
-# rather than a timeout. Shared by the estimator and the annotation queue.
-SAMPLING_TIME_BUDGET_SECONDS = 25
+# Deadline on the reads behind any operation that samples the document list, so a
+# slow set yields a narrower sample rather than a timeout. Shared by the estimator
+# and the annotation queue. It is checked before every section read, not only
+# between pages, because the cap above makes the sample a single page.
+#
+# It has to expire inside the dispatcher's 20s (_RESOLVER_READ_TIMEOUT_SECONDS in
+# http_api_dispatcher): past that the caller already has a 504, however narrow the
+# sample became. The rest of the 20s pays for a cold start (~1.7s measured), the
+# reads before and after sampling, and the reads in flight when the deadline passes.
+# For the annotation queue the deadline is set before its label-job harvest, which
+# spends QUEUE_HARVEST_TIME_BUDGET_SECONDS of it.
+#
+# Not bounded by it: the listing of the set's whole baseline/ prefix that precedes
+# each page's section reads. That time is spent from this budget, but the deadline
+# is not checked inside it, and it grows with the size of the set rather than the
+# page.
+SAMPLING_TIME_BUDGET_SECONDS = 12
 
 # Ceiling on baseline sections read to characterise document shape for the effort
 # model. Each read is a separate S3 GET, and sets vary widely in sections per
@@ -3439,6 +3493,11 @@ MAX_SECTIONS_FOR_FIELD_SAMPLE = 40
 # several S3 calls per section, so a large set cannot finish in one pass; stopping
 # short leaves the job RUNNING and the next poll continues.
 HARVEST_TIME_BUDGET_SECONDS = 20
+
+# The annotation queue's harvest share of its own request. Kept well under
+# SAMPLING_TIME_BUDGET_SECONDS, which the queue measures from before the harvest, so
+# a harvest that uses all of its share still leaves the queue time to be read.
+QUEUE_HARVEST_TIME_BUDGET_SECONDS = 4
 
 # Document states the pipeline never leaves. A labeling job waiting on one of
 # these would never complete, and every caller that shows a job re-harvests on a
@@ -3483,7 +3542,7 @@ def _collect_doc_confidences(test_set_id):
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     documents = []
     next_token = None
-    started = time.monotonic()
+    deadline = time.monotonic() + SAMPLING_TIME_BUDGET_SECONDS
 
     while len(documents) < MAX_DOCS_FOR_ESTIMATE:
         page = get_test_set_documents(
@@ -3491,7 +3550,8 @@ def _collect_doc_confidences(test_set_id):
                 "testSetId": test_set_id,
                 "limit": min(200, MAX_DOCS_FOR_ESTIMATE - len(documents)),
                 "nextToken": next_token,
-            }
+            },
+            deadline=deadline,
         )
         documents.extend(page.get("documents") or [])
         next_token = page.get("nextToken")
@@ -3499,7 +3559,7 @@ def _collect_doc_confidences(test_set_id):
             break
         # A narrower sample still produces a usable estimate, and says so via
         # sampledDocs; a timeout produces nothing.
-        if time.monotonic() - started > SAMPLING_TIME_BUDGET_SECONDS:
+        if time.monotonic() > deadline:
             logger.warning(
                 f"estimateReviewEffort({test_set_id}): stopped sampling at "
                 f"{len(documents)} document(s) after "
@@ -3535,14 +3595,19 @@ def _collect_doc_confidences(test_set_id):
     # and this reads every section in the set one at a time.
     field_counts = []
     sections_read = 0
+
+    def field_sample_done():
+        return (
+            sections_read >= MAX_SECTIONS_FOR_FIELD_SAMPLE
+            or len(field_counts) >= 20
+            or time.monotonic() > deadline
+        )
+
     for doc in documents:
-        if sections_read >= MAX_SECTIONS_FOR_FIELD_SAMPLE or len(field_counts) >= 20:
+        if field_sample_done():
             break
         for section in doc.get("sections") or []:
-            if (
-                sections_read >= MAX_SECTIONS_FOR_FIELD_SAMPLE
-                or len(field_counts) >= 20
-            ):
+            if field_sample_done():
                 break
             key = section.get("baselineKey")
             if not key:
@@ -5001,7 +5066,7 @@ def get_test_sets():
         # Per-request reconcile budget. Cold-container invocations pay 2
         # paginated list_objects_v2 + 1 HeadObject per registered prefix
         # before the warm-container memo kicks in, and this resolver runs
-        # under a 60 s timeout with 256 MB. Cap the work here the same way
+        # under a 60 s timeout with 1024 MB. Cap the work here the same way
         # ``_reconcile_label_state`` caps its own probes (25 / 5 s) — the
         # remainder is picked up by the next poll, which is what the memo
         # is designed for. The listing paths do NOT skip on this budget;
@@ -5212,7 +5277,7 @@ def get_test_sets():
     return result
 
 
-def get_test_set_documents(args):
+def get_test_set_documents(args, deadline=None):
     """List the documents in a test set with their baseline (ground truth) sections.
 
     Paginated over the set's `input/` prefix; the S3 continuation token is
@@ -5225,6 +5290,11 @@ def get_test_set_documents(args):
     page, because the page is the thing the caller cannot see past: a table that
     filtered its own 50 rows reported "no results" for documents that were in the
     set two pages along. See ``_search_test_set_documents``.
+
+    ``deadline`` is for internal callers sampling the set under a time budget. When
+    it passes mid-page, the page is cut to the leading documents none of whose
+    sections it skipped, and ``nextToken`` is ``None``, since resuming from the uncut
+    page's token would skip the documents dropped from it.
     """
     test_set_id = args["testSetId"]
     limit = args.get("limit") or 100
@@ -5305,7 +5375,16 @@ def get_test_set_documents(args):
         )
         for doc in documents:
             doc["sections"] = sections.get(doc["objectKey"], [])
-        _attach_label_metadata(test_set_bucket, documents)
+
+        complete = _attach_label_metadata(test_set_bucket, documents, deadline)
+        if complete < len(documents):
+            logger.warning(
+                f"getTestSetDocuments({test_set_id}): time budget reached after "
+                f"reading {complete} of {len(documents)} document(s) on this page; "
+                "returning those"
+            )
+            documents = documents[:complete]
+            response_next_token = None
 
     result = {
         "documents": documents,
@@ -5472,9 +5551,13 @@ def _search_test_set_documents(bucket, input_prefix, search, limit, next_token):
     )
 
 
-def _attach_label_metadata(test_set_bucket, documents):
-    """Add label source, alert counts, confidence and classes to a page of documents."""
-    attach_label_metadata(s3_client, test_set_bucket, documents)
+def _attach_label_metadata(test_set_bucket, documents, deadline=None):
+    """Add label source, alert counts, confidence and classes to a page of documents.
+
+    Returns how many leading documents were read before ``deadline``; see
+    ``attach_label_metadata``.
+    """
+    return attach_label_metadata(s3_client, test_set_bucket, documents, deadline)
 
 
 def _is_valid_test_set_structure(s3_client, bucket, prefix):
@@ -6065,7 +6148,7 @@ _RECONCILE_TTL_SECONDS = 30
 # Per-request cap on reconcile probes, mirroring the label-state probe
 # budget (MAX_LABEL_STATE_PROBES / LABEL_STATE_PROBE_BUDGET_SECONDS above).
 # Reconcile does the same 2 x list_objects_v2 + 1 x HeadObject per prefix
-# on a cold container; the resolver's Timeout is 60 s and MemorySize 256 MB.
+# on a cold container; the resolver's Timeout is 60 s and MemorySize 1024 MB.
 # Beyond this budget, the remainder of the prefixes are picked up by the
 # next getTestSets call (which finds them in the warm-container memo when
 # it comes back for them).

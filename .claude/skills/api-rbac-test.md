@@ -98,7 +98,7 @@ Notes:
   `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
   ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
   `scripts/test_api_rbac.py`) — **`Annotator` is not one** — and it creates **no
-  groupless user**. 26 operations are declared `ANY_GROUP` today, and "denied to a
+  groupless user**. 27 operations are declared `ANY_GROUP` today, and "denied to a
   caller in no group" — the whole point of that policy — is asserted offline only, in
   `test_http_api_dispatcher_authz.py`. The *mechanism* is live-proven: step 4 of the
   chain measured in
@@ -177,7 +177,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (160 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (161 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -421,7 +421,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 160 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 161 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,
@@ -480,9 +480,17 @@ policy, which the generator never reads.) `authz.py` never sees `ANY_GROUP`: it 
 expanded before the manifest is written, and an unexpanded one there means a broken
 build and is treated as one (deny-all).
 
-⚠️ **A group floor is not the whole control.** It gates the REST API. The Identity
-Pool attaches one `authenticated` role with no role mappings, so every signed-in
-user — group or no group — holds `s3:GetObject`/`ListBucket` on the document
-buckets, and the UI reads them directly by default. Do not describe an `ANY_GROUP`
-operation as making document content unreachable; it makes that *operation*
-unreachable. See the residuals in `docs/rbac.md` and AUTH.T03.
+⚠️ **A group floor is not the whole control, even where it now reaches the bytes.**
+It gates the REST API. The Identity Pool attaches one `authenticated` role with no
+role mappings, so whatever that role grants is held by every signed-in user, group
+or no group — which is why it grants **nothing** on the Input and Output buckets and
+**no** `s3:GetObject` or `s3:ListBucket` on any bucket, and why the UI asks
+`getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls` for every document
+byte. For the document read path the floor and the asset therefore coincide. What the
+floor still does not supply is per-document authorization: `document_scope` matches
+the owning document's `ConfigVersion` against the caller's `allowedConfigVersions`,
+which refuses a **scoped** caller a document outside their profiles and refuses an
+**unscoped** one nothing, scoping being opt-in per user. So do not describe an
+`ANY_GROUP` operation as making document content unreachable; it makes that
+*operation* unreachable, and on this path that is as far as the floor goes. See the
+residuals in `docs/rbac.md` and AUTH.T03.

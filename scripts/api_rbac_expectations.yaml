@@ -204,12 +204,14 @@ operations:
     groups: ANY_GROUP
     kind: read
     scope_checked: true
-    # `_parse_and_validate_uri` is the one function BOTH fields call before touching
-    # S3, and it is where both authorization checks live. Named explicitly because
-    # this module dispatches on `getFilePresignedUrl` only — `getFileContents` is the
-    # default branch, so S4 can find no `if` test on its name and would otherwise
-    # fall back to module scope, which is what it stopped doing on purpose.
-    scope_enforced_in: _parse_and_validate_uri
+    # `_parse_and_validate_one` is the one function ALL THREE fields call before
+    # touching S3, and it is where every authorization check lives — the bucket
+    # allow-list, the per-user key scope and the per-document scope. Named
+    # explicitly because this module dispatches on the two presign field names
+    # only — `getFileContents` is the default branch, so S4 can find no `if` test
+    # on its name and would otherwise fall back to module scope, which is what it
+    # stopped doing on purpose.
+    scope_enforced_in: _parse_and_validate_one
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
     args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
     note: >-
@@ -223,9 +225,15 @@ operations:
       (`<test_set_id>/`) — so `key_scope` applies the caller's
       allowedConfigVersions / allowedTestSets to the key, fail-closed, before any
       S3 call. A bucket-only check was the negation of both axes for exactly the
-      callers they restrict. What remains open is per-DOCUMENT scope on the Input
-      and Output buckets, which no per-user axis in this deployment records
-      (UI.T06, #1033).
+      callers they restrict. Per-DOCUMENT scope on the Input and Output buckets
+      is the third control, in `document_scope`: the owning document is found on
+      the tracking table from the key and its `ConfigVersion` matched against the
+      caller's allowedConfigVersions, fail-closed on an unidentifiable document
+      and on an unstamped one. It narrows a SCOPED caller only — a caller whose
+      row sets no allowedConfigVersions is deliberately unrestricted, the same
+      answer listDocuments gives — so the cross-document read is closed for
+      scoped callers and bounded by the group floor for everyone else (UI.T06,
+      #1033).
       The `args` bucket is REPLACED by apply_dynamic_args() with this
       deployment's own input bucket, because the matrix measures the GROUP floor
       and an out-of-allow-list bucket is refused to every caller by the
@@ -259,20 +267,51 @@ operations:
     alias_of: getFileContents
     scope_checked: true
     # Same choke point as getFileContents, and named for the same reason: this
-    # field DOES have a dispatch branch, but pinning the entry point makes the two
-    # aliases verifiably identical rather than identical by coincidence of call
-    # graph.
-    scope_enforced_in: _parse_and_validate_uri
+    # field DOES have a dispatch branch, but pinning the entry point makes the
+    # three fields verifiably identical rather than identical by coincidence of
+    # call graph.
+    scope_enforced_in: _parse_and_validate_one
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
     args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
     note: >-
       capability-issuing: the returned URL carries its own authorization for the
       lifetime of the signature, so it is the operation least able to rely on a
-      later check. That is why the key-scope check is in the shared
-      `_parse_and_validate_uri` rather than in either handler — a check this field
+      later check. That is why every authorization check is in the shared
+      `_parse_and_validate_one` rather than in any handler — a check this field
       could be added without is one that will eventually be missing from it. Same
-      runtime bucket substitution as getFileContents, and the same open
-      per-document residual — see its note.
+      runtime bucket substitution as getFileContents, and the same per-document
+      scope check — see its note.
+  getFilePresignedUrls:
+    groups: ANY_GROUP
+    kind: read
+    alias_of: getFileContents
+    scope_checked: true
+    # The same choke point as the two single-object fields, which is the point of
+    # naming it: a batch field that validated once outside its loop and signed the
+    # rest would satisfy a reference check, so the entry point is pinned to the
+    # function every entry goes through individually.
+    scope_enforced_in: _parse_and_validate_one
+    enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
+    args:
+      files:
+        - s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json"
+    note: >-
+      The batch form of getFilePresignedUrl, and capability-issuing for the same
+      reason: it returns URLs that carry their own authorization for the lifetime
+      of the signature. Every entry goes through `_parse_and_validate_one`
+      individually — bucket allow-list, key scope, document scope — and all of
+      them are authorized BEFORE the first URL is minted, so no partial result
+      exists. A refusal fails the WHOLE request rather than being reported per
+      entry: a per-entry refusal would turn one call into an N-key authorization
+      oracle, telling the caller key by key which documents are in their scope.
+      The list is capped server-side (MAX_BATCH_OBJECTS) and refused rather than
+      truncated past the cap, because the argument is caller-supplied and an
+      uncapped list amplifies one API call into an arbitrary number of signings,
+      tracking-table reads and response bytes. The number of distinct documents
+      one call may look up is bounded separately and more tightly
+      (document_scope.MAX_DOCUMENT_LOOKUPS), since those are DynamoDB reads.
+      Same runtime bucket substitution as getFileContents: apply_dynamic_args()
+      replaces the placeholder bucket inside the `files` list.
   getStepFunctionExecution:
     groups: ANY_GROUP
     kind: read

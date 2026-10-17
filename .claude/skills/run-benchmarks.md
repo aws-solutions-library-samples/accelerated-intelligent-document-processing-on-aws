@@ -82,7 +82,9 @@ It creates ONE new `docs/benchmarking/releases/v<NEW>.md` comparing the previous
 Procedure (drive it yourself — several steps need judgment):
 
 1. **Deploy the PREV published release.** Find the public template URL in `README.md`
-   (`s3://aws-ml-blog-<region>/artifacts/genai-idp/idp-main.yaml`); confirm its
+   (`s3://<basename>-<region>/artifacts/genai-idp/idp-main.yaml` — `aws-ml-blog` for
+   us-west-2, us-east-1 and eu-central-1, `aws-bigdata-blog-replica` for ca-central-1);
+   confirm its
    Description says `(v<PREV>)`. `idp-cli deploy --stack-name <S> --template-url <url>
    --admin-email <you> --region us-west-2 --wait`.
 2. **Generate the `corefast` grid** (`gen_corpus.py`; `make_configs.py --suite corefast`).

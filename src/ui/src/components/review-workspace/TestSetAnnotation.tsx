@@ -324,7 +324,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
               { id: 'source', text: 'View source document' },
             ]}
           />
-          {docView === 'source' && <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} presignVia="server" />}
+          {docView === 'source' && <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} />}
           {docView === 'ground-truth' && (
             <GroundTruthVisualEditor
               key={doc.objectKey}

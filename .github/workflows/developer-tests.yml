@@ -192,8 +192,8 @@ jobs:
         id: run-tests
         run: make test-cicd -C lib/idp_common_pkg
 
-      # The step above writes ONE of the ratchet's nine trees. Without this step the
-      # other eight resolve to no report at all, so the ratchet named them as
+      # The step above writes ONE of the ratchet's trees. Without this step the
+      # others resolve to no report at all, so the ratchet named them as
       # "not checked" and exited 0 — advisory-but-passing over exactly the trees
       # where coverage had actually been lost, including this repository's own hook
       # guards (issue #1256). Trees are measured concurrently and `idp_common` is

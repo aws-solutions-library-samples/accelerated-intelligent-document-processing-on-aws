@@ -1278,7 +1278,7 @@ Remove residual AWS resources left behind from deleted IDP stacks. Identifies or
 **Parameters:**
 - `dry_run` (bool, optional): Preview changes without making them (default: False)
 - `auto_approve` (bool, optional): Auto-approve all deletions (default: False)
-- `regions` (list[str], optional): AWS regions to check (default: us-east-1, us-west-2, eu-central-1)
+- `regions` (list[str], optional): AWS regions to check (default: the `IDP_REGIONS` list in `lib/idp_sdk/idp_sdk/_core/cleanup_orphaned.py`)
 - `profile` (str, optional): AWS profile name (default: None)
 
 **Returns:** `OrphanedResourceCleanupResult` with `results` (dict), `has_errors`, and `has_disabled`

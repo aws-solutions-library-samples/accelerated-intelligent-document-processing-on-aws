@@ -661,10 +661,25 @@ export type FileContentsResponse = {
   size: Scalars['Int']['output'];
 };
 
+export type FilePresignRequest = {
+  s3Uri: Scalars['String']['input'];
+  versionId?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type FilePresignedUrl = {
+  contentType: Scalars['String']['output'];
+  presignedUrl: Scalars['String']['output'];
+  s3Uri: Scalars['String']['output'];
+};
+
 export type FilePresignedUrlResponse = {
   contentType: Scalars['String']['output'];
   presignedUrl: Scalars['String']['output'];
   size: Scalars['Int']['output'];
+};
+
+export type FilePresignedUrlsResponse = {
+  results: Array<FilePresignedUrl>;
 };
 
 export type FileUploadInfo = {
@@ -1814,6 +1829,7 @@ export type Query = {
   getFeatureLaunchUrl?: Maybe<FeatureLaunchUrl>;
   getFileContents?: Maybe<FileContentsResponse>;
   getFilePresignedUrl?: Maybe<FilePresignedUrlResponse>;
+  getFilePresignedUrls?: Maybe<FilePresignedUrlsResponse>;
   getFinetuningJob?: Maybe<FinetuningJob>;
   getInboxPreferences?: Maybe<InboxPreferences>;
   getInboxUnreadCount?: Maybe<Scalars['Int']['output']>;
@@ -1988,6 +2004,11 @@ export type QueryGetFileContentsArgs = {
 export type QueryGetFilePresignedUrlArgs = {
   s3Uri: Scalars['String']['input'];
   versionId?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryGetFilePresignedUrlsArgs = {
+  files: Array<FilePresignRequest>;
 };
 
 

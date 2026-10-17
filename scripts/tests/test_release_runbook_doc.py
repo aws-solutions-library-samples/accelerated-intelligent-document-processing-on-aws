@@ -4,7 +4,7 @@
 """Keep ``docs/release-runbook.md`` honest about ``scripts/aws-release.sh``.
 
 The runbook documents the one irreversible step this project has: publishing
-artifacts to the three public ``aws-ml-blog-*`` buckets. It is read under pressure,
+artifacts to the four public release buckets. It is read under pressure,
 by someone who may be doing it for the first time, and it is trusted literally. A
 runbook that describes a release the script no longer performs is worse than none.
 
@@ -15,7 +15,7 @@ the script and the Makefile rather than against a copy of the facts:
 * the runbook quotes the script **verbatim**, so editing the script forces a
   decision about the prose around the quote;
 * the set of published regions in the runbook is the set in the script — adding a
-  fourth region cannot land undocumented;
+  region cannot land undocumented;
 * every ``make <target>`` the page cites still exists;
 * the artifact keys it names are the keys the publisher writes;
 * the number of files ``make version`` stamps is the number the page claims;
@@ -128,38 +128,63 @@ def test_the_runbook_quotes_the_release_script_verbatim() -> None:
     )
 
 
+def _script_buckets() -> dict[str, str]:
+    """Region -> ``<basename>-<region>``, read off each publish line.
+
+    The basename is per line rather than global — three regions publish to
+    ``aws-ml-blog`` and ``ca-central-1`` to ``aws-bigdata-blog-replica`` — so a
+    single ``--bucket-basename`` search over the whole script, or a bucket name
+    built from the region alone, is wrong for Canada.
+    """
+    buckets: dict[str, str] = {}
+    for line in _script_body().splitlines():
+        region = re.search(r"--region\s+([a-z0-9-]+)", line)
+        basename = re.search(r"--bucket-basename\s+(\S+)", line)
+        if region and basename:
+            buckets[region.group(1)] = f"{basename.group(1)}-{region.group(1)}"
+    return buckets
+
+
 @pytest.mark.unit
 def test_published_regions_match_the_script() -> None:
     """A region published but undocumented is a region nobody verifies after release."""
-    script_regions = set(re.findall(r"--region\s+([a-z0-9-]+)", _script_body()))
-    assert script_regions, "no --region flags found in the release script"
+    buckets = _script_buckets()
+    assert buckets, "no publish lines with --region and --bucket-basename in the script"
 
     text = _doc_text()
-    # Concrete bucket names only; placeholders like aws-ml-blog-<region> do not match.
-    doc_regions = set(re.findall(r"aws-ml-blog-([a-z]{2}-[a-z]+-\d)", text))
-
-    assert script_regions <= doc_regions, (
-        f"regions published by {SCRIPT.relative_to(REPO_ROOT)} but not named in "
-        f"{DOC.relative_to(REPO_ROOT)}: {sorted(script_regions - doc_regions)}"
+    # Each region's own bucket must appear by name. Concrete names only;
+    # placeholders like <basename>-<region> do not match.
+    missing = {r: b for r, b in buckets.items() if b not in text}
+    assert not missing, (
+        f"{DOC.relative_to(REPO_ROOT)} does not name the bucket for every published "
+        f"region: {sorted(missing.items())}"
     )
-    assert doc_regions <= script_regions, (
+
+    # And no bucket is claimed for a region the script does not publish to.
+    documented = set(
+        re.findall(r"aws(?:-ml-blog|-bigdata-blog-replica)-([a-z]{2}-[a-z]+-\d)", text)
+    )
+    assert documented <= set(buckets), (
         f"{DOC.relative_to(REPO_ROOT)} names buckets for regions the script does not "
-        f"publish: {sorted(doc_regions - script_regions)}"
+        f"publish: {sorted(documented - set(buckets))}"
     )
 
 
 @pytest.mark.unit
 def test_bucket_basename_and_prefix_match_the_script() -> None:
     body = _script_body()
-    basename = re.search(r"--bucket-basename\s+(\S+)", body)
+    basenames = set(re.findall(r"--bucket-basename\s+(\S+)", body))
     prefix = re.search(r"--prefix\s+(\S+)", body)
-    assert basename and prefix, (
+    assert basenames and prefix, (
         "release script must pass --bucket-basename and --prefix"
     )
 
     text = _doc_text()
-    assert basename.group(1) in text, (
-        f"bucket basename {basename.group(1)!r} is not mentioned in "
+    # Every basename, not just the first: a second one added for one region is
+    # exactly the case a single search would miss.
+    unmentioned = sorted(b for b in basenames if b not in text)
+    assert not unmentioned, (
+        f"bucket basenames {unmentioned} are not mentioned in "
         f"{DOC.relative_to(REPO_ROOT)}"
     )
     assert prefix.group(1) in text, (

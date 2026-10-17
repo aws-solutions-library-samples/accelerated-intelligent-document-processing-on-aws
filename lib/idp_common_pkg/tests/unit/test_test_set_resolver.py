@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
@@ -83,6 +84,55 @@ def _seed_test_set(table, test_set_id, **extra):
     item = {"PK": f"testset#{test_set_id}", "SK": "metadata", "id": test_set_id}
     item.update(extra)
     table.put_item(Item=item)
+
+
+def _seed_packet_set(table, s3, test_set_id, docs, sections):
+    """A set of multi-section packets whose weakest field is in the last section.
+
+    Sections before the last score 0.9 and the last scores 0.1, so a document whose
+    minConfidence is 0.1 is one whose every section was read.
+    """
+    _seed_test_set(table, test_set_id, fileCount=docs)
+    names = [f"packet_{i:04d}.pdf" for i in range(docs)]
+    for name in names:
+        s3.put_object(
+            Bucket="test-set-bucket", Key=f"{test_set_id}/input/{name}", Body=b"x"
+        )
+        for sec in range(1, sections + 1):
+            confidence = 0.1 if sec == sections else 0.9
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"{test_set_id}/baseline/{name}/sections/{sec}/result.json",
+                Body=json.dumps(
+                    {
+                        "labelSource": "draft-machine",
+                        "inference_result": {"f": "v"},
+                        "explainability_info": [{"f": {"confidence": confidence}}],
+                    }
+                ).encode(),
+            )
+    return names
+
+
+def _one_second_per_baseline_read(s3, monkeypatch):
+    """Make the resolver's clock read one second per baseline GET issued so far.
+
+    Patched on the client rather than on a resolver helper, so every reader of a
+    baseline pays whichever path it takes. Returns the keys read, in order.
+    """
+    lock = threading.Lock()
+    reads = []
+    real_get = s3.get_object
+
+    def get_object(**kwargs):
+        if "/baseline/" in kwargs.get("Key", ""):
+            with lock:
+                reads.append(kwargs["Key"])
+        return real_get(**kwargs)
+
+    monkeypatch.setattr(s3, "get_object", get_object)
+    monkeypatch.setattr(test_set_index.time, "monotonic", lambda: float(len(reads)))
+    return reads
 
 
 @pytest.fixture
@@ -3062,39 +3112,37 @@ class TestTestSetResolver:
     def test_estimate_stops_sampling_before_the_lambda_times_out(
         self, labeling_env, monkeypatch
     ):
-        """Regression: the estimate must return a narrower answer, never nothing.
+        """Regression (#1473): the estimate must return a narrower answer, not none.
 
-        Each document's sections are read from S3 to recover their confidence, so a
-        large sample costs multiple sequential pages of S3 reads and can exceed the
-        Lambda timeout. A time budget bounds the paging independently of the
-        document cap: a smaller sample still yields a usable estimate, and
-        sampledDocs reports how much was inspected.
+        The sample is a single page, so a budget checked only between pages was never
+        checked before the work was done. A set of four-section packets made that one
+        page cost ~26s against the dispatcher's 20s, and the estimate never arrived.
+        The budget has to stop the section reads themselves, and the field sample
+        after them.
         """
         table, s3 = labeling_env
-        _seed_test_set(table, "ts1", fileCount=600)
-        for i in range(5):
-            name = f"doc{i}.pdf"
-            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
-            s3.put_object(
-                Bucket="test-set-bucket",
-                Key=f"ts1/baseline/{name}/sections/1/result.json",
-                Body=json.dumps(
-                    {
-                        "labelSource": "draft-machine",
-                        "explainability_info": [{"f": {"confidence": 0.5}}],
-                    }
-                ).encode(),
-            )
+        _seed_packet_set(table, s3, "ts1", docs=30, sections=4)
+        budget = 40
+        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", budget)
+        reads = _one_second_per_baseline_read(s3, monkeypatch)
+        field_reads = []
+        real_count = test_set_index._count_baseline_fields
 
-        # Every page appears to take longer than the whole budget.
-        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", 0)
+        def counting(bucket, key):
+            field_reads.append(key)
+            return real_count(bucket, key)
+
+        monkeypatch.setattr(test_set_index, "_count_baseline_fields", counting)
 
         result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
 
-        # It returned rather than paging on: an answer, plus how much it saw.
-        assert result["totalDocs"] == 600
-        assert result["sampledDocs"] >= 1
-        assert result["docsToReview"] <= 600
+        assert result["totalDocs"] == 30
+        assert 1 <= result["sampledDocs"] < 30
+        assert result["docsToReview"] <= 30
+        assert len(reads) <= budget + 16, (
+            f"{len(reads)} of 120 sections read; reads continued past the budget"
+        )
+        assert field_reads == []
 
     def test_queue_stops_collecting_before_the_lambda_times_out(
         self, labeling_env, monkeypatch
@@ -3107,28 +3155,177 @@ class TestTestSetResolver:
         much was ranked.
         """
         table, s3 = labeling_env
-        _seed_test_set(table, "ts1", fileCount=600)
-        for i in range(4):
-            name = f"doc{i}.pdf"
-            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
-            s3.put_object(
-                Bucket="test-set-bucket",
-                Key=f"ts1/baseline/{name}/sections/1/result.json",
-                Body=json.dumps(
-                    {
-                        "labelSource": "draft-machine",
-                        "explainability_info": [{"f": {"confidence": 0.4}}],
-                    }
-                ).encode(),
-            )
-
-        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", 0)
+        _seed_packet_set(table, s3, "ts1", docs=30, sections=4)
+        budget = 40
+        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", budget)
+        reads = _one_second_per_baseline_read(s3, monkeypatch)
 
         result = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
 
-        assert result["totalDocs"] == 600
+        assert result["totalDocs"] == 30
+        assert 1 <= result["inspectedDocs"] < 30
+        assert len(result["documents"]) == result["inspectedDocs"]
+        assert len(reads) <= budget + 16
+
+    def test_queue_cut_by_the_budget_ranks_only_whole_documents(
+        self, labeling_env, monkeypatch
+    ):
+        """A document the budget cut short is left out, not ranked on part of it.
+
+        The budget runs out partway through a page, so some document is always
+        half-read when it does. Ranking that one would show the confidence and alert
+        count of the sections that happened to be read — here, a document scoring
+        0.9 whose weakest field, at 0.1, is in a section never opened.
+        """
+        table, s3 = labeling_env
+        names = _seed_packet_set(table, s3, "ts1", docs=30, sections=4)
+        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", 40)
+        _one_second_per_baseline_read(s3, monkeypatch)
+
+        result = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+
+        inspected = result["inspectedDocs"]
+        assert 1 <= inspected < 30
+        assert {d["objectKey"] for d in result["documents"]} == set(names[:inspected])
+        for doc in result["documents"]:
+            assert doc["sectionCount"] == 4
+            assert doc["minConfidence"] == pytest.approx(0.1), doc["objectKey"]
+
+    @staticmethod
+    def _queue_with_a_harvest_that_spends_its_share(table, s3, monkeypatch):
+        """A running labeling job whose harvest uses every second it is given.
+
+        Returns the baseline keys read and the deadlines the harvest was handed.
+        """
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#job1",
+                "testSetId": "ts1",
+                "jobId": "job1",
+                "status": "RUNNING",
+                "createdAt": "2026-01-01T00:00:00Z",
+            }
+        )
+        reads = _one_second_per_baseline_read(s3, monkeypatch)
+        spent = {"harvest": 0.0}
+        deadlines = []
+
+        def harvest(job, deadline=None):
+            deadlines.append(deadline)
+            spent["harvest"] = deadline
+            return job
+
+        monkeypatch.setattr(test_set_index, "_harvest_label_job", harvest)
+        monkeypatch.setattr(
+            test_set_index.time,
+            "monotonic",
+            lambda: spent["harvest"] + float(len(reads)),
+        )
+        return reads, deadlines
+
+    def test_queue_harvest_spends_the_queue_budget_rather_than_adding_to_it(
+        self, labeling_env, monkeypatch
+    ):
+        """Regression (#1473): one deadline covers the harvest and the queue read.
+
+        While a labeling job runs the queue advances it first, then reads the set.
+        The harvest's own 20s budget was spent before a fresh sampling budget
+        started, so the request could run 20s + 12s against the dispatcher's 20s —
+        on the workspace an annotator opens straight after starting draft labeling.
+        """
+        table, s3 = labeling_env
+        _seed_packet_set(table, s3, "ts1", docs=30, sections=4)
+        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", 40)
+        monkeypatch.setattr(test_set_index, "QUEUE_HARVEST_TIME_BUDGET_SECONDS", 30)
+        reads, deadlines = self._queue_with_a_harvest_that_spends_its_share(
+            table, s3, monkeypatch
+        )
+
+        result = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+
+        assert deadlines == [30.0]
+        assert len(reads) <= (40 - 30) + 16, (
+            f"{len(reads)} sections read after a 30s harvest; the queue's budget "
+            "restarted when the harvest finished"
+        )
         assert result["inspectedDocs"] >= 1
-        assert len(result["documents"]) >= 1
+        assert result["labelJobStatus"] == "RUNNING"
+
+    def test_queue_always_ranks_at_least_one_document(self, labeling_env, monkeypatch):
+        """A queue whose budget is gone before its reads start still has a front.
+
+        An empty queue with the whole set remaining gives the annotator nothing to
+        open and no error to act on. The first document is read whatever the clock
+        says, so the workspace always has one to work.
+        """
+        table, s3 = labeling_env
+        names = _seed_packet_set(table, s3, "ts1", docs=30, sections=4)
+        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", 20)
+        monkeypatch.setattr(test_set_index, "QUEUE_HARVEST_TIME_BUDGET_SECONDS", 30)
+        reads, _ = self._queue_with_a_harvest_that_spends_its_share(
+            table, s3, monkeypatch
+        )
+
+        result = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+
+        assert result["inspectedDocs"] == 1
+        assert [d["objectKey"] for d in result["documents"]] == [names[0]]
+        assert result["documents"][0]["minConfidence"] == pytest.approx(0.1)
+        assert len(reads) == 4
+
+    def test_document_listing_is_not_time_bounded(self, labeling_env, monkeypatch):
+        """The budget belongs to the samplers; paging the set returns every document.
+
+        getTestSetDocuments is also the Test Studio document table, which pages
+        through the whole set and must not silently lose rows to a clock it never
+        asked for.
+        """
+        table, s3 = labeling_env
+        _seed_packet_set(table, s3, "ts1", docs=30, sections=4)
+        monkeypatch.setattr(test_set_index, "SAMPLING_TIME_BUDGET_SECONDS", 0)
+        reads = _one_second_per_baseline_read(s3, monkeypatch)
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1", "limit": 30})
+
+        assert len(page["documents"]) == 30
+        assert len(reads) == 120
+        for doc in page["documents"]:
+            assert doc["minConfidence"] == pytest.approx(0.1), doc["objectKey"]
+
+    def test_sampling_budget_expires_inside_the_dispatcher_bound(self):
+        """The budget has to run out while the dispatcher is still waiting.
+
+        The dispatcher stops waiting for this resolver at
+        ``_RESOLVER_READ_TIMEOUT_SECONDS`` and answers 504. A 25s budget against its
+        20s made every sample that used its budget a 504 however narrow it became
+        (#1473). What remains of the 20s pays for a cold start (up to ~1.7s
+        measured), the reads before and after sampling, and the section reads still
+        in flight when the budget runs out.
+
+        The annotation queue's label-job harvest is spent from the same budget, so
+        its share has to leave the queue's own reads the larger part of it.
+        """
+        dispatcher = pathlib.Path(__file__).resolve().parents[4] / (
+            "nested/api-resolvers/src/lambda/http_api_dispatcher/index.py"
+        )
+        assert dispatcher.exists(), f"dispatcher source not at {dispatcher}"
+        match = re.search(
+            r"^_RESOLVER_READ_TIMEOUT_SECONDS = (\d+)$",
+            dispatcher.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert match, "dispatcher read timeout not found"
+        read_timeout = int(match.group(1))
+        headroom = read_timeout - test_set_index.SAMPLING_TIME_BUDGET_SECONDS
+        assert headroom >= 5, (
+            f"sampling budget leaves {headroom}s of the dispatcher's {read_timeout}s"
+        )
+        harvest = test_set_index.QUEUE_HARVEST_TIME_BUDGET_SECONDS
+        assert harvest <= test_set_index.SAMPLING_TIME_BUDGET_SECONDS / 2, (
+            f"the queue's {harvest}s harvest share leaves its reads less than half "
+            "of the budget"
+        )
 
     def test_field_sample_is_bounded_when_no_baseline_carries_fields(
         self, labeling_env, monkeypatch

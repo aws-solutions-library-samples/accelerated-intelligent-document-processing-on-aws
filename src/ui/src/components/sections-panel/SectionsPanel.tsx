@@ -34,7 +34,7 @@ import { getConfigClassOptions } from '../common/config-class-options';
 import PageGroupingEditor from '../common/PageGroupingEditor';
 import type { GroupedSection } from '../common/section-grouping';
 import { updateDocumentSections } from '../../graphql/generated';
-import usePageThumbnails from '../../hooks/use-page-thumbnails';
+import usePageThumbnails, { THUMBNAIL_FAILURE_MESSAGES } from '../../hooks/use-page-thumbnails';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
 import type { EditableSection } from '../../types/documents';
@@ -944,7 +944,12 @@ const SectionsPanel = ({
   const [isRegrouping, setIsRegrouping] = useState(false);
   const [isSavingGrouping, setIsSavingGrouping] = useState(false);
   const [groupingNotice, setGroupingNotice] = useState<string | null>(null);
-  const thumbnailUrls = usePageThumbnails(pages);
+  // Deferred until the page-regrouping board is actually open: these thumbnails
+  // feed only that board, so signing them on mount signed a whole document's
+  // pages — one resolver round trip per document view — and rendered none of
+  // them. PagesPanel keeps signing eagerly because it shows its thumbnails
+  // immediately.
+  const { urls: thumbnailUrls, failure: thumbnailFailure } = usePageThumbnails(pages, { enabled: isRegrouping });
   const [editedSections, setEditedSections] = useState<SectionItem[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string[]>>({});
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -1661,6 +1666,14 @@ const SectionsPanel = ({
         {groupingNotice && (
           <Alert type="info" dismissible onDismiss={() => setGroupingNotice(null)}>
             {groupingNotice}
+          </Alert>
+        )}
+
+        {/* The board's page cards are the thumbnails, so a refused signing leaves it
+            showing unlabelled empty cards. Say why instead. */}
+        {isRegrouping && thumbnailFailure && (
+          <Alert type={thumbnailFailure === 'access-denied' ? 'warning' : 'error'} header="Page thumbnails unavailable">
+            {THUMBNAIL_FAILURE_MESSAGES[thumbnailFailure]}
           </Alert>
         )}
 

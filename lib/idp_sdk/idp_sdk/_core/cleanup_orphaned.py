@@ -28,7 +28,15 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Regions to check for IDP stacks
+# Regions to check for IDP stacks when the caller names none. A superset of the
+# Regions releases are published to (`scripts/aws-release.sh`), because a customer
+# can deploy from source anywhere — but every published Region belongs here, or
+# the orphaned resources of a deleted stack in it are skipped and leak.
+#
+# ⚠️ This is the *SDK* default, reached only when `regions is None`. The
+# `idp-cli remove-deleted-stack-resources` option carries its own, narrower
+# default (three Regions) and always passes it, so adding a Region here does not
+# change what the CLI scans.
 IDP_REGIONS = [
     "us-east-1",
     "us-west-2",
@@ -36,6 +44,7 @@ IDP_REGIONS = [
     "eu-west-1",
     "ap-southeast-1",
     "ap-northeast-1",
+    "ca-central-1",
 ]
 
 # IDP solution identifier in CloudFormation Description
@@ -1200,7 +1209,7 @@ class OrphanedResourceCleanup:
         Args:
             dry_run: If True, only report what would be cleaned up
             auto_approve: If True, skip confirmation prompts
-            regions: List of regions to check for stacks (default: us-east-1, us-west-2, eu-central-1)
+            regions: List of regions to check for stacks (default: ``IDP_REGIONS``)
 
         Returns:
             Dict with results for each resource type

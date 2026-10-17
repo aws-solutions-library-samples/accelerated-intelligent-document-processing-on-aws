@@ -568,35 +568,79 @@ class TestScopeRefusalsDiscloseNothing:
 
 
 @pytest.mark.unit
-class TestTheRemainingResidual:
-    """The document buckets are still bucket-scoped only, and that is the open gap.
+class TestTheDocumentBucketsAreScopedByADifferentAxis:
+    """The document buckets carry no PER-USER key scope, and are not unchecked either.
 
-    UI.T06's document half is not closed here: the Output and Input buckets are not
-    partitioned by any per-user axis this deployment records, so there is nothing for
-    a key rule to consult. Closing it needs per-document authorization, which is
-    issue #1033 and a change to the document-viewing data path.
+    This class used to pin UI.T06's document half as an open gap: the Output and Input
+    buckets are not partitioned by any per-user axis, so there was nothing for a key
+    rule to consult, and an Output-bucket read by a config-version-scoped caller
+    succeeded. Its docstring said that if per-document scope ever arrived this is the
+    test that would fail and name the place to enforce it. It did, and this is that
+    place: the axis is the DOCUMENT's own `ConfigVersion` against the caller's
+    `allowedConfigVersions`, enforced by `document_scope` rather than by `key_scope`,
+    and issue #1033 is where it landed.
 
-    Pinned rather than merely written down, so the residual cannot be mistaken for
-    something this path already handles — and so that if per-document scope does
-    arrive, this test is what fails and names the place to enforce it.
+    Both halves are pinned, because the distinction between them is the thing that was
+    hardest to see before: `key_scope` still answers "no scope question" for every
+    Output-bucket key — reading its call graph and concluding the read is scoped is
+    exactly the mistake #1033's own write-up records — and the read is nevertheless
+    authorized, by a separate control consulting a separate store. The per-document
+    control's own behaviour is in `test_document_scope.py`; what is asserted here is
+    that it is reached from this path and that `key_scope` is not the thing reaching
+    it.
     """
 
     @pytest.mark.parametrize("field", BOTH_FIELDS)
-    def test_an_output_bucket_key_is_not_key_scoped(self, resolver, field):
+    def test_an_output_bucket_read_is_refused_when_the_document_cannot_be_identified(
+        self, resolver, field
+    ):
+        """Fail-closed, from this fixture, which wires no TRACKING_TABLE_NAME.
+
+        An Output-bucket read by a scoped caller used to succeed here. It is now
+        refused, and the reason is worth being precise about: it is not that the key is
+        out of scope — `key_scope` has no opinion on it, asserted below — but that
+        `document_scope` cannot identify the owning document with no tracking table
+        wired, and an unidentifiable document denies. Reading an unset environment
+        variable as "nothing to check" would make the per-document control removable by
+        deleting one line from `nested/api-resolvers/template.yaml`.
+        """
         index, table = resolver
         _put_user(table, "user@example.test", allowedConfigVersions=[MINE])
+
+        with pytest.raises(PermissionError, match="^Unauthorized:"):
+            index.handler(
+                _event(field, OUTPUT_BUCKET, "doc/sections/1/result.json"), None
+            )
+
+    @pytest.mark.parametrize("field", BOTH_FIELDS)
+    def test_an_output_bucket_read_by_an_unscoped_caller_still_succeeds(
+        self, resolver, field
+    ):
+        """The per-document axis is opt-in per user, like every other use of it.
+
+        A caller whose UsersTable row sets no `allowedConfigVersions` is unrestricted,
+        so `document_scope` resolves nothing and consults no table — which is why this
+        succeeds from a fixture with no tracking table. It is the honest bound on what
+        #1033 closed, and asserting it here as well as in `test_document_scope.py`
+        keeps the two fixtures from disagreeing about it.
+        """
+        index, table = resolver
+        _put_user(table, "user@example.test")
 
         assert index.handler(
             _event(field, OUTPUT_BUCKET, "doc/sections/1/result.json"), None
         )
 
     def test_the_document_buckets_are_scope_bearing_for_no_key_shape(self, resolver):
-        """Which buckets carry a scope question, derived from the code not restated.
+        """Which buckets carry a PER-USER key scope question, derived not restated.
 
         The three key shapes below are every shape this resolver is asked for. The
-        Output and Input buckets answer `None` to all of them — that is the residual,
-        stated as the absence it actually is. If a document axis is ever added, this
-        is what fails, and it names the buckets that need it.
+        Output and Input buckets answer `None` to all of them, and that is still true
+        and still the point: `key_scope` is a no-op on a document key, so a reviewer
+        who sees `assert_key_in_scope` called on every key and concludes the document
+        read is scoped has read the call graph correctly and the control wrongly. The
+        document axis lives in `document_scope` and consults the tracking table, not
+        the key.
         """
         import key_scope
 

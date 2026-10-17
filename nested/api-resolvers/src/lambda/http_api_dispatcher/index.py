@@ -251,6 +251,10 @@ FIELD_FUNCTION_MAP: Dict[str, str] = _load_field_function_map()
 # regardless of which field name routed to it.
 FIELD_ALIASES: Dict[str, str] = {
     "getFilePresignedUrl": "getFileContents",
+    # Both presign fields alias the same resolver, which dispatches on fieldName.
+    # An alias rather than a FIELD_FUNCTION_MAP entry for the reason stated below:
+    # HttpApiFieldFunctionMap is already at its 8 KB Advanced-tier ceiling.
+    "getFilePresignedUrls": "getFileContents",
     "listSampleDocuments": "uploadDocument",
     "uploadSampleDocument": "uploadDocument",
     # addDocumentsToTestSet (TestSetResolverFunction)
