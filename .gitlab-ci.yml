@@ -939,6 +939,26 @@ srt_security_review:
   # Start immediately, in parallel with static_checks — SRT needs no artifacts.
   needs: []
 
+  # `make srt-setup` resolves SRT's latest release through the GitHub API, which
+  # allows 60 requests/hour PER IP unauthenticated — and the hosted runner fleet
+  # shares its IPs, so the anonymous request returns 403 "rate limit exceeded"
+  # whenever another project on the same runner has spent the hour's budget. That
+  # is one API call per job, before any scanning: the job then fails at setup with
+  # no findings read and no artifacts to upload, which reads like a security gate
+  # failure and is not one.
+  #
+  # The fix is the `GITHUB_TOKEN` project CI/CD variable (masked, NOT protected —
+  # this job runs on every branch, and a protected variable reaches only protected
+  # refs). A token raises the limit to 5,000/hour for the token rather than for the
+  # shared IP. setup.py reads `GITHUB_TOKEN` or `GH_TOKEN` from the environment,
+  # and GitLab injects project variables into every job, so there is nothing to
+  # wire in `variables:` here — this comment is the only place the dependency is
+  # visible.
+  #
+  # ⚠️  With the variable absent or expired the job fails exactly as above; the
+  #     scan does not silently degrade to anonymous-and-green. The hint in
+  #     setup.py's failure output names this variable. A read-public-only token is
+  #     sufficient: the only call is a release lookup against a public repository.
   before_script:
     - python --version
     - apt-get update -y
