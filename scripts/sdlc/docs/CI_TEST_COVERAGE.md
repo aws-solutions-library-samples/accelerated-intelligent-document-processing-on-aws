@@ -1358,18 +1358,15 @@ still using**, so they never touch a live run.
 
 **One stack is left standing at any age: `idp-ux-nightly`**, the name reserved
 for a long-lived review stack that is updated in place rather than created per
-run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). Each reaper would
-otherwise take it in its own way. The stack reaper would delete it and its
-`-iam` pre-stack once they passed its age gate. The bucket reaper would empty
-and delete its buckets once they passed its own, even with the stack up,
-because its live-stack protection is keyed on a run's `idp-MMDD-HHMMSS` prefix
-and that name carries none. The BDA reaper asks after the stack that the first
-three hyphen-separated parts of a name spell, so it spares `idp-ux-nightly-*`
-resources only while the stack's status is in that reaper's active set, and
-never spares the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`,
-whose first three parts spell no stack. The IAM-role and IAM-policy reapers
-delete only run-prefixed names, so they already passed that stack's roles and
-policies over. The stack reaper therefore skips `idp-ux-nightly` and its
+run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). The stack and
+bucket reapers would otherwise each take it in its own way. The stack reaper
+would delete it and its `-iam` pre-stack once they passed its age gate. The
+bucket reaper would empty and delete its buckets once they passed its own, even
+with the stack up, because its live-stack protection is keyed on a run's
+`idp-MMDD-HHMMSS` prefix and that name carries none. The BDA, IAM-role and
+IAM-policy reapers delete only run-prefixed names, so they already passed that
+stack's BDA projects and blueprints, roles and policies over. The stack reaper
+therefore skips `idp-ux-nightly` and its
 pre-stack, `idp-ux-nightly-iam`, and no other stack: it asks only about
 top-level stacks, so the stack's nested stacks never reach that check, and any
 other top-level `idp-ux-nightly-*` stack is a stack of its own, reaped once it

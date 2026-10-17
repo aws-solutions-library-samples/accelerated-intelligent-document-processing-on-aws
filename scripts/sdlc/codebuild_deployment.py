@@ -439,9 +439,9 @@ STARTUP_SWEEPS = (
             "row — which is what #1391 was actually about, a log line nobody "
             "read — and not the exit code. Measuring a quota is what would flip "
             "this, in this one place. The decision survives this sweep's second "
-            "finding source unchanged: a prefix whose liveness cannot be read is "
-            "left in place (#1440), so what that costs is the same unmeasured "
-            "leak the rest of this reason is about."
+            "finding source unchanged: when the account's stacks cannot be "
+            "enumerated, every name is left in place (#1440), so what that costs "
+            "is the same unmeasured leak the rest of this reason is about."
         ),
     ),
     StartupSweep(
@@ -573,7 +573,7 @@ def _first_failure_reason(existing, candidate):
 #: stack that outlives every run, updated in place rather than created per run.
 #: Each of them asks before its age gate or liveness check, so a name it spares
 #: is counted as long-lived, never reported as an item whose age could not be
-#: established (#1445) or whose run's liveness went unanswered.
+#: established (#1445).
 #: Registered in scripts/tests/gate_exemptions.json.
 SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly"})
 
@@ -613,91 +613,55 @@ def _is_exempt_stack_or_pre_stack(name: str) -> bool:
     return any(name in (stack, f"{stack}-iam") for stack in SWEEP_EXEMPT_STACK_NAMES)
 
 
-#: The CloudFormation error code for a stack that is not there. `DescribeStacks`
-#: models no error shapes at all, so botocore raises a generic `ClientError` and
-#: the code has to be read off the payload — which is also what makes a gone
-#: stack indistinguishable from a throttle or a denial at the bare `except`. The
-#: API reference states this code: "If the stack doesn't exist, a
-#: ValidationError is returned."
-_STACK_GONE_ERROR_CODE = "ValidationError"
-
-#: ...and the message fragment that says a `ValidationError` is about the
-#: stack's EXISTENCE rather than about the request. `ValidationError` is
-#: CloudFormation's catch-all 400 — a malformed stack name arrives under it, and
-#: so does `Parameters: [X] do not exist in the template` on a neighbouring
-#: operation — so the code by itself does not establish absence on a path that
-#: deletes. Two other call sites here already draw the line in the same place:
-#: `_iam_stack_presence` below, and the feature launch-URL resolver in
-#: `feature-platform/main-stack-extensions/lambdas/get_feature_launch_url`.
-#:
-#: The cost of requiring the message is worth stating in the direction it falls:
-#: were CloudFormation to reword it, every prefix would read as unanswered, so
-#: the sweep would reap nothing AND report a finding every run. Inert and loud,
-#: rather than over-eager and quiet.
-_STACK_GONE_MESSAGE = "does not exist"
-
-
-def _run_stack_liveness(cf_client, stack_name, active_statuses):
-    """(active, detail) for a run's stack — True, False, or None for unanswered.
-
-    `None` is the state this function exists to produce, and a caller that
-    deletes on the answer has to read it as "leave this one alone".
-    `describe_stacks` raises `ClientError` both for a stack that genuinely is
-    not there, which really does mean the run is over, and for `Throttling`,
-    `ThrottlingException`, `RequestLimitExceeded`, `AccessDenied`, expired
-    credentials and anything else. Only the first says the run is over, and a
-    handler that collapses the two reaches for the one answer that permits
-    deleting an in-flight run's resources — at precisely the moment that answer
-    is most likely to be wrong, since a `DescribeStacks` is throttled when
-    several runs are in flight (#1440).
-
-    So absence is established positively, by the error code AND the message, and
-    every other outcome answers None — an unrecognised code included, because
-    the safe branch is the one an unfamiliar condition has to take. `detail` is
-    the reason, for the caller to put in its finding.
-    """
-    try:
-        resp = cf_client.describe_stacks(StackName=stack_name)
-    except Exception as e:  # noqa: BLE001
-        code = _aws_error_code(e)
-        if code == _STACK_GONE_ERROR_CODE and _STACK_GONE_MESSAGE in str(e):
-            return False, ""
-        return None, f"{code or type(e).__name__}: {e}"
-
-    stacks = resp.get("Stacks") or []
-    if not stacks:
-        # Asked about a named stack, DescribeStacks either answers with it or
-        # raises, so an empty list is a response this code cannot read rather
-        # than an absence it can act on.
-        return None, "DescribeStacks answered with no stack and no error"
-    return stacks[0].get("StackStatus", "") in active_statuses, ""
-
-
 def cleanup_stale_bda_blueprints():
-    """Delete BDA projects, blueprint versions, and blueprints whose stacks are no longer active.
+    """Delete idp- BDA projects, blueprint versions and blueprints whose run is over.
 
-    TWO enumerations — `list_blueprints` and `list_data_automation_projects` —
-    and either failing leaves nothing to sweep, so both sit in one block and both
-    produce a finding. Returns the Step 0 sweep outcome described at
-    STARTUP_SWEEPS: an empty list only if both listings answered and every idp-
-    blueprint and project in them was considered. Never raises.
+    THREE enumerations, and any one failing leaves nothing that can be deleted
+    safely, so each produces a finding: `list_blueprints` and
+    `list_data_automation_projects` in one block, then the account's surviving
+    stacks through `_live_idp_run_prefixes`. Returns the Step 0 sweep outcome
+    described at STARTUP_SWEEPS: an empty list only if every listing answered and
+    every idp- blueprint and project in them was considered. Never raises.
 
-    "Considered" includes the per-prefix liveness question, which is the second
-    way this sweep can fail to complete: a prefix whose `DescribeStacks` could
-    not be answered is left in place AND reported, rather than read as a run that
-    is over. See `_run_stack_liveness` for why that direction is the only safe
-    one on a path that deletes (#1440).
+    A name is reaped only when it carries a run prefix (`_IDP_RUN_PREFIX_RE`, the
+    leading `idp-MMDD-HHMMSS`) and no stack of that run survives in any status
+    but `DELETE_COMPLETE` — the question the bucket, role and policy reapers ask,
+    answered the way they answer it. It is asked of the run rather than of a
+    stack because where the stack name ends inside a BDA name cannot be read off
+    the name: a class's blueprint is `<stack>-<class>-<uuid8>`, a configuration
+    version's project `<stack>-<version>` and its bootstrap blueprint
+    `<project>-bootstrap-<uuid8>`, the BDA-as-OCR project
+    `<stack>_OCR_StdOutput`, and a probe or transform deploy test names its stack
+    `idp-MMDD-HHMMSS-<suffix>`. The run prefix is the part every one of those
+    shares with the stack that created it. Every surviving status protects,
+    because a stack mid-cleanup, rolling back, under review, failed, or retained
+    for inspection still owns what it created, and a retained stack is kept
+    precisely so that what it holds can be examined. A name with no run prefix
+    is never reaped here: nothing ties it to a run whose end could be
+    established.
+
+    Three answers per run rather than two (#1440) — live, over, and unanswered —
+    and only "over" deletes. "Unanswered" is the stack enumeration not
+    completing: `_live_idp_run_prefixes` raises rather than returning the stacks
+    it had read, since a partial set would read every run on a missing page as
+    over. Then nothing is deleted and the sweep reports itself incomplete ONCE,
+    however many names it listed. One paginated call per sweep, rather than a
+    question per name, also keeps the sweep's own requests from causing the
+    throttling it would then have to report.
+
+    The BDA listings are read BEFORE the stacks, and with no age gate that order
+    is what keeps a starting run safe. A BDA resource is created by a stack that
+    already exists, so a stack enumeration taken after the listing sees the
+    owner of everything the listing returned, while that owner is up. Read the
+    other way round, a run whose stack and first resources both appeared
+    between the two reads would be listed and not protected.
 
     A blueprint or project named for a SWEEP_EXEMPT_STACK_NAMES stack is never
-    stale, and its stack's liveness is not asked. That stack outlives every run,
-    so a status outside `active_statuses` — UPDATE_ROLLBACK_FAILED, or a
-    `*_CLEANUP_IN_PROGRESS` state mid-update — does not make its resources
-    leftovers. Its BDA-as-OCR project, `<stack>_OCR_StdOutput`, would otherwise
-    be taken at any status: the first three hyphen-separated parts of that name
-    spell no stack, so the liveness question below reads it as a run that is
-    over. And a `DescribeStacks` about that stack that went unanswered would
-    report a finding about resources this sweep never deletes. They are counted
-    in the summary line instead.
+    stale, whatever the stack enumeration says of that stack. That stack
+    outlives every run and its name carries no run prefix, so the rule above
+    would pass its resources over anyway; checking first means they do not rest
+    on that name failing the run-prefix match. The summary line counts them as
+    named for a long-lived stack, never as names with no run prefix.
 
     One blueprint or project that would not delete stays best effort and is NOT a
     finding — the loops below name it and the next run takes it.
@@ -711,7 +675,6 @@ def cleanup_stale_bda_blueprints():
         bda_client = boto3.client(
             "bedrock-data-automation", config=_THROTTLE_RETRY_CONFIG
         )
-        cf_client = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
 
         # Collect all idp- blueprints and projects
         paginator = bda_client.get_paginator("list_blueprints")
@@ -736,50 +699,30 @@ def cleanup_stale_bda_blueprints():
             f"was deleted: {e}"
         )
 
+    if not blueprints and not projects:
+        print("✅ No stale BDA resources found")
+        return []
+
     try:
-        active_statuses = {
-            "CREATE_IN_PROGRESS",
-            "CREATE_COMPLETE",
-            "UPDATE_IN_PROGRESS",
-            "UPDATE_COMPLETE",
-            "UPDATE_ROLLBACK_COMPLETE",
-            "UPDATE_ROLLBACK_IN_PROGRESS",
-            "IMPORT_IN_PROGRESS",
-            "IMPORT_COMPLETE",
-        }
+        live_runs = _live_idp_run_prefixes()
+    except Exception as e:  # noqa: BLE001
+        return _sweep_finding(
+            "could not enumerate the account's surviving CloudFormation stacks "
+            f"({_aws_error_code(e) or type(e).__name__}), so none of the "
+            f"{len(blueprints) + len(projects)} idp- blueprint(s) and project(s) "
+            "it listed could be established as left over from a run that is "
+            f"over, and none was deleted: {e}"
+        )
 
-        if not blueprints and not projects:
-            print("✅ No stale BDA resources found")
-            return []
-
-        # Check stack status for each unique stack prefix. THREE answers rather
-        # than two — live, established gone, and unanswered — and only the middle
-        # one may lead to a delete. See _run_stack_liveness.
-        stack_cache = {}
-        liveness_unanswered = {}
+    try:
         skipped_long_lived = 0
-        for name, _ in blueprints + projects:
-            if _named_for_exempt_stack(name):
-                continue
-            parts = name.split("-")
-            if len(parts) >= 3:
-                prefix = f"{parts[0]}-{parts[1]}-{parts[2]}"
-                if prefix not in stack_cache:
-                    active, detail = _run_stack_liveness(
-                        cf_client, prefix, active_statuses
-                    )
-                    stack_cache[prefix] = active
-                    if active is None:
-                        liveness_unanswered[prefix] = detail
 
         def _is_stale(name):
-            """Stale only where the run's stack is POSITIVELY established gone.
+            """Stale only where the name's run prefix has no surviving stack.
 
-            `is False` rather than a falsy test: the cache's third value is None
-            for a prefix whose liveness could not be read, `not None` is True,
-            and that hands an unanswerable question the one answer that deletes
-            an in-flight run's blueprints (#1440). A prefix missing from the
-            cache answers None here too, for the same reason.
+            The set is the one `_live_idp_run_prefixes` read in full, so a run
+            missing from it is one the enumeration established is over, rather
+            than one it failed to read. A name with no run prefix is never stale.
 
             A name for a SWEEP_EXEMPT_STACK_NAMES stack answers False before any
             of that, whatever the stack's status, and is counted.
@@ -788,10 +731,8 @@ def cleanup_stale_bda_blueprints():
             if _named_for_exempt_stack(name):
                 skipped_long_lived += 1
                 return False
-            parts = name.split("-")
-            if len(parts) < 3:
-                return False
-            return stack_cache.get(f"{parts[0]}-{parts[1]}-{parts[2]}") is False
+            match = _IDP_RUN_PREFIX_RE.match(name)
+            return match is not None and match.group(1) not in live_runs
 
         # Step 1: Delete projects first (blueprints are referenced by projects)
         deleted_projects = 0
@@ -825,29 +766,18 @@ def cleanup_stale_bda_blueprints():
                     print(f"  ⚠️ Failed to delete blueprint {name}: {e}")
                     time.sleep(0.5)
 
-        live = sum(1 for active in stack_cache.values() if active)
+        matches = [
+            _IDP_RUN_PREFIX_RE.match(name)
+            for name, _ in blueprints + projects
+            if not _named_for_exempt_stack(name)
+        ]
+        live = len({m.group(1) for m in matches if m and m.group(1) in live_runs})
+        unprefixed = matches.count(None)
         print(
             f"✅ Cleaned up {deleted_projects} projects, {deleted_bps} blueprints "
-            f"(skipped {live} live run(s), {len(liveness_unanswered)} unanswered, "
+            f"(skipped {live} live run(s), {unprefixed} name(s) with no run prefix, "
             f"{skipped_long_lived} named for a long-lived stack)"
         )
-        if liveness_unanswered:
-            # Not an enumeration failure and not a stuck delete: the listings
-            # answered and nothing was refused, but for these prefixes the
-            # question "is this run still going?" has no answer, so their
-            # blueprints and projects were left where they are. A sweep that
-            # could not establish liveness for part of what it listed has not
-            # completed, and saying so is the whole of what this costs.
-            detail = "; ".join(
-                f"{prefix} ({why})"
-                for prefix, why in sorted(liveness_unanswered.items())
-            )
-            return _sweep_finding(
-                f"could not establish whether the run behind "
-                f"{len(liveness_unanswered)} of the idp- blueprint/project "
-                f"prefix(es) it listed is still in flight, so those were left in "
-                f"place rather than reaped: {detail}"
-            )
         return []
     except Exception as e:  # noqa: BLE001
         # Not a per-resource delete failure — those are caught in the loops above
@@ -6953,9 +6883,16 @@ _IDP_RUN_PREFIX_RE = re.compile(r"^(idp-\d{4}-\d{6})")
 def _live_idp_run_prefixes():
     """Run-prefixes (idp-MMDD-HHMMSS) that still have ANY CloudFormation stack.
 
-    A bucket whose run-prefix is in this set belongs to a run that isn't fully
-    torn down (possibly in-flight), so it must NOT be reaped. Includes stacks in
-    every non-terminal and terminal-but-present state.
+    A bucket, role, policy or BDA resource whose run-prefix is in this set
+    belongs to a run that isn't fully torn down (possibly in-flight), so it must
+    NOT be reaped. Includes stacks in every non-terminal and terminal-but-present
+    state: every `StackStatus` but `DELETE_COMPLETE`, a set
+    `test_startup_sweep_outcomes.py` reads off botocore's own model, so a status
+    CloudFormation adds later fails there rather than reading as gone here.
+
+    Raises if any page of the listing cannot be read, rather than returning the
+    prefixes read so far. Every caller reaps what is NOT in the set, so a partial
+    set would read each run on an unread page as over, on a path that deletes.
     """
     prefixes = set()
     cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
@@ -8994,8 +8931,9 @@ def main():
     # startup reapers converge the account back to clean regardless — otherwise
     # leaked test VPCs exhaust the VPC quota, and leaked -iam stacks' roles
     # exhaust the RolesPerAccount quota (which failed every deploy once ~600
-    # roles had accumulated). All are age-gated so a concurrent pipeline's
-    # in-flight run is never touched.
+    # roles had accumulated). All but the BDA sweep are age-gated so a
+    # concurrent pipeline's in-flight run is never touched; that one is gated
+    # on its run's surviving stacks instead.
     #
     # Every sweep's outcome is BOUND here rather than printed and forgotten: a
     # sweep whose enumeration failed considered nothing, and a `⚠️` on an
