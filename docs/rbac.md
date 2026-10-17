@@ -663,7 +663,7 @@ names did not even have to be known. The Test Set bucket has never been on the r
 Both are reachable only through the three object-read operations above, where
 `key_scope` checks the key against the caller's scope.
 
-So the accurate statement of what `ANY_GROUP` buys is: **those twenty-seven API
+So the accurate statement of what `ANY_GROUP` buys is: **those 27 API
 operations** now refuse a caller in no group, and since the document read path runs
 through three of them, the document bytes are behind that floor too. What the floor
 does **not** supply is per-document authorization; the profile scope supplies as much

@@ -321,6 +321,7 @@ def labeling_env():
         "AWS_REGION": "us-east-1",
         "TRACKING_TABLE": "test-table",
         "TEST_SET_BUCKET": "test-set-bucket",
+        "TEST_SET_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
         "TEST_RUNNER_FUNCTION_ARN": "arn:aws:lambda:us-east-1:123456789012:function:runner",
     }
     with mock_aws(), patch.dict(os.environ, region_env):

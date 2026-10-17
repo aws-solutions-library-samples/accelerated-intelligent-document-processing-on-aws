@@ -157,6 +157,7 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 | `src/lambda/ocr_benchmark_deployer` | `test_local.py` needs `huggingface_hub`, which is not a test dependency |
 | `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
 | `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
+| `lib/idp_common_pkg/idp_common/review_queues` | source, not tests: `test_set_docs.py` and `test_set_summaries.py` are the test-set document store and summary modules, which the `test_` prefix makes look like a suite |
 | `lib/idp_common_pkg/manual_tests/agents` | operator-run scripts, not a suite: each one drives real Bedrock, Athena or DynamoDB against a deployed stack and bills model calls. Run by hand (`python manual_tests/agents/test_analytics.py -q "…"`); `norecursedirs` in `lib/idp_common_pkg/pytest.ini` keeps a bare `pytest` from collecting them |
 
 Adding an exclusion, or lifting one of these, fails that guard until this table and

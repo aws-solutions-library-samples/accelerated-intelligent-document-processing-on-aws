@@ -13,6 +13,7 @@ name the values.
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,6 @@ SCAN_ROOTS = [
     *sorted((REPO_ROOT / "nested").glob("*/src/lambda")),
 ]
 
-SKIPPED_DIR_NAMES = {"tests", ".aws-sam", "build", "__pycache__", "node_modules"}
 CANONICAL = REPO_ROOT / "lib/idp_common_pkg/idp_common/review_queues/statuses.py"
 VENDORED_NAME = "review_statuses.py"
 
@@ -48,16 +48,30 @@ CONTEXT_MARKERS = ("hitl_status", "HITLStatus")
 
 
 def _python_files():
-    for root in SCAN_ROOTS:
-        for path in root.rglob("*.py"):
-            rel_parts = path.relative_to(root).parts
-            if SKIPPED_DIR_NAMES.intersection(rel_parts):
-                continue
-            if path.name.startswith("test_") or path.name == VENDORED_NAME:
-                continue
-            if path == CANONICAL:
-                continue
-            yield path
+    # Tracked files only, so build output (.aws-sam, build, node_modules) and
+    # caches are left out by git rather than by a list of directory names.
+    tracked = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--",
+            *(str(r.relative_to(REPO_ROOT)) for r in SCAN_ROOTS),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    for rel in tracked:
+        if not rel.endswith(".py"):
+            continue
+        path = REPO_ROOT / rel
+        if path.name.startswith("test_") or path.name == VENDORED_NAME:
+            continue
+        if path == CANONICAL:
+            continue
+        yield path
 
 
 def _contextual_nodes(tree):
