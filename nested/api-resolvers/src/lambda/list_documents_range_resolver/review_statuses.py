@@ -118,6 +118,11 @@ class HitlView:
     kind: HitlKind
     queue_managed: bool
 
+    @property
+    def in_review(self) -> bool:
+        """True while a queue review is under way (not yet complete or rejected)."""
+        return self.kind == "in_review"
+
 
 _LEGACY_KINDS = {
     LegacyHitlStatus.PENDING_REVIEW.value: "pending",

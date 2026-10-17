@@ -3,9 +3,10 @@
 
 """user_sync maps every persona to its own Cognito group (IDP-0002 D47).
 
-It used to map every non-Admin persona to Reviewer, so an Author, Annotator,
-Viewer or QueueReviewer created or changed in User Management could become a
-Reviewer. An unknown persona now gets no group at all.
+It used to map every non-Admin persona to Reviewer, so an Author, Annotator or
+Viewer created or changed in User Management could become a Reviewer. An unknown
+persona now gets no group at all, and that includes the retired QueueReviewer
+persona, which has no Cognito group behind it.
 """
 
 import logging
@@ -55,7 +56,6 @@ class TestPersonaGroups:
     @pytest.mark.parametrize(
         ("persona", "group"),
         [
-            ("QueueReviewer", "QueueReviewer"),
             ("Annotator", "Annotator"),
             ("Viewer", "Viewer"),
             ("Author", "Author"),
@@ -73,10 +73,11 @@ class TestPersonaGroups:
         user_sync.handle_user_created({"dynamodb": {"NewImage": _image(persona)}})
         cognito.assert_no_pending_responses()
 
-    def test_unknown_persona_gets_no_group(self, cognito, caplog):
+    @pytest.mark.parametrize("persona", ["Ghost", "QueueReviewer"])
+    def test_unknown_persona_gets_no_group(self, cognito, caplog, persona):
         _expect_create(cognito)
         with caplog.at_level(logging.WARNING):
-            user_sync.handle_user_created({"dynamodb": {"NewImage": _image("Ghost")}})
+            user_sync.handle_user_created({"dynamodb": {"NewImage": _image(persona)}})
         cognito.assert_no_pending_responses()
         assert "Unknown persona" in caplog.text
 

@@ -99,6 +99,17 @@ class TestNormalize:
     def test_strip(self):
         assert normalize_hitl_status("  in_review ") == HitlView("in_review", True)
 
+    def test_only_a_review_under_way_reads_as_in_review(self):
+        """``in_review`` is what processChanges refuses on (finished ones are editable)."""
+        assert normalize_hitl_status(ReviewStatus.IN_REVIEW.value).in_review is True
+        for raw in (
+            ReviewStatus.COMPLETE.value,
+            ReviewStatus.REJECTED.value,
+            *(s.value for s in LegacyHitlStatus),
+            None,
+        ):
+            assert normalize_hitl_status(raw).in_review is False, raw
+
 
 @pytest.mark.unit
 class TestReviewStatusForState:

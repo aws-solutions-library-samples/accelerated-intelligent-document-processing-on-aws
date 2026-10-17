@@ -645,7 +645,6 @@ def test_live_matrix_roles_are_every_template_group():
         "Admin",
         "Annotator",
         "Author",
-        "QueueReviewer",
         "Reviewer",
         "Viewer",
     }

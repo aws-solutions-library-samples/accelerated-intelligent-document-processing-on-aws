@@ -7,6 +7,7 @@ import json
 import os
 from datetime import datetime, timezone
 from log_sanitizer import sanitize_event_for_logging
+from review_statuses import ReviewStatus
 import logging
 
 logger = logging.getLogger()
@@ -37,10 +38,11 @@ def calculate_durations(timestamps):
         logger.error(f"Error calculating durations: {e}", exc_info=True)
         return {}
 
-#: The consumer-facing review statuses (idp_common.review_queues.statuses.ReviewStatus).
-#: This function carries no idp_common layer, so the three values are listed here;
-#: test_lookup_function_review.py pins them to the enum.
-REVIEW_STATUS_VALUES = ("in_review", "complete", "rejected")
+#: The consumer-facing review statuses. This function carries no idp_common layer,
+#: so it reads them from review_statuses.py, a verbatim copy of
+#: idp_common/review_queues/statuses.py kept in step by
+#: test_review_modules_vendored.py.
+REVIEW_STATUS_VALUES = tuple(s.value for s in ReviewStatus)
 
 
 def review_info(item):

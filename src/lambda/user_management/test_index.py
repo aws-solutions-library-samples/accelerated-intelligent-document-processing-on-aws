@@ -256,12 +256,16 @@ class TestPersonaPrecedence:
         assert index._determine_persona_from_groups(groups) == "Annotator"
 
 
-class TestQueueReviewerPersona:
-    def test_queue_reviewer_is_a_valid_persona_with_its_group(self):
-        index = _load_index()
-        assert index.VALID_PERSONAS["QueueReviewer"] == "QueueReviewer"
+class TestQueueReviewerRetired:
+    """QueueReviewer was retired with the review-queue redesign (Annotators work
+    production and Test Studio queues): no Cognito group backs it, so it must not
+    be a persona User Management can grant or infer."""
 
-    def test_create_with_queue_reviewer_persona(self, users_table):
+    def test_queue_reviewer_is_not_a_valid_persona(self):
+        index = _load_index()
+        assert "QueueReviewer" not in index.VALID_PERSONAS
+
+    def test_creating_a_queue_reviewer_is_refused_before_any_write(self, users_table):
         index = _load_index()
         with (
             patch.object(index, "sync_user_to_cognito") as sync,
@@ -276,23 +280,20 @@ class TestQueueReviewerPersona:
                 },
             ),
         ):
-            result = index.create_user(
-                {"email": "qr@example.com", "persona": "QueueReviewer"}
-            )
-        assert result["persona"] == "QueueReviewer"
-        assert sync.call_args.args[2] == "QueueReviewer"
+            with pytest.raises(ValueError, match="Invalid persona: QueueReviewer"):
+                index.create_user(
+                    {"email": "qr@example.com", "persona": "QueueReviewer"}
+                )
+        sync.assert_not_called()
+        assert users_table.scan()["Items"] == []
 
-    def test_precedence_after_reviewer_before_annotator(self):
+    def test_a_stray_queue_reviewer_group_confers_no_persona(self):
         index = _load_index()
         pick = index._determine_persona_from_cognito_groups
-        assert pick(["Annotator", "QueueReviewer"]) == "QueueReviewer"
+        assert pick(["Annotator", "QueueReviewer"]) == "Annotator"
         assert pick(["QueueReviewer", "Reviewer"]) == "Reviewer"
         objects = [{"GroupName": "Annotator"}, {"GroupName": "QueueReviewer"}]
-        assert index._determine_persona_from_groups(objects) == "QueueReviewer"
-        assert (
-            index._determine_persona_from_groups([{"GroupName": "QueueReviewer"}, {"GroupName": "Reviewer"}])
-            == "Reviewer"
-        )
+        assert index._determine_persona_from_groups(objects) == "Annotator"
 
 
 class TestMissingCognitoSync:

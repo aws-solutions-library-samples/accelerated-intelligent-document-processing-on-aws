@@ -33,11 +33,15 @@ RESOLVERS = [
 #: canonical file name -> vendored file name
 MODULES = {"statuses.py": "review_statuses.py", "visibility.py": "review_visibility.py"}
 
+#: The document lookup function also carries no idp_common layer and reads the
+#: review status values from its own ``review_statuses.py`` copy.
+LOOKUP_FUNCTION = REPO_ROOT / "src/lambda/lookup_function"
+
 PAIRS = [
     (CANONICAL_DIR / canonical, resolver / vendored)
     for canonical, vendored in MODULES.items()
     for resolver in RESOLVERS
-]
+] + [(CANONICAL_DIR / "statuses.py", LOOKUP_FUNCTION / "review_statuses.py")]
 
 
 @pytest.mark.unit

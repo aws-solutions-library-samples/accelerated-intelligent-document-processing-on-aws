@@ -17,6 +17,7 @@ from typing import Any, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from .keys import queue_partition
+from .statuses import ReviewStatus
 
 
 def _pascal(name: str) -> str:
@@ -254,7 +255,7 @@ class StatusObject(BaseModel):
 
     schema_version: Literal["1.0"] = "1.0"
     document_key: str
-    status: Literal["in_review", "complete", "rejected"]
+    status: ReviewStatus
     sequence: int
     cycle_id: str
     profile: str

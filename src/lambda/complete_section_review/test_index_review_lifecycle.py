@@ -332,7 +332,7 @@ def test_a_caller_outside_the_three_review_groups_reaches_no_operation(
     already changed the document.
     """
     put_doc(table, HITLStatus="Review Pending", HITLSectionsPending=["sec-1"])
-    with pytest.raises(ValueError, match="Admin, Reviewer or Annotator"):
+    with pytest.raises(PermissionError, match="Admin, Reviewer or Annotator"):
         mod.handler(event(field_name, [group]), None)
     assert read_doc(table)["HITLStatus"] == "Review Pending"
     assert read_doc(table)["HITLSectionsPending"] == ["sec-1"]
@@ -366,7 +366,7 @@ def test_an_annotator_may_not_skip_a_document_without_looking_at_it(mod, table):
     would write unverified labels into a golden dataset.
     """
     put_doc(table)
-    with pytest.raises(ValueError, match="administrators and reviewers"):
+    with pytest.raises(PermissionError, match="administrators and reviewers"):
         mod.handler(
             event(
                 "skipAllSectionsReview",
@@ -412,7 +412,7 @@ def test_an_annotator_who_also_holds_reviewer_stays_test_set_scoped(mod, table):
     """
     put_doc(table, TestSetId="ts-other")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
-    with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+    with pytest.raises(PermissionError, match="not assigned to test set 'ts-other'"):
         mod.handler(event("completeSectionReview", ["Annotator", "Reviewer"]), None)
 
 
@@ -460,7 +460,7 @@ def test_an_annotator_may_not_review_a_production_document(mod, table):
     """A document with no `TestSetId` is production HITL work, not annotation."""
     put_doc(table)  # no TestSetId
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
-    with pytest.raises(ValueError, match="only review test-set documents"):
+    with pytest.raises(PermissionError, match="only review test-set documents"):
         mod._assert_annotator_scope(
             event("completeSectionReview", ["Annotator"]), OBJECT_KEY
         )
@@ -472,7 +472,7 @@ def test_an_annotator_with_no_scope_at_all_is_denied_rather_than_unrestricted(
 ):
     """Fails closed: a half-created annotator must not inherit every test set."""
     put_doc(table, TestSetId="ts-mine")  # users table left empty
-    with pytest.raises(ValueError, match="not assigned to any test set"):
+    with pytest.raises(PermissionError, match="not assigned to any test set"):
         mod._assert_annotator_scope(
             event("completeSectionReview", ["Annotator"]), OBJECT_KEY
         )
@@ -502,7 +502,9 @@ def test_claiming_and_releasing_are_test_set_scoped_for_an_annotator(
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+        with pytest.raises(
+            PermissionError, match="not assigned to test set 'ts-other'"
+        ):
             mod.handler(
                 event(field_name, ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
                 None,
@@ -524,7 +526,7 @@ def test_an_annotator_can_neither_claim_nor_release_a_production_document(
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError, match="only review test-set documents"):
+        with pytest.raises(PermissionError, match="only review test-set documents"):
             mod.handler(
                 event(field_name, ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
                 None,
@@ -557,10 +559,11 @@ def test_an_annotator_is_refused_a_document_that_does_not_exist(
 
     * the refusal happens at all — an annotator reaching a review mutation on a
       document outside every test set of theirs is the escalation;
-    * the message keeps the `Unauthorized` prefix, which is the ONLY thing that
-      makes the dispatcher map this `ValueError` to 403 rather than to 400. Reword
-      it and the live cell sees a 400, reads "not refused", and reports a leak —
-      while this suite, matching on the sentence, would stay green.
+    * the refusal is a `PermissionError`, which the dispatcher maps to 403 by
+      class name; a `ValueError` would be a 400, which the live cell reads as "not
+      refused" and reports as a leak. The `Unauthorized` prefix is kept as well,
+      because the dispatcher's message-prefix fallback maps it to 403 even for a
+      resolver deployed ahead of the class change.
 
     The two neighbouring tests cover a document that exists and carries no
     `TestSetId`; this one covers a document that is not there, which is a different
@@ -571,7 +574,7 @@ def test_an_annotator_is_refused_a_document_that_does_not_exist(
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError) as refused:
+        with pytest.raises(PermissionError) as refused:
             mod.handler(
                 event(field_name, ["Annotator"], arguments=arguments),
                 None,
@@ -670,7 +673,9 @@ def test_the_fall_through_route_to_completion_also_asserts_scope(mod, table):
     put_doc(table, TestSetId="ts-other")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
     with patch.object(mod, "complete_section_review") as completion:
-        with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+        with pytest.raises(
+            PermissionError, match="not assigned to test set 'ts-other'"
+        ):
             mod.handler(event("completeSectionReview", ["Annotator"]), None)
     completion.assert_not_called()
 
@@ -1620,7 +1625,7 @@ def test_a_third_party_cannot_release_someone_elses_review(mod, table):
     with patch.object(
         mod, "create_document_service", return_value=FakeDocumentService(document)
     ):
-        with pytest.raises(ValueError, match="owner or an admin"):
+        with pytest.raises(PermissionError, match="owner or an admin"):
             mod.release_review(OBJECT_KEY, "alice", is_admin=False)
     assert read_doc(table)["HITLReviewOwner"] == "bob"
 

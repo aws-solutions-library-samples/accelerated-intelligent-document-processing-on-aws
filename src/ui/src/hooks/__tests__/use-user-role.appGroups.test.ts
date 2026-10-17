@@ -57,8 +57,10 @@ describe('APP_GROUPS', () => {
   });
 });
 
-describe('QueueReviewer flags', () => {
-  it('APP_GROUPS includes QueueReviewer', () => {
-    expect(APP_GROUPS).toContain('QueueReviewer');
+describe('QueueReviewer', () => {
+  // Retired with the review-queue redesign: Annotators work the queues, and no
+  // Cognito group named QueueReviewer exists for the app to recognise.
+  it('is not an app group', () => {
+    expect(APP_GROUPS).not.toContain('QueueReviewer');
   });
 });

@@ -449,7 +449,7 @@ def handler(event, context):
             # A document waiting in a review queue is worked through the review
             # operations; editing it here would bypass the reviewer's lease (D30).
             # A finished queue document can be edited (a fresh, rerouted run).
-            if normalize_hitl_status(document.hitl_status).kind == "in_review":
+            if normalize_hitl_status(document.hitl_status).in_review:
                 logger.warning(
                     "Rejecting processChanges on a document in a review queue"
                 )
