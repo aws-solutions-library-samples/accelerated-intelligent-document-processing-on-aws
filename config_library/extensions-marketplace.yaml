@@ -52,13 +52,20 @@
 # the customer would be handed a CloudFormation template we did not write. That
 # is a security property, not tidiness.
 #
-# Three regions rather than one because `sam package` bakes an absolute
+# Several regions rather than one because `sam package` bakes an absolute
 # `s3://bucket/key` CodeUri into the published template, and a Lambda's code
 # bucket must live in the function's own region. There is deliberately no
 # region-agnostic template: a nested-stack launcher would have to hand-mirror
 # the feature template's parameters, and CloudFormation refuses to update or
 # delete a nested stack directly, which would break the host's
 # `stacks/update/template` flow.
+#
+# ⚠️ The bucket basename is NOT the same in every region, which is a second
+# reason the map spells each bucket out. us-west-2, us-east-1 and eu-central-1
+# publish to `aws-ml-blog-<region>`; ca-central-1 publishes to
+# `aws-bigdata-blog-replica-ca-central-1` — `aws-ml-blog-ca-central-1` exists
+# but nothing is published to it, so a name derived from one basename plus a
+# region list is wrong for Canada and silently resolves to an empty bucket.
 #
 # `templateKey` is VERSION-FREE and must stay that way. The newest publish
 # overwrites `template.yaml`; versioned artifacts (ui-bundle.js, manifest.json,
@@ -123,11 +130,16 @@ features:
     # comes from real AWS Marketplace.
     licenseMode: marketplace-live
     # Seed/fallback only — the live value comes from latest.json at runtime.
-    latestVersion: "0.1.0"
-    # Published by the closed-source release tooling to the same public buckets
-    # and regions as the host's own templates (scripts/aws-release.sh), but under
-    # a separate `artifacts/genai-idp-mp/` prefix so neither release process can
-    # overwrite the other's keys.
+    latestVersion: "0.1.1"
+    # Published by the closed-source release tooling to the four buckets listed
+    # below, under a separate `artifacts/genai-idp-mp/` prefix so neither release
+    # process can overwrite the other's keys. Three of the four are
+    # `aws-ml-blog-<region>`; ca-central-1 is `aws-bigdata-blog-replica-ca-central-1`
+    # (see the header note). The host's own publish list
+    # (scripts/aws-release.sh) happens to cover the same four regions today, but
+    # the two lists are maintained separately — only widen this one against what
+    # the marketplace publisher actually wrote, or you will advertise an artifact
+    # nobody published.
     #
     # These objects are public-read by necessity, not by preference: the
     # registered Quick Launch template URL is fetched by AWS Seller Ops during
@@ -145,6 +157,9 @@ features:
         templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
       eu-central-1:
         sellerBucket: aws-ml-blog-eu-central-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
+      ca-central-1:
+        sellerBucket: aws-bigdata-blog-replica-ca-central-1
         templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
 
   - featureId: idp-monitor
@@ -175,10 +190,11 @@ features:
     # comes from real AWS Marketplace rather than a simulator.
     licenseMode: marketplace-live
     # Seed/fallback only — the live value comes from latest.json at runtime.
-    latestVersion: "0.1.1"
+    latestVersion: "0.1.2"
     # Same public buckets, regions and `artifacts/genai-idp-mp/` prefix as Auto
     # Optimizer, under this extension's own featureId. See the notes on the entry
-    # above for why the keys are version-free and why the objects are public-read.
+    # above for why the keys are version-free, why the objects are public-read, and
+    # why this region set is not widened from scripts/aws-release.sh.
     regions:
       us-west-2:
         sellerBucket: aws-ml-blog-us-west-2
@@ -188,6 +204,9 @@ features:
         templateKey: artifacts/genai-idp-mp/extensions/idp-monitor/template.yaml
       eu-central-1:
         sellerBucket: aws-ml-blog-eu-central-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-monitor/template.yaml
+      ca-central-1:
+        sellerBucket: aws-bigdata-blog-replica-ca-central-1
         templateKey: artifacts/genai-idp-mp/extensions/idp-monitor/template.yaml
 
   # Example shape for an additional paid extension:

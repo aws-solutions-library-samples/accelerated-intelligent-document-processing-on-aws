@@ -272,7 +272,7 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "tree's own tests fail, which the test gates already report -- so there is no "
         "verdict for CI to carry. What both CIs run is `coverage-all-cicd`, which is "
         "in SHARED_GATES: same producer, but with a concurrency budget and skipping "
-        "the tree an earlier CI step already measured. This unbudgeted nine-tree form "
+        "the tree an earlier CI step already measured. This unbudgeted form "
         "is the local one."
     ),
     "coverage-summary": (

@@ -34,8 +34,9 @@ by everything below it, so each of them is wrong for every command at once:
     non-federated stack, or when the caller chose a value.
 
 ``_parse_tags`` and ``TEMPLATE_URLS``
-    A parser whose input comes straight from a shell argument, and a three-entry
-    table where a copy-paste slip is invisible unless every entry is checked.
+    A parser whose input comes straight from a shell argument, and a table of
+    published-release template URLs where a copy-paste slip is invisible unless
+    every entry is checked against the publish script.
 
 The one test that is not about a helper is the tier-1 import guard at the top of
 the module. ``click``, ``boto3`` and ``rich`` are used by the decorators at module
@@ -50,7 +51,9 @@ with one of the three blocked, which records the behaviour without disturbing th
 import builtins
 import importlib.util
 import json
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -724,27 +727,152 @@ class TestParseTags:
 
 
 class TestTemplateUrlTable:
-    """The three regions with a published template, one entry each.
+    """The regions with a published template, one entry each.
 
-    Every entry is checked rather than a representative one: the values differ
-    only by the region substring, which appears twice in each, so a duplicated
-    line is a perfectly valid URL that deploys the wrong region's artifact or
-    fails with a cross-region S3 error that names neither the CLI nor this table.
+    Every entry is checked rather than a representative one: the region appears
+    twice in each value — in the host and in the bucket — and the bucket basename
+    is not the same in every region, so a line copied from its neighbour is a
+    perfectly valid URL that deploys the wrong region's artifact, or names a
+    bucket that does not exist, or fails with a cross-region S3 error that names
+    neither the CLI nor this table.
     """
 
-    def test_exactly_the_three_published_regions_are_listed(self):
-        assert set(TEMPLATE_URLS) == {"us-west-2", "us-east-1", "eu-central-1"}
+    def test_exactly_the_published_regions_are_listed(self):
+        assert set(TEMPLATE_URLS) == {
+            "us-west-2",
+            "us-east-1",
+            "eu-central-1",
+            "ca-central-1",
+        }
+
+    def test_the_table_matches_what_the_release_script_publishes(self):
+        """The dict and ``scripts/aws-release.sh`` are two halves of one claim.
+
+        Derived rather than pinned, because the failure is one-sided and silent
+        in both directions: a Region published but absent here is refused by all
+        three deploy paths that read the dict (``--govcloud``, ``--headless``
+        and the plain deploy) while the README's Launch Stack button still
+        offers it, and a Region here but never published serves a 404 to
+        ``idp-cli deploy``. Pinning only the set above would let the two drift
+        apart with this file still green.
+        """
+        published = self._published_regions()
+        assert published == set(TEMPLATE_URLS), (
+            "scripts/aws-release.sh and TEMPLATE_URLS disagree about which "
+            "Regions carry a published template.\n"
+            f"  published but not in TEMPLATE_URLS: {sorted(published - set(TEMPLATE_URLS))}\n"
+            f"  in TEMPLATE_URLS but not published: {sorted(set(TEMPLATE_URLS) - published)}\n"
+            "Add the Region to both, plus all three Launch Stack tables "
+            "(README.md, docs/deployment.md, "
+            "workshop/amazon-quick-integration-workshop.md) and the Templates "
+            "block in .claude/skills/cut-release-changelog.md."
+        )
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            "README.md",
+            "docs/deployment.md",
+            "workshop/amazon-quick-integration-workshop.md",
+        ],
+    )
+    def test_every_published_region_has_a_launch_stack_row(self, page):
+        """Each Launch Stack table offers exactly the published Regions.
+
+        Three tables carry these buttons and the third is the one that gets
+        forgotten, because the other two sit side by side in the deployment
+        docs. A missing row is a Region customers cannot one-click deploy
+        although its artifacts exist; a surplus row is a button that 404s in the
+        CloudFormation console. Derived from the publish script for the same
+        reason the dict is.
+        """
+        path = self._repo_root() / page
+        if not path.is_file():  # pragma: no cover - packaged install
+            pytest.skip(f"{path} is not present in this checkout")
+
+        text = path.read_text(encoding="utf-8")
+        buckets = self._published_buckets()
+        # Each Region's own bucket, not any path-style S3 URL: an illustrative
+        # Launch Stack link pointing at a customer's own bucket is not a claim
+        # about the published set and must not fail this. Keyed on the bucket
+        # rather than built from the Region, because the basename differs by
+        # Region.
+        offered = {
+            region
+            for region, bucket in buckets.items()
+            if f"templateURL=https://s3.{region}.amazonaws.com/{bucket}/" in text
+        }
+        wrong_bucket = {
+            region
+            for region in re.findall(
+                r"templateURL=https://s3\.([a-z0-9-]+)\.amazonaws\.com/", text
+            )
+            if region in buckets
+        } - offered
+        published = set(buckets)
+        assert offered == published and not wrong_bucket, (
+            f"{page}'s Launch Stack table and scripts/aws-release.sh disagree.\n"
+            f"  published with no button: {sorted(published - offered)}\n"
+            f"  button with no published artifact: {sorted(offered - published)}\n"
+            "  button pointing at a bucket the script does not publish to: "
+            f"{sorted(wrong_bucket)}"
+        )
+
+    @staticmethod
+    def _repo_root() -> Path:
+        return Path(__file__).resolve().parents[3]
+
+    @classmethod
+    def _published_regions(cls) -> set[str]:
+        return set(cls._published_buckets())
+
+    @classmethod
+    def _published_buckets(cls) -> dict[str, str]:
+        """Region -> bucket name, read off each publish line in the script.
+
+        The basename is **per line**, not global: three Regions publish to
+        ``aws-ml-blog`` and ``ca-central-1`` to ``aws-bigdata-blog-replica``, so
+        anything deriving a bucket from the Region alone is wrong for Canada.
+        Comments are stripped first, the way
+        ``scripts/tests/test_release_runbook_doc.py`` reads the same script: a
+        commented-out publish line is not a published Region.
+        """
+        script = cls._repo_root() / "scripts" / "aws-release.sh"
+        if not script.is_file():  # pragma: no cover - packaged install
+            pytest.skip(f"{script} is not present in this checkout")
+
+        buckets: dict[str, str] = {}
+        for line in script.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            region = re.search(r"--region\s+(\S+)", line)
+            basename = re.search(r"--bucket-basename\s+(\S+)", line)
+            if region and basename:
+                buckets[region.group(1)] = f"{basename.group(1)}-{region.group(1)}"
+
+        assert buckets, (
+            f"no publish lines with --region and --bucket-basename in {script}"
+        )
+        return buckets
 
     @pytest.mark.parametrize("region", sorted(TEMPLATE_URLS))
-    def test_each_url_names_its_own_region_in_both_places(self, region):
-        url = TEMPLATE_URLS[region]
-        assert url == (
-            f"https://s3.{region}.amazonaws.com/aws-ml-blog-{region}"
+    def test_each_url_names_its_own_region_and_its_own_bucket(self, region):
+        """The host and the bucket both have to be this Region's.
+
+        The bucket is taken from the publish script rather than built from the
+        Region, because the basename is per Region: ``aws-ml-blog`` for three
+        and ``aws-bigdata-blog-replica`` for ``ca-central-1``. Building it here
+        would re-make the mistake this asserts against.
+        """
+        bucket = self._published_buckets().get(region)
+        assert bucket, f"{region} is in TEMPLATE_URLS but not published"
+        assert TEMPLATE_URLS[region] == (
+            f"https://s3.{region}.amazonaws.com/{bucket}"
             "/artifacts/genai-idp/idp-main.yaml"
         )
         for other in TEMPLATE_URLS:
             if other != region:
-                assert other not in url
+                assert other not in TEMPLATE_URLS[region]
 
     def test_the_urls_are_distinct(self):
         assert len(set(TEMPLATE_URLS.values())) == len(TEMPLATE_URLS)

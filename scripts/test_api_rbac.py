@@ -1426,17 +1426,26 @@ def apply_dynamic_args(ops, ctx, tokens):
     # offline, where the allow-list contents are known:
     # nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py.
     bucket = _input_bucket(ctx)
-    for field in ("getFileContents", "getFilePresignedUrl"):
+    uri_fields = ("getFileContents", "getFilePresignedUrl")
+    # The batch field takes the same URI inside a list, so the substitution has to
+    # reach into it. Written as its own tuple rather than branching on the field
+    # name inside one loop, so adding a field to either shape is a one-line edit
+    # that cannot accidentally give a batch field a scalar argument the validator
+    # would reject before the group floor ever answered.
+    list_fields = ("getFilePresignedUrls",)
+    for field in uri_fields + list_fields:
         if field not in ops:
             continue
-        if bucket:
-            ops[field]["args"] = {
-                "s3Uri": f"s3://{bucket}/__sectest-nonexistent-key__.json"
-            }
-            print(f"  {field}: using this stack's input bucket {bucket}")
-        else:
+        if not bucket:
             skip.add(field)
             print(f"  {field}: could not resolve the stack's input bucket")
+            continue
+        uri = f"s3://{bucket}/__sectest-nonexistent-key__.json"
+        if field in list_fields:
+            ops[field]["args"] = {"files": [{"s3Uri": uri}]}
+        else:
+            ops[field]["args"] = {"s3Uri": uri}
+        print(f"  {field}: using this stack's input bucket {bucket}")
 
     if "getStepFunctionExecution" in ops:
         arn = resolve_execution_arn(ctx, tokens)

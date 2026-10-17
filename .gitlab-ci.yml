@@ -332,8 +332,8 @@ unit_tests:
     # on the command line twice, which pytest answers by collecting NOTHING and
     # exiting 5 -- loud rather than silent, but a broken job either way.
     - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
-    # The line above writes ONE of the ratchet's nine trees. Without the next step the
-    # other eight resolve to no report at all, so the ratchet named them as
+    # The line above writes ONE of the ratchet's trees. Without the next step the
+    # others resolve to no report at all, so the ratchet named them as
     # "not checked" and exited 0 — advisory-but-passing over exactly the trees where
     # coverage had actually been lost, including this repository's own hook guards
     # (issue #1256). Trees are measured concurrently and `idp_common` is skipped

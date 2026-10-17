@@ -116,7 +116,14 @@ regions:
   us-west-2:    { sellerBucket: aws-ml-blog-us-west-2,    templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml }
   us-east-1:    { sellerBucket: aws-ml-blog-us-east-1,    templateKey: … }
   eu-central-1: { sellerBucket: aws-ml-blog-eu-central-1, templateKey: … }
+  ca-central-1: { sellerBucket: aws-bigdata-blog-replica-ca-central-1, templateKey: … }
 ```
+
+Note the `ca-central-1` bucket: the basename is **not** uniform across Regions.
+Three Regions publish to `aws-ml-blog-<region>`, Canada to
+`aws-bigdata-blog-replica-ca-central-1`. `aws-ml-blog-ca-central-1` is a real
+bucket with nothing published to it, so a name built from one basename plus a
+Region list resolves successfully and serves nothing there.
 
 `getFeatureLaunchUrl` **looks the caller's Region up** in that map and fails
 closed ("not available in `<region>`") when it's absent, and

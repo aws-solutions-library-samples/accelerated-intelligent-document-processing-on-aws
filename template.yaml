@@ -820,7 +820,8 @@ Parameters:
       used for the "update available" check shown in the Web UI Deployment
       Info section. Leave empty to disable the check (default for headless
       / private-network deployments). For the public release, point this at
-      the regional aws-ml-blog bucket — e.g. aws-ml-blog-us-west-2.
+      that Region's release bucket — e.g. aws-ml-blog-us-west-2, or
+      aws-bigdata-blog-replica-ca-central-1 in Canada.
 
   PublicArtifactsPrefix:
     Type: String
@@ -13362,35 +13363,33 @@ Resources:
                   - lambda:InvokeFunction
                   - lambda:InvokeFunctionUrl
                 Resource: !GetAtt ChatStreamProcessorFunction.Arn
-        # What the BROWSER may read with the signed-in user's own credentials.
+        # ⚠️ **The browser gets no S3 grant, and that is the point.** There is
+        # deliberately no `S3` policy on this role. Do not add one back without
+        # reading the next four paragraphs; `scripts/tests/test_browser_s3_grants.py`
+        # fails if an S3 statement appears here under any policy name.
         #
         # Every authenticated user assumes this one role — `CognitoIdentityPoolSetRole`
         # declares no `RoleMappings`, so Cognito group membership plays no part in
-        # which role is assumed. Whatever is listed here is therefore readable by
-        # every signed-in user irrespective of group, with no resolver in the path and
-        # so with no group check, no per-document check and no scope check available to
-        # apply. That makes this list, not the API surface, the boundary for anything
-        # it names.
+        # which role is assumed. Anything this role could read would therefore be
+        # readable by every signed-in user irrespective of group, including one in no
+        # group at all, with no resolver in the path — so with no group check, no
+        # per-document check and no per-user scope check available to apply to it.
+        # That is why the policy, and not the API surface, was the boundary for
+        # everything it named.
         #
-        # It names the Input and Output buckets because the UI genuinely signs those
-        # GETs in the browser: `use-page-thumbnails` and `PageImageViewer` fetch
-        # `page.ImageUri` (Output), `FileViewer` defaults to `presignVia: 'client'`
-        # against `settings.InputBucket`, and `presignForExport` signs client-side
-        # for exactly those two and routes every other bucket to the resolver.
-        # Removing the buckets themselves is the document-bucket half of this, which
-        # needs the read path redesigned rather than the grant trimmed
+        # It named the Input and Output buckets until the document read path moved
+        # behind a resolver
         # ([#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
-        #
-        # What it grants on them is object read and nothing else: `s3:GetObject` and
-        # `s3:GetObjectVersion` authorize on a key the caller already holds.
-        # `s3:ListBucket` was granted here too and is not any more — it produces keys
-        # rather than needing one, so it widens "read a document you hold a key for"
-        # into "read every document", and on this role that reach belongs to every
-        # signed-in user with no resolver in the path to bound either half. It had no
-        # consumer: the browser issues no list request, since its only S3 dependency
-        # is `@aws-sdk/s3-request-presigner` and a presigned GET does not list. The
-        # Resource list is object ARNs only for the same reason — see the note on it
-        # below. `scripts/tests/test_browser_s3_grants.py` keeps the verb off.
+        # Those two buckets hold every uploaded source document and every document's
+        # extracted output, page images and OCR text, so `s3:GetObject` on them was
+        # "read any document's bytes by key, as any signed-in account" — measured end
+        # to end against a live stack, not inferred. The UI now asks
+        # `getFilePresignedUrl` and `getFilePresignedUrls` for its URLs instead, which
+        # puts three server-side controls in front of every document byte: the
+        # dispatcher's field-level group floor, the resolver's bucket allow-list, and
+        # `document_scope`, which matches the owning document's `ConfigVersion`
+        # against the caller's `allowedConfigVersions`. The batch field exists so that
+        # costs one resolver call per document view rather than one per page.
         #
         # It does NOT name the Configuration bucket, and must not. That bucket holds
         # `config_revisions/<profile>/<nnnnnn>.json.gz` — every configuration
@@ -13400,49 +13399,30 @@ Resources:
         # named here the grant still carried `s3:ListBucket`, so the profile names did
         # not have to be known in advance either.
         #
-        # No UI code path reads it. What that rests on is the **call sites**, not on
-        # the bucket name being unavailable: the browser holds no S3 API client at all
-        # (only `S3RequestPresigner`, at four call sites, every one of which resolves
-        # to the Input or Output bucket — and `presignForExport` refuses outright to
-        # client-sign anything else). ⚠️ The name IS available to the browser: it is
-        # one key of the settings blob the UI fetches from Parameter Store with these
-        # same credentials. So this grant's absence is what bounds the reach, and
-        # `scripts/tests/test_browser_s3_grants.py` is what keeps it absent.
+        # ⚠️ What keeps all of this closed is the absence of the grant, not the
+        # absence of a call site. The browser holds no S3 API client at all (its only
+        # S3 dependency is `@aws-sdk/s3-request-presigner`, which signs a GET), but the
+        # bucket names ARE available to it — they are keys of the settings blob the UI
+        # fetches from Parameter Store with these same credentials — and the signed-in
+        # user holds the credentials and can call whatever the role allows. A grant
+        # here is reachable whether or not anything in `src/ui` reaches for it.
         #
-        # The Configuration-bucket content the UI does display — bundled samples under
+        # The Configuration-bucket content the UI displays — bundled samples under
         # `samples/`, the config library, profile bodies — is served by
         # `getSampleDocumentUrl`, `getConfigurationLibraryFile` and
-        # `getConfigVersion`, each of which applies the caller's scope. The reads that
-        # remain go through `getFileContents` / `getFilePresignedUrl`, where
-        # `key_scope` enforces the same axis on the key.
-        - PolicyName: S3
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - "s3:GetObject"
-                  # s3:GetObjectVersion is required for the browser to fetch a
-                  # specific object version via a client-presigned URL
-                  # (?versionId=...) — used to view a past document version's
-                  # page images. Without it, versioned image loads get
-                  # AccessDenied and render blank.
-                  - "s3:GetObjectVersion"
-                # Object ARNs only. Both actions above act on an object, so a bare
-                # bucket ARN authorizes nothing — it was here for s3:ListBucket, a
-                # bucket-level action, and is removed with it rather than left to read
-                # as a grant that does something.
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
-              - Effect: Allow
-                Action:
-                  - kms:Encrypt
-                  - kms:Decrypt
-                  - kms:ReEncrypt*
-                  - kms:GenerateDataKey*
-                  - kms:DescribeKey
-                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        # `getConfigVersion`, each of which applies the caller's scope. Everything
+        # else goes through `getFileContents` / `getFilePresignedUrl` /
+        # `getFilePresignedUrls`, where `key_scope` enforces the per-user axis on the
+        # key and `document_scope` the per-document one.
+        #
+        # The KMS statement went with the S3 one. It granted `kms:Decrypt` and four
+        # siblings on the stack's CMK, and its only purpose was to let a
+        # client-presigned GET decrypt an SSE-KMS object: the browser has no KMS
+        # client, no write path (this role was never granted `s3:PutObject`), and the
+        # one other thing it reads with these credentials — `SettingsParameter` — is a
+        # plain `AWS::SSM::Parameter` of `Type: String`, not a SecureString, so it
+        # needs no key. Presigned URLs minted by the resolver are decrypted under the
+        # RESOLVER's role, which holds its own grant on the same key.
         - PolicyName: ParameterStore
           PolicyDocument:
             Version: 2012-10-17

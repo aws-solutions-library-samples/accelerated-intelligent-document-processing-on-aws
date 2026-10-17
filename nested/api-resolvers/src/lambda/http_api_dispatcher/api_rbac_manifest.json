@@ -228,6 +228,13 @@
       "Reviewer",
       "Viewer"
     ],
+    "getFilePresignedUrls": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getFinetuningJob": "ANY",
     "getLatestPublishedVersion": "ANY",
     "getModelConfigLimits": [

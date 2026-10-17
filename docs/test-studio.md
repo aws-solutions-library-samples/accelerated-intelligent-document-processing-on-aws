@@ -1186,7 +1186,9 @@ editor pane, so finishing a long document does not mean scrolling past every fie
 to reach them.
 
 On large sets the queue is read a page at a time, and the page says so rather than
-implying the whole set has been ranked.
+implying the whole set has been ranked. What bounds that page is the number of
+document sections it can read in the time a request has, so a set of multi-section
+packets ranks fewer documents at a time than a set of single-section ones.
 
 > **The link is not a credential.** It only navigates; access is gated by the
 > annotator's scoped Cognito session and re-checked server-side on every

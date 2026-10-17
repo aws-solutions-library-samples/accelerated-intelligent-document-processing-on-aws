@@ -434,9 +434,11 @@ def test_required_arg_count_is_stable(spec):
     addDocumentsToTestSetByKey the 112th, and the three config-prefix-mapping ops
     that take a required argument — putConfigPrefixMapping (prefix,
     configProfile), deleteConfigPrefixMapping (prefix) and
-    resolveConfigPrefixMapping (objectKey) — 113–115. listConfigPrefixMappings
-    takes no arguments at all, so it is deliberately not among them)."""
+    resolveConfigPrefixMapping (objectKey) — 113–115, and getFilePresignedUrls
+    the 116th, whose `files: [FilePresignRequest!]!` is the first non-null LIST
+    argument on this surface. listConfigPrefixMappings takes no arguments at all,
+    so it is deliberately not among them)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 115
+    assert len(required) == 116

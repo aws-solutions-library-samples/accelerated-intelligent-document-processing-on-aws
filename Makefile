@@ -322,10 +322,14 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 # (issue #1256).
 #
 # Two things keep the added wall clock down, and neither is a cache:
-#   --jobs   measures trees concurrently. It has to be concurrency ACROSS trees:
-#            `scripts` declares Tree.serial because xdist under-collects a suite that
-#            drives its subject as a subprocess, so that tree cannot be sped up from
-#            the inside and its ~16 min is hidden behind the other eight instead.
+#   --jobs   measures trees concurrently, and it has to be concurrency ACROSS trees
+#            because a tree may decline xdist: Tree.serial records that, per entry,
+#            with the measurement. It is NOT a claim that a suite cannot be
+#            parallelised -- `scripts` carried the flag on that belief and lost it
+#            when the figures turned out identical per file, serial against the
+#            worker count CI gives it. The job therefore costs its slowest tree
+#            rather than the sum, and which tree that is moves; measure rather than
+#            reading a figure here.
 #   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
 #            step below still requires it BY NAME, so dropping the wrong tree here
 #            turns the gate red rather than quietly narrowing it.
@@ -355,7 +359,7 @@ check-coverage-debt: ## Ratchet per-file coverage across every registered tree: 
 # measured were reported and passed for as long as that was the arrangement. Requiring
 # every tree turns a missing report into a red mark that names the tree. The required
 # list is derived from TREES inside the script, so adding a Tree cannot leave it behind
-# and no Makefile or CI config holds a second copy of the nine names.
+# and no Makefile or CI config holds a second copy of the registry's names.
 check-coverage-debt-cicd: ## The ratchet, failing by name if ANY registry tree has no report from this run
 	@python3 scripts/check_coverage_debt.py --require-all-trees $(CHECK_COVERAGE_DEBT_ARGS)
 

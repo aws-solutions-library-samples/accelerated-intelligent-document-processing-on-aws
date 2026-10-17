@@ -525,6 +525,49 @@ a cosmetic nit and a risky architectural change.
 - **Read the comments before ranking.** Issues here are often partly withdrawn or
   re-scoped in a comment, and the title can be stale. An issue whose premise was
   retracted should be retitled or closed, not worked.
+- ⚠️ **Ask what the fix shields *today*, and demote it if the answer is "nothing".**
+  See the next subsection — this is the adjustment most likely to be skipped, because
+  a prospective control reads as a defect in every other respect.
+
+### ⚠️ What does this shield today? — and how far is it from the product?
+
+**The most expensive item in one run was a real defect that protected nothing.** An
+exemption registry's discovery did not reach the Lambda handler trees, so a carve-out
+written there would never be registered. True, well argued, and the fix cost **1.4M
+tokens, five hours and three review rounds** before the agent stopped at a question
+nobody could answer without writing dataflow analysis. Its own measurements were the
+refutation, available before the first dispatch: widening discovery finds ~33 constants
+in those trees, of which the ones examined are **one false positive and a set of security
+controls**, and **not one genuine unregistered carve-out exists there**. The gate's new
+reach would have shielded **zero present findings**, at a price of 42 authored judgements
+mostly saying "this is not an exemption".
+
+So two questions go into ranking, and both are cheap:
+
+1. **What finding does this shield today?** Name one, in the tree, now. If the honest
+   answer is "none yet, but it would catch the next one", the item is **prospective**.
+   Prospective work ranks **below every defect**, and the registry's own non-vacuity rule
+   is the precedent: an exemption that shields nothing is dead, and so is a gate.
+2. **How many layers from the product is the subject?** The product is document
+   processing. A defect in it is layer 0; a gate over that code is layer 1; a gate over a
+   gate, or a registry policing our own prose, is layer 2 or more. **At layer 2 and
+   beyond, say the cost out loud before dispatching** and prefer the smallest version that
+   fixes a present finding.
+
+This is not an argument against gate work — three of the highest-value items in that same
+run were gates, because each one shielded a live finding (a suppression that pre-approved
+future findings; a ratchet that compared a single tree against a registry holding many
+and passed; a gate whose green run
+could not see the call site it was written for). The distinction is **present finding
+versus prospective reach**, not product code versus infrastructure.
+
+⚠️ **The failure this prevents is a coordinator one, and it has a signature: escalating a
+design question that should have been a value question.** When an agent hands back "option
+1 or option 2 on this gate's trust model", the first question is not which option — it is
+**whether the item is worth another round at all**. Asking the user to adjudicate the
+design implies the work is worth finishing, which is the thing that had stopped being
+true. Measured: the user's answer to a carefully-written two-option question was "is this
+worth the cycles?", and it was not.
 
 ### Classify the whole backlog, not just the top of it
 
@@ -901,6 +944,25 @@ Tell the agent, in its own brief:
 > second reviewer. Iterate until no finding survives, then report to me: what you
 > fixed, what you withdrew and why, what the reviewer measured, and the gate
 > numbers.
+>
+> **Also report, always: which part of your change would stand alone, and what it
+> costs.** One or two sentences naming the smallest subset that is independently
+> correct, independently useful, and already measured. You may well not need it —
+> but if the rest of the change turns out not to be worth finishing, that sentence
+> is the difference between landing the valuable part and throwing the whole branch
+> away, and you are the only one who can write it cheaply.
+
+⚠️ **A third round that defeats a third spelling of the same property is a stop
+signal, not a fourth round.** This is distinct from the same-finding-twice rule
+below: here each round's finding is *new* and *correct*, which is exactly why it
+reads as progress. Three different spellings defeating the same claim means the
+property cannot be verified at the cost being paid — the measured case was a check
+for "a refusal branches on this constant", beaten in turn by a helper function, two
+helpers, a comprehension and a lazily-initialised global, with **79 functions in the
+target trees already written in the defeating style**. The agent that stopped and
+said so produced the right outcome; a fourth hop of dataflow analysis would not
+have. Stop, report the cheap subset, and let the coordinator decide whether the
+remainder is wanted.
 
 Two things make this step earn its cost, both observed repeatedly:
 
@@ -1355,7 +1417,7 @@ brief:
 >    line did not run. ⚠️ **Do not edit anything in that worktree while the
 >    battery runs** — an interrupted run still writes a `coverage.xml`, and the
 >    ratchet will then report fabricated losses.
-> 5. **Never `make coverage-all`.** It measures all nine trees from scratch, is in
+> 5. **Never `make coverage-all`.** It measures every registry tree from scratch, is in
 >    **neither** CI configuration and in no tier of this skill, and it is not the
 >    coverage gate — `scripts/check_coverage_debt.py` is, it takes seconds, and it
 >    reads the report `make test-cicd` has already written. Measured: one merge agent
@@ -1491,6 +1553,7 @@ specifies, add it to `parked` with a link to that comment, label it, and move on
 | A **merge conflict outside `CHANGELOG.md`** that is not mechanical | **park**, re-dispatch on a fresh base if the conflict was staleness |
 | An **externally-reported issue whose fix touches a protected surface** from section 0b | **park** with the issue's `author_association`, the surface, and the change it argues for |
 | An **agent reports the same finding twice after two review rounds** without converging | **park** — a third round is usually an issue that needs a decision and is getting iteration instead |
+| An agent hands back a **design question about a control it is building**, and the item shields no present finding | **cut it to the subset that stands alone, land that, and close the issue with the decision recorded** — do not escalate the design question. See "What does this shield today?" in section 1 |
 | **`develop` goes red** | **not a halt: it is the top-priority work item.** Fix it on `develop` as its own PR, because everything downstream inherits it and a red `develop` makes every branch's checks unreadable |
 | **`loopReady` is empty** | the triage pass below, not a stop |
 
@@ -1662,6 +1725,23 @@ permanent, and in the state file, which is resumable.
 - ⚠️ **A turn that ends with nothing tracked ends the run**, and it looks exactly
   like a turn that ended because the work was done. Five and a half hours were lost
   to one of these. Name the live child before ending a turn.
+- ⚠️ **Evidence files go in a sibling directory, not inside the worktree — and this
+  repository's gates make that a correctness matter rather than tidiness.** Several
+  gates discover their inputs **by content**, not by filename, and an untracked file
+  is still a file: `scripts/discover_templates.sh` finds anything declaring
+  `AWSTemplateFormatVersion`, so a byte-identical copy of `template.yaml` kept under
+  the worktree as a restore-point added **one** to the count of templates discovery
+  finds — content discovery cannot tell a restore-point copy from a template — and
+  produced **seven red tests in suites the PR never touched** — three
+  well-architected counting tests, two log-group tests, the markdown-link gate and
+  the exemption-registry discovery test. Being untracked does not help, because
+  discovery reads the filesystem; only being **gitignored** or **outside the tree**
+  does, and `.logs/` is neither. ⚠️ **Note this cuts against the `/tmp` rule** — the
+  reason not to use `/tmp` is that it is a tmpfs competing with the test processes for
+  RAM, so the answer is a sibling path on real disk (`$HOME/wt/<runId>/m<pr>-logs`),
+  not a path inside the checkout. Say this in the brief, because the failure
+  signature is indistinguishable from a PR defect and the agent that hit it was
+  following its instructions literally.
 
 ---
 
@@ -1692,8 +1772,19 @@ code-level control and was caught only by the user asking a plain question:
   being that the agent had locally installed a tool the host lacked. Numbers arriving
   in a report are claims until someone re-measures them, and the coordinator is the
   actor most likely to launder one into the record.
+- **Optimising inside an item instead of asking whether the item was worth it.** A
+  gate-over-a-gate fix ran to 1.4M tokens and three review rounds; every individual
+  decision in it was defensible, every gate stayed green, and the coordinator's
+  response to the dead end was to write the user a careful two-option question about
+  the design. The user's reply was "is this worth the cycles?" — and it was not,
+  measurably, from figures the agent had reported hours earlier. **A well-framed
+  question about how to finish something implies it is worth finishing**, which is the
+  premise that had quietly stopped being true. The controls are in section 1 ("What
+  does this shield today?") and section 2c (three spellings is a stop signal), but the
+  habit is the thing: when an item stops converging, re-ask its value before its
+  design.
 
-The pattern in all three is the same and it is worth naming: **the coordinator's
+The pattern in all four is the same and it is worth naming: **the coordinator's
 errors are about process and reporting, not about code, so a green tree proves nothing
 about them.** Ask at every check-in what you are treating as established without having
 measured it.

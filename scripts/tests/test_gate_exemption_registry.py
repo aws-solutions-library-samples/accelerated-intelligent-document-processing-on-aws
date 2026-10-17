@@ -45,6 +45,7 @@ to do it.
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import subprocess
 import tempfile
@@ -58,6 +59,10 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = gate_premises.REPO_ROOT
 REGISTRY_PATH = Path(__file__).resolve().parent / "gate_exemptions.json"
+
+#: This module, repo-relative. It is the file an entry is most likely to name as its
+#: ratchetEvidence, and the one META_TEST_PERMITTED_RATCHETS below is about.
+_THIS_MODULE = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
 
 KINDS = {"exemption", "enforced-universe", "prune", "fixture", "capability"}
 RATCHETS = {
@@ -518,6 +523,14 @@ PREDICATE_DOMAIN_WORDING = {
         "generated filename",
         "written into the tree while",
     ),
+    "not_reachable_by_a_package_walk": (
+        "not a package",
+        "no __init__.py",
+        "package walk",
+        "not an importable package",
+        "nothing imports it",
+        "cannot be discovered",
+    ),
 }
 
 
@@ -691,7 +704,10 @@ RATCHET_EVIDENCE_MARKERS = {
         "neither",
         "unregistered",
         "unclassified",
-        "not in RUN_ROOTS",
+        # "not in RUN_ROOTS" was here and is deleted. It appeared in exactly ONE place in
+        # the tree -- this table -- so before _evidence_text excised the table from its own
+        # file it read as live purely because an entry named this module as its evidence.
+        # The phrase a run-roots closure actually uses is "unregistered", which is live.
         "missing wildcard",
         "inverse",
         "drift",
@@ -709,6 +725,76 @@ RATCHET_EVIDENCE_MARKERS = {
     ),
     "prune-meta-test": ("scratch", ".claude", "PRUNE"),
 }
+
+
+#: The two ratchet kinds this module itself implements: non-vacuity (the dead-glob check
+#: on the discovery apertures) and universe-closure (membership asserted in both
+#: directions).
+#:
+#: ⚠️ **It exists because excising the marker table is not sufficient.** After the excision
+#: this file still contains, in ordinary prose, at least one marker for all five labels --
+#: "stale", "vanished" and "no longer" for staleness, "pinned" for count-pinned, "scratch"
+#: and ".claude" for the prune meta-test -- so naming it as evidence still satisfied the
+#: label check for a ratchet it does not implement. A marker vocabulary matched by
+#: substring cannot distinguish prose from an implementation, so the restriction is made
+#: per file instead, about the one file an entry can always reach for.
+META_TEST_PERMITTED_RATCHETS = frozenset({"non-vacuity", "universe-closure"})
+
+
+@functools.cache
+def _evidence_text(rel: str) -> str:
+    """A ratchetEvidence file's text, with the marker TABLE removed if it declares one.
+
+    ``RATCHET_EVIDENCE_MARKERS`` is declared in this module, so the text of this module
+    contained every marker for every label and naming it as evidence satisfied the label
+    check unconditionally -- an evidence pointer that cannot fail, which is exactly the
+    "ratchet nothing implements" this registry refuses. Excising the assignment's own
+    source span is the narrow half of the fix: a marker in a failure message, a docstring
+    or a check body still counts, which is where an implemented ratchet says what it does.
+    """
+    text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(text, filename=rel)
+    except SyntaxError:
+        return text
+    lines = text.splitlines(keepends=True)
+    for node in tree.body:
+        targets = (
+            [node.target]
+            if isinstance(node, ast.AnnAssign)
+            else list(node.targets)
+            if isinstance(node, ast.Assign)
+            else []
+        )
+        if any(
+            isinstance(t, ast.Name) and t.id == "RATCHET_EVIDENCE_MARKERS"
+            for t in targets
+        ):
+            end = node.end_lineno or node.lineno
+            del lines[node.lineno - 1 : end]
+            break
+    return "".join(lines)
+
+
+def ratchet_evidence_candidates(ratchet: str, paths: list[str]) -> list[str]:
+    """The named evidence files that may satisfy ``ratchet``, as a pure function.
+
+    ⚠️ **Applied PER FILE, not to an entry whose only evidence is this module.** Written
+    the second way first, it was bypassed by naming any second tracked file alongside: the
+    marker search is ``any(...)`` across the named files on purpose -- several ratchets are
+    split across a script and its test -- so the second file lifted the restriction while
+    this file went on supplying the marker out of its own prose. Measured: a ``staleness``
+    claim with evidence ``[this module, CHANGELOG.md]`` passed.
+
+    Pure so the rule can be driven by synthetic input. A rule that needs a real run to
+    test would mean rewriting the registry this suite reads, which is not a trade worth
+    making for a list comprehension.
+    """
+    return [
+        rel
+        for rel in paths
+        if rel != _THIS_MODULE or ratchet in META_TEST_PERMITTED_RATCHETS
+    ]
 
 
 @pytest.mark.parametrize("key", sorted(_registry()))
@@ -745,15 +831,26 @@ def test_a_named_ratchet_is_implemented_somewhere(key: str) -> None:
     # unclassified directory while its test file covers the registry's shape -- so
     # requiring every named file to carry a marker would force the author to drop the
     # honest other half from the list.
+    candidates = ratchet_evidence_candidates(ratchet, paths)
+    assert candidates, (
+        f"{key} claims ratchet {ratchet!r} and names only this module as evidence, and "
+        f"the registry meta-test implements {sorted(META_TEST_PERMITTED_RATCHETS)} and "
+        "nothing else. The marker check cannot catch this: after the marker table is "
+        "excised this file still carries at least one marker for every label in ordinary "
+        f"prose, so the label would be satisfied by a word. Point at the file that "
+        f"implements {ratchet!r}, or set ratchet to 'none' with a ratchetGap."
+    )
+    # Read through _evidence_text, which excises the marker TABLE from the file that
+    # declares it, and over `candidates` rather than every named path.
     assert any(
-        marker.lower() in (REPO_ROOT / rel).read_text(encoding="utf-8").lower()
-        for rel in paths
+        marker.lower() in _evidence_text(rel).lower()
+        for rel in candidates
         for marker in markers
     ), (
-        f"{key} claims ratchet {ratchet!r} implemented in {paths}, but none of those "
-        f"files contains any of {list(markers)}. Either the ratchet is not implemented "
-        "there -- in which case say so and set ratchet to 'none' with a ratchetGap -- "
-        "or point at the file that does implement it."
+        f"{key} claims ratchet {ratchet!r} implemented in {candidates}, but none of those "
+        f"files contains any of {list(markers)} outside the marker table itself. Either "
+        "the ratchet is not implemented there -- in which case say so and set ratchet to "
+        "'none' with a ratchetGap -- or point at the file that does implement it."
     )
 
 
@@ -782,7 +879,7 @@ def test_every_ratchet_marker_is_live() -> None:
             evidence = entry.get("ratchetEvidence") or []
             paths.update([evidence] if isinstance(evidence, str) else evidence)
         texts = [
-            (REPO_ROOT / rel).read_text(encoding="utf-8").lower()
+            _evidence_text(rel).lower()
             for rel in sorted(paths)
             if (REPO_ROOT / rel).exists()
         ]
@@ -852,3 +949,154 @@ def test_a_path_membered_exemption_engages_with_the_path_predicates(key: str) ->
         "gate, or list it in 'predicateConsidered' with a sentence saying why it does "
         "not settle the question."
     )
+
+
+def test_no_discovery_pathspec_is_dead() -> None:
+    """A glob in either discovery aperture that matches nothing contributes nothing.
+
+    The aperture constants are registered rather than excluded, because a scanner that
+    skips itself is the one hole nothing can see -- but until now nothing asked whether an
+    entry on one of those lists could fire. A mistyped or outlived glob leaves the tuple
+    looking like coverage and reading as zero files, which is the same quiet failure as a
+    dead vocabulary fragment, and it is the one two of the aperture entries in the registry
+    named as their declared gap. ``TEXT_SOURCES`` is covered as well as
+    ``PYTHON_PATHSPECS`` because a bare ``Makefile`` there matched the repository root
+    alone, which is the same defect one step further on: this is what would now catch a
+    typo in the three widened globs.
+
+    It is NOT the broader property ``PYTHON_PATHSPECS``'s remaining ``ratchetGap`` names:
+    nothing here asserts the aperture covers every tree holding a gate.
+    """
+    # The TEXT_SOURCES half is scoped to the surfaces built from the name vocabulary --
+    # derived by comparing each entry's pattern with `_text_pattern`, not listed -- which
+    # is exactly the three globs widened alongside this. The other entries there name a
+    # specific CONFIGURATION file, and one of those (`.pre-commit-config.yaml`) is simply
+    # absent from this repository: a named config that is not present is an absence rather
+    # than a typo, and failing on it would make this check report a condition nobody can
+    # fix.
+    vocabulary_patterns = {
+        exemption_discovery._text_pattern("upper"),
+        exemption_discovery._text_pattern("lower"),
+    }
+    specs = list(exemption_discovery.PYTHON_PATHSPECS) + [
+        spec
+        for spec, pattern in exemption_discovery.TEXT_SOURCES
+        if pattern in vocabulary_patterns
+    ]
+    assert len(specs) > len(exemption_discovery.PYTHON_PATHSPECS), (
+        "no TEXT_SOURCES entry is built from the name vocabulary any more, so the Make "
+        "and shell globs are outside this check and a typo in one would be silent"
+    )
+    dead = [
+        spec
+        for spec in specs
+        if not gate_premises.tracked_files(spec, include_untracked=True)
+    ]
+    assert not dead, (
+        f"these discovery pathspecs match no file at all: {dead}. A dead glob makes the "
+        "aperture look wider than it is; either fix the spelling or delete it, because a "
+        "tree or a file shape that has moved is one discovery has silently stopped "
+        "covering."
+    )
+
+
+def test_the_marker_table_does_not_satisfy_its_own_label_check() -> None:
+    """``_evidence_text`` must remove the markers from the file that declares them.
+
+    Without it, naming this module as an entry's ``ratchetEvidence`` satisfied the label
+    check for ANY label, because every marker for every label is written out here.
+
+    The set is DERIVED rather than listed: markers present in the raw text and absent
+    after excision are exactly the ones the hole was shielding. Asserted non-empty first,
+    because an empty derived set would make the rest of this case vacuous rather than
+    failing.
+    """
+    raw = (REPO_ROOT / _THIS_MODULE).read_text(encoding="utf-8").lower()
+    excised = _evidence_text(_THIS_MODULE).lower()
+    table_only = sorted(
+        {
+            marker
+            for markers in RATCHET_EVIDENCE_MARKERS.values()
+            for marker in markers
+            if marker.lower() in raw and marker.lower() not in excised
+        }
+    )
+    assert table_only, (
+        "no marker in RATCHET_EVIDENCE_MARKERS is present in this file's raw text and "
+        "absent after excision, so either the excision has stopped working or every "
+        "marker is now used in prose here -- in both cases this case proves nothing."
+    )
+    for marker in table_only:
+        assert marker.lower() not in excised, (
+            f"{marker!r} survives excision, so an entry naming {_THIS_MODULE} as "
+            "ratchetEvidence is satisfied by the table rather than by an implementation."
+        )
+    # Only the labels this module IMPLEMENTS need to survive excision. Asserting it for
+    # all five would pin the hole open: the reason naming this file satisfied a label it
+    # does not implement is that the prose here carries a marker for every one of them.
+    for ratchet in sorted(META_TEST_PERMITTED_RATCHETS):
+        assert any(m.lower() in excised for m in RATCHET_EVIDENCE_MARKERS[ratchet]), (
+            f"after excision this file contains no marker for {ratchet!r}, which it does "
+            "implement, so an entry claiming it and naming this file would fail. The "
+            "excision has removed more than the table."
+        )
+
+
+@pytest.mark.parametrize("ratchet", sorted(set(RATCHETS) - {"none"}))
+def test_this_module_may_only_be_evidence_for_the_ratchets_it_implements(
+    ratchet: str,
+) -> None:
+    """Per label, through the real candidate rule.
+
+    Excising the marker table was not sufficient, and this is the measurement that says
+    so: after the excision this file still carries at least one marker for every one of
+    the five labels in ordinary prose, so an entry naming it as evidence was satisfied for
+    a ratchet it does not implement.
+    """
+    candidates = ratchet_evidence_candidates(ratchet, [_THIS_MODULE])
+    satisfied_by_a_marker = any(
+        marker.lower() in _evidence_text(_THIS_MODULE).lower()
+        for marker in RATCHET_EVIDENCE_MARKERS[ratchet]
+    )
+    assert satisfied_by_a_marker, (
+        f"{ratchet!r} has no marker in this file after excision, so this case is not "
+        "measuring the restriction -- the marker check alone would already refuse it."
+    )
+    if ratchet in META_TEST_PERMITTED_RATCHETS:
+        assert candidates == [_THIS_MODULE], (
+            f"{ratchet!r} is a ratchet this module implements and it is not a candidate, "
+            "so every entry claiming it here would fail"
+        )
+        return
+    assert not candidates, (
+        f"{ratchet!r} is satisfied by a marker in this file AND permitted for it, so an "
+        "entry can claim a ratchet this module does not implement."
+    )
+
+
+def test_a_second_evidence_file_does_not_lift_the_meta_test_restriction() -> None:
+    """The restriction is per file, because per entry it was one edit away from nothing.
+
+    The marker search is ``any(...)`` across the named files deliberately -- several
+    ratchets are split between a script and its test, and requiring every named file to
+    carry a marker would force the honest other half out of the list. Written as "an entry
+    whose ONLY evidence is this module", the restriction was therefore bypassed by naming
+    any second tracked file: the second file lifted it and this one went on supplying the
+    marker out of its own prose. Measured: a ``staleness`` claim with evidence ``[this
+    module, CHANGELOG.md]`` passed.
+    """
+    second = "CHANGELOG.md"
+    assert gate_premises.is_tracked(second), f"{second} is not tracked"
+    for ratchet in sorted(set(RATCHETS) - {"none"}):
+        candidates = ratchet_evidence_candidates(ratchet, [_THIS_MODULE, second])
+        if ratchet in META_TEST_PERMITTED_RATCHETS:
+            assert _THIS_MODULE in candidates, (
+                f"{ratchet!r} is a ratchet this module implements and it is not a "
+                "candidate, so every entry claiming it here would fail"
+            )
+            continue
+        assert candidates == [second], (
+            f"this module survives as a candidate for {ratchet!r}, which it does not "
+            "implement, so an entry can claim that ratchet by naming any second file and "
+            f"letting the marker come out of this file's prose: {candidates}"
+        )

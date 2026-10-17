@@ -325,6 +325,85 @@
         "scripts/ux_test_session.py": 0.0
       }
     },
+    "src_lambda": {
+      "total": 89.78,
+      "conditions": {
+        "collected": 1607,
+        "skipped": 0
+      },
+      "files": {
+        "api_handler/index.py": 90.91,
+        "api_handler/models.py": 100.0,
+        "batch_pre_processor/index.py": 92.08,
+        "bda_ocr_project/index.py": 84.06,
+        "bda_ocr_project/log_sanitizer.py": 64.0,
+        "calculate_capacity/index.py": 96.9,
+        "calculate_capacity/log_sanitizer.py": 100.0,
+        "calculate_capacity/validation.py": 100.0,
+        "chat_stream_processor/app.py": 0.0,
+        "chat_stream_processor/sse.py": 97.06,
+        "chat_stream_processor/vendored/agent_chat_processor.py": 27.86,
+        "chat_with_document_processor/index.py": 74.86,
+        "circuit_breaker_manager/index.py": 81.96,
+        "circuit_breaker_manager/log_sanitizer.py": 64.0,
+        "complete_section_review/index.py": 100.0,
+        "external_idp_group_mapping/index.py": 98.13,
+        "finetuning_deployment_handler/index.py": 51.08,
+        "finetuning_job_creator/index.py": 40.32,
+        "job_tracker/index.py": 100.0,
+        "queue_processor/index.py": 89.71,
+        "queue_sender/index.py": 93.25,
+        "save_reporting_data/index.py": 95.65,
+        "start_codebuild/__init__.py": 100.0,
+        "start_codebuild/index.py": 66.49,
+        "start_codebuild/log_sanitizer.py": 28.0,
+        "test_file_copier/index.py": 40.83,
+        "update_configuration/index.py": 39.61,
+        "user_management/index.py": 83.07,
+        "user_management/log_sanitizer.py": 28.0,
+        "version_check_resolver/index.py": 96.05,
+        "version_check_resolver/log_sanitizer.py": 46.0,
+        "workflow_tracker/index.py": 59.12
+      }
+    },
+    "api_resolvers": {
+      "total": 69.23,
+      "conditions": {
+        "collected": 639,
+        "skipped": 0
+      },
+      "files": {
+        "configuration_resolver/index.py": 41.9,
+        "delete_agent_chat_session_resolver/index.py": 74.32,
+        "delete_agent_chat_session_resolver/log_sanitizer.py": 70.0,
+        "discovery_upload_resolver/index.py": 20.26,
+        "finetuning_jobs_resolver/index.py": 38.02,
+        "get_agent_chat_messages_resolver/index.py": 64.0,
+        "get_agent_chat_messages_resolver/log_sanitizer.py": 70.0,
+        "get_file_contents_resolver/config_scope.py": 71.17,
+        "get_file_contents_resolver/document_scope.py": 95.45,
+        "get_file_contents_resolver/index.py": 85.12,
+        "get_file_contents_resolver/key_scope.py": 96.91,
+        "get_file_contents_resolver/log_sanitizer.py": 72.0,
+        "get_file_contents_resolver/s3_targets.py": 54.55,
+        "get_file_contents_resolver/testset_scope.py": 90.54,
+        "get_sample_document_resolver/index.py": 88.89,
+        "get_stepfunction_execution_resolver/index.py": 70.89,
+        "list_agent_chat_sessions_resolver/index.py": 80.0,
+        "list_agent_chat_sessions_resolver/log_sanitizer.py": 72.0,
+        "list_documents_gsi_resolver/config_scope.py": 74.77,
+        "list_documents_gsi_resolver/index.py": 87.23,
+        "list_documents_range_resolver/config_scope.py": 72.07,
+        "list_documents_range_resolver/index.py": 76.25,
+        "list_documents_range_resolver/log_sanitizer.py": 72.0,
+        "reprocess_document_resolver/index.py": 78.43,
+        "send_chat_document_message_resolver/index.py": 86.59,
+        "sync_bda_idp_resolver/index.py": 78.75,
+        "test_runner/index.py": 65.4,
+        "test_set_resolver/index.py": 15.0,
+        "upload_resolver/index.py": 93.27
+      }
+    },
     "idp_sdk": {
       "total": 99.65,
       "conditions": {
@@ -457,28 +536,6 @@
       "total": 94.93,
       "files": {
         "handler.py": 88.68
-      }
-    },
-    "complete_section_review": {
-      "total": 99.66,
-      "conditions": {
-        "collected": 118,
-        "skipped": 0
-      },
-      "files": {
-        "index.py": 100.0
-      }
-    },
-    "calculate_capacity": {
-      "total": 98.69,
-      "conditions": {
-        "collected": 383,
-        "skipped": 0
-      },
-      "files": {
-        "index.py": 96.9,
-        "log_sanitizer.py": 100.0,
-        "validation.py": 100.0
       }
     }
   }

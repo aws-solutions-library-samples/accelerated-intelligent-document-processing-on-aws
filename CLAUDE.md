@@ -542,16 +542,33 @@ concurrently, and then reach the ratchet through `make check-coverage-debt-cicd`
 which passes `--require-all-trees`: a tree with no report is **refused by name** and
 the run reaches no verdict. The required list is derived from
 `check_coverage_debt.TREES` **inside the script**, so neither Makefile nor CI config
-holds a second copy of the nine names and a tree added to the registry is required
+holds a second copy of the registry's names and a tree added to it is required
 without an edit anywhere else. Issue #1256.
 
-The concurrency is **across** trees and has to be: `scripts` declares `Tree.serial`,
-because xdist under-collects a suite that drives its subject as a subprocess, so that
-tree cannot be sped up from the inside and its ~16 minutes is hidden behind the other
-eight instead. Each parallel tree gets an explicit share of the host, never `-n auto`
-— `auto` is per-process, so four concurrent trees each asking for it request four
-times the machine, which on a 4-CPU runner is a slow-down dressed up as parallelism.
-Measured at nine trees, four at a time: 979s against roughly 33 minutes sequential.
+The concurrency is **across** trees, and it is across them rather than only inside
+them because a tree may decline xdist. `Tree.serial` is what records that, with the
+measurement at the entry, and the thing to know is that it is **not** a statement
+about a suite being unparallelisable: `scripts` carried it on the belief that xdist
+under-collects a suite driving its subject as a subprocess, and when that was finally
+measured the figures were identical per file, serial against `-n 4`, so the flag came
+off. What actually under-collects a subprocess is the absence of subprocess
+instrumentation, not the worker count. **No tree declares it today**, and the same intuition was tried once
+more and measured down: the two Lambda handler fan-outs look like the case for it —
+many small pytest roots, so a root costs process startup rather than test execution —
+and at the worker count CI gives a tree that is a wash on one of them and distinctly
+faster in parallel on the other, with every file identical. The figures are at the
+entries. Each parallel tree gets an
+explicit share of the host, never `-n auto` — `auto` is per-process, so four
+concurrent trees each asking for it request four times the machine, which on a 4-CPU
+runner is a slow-down dressed up as parallelism. The job costs its slowest tree rather
+than the sum, and which tree that is moves; re-measure rather than quoting a figure.
+
+⚠️ **`--only <one tree>` hands that tree every CPU, so it measures a configuration
+nothing runs.** `--jobs` is clamped by the number of trees selected, so one tree
+collapses it to 1 and the worker share for one job is the whole machine. Pass
+`--workers N` to ask for the share CI would give that tree — without it, reproducing a
+CI figure means narrowing what `cpu_count()` sees with `taskset`, which is easy to
+forget and leaves two numbers that are not comparable.
 
 Two things about the baseline are worth knowing before touching it.
 `scripts/coverage_debt.json` is **generated**, and a floor is a lower bound, so a
@@ -1478,7 +1495,7 @@ that domain:
 | `.claude/skills/documentation.md` | Documentation standards, two doc tiers, CHANGELOG, docs-site, and the "adding a Bedrock model" checklist |
 | `.claude/skills/add-model.md` | Adding or changing a selectable Bedrock model (model IDs, regions, limits, pricing, template enums, client routing, UI, both doc tiers, tests) — the full expanded checklist |
 | `.claude/skills/prepare-changelog.md` | Preparing the `[Unreleased]` CHANGELOG section for release — three-section shape (Added/Changed/Fixed), net-since-release entries (drop intra-cycle churn), compact entries with doc/PR links |
-| `.claude/skills/cut-release-changelog.md` | Cutting the release section at tag time — relabel `[Unreleased]` to the `VERSION` number (no date) and append the version-pinned `## Templates` URLs for the three published regions |
+| `.claude/skills/cut-release-changelog.md` | Cutting the release section at tag time — relabel `[Unreleased]` to the `VERSION` number (no date) and append the version-pinned `## Templates` URLs for the four published regions |
 
 > **Note:** `.claude/skills/` is canonical. The Cline assistant's
 > `.cline/skills/` files are **symlinks** to these (different filenames), so
