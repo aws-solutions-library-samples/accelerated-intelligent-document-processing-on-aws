@@ -38,8 +38,8 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `notify.py` | Inbox messages (`review.*` notification types); never raises |
 | `sweeper.py` | `ReviewSweeper`: assignment reminders and self-healing, run every 5 minutes |
 | `api_models.py` | The camelCase API views and argument models |
-| `test_set_summaries.py` | Computing a Test Studio document's summary from its labels in S3 (label source, alert and field counts, the weakest confidence and its threshold, classes, sections) for one document, one page, or a whole set (`summarize_test_set`, which lists `input/` and `baseline/` once each). Used by the test-set resolver and, for whole sets, by `TestSetFileCopierFunction` |
-| `test_set_docs.py` | Test Studio documents as queue items: one `TSDOC#<testSetId>` / `D#<objectKey>` item per document with its summary (label source, alert count, lowest confidence, classes, sections, reviewed) and assignment, so a set's queue is one Query while the labels stay in S3. Assign, unassign, skip, the assignee check, and the assigned / unassigned / reminder Inbox notices. Standard library and boto3 only |
+| `testset_summaries.py` | Computing a Test Studio document's summary from its labels in S3 (label source, alert and field counts, the weakest confidence and its threshold, classes, sections) for one document, one page, or a whole set (`summarize_test_set`, which lists `input/` and `baseline/` once each). Used by the test-set resolver and, for whole sets, by `TestSetFileCopierFunction` |
+| `testset_docs.py` | Test Studio documents as queue items: one `TSDOC#<testSetId>` / `D#<objectKey>` item per document with its summary (label source, alert count, lowest confidence, classes, sections, reviewed) and assignment, so a set's queue is one Query while the labels stay in S3. Assign, unassign, skip, the assignee check, and the assigned / unassigned / reminder Inbox notices. Standard library and boto3 only |
 
 ## Queue item lifecycle
 
@@ -121,7 +121,7 @@ document's completion when the finalize run ends.
   items by profile.
 - Admins also have `renewReviewLease` and `escalateReviewItem`. The web UI doesn't
   use them.
-- **Test Studio** queues are the test sets. `test_set_docs.TestSetDocStore` holds
+- **Test Studio** queues are the test sets. `testset_docs.TestSetDocStore` holds
   each document's summary and assignment (`assignTestSetDocuments`,
   `unassignTestSetDocuments`, `claimTestSetDocument`, `listMyTestSetTasks`). A
   set's queue is worked by the Annotators in its `QueueEligibleAnnotators`; listing

@@ -53,7 +53,7 @@ PLATFORM_TYPES: tuple[NotificationType, ...] = (
         default_severity="warning",
     ),
     # Admin assignment of queue items and Test Studio documents to Annotators
-    # (idp_common.review_queues.test_set_docs). Assignments do not expire.
+    # (idp_common.review_queues.testset_docs). Assignments do not expire.
     NotificationType(
         id="review.task_reminder",
         display_name="Task reminder",

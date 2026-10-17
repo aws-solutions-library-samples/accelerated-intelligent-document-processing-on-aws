@@ -60,7 +60,7 @@ LAYER_REFS = ("IDPCommon",)
 # events), so listing it here would assert a file that is correctly absent. It
 # also needs no exemption: the vendored copies are imported as
 # `from log_sanitizer import ...`, which never names `idp_common`.
-VENDORED_MODULES = ("config_scope", "review_statuses", "review_visibility")
+VENDORED_MODULES = ("config_scope", "review_statuses")
 
 
 class _Loader(yaml.SafeLoader):

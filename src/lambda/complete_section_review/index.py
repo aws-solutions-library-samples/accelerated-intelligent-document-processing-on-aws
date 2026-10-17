@@ -13,11 +13,11 @@ import boto3
 from idp_common.docs_service import create_document_service
 from idp_common.models import Status
 from idp_common.review_queues.statuses import LegacyHitlStatus
-from idp_common.review_queues.test_set_docs import (
+from idp_common.review_queues.testset_docs import (
     TestSetDocStore,
     store_assigned_count,
 )
-from idp_common.review_queues.test_set_summaries import summarize_document
+from idp_common.review_queues.testset_summaries import summarize_document
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()

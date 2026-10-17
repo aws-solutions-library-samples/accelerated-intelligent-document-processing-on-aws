@@ -32,7 +32,7 @@ from idp_common.evaluation.confidence_curve import (  # type: ignore
 )
 from idp_common.evaluation.curve_store import CurveStore  # type: ignore
 from idp_common.models import Status  # type: ignore
-from idp_common.review_queues import test_set_summaries  # type: ignore
+from idp_common.review_queues import testset_summaries  # type: ignore
 from idp_common.review_queues.annotators import (  # type: ignore
     ANNOTATOR_GROUP,
     COGNITO_SOURCE,
@@ -40,7 +40,7 @@ from idp_common.review_queues.annotators import (  # type: ignore
     persona_for_groups,
 )
 from idp_common.review_queues.statuses import LEGACY_DONE  # type: ignore
-from idp_common.review_queues.test_set_docs import (  # type: ignore
+from idp_common.review_queues.testset_docs import (  # type: ignore
     SUMMARY_BUILDING,
     SUMMARY_READY,
     SUMMARY_VERSION,
@@ -52,7 +52,7 @@ from idp_common.review_queues.test_set_docs import (  # type: ignore
     time_limit_minutes,
     validate_time_limit,
 )
-from idp_common.review_queues.test_set_summaries import (  # type: ignore
+from idp_common.review_queues.testset_summaries import (  # type: ignore
     LABEL_SOURCE_DRAFT,
     LABEL_SOURCE_HUMAN,
     attach_label_metadata,
@@ -72,14 +72,14 @@ MAX_ZIP_SIZE_BYTES = 1073741824  # 1 GB
 
 logger = logging.getLogger()
 
-# The label-metadata helpers live in idp_common.review_queues.test_set_summaries;
+# The label-metadata helpers live in idp_common.review_queues.testset_summaries;
 # their resolver-module names stay importable.
-_absent_field_paths = test_set_summaries.absent_field_paths
-_alert_counts = test_set_summaries.alert_counts
-_confidence_threshold = test_set_summaries.confidence_threshold
-_min_confidence = test_set_summaries.min_confidence
-_walk_confidence_named = test_set_summaries.walk_confidence_named
-list_child_path = test_set_summaries.list_child_path
+_absent_field_paths = testset_summaries.absent_field_paths
+_alert_counts = testset_summaries.alert_counts
+_confidence_threshold = testset_summaries.confidence_threshold
+_min_confidence = testset_summaries.min_confidence
+_walk_confidence_named = testset_summaries.walk_confidence_named
+list_child_path = testset_summaries.list_child_path
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 
@@ -421,6 +421,7 @@ def _dispatch(event, context):
     elif field_name == "listTestSetQueues":
         return list_test_set_queues(event)
     elif field_name == "claimTestSetDocument":
+        assert_can_access_test_set(event, event["arguments"].get("testSetId") or "")
         return claim_test_set_document(event["arguments"], event)
     elif field_name == "updateTestSetQueue":
         return update_test_set_queue(event["arguments"])

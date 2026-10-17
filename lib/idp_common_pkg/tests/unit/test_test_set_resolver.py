@@ -14,12 +14,12 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from idp_common.dynamodb.client import DynamoDBError
-from idp_common.review_queues.test_set_docs import (
+from idp_common.review_queues.testset_docs import (
     SUMMARY_BUILDING,
     SUMMARY_READY,
     SUMMARY_VERSION,
 )
-from idp_common.review_queues.test_set_docs import (
+from idp_common.review_queues.testset_docs import (
     TestSetDocStore as DocStore,  # aliased: pytest would try to collect "Test*"
 )
 from tests.unit.review_queues._table import create_review_table

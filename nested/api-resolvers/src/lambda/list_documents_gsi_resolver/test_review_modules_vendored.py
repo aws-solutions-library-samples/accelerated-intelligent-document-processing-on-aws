@@ -31,7 +31,7 @@ RESOLVERS = [
     REPO_ROOT / "nested/api-resolvers/src/lambda/list_documents_range_resolver",
 ]
 #: canonical file name -> vendored file name
-MODULES = {"statuses.py": "review_statuses.py", "visibility.py": "review_visibility.py"}
+MODULES = {"statuses.py": "review_statuses.py"}
 
 #: The document lookup function also carries no idp_common layer and reads the
 #: review status values from its own ``review_statuses.py`` copy.

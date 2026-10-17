@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError
 
-from idp_common.review_queues.test_set_docs import (  # type: ignore
+from idp_common.review_queues.testset_docs import (  # type: ignore
     TestSetDocStore,
     mark_summaries_ready,
     store_assigned_count,
 )
-from idp_common.review_queues.test_set_summaries import (  # type: ignore
+from idp_common.review_queues.testset_summaries import (  # type: ignore
     summarize_test_set,
 )
 from idp_common.s3 import find_matching_files  # type: ignore

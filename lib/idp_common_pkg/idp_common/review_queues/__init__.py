@@ -49,7 +49,7 @@ _LAZY = (
     "sweeper",
     "config_guard",
     "queue_defs",
-    "test_set_docs",
+    "testset_docs",
 )
 
 

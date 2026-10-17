@@ -276,10 +276,6 @@ QUARANTINE = {
     "lib/idp_sdk/idp_sdk/_core": (
         "Source tree, not a test root (contains helper modules named test_*)."
     ),
-    "lib/idp_common_pkg/idp_common/review_queues": (
-        "Source tree, not a test root (test_set_docs.py and test_set_summaries.py "
-        "are test-set modules)."
-    ),
     # Operator-run agent scripts. Every one drives real Bedrock, Athena or
     # DynamoDB against a deployed stack, so they are run by hand, never in a gate,
     # and `norecursedirs` in lib/idp_common_pkg/pytest.ini keeps pytest from

@@ -5,7 +5,7 @@
 
 A test set's labels live in S3 (``<set>/baseline/<doc>/sections/<n>/result.json``);
 the queue page reads each document's summary from DynamoDB instead
-(:mod:`.test_set_docs`). This module computes those summaries: label source, alert
+(:mod:`.testset_docs`). This module computes those summaries: label source, alert
 and field counts, the weakest confidence and its threshold, classes and sections.
 The test-set resolver uses it for one page of documents, and the test-set file
 copier for a whole set in the background (:func:`summarize_test_set`), so no queue

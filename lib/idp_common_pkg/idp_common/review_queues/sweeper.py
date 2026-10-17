@@ -392,7 +392,7 @@ class ReviewSweeper:
         try:
             import boto3
 
-            from .test_set_docs import TestSetDocStore, notify_reminder
+            from .testset_docs import TestSetDocStore, notify_reminder
 
             table = boto3.resource("dynamodb").Table(self.store.table_name)
             for doc in TestSetDocStore(table).due_reminders(now_ms):

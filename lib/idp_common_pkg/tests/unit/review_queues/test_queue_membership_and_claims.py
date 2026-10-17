@@ -20,8 +20,8 @@ from idp_common.review_queues.models import CallerContext, ReviewItemRecord
 from idp_common.review_queues.queue_defs import QueueDefinition
 from idp_common.review_queues.service import ReviewQueueService
 from idp_common.review_queues.store import ReviewStore, item_to_dynamo
-from idp_common.review_queues.test_set_docs import TestSetAssignmentError as Refused
-from idp_common.review_queues.test_set_docs import TestSetDocStore
+from idp_common.review_queues.testset_docs import TestSetAssignmentError as Refused
+from idp_common.review_queues.testset_docs import TestSetDocStore
 
 ANN = "ann@example.com"
 OTHER = "other@example.com"
