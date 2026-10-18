@@ -141,12 +141,12 @@ def _rows(n: int) -> list[dict]:
     ]
 
 
-def _issues(text: str, extracted: int, **svc_kw):
+def _issues(text: str, extracted: int, metadata: dict | None = None, **svc_kw):
     svc = _svc(**svc_kw)
     svc._document_text = text
     return svc, svc._build_extraction_issues(
         extracted_fields={"Account Number": "1", "Transactions": _rows(extracted)},
-        metadata={},
+        metadata=metadata or {},
         section_id="1",
     )
 
@@ -460,3 +460,167 @@ class TestTheActionDoesNotGovernThisCode:
         )
         assert "Status: SUCCESS" in report
         assert "FAILED" not in report
+
+
+#: The group schema with a declared ceiling UNDER the evidence floor. `expected`
+#: is `min(ocr_rows, group_cap)`, so this reaches the same branch as absent
+#: evidence by an entirely different route: the evidence is plentiful and it is the
+#: config author's own cap that makes the comparison inapplicable.
+CAPPED_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "Account Number": {"type": "string"},
+        "Transactions": {"type": "array", "items": ROW, "maxItems": 20},
+    },
+}
+
+
+class TestADeclaredCapIsNotMistakenForAbsentEvidence:
+    """A `maxItems` under the floor reaches the branch and must stay silent here.
+
+    Every string this code emits — the message, the `root_cause`, and both
+    documents — describes ONE half of `expected < 30`: that the section's OCR text
+    holds fewer than 30 rows in tables of the list's width. The other half is a
+    summed declared `maxItems` under 30, and there the OCR evidence can be
+    plentiful: 400 matched rows against `maxItems: 20` would produce "the section's
+    OCR text holds only 400 row(s) ... under the 30-row floor", which is a
+    contradiction, beside a `details` dict that shows the mismatch without
+    explaining it.
+
+    It is reachable rather than hypothetical. `shard_validation_schema` strips
+    `maxItems` for a shard deliberately — "a shard whose pages hold more rows than
+    the section's maxItems must not be told to drop rows before the merge counts
+    them" — so a merged section can carry more rows than its declared cap, which is
+    exactly the `extracted >= 30 > group_cap` shape below.
+
+    The resolution is to read the new issue's gate against `ocr_rows` rather than
+    `expected`. That leaves this case reporting nothing, as it did before this code
+    existed, and it is a strict NARROWING: `ocr_rows < 30` forces `expected < 30`,
+    so no state that was silent before can start speaking.
+    """
+
+    def test_the_cap_really_does_reach_this_branch(self):
+        """The precondition, measured — or the tests below prove nothing."""
+        svc = _svc(schema=CAPPED_SCHEMA)
+        tables = svc._ocr_tables(textractor(400))
+        ocr_rows = svc._expected_rows_for_width(3, tables)
+        assert ocr_rows >= FLOOR, ocr_rows
+        assert min(ocr_rows, 20) < FLOOR  # `expected` is under the floor
+        assert 362 >= FLOOR  # and the extracted side clears it
+
+    def test_no_issue_is_emitted_when_the_evidence_is_ample(self):
+        assert _verdict(textractor(400), 362, schema=CAPPED_SCHEMA) == "SILENT"
+
+    def test_the_absent_evidence_case_still_fires_with_the_same_cap(self):
+        """The cap is not what silences it — the ample evidence is.
+
+        Same schema, same extracted count, a rendering with zero exact-width
+        evidence: the issue is back. Without this case a gate that keyed on
+        `group_cap` being declared at all would pass the test above.
+        """
+        assert _verdict(four_columns(400), 362, schema=CAPPED_SCHEMA) == "UNVERIFIED"
+
+    def test_a_cap_above_the_floor_is_irrelevant_either_way(self):
+        """A declared cap only reaches this branch when it is under the floor."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "Account Number": {"type": "string"},
+                "Transactions": {"type": "array", "items": ROW, "maxItems": 500},
+            },
+        }
+        assert _verdict(four_columns(400), 362, schema=schema) == "UNVERIFIED"
+
+
+class TestTheInteractionWithTheOneCertainSignal:
+    """ "Equally consistent with a complete list" is about this check's evidence.
+
+    `extraction_output_truncated` is the one CERTAIN completeness signal, it needs
+    neither OCR nor a list, and nothing suppresses either issue — so a section can
+    carry both. Read together without a qualifier they contradict: one says the
+    response certainly stopped early, the other that the row count is as likely
+    complete as not.
+    """
+
+    def test_both_issues_fire_on_one_section(self):
+        _svc_obj, issues = _issues(
+            four_columns(400), 362, metadata={"output_truncated": True}
+        )
+        codes = [i.code for i in issues]
+        assert ExtractionService.OUTPUT_TRUNCATED_CODE in codes
+        assert UNVERIFIED in codes
+
+    def test_the_message_defers_to_it_by_name(self):
+        issue = _unverified(four_columns(400), 362, metadata={"output_truncated": True})
+        assert "equally consistent with a complete list" in issue.message
+        assert ExtractionService.OUTPUT_TRUNCATED_CODE in issue.message
+        assert "certain signal and it governs" in issue.message
+
+    def test_the_clause_is_absent_when_nothing_truncated(self):
+        """The qualifier is conditional: on an untruncated run it would be noise."""
+        issue = _unverified(four_columns(400), 362)
+        assert ExtractionService.OUTPUT_TRUNCATED_CODE not in issue.message
+        assert "it governs" not in issue.message
+
+    def test_severity_is_still_info_when_both_fire(self):
+        issue = _unverified(four_columns(400), 362, metadata={"output_truncated": True})
+        assert issue.severity == "info"
+
+
+class TestTheDetailsPayloadIsBoundedByMeasurement:
+    """`details` carries the whole `ocr_tables` list, and it is NOT size-bounded.
+
+    `ProcessingIssue._bound_details` elides oversized **string** leaves and leaves
+    list LENGTH alone, so a list of `{"rows": n, "cols": c}` dicts grows without a
+    ceiling, against DynamoDB's 400 KB item limit. The two sibling row checks carry
+    the same payload, so this is not new — but this code is the one that fires on
+    documents where nothing is wrong, so it is the one that will carry it often.
+
+    The numbers are measured here rather than asserted as safe, so that a change
+    making the payload bigger per table shows up as a diff in the figures.
+    """
+
+    @staticmethod
+    def _many_table_text(n_tables: int) -> str:
+        """`n_tables` four-column tables (the wrong width for the schema).
+
+        Four columns so the exact-width match finds nothing and the new code is
+        what fires, with every table still landing in `details["ocr_tables"]`.
+        """
+        unit = "| # | Date | Description | Amount |\n|---|---|---|---|\n" + "".join(
+            f"| {i} | d{i} | SEQ{i:05d} | {i}.00 |\n" for i in range(3)
+        )
+        return "prose\n".join([unit] * n_tables)
+
+    def test_every_table_reaches_the_details_payload(self):
+        issue = _unverified(self._many_table_text(200), 40)
+        assert len(issue.details["ocr_tables"]) == 200
+        # The widths list is deduplicated, which is why it is the field a reader
+        # needs and this one is the field that grows.
+        assert issue.details["ocr_table_widths"] == [4]
+
+    #: DynamoDB's item ceiling, which is the limit `_bound_details` was written to
+    #: defend. Not `MAX_DETAIL_STRING_BYTES` (1,024): that is the per-STRING elision
+    #: bound, and this payload holds no strings at all, which is precisely why it is
+    #: unbounded.
+    DDB_ITEM_CEILING_BYTES = 400 * 1024
+
+    def test_the_payload_cost_per_table_and_the_crossing_point(self):
+        import json
+
+        sizes = {}
+        for n in (100, 400):
+            issue = _unverified(self._many_table_text(n), 40)
+            sizes[n] = len(json.dumps(issue.to_dict()).encode("utf-8"))
+        per_table = (sizes[400] - sizes[100]) / 300
+        # 24 bytes per table as of this commit: `{"rows": 4, "cols": 4}, `.
+        assert 20 <= per_table <= 32, (sizes, per_table)
+        # One issue therefore needs on the order of ten thousand tables in ONE
+        # section to approach the item ceiling, and a table costs at least five OCR
+        # lines (heading, separator, `_OCR_TABLE_MIN_ROWS` rows). That is the
+        # residual, written down: this payload is bounded by the document rather
+        # than by any check, and `_bound_details` cannot bound it because it elides
+        # oversized strings and leaves list length alone.
+        crossing = self.DDB_ITEM_CEILING_BYTES / per_table
+        assert crossing > 10_000, crossing
+        assert sizes[400] < self.DDB_ITEM_CEILING_BYTES // 10

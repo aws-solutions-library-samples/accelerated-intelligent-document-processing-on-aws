@@ -4108,7 +4108,32 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # shortfall that is not one, where `ocr_table_widths` lets a
                     # reader see a 4-vs-3 mismatch and fix the schema or the OCR
                     # backend with no false finding anywhere.
-                    if extracted >= self._OCR_ROW_ESTIMATE_MIN:
+                    #
+                    # ⚠️ Read against `ocr_rows`, NOT against the `expected` the
+                    # branch itself is gated on. `expected` is
+                    # `min(ocr_rows, group_cap)`, so this branch is also reached
+                    # with the OCR evidence PLENTIFUL and the group's summed
+                    # declared `maxItems` under the floor — 400 matched rows
+                    # against `maxItems: 20`. Every string below describes the
+                    # absent-evidence half of that disjunction, so emitting there
+                    # would state a contradiction ("the OCR text holds only 400
+                    # row(s) ... under the 30-row floor"), and the condition is
+                    # genuinely different: the evidence is present and it is the
+                    # author's own ceiling that makes the comparison inapplicable.
+                    # That case is reachable rather than hypothetical, because
+                    # `shard_validation_schema` strips `maxItems` for a shard on
+                    # purpose ("a shard whose pages hold more rows than the
+                    # section's maxItems must not be told to drop rows before the
+                    # merge counts them"), so a merged section can carry more rows
+                    # than the cap. It stays silent here, exactly as it was before
+                    # this code existed — the residual this narrowing accepts.
+                    # Narrowing rather than widening is also what keeps the change
+                    # additive: this condition is strictly inside the branch's own
+                    # gate, since `ocr_rows < 30` forces `expected < 30`.
+                    if (
+                        extracted >= self._OCR_ROW_ESTIMATE_MIN
+                        and ocr_rows < self._OCR_ROW_ESTIMATE_MIN
+                    ):
                         fields_str = ", ".join(labels)
                         widths = sorted({tb["cols"] for tb in tables})
                         evidence_clause = (
@@ -4123,6 +4148,24 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                             if ocr_rows == 0
                             else f"only {ocr_rows} row(s) in {n_props}-column "
                             f"table(s) of that shape"
+                        )
+                        # "Equally consistent with a complete list" is true of
+                        # THIS issue's own evidence and false of the section when
+                        # the response is known to have stopped early. Nothing
+                        # suppresses either issue, so without this clause a reader
+                        # gets one issue saying the output certainly stopped early
+                        # and another saying the row count is as likely complete as
+                        # not. `extraction_output_truncated` is the one certain
+                        # completeness signal here, so defer to it by name.
+                        truncated_clause = (
+                            f" ⚠️ This section also reports "
+                            f"{self.OUTPUT_TRUNCATED_CODE}: the response stopped "
+                            "before it finished, so every list in it is a prefix. "
+                            "That is a certain signal and it governs — read the "
+                            "'equally consistent' statement above as being about "
+                            "this check's evidence, not about the section."
+                            if metadata.get("output_truncated")
+                            else ""
                         )
                         issues.append(
                             ProcessingIssue(
@@ -4148,6 +4191,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                                     "OCR backend that renders tables (Textract with "
                                     "the TABLES feature, or BDA) and give the item "
                                     "schema one property per rendered column."
+                                    + truncated_clause
                                 ),
                                 root_cause=(
                                     f"{'agentic' if is_agentic else 'traditional'} "
