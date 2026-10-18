@@ -311,12 +311,35 @@ finding whose runs carry it. **That last one is the part to read**, because the 
 a release A/B quotes is a cell mean and the defect's whole shape is a single run
 inside one dragging it down.
 
+`--compare` reads that count from the **rows** on both sides, never from a stored
+`cell_stats` block, and the baseline side is why. Every `cell_stats` block committed
+here was written before the counter existed, so the block answers 0 for every
+baseline available — the side that carries the defect — and the next release's recall
+move would read as a plain improvement with nothing saying the older figure was an
+instrument artifact. The verdict is recoverable from an old row because `rows_truth`,
+`rows_extracted` and `dups` have always been on it.
+
 `unverified_row_shortfall` is the discriminator, and it is a shape argument rather
 than a threshold. Truncation drops a contiguous tail, so the rows that come back are
 distinct: `dups` is 0 and `truncation_prefix` is near the kept count. Identifier
 collapse is the opposite — a tag arrives for every row and two of them read as one
-id, so each unit of shortfall is paid for by a unit of `dups` and the prefix stays
-tiny. `dups` **at or above** the shortfall cannot be truncation whatever else it is.
+id, so each unit of shortfall is paid for by a unit of `dups`. `dups` **at or above**
+the shortfall cannot be truncation whatever else it is, and that comparison is the
+whole of the argument.
+
+⚠️ **`truncation_prefix` corroborates it on the common shape and is not part of it.**
+On the 105 committed rows carrying this signature the prefix is 5 rows or fewer on 91
+of them, which is what a collapse scattered through the document looks like — but it
+reaches 1,072 of the 1,599 rows recovered on `scale_1600`, a run that returned 1,698
+identifiers for 1,600 truth rows and so carries genuine duplication as well. A small
+prefix is therefore evidence when it is there and says nothing when it is not.
+
+Each excuse is bounded by the shortfall it can account for. `dups` pays one unit per
+duplicated identifier and an unresolved tag one unit per unattributable row, so the
+two are summed and compared against the shortfall once; a shortfall larger than that
+sum is unexplained and this says nothing about it. Unbounded, one hallucinated tag
+would annotate an arbitrarily large completeness regression as not-row-loss, which is
+this reading's mirror image.
 
 The cost of not making that distinction is on the record. `small_narrow` scored 62/100
 rows and recall 0.620 with `dups: 38` and `truncation_prefix: 5` on a run that

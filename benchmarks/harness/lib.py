@@ -961,8 +961,18 @@ def unverified_row_shortfall(
     consecutive releases (62/100 with `dups: 38`) while returning all 100 rows.
 
     An `unresolved_ids` count is the second: a tag naming no truth row is an
-    identifier this scorer declined to attribute, so the rows behind those tags are
-    unmeasured rather than absent.
+    identifier this scorer declined to attribute, so the row behind it is unmeasured
+    rather than absent.
+
+    ⚠️ **Both shapes are bounded by the shortfall they can account for, and the
+    second has to be for the same reason as the first.** One unresolved tag accounts
+    for at most one unmeasured row — it contributes nothing to `rows_extracted`, so
+    it can explain one unit of shortfall and no more. An unbounded test would let a
+    single hallucinated tag excuse a 40-row shortfall, annotating a genuine
+    completeness regression as not-row-loss, which is the opposite of what this
+    function is for. So the two counts are summed and compared against the shortfall
+    once; the label then says which of them carries it. A shortfall larger than
+    `dups + unresolved_ids` is unexplained, and this returns `None` for it.
 
     Returned as a short reason rather than a bool so a `summary.csv` column says
     which. Recorded on the row rather than raised: a grid that stops scoring loses
@@ -973,11 +983,11 @@ def unverified_row_shortfall(
     shortfall = rows_truth - rows_extracted
     if shortfall <= 0:
         return None
-    if shortfall <= (dups or 0):
-        return "dups_exceed_shortfall"
-    if unresolved_ids:
-        return "unresolved_row_ids"
-    return None
+    dups = dups or 0
+    unresolved_ids = unresolved_ids or 0
+    if shortfall > dups + unresolved_ids:
+        return None
+    return "dups_at_or_above_shortfall" if shortfall <= dups else "unresolved_row_ids"
 
 
 def walk_confidence(explainability_info):

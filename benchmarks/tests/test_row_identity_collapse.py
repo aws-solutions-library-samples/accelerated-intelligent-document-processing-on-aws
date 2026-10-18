@@ -321,7 +321,7 @@ def test_the_canonicalised_scorer_recovers_every_row(shape, monkeypatch):
     assert scored["dups"] == 0
     assert scored["n_gaps"] == 0
     assert scored["rows_id_repaired"] == dups
-    assert scored["rows_id_unresolved"] is None
+    assert scored["rows_id_unresolved"] == 0
     assert scored["unverified_row_shortfall"] is None
 
 
@@ -340,6 +340,66 @@ def test_a_perturbed_row_is_joined_to_its_own_cell_truth(shape, monkeypatch):
     assert scored["cell_accuracy"] == 1.0, (
         "every row carries its own correct Amount, so any miss here is a row joined "
         "to another row's truth"
+    )
+
+
+def test_the_cell_join_canonicalises_against_the_document_not_the_instrument():
+    """A partial ``rows_typed`` must not make a wrong candidate unique (#1500).
+
+    ``rows_typed`` declares the rows carrying cell truth; ``seq_ids`` declares every
+    row in the document. They coincide today and have diverged before. What a
+    divergence causes is not a missed repair but a CONFIDENT wrong one, and the
+    mechanism is worth stating exactly: ``SEQ000042`` reads as 42 outright, and the
+    plain integer reading is accepted whenever it names a row of the join set. Narrow
+    that set to row 4 and 42 is no longer in it, so the reading falls through to the
+    one-edit candidates ``{42, 2, 4}``, of which exactly one — 4 — survives the
+    intersection. The repair then succeeds and pairs row 42's values with row 4's
+    truth.
+
+    So the join target is the document's set. Below, row 4 is the only row declaring
+    cell truth (``9.00``) while the document holds rows 4 and 42, and row 42 came
+    back perturbed carrying ``42.00``. Canonicalised against the document it is row
+    42 and is left out of the comparison for want of truth; canonicalised against
+    ``rows_typed`` it would be row 4 and score as a value error.
+    """
+    rows_typed = {"SEQ00004": {"Amount": "9.00"}}
+    seq_ids = [f"SEQ{s:05d}" for s in (4, 42)]
+    sections = [
+        {
+            "inference_result": {
+                "Transactions": [{"Description": "SEQ000042 Any", "Amount": "42.00"}]
+            },
+            "explainability_info": [
+                {"Transactions": [{"Amount": {"confidence": 0.9}}]}
+            ],
+        }
+    ]
+    # Against the instrument's own keys the one-edit repair is unique and wrong.
+    assert lib.canonical_seq("000042", {4}) == 4
+    # Against the document's set the integer reading names a real row, so no repair
+    # is attempted at all.
+    assert lib.canonical_seq("000042", {4, 42}) == 42
+
+    hits, total, matched = analyze.score_cells(
+        sections, rows_typed, "Transactions", seq_ids
+    )
+    # `matched` is `len(by_seq)`, i.e. one row recovered either way; `total` is the
+    # discriminator — 0 cells compared, because row 42 declares no cell truth.
+    assert (hits, total, matched) == (0, 0, 1), (
+        "the perturbed row 42 was joined to row 4's cell truth, which reports a "
+        "value error that is an artefact of the join"
+    )
+    # And the per-cell confidence join, which pairs on the same identifier — the
+    # observation would be (0.9, incorrect) against another row's expected value.
+    assert (
+        analyze.confidence_observations(sections, rows_typed, "Transactions", seq_ids)
+        == []
+    )
+    # The narrow join target is what produces the artefact, so the test is about a
+    # difference rather than about an absence.
+    assert analyze.score_cells(sections, rows_typed, "Transactions") == (0, 1, 1), (
+        "joining against `rows_typed` alone no longer mispairs, so this test no "
+        "longer distinguishes the two join targets"
     )
 
 
@@ -366,7 +426,7 @@ def test_a_genuine_truncation_is_still_reported_as_row_loss(monkeypatch):
     assert scored["completeness_recall"] == 0.6
     assert scored["truncation_prefix"] == kept
     assert scored["dups"] == 0
-    assert scored["rows_id_repaired"] is None
+    assert scored["rows_id_repaired"] == 0
     assert scored["unverified_row_shortfall"] is None
 
 
@@ -374,8 +434,8 @@ def test_a_clean_run_records_no_identifier_repair(monkeypatch):
     scored = _score_through_the_harness(100, set(), monkeypatch)
     assert scored["completeness_recall"] == 1.0
     assert scored["rows_tagged"] == 100
-    assert scored["rows_id_repaired"] is None
-    assert scored["rows_id_unresolved"] is None
+    assert scored["rows_id_repaired"] == 0
+    assert scored["rows_id_unresolved"] == 0
     assert scored["unverified_row_shortfall"] is None
 
 
@@ -412,11 +472,20 @@ def test_an_ambiguous_identifier_is_counted_not_guessed(monkeypatch):
 # The backstop: a shortfall `dups` pays for is not row loss
 # --------------------------------------------------------------------------- #
 def test_the_guard_names_the_shape_truncation_cannot_produce():
-    """Driven by the committed numbers, not by invented ones.
+    """A WIRING check over the committed numbers, and it is worth being clear that
+    that is all the first assertion is.
 
-    This condition was recorded on every one of the affected runs and consulted by
-    nothing, which is how the same artifact was published as a fresh regression four
-    times. Here it is asserted to fire on each of them.
+    ``_signature_rows`` selects on ``0 < shortfall <= dups``, which is the condition
+    the guard's first branch tests, so running the guard over that selection can only
+    confirm that the shipped function implements the predicate the selection names —
+    on real recorded inputs rather than invented ones, which is the part worth
+    having, but not evidence about the population.
+
+    The second assertion is the evidence. It uses a field the selection does not
+    read: on every one of these rows ``completeness_recall`` is exactly
+    ``rows_extracted / rows_truth`` and strictly below 1.0, so the recorded recall on
+    all of them is the understated figure #1500 is about, and the guard's verdict and
+    the published metric are about the same runs.
     """
     silent = [
         (
@@ -429,12 +498,27 @@ def test_the_guard_names_the_shape_truncation_cannot_produce():
         )
         for r in SIGNATURE_ROWS
         if lib.unverified_row_shortfall(r["rows_truth"], r["rows_extracted"], r["dups"])
-        != "dups_exceed_shortfall"
+        != "dups_at_or_above_shortfall"
     ]
     assert silent == [], (
         f"the guard is silent on {len(silent)} of {len(SIGNATURE_ROWS)} committed "
         "rows whose shortfall its own `dups` pays for, which is the combination "
         f"truncation cannot produce. First few: {silent[:5]}"
+    )
+
+    unflagged = [
+        (r["grid"], r["doc"], r["cell"], r["completeness_recall"])
+        for r in SIGNATURE_ROWS
+        if r.get("completeness_recall")
+        != round(r["rows_extracted"] / r["rows_truth"], 4)
+        or r["completeness_recall"] >= 1.0
+    ]
+    assert unflagged == [], (
+        f"{len(unflagged)} of {len(SIGNATURE_ROWS)} rows the guard speaks about do "
+        "not carry an understated `completeness_recall`, so the guard's verdict and "
+        "the metric a release A/B publishes are no longer about the same runs — "
+        f"which is what makes the annotation worth printing. First few: "
+        f"{unflagged[:5]}"
     )
 
 
@@ -471,6 +555,27 @@ def test_the_guard_is_silent_on_truncation_and_on_a_complete_run():
     assert lib.unverified_row_shortfall(400, 400, 0) is None
     assert lib.unverified_row_shortfall(0, 0, 0) is None
     assert lib.unverified_row_shortfall(None, None, None) is None
+
+
+def test_each_excuse_is_bounded_by_the_shortfall_it_can_account_for():
+    """One unresolved tag excuses one row, not an arbitrary shortfall.
+
+    An unresolved tag contributes nothing to ``rows_extracted``, so it can account
+    for exactly one unit of shortfall. Unbounded, a single hallucinated identifier
+    would annotate a 40-row completeness regression as not-row-loss — the reading
+    this guard exists to prevent, in the mirror direction. The two counts are summed
+    because each pays for one unit, and the label says which one carries it.
+    """
+    # 40 rows short, one unattributable tag: 39 units are unexplained.
+    assert lib.unverified_row_shortfall(400, 360, 0, 1) is None
+    # Exactly accounted for, by each count alone and by the two together.
+    assert lib.unverified_row_shortfall(400, 360, 0, 40) == "unresolved_row_ids"
+    assert lib.unverified_row_shortfall(400, 360, 40, 0) == "dups_at_or_above_shortfall"
+    assert lib.unverified_row_shortfall(400, 360, 25, 15) == "unresolved_row_ids"
+    # One unit short of covering it.
+    assert lib.unverified_row_shortfall(400, 360, 25, 14) is None
+    # `dups` alone covering it keeps the `dups` label even with unresolved tags too.
+    assert lib.unverified_row_shortfall(400, 360, 40, 5) == "dups_at_or_above_shortfall"
 
 
 # --------------------------------------------------------------------------- #
@@ -563,7 +668,7 @@ class TestTheAggregateCarriesTheFinding:
             self._row(
                 repeat=1,
                 completeness_recall=0.62,
-                unverified_row_shortfall="dups_exceed_shortfall",
+                unverified_row_shortfall="dups_at_or_above_shortfall",
                 rows_id_repaired=38,
             ),
         ]
@@ -579,7 +684,7 @@ class TestTheAggregateCarriesTheFinding:
             self._row(
                 repeat=i,
                 completeness_recall=0.62,
-                unverified_row_shortfall="dups_exceed_shortfall",
+                unverified_row_shortfall="dups_at_or_above_shortfall",
                 rows_id_repaired=38,
             )
             for i in range(3)
@@ -596,6 +701,64 @@ class TestTheAggregateCarriesTheFinding:
         assert "NOT ROW LOSS" in hits[0], (
             "the recall finding does not say that every run behind it has an "
             f"unreadable row identity, which is #1500's whole subject: {hits[0]}"
+        )
+
+    def test_the_baseline_side_is_read_from_the_rows_not_the_stored_block(
+        self, tmp_path
+    ):
+        """The shape every committed artifact in this repository actually has (#1500).
+
+        `_cells` prefers a STORED `cell_stats` block, and all 120 committed blocks
+        were written before `n_unverified_row_shortfall` existed. A comparison that
+        asked the block would therefore answer 0 on the baseline side of every
+        release A/B available here — the side that carries the defect — and the next
+        release's recall move would be published as a plain improvement with nothing
+        saying the older figure was an instrument artifact.
+
+        So the baseline below is built the way a pre-fix grid was: its rows carry the
+        shape in `rows_truth`/`rows_extracted`/`dups` and nothing else, and its stored
+        block is a real `cell_stats` with the two keys this change added stripped out.
+        The current grid is the post-fix one at recall 1.000, so the move is an
+        improvement — and it must still carry the annotation.
+        """
+        aggregate = harness_module("aggregate")
+        base_rows = [
+            self._row(
+                repeat=i,
+                completeness_recall=0.62,
+                rows_truth=100,
+                rows_extracted=62,
+                dups=38,
+            )
+            for i in range(3)
+        ]
+        cur_rows = [
+            self._row(repeat=i, rows_truth=100, rows_extracted=100, dups=0)
+            for i in range(3)
+        ]
+        stale = aggregate.cell_stats(base_rows)
+        for cell in stale.values():
+            cell.pop("n_unverified_row_shortfall", None)
+            cell.pop("n_rows_id_repaired", None)
+        assert "n_unverified_row_shortfall" not in next(iter(stale.values())), (
+            "this fixture has to reproduce a block written before the counter "
+            "existed, or it is not the committed shape"
+        )
+        (tmp_path / "cur.json").write_text(
+            json.dumps({"rows": cur_rows, "cell_stats": aggregate.cell_stats(cur_rows)})
+        )
+        (tmp_path / "base.json").write_text(
+            json.dumps({"rows": base_rows, "cell_stats": stale})
+        )
+        _reg, imp, _weak = aggregate.compare_cells(
+            str(tmp_path / "cur.json"), str(tmp_path / "base.json")
+        )
+        hits = [t for _cell, t in imp if "recall" in t]
+        assert hits, "a uniform +0.38 recall move must still be reported"
+        assert "NOT ROW LOSS on baseline 3/3" in hits[0], (
+            "the baseline's unreadable row identity is invisible because the stored "
+            "`cell_stats` block was consulted instead of the rows, which is the "
+            f"state of every committed artifact: {hits[0]}"
         )
 
 

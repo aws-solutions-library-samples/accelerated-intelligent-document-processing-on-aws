@@ -201,8 +201,13 @@ CSV_COLS = [
     # `completeness_recall`'s own denominator problem, beside it (#1500). The recall
     # is distinct rows recovered over truth rows, and a reader cannot tell a run that
     # lost rows from one whose row IDENTIFIERS collapsed unless the identifier
-    # figures are in the same table: `rows_tagged` is how many tags came back,
-    # `rows_id_repaired` how many of them the canonicalisation had to repair, and
+    # figures are in the same table. All seven are new to the CSV, and three of them
+    # are not new to the row: `rows_truth`, `rows_extracted` and `dups` have been
+    # recorded on every synthetic row for releases and were readable only out of
+    # `summary.json` — which is why the discriminating figure existed on each of the
+    # affected runs and was consulted by nothing. Then `rows_tagged` is how many tags
+    # came back, `rows_id_repaired` how many of them the canonicalisation had to
+    # repair, `rows_id_unresolved` how many named no truth row at all, and
     # `unverified_row_shortfall` names the shape, if any, that says this run's
     # shortfall is not row loss.
     # `DictWriter(extrasaction="ignore")` drops any row key not listed here, so a
@@ -449,9 +454,16 @@ def cell_stats(rows):
             # Successful runs whose row shortfall is not evidence of a missing row,
             # because row identity was not readable on them (#1500). The mean
             # `completeness_recall` below is the figure a release A/B reads, and a
-            # single run of nine carrying this shape is what moved the one cell the
-            # v0.6.12 audit trail reported — so the count belongs beside the mean,
-            # not only on the rows. It is 0 on a cell whose identifiers all resolved.
+            # single run of nine carrying this shape is enough to move a cell mean
+            # into a headline finding. On record at `docs/release-validation/
+            # v0.6.11.md` ("recall +0.042 (0.958 -> 1.000)"), over the
+            # `core-llm-simple-sep` cell where `small_narrow.pdf` records 62 of 100
+            # rows with `dups: 38` in every committed grid from v0.5.16 on. So the
+            # count belongs beside the mean, not only on the rows. On a grid scored
+            # before this existed the same verdict is derivable from the rows, which
+            # is what `_unverified_row_shortfall_counts` does for the comparison;
+            # this block is the figure a fresh grid publishes. It is 0 on a cell
+            # whose identifiers all resolved.
             "n_unverified_row_shortfall": sum(
                 1 for r in succ if r.get("unverified_row_shortfall")
             ),
@@ -832,6 +844,44 @@ def _cells(summary):
     return summary.get("cell_stats") or cell_stats(summary.get("rows", []))
 
 
+def _unverified_row_shortfall_counts(summary):
+    """Per-cell count of successful runs whose row shortfall is not row loss (#1500).
+
+    Derived from the **rows**, never read from the `cell_stats` block, and that is the
+    whole point of the function. `_cells` prefers a STORED block, and every
+    `cell_stats` block committed to this repository was written before
+    `n_unverified_row_shortfall` existed — so asking the block answers 0 for every
+    baseline in the tree, which is exactly the side of a release A/B that carries the
+    shape. A post-fix grid compared against `v0.6.11` would report the recall move as
+    an improvement with nothing saying the older figure was an instrument artifact:
+    the mirror image of the reading #1500 is about.
+
+    The verdict is recoverable from an old row because its three inputs are not new:
+    `rows_truth`, `rows_extracted` and `dups` are on every synthetic row of every
+    committed grid. `rows_id_unresolved` is new and absent there, which reads as 0 —
+    correct, since a grid scored before canonicalisation existed resolved every tag
+    it could match. A row that already records `unverified_row_shortfall` is taken at
+    its word rather than recomputed.
+
+    `LATE_ADDED_METRICS` is the wrong instrument for this one: entries there are
+    judged by truthiness, and this counter is legitimately 0 on a healthy grid, so
+    registering it would report "never recorded it" on every clean run.
+    """
+    out = {}
+    for row in summary.get("rows") or []:
+        if not row.get("success"):
+            continue
+        reason = row.get("unverified_row_shortfall") or lib.unverified_row_shortfall(
+            row.get("rows_truth"),
+            row.get("rows_extracted"),
+            row.get("dups"),
+            row.get("rows_id_unresolved") or 0,
+        )
+        if reason:
+            out[row.get("cell")] = out.get(row.get("cell"), 0) + 1
+    return out
+
+
 QUALITY_METRICS = ("scalar_accuracy", "completeness_recall", "weighted_accuracy")
 
 
@@ -1128,6 +1178,12 @@ def compare_cells(summary_path, baseline_path):
     )
     cur = _cells(cur_summary)
     base = _cells(base_summary)
+    # Read from the rows on both sides rather than from the stats blocks — see
+    # `_unverified_row_shortfall_counts` for why a stored block cannot answer this.
+    unverified = {
+        "baseline": _unverified_row_shortfall_counts(base_summary),
+        "current": _unverified_row_shortfall_counts(cur_summary),
+    }
     paired = _paired_quality_deltas(cur_summary, base_summary)
     reg, imp, weak = [], [], []
     unread = {}
@@ -1228,7 +1284,7 @@ def compare_cells(summary_path, baseline_path):
                 flagged = [
                     f"{side} {n}/{stats.get('n_success') or 0}"
                     for side, stats in (("baseline", b), ("current", c))
-                    if (n := stats.get("n_unverified_row_shortfall") or 0)
+                    if (n := unverified[side].get(cell) or 0)
                 ]
                 if flagged:
                     tag += (
@@ -1545,6 +1601,7 @@ def augment_summary(path, corpus_dir, dry_run=False):
                 sections,
                 (truth or {}).get("rows_typed"),
                 (truth or {}).get("list_key"),
+                seq_ids=(truth or {}).get("seq_ids"),
             )
         )
         updated += 1
@@ -1760,7 +1817,10 @@ def calibration_study(
                 continue
             sections = read.sections
             scored = analyze.score_calibration(
-                sections, truth.get("rows_typed"), truth.get("list_key")
+                sections,
+                truth.get("rows_typed"),
+                truth.get("list_key"),
+                seq_ids=truth.get("seq_ids"),
             )
             if not scored["calibration_curve"]:
                 leaves = sum(
