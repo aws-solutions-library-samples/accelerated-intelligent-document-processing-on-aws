@@ -569,7 +569,7 @@ multiplicative rung has no absolute bound, so the number of rows that can go unr
 is limited only by how long the longest list is. That is the same shape #1361 fixed for
 `extraction_rows_below_ocr_estimate` by replacing a multiplicative tolerance with a
 29-row additive one, and it is the argument for giving this rung an absolute ceiling the
-way the error rung already carries an absolute floor.
+way the error rung already carries an absolute floor ([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The two error paths are disjoint on this corpus, and together they account for
 every run at or above 25%. The median, p90 and p95 are all exactly 0; p99 is

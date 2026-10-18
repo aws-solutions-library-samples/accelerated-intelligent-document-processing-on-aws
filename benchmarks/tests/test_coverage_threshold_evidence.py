@@ -81,7 +81,9 @@ MAX_WARNING_FIRING_SHARE = 0.02
 # the same shape #1361 fixed for `extraction_rows_below_ocr_estimate`, by replacing a
 # multiplicative tolerance with a 29-row additive one, and the argument for giving
 # this warning rung an absolute ceiling the way the error rung already carries an
-# absolute floor. Tracked separately; this pin only stops it growing unnoticed again.
+# absolute floor. Tracked as #1495; this pin only stops it growing unnoticed again,
+# and a pin over a committed corpus tracks the longest list anyone benchmarked rather
+# than bounding production.
 MAX_SILENT_UNSCORED_ROWS = 115
 
 
