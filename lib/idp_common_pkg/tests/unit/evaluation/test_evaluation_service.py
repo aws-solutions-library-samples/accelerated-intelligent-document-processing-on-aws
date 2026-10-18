@@ -3,34 +3,35 @@
 
 """
 Unit tests for the evaluation service module.
+
+⚠️ Do not stub a third-party module into ``sys.modules`` here. This file used to
+install a ``MagicMock`` over ``munkres`` at module scope, before its own imports and
+with nothing to undo it, so every test that ran **after** it in the same process got
+the mock as well. ``munkres`` is the Hungarian-assignment library Stickler uses to
+pair list items, so the sibling Stickler suites silently stopped matching anything:
+``test_evaluation_service_stickler.py`` and ``test_golden_fixture_stickler.py`` lost
+six tests between them, reporting ``fd: 0`` where four false discoveries were
+expected and golden drift on two fixtures.
+
+The stub was also unnecessary — ``munkres`` is a hard dependency of the pinned
+``stickler-eval``, so it is always installed — and it was invisible in most local
+runs, because whether the poisoned process is the one that runs the Stickler files
+depends on pytest's rootdir and on how xdist happens to distribute them. CI runs two
+workers and hit it; several local configurations did not.
+``test_no_test_module_shadows_an_installed_distribution`` in
+``tests/unit/test_suite_hygiene.py`` now fails on the class rather than this instance.
 """
 
-# ruff: noqa: E402, I001
-# The above line disables E402 (module level import not at top of file) and I001 (import block sorting) for this file
-
-# Mock munkres module before importing any modules that depend on it
-import sys
-from unittest.mock import MagicMock
-
-# Create mock for munkres module and its components
-munkres_mock = MagicMock()
-munkres_mock.Munkres = MagicMock
-munkres_mock.make_cost_matrix = MagicMock(return_value=[[0, 1], [1, 0]])
-sys.modules["munkres"] = munkres_mock
-
-# Import standard library modules first
 import warnings
 from unittest.mock import patch
 
-# Now import third-party modules
 import pytest
 
-# Finally import application modules
-from idp_common.evaluation.service import EvaluationService
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     SectionEvaluationResult,
 )
+from idp_common.evaluation.service import EvaluationService
 from idp_common.models import Document, Section, Status
 
 
