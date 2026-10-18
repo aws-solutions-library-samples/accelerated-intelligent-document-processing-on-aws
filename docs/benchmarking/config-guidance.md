@@ -51,11 +51,11 @@ this table before citing a figure.
 
 | Section | On v0.6.12? | Data |
 |---|---|---|
-| §2 configuration matrix (19 cells × 7 synthetic docs) | ✅ re-measured | `core` synthetic slice (133 runs, exact ground truth) |
+| §2 configuration matrix (19 cells × 7 synthetic docs) | ✅ re-measured | `core` synthetic slice (133 runs, 0 failures, exact ground truth), at the **control** model — that suite carries no model override, so §2 is a cross-*configuration* result and the shipped default's own grid is §5.1's. ⚠️ The Bedrock-LLM cell's completeness and cell-accuracy figures are **withheld, not refreshed**: the metric collapses on that backend's perturbed identifiers ([#1500](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1500)) — finding 4 gives the one figure of its five that survives, and the identifier-free evidence that replaces the rest |
 | §2c real-corpus accuracy | ✅ **re-measured, ONE arm** | `core` reference slice — **756 scored rows over 760 documents** across both corpora, at the **control** model. ⚠️ The *two-model* comparison the previous editions published is **not** refreshed: only the control arm ran, so the Sonnet-5 side would be a cross-release figure. Treat §2c as a cross-configuration result on this release, not a model comparison |
-| §2.1 integrated + simple hazard | ✅ re-measured | `intconf` (8 runs) — **closed**, 8/8 complete |
-| §3 scaling | ✅ re-measured | `scaling` (14 runs, 25→3,200 rows) |
-| §4 cost level and variance | ✅ re-measured | `cost` (control) and `cost__extraction-model-sonnet5`, n=5 each |
+| §2.1 integrated + simple hazard | ✅ **re-measured, one model per mode** | `intconf` (8 runs, **control** model) — **closed**, 8/8 complete — and `advverify__extraction-model-sonnet5` (8 runs, shipped default) for the advanced-mode counterpart. ⚠️ No Sonnet 5 `intconf` arm ran, so the simple-mode half is a **one-model** result and carries no cross-model comparison |
+| §3 scaling | ✅ **re-measured, control only** | `scaling` (14 runs, 25→3,200 rows, **one draw** per mode per size), at the **control** model — that suite carries no model override and no `scalingsimple` repeat arm ran, so every simple-mode cell is a single draw and no Sonnet 5 series exists at these sizes. Sonnet 5 at the 3,200-row point is §5.2's `astracap` (2 repeats) |
+| §4 cost level and variance | ✅ re-measured | `cost` (control) and `cost__extraction-model-sonnet5`, n=5 each, 25 runs each, all 50 complete at recall 1.000 |
 | §5.1 extraction-model sweep | ✅ **all 9 models** | `coresynth__extraction-model-*` for `sonnet5`, `sonnet5_1m`, `opus5`, `opus55`, `astra`, `haiku55`, **`sonnet55`** (133 runs each); `simplegrid__extraction-model-*` for `nova_lite` and `nova_pro` (63 each — neither finishes the agentic path, #895), with `simplegrid` as their comparable control |
 | §5.2 premium head-to-head | ✅ **all three pairs** | `astravalue` (100 runs), `astracap` (12), and **`opus55value` (40) — run for the first time** |
 | §5.3 classification model | ✅ **all 3** | `nova_2_lite` (default), `sonnet5`, `haiku55`, 133 runs each |
@@ -249,103 +249,180 @@ Mean over 7 bank-statement (transaction-list) documents spanning 5 → 800 rows 
 row width, list count and description length (`tiny_form`, `small_narrow`, `med_narrow`,
 `large_narrow`, `wide_400`, `manylists_400`, `longdesc_100`). `recall` = distinct
 ground-truth rows recovered ÷ total (exact, via SEQ tags); `cell acc` = per-row typed value
-match, keyed by SEQ tag. Extraction model **Sonnet 5**, the shipped default. **133 runs,
-0 failures, and every run produced exactly one section (7 of 7 documents in every cell).**
+match, keyed by SEQ tag, reported beside the `cells_compared` it was computed over.
+Extraction model **Sonnet 4.6, the cross-version control** — the `core` suite carries no
+model override, so §2 is a cross-*configuration* result at one model, and the shipped
+default's own grid is §5.1's. **133 runs, 0 failures, and 132 of the 133 produced exactly
+one section**; the single exception is the Bedrock-LLM cell on `manylists_400`, which split
+one statement in two.
+
+**Eighteen of the nineteen cells are at recall 1.000 and cell accuracy 1.000 over 4,410
+`cells_compared` each, on all 7 documents** — including the 800-row, 17-page one. Every
+figure below sits inside that result, so the grid separates the configurations on **cost,
+wall-clock and value fidelity** rather than on completeness.
 
 ### 2a. The decision space: OCR × mode × assessment
 
-| OCR / mode / assessment | recall | cell acc | cost/doc | mean conf | alert % | valid rate | wall_s | fails |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Textract TABLES / simple / separate | 1.000 | 1.000 | $0.721 | 0.999 | 0.0 | 1.000 | 243 | 0 |
-| Textract TABLES / simple / off | 1.000 | 1.000 | $0.551 | n/a | n/a | 1.000 | 118 | 0 |
-| Textract TABLES / simple / integrated | **1.000** | 1.000 | $0.729 | **0.999** | **0.0** | 1.000 | 257 | 0 |
-| Textract TABLES / advanced / separate | 1.000 | 1.000 | $1.661 | 0.988 | 0.0 | 1.000 | 223 | 0 |
-| Textract TABLES / advanced / integrated | 1.000 | 1.000 | **$1.882** | 0.990 | 0.0 | 1.000 | 315 | 0 |
-| Textract LAYOUT / simple / separate | 1.000 | 1.000 | $0.568 | 0.998 | 0.0 | 1.000 | 244 | 0 |
-| Textract LAYOUT / advanced / separate | 1.000 | 1.000 | **$1.171** | 0.987 | 0.0 | 1.000 | 203 | 0 |
-| **⚠️ BDA / simple / separate** | **0.865** | 1.000 | $0.524 | 0.997 | 0.0 | 1.000 | 186 | 0 |
-| BDA / advanced / separate | 1.000 | 1.000 | $1.380 | 0.989 | 0.0 | 1.000 | 211 | 0 |
-| **⚠️ Bedrock-LLM / simple / separate** | **0.827** | **0.983** | **$0.403** | 0.997 | 0.0 | 1.000 | 156 | 0 |
+`leaves < 0.9` is a **count** of confidence leaves below the 0.9 alert threshold, not a
+percentage, over the per-cell leaf total in the next column — on this grid the fractions are
+small enough that a percentage reads as zero everywhere and hides the only two that exist.
 
-Cost CV is 0.6–0.7 for every cell because the 7 documents differ 160× in row count; that
-is *between-document* spread, not run-to-run noise. §4 measures cost variance properly,
-with repeats on one document.
+| OCR / mode / assessment | recall | cell acc | `cells_compared` | cost/doc | mean conf | leaves < 0.9 | conf leaves | valid rate | wall_s | fails |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Textract TABLES / simple / separate | 1.000 | 1.000 | 4,410 | $0.5157 | 0.9992 | 0 | 6,664 | 1.000 | 212 | 0 |
+| Textract TABLES / simple / off | 1.000 | 1.000 | 4,410 | **$0.4002** | n/a | n/a | 0 | 1.000 | **74** | 0 |
+| Textract TABLES / simple / integrated | 1.000 | 1.000 | 4,410 | $0.5550 | 0.9991 | 0 | 6,664 | 1.000 | 182 | 0 |
+| Textract TABLES / advanced / separate | 1.000 | 1.000 | 4,410 | $0.6267 | 0.9873 | 0 | 6,664 | 1.000 | **96** | 0 |
+| ⚠️ Textract TABLES / advanced / integrated | 1.000 | 1.000 | 4,410 | **$3.2060** | 0.9937 | 0 | 6,661 | 1.000 | **442** | 0 |
+| Textract LAYOUT / simple / separate | 1.000 | 1.000 | 4,410 | $0.4603 | 0.9983 | 0 | 6,655 | 1.000 | 194 | 0 |
+| Textract LAYOUT / advanced / separate | 1.000 | 1.000 | 4,410 | $0.9512 | 0.9882 | 0 | 6,664 | 1.000 | 158 | 0 |
+| BDA / simple / separate | 1.000 | 1.000 | 4,410 | $0.5565 | 0.9991 | 0 | 6,664 | 1.000 | 185 | 0 |
+| BDA / advanced / separate | 1.000 | 1.000 | 4,410 | $0.6192 | 0.9868 | 0 | 6,664 | 1.000 | **96** | 0 |
+| **⚠️ Bedrock-LLM / simple / separate** | see finding 4 | see finding 4 | — | **$0.3773** | 0.9967 | **2** | 6,666 | 0.929 | 181 | 0 |
+
+The Bedrock-LLM row's completeness and cell-accuracy figures are withheld rather than
+printed, because the metric that produces them is not readable on that backend: finding 4
+gives the reason and the figures that survive it. Its cost, confidence, validation and
+wall-clock columns do not key on a row identifier and are unaffected.
+
+`cells_compared` is the **total** over the 7 documents (2 scored values per row, so
+2 × 2,205 truth rows), while the cost, confidence and wall columns are means. Cost CV within
+a cell is **0.71–1.02** because the 7 documents differ 160× in row count; that is
+*between-document* spread and tells you nothing about reproducibility. §4 measures cost
+variance properly, with repeats on one document.
 
 ### 2b. The v0.7 feature arms
 
 All are Textract TABLES + `separate`; `restate-*` are advanced, the rest simple. `sections`
 is the total across the 7 documents, where the ground truth is **7** (one per document) —
-**every cell gets 7** this edition (v0.6.7: 13–23).
+**every cell in this table gets 7** (v0.6.7: 13–23). Every arm is at recall 1.000 and cell
+accuracy 1.000 over **4,410 `cells_compared`**, so the columns that discriminate are cost
+and the validation pair.
 
-| cell | recall | cell acc | cost/doc | sections (truth 7) | valid rate | val errors |
-|---|---:|---:|---:|---:|---:|---:|
-| `enforce-off` | 1.000 | 1.000 | $0.710 | 7 | not measured (validation off) | — |
-| `enforce-warn` *(shipped default)* | 1.000 | 1.000 | $0.728 | 7 | **1.000** | 0 |
-| `enforce-escalate` | 1.000 | 1.000 | $0.716 | 7 | 1.000 | 0 |
-| `force-off` *(shipped default)* | 1.000 | 1.000 | $0.698 | 7 | 1.000 | 0 |
-| **⚠️ `force-on`** | **0.874** | 1.000 | $0.533 | 7 | 1.000 | 0 |
-| `restate-on` *(shipped default)* | 1.000 | 1.000 | $1.523 | 7 | 1.000 | 0 |
-| `restate-off` | 1.000 | 1.000 | $1.548 | 7 | 1.000 | 0 |
-| `split-llm` *(shipped default)* | 1.000 | 1.000 | $0.717 | **7** | 1.000 | 0 |
-| `split-disabled` | 1.000 | 1.000 | $0.714 | 7 | 1.000 | 0 |
+| cell | recall | cell acc | `cells_compared` | cost/doc | sections (truth 7) | valid rate | val errors |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `enforce-off` | 1.000 | 1.000 | 4,410 | $0.5570 | 7 | not measured (validation off) | — |
+| `enforce-warn` *(shipped default)* | 1.000 | 1.000 | 4,410 | $0.5554 | 7 | **1.000** | 0 |
+| `enforce-escalate` | 1.000 | 1.000 | 4,410 | $0.5557 | 7 | 1.000 | 0 |
+| `force-off` *(shipped default)* | 1.000 | 1.000 | 4,410 | $0.5151 | 7 | 1.000 | 0 |
+| `force-on` | 1.000 | 1.000 | 4,410 | $0.5620 | 7 | 1.000 | 0 |
+| `restate-on` *(shipped default)* | 1.000 | 1.000 | 4,410 | $0.6292 | 7 | 1.000 | 0 |
+| `restate-off` | 1.000 | 1.000 | 4,410 | $0.6142 | 7 | 1.000 | 0 |
+| `split-llm` *(shipped default)* | 1.000 | 1.000 | 4,410 | $0.5555 | **7** | 1.000 | 0 |
+| `split-disabled` | 1.000 | 1.000 | 4,410 | $0.5480 | 7 | 1.000 | 0 |
 
 **Findings**
 
-1. **Completeness and per-row accuracy are solved for Textract cells in both modes, up to
-   and including the 800-row / 17-page document.** Six of the ten decision cells are at
-   recall 1.000 *and* cell accuracy 1.000 on all 7 documents. Mode is therefore a **cost**
-   decision at these sizes: simple $0.55–0.73, advanced $1.17–1.88, a **2.1–2.6× premium**
-   (v0.6.7: 2.6–2.9×; the gap narrowed because advanced mode no longer pays for 2–3 spurious
-   sections per document).
-2. **Every sub-1.000 recall in the grid is the same document: `large_narrow`, 800 rows on
-   17 pages, in simple mode.** BDA OCR returned 43 of 800 rows, Bedrock-LLM OCR 54, forced
-   tool use 92 — each `COMPLETED`, each carrying the new `extraction_rows_below_ocr_estimate`
-   warning, and each **cheaper** than the complete run ($0.53–0.81 vs $1.97). Textract
-   TABLES and LAYOUT returned all 800 in this grid and in the 4 draws of §3's size series —
-   but the same TABLES cell returned 43 rows in 3 of 5 repeats inside the §5.2 premium study,
-   and Sonnet 5 `:1m` on it returned 43 (§5). Read this as:
-   *800 rows in one section is at the single-response limit, and which side of it a run
-   lands on depends on the OCR text, the output format and the model variant.* §3 has the
-   size series; §5 the per-profile threshold.
-3. **`integrated` + simple is no longer a hazard, and no longer more expensive.** Recall
-   1.000 on all 7 documents (v0.6.7: 0.936, with `manylists_400` at 0.552), mean confidence
-   0.999 (v0.6.7: 0.901), alert rate 0.0% (2.4%), at $0.729 against `separate`'s $0.721 —
-   because a Simple-mode section whose class declares a list is now routed to the separate
-   confidence pass automatically (#795). §2.1 has the repeated-measures confirmation. The
-   recommendation is still `separate` — it is the mechanism that actually runs — but
-   choosing `integrated` no longer costs you rows.
-4. **⚠️ Bedrock-LLM OCR is the only backend that gets *values* wrong, and it now also loses
-   rows on ordinary documents.** Cell accuracy 0.979–0.988 on the three 400-row documents
-   and 0.926 on the 800-row one, where every Textract and BDA cell is 1.000; recall
-   0.905–0.910 on the 400-row documents (v0.6.7: 1.000 there, 0.620 on a 100-row one). It is
-   the cheapest cell ($0.403) and the only one that corrupts identifiers — the fixed-width
-   digit insertion root-caused in the [v0.6.6 audit](releases/v0.6.6.md). **Do not use it
-   where identifiers or amounts matter.**
-5. **LAYOUT-only is the cheapest complete option in both modes** ($0.568 simple / $1.171
-   advanced) with confidence indistinguishable from TABLES (0.998 / 0.987). TABLES costs
-   27% (simple) to 42% (advanced) more and bought no completeness here — but note finding 2:
-   on the 800-row document both Textract flavours completed where BDA did not, so the
-   Textract text itself, not the TABLES markdown, is what helps at the limit.
-6. **Validation is now clean everywhere.** Every cell with validation on reports
-   `valid rate` 1.000 with 0 errors (v0.6.7: 0.54–0.71 in simple mode, with 9–19 spurious
-   `'Account Number' is a required property` errors per cell). The v0.6.7 edition predicted
-   this: those errors were continuation sections of over-split documents, and there are no
-   continuation sections any more.
-7. **`force-on` (forced tool use) is schema-valid again, and neutral on 6 of 7 documents.**
-   The #783 `$defs`-pointer defect that made every forced section invalid at v0.6.7 is fixed
-   (#794): valid rate 1.000, honoured on every call. Its one loss is finding 2's 800-row
-   document (92 of 800 rows, one draw). At $0.533 vs $0.698 it looks cheaper, but $0.13 of
-   that is the truncated run; on the six complete documents the two arms are within noise.
-   §7 has the dedicated A/B.
-8. **`enforce-escalate` no longer costs anything on clean documents** ($0.716 vs `warn`
-   $0.728; v0.6.7: +35%) because there is nothing to escalate: 0 validation errors in the
-   grid means 0 re-extractions. Its price is paid only when validation actually fails, so
-   the v0.6.7 "+35%" was the over-splitting bill again, not the arm's own cost.
-9. **Schema restatement off is neutral** ($1.548 vs $1.523, n=7, well inside agentic
-   spread) — same conclusion as v0.6.7, at one section per document.
-10. **`split-disabled` is a no-op on this corpus** (7 sections either way, $0.714 vs $0.717),
-    because every document is a single statement. It remains wrong by construction on
-    packets (§7) and is not a cost lever any more.
+1. **Completeness and per-row accuracy are solved across the whole decision space, up to and
+   including the 800-row / 17-page document.** Nine of the ten decision cells — every
+   Textract and BDA cell, in both modes and at all three assessment settings — are at recall
+   1.000 *and* cell accuracy 1.000 over 4,410 `cells_compared` each, on all 7 documents. The
+   tenth is the Bedrock-LLM cell of finding 4. Mode is therefore a **cost and latency**
+   decision at these sizes rather than a completeness one, and the cost gap is narrower than
+   it has been: on matched OCR backends with `separate` assessment, simple → advanced is
+   **$0.5157 → $0.6267 for TABLES (1.22×)**, **$0.4603 → $0.9512 for LAYOUT (2.07×)** and
+   **$0.5565 → $0.6192 for BDA (1.11×)**. Advanced mode is also the **faster** of the two on
+   all three matched pairs — 96 s against 212 s on TABLES, 158 s against 194 s on LAYOUT,
+   96 s against 185 s on BDA — because simple mode's single long response dominates the
+   wall-clock on the larger documents.
+2. **There is no completeness cliff in this grid, and the 800-row document is where that is
+   worth stating.** Eighteen of the nineteen cells returned **800 of 800 rows on
+   `large_narrow`** at cell accuracy 1.000 over 1,600 `cells_compared` — both simple-mode
+   Textract flavours, BDA in both modes, forced tool use, and every assessment setting. The
+   nineteenth, Bedrock-LLM, also returned 800 rows: it emitted 800 identifiers for 800 truth
+   rows (762 distinct plus 38 collapsed) and its identifier-free `conf_rows_expected` reads
+   800, so no row is missing, though its *accuracy* figure on that document is withheld for
+   the reason in finding 4. The three sub-1.000 recalls anywhere in the 133 runs are all that
+   one cell and all are the same measurement defect. What this does *not* establish is that
+   800 rows is comfortable: it is one draw per cell, and §3's size series and §5.1's
+   per-model grid both show the same request landing on either side of a single-response
+   limit at larger sizes and on other models — §5.1's Sonnet 5 grid returns **43 of 800** in
+   this very cell. Read §2 as "the control model clears this corpus" and §3 and §5.1 as where
+   the limit actually is.
+3. **`integrated` + simple is no longer a hazard, and costs about 8% more.** Recall 1.000 and
+   cell accuracy 1.000 over 4,410 cells on all 7 documents (v0.6.7: recall 0.936, with
+   `manylists_400` at 0.552), mean confidence 0.9991 (v0.6.7: 0.901), **0 of 6,664 confidence
+   leaves below 0.9**, at $0.5550 against `separate`'s $0.5157 — because a Simple-mode
+   section whose class declares a list is now routed to the separate confidence pass
+   automatically (#795). §2.1 has the repeated-measures confirmation. The recommendation is
+   still `separate` — it is the mechanism that actually runs — but choosing `integrated` no
+   longer costs you rows.
+
+   ⚠️ **On the *agentic* path, though, `integrated` is the most expensive cell in the grid and
+   by a wide margin: $3.2060 against `advanced`/`separate`'s $0.6267, 5.1×, at 442 s against
+   96 s.** Completeness is unaffected (recall 1.000, cell accuracy 1.000 over 4,410 cells),
+   so this is purely a cost and latency finding — and it is concentrated entirely on the four
+   documents of 400 rows or more, which cost $3.56–8.16 each against $0.10–0.40 for the three
+   smaller ones. Every one of those four runs carries `extraction_output_truncated`, with
+   extraction output tokens of 157,390–413,136: the agent is emitting inline assessment,
+   overrunning its output budget and retrying. §4 reproduces the same shape with five repeats
+   on one document. **Use `separate` on the agentic path**; on the simple path the two are
+   within 8% and the choice does not matter much.
+4. **⚠️ Bedrock-LLM OCR is the only backend that gets *values* wrong, and the metric that
+   would quantify how often is not readable on it.** The clean, identifier-free evidence is
+   `scalar_accuracy`, which compares the two top-level scalar fields of each document
+   (`Account Number`, `Statement Period`) by label and so cannot be affected by a corrupted
+   row id: **Bedrock-LLM gets 7 of its 14 scalar fields right, where every other cell in the
+   grid gets 13 or 14 of 14.** `Account Number` is exactly the fixed-width identifier this
+   backend perturbs — the digit insertion root-caused in the
+   [v0.6.6 audit](releases/v0.6.6.md).
+
+   ⚠️ **Its completeness and cell-accuracy figures are withheld because they rest on that
+   same corruption.** `rows_extracted` counts *distinct recognisable* `SEQ` ids against a
+   five-digit pattern, and a perturbed id collapses onto another row rather than going
+   missing, so the count falls while no row is lost
+   ([#1500](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1500);
+   105 runs across nine releases all correct to recall 1.000). Three of this cell's runs
+   carry the signature exactly — `med_narrow`, `wide_400` and `large_narrow` each report
+   **`dups` 38 and `n_gaps` 38**, the arithmetic of a one-to-one collapse, with a
+   `truncation_prefix` of 5 on a 400- or 800-row list — and on all three the identifier-free
+   corroborator reads the full truth count (`conf_rows_expected` = `conf_rows_scored` =
+   400, 400, 800). Cell accuracy is affected too, because the comparison joins on the same
+   identifier and a collapsed id can pair one row's values against another row's truth.
+   So the recalls those runs report (0.905, 0.905, 0.953) and the cell accuracies computed
+   over their shrunken denominators (0.9793 and 0.9876 over 724 cells, 0.981 over 1,524) are
+   **not published here**.
+
+   **One figure survives, and it is the one to cite.** On `manylists_400` this cell carries
+   `dups` 0 and `n_gaps` 0, all 400 identifiers distinct and matched, and a full 400-row
+   prefix — so its join is complete and its **cell accuracy is 0.990 over 800
+   `cells_compared`**, 8 wrong cells of 800, against 1.000 in every other cell of the grid.
+   That makes Bedrock-LLM the only one of the nineteen cells with any cell accuracy below
+   1.000 anywhere in the grid. It is also the cheapest cell ($0.3773), the only one with
+   confidence leaves below the alert threshold (**2 of 6,666**, both on that run), the only
+   one to split a document (2 sections on that same run), and the only one with a validation
+   error (1, on that run, valid rate 0.5 across its two sections). **Do not use it where
+   identifiers or amounts matter.**
+5. **LAYOUT-only is the cheapest complete option in simple mode and the dearest in advanced**
+   ($0.4603 simple, $0.9512 advanced) with confidence indistinguishable from TABLES (0.9983 /
+   0.9882). In simple mode TABLES costs 12% more and bought no completeness here. In advanced
+   mode the ordering inverts: LAYOUT is **52% more than TABLES** ($0.9512 against $0.6267)
+   and 54% more than BDA, which §4 reproduces with repeats on one document. The LAYOUT text
+   is cheaper to produce and more expensive for the agent to extract from.
+6. **Validation is clean everywhere except the one split document.** Every cell with
+   validation on reports `valid rate` 1.000 with 0 errors (v0.6.7: 0.54–0.71 in simple mode,
+   with 9–19 spurious `'Account Number' is a required property` errors per cell) — the one
+   exception being the Bedrock-LLM run that produced 2 sections, where the second section
+   carries the single validation error in all 133 runs. That is the v0.6.7 mechanism in
+   miniature and confirms the diagnosis: those errors were continuation sections of
+   over-split documents, and the only continuation section left in the grid still produces
+   one.
+7. **`force-on` (forced tool use) is schema-valid, honoured, and complete.** The #783
+   `$defs`-pointer defect that made every forced section invalid at v0.6.7 is fixed (#794):
+   valid rate 1.000, **attempted and honoured on 7 of 7 documents with no skips**, recall
+   1.000 and cell accuracy 1.000 over 4,410 cells. It costs 9% more than `force-off`
+   ($0.5620 against $0.5151), which is the one thing this grid holds against it, and §7 has
+   the dedicated A/B.
+8. **`enforce-escalate` costs nothing on clean documents** ($0.5557 against `warn`'s $0.5554
+   and `off`'s $0.5570 — a $0.0003 spread across the three arms; v0.6.7: +35%) because there
+   is nothing to escalate: 0 validation errors in these cells means 0 re-extractions. Its
+   price is paid only when validation actually fails, so the v0.6.7 "+35%" was the
+   over-splitting bill, not the arm's own cost.
+9. **Schema restatement off is neutral** ($0.6142 against $0.6292, n=7, well inside the
+   agentic spread §4 measures) — same conclusion as v0.6.7, at one section per document.
+10. **`split-disabled` is a no-op on this corpus** (7 sections either way, $0.5480 against
+    $0.5555), because every document is a single statement. It remains wrong by construction
+    on packets (§7) and is not a cost lever any more.
 
 ### 2c. Real-corpus accuracy (RealKIE-FCC-Verified, OmniAI-OCR-Benchmark)
 
@@ -583,31 +660,37 @@ python3 benchmarks/harness/aggregate.py \
 
 ## 2.1 The `integrated` + simple hazard — closed at v0.6.8
 
-**What v0.6.8 measures.** On the 7-document grid, `simple/integrated` recall is **1.000 on
-every document**, including `manylists_400` (0.552 at v0.6.7) and the 800-row
-`large_narrow`. The repeated-measures suite that established the hazard (`intconf`: the
-integrated cell and a `separate` control on the same 100-row document, 4× each) now reads:
+**What v0.6.12 measures.** On the 7-document grid, `simple/integrated` recall is **1.000 on
+every document** at cell accuracy 1.000 over 4,410 `cells_compared`, including
+`manylists_400` (0.552 at v0.6.7) and the 800-row `large_narrow`. The repeated-measures
+suite that established the hazard (`intconf`: the integrated cell and a `separate` control
+on the same 100-row document, 4× each) now reads, at the control model — the only arm that
+ran this release:
 
-| extraction model | cell | recall per repeat | cost/doc | mean conf |
-|---|---|---|---|---|
-| **Sonnet 5** (shipped default) | simple / **integrated** | **1.000 ×4** | $0.304 | 0.999–1.000 |
-| Sonnet 5 | simple / separate | 1.000 ×4 | $0.303 | 0.999–1.000 |
-| Sonnet 4.6 (control) | simple / **integrated** | **1.000 ×4** | $0.208 | 0.999 |
-| Sonnet 4.6 | simple / separate | 1.000 ×4 | $0.208 | 0.999 |
+| extraction model | cell | recall per repeat | cell acc (`cells_compared`) | cost/doc | min–max | mean conf |
+|---|---|---|---|---|---|---|
+| Sonnet 4.6 (control) | simple / **integrated** | **1.000 ×4** | 1.000 (200 ×4) | $0.2074 | $0.2066–0.2082 | 0.9989–0.9996 |
+| Sonnet 4.6 (control) | simple / separate | 1.000 ×4 | 1.000 (200 ×4) | $0.2076 | $0.2069–0.2081 | 0.9993–1.0000 |
 
 At v0.6.5 the first row read **0.000 ×4** (1–10 rows returned, none matching). The reason
-the two cells now cost the same to the cent is that they *are* the same mechanism: a
+the two cells cost the same to within $0.0002 is that they *are* the same mechanism: a
 Simple-mode section whose class declares a list field is routed to the separate confidence
 pass regardless of the `integrated` setting (#795; `metadata.confidence_mode_effective`
 records it). A class can opt back into true inline scoring with
-`x-aws-idp-allow-integrated-lists: true`, and these numbers do not cover that path.
+`x-aws-idp-allow-integrated-lists: true`, and these numbers do not cover that path. Both
+arms produced one section per run and **0 of 307 confidence leaves below 0.9** on every
+repeat.
 
-**The advanced-mode counterpart is closed too.** `advverify` (the agentic cell with
-`integrated` and `separate` confidence on `longdesc_100`, 4× each, Sonnet 5): **8 of 8 runs
-complete**, recall 1.000, cell accuracy 1.000, $0.61–1.93/doc. At v0.6.5 the agent declined
-the table tool over one bad column and returned the whole 100-row list as `null` — that is
-the tool-decline hazard the v0.6.6/v0.6.7 editions tracked (#666/#668), and it did not
-recur.
+**The advanced-mode counterpart is closed too, and it is the arm measured at the shipped
+default.** `advverify__extraction-model-sonnet5` (the agentic cell with `integrated` and
+`separate` confidence on `longdesc_100`, 4× each, Sonnet 5): **8 of 8 runs complete**,
+recall 1.000 and cell accuracy 1.000 over 200 `cells_compared` per run, one section each.
+Cost across the eight runs is **$0.316–0.510** — `integrated` $0.4721 mean
+($0.4450–0.5100), `separate` $0.3765 mean ($0.3163–0.3969), so integrated is about 25%
+dearer on the agentic path at this size and both are within the run-to-run spread §4
+measures. At v0.6.5 the agent declined the table tool over one bad column and returned the
+whole 100-row list as `null` — that is the tool-decline hazard the v0.6.6/v0.6.7 editions
+tracked (#666/#668), and it did not recur.
 
 > These are repeated measures on the one document each hazard fired on. The grid adds
 > single draws on six more; none fired. The v0.6.5 evidence tables that documented the
@@ -619,87 +702,118 @@ recur.
 ## 3. Scaling: where extraction hits limits (synthetic, exact GT)
 
 Simple vs advanced, Textract TABLES + separate confidence, one transaction list of N rows
-(~48 rows/page), one section per document at every size. Extraction model **Sonnet 5**; the
-control-model series is below it. `n` is the number of draws behind each simple-mode cell
-(the `scaling` suite plus three repeats of `scalingsimple`).
+(~48 rows/page), and exactly one section in every run that produced one at all — 13 of the
+14, the exception being the 3,200-row simple run, which produced none. Extraction model
+**Sonnet 4.6, the cross-version control**: the `scaling` suite carries no model override,
+and there is one draw per mode per size, 14 runs in all. For the shipped default at the top
+of this range, §5.2's `astracap` suite is the measurement — it runs the 3,200-row document
+at Sonnet 5 and at GPT-6 Astra with repeats.
 
-| rows | pages | SIMPLE recall (n=2) | simple $ | wall | ADVANCED recall | adv $ | wall |
-|-----:|------:|------------------:|---------:|-----:|----------------:|------:|-----:|
-| 25 | 1 | 1.000, 1.000 | $0.060 | 29 s | 1.000 | $0.130 | 35 s |
-| 100 | 3 | 1.000, 1.000 | $0.197–0.198 | 62 s | 1.000 | $0.235 | 69 s |
-| 400 | 9 | 1.000, 1.000 | $0.704–0.712 | 268 s | 1.000 | $0.812 | 157 s |
-| 800 | 17 | **0.126, 1.000** — bimodal | $0.827, $1.972 | 192 s | 1.000 | $1.493 | 151 s |
-| 1,200 | 25 | **0.084, 0.036** (101 and 43 of 1,200 rows) | $1.005–1.120 | 233 s | 1.000 | $2.176 | 151 s |
-| 1,600 | 33 | **0.027, 0.058** (43 and 92 of 1,600) | $1.341–1.378 | 290 s | 1.000 | $2.925 | 257 s |
-| 3,200 | 66 | **FAILED**, FAILED | $1.056 | 51 s | 1.000 | **$5.696** | 417 s |
+⚠️ **Read the `status` column, not the recall column.** At two of the seven sizes simple
+mode reports **recall 1.000 and cell accuracy 1.000 on a document the pipeline failed**, and
+a reader taking recall at face value there concludes simple mode is flawless at 1,600 rows.
 
-Control model (Sonnet 4.6), one draw per size: simple 1.000 through 800 rows ($1.63 at 800),
-failing from 1,200; advanced 1.000 throughout at $0.143 → $5.004, 45 → 408 s.
+| rows | pages | SIMPLE status | simple recall | simple cell acc (`cells_compared`) | simple $ | wall | ADVANCED status | adv recall | adv cell acc (`cells_compared`) | adv $ | wall |
+|-----:|------:|---|---:|---|---:|-----:|---|---:|---|------:|-----:|
+| 25 | 1 | COMPLETED | 1.000 | 1.000 (50) | $0.0487 | 35 s | COMPLETED | 1.000 | 1.000 (50) | $0.1439 | 40 s |
+| 100 | 3 | COMPLETED | 1.000 | 1.000 (200) | $0.1449 | 64 s | COMPLETED | 1.000 | 1.000 (200) | $0.2057 | 58 s |
+| 400 | 9 | COMPLETED | 1.000 | 1.000 (800) | $0.5245 | 200 s | COMPLETED | 1.000 | 1.000 (800) | $0.5773 | 116 s |
+| 800 | 17 | COMPLETED | 1.000 | 1.000 (1,600) | $1.6209 | 477 s | COMPLETED | 1.000 | 1.000 (1,600) | $1.3705 | 120 s |
+| 1,200 | 25 | **⚠️ FAILED** | *1.000* | *1.000 (2,400)* | $0.3995 ‡ | 2,029 s | COMPLETED | 1.000 | 1.000 (2,400) | $1.9015 | 135 s |
+| 1,600 | 33 | **⚠️ FAILED** | *1.000* | *1.000 (3,200)* | $0.5271 ‡ | 2,088 s | COMPLETED | 1.000 | 1.000 (3,200) | $2.5576 | 243 s |
+| 3,200 | 66 | **FAILED** | 0.000 | — (0 rows) | $1.0550 ‡ | 56 s | COMPLETED | 1.000 | 1.000 (6,400) | **$4.9910** | **509 s** |
 
-Per-row **cell accuracy is 1.000 in every completed run of both modes** — at no size does
-either mode return a row with a *wrong* value. Every loss here is a missing row.
+‡ A failed document bills no extraction or assessment phase in the metering map, so these
+three figures are **OCR plus classification only** and are not the cost of the work
+attempted: $0.3758 + $0.0237 at 1,200 rows, $0.4959 + $0.0312 at 1,600, and
+$0.9917 + $0.0633 at 3,200.
 
-> ⚠️ **Behaviour change at v0.6.9, and it is the one number in this section to read carefully.**
-> On v0.6.8 simple mode **refused** documents from 1,200 rows, in 21–55 s, in 12 of 12 draws
-> across both models. On v0.6.9 the same cells **return `COMPLETED`** carrying 43–101 of the
-> requested 1,200–1,600 rows: the status is success, and a consumer reading status alone sees
-> a completed document with 3–8% of its rows. Advanced mode is unaffected and returns 1.000 at
-> every size, so the practical guidance below does not change. From 0.6.10 a deployment can
-> make the outcome a **failure** again with `extraction.row_shortfall_action: fail`; the
-> default stays `warn`, so the numbers in this table are still what ships by default. See
-> *What changed, and what ships now* below.
+**Advanced mode is at recall 1.000 and cell accuracy 1.000 at every size from 25 to 3,200
+rows**, one section per document throughout, with no run below either figure. Sharding keeps
+each call small, so neither the single-response truncation nor an input-context limit is
+reached.
+
+Per-row **cell accuracy is 1.000 in every run of both modes that returned rows at all** — at
+no size does either mode return a row with a *wrong* value.
+
+### Simple mode has three regimes, and only the third is a size limit
+
+The simple-mode column above is not a gradient. It is three distinct behaviours with two
+sharp boundaries, and they want different responses from a deployment:
+
+1. **25 → 800 rows / 1 → 17 pages: it completes, with everything.** `COMPLETED`, recall
+   1.000, cell accuracy 1.000 on denominators from 50 to 1,600 cells. Nothing to manage.
+2. ⚠️ **1,200 and 1,600 rows / 25 and 33 pages: the extraction succeeds and the document
+   fails.** Both runs report `FAILED`, and both report **recall 1.000 and cell accuracy
+   1.000 over 2,400 and 3,200 `cells_compared`** — every row, every value. The extraction
+   was not truncated and was not wrong: it was validated clean (`validation_valid_rate`
+   1.000, 0 errors), the confidence pass scored **every** row (`conf_rows_expected` =
+   `conf_rows_scored` = 1,200 and 1,600, `conf_coverage` 1.000), and then the document
+   failed anyway. What fails is `AssessmentStep` exhausting its Lambda
+   ([#1488](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1488),
+   fixed by PR #1493) — the same cause that cost eleven cells across seven arms their
+   completion in §5.1 — and the wall-clock is what gives it away: **2,029 s and 2,088 s
+   against 477 s at 800 rows**, which is repeated Lambda lifetimes rather than a longer
+   request. A complete, validated, persisted extraction was being discarded.
+3. **3,200 rows / 66 pages: refused before extraction inference, which is correct.**
+   `FAILED` in 56 s having returned **0 rows and 0 sections**, with no extraction tokens
+   billed at all — the spend is the OCR and classification that had already run. The
+   document is beyond what one request with 66 page images can carry;
+   `benchmarks/matrices/config_matrix.yaml` records this size as an expected
+   `ExtractionInputTooLarge` rejection rather than a regression, and §5.2's `astracap`
+   reproduces it 4 times over, twice on Sonnet 5 and twice on GPT-6 Astra, at 50–55 s and
+   0 rows each. Refusing is the right outcome: nothing is attempted and nothing wrong is
+   returned.
+
+⚠️ **So `completeness_recall` is the wrong signal in regime 2 and `status` is the right
+one — and in regime 3 it is the other way round.** A reader who ranks by recall concludes
+simple mode is flawless at 1,600 rows; a reader who ranks by completion rate concludes it
+returned nothing there. Both are wrong. Pair the two columns, which is why the table above
+prints `status` first.
+
+> ⚠️ **No per-page input-token budget is published for the sizes that failed, and the reason
+> is that this suite cannot measure them.** A failed document bills **no extraction tokens at
+> all**, so for the three sizes above 800 rows there is no record of the request that was
+> refused or of the one whose result was discarded. What the suite does measure is the
+> simple-mode extraction input on the four sizes that completed — **2,552, 7,958, 26,616 and
+> 51,433 tokens at 1, 3, 9 and 17 pages**, about **3,100 tokens per page** over the 3–17-page
+> span, with the 1-page point below that line because fixed overhead dominates it. That
+> figure describes the completing regime only. Extrapolating it to 25, 33 or 66 pages would
+> produce a number this suite does not support, so none is given — and for regime 2 it would
+> answer the wrong question anyway, since those requests succeeded.
 >
-> ⚠️ **The v0.6.8 refusal was not an input-size decision, and this is worth knowing before
-> tuning anything.** Simple mode's pre-flight estimate has never refused a request — it logs
-> and sends, in both releases. What refused these documents was Bedrock, on the **size of the
-> request its page images made**, which is what #994 fixed by clamping every image in a
-> many-image request to 2,000 px per side. Two separate Bedrock limits bind there: a stricter
-> per-image dimension cap once a request carries more than 20 image blocks, and a cap on the
-> total request payload. It is the **payload** limit that produces
+> The product mechanism behind regime 3 is unchanged and is documented rather than measured
+> here. Simple mode's pre-flight estimate logs and sends; what refuses an oversized request
+> is Bedrock, on the size of the request its page images make, and #994 relieved it by
+> clamping every image in a many-image request to 2,000 px per side. Two separate Bedrock
+> limits bind: a stricter per-image dimension cap once a request carries more than 20 image
+> blocks, and a cap on the total request payload. It is the **payload** limit that produces
 > `ExtractionInputTooLarge`, because Bedrock reports an oversized payload with the same
 > *"Input is too long for requested model"* wording it uses for a context overflow; the
 > per-image dimension rejection has its own distinct wording and is matched separately (see
-> the note in `idp_common/utils/bedrock_utils.py`). The clamp cuts pixel area, so it relieves
-> both.
->
-> The extraction-phase input tokens in this suite give the arithmetic. Between 3 and 17 pages
-> the request costs 6,622 tokens per page (the two-point slope over 9→17 pages; a four-point
-> fit over 1/3/9/17 gives 6,586, and the 1-page point sits 14.8% above the line, so the claim
-> is scoped to 3–17 pages, where it holds to 0.25%). The 17-page figure is **identical**
-> across the two releases — 111,083 — because at 17 images no many-image cap applies. At 25
-> and 33 pages v0.6.9 measures 146,142 and 193,745 against a projected uncapped 164,060 and
-> 217,037: a saving of 717 and 706 tokens per image, two figures 1.5% apart, present where the
-> cap applies and absent where it does not. And 164,060 is **under** Sonnet 5's
-> 200,000-token window — 82% of it — so at 25 pages there was no context overflow available to
-> refuse. The v0.6.8 failures also billed **no extraction tokens at all**, their cost being
-> the OCR spend plus the classification pass that had already run, which is a request rejected
-> before extraction inference rather than one that ran. At 33 pages both limits bound and the
-> clamp relieved both. At 66 pages the projection is ~389K even clamped, which is why 3,200
-> rows still fails.
+> the note in `idp_common/utils/bedrock_utils.py`). The clamp cuts pixel area, so it
+> relieves both.
 
-### What changed, and what ships now
+### The row-shortfall control, and why this table does not exercise it
 
-The consequence of the above is that **restoring a pre-flight refusal would not have fixed
-this**. At 25 pages the request is ~146K estimated input tokens against a 200K window — 73%
-of it by the pre-flight's own estimate, 82% by the billed figure — so a gate keyed on "the
-estimate exceeds the model's window" is silent on exactly the cases in this table, and a gate
-tightened until it were not would refuse documents that complete today. Nor would a
-payload-size gate help: it would re-refuse precisely what #994 deliberately made legal. The
-truncation is an **output** event: the model accepts a request that fits and stops after ~100
-rows, well short of its 128K output cap (5,213 output tokens at 1,200 rows). It is also not
-new — 800 rows was already bimodal on v0.6.8, at a page count where no many-image cap applied.
-What #994 changed is the *range of sizes over which the request is accepted*, which exposed a
-pre-existing truncation at 1,200 and 1,600 rows.
+`extraction.row_shortfall_action` is the knob that lets an observed row shortfall decide the
+outcome, added at 0.6.10 for the truncated-but-`COMPLETED` shape — a run that returns a
+fraction of a list and reports success, which §5.1 measures on three extraction models at
+17 pages. **Nothing in this suite exercises it**: no run here lost a row, so
+`extraction_rows_below_ocr_estimate` never fired, and the two documents that failed failed in
+the confidence pass with a complete extraction behind them — which is a different defect
+(regime 2 above) and one no row-count check can see. The knob is described here because it is
+the control a reader reaches for after reading this table, not because this table measures it.
 
-So 0.6.10 makes the observed shortfall able to decide the outcome, via
-`extraction.row_shortfall_action`. The `extraction_rows_below_ocr_estimate` detection is
-unchanged — the rows extracted against the rows in the section's OCR tables of the same width,
-a floor of 30 and a "fewer than half" ratio — and under `fail` the partial rows and the
-diagnosis are written before the section fails, so a truncated run in this table reports
-`FAILED` with a message naming the rows extracted, the OCR estimate and the remedy.
+The `extraction_rows_below_ocr_estimate` detection is unchanged — the rows extracted against
+the rows in the section's OCR tables of the same width, a floor of 30 and a "fewer than half"
+ratio — and under `fail` the partial rows and the diagnosis are written before the section
+fails, so a truncated run reports `FAILED` with a message naming the rows extracted, the OCR
+estimate and the remedy. §2's grid and §5.1's per-model grid are where truncated runs are
+actually observed on this release.
 
-**The default is `warn`, so this table's numbers still describe what ships by default.** The
-reason is the check's evidence, not caution: matched tables are summed over the whole section
+**The default is `warn`.** The reason is the check's evidence, not caution: matched tables
+are summed over the whole section
 on width alone, and a 2- or 3-property array modelling an entity *group* is structurally
 identical to one modelling table rows. On the default preset a completely correct extraction
 of `Bank-Statement.account_summary` (2 properties, 5 rows) scores 0.13, because a monthly
@@ -720,58 +834,64 @@ prefix. What none of this establishes is the **false-failure** rate against real
 65 are all runs that genuinely lost more than half their rows, and the group-shaped-array
 problem above was found by reading the shipped schemas, **not measured** on a document set.
 
-### Where the cliff is, and why "COMPLETED" is not the signal to trust
+### Where the simple-mode envelope is, and what to do above it
 
-At v0.6.7 this table showed simple mode "complete" at 1,200 rows and recovering 0.72–0.79 at
-3,200, and the edition spent a section explaining that the completeness was an artefact:
-the classifier split every large document into 6–18 sections, each small enough to
-extract, and the rows arrived as N per-section lists that a consumer had to reassemble.
-With #726/#817 every document is one section and that scaffolding is gone. Three things
-follow, each measured here:
+On v0.6.7 simple mode reported "complete" at 1,200 rows and recovered 0.72–0.79 of the rows
+at 3,200 — and that completeness was an artefact of a different behaviour: the classifier
+split every large document into 6–18 sections, each small enough to extract, so the rows
+arrived as N per-section lists that a consumer had to reassemble. With #726/#817 every
+document is one section and that scaffolding is gone, which is why the shape above looks
+nothing like it. Three things follow, each measured in the table above:
 
-1. **From 1,200 rows / 25 pages, simple mode returns a fraction of the document.** 43–101
-   rows of 1,200–1,600, in 4 of 4 draws, for $1.00–1.38. Only 3,200 rows / 66 pages exceeds
-   the model's input window and is refused before extraction inference. These runs report
-   `COMPLETED`, and they still do by default; setting `extraction.row_shortfall_action: fail`
-   makes them resolve to `FAILED` with the rows extracted, the OCR row estimate and the remedy
-   in the message, which is the outcome a mode that cannot shard should give. Either way the
-   rows it did extract are written to the section's `result.json`, so nothing measured here is
-   lost — only the claim of success is in question.
-2. **800 rows / 17 pages is the boundary, and it is a coin flip.** The TABLES + Sonnet 5
-   cell completed 800 rows in this table's 4 draws and §2's grid run, then returned **43 of
-   800 in 3 of 5 repeats** of the identical cell inside the §5.2 premium study — **8 of 11
-   overall** — and on the prerelease `dev2` build it returned 43
-   ([releases/v0.6.8.md](releases/v0.6.8.md), prerelease section). The same document in the
-   same grid under BDA OCR, Bedrock-LLM OCR, or forced tool use returned 43, 54 and 92 rows;
-   under Sonnet 5 `:1m`, 43; under Astra, nothing at all (§5). So the honest statement is
-   not "complete at 800" but **"800 rows is where the model's single response stops being
-   reliably long enough; the same request lands on either side of it run to run, and small
-   changes to the input text or output format shift the odds."** Treat ~400 rows / ~10
-   pages as the safe simple-mode envelope, and use advanced mode above it.
-3. **A truncated run is not silent, but by default it is still `COMPLETED`.** Every 43–92-row
-   result carries `extraction_rows_below_ocr_estimate` (#843) in its processing issues, and
-   the status-tracking record counts it — but reading it needs a dashboard or a downstream
-   rule, because a processing issue does not change a document's status at **any** severity,
-   and a truncated run is *cheaper* than a complete one, so neither status nor cost flags it.
-   `extraction.row_shortfall_action: fail` is what makes the status trustworthy on its own,
-   and it is opt-in for the reason given above.
+1. **The simple-mode envelope on this corpus is 800 rows / 17 pages, and the 800-row point
+   is the one to hold loosely.** It completes with all 800 rows here, in §2's grid run, and
+   in all 19 of §2's cells — but it is one draw per cell, and §5.1 measures the *same*
+   17-page document in simple mode returning ~351 to ~454 of 800 rows on three of seven
+   extraction models while reporting `COMPLETED`, with cell accuracy 0.9985–1.0000 computed
+   on the rows they returned. The single long response is what varies, and which side of the
+   limit a run lands on moves with the model and with the input text. **Treat ~400 rows /
+   ~10 pages as the comfortable simple-mode envelope and 800 as the edge of it**; use
+   advanced mode above that.
+2. **Above the envelope, simple mode does not degrade gracefully — it stops being
+   available.** At 1,200 and 1,600 rows the extraction is perfect and the document fails
+   (regime 2); at 3,200 rows the request is refused outright (regime 3). Neither outcome
+   gives a consumer a partial list to work with, and neither is improved by tuning: the
+   remedy at every size above the envelope is advanced mode, which returns 1.000 at all
+   seven.
+3. ⚠️ **A status column and a recall column disagree here, and which one lies depends on the
+   size.** This is the one part of §3 to carry away. `COMPLETED` is not evidence of
+   completeness — §5.1's truncated-but-completed runs are the proof — and `FAILED` is not
+   evidence of lost rows, because at 1,200 and 1,600 rows every row was extracted, validated
+   and scored before the document failed. Read `status` **and** `completeness_recall`
+   **and** `cells_compared` together, or the same table supports two opposite conclusions.
 
 ### Advanced mode: completeness holds; cost and wall-clock are the limits
 
-Advanced (agentic sharding) holds **recall 1.000 and cell accuracy 1.000 through 3,200 rows
-/ 66 pages** at both Claude models — and, in the premium study (§5), at Opus 5 and GPT-6
-Astra too. Sharding keeps each call small, so neither the truncation nor an input-context
-limit is hit. The practical limits are **cost** (up to ~$25/doc at 3,200 rows on Sonnet 5,
-~$11 on Sonnet 4.6) and **wall-clock** (~19 min at 3,200 rows). Cost grows roughly
-linearly in rows to 1,600 and then jumps (×3.6 from 1,600 to 3,200 rows on Sonnet 5), which
-is the agent re-reading a growing conversation.
+Advanced (agentic sharding) holds **recall 1.000 and cell accuracy 1.000 from 25 through
+3,200 rows / 66 pages** at the control model, on denominators from 50 to 6,400
+`cells_compared`, one section per document throughout — and, in the premium study (§5.2), at
+Sonnet 5, Opus 5 and GPT-6 Astra too. Sharding keeps each call small, so neither the
+single-response truncation nor an input-context limit is reached.
 
-> **The confidence pass no longer fails at scale.** The v0.6.7 edition's one aborted run
-> (simple @800: extraction complete, then five 900-second Assessment timeouts) did not
-> recur in any of the 11 Sonnet 5 draws at 800 rows this edition. The Nova Lite batch ceiling and
-> per-batch budget shipped in #861 (§7) are why: the 800-row confidence pass now reports
-> `assessment_recovered_with_retries` with 7 rows recovered on one retry, not a ladder that
-> never converges.
+The practical limits are **cost and wall-clock**, and at the control model both stay modest:
+**$4.9910 and 509 s at 3,200 rows**, against $0.1439 and 40 s at 25 rows. Cost is close to
+**linear in rows from 400 upward** — $0.00144, $0.00171, $0.00158, $0.00160 and $0.00156 per
+row at 400, 800, 1,200, 1,600 and 3,200 rows — so there is no cost cliff at the top of this
+series; the 25-row point is the outlier, at $0.00576 per row, because the fixed per-document
+overhead dominates a one-page document. For the shipped default at the 3,200-row size, §5.2's
+`astracap` measures Sonnet 5 at **$5.7954 and $5.8167 over two repeats, 411 s and 406 s**, so
+the control is modestly the cheaper and modestly the slower of the two there.
+
+> **The confidence pass converges at 800 rows and is what fails above it.** At 800 rows the
+> Nova Lite batch ceiling and per-batch budget shipped in #861 (§7) do their job: the
+> simple-mode run reports `assessment_recovered_with_retries` with **8 rows recovered, 1
+> truncated call, 1 split, 0 unrecoverable rows**, on a token-aware batch of 12 against a
+> configured 25 — a ladder that converges rather than one that does not. That is the v0.6.7
+> aborted run (simple @800: extraction complete, then five 900-second Assessment timeouts)
+> closed. **At 1,200 and 1,600 rows the confidence pass is nonetheless where the document is
+> lost** — #1488, regime 2 above — and the shape is different: it scores every row
+> successfully and then exhausts the Lambda, so there is no retry ladder to tune and no
+> unrecovered row to report. #861 fixed the ladder; #1493 is the fix for this.
 
 ---
 
@@ -782,56 +902,88 @@ so a single sample cannot resolve a cost difference between configs. The suite m
 with repeats and reports mean ± stdev + coefficient of variation (CV); a cost difference is
 only trustworthy when it exceeds the sampling spread.
 
-Same document (`med_narrow`, 400 rows / 9 pages), 5 repeats per cell, 25 runs, extraction
-model **Sonnet 5** (the shipped default). All 25 returned `COMPLETED` with **recall 1.000**
-and **one section** — so these are like-for-like cost comparisons of configurations that all
-did the job.
+Same document (`med_narrow`, 400 rows / 9 pages), 5 repeats per cell, 25 runs per model —
+one suite at the shipped default and one at the control. In **both** suites all 25 runs
+returned `COMPLETED` at **recall 1.000**, **cell accuracy 1.000 over 800 `cells_compared`
+per run** and **one section**, so every figure below is a cost comparison between
+configurations that all did the job, with no completeness difference confounding it.
+
+Extraction model **Sonnet 5**, the shipped default (`cost__extraction-model-sonnet5`):
 
 | config (OCR / mode / assessment) | cost mean ± stdev | CV | min–max | sections/run |
 |----------------------------------|-------------------|---:|---------|---|
-| Textract TABLES / **simple** / separate | **$0.730 ± $0.030** | **4.1%** | $0.702–0.775 | 1 ×5 |
-| Textract LAYOUT / advanced / separate | $1.325 ± $0.457 | 34.5% | $0.793–1.971 | 1 ×5 |
-| BDA / advanced / separate | $1.501 ± $0.381 | 25.4% | $1.238–2.162 | 1 ×5 |
-| Textract TABLES / advanced / integrated | $1.962 ± $0.662 | 33.7% | $1.380–2.925 | 1 ×5 |
-| Textract TABLES / advanced / separate | $2.034 ± $0.811 | **39.9%** | $1.329–**3.353** | 1 ×5 |
+| Textract TABLES / **simple** / separate | $0.709 ± $0.004 | **0.5%** | $0.703–0.713 | 1 ×5 |
+| BDA / advanced / separate | **$0.671 ± $0.052** | 7.7% | $0.644–0.763 | 1 ×5 |
+| Textract TABLES / advanced / separate | $0.743 ± $0.088 | 11.9% | $0.646–0.811 | 1 ×5 |
+| Textract TABLES / advanced / integrated | $0.848 ± $0.088 | 10.4% | $0.752–0.916 | 1 ×5 |
+| Textract LAYOUT / advanced / separate | $1.191 ± $0.233 | **19.6%** | $0.936–**1.575** | 1 ×5 |
 
-The same five cells at the **control model, Sonnet 4.6** (also 5 repeats, all complete,
-one section each):
+The same five cells at the **control model, Sonnet 4.6** (`cost`, also 5 repeats, all
+complete, one section each):
 
 | config | cost mean ± stdev | CV | min–max |
 |---|---|---:|---|
-| Textract TABLES / simple / separate | $0.526 ± $0.001 | **0.2%** | $0.526–0.527 |
-| Textract LAYOUT / advanced / separate | $1.115 ± $0.077 | 6.9% | $1.027–1.197 |
-| BDA / advanced / separate | $1.249 ± $0.041 | **3.3%** | $1.204–1.285 |
-| Textract TABLES / advanced / integrated | $1.450 ± $0.091 | 6.2% | $1.343–1.551 |
-| Textract TABLES / advanced / separate | $1.351 ± $0.172 | 12.7% | $1.167–1.541 |
+| Textract TABLES / simple / separate | $0.524 ± $0.001 | **0.2%** | $0.523–0.525 |
+| BDA / advanced / separate | $0.577 ± $0.003 | **0.6%** | $0.572–0.580 |
+| Textract TABLES / advanced / separate | $0.650 ± $0.069 | 10.6% | $0.572–0.703 |
+| Textract LAYOUT / advanced / separate | $1.139 ± $0.193 | **17.0%** | $0.829–1.300 |
+| ⚠️ Textract TABLES / advanced / integrated | **$2.963 ± $0.057** | 1.9% | $2.928–3.060 |
 
 **Findings**
 
-- **Simple mode is 1.8–2.8× cheaper than advanced at Sonnet 5 and essentially
-  deterministic** (CV 4.1% vs 25–40%). For budgeting, simple is both cheaper and
-  predictable; agentic cost must still be planned as a *range*.
-- **The classifier's share of the variance is gone; the model's share is not.** At v0.6.7
-  the same document was classified 1 to 5 ways across five identical runs and each spurious
-  section was a whole agent loop (`r(sections, cost) = 0.37`, ≈$0.21 per extra section). This
-  edition every run is one section, and at Sonnet 4.6 the advanced-mode CV collapsed from
-  5.5–47.3% to **3.3–12.7%**. At Sonnet 5 it did not: **25–40%**, with `tt-adv-sep` ranging
-  $1.33 → $3.35 on the same document with the same one section. That spread is the agent
-  itself — Sonnet 5 takes a variable number of turns on the same input — and no
-  configuration knob in this study removes it.
-- **The worst case still matters more than the mean.** A capacity model built on the Sonnet 5
-  mean will be 65% under the run-to-run maximum on `tt-adv-sep`.
-- **BDA / advanced is the most stable advanced option at both models** (CV 3.3% / 25.4%),
-  LAYOUT / advanced the cheapest at the low end ($0.79 on Sonnet 5 when the agent finishes
-  quickly).
-- **Why advanced costs more even with the deterministic table tool:** it is a multi-turn
-  agent loop, and each turn re-sends the growing conversation as *input* tokens. With one
-  section per document that loop now runs once, which is why the advanced premium fell from
-  2.6–4.1× (v0.6.7) to 1.8–2.8×.
+- **Simple mode is the predictable one; that is the robust result, and it is not the
+  cheapest-by-a-wide-margin result.** Simple-mode cost on this document is flat to a
+  fraction of a percent — CV **0.5%** at Sonnet 5 and **0.2%** at the control — while
+  every agentic cell varies run to run on identical input. But the *level* difference is
+  small here: on the matched Textract TABLES pair, advanced costs **$0.743 against simple's
+  $0.709, a 1.05× premium** at Sonnet 5 and **$0.650 against $0.524, 1.24×** at the
+  control. **BDA / advanced at $0.671 is 5% cheaper than TABLES / simple at $0.709.** At
+  400 rows, mode is a predictability decision far more than a price one — and §3's size
+  series shows the advanced premium *shrinking* with size rather than growing: at the control
+  it is 2.95× at 25 rows, 1.42× at 100, 1.10× at 400 and **inverts at 800**, where advanced
+  costs $1.3705 against simple's $1.6209. Advanced mode is not the expensive option on long
+  lists; it is the expensive option on short ones.
+- **The run-to-run spread is a property of the agentic path at both models, not of Sonnet 5.**
+  The two CV bands overlap almost completely — advanced cells run at **0.6–17.0%** at the
+  control and **7.7–19.6%** at Sonnet 5 — so this suite does not separate the models on
+  variance. What it does establish is that the spread is real and survives one section per
+  document: the widest single cell in either suite is LAYOUT / advanced at Sonnet 5, which
+  ranged **$0.936 → $1.575** across five identical runs of the same document, a **1.68×**
+  swing with no configuration difference behind it. At v0.6.7 part of the variance was the
+  classifier splitting one document 1 to 5 ways, each spurious section costing a whole agent
+  loop; every run in both suites here is one section, so what is left is the agent's own
+  turn count.
+- **Budget the maximum, not the mean, and the headroom is about a third.** The largest gap
+  between a cell's mean and its own worst run is again LAYOUT / advanced at Sonnet 5:
+  **$1.575 against a $1.191 mean, 32% above it**. On the Textract TABLES advanced cell it is
+  9% ($0.811 against $0.743). No cell in either suite exceeds the harness's CV > 0.25
+  unreliable-at-current-n flag, so n=5 resolves all ten of these means.
+- ⚠️ **The agentic + `integrated` cell is not a clean configuration cost at either model,
+  and at the control it is the most expensive cell measured here.** At Sonnet 4.6 it is
+  **$2.963 against the `separate` cell's $0.650 — 4.6× —** and all five runs carry
+  `extraction_output_truncated` together with `assessment_recovered_with_retries`, with
+  extraction output averaging **147,550 tokens against the `separate` cell's 13,468**: the
+  agent is emitting inline assessment, overrunning its output budget and retrying, and the
+  dollar figure is mostly that retry. At Sonnet 5 the same cell reads $0.848 but carries
+  `assessment_incomplete` on 5 of 5 runs and **no assessment spend at all** ($0.0000 in the
+  Assessment phase), so the confidence work it is priced for did not land. Both arms reach
+  recall 1.000 and cell accuracy 1.000 over 800 cells, by different routes. Use `separate`
+  on the agentic path; §2a measures the same contrast across seven document sizes.
+- **BDA / advanced is the most stable advanced option at both models** (CV 7.7% at Sonnet 5,
+  0.6% at the control) and the cheapest advanced cell at both.
+- **LAYOUT / advanced is the dearest advanced option at both models, not the cheapest.** Its
+  *minimum* run ($0.936 at Sonnet 5, $0.829 at the control) sits above the TABLES advanced
+  cell's *maximum* ($0.811, $0.703), so the ordering holds run-to-run rather than only on
+  the mean. Extraction is where it goes: $1.126 of its $1.191 at Sonnet 5, against $0.578 of
+  $0.743 for TABLES. The LAYOUT text is cheaper to produce and more expensive to extract
+  from on the agentic path.
+- **Why advanced costs anything extra at all, given the deterministic table tool:** it is a
+  multi-turn agent loop, and each turn re-sends the growing conversation as *input* tokens.
+  With one section per document that loop now runs once.
 
-> **Model note.** §4's Sonnet 5 table is directly comparable with §2. The Sonnet 4.6 table
-> is comparable with the [release audit](releases/v0.6.8.md), which is measured at that
-> control model; do not compare absolute dollars across the two tables, only shapes.
+> **Model note.** §4's Sonnet 5 table is the only Sonnet 5 measurement in §2–§4; §2 and §3
+> are at the control, so compare §4's control table with those and read the Sonnet 5 table
+> against §5. Do not compare absolute dollars across the two tables — only shapes.
 
 > Methodology note: run these cells with `--suite cost` (or `--repeats ≥5`); the harness
 > flags any cell with cost CV > 0.25 as unreliable-at-current-n, and
@@ -1638,11 +1790,16 @@ ordered by how much data they can cost a customer.
    mismatch or a model behaviour on long inputs is not established here; what is clear is
    that the failure needs to be *detectable*, since on this evidence the confidence pass
    will score an empty keyspace as a full one. §5.2 has the per-cell table.
-6. **The agentic cost variance at Sonnet 5 is the model, not the classifier (P2).** With one
-   section per document the Sonnet 4.6 advanced cells run at CV 3–13%; Sonnet 5's run at
-   25–40% on the same document (§4). Bounding the agent's turn count, or surfacing it in the
-   metering so a customer can see why one document cost 2.5× another, would make the shipped
-   default budgetable.
+6. **The agent's turn count is not visible in the metering, so agentic cost is a range a
+   customer cannot explain (P2).** With one section per document the run-to-run spread is
+   down but not gone, and it is a property of the agentic path at **both** models rather than
+   of the shipped default: advanced cells run at CV **0.6–17.0%** at the control and
+   **7.7–19.6%** at Sonnet 5, against simple mode's 0.2% and 0.5% on the same document (§4).
+   The widest single cell in either suite is Textract LAYOUT / advanced at Sonnet 5, which
+   ranged **$0.936 → $1.575 across five identical runs — 1.68× — on one 400-row document with
+   one section**. Nothing in the metering says why, because the turn count is not reported.
+   Bounding it, or surfacing it, would make an agentic budget explainable instead of
+   empirical.
 7. **The TestRunner rejected any compressed configuration carrying a float —
    [#892](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/892).**
    Found because the OCR-benchmark preset has `temperature: 0.0`; every Test Studio run
@@ -1714,10 +1871,15 @@ and "never applied" produce the same numbers.
 to slightly more expensive on a tiny form (+23% at n=3, i.e. cents), honoured on every
 call, and schema-valid now that #783 is fixed.** Enable it for the structural guarantee (a
 malformed-JSON parse failure becomes impossible for declared fields) if your corpus produces
-parse failures; do not enable it for accuracy. One caution from §2: in the Sonnet 5 grid the
-forced arm was the one that truncated the 800-row document (92 of 800) where the prose arm
-returned all 800 — a single draw, but consistent with a tool-call response being a different
-length budget than prose. Measure on your own long lists before forcing them.
+parse failures; do not enable it for accuracy. One caution, and the direction of it is worth
+reading carefully: on the 800-row, 17-page document in the **Sonnet 5** grid (§5.1) *both*
+arms truncate, and the forced one truncates less — `force-on` returned **92 of 800** against
+`force-off`'s **43 of 800**, each `COMPLETED` and each carrying
+`extraction_rows_below_ocr_estimate`, at cell accuracy 1.000 over 184 and 86
+`cells_compared`. At the **control** model (§2) both arms return all 800 rows. So a tool-call
+response does appear to carry a different output-length budget than prose, but on this
+evidence it is not the shorter one, and neither arm is safe at that size in simple mode.
+Measure on your own long lists before forcing them.
 
 ### `classification.sectionSplitting` and the boundary prompt (`boundaryab`) — #817 confirmed, #750 open
 
