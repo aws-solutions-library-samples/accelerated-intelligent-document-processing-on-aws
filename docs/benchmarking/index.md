@@ -77,6 +77,17 @@ printing blanks. The suites that do produce it are `enforcement` and `forcing`, 
 which name `kv_form` and must be run with `--class kv_form` for it, because configs are
 built per document class.
 
+**Which encoding a grid you are reading uses is told by the reason column, not by the
+blank.** A row carrying `typed_truth_unavailable` was scored under the encoding above,
+so an absent pair there means "never applicable" and nothing else. A row carrying no
+such column at all was scored under the earlier one, where the pair is present and
+null on a document with no typed scalar truth and a blank is therefore *not*
+distinguishable from a measurement that came back empty. Every grid committed under
+`benchmarks/results/` up to and including `v0.6.11` is of that earlier vintage — they
+are not rescored, since scoring is a point-in-time read of a stack's output and
+`RETENTION.md` records how short that window is — so check for the column before
+reading one of their blanks.
+
 `conf_coverage` is `None`, not `1.0`, for a document with no list attribute: coverage
 is undefined there, and `cell_stats` drops it rather than averaging it in. The cell
 roll-up carries min, max, stdev and CV as well as the mean, because a mean of 0.99 is

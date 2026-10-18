@@ -29,6 +29,19 @@ What these tests pin
    parsed out of ``docs/benchmarking/index.md``'s instrument table rather than restated
    here, so a metric cannot be added to the published page without being covered, and
    the evidence is the committed artifacts rather than a figure in a docstring.
+
+   ⚠️ That makes this one check a function of the **retention policy** as well as of
+   the harness. ``benchmarks/results/RETENTION.md`` guarantees only
+   ``v<RELEASE>/corefast/`` and ``baseline.json``, and ``corefast`` is
+   ``[tiny_form, small_narrow, longdesc_100]`` — all ``bank_statement``, which by this
+   change's own design can never carry ``typed_accuracy``. Its only non-null evidence
+   is in four one-off ``kv_form`` slices, which that policy permits pruning once their
+   finding is written into a ``docs/benchmarking/`` page. So a prune can turn this red
+   with the harness working perfectly; the assertion message names that as a distinct
+   cause with its own remedy, because the other two remedies do not apply to it. The
+   contract tests further down are the ones that are **not** coupled to the tree: they
+   re-score the corpus's generators, so they answer "does the harness still produce
+   it" on its own.
 2. **The typed-scalar pair is absent, never present-and-null, on a document that has no
    typed scalar truth** — and present and *measuring* on one that does. Closed over the
    corpus's generators, derived from the generator directory and
@@ -65,39 +78,61 @@ PUBLISHED_PAGE = os.path.join(REPO, "docs", "benchmarking", "index.md")
 # --------------------------------------------------------------------------- #
 # The published metric set, read off the published page
 # --------------------------------------------------------------------------- #
-def published_metrics() -> list[str]:
-    """Metric names from the instrument table in ``docs/benchmarking/index.md``.
+def _metric_table_starts(lines) -> list[int]:
+    """Line indices of every ``| Metric | Reads |`` header on the published page."""
+    return [
+        i
+        for i, ln in enumerate(lines)
+        if re.match(r"^\|\s*Metric\s*\|\s*Reads\s*\|", ln)
+    ]
+
+
+def published_metric_rows() -> dict[str, str]:
+    """``{metric: the whole table row}`` from ``docs/benchmarking/index.md``.
 
     Derived rather than restated, for the usual reason: a list here would be a second
     copy of the published set, and the copy that goes stale is the one nothing reads.
     The table is the page's own "Three of these have more than one instrument, and
     picking the wrong one has produced wrong conclusions here before" block, whose
     first column is a single backticked row key.
+
+    It is **tolerant** on purpose and asserts nothing: it is called at collection time
+    by ``@pytest.mark.parametrize``, so a raise here is a collection error, and a
+    collection error takes out ``test_the_published_set_was_actually_parsed`` — the
+    test written to diagnose exactly this condition — along with everything else in
+    the module. A drift that renames the header or adds a second such table therefore
+    has to surface as an empty parse that the guard test reports, not as an exception.
+    The strict "exactly one table" shape lives in that guard.
     """
     with open(PUBLISHED_PAGE) as fh:
         lines = fh.read().splitlines()
-    starts = [
-        i
-        for i, ln in enumerate(lines)
-        if re.match(r"^\|\s*Metric\s*\|\s*Reads\s*\|", ln)
-    ]
-    assert len(starts) == 1, (
-        f"expected exactly one '| Metric | Reads |' table in {PUBLISHED_PAGE}, "
-        f"found {len(starts)} — this parser has to be retargeted"
-    )
-    names = []
+    starts = _metric_table_starts(lines)
+    if len(starts) != 1:
+        return {}
+    rows = {}
     for ln in lines[starts[0] + 2 :]:
         if not ln.startswith("|"):
             break
-        cell = ln.split("|")[1].strip()
-        match = re.fullmatch(r"`([A-Za-z0-9_.]+)`", cell)
+        cells = ln.split("|")
+        match = re.fullmatch(r"`([A-Za-z0-9_.]+)`", cells[1].strip())
         if match:
-            names.append(match.group(1))
-    return names
+            rows[match.group(1)] = ln
+    return rows
+
+
+def published_metrics() -> list[str]:
+    """Just the metric names, in page order."""
+    return list(published_metric_rows())
 
 
 def committed_rows():
-    """Every scored row in the committed results tree, as read from ``summary*.json``."""
+    """Every scored row in the committed results tree.
+
+    Every committed JSON carrying a ``rows`` list, selected by that shape rather than
+    by filename. Most are ``summary.json``, but not all — ``boundary_prompt-*.json``
+    and ``prefix_survey_32_classes.json`` are scored grids under another name — and a
+    future artifact of the same shape should be read too.
+    """
     rows = []
     for path in sorted(
         glob.glob(os.path.join(RESULTS, "**", "*.json"), recursive=True)
@@ -120,7 +155,20 @@ def rows():
 @pytest.mark.unit
 class TestEveryPublishedMetricIsLive:
     def test_the_published_set_was_actually_parsed(self):
-        """Guard the guard: an empty set would make every assertion below vacuous."""
+        """Guard the guard: an empty set would make every assertion below vacuous.
+
+        This is also where the parser's strict shape is asserted, rather than inside
+        ``published_metric_rows``: that runs at collection time, so an assertion there
+        raises a collection error, which suppresses this test too and leaves the drift
+        undiagnosed.
+        """
+        with open(PUBLISHED_PAGE) as fh:
+            starts = _metric_table_starts(fh.read().splitlines())
+        assert len(starts) == 1, (
+            f"expected exactly one '| Metric | Reads |' table in {PUBLISHED_PAGE}, "
+            f"found {len(starts)} — this parser has to be retargeted, and until it is, "
+            "every liveness assertion in this module is parametrized over an empty set"
+        )
         names = published_metrics()
         assert len(names) >= 5, names
         # The metric this file exists for must be in it, or the parse has drifted off
@@ -145,10 +193,20 @@ class TestEveryPublishedMetricIsLive:
         live = sum(1 for r in rows if r.get(metric) is not None)
         assert live, (
             f"`{metric}` is published in docs/benchmarking/index.md and is non-null on "
-            f"0 of the {len(rows)} committed scored rows. Either the harness stopped "
-            "producing it, or no committed suite runs a document it applies to — in "
-            "which case the page must say so rather than letting the column render "
-            "blank (#1490)."
+            f"0 of the {len(rows)} committed scored rows. THREE causes, with different "
+            "remedies, so establish which one before fixing it: (1) the harness stopped "
+            "producing it — the scorer contract tests in this module answer that, since "
+            "they re-score the corpus's generators and do not read the results tree at "
+            "all; (2) no committed suite runs a document it applies to, in which case "
+            "the page must say so rather than letting the column render blank (#1490); "
+            "or (3) THE EVIDENCE WAS PRUNED. benchmarks/results/RETENTION.md guarantees "
+            "only `v<RELEASE>/corefast/` and `baseline.json`, and `corefast` is "
+            "[tiny_form, small_narrow, longdesc_100], all bank_statement — so a metric "
+            "whose only evidence sits in a one-off slice is removable by a "
+            "policy-compliant prune with the harness working perfectly. Remedy for (3) "
+            "is to restore the slice (`git checkout <SHA> -- benchmarks/results/<dir>/`) "
+            "and give it a Keep row in RETENTION.md, or to run a slice that produces the "
+            "metric into the release grid."
         )
 
 
@@ -291,8 +349,11 @@ class TestTypedScalarKeysAreAbsentRatherThanNull:
         """The #1490 regression, stated directly.
 
         Before this, both keys were present and null on every row of every
-        bank_statement document — which is every row of `core`, `corefast`,
-        `coresynth`, `simplegrid` and `scaling`.
+        bank_statement document — which is every row of `corefast`, `coresynth`,
+        `simplegrid` and `scaling`, and every synthetic row of `core`. `core` runs
+        `core_docs`, which also names the `realkie` and `ocr_bench` reference corpora;
+        those go through `score_reference` and carry no typed key at all, so they were
+        never part of this defect and are not part of its fix.
         """
         for gen, (truth, row) in scored_by_generator.items():
             if truth.get("fields_typed"):
@@ -322,6 +383,45 @@ class TestTypedScalarKeysAreAbsentRatherThanNull:
             # The rest of the row is a complete, successful measurement.
             assert row["scalar_accuracy"] is not None
             assert row["completeness_recall"] is not None
+
+    def test_the_hardcoded_generator_names_match_the_generator_set(
+        self, scored_by_generator
+    ):
+        """The two places in this contract that are NOT derived, pinned to the set.
+
+        Everything else here is closed over the generator directory, so a generator
+        added tomorrow is covered without an edit. Two texts cannot be: the reason
+        string is a module-level constant in ``analyze`` and cannot import the corpus,
+        and the published page is prose. Both name ``kv_form`` outright and both say
+        "and nothing else". A second generator emitting ``fields_typed`` would satisfy
+        every assertion above — the closure is real — and leave those two texts
+        telling a reader the opposite of what the harness does, with the suite green.
+        This is the assertion that fails instead, and it fails on each text separately
+        so the message says which one to edit.
+        """
+        declares = {
+            gen
+            for gen, (truth, _) in scored_by_generator.items()
+            if truth.get("fields_typed")
+        }
+        page_row = published_metric_rows().get("typed_accuracy", "")
+        assert page_row, (
+            f"no `typed_accuracy` row in the instrument table of {PUBLISHED_PAGE}"
+        )
+        for text, where in (
+            (
+                analyze.TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS,
+                "analyze.TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS",
+            ),
+            (page_row, f"the `typed_accuracy` row of {PUBLISHED_PAGE}"),
+        ):
+            named = {gen for gen in generator_names() if f"`{gen}`" in text}
+            assert named == declares, (
+                f"{where} names generators {sorted(named)} as the ones carrying typed "
+                f"scalar truth, but the generators that actually declare `fields_typed` "
+                f"are {sorted(declares)}. Both texts say 'and nothing else', so the "
+                "claim is wrong rather than merely incomplete — update it."
+            )
 
     @pytest.mark.parametrize("column", TYPED_KEYS + (REASON_KEY,))
     def test_the_typed_columns_reach_the_csv(self, column):
