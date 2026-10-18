@@ -282,11 +282,34 @@ def _quiet_publisher(monkeypatch):
 #: root. The packaging step resolves all of them — and its own `.aws-sam` output
 #: directory — against the process's cwd, which is what lets the staging root
 #: below stand in for the checkout.
+#:
+#: ⚠️ No entry may be nested inside another, and `_assert_no_nested_inputs`
+#: enforces it. `staging_checkout` creates each link's parent with
+#: `mkdir(parents=True)`, which **follows an existing symlink** — so a nested
+#: entry such as `src/lambda/multi_doc_discovery/docker/requirements.txt` would
+#: create a real directory inside the repository, which is the exact class this
+#: fixture exists to prevent. The set is not local either: it splices in
+#: `MULTI_DOC_DISCOVERY_BUILD_INPUTS` from `publish.py`, so it can grow without
+#: this file being edited.
 _PACKAGING_INPUTS = (
     "lib/idp_common_pkg",
     "src/lambda/multi_doc_discovery",
     *MULTI_DOC_DISCOVERY_BUILD_INPUTS,
 )
+
+
+def _assert_no_nested_inputs() -> None:
+    """Refuse a `_PACKAGING_INPUTS` entry that sits inside another entry."""
+    for inner in _PACKAGING_INPUTS:
+        for outer in _PACKAGING_INPUTS:
+            if inner != outer and Path(inner).is_relative_to(Path(outer)):
+                raise AssertionError(
+                    f"_PACKAGING_INPUTS entry {inner!r} is nested inside {outer!r}. "
+                    f"Linking it would mkdir through the {outer!r} symlink and "
+                    f"create a real directory inside the repository. Extend "
+                    f"staging_checkout to copy or stage that subtree instead of "
+                    f"adding a nested link."
+                )
 
 
 @pytest.fixture
@@ -305,9 +328,10 @@ def staging_checkout(monkeypatch, tmp_path):
 
     ⚠️ It also applies to a test that only expects the step to **fail**: the zip
     is written before the build-input check raises, so an aborting call leaks too.
-    That is how `test_missing_build_input_fails_loudly` leaked after the fixture
-    below was fixed, and why `test_packaging_leaves_no_build_output_in_the_checkout`
-    is asserted separately from it.
+    `test_missing_build_input_fails_loudly` is therefore covered by this fixture
+    even though it never reaches the upload, and
+    `test_packaging_leaves_no_build_output_in_the_checkout` asserts the property
+    separately rather than relying on either call site.
 
     The symlinks preserve the relative layout, and the step writes each member
     under `os.path.relpath(file_path, ".")`, so every archive name is
@@ -319,6 +343,7 @@ def staging_checkout(monkeypatch, tmp_path):
     the cross-process lock the zip path used to require: two pytest-xdist workers
     can no longer write the same archive and read each other's half-written copy.
     """
+    _assert_no_nested_inputs()
     staging = tmp_path / "checkout"
     for rel in _PACKAGING_INPUTS:
         link = staging / rel
@@ -328,40 +353,71 @@ def staging_checkout(monkeypatch, tmp_path):
     return staging
 
 
+def _checkout_zip_state() -> tuple[bool, int | None]:
+    """Whether the repo-root source zip exists, and its mtime if it does.
+
+    The pair, not the bare existence, is what the guard below compares: a
+    developer tree that has run `publish.py` legitimately carries this exact
+    path, so "absent" is not the property worth asserting.
+    """
+    leaked = _REPO_ROOT / ".aws-sam" / "multi-doc-discovery-source.zip"
+    if not leaked.exists():
+        return False, None
+    return True, leaked.stat().st_mtime_ns
+
+
 @pytest.fixture
-def publisher_zip_names(monkeypatch, staging_checkout):
-    """Member names of the real source zip produced by the packaging step.
+def packaging_run(monkeypatch, staging_checkout):
+    """One real packaging call, with the checkout's zip state either side of it.
 
     Runs against the actual repo tree — the zip content IS the contract — but
-    from `staging_checkout`, so nothing lands in the working tree.
+    from `staging_checkout`, so nothing lands in the working tree. The before and
+    after snapshots let the guard below assert what it is actually about: that
+    *this run* did not write to the repo root.
     """
     staging = staging_checkout
     publisher = _quiet_publisher(monkeypatch)
     zip_path = staging / ".aws-sam" / "multi-doc-discovery-source.zip"
+    before = _checkout_zip_state()
     try:
         publisher.package_multi_doc_discovery_source()
     except (SystemExit, Exception):  # noqa: B014
         # The upload stage needs S3 config we deliberately don't provide.
         if not zip_path.exists():
             raise
+    after = _checkout_zip_state()
     with zipfile.ZipFile(zip_path) as zf:
-        return zf.namelist()
+        return zf.namelist(), before, after
 
 
-def test_packaging_leaves_no_build_output_in_the_checkout(publisher_zip_names):
-    """The fixture above must not materialise `.aws-sam/` in the repo tree.
+@pytest.fixture
+def publisher_zip_names(packaging_run):
+    """Member names of the real source zip produced by the packaging step."""
+    names, _before, _after = packaging_run
+    return names
 
-    Regression guard for #1491. Asserted through the fixture so it runs after a
-    real packaging call rather than against an untouched tree, and scoped to the
-    one artefact the packaging step writes — a checkout that already had an
-    `.aws-sam` from a genuine `publish.py` run is not this test's business.
+
+def test_packaging_leaves_no_build_output_in_the_checkout(packaging_run):
+    """A packaging call must not write `.aws-sam/` into the repo tree.
+
+    Regression guard for #1491. Asserted through a real packaging call rather
+    than against an untouched tree.
+
+    ⚠️ **The property is "unchanged by this run", not "absent".** A genuine
+    `python3 publish.py …` writes precisely
+    `.aws-sam/multi-doc-discovery-source.zip` relative to the repository root, so
+    plenty of legitimate developer trees carry that exact path — as does any tree
+    that ran `make test` before this guard existed. Asserting absence would turn
+    those into a red test blaming the current run for a file it did not create.
     """
-    assert publisher_zip_names, "fixture produced no archive, so it proved nothing"
-    leaked = _REPO_ROOT / ".aws-sam" / "multi-doc-discovery-source.zip"
-    assert not leaked.exists(), (
-        f"packaging wrote {leaked} into the checkout. `make srt-scan` degrades "
+    names, before, after = packaging_run
+    assert names, "fixture produced no archive, so it proved nothing"
+    assert after == before, (
+        f"packaging wrote {_REPO_ROOT / '.aws-sam' / 'multi-doc-discovery-source.zip'} "
+        f"during this run (state {before} -> {after}). `make srt-scan` degrades "
         f"when an .aws-sam directory is present, so this makes the security gate "
-        f"depend on whether the test suite ran first — see issue #1491."
+        f"depend on whether the test suite ran first — see issue #1491. "
+        f"`make srt-clean` removes it."
     )
 
 

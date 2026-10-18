@@ -158,6 +158,39 @@ predicate that is a tautology against a mock (`hasattr(mock, anything)`,
 `assert mock.attr is not None`, `assert isinstance(mock, Mock)`). A `Mock` answers
 to every attribute name, so a claim about one is a claim about your own fixture.
 
+## ⚠️ Never chdir to the repo root for code that writes
+
+A test that exercises a real build or packaging step often has to set the cwd, because
+the step resolves its inputs relatively. **Set it to a staging root, never to the
+checkout** — many of those steps resolve their *output* relatively too, so the test
+leaves build artefacts in the working tree.
+
+The cost is not tidiness. `make srt-scan` detects an `.aws-sam` directory and drops
+into a degraded mode (phantom LOCAL-ONLY findings, and a documented risk of crashing
+checkov on the largest templates), so a test that leaves one makes **the security gate
+depend on whether the test suite ran first** — it stops being the scan CI runs. That
+shipped once ([#1491](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1491)).
+
+Build the staging root out of **symlinks** to the paths the step reads, under
+`tmp_path`. Archive members are written relative to the cwd, so the artefact is
+byte-identical to one built in the checkout, which keeps whatever content contract the
+test is asserting. `staging_checkout` in
+`lib/idp_sdk/tests/unit/test_multi_doc_discovery_source_zip.py` is the worked example.
+
+Three things that are easy to get wrong:
+
+- **A test that only expects the step to *fail* leaks too.** The artefact is usually
+  written before the validation that raises, so an aborting call still writes.
+- **Assert "unchanged by this run", not "absent".** `publish.py` legitimately writes
+  these paths in a developer's checkout, so a guard that demands absence goes red on an
+  ordinary built tree and blames the current run. Snapshot existence and mtime either
+  side of the call instead.
+- **`mkdir(parents=True)` follows an existing symlink.** If the set of staged paths ever
+  contains one nested inside another, creating the second link's parent creates a real
+  directory *inside the repository* — the exact thing being prevented. Assert no staged
+  path is a prefix of another, especially when the set is imported from elsewhere and can
+  grow without the test being touched.
+
 ## Moto Usage
 Always use `@mock_aws` decorator:
 ```python
