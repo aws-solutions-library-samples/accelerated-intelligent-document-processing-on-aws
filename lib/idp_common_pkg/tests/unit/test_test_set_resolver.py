@@ -20,6 +20,9 @@ from idp_common.review_queues.testset_docs import (
     SUMMARY_VERSION,
 )
 from idp_common.review_queues.testset_docs import (
+    TestSetAssignmentError as AssignmentError,  # aliased: not a test class either
+)
+from idp_common.review_queues.testset_docs import (
     TestSetDocStore as DocStore,  # aliased: pytest would try to collect "Test*"
 )
 from tests.unit.review_queues._table import create_review_table
@@ -10264,6 +10267,33 @@ class TestTestSetQueueClaims:
         assert [d["objectKey"] for d in store.assigned_to("ann@example.com")] == [
             "free.pdf"
         ]
+
+    def test_an_annotator_claims_several_documents(self, queue_claim_env):
+        """The queue page claims each selected document in turn; all of them stick."""
+        _, store = queue_claim_env
+        for key in ("free.pdf", "mine.pdf"):
+            test_set_index.claim_test_set_document(
+                {"testSetId": "listed", "objectKey": key},
+                _caller("ann@example.com", "Annotator"),
+            )
+        assert sorted(d["objectKey"] for d in store.assigned_to("ann@example.com")) == [
+            "free.pdf",
+            "mine.pdf",
+        ]
+
+    def test_a_document_another_annotator_holds_cannot_be_claimed(
+        self, queue_claim_env
+    ):
+        _, store = queue_claim_env
+        store.assign(
+            "listed", "free.pdf", "b@example.com", assigned_by="b", time_limit=5
+        )
+        with pytest.raises(AssignmentError, match="ALREADY_CLAIMED"):
+            test_set_index.claim_test_set_document(
+                {"testSetId": "listed", "objectKey": "free.pdf"},
+                _caller("ann@example.com", "Annotator"),
+            )
+        assert store.get("listed", "free.pdf")["assignedTo"] == "b@example.com"
 
     def test_an_unlisted_annotator_is_refused(self, queue_claim_env):
         with pytest.raises(PermissionError, match="NOT_ELIGIBLE"):

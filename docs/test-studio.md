@@ -1176,9 +1176,9 @@ The queue page shows:
   and is fed to the calibration curve as a correct-at-this-confidence signal — so
   use it when you have actually looked at every section, not as a shortcut past
   the ones you have not opened.
-- **Show reviewed documents** — reviewed work drops out of the queue, so this is
-  the way back to a document whose label you already confirmed, including to
-  search for one by name. Those rows are not held in the browser, so revealing
+- **Show reviewed documents** — the **Assigned** and **Not assigned** filters leave
+  out reviewed work, so this switches back to **All documents**: the way back to a
+  document whose label you already confirmed, including to search for one by name. Those rows are not held in the browser, so revealing
   them re-reads the queue from the server and takes a few seconds on a large set.
 
 Per-document actions (claim, release, skip, mark reviewed) sit at the top of the

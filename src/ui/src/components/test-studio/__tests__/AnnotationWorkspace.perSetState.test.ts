@@ -113,9 +113,9 @@ describe('one route to reviewed documents at a time', () => {
     // rendered in both, so that the progress line cannot be fixed in one and left
     // dead in the other. Counted so a third route still fails here: one definition,
     // two render sites.
-    // (The reveal sets the status filter to Completed; there is no separate
-    // showReviewed state on this page.)
-    const definitions = SOURCE.split("setStatusFilter('reviewed')").length - 1;
+    // (The reveal sets the status filter to All documents, the one filter that lists
+    // completed documents; there is no separate showReviewed state on this page.)
+    const definitions = SOURCE.split("setStatusFilter('all')").length - 1;
     const renderSites = SOURCE.split('showReviewedControl}').length - 1;
     expect(definitions).toBe(1);
     expect(renderSites).toBe(2);

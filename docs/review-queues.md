@@ -67,7 +67,10 @@ Inbox; other users have neither.
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
   **Eligible Annotators**). Open one to see its items. You can open any item
   read-only, and **Claim** one that nobody holds: it's assigned to you and appears
-  in your Tasks. Items someone else holds stay view-only.
+  in your Tasks. On a Test Studio queue you can also select several documents
+  nobody holds and choose **Claim (n)** to take them all at once; any that another
+  Annotator took first are listed and left with them. Items someone else holds stay
+  view-only.
 - **Tasks** lists everything assigned to you, whether you claimed it or an Admin
   assigned it: Production review items and Test Studio documents, each with its
   document, source, queue and age. Its badge counts both. You get an Inbox message
@@ -156,14 +159,19 @@ To work a queue, open its page, select items, and choose one of:
   only way an item is escalated.
 
 **Test Studio queues** come from test sets: each test set is a queue, created and
-deleted with the set. Its page shows **Queue Progress**: a progress bar plus
-**Status** (percent of documents reviewed), **Pending**, **Assigned** and
-**Annotators**. Below that are the draft-labeling status, the ground-truth version
-being annotated toward, and every document, worst first, with columns **Document**,
-**Labels**, **Confidence** and **Assigned** (Yes or No; the assignee shows on hover).
+deleted with the set. Its page shows **Queue Progress**, a progress bar on its own,
+and **Key metrics**: **Status** (percent of documents completed), **Pending**,
+**Assigned** and **Annotators**, then the label-accuracy estimate (**Estimated label
+accuracy**, **Evidence** and **Quality**) once there is one. Below that are the
+draft-labeling status, the ground-truth version being annotated toward, and every
+document, worst first, with columns **Document**, **Labels**, **Confidence** and
+**Assigned** (Yes or No; the assignee shows on hover). The document list filters to
+**All documents**, **Assigned** or **Not assigned**; **Not assigned** is exactly the
+documents that can still be claimed.
 Each row's menu offers **View** (the source document), **Annotate**, and for Admins
 **Assign** and **Delete** (removes the document from the test set, after a
-confirmation). Every document can be
+confirmation). An Admin can also select several documents and choose **Assign to…** to
+give them all to one Annotator, or **Unassign** to take them back. Every document can be
 assigned, including authored ground truth: the Annotator checks or corrects its
 labels and completes it. A document with no labels yet needs draft labels first.
 Assigning a document also gives the Annotator access to that test set.

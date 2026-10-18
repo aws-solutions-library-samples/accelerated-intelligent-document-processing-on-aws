@@ -84,41 +84,29 @@ const client = generateClient();
 const logger = new ConsoleLogger('AnnotationWorkspace');
 
 /** The queue table's status filter. Every document of the set is listed by default. */
-type DocStatusFilter = 'to-review' | 'open' | 'unassigned' | 'assigned' | 'ground-truth' | 'unlabeled' | 'reviewed' | 'all';
+type DocStatusFilter = 'all' | 'assigned' | 'unassigned';
 
 const DEFAULT_STATUS_FILTER: DocStatusFilter = 'all';
 
 const STATUS_FILTER_OPTIONS: (SelectProps.Option & { value: DocStatusFilter })[] = [
   { value: 'all', label: 'All documents' },
-  { value: 'to-review', label: 'To review' },
-  { value: 'unassigned', label: 'Not assigned' },
   { value: 'assigned', label: 'Assigned' },
-  { value: 'ground-truth', label: 'No review needed (ground truth)' },
-  { value: 'unlabeled', label: 'Not labeled yet' },
-  { value: 'open', label: 'All not yet completed' },
-  { value: 'reviewed', label: 'Completed (reviewed or skipped)' },
+  { value: 'unassigned', label: 'Not assigned' },
 ];
 
-/** The document's task is complete: reviewed, or skipped without a review. */
+/** The document's task is complete: reviewed, or skipped under the earlier behaviour. */
 const isDone = (d: QueueItem): boolean => d.reviewed || !!d.skipped;
 
-/** Whether a queue document matches a status filter. */
+/**
+ * Whether a queue document matches a status filter. "Not assigned" is exactly the
+ * documents an Annotator can claim: nobody holds them and their task isn't complete.
+ */
 const matchesStatus = (d: QueueItem, filter: DocStatusFilter): boolean => {
   switch (filter) {
-    case 'to-review':
-      return !isDone(d) && !!d.reviewObjectKey;
     case 'unassigned':
-      return !isDone(d) && !!d.reviewObjectKey && !d.assignedTo;
+      return !isDone(d) && !d.assignedTo;
     case 'assigned':
       return !!d.assignedTo;
-    case 'ground-truth':
-      return !isDone(d) && !d.reviewObjectKey && !!d.labelSource;
-    case 'unlabeled':
-      return !isDone(d) && !d.reviewObjectKey && !d.labelSource;
-    case 'reviewed':
-      return isDone(d);
-    case 'open':
-      return !isDone(d);
     default:
       return true;
   }
@@ -164,12 +152,12 @@ const AnnotationQueuePage = (): React.JSX.Element => {
   const [queueFilter, setQueueFilter] = useState('');
   const [queuePage, setQueuePage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<DocStatusFilter>(DEFAULT_STATUS_FILTER);
-  const showReviewed = statusFilter === 'reviewed' || statusFilter === 'all';
+  const showReviewed = statusFilter === 'all';
   const [selectedRows, setSelectedRows] = useState<QueueItem[]>([]);
   const [assignOpen, setAssignOpen] = useState(false);
   const [candidates, setCandidates] = useState<string[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
-  const [bulkBusy, setBulkBusy] = useState<'assign' | 'unassign' | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<'assign' | 'unassign' | 'claim' | null>(null);
   const [claimingKey, setClaimingKey] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
   const [deleting, setDeleting] = useState<QueueItem | null>(null);
@@ -416,6 +404,45 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
   /** Whether a document can be claimed: nobody holds it and its task isn't complete. */
   const isClaimable = (item: QueueItem): boolean => !item.assignedTo && !isDone(item);
+  const claimable = selectedRows.filter(isClaimable);
+
+  /**
+   * Claim every selected document. One request per document, in order, so a document
+   * another Annotator took in the meantime fails on its own and the rest are still
+   * claimed; the server refuses any that are already held (only_if_unassigned).
+   */
+  const handleBulkClaim = async () => {
+    const keys = claimable.map((d) => d.objectKey);
+    if (keys.length === 0) return;
+    setBulkBusy('claim');
+    reviewWork?.beginMutation();
+    const failed: string[] = [];
+    try {
+      for (const key of keys) {
+        try {
+          await claimTestSetDocument(testSetId, key);
+        } catch (err) {
+          logger.warn(`claim ${key} failed`, err);
+          failed.push(key);
+        }
+      }
+      const claimed = keys.length - failed.length;
+      if (claimed > 0) {
+        setSuccessMessage(`Claimed ${claimed} document${claimed === 1 ? '' : 's'}. Work them in My Work › Tasks.`);
+      }
+      if (failed.length > 0) {
+        setErrorMessage(
+          `${failed.length} document${failed.length === 1 ? ' was' : 's were'} not claimed, usually because another Annotator took ${
+            failed.length === 1 ? 'it' : 'them'
+          } first: ${failed.join(', ')}`,
+        );
+      }
+      setSelectedRows([]);
+    } finally {
+      setBulkBusy(null);
+    }
+    await Promise.all([loadQueue(), reviewWork?.refresh()]);
+  };
 
   /** The set's queue settings, read fresh so the dialog never edits stale values. */
   const openSettings = async () => {
@@ -477,20 +504,22 @@ const AnnotationQueuePage = (): React.JSX.Element => {
     }
   };
 
-  const metric = (label: string, value: React.ReactNode, note: string) => (
+  const metric = (label: string, value: React.ReactNode, note?: string) => (
     <div key={label}>
       <Box variant="awsui-key-label">{label}</Box>
       <Box fontSize="heading-l" fontWeight="bold">
         {value}
       </Box>
-      <Box fontSize="body-s" color="text-body-secondary">
-        {note}
-      </Box>
+      {note && (
+        <Box fontSize="body-s" color="text-body-secondary">
+          {note}
+        </Box>
+      )}
     </div>
   );
 
   const revealReviewed = () => {
-    setStatusFilter('reviewed');
+    setStatusFilter('all');
     setQueuePage(1);
   };
 
@@ -584,11 +613,6 @@ const AnnotationQueuePage = (): React.JSX.Element => {
           >
             {`Test set: ${testSetId}`}
           </Header>
-          {showReviewed && statusFilter !== DEFAULT_STATUS_FILTER && (
-            <Alert type="info" action={<Button onClick={() => setStatusFilter(DEFAULT_STATUS_FILTER)}>Show all</Button>}>
-              Showing documents that have already been reviewed.
-            </Alert>
-          )}
         </SpaceBetween>
       }
     >
@@ -610,46 +634,48 @@ const AnnotationQueuePage = (): React.JSX.Element => {
 
         {queue && (
           <Container header={<Header variant="h2">Queue Progress</Header>}>
+            <ProgressBar
+              value={progressPct}
+              description="Shared across everyone annotating this test set"
+              additionalInfo={`${completedDocs} of ${queue.totalDocs} documents completed`}
+              style={{ progressBar: { height: '16px', borderRadius: '8px' } }}
+            />
+          </Container>
+        )}
+
+        {queue && (
+          <Container header={<Header variant="h2">Key metrics</Header>}>
             <SpaceBetween size="l">
-              <ProgressBar
-                value={progressPct}
-                description="Shared across everyone annotating this test set"
-                additionalInfo={`${completedDocs} of ${queue.totalDocs} documents completed`}
-              />
+              {/* One grid for every metric, so a second row stays in the first row's columns. */}
               <ColumnLayout columns={4} variant="text-grid">
                 {metric('Status', `${progressPct}%`, `${completedDocs} of ${queue.totalDocs} documents completed`)}
                 {metric('Pending', pendingCount, 'not assigned yet')}
                 {metric('Assigned', assignedCount, 'assigned to an Annotator')}
                 {metric('Annotators', annotatorCount, 'Annotators with assigned documents')}
+                {impact &&
+                  metric(
+                    'Estimated label accuracy',
+                    formatPct(1 - impact.baselineError, estimateDecimals),
+                    impact.residualError < impact.baselineError
+                      ? `${formatPct(1 - impact.residualError, estimateDecimals)} after the recommended review`
+                      : 'reviewing more will refine this',
+                  )}
+                {impact &&
+                  metric(
+                    'Evidence',
+                    impact.totalObservations.toLocaleString(),
+                    /* `prior` means the number comes from other sets; reviewing changes that. */
+                    impact.estimateConfidence === 'prior'
+                      ? 'measurements — estimate still based on other sets'
+                      : `measurements — ${impact.estimateConfidence.replace('-', ' ')} on this set`,
+                  )}
+                {/* Shared with the Test Sets list: one vocabulary and color map. */}
+                {impact &&
+                  metric(
+                    'Quality',
+                    renderQualityTier(impact.qualityTier, impact.qualityTierReason, 1 - impact.baselineError, estimateDecimals),
+                  )}
               </ColumnLayout>
-              {impact && (
-                <ColumnLayout columns={3} variant="text-grid">
-                  <div>
-                    <Box variant="awsui-key-label">Estimated label accuracy</Box>
-                    <Box fontSize="heading-m">{formatPct(1 - impact.baselineError, estimateDecimals)}</Box>
-                    <Box fontSize="body-s" color="text-body-secondary">
-                      {impact.residualError < impact.baselineError
-                        ? `${formatPct(1 - impact.residualError, estimateDecimals)} after the recommended review`
-                        : 'reviewing more will refine this'}
-                    </Box>
-                  </div>
-                  <div>
-                    <Box variant="awsui-key-label">Evidence</Box>
-                    <Box fontSize="heading-m">{impact.totalObservations.toLocaleString()}</Box>
-                    <Box fontSize="body-s" color="text-body-secondary">
-                      {/* `prior` means the number comes from other sets; reviewing changes that. */}
-                      {impact.estimateConfidence === 'prior'
-                        ? 'measurements — estimate still based on other sets'
-                        : `measurements — ${impact.estimateConfidence.replace('-', ' ')} on this set`}
-                    </Box>
-                  </div>
-                  <div>
-                    <Box variant="awsui-key-label">Quality</Box>
-                    {/* Shared with the Test Sets list: one vocabulary and color map. */}
-                    {renderQualityTier(impact.qualityTier, impact.qualityTierReason, 1 - impact.baselineError, estimateDecimals)}
-                  </div>
-                </ColumnLayout>
-              )}
               {/* Worst-first ordering only ranks the documents inspected so far. */}
               {queue.inspectedDocs != null && queue.inspectedDocs < queue.totalDocs && (
                 <Box fontSize="body-s" color="text-body-secondary">
@@ -701,7 +727,9 @@ const AnnotationQueuePage = (): React.JSX.Element => {
             trackBy="objectKey"
             loading={isLoading}
             loadingText="Loading the queue"
-            selectionType={isAdmin ? 'multi' : undefined}
+            selectionType={isAdmin || claimsWork ? 'multi' : undefined}
+            // An Annotator selects documents to claim, so only claimable rows can be picked.
+            isItemDisabled={isAdmin ? undefined : (item) => !isClaimable(item)}
             selectedItems={selectedRows}
             onSelectionChange={({ detail }) => setSelectedRows(detail.selectedItems)}
             ariaLabels={{
@@ -716,29 +744,41 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                   isAdmin
                     ? 'Worst-first: the documents with the most confidence alerts come first. Select documents to assign them to an Annotator.'
                     : claimsWork
-                      ? 'Worst-first: the documents with the most confidence alerts come first. Claim a document that is not assigned yet to work it in My Work › Tasks.'
+                      ? 'Worst-first: the documents with the most confidence alerts come first. Select documents nobody holds and Claim them to work them in My Work › Tasks.'
                       : 'Worst-first: the documents with the most confidence alerts come first.'
                 }
                 actions={
-                  isAdmin && (
-                    <SpaceBetween direction="horizontal" size="xs">
-                      <Button
-                        disabled={unassignable.length === 0 || bulkBusy !== null}
-                        disabledReason={unassignable.length === 0 ? 'Select assigned documents' : undefined}
-                        loading={bulkBusy === 'unassign'}
-                        onClick={() => void handleUnassign()}
-                      >
-                        {unassignable.length > 0 ? `Unassign (${unassignable.length})` : 'Unassign'}
-                      </Button>
-                      <Button
-                        variant="primary"
-                        disabled={assignable.length === 0 || bulkBusy !== null}
-                        disabledReason={assignable.length === 0 ? 'Select documents that still need review' : undefined}
-                        onClick={() => void openAssign()}
-                      >
-                        {assignable.length > 0 ? `Assign to… (${assignable.length})` : 'Assign to…'}
-                      </Button>
-                    </SpaceBetween>
+                  claimsWork ? (
+                    <Button
+                      variant="primary"
+                      disabled={claimable.length === 0 || bulkBusy !== null || claimingKey !== null}
+                      disabledReason={claimable.length === 0 ? 'Select documents nobody holds yet' : undefined}
+                      loading={bulkBusy === 'claim'}
+                      onClick={() => void handleBulkClaim()}
+                    >
+                      {claimable.length > 0 ? `Claim (${claimable.length})` : 'Claim'}
+                    </Button>
+                  ) : (
+                    isAdmin && (
+                      <SpaceBetween direction="horizontal" size="xs">
+                        <Button
+                          disabled={unassignable.length === 0 || bulkBusy !== null}
+                          disabledReason={unassignable.length === 0 ? 'Select assigned documents' : undefined}
+                          loading={bulkBusy === 'unassign'}
+                          onClick={() => void handleUnassign()}
+                        >
+                          {unassignable.length > 0 ? `Unassign (${unassignable.length})` : 'Unassign'}
+                        </Button>
+                        <Button
+                          variant="primary"
+                          disabled={assignable.length === 0 || bulkBusy !== null}
+                          disabledReason={assignable.length === 0 ? 'Select documents that still need review' : undefined}
+                          onClick={() => void openAssign()}
+                        >
+                          {assignable.length > 0 ? `Assign to… (${assignable.length})` : 'Assign to…'}
+                        </Button>
+                      </SpaceBetween>
+                    )
                   )
                 }
               >
@@ -801,7 +841,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                             {
                               id: 'claim',
                               text: 'Claim',
-                              disabled: !isClaimable(item) || claimingKey !== null,
+                              disabled: !isClaimable(item) || claimingKey !== null || bulkBusy !== null,
                               disabledReason: item.claimedByMe
                                 ? 'This document is assigned to you'
                                 : item.assignedTo
@@ -833,8 +873,8 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                     {queueFilter
                       ? queueEmptyText(queueFilter)
                       : statusFilter === DEFAULT_STATUS_FILTER
-                        ? 'No documents need review right now. Choose another status to see the rest of the set.'
-                        : 'No documents match this status.'}
+                        ? 'This test set has no documents yet.'
+                        : 'No documents match this filter. Choose All documents to see the rest of the set.'}
                   </Box>
                   {/* A search can come up empty because the status filter hides reviewed
                       documents; say so, since the reveal is in the filter bar above. */}
