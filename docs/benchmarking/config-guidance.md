@@ -317,17 +317,56 @@ comparison of models rather than of releases. **1,520 documents, 1,520 completed
 failures.** v0.6.0, the previous real-corpus measurement, reported RealKIE-FCC ≈0.80 and
 OCR-Benchmark ≈0.87.
 
-v0.6.11 ran both corpora again at the **control only** — 2,280 scored runs over the same
-760 (cell, corpus, document) triples at 3 repeats, 2,280 completed, 0 parse failures — and
-it reproduces the v0.6.8 control picture: RealKIE **0.777–0.811** weighted accuracy across
-the 19 cells (corpus mean 0.796, $0.1932/document), OCR-Benchmark **0.971–0.998** (corpus
-mean 0.996, $0.0395/document), class accuracy 1.000 everywhere. Render the per-cell tables
-from the committed artifact with
+v0.6.12 ran both corpora again at the **control only** — **756 scored rows over 760
+(cell, corpus, document) triples**, 0 parse failures anywhere — and reproduces the control
+picture: RealKIE **0.758–0.812** weighted accuracy across the 19 cells, OCR-Benchmark
+**0.965–0.998**, class accuracy **1.000 in every cell of both corpora**. Render the
+per-cell tables from the committed artifact with
 
 ```bash
 python3 benchmarks/harness/aggregate.py \
-    --reference-tables benchmarks/results/v0.6.11/core/summary.json
+    --reference-tables benchmarks/results/v0.6.12/core/summary.json
 ```
+
+#### ⚠️ On a real labelled corpus, simple mode beats advanced — at half the cost
+
+This is the finding the synthetic grid **cannot** produce, and the reason running these
+corpora matters more than the row count suggests. §2's 19 cells score 1.000 on recall and
+cell accuracy almost everywhere on exact-ground-truth synthetic documents, so the grid
+ranks nothing. RealKIE ranks them, and it inverts the intuition that the agentic path is
+the more capable one:
+
+| RealKIE cell | weighted accuracy | cost/doc | wall |
+|---|---|---|---|
+| `split-disabled` | **0.812** | $0.1251 | 44 s |
+| `core-tt-simple-sep` | 0.807 | $0.1423 | 38 s |
+| `core-tt-simple-off` | 0.805 | $0.1392 | 29 s |
+| `core-tl-adv-sep` | 0.791 | $0.2464 | 53 s |
+| `core-tt-adv-int` | 0.768 | $0.4870 | 63 s |
+| `core-bda-adv-sep` | 0.760 | $0.3142 | 53 s |
+| `core-tt-adv-sep` | **0.758** | $0.2757 | 52 s |
+
+**The three best cells are all simple mode and the three worst are all advanced**, and the
+gap in cost is about 2× (`core-tt-simple-sep` $0.1423 against `core-tt-adv-sep` $0.2757) in
+the same direction. On this corpus advanced extraction is paying more for less. The two
+readings this does *not* support: it says nothing about completeness at scale, which is
+§3's territory and where advanced mode is unambiguously better; and RealKIE's documents are
+not long lists, so this is a statement about labelled real-world forms rather than about
+tabular extraction generally.
+
+OCR-Benchmark does not discriminate the same way — every cell lands between 0.965 and
+0.998, with `core-llm-simple-sep` the only one below 0.99 (0.965), consistent with the
+`bedrock_llm` arm being the noisiest throughout this edition.
+
+⚠️ **This is one arm, so it is not a model comparison.** Only the control ran, so the
+v0.6.8 two-model pair below is still the only like-for-like comparison of the shipped
+default against the control on these corpora. Comparing a v0.6.12 control figure with a
+v0.6.8 default figure would be a cross-release difference wearing a model label.
+
+⚠️ **4 of the 760 triples produced no score** — `SCORE_ERROR` on `ocr_bench` in four
+different cells. That is a **scoring** failure, not a processing one: the documents
+processed and the scorer did not return a figure for them, which is why those cells read
+19 of 20 completed rather than 20.
 
 
 ### RealKIE-FCC-Verified (20 docs, 1 class) — extraction Sonnet 5 (shipped default), v0.6.8
