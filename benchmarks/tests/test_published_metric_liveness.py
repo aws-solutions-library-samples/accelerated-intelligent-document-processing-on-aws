@@ -378,6 +378,26 @@ def truth_by_generator(scored_by_generator):
     return {gen: truth for gen, (truth, _row) in scored_by_generator.items()}
 
 
+def _assert_named_generators(text, where, expected, declaration, *, optional=False):
+    """``text`` must name exactly the generators in ``expected``, by backticked name.
+
+    The lever for the two texts in this contract that cannot be derived from the
+    corpus — a module-level reason string in ``analyze``, and prose on the published
+    page. ``optional`` is for a text that describes the condition by PROPERTY instead
+    ("a document that has a list attribute"), which needs no pin and does not acquire
+    one by naming nothing; it still has to be right if it does name a generator.
+    """
+    named = {gen for gen in generator_names() if f"`{gen}`" in text}
+    if optional and not named:
+        return
+    assert named == expected, (
+        f"{where} names generators {sorted(named)} as the ones carrying this truth, "
+        f"but the generators that actually declare {declaration} are "
+        f"{sorted(expected)}. The text claims to be exhaustive, so the claim is wrong "
+        "rather than merely incomplete — update it."
+    )
+
+
 TYPED_KEYS = ("typed_accuracy", "typed_fields")
 REASON_KEY = "typed_truth_unavailable"
 
@@ -491,13 +511,7 @@ class TestTypedScalarKeysAreAbsentRatherThanNull:
             ),
             (page_row, f"the `typed_accuracy` row of {PUBLISHED_PAGE}"),
         ):
-            named = {gen for gen in generator_names() if f"`{gen}`" in text}
-            assert named == declares, (
-                f"{where} names generators {sorted(named)} as the ones carrying typed "
-                f"scalar truth, but the generators that actually declare `fields_typed` "
-                f"are {sorted(declares)}. Both texts say 'and nothing else', so the "
-                "claim is wrong rather than merely incomplete — update it."
-            )
+            _assert_named_generators(text, where, declares, "`fields_typed`")
 
     @pytest.mark.parametrize("column", TYPED_KEYS + (REASON_KEY,))
     def test_the_typed_columns_reach_the_csv(self, column):
@@ -697,6 +711,61 @@ class TestCellKeysAreAbsentRatherThanNull:
             assert (
                 aggregate.row_scored_against(shape_only) == analyze.SCORED_EXACT_TRUTH
             ), gen
+
+    def test_the_hardcoded_generator_names_match_the_generator_set(
+        self, scored_by_generator
+    ):
+        """The same pin as on the typed side, for the texts that name a generator.
+
+        ``CELL_TRUTH_UNAVAILABLE_NO_LIST`` names ``bank_statement`` outright and says
+        "only", so it is wrong rather than incomplete if a second generator starts
+        emitting ``rows_typed``. The published table row is pinned only *if* it names
+        one: it states the condition by property — "a document that has a list
+        attribute" — which is the better form here and needs no maintenance, but a
+        generator name added to it later must still be the right one.
+        """
+        declares = {
+            gen
+            for gen, (truth, _) in scored_by_generator.items()
+            if truth.get("rows_typed")
+        }
+        page_row = published_metric_rows().get("cell_accuracy", "")
+        assert page_row, (
+            f"no `cell_accuracy` row in the instrument table of {PUBLISHED_PAGE}"
+        )
+        _assert_named_generators(
+            analyze.CELL_TRUTH_UNAVAILABLE_NO_LIST,
+            "analyze.CELL_TRUTH_UNAVAILABLE_NO_LIST",
+            declares,
+            "`rows_typed`",
+        )
+        _assert_named_generators(
+            page_row,
+            f"the `cell_accuracy` row of {PUBLISHED_PAGE}",
+            declares,
+            "`rows_typed`",
+            optional=True,
+        )
+
+    def test_neither_reason_string_is_emitted_without_the_other_applying(
+        self, scored_by_generator
+    ):
+        """The bound on the two reasons cross-referencing each other's metrics.
+
+        ``CELL_TRUTH_UNAVAILABLE_NO_LIST`` sends the reader to `typed_accuracy` and
+        ``TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS`` sends them to `cell_accuracy`, so
+        a generator declaring NEITHER kind of truth would emit both reasons, each
+        naming a column that is also absent on that row. Not reachable today, and this
+        is what fails if it becomes reachable: such a generator needs a reason string
+        of its own rather than these two together.
+        """
+        for gen, (truth, row) in scored_by_generator.items():
+            assert truth.get("rows_typed") or truth.get("fields_typed"), (
+                f"{gen} declares neither `rows_typed` nor `fields_typed`, so its rows "
+                f"carry both reason strings and each refers the reader to a column "
+                f"that is absent too: {row.get(CELL_REASON_KEY)!r} and "
+                f"{row.get(REASON_KEY)!r}. Give it a reason of its own."
+            )
 
     @pytest.mark.parametrize("column", CELL_KEYS + (CELL_REASON_KEY,))
     def test_the_cell_columns_reach_the_csv(self, column):

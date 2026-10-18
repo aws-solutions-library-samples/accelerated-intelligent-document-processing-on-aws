@@ -1027,6 +1027,15 @@ def typed_scalar_keys(hits, total):
     carry the key — which is how a column the release procedure asks for came to
     render as blank cells in a table instead of as a missing measurement
     (GitHub #1490).
+
+    The ``not total`` guard folds ``total == 0`` onto "no typed scalar truth", which is
+    deliberate and is NOT how ``cell_metric_keys`` below guards. ``fields_typed`` is a
+    mapping the truth file either declares or does not, so an empty one and an absent
+    one are the same fact and both mean the metric does not apply. ``score_cells``
+    answers in three states rather than two and distinguishes them by returning
+    ``None`` for no-list against ``0`` for a declared list that joined nothing, so a
+    zero there is load-bearing and must not be folded. The two helpers are adjacent
+    and the asymmetry is the point; do not tidy it.
     """
     if not total:
         return {"typed_truth_unavailable": TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS}
@@ -1079,6 +1088,15 @@ def cell_metric_keys(hits, total):
     per-cell table in its §5 quotes it, and an accuracy figure whose denominator reads
     as a blank is the specific shape that hides row loss — a model returning 10 rows of
     400 scores 1.000 over the 20 cells it returned (GitHub #1497).
+
+    One bound on the two reason strings, since each points the reader at the other's
+    metrics: a generator declaring NEITHER ``rows_typed`` nor ``fields_typed`` would
+    emit both, and each would then name a column that is also absent on that row. Both
+    still name ``scalar_accuracy``, which ``score_synthetic`` writes unconditionally,
+    so the reader is not left with nothing — but the referral would be wrong. Not
+    reachable today: ``bank_statement`` and ``kv_form`` are the whole corpus and each
+    declares exactly one of the two. A third generator declaring neither needs a reason
+    string of its own rather than these two together.
     """
     if hits is None or total is None:
         return {"cell_truth_unavailable": CELL_TRUTH_UNAVAILABLE_NO_LIST}

@@ -219,8 +219,16 @@ CSV_COLS = [
     # with no list attribute now carries NEITHER of the two columns above, because
     # there were no cells to compare rather than zero correct ones, and this says so.
     # A document that has a list and joined nothing still carries both, with
-    # `cells_compared` the literal 0 — so a blank in either of those two columns now
-    # means "does not apply to this row" and nothing else.
+    # `cells_compared` the literal 0 — so a blank `cells_compared` now means "does not
+    # apply to this row" and nothing else.
+    #
+    # `cell_accuracy`'s blank is NOT unique, and the CSV is the one artifact where that
+    # is true: `DictWriter`'s default `restval` is `''`, so an absent key and a null
+    # value render as the same empty cell, and state 2 deliberately keeps
+    # `cell_accuracy: None` because 0/0 is undefined. In `summary.json` the two states
+    # differ on that key alone — absent against present-and-null — while here a blank
+    # `cell_accuracy` is either "no list" or "a list that joined nothing", which
+    # `cells_compared`'s 0 and this column tell apart.
     "cell_truth_unavailable",
     # Mean over repeats IS the boundary-detection pass rate.
     "sections_correct",
