@@ -60,7 +60,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rbac_common  # noqa: E402
 
-PASS = "PASS"
+PASS = "PASS"  # nosec B105 - check outcome label, not a password
 FAIL = "FAIL"
 ERROR = "ERROR"
 SKIP = "SKIP"

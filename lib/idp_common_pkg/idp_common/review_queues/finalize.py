@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
 FINALIZE_EVENT_TYPE = "ReviewFinalize"
-TOKEN_ATTRIBUTE = "ReviewFinalizeToken"
+TOKEN_ATTRIBUTE = "ReviewFinalizeToken"  # nosec B105 - DynamoDB attribute name, not a secret
 
 
 def finalize_token(doc_key: str, cycle_id: str, attempt: int) -> str:
