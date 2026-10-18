@@ -826,13 +826,13 @@ are §3's territory, not this table's.
 
 | extraction model | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | % conf leaves < 0.9 |
 |---|---:|---:|---|---|---:|---|---|
-| **Claude Opus 5.5** | 133 | 130 | **1.0000** | **1.0000** | **83,790** | **$101.67** | 2.03% |
-| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 ◊ | 0.40% |
-| Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 0.96% |
-| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 0.71% |
-| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 0.63% |
-| **Claude Sonnet 5.5** *(new)* | 133 | 132 | **0.9041** ※ | 1.0000 ※ | 73,570 | $62.85 ‡ | 1.12% |
-| Claude Haiku 5.5 | 133 | 133 | 0.9269 | 0.9990 | 70,406 | $26.30 † | 2.54% |
+| **Claude Opus 5.5** | 133 | 130 | **1.0000** | **1.0000** | **83,790** | **$101.67** | 0.020% |
+| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 ◊ | 0.004% |
+| Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 0.010% |
+| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 0.007% |
+| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 0.006% |
+| **Claude Sonnet 5.5** *(new)* | 133 | 132 | **0.9041** ※ | 1.0000 ※ | 73,570 | $62.85 ‡ | 0.011% |
+| Claude Haiku 5.5 | 133 | 133 | 0.9269 | 0.9990 | 70,406 | $26.30 † | 0.025% |
 
 ⚠️ **Read `cells_compared` alongside the accuracy columns, not after them.** A cell the
 arm never returned is a cell it is not scored on, so an arm that returns fewer rows is
@@ -914,15 +914,22 @@ shape:
 | extraction model (`simplegrid`) | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | % confidence leaves < 0.9 |
 |---|---:|---:|---|---|---:|---|---|
 | `simplegrid` control (Sonnet 4.6) | 63 | 61 | 0.9962 | 0.9990 | 39,462 | $29.17 | — |
-| Amazon Nova Pro | 63 | **63** | **0.4809** | 0.9361 | 6,960 | $10.89 | 0.7% |
-| Amazon Nova Lite | 63 | **63** | **0.4690** | 0.7525 | 8,418 | $8.76 | **70.7%** |
+| Amazon Nova Pro | 63 | **63** | **0.4809** | 0.9361 | 6,960 | $10.89 | 0.007% |
+| Amazon Nova Lite | 63 | **63** | **0.4690** | 0.7525 | 8,418 | $8.76 | 0.707% |
 
 Both Nova arms completed **every run with no error** and returned **less than half the
 rows**. Nova Pro's 0.9361 cell accuracy is computed over 6,960 cells against the control's
-39,462 — it is "94% accurate on the rows it chose to return", not 94% accurate. The one
-genuinely reassuring number is Nova Lite's **70.7% of confidence leaves below 0.9**: the
-model's own confidence signal flags the problem even though the run reports success. Nova
-Pro's does not (0.7%), so on that arm the under-return is close to silent. **Neither model
+39,462 — it is "94% accurate on the rows it chose to return", not 94% accurate.
+
+⚠️ **And the confidence signal does not catch it.** The `% conf leaves < 0.9` column is the
+one to read carefully here, because the numbers are small and easy to inflate: Nova Lite
+flags **0.707%** of its confidence leaves and Nova Pro **0.007%**, on arms that returned
+**less than half the rows**. A 0.9 threshold is therefore close to inert on this corpus —
+the under-return is silent on *both* arms, not just one. There is no safety net in the
+model's own confidence here, and a deployment relying on the confidence-alerts filter to
+notice a half-empty extraction would not be alerted. The completeness signals in
+`extraction_*` are what catch this, and §2's detection discussion is where they are
+measured. **Neither model
 is viable for list extraction at any size this corpus covers**, and their dollar figures
 are not comparable with the seven-arm grid above: they ran the smaller `simplegrid`
 matrix, so the only row they can be priced against is that matrix's own Sonnet 4.6
