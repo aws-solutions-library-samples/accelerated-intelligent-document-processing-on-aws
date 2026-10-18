@@ -173,9 +173,17 @@ shipped once ([#1491](https://github.com/aws-solutions-library-samples/accelerat
 
 Build the staging root out of **symlinks** to the paths the step reads, under
 `tmp_path`. `staging_checkout` in
-`lib/idp_sdk/tests/unit/test_multi_doc_discovery_source_zip.py` is the worked example,
-and `no_build_output_in_checkout` in `lib/idp_sdk/tests/conftest.py` is the suite-wide
-control that catches the class rather than one instance.
+`lib/idp_sdk/tests/unit/test_multi_doc_discovery_source_zip.py` is the worked example.
+
+**The control is `scripts/tests/no_build_output.py`, and adopting it in a suite is two
+lines** — walk up to it and bind its `fixture(project_root)` to a name in that suite's
+`conftest.py`, the way `lib/idp_sdk/tests/conftest.py` does and the way
+`no_outbound_aws` is adopted. It discovers build output with the **same predicate
+`scripts/srt/run.py` uses** (`**/.aws-sam`, directories, excluding `node_modules`), so
+the control and the scanner agree about what counts by construction; `publish.py`
+writes these directories throughout the tree, not only at the root, so a hardcoded
+list would miss a leak under `patterns/` or `nested/`. Today only the `idp_sdk` suite
+binds it — a suite that drives a build step and does not is uncovered.
 
 Check, rather than assume, that the artefact is identical to one built in the checkout.
 It is for that step because it derives each archive name with

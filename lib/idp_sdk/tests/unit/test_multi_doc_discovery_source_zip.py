@@ -353,12 +353,6 @@ def staging_checkout(monkeypatch, tmp_path):
     return staging
 
 
-#: The watched paths, the snapshot and the diff all come from the
-#: `checkout_build_output` fixture in `../conftest.py` — one definition for the
-#: suite-wide control and this narrower per-call claim, so the two cannot drift.
-#: They did drift on the first edit, when each kept its own list.
-
-
 @pytest.fixture
 def packaging_run(monkeypatch, staging_checkout, checkout_build_output):
     """One real packaging call, with the checkout's zip state either side of it.
@@ -375,6 +369,12 @@ def packaging_run(monkeypatch, staging_checkout, checkout_build_output):
     below nor `conftest`'s session control would see it. Nothing lands in the
     working tree because the step's only write is `.aws-sam/`, which is not a
     staged path — not because the staging root isolates writes.
+
+    The watched paths, the snapshot and the diff come from the
+    `checkout_build_output` fixture rather than being defined here. Keep it that
+    way: a second copy here and in the session control can diverge without either
+    one failing, and this assertion is meant to be the narrower claim about the
+    same set, not a parallel set.
     """
     snapshot, _changed, _message = checkout_build_output
     staging = staging_checkout

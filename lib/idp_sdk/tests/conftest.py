@@ -83,70 +83,58 @@ no_outbound_aws = _no_outbound_aws_fixture()
 # `python3 publish.py …` writes these very paths in the checkout it runs from, so
 # demanding absence would fail on any tree that has published and blame the test
 # run for a file it did not create.
-# ⚠️ **Watch each artefact, not only its directory.** A directory's mtime moves when
-# an entry is created, deleted or renamed — NOT when an existing file is rewritten in
-# place. So on the very trees the note above calls legitimate and common, a re-leak of
-# #1491's own file would truncate and rewrite it while `.aws-sam`'s own mtime stayed
-# put. Watching the directory alone would pass exactly the case this control exists for.
+# The definition is NOT here. It lives in `scripts/tests/no_build_output.py` and is
+# walked up to, which is the load-bearing half of the convention `no_outbound_aws`
+# follows above: a definition reachable from any pytest root in the tree, so the next
+# suite to need it writes two lines rather than a copy. A control that only this
+# rootdir can reach is the pre-#1398 state that module's docstring describes.
 #
-# One definition, imported rather than copied — the convention `no_outbound_aws` states
-# above. The per-test guard in
-# `unit/test_multi_doc_discovery_source_zip.py` reaches the same tuple and the same
-# snapshot through `checkout_build_output` below, so the two cannot drift; they did, on
-# the first edit, when each kept its own list and its own derivation of the repo root.
-CHECKOUT_BUILD_PATHS = (
-    ".aws-sam",
-    ".aws-sam/multi-doc-discovery-source.zip",
-)
-
+# What it watches, why it is a glob rather than a list, and why the semantics are
+# "unchanged by this session" rather than "absent" are all documented there.
 _CHECKOUT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _snapshot_build_output():
-    """``{rel: (exists, st_mtime_ns)}`` for every watched repo-root path."""
-    state = {}
-    for rel in CHECKOUT_BUILD_PATHS:
-        p = _CHECKOUT_ROOT / rel
-        state[rel] = (p.exists(), p.stat().st_mtime_ns if p.exists() else None)
-    return state
+def _no_build_output_fixtures():
+    import sys as _sys
+    from pathlib import Path as _Path
 
+    for ancestor in _Path(__file__).resolve().parents:
+        helper = ancestor / "scripts" / "tests"
+        if not (helper / "no_build_output.py").is_file():
+            continue
+        _sys.path.insert(0, str(helper))
+        try:
+            import no_build_output
 
-def _changed_build_output(before, after):
-    """Which watched paths differ between two snapshots."""
-    return [rel for rel in CHECKOUT_BUILD_PATHS if after[rel] != before[rel]]
-
-
-def _build_output_message(changed, before, after, what):
-    return (
-        f"{what} changed {', '.join(repr(c) for c in changed)} under "
-        f"{_CHECKOUT_ROOT} (before={before}, after={after}). A build or packaging "
-        f"step ran with the cwd set to the repository root instead of a staging "
-        f"directory. `make srt-scan` degrades when an .aws-sam directory is present, "
-        f"so this makes the security gate depend on whether the test suite ran first "
-        f"— see issue #1491 and the chdir section in "
-        f".claude/skills/testing-qa.md. `make srt-clean` removes it."
+            return no_build_output
+        finally:
+            _sys.path.pop(0)
+    raise RuntimeError(
+        "scripts/tests/no_build_output.py not found above this file; it carries the "
+        "control that stops this suite leaving SAM build output in the checkout and "
+        "silently degrading `make srt-scan` (#1491)"
     )
+
+
+_no_build_output = _no_build_output_fixtures()
+
+no_build_output_in_checkout = _no_build_output.fixture(_CHECKOUT_ROOT)
 
 
 @pytest.fixture(scope="session")
 def checkout_build_output():
-    """The shared watch, for a test that wants to assert over its own call.
+    """The shared watch, for a test asserting the narrower claim about its own call.
 
-    Exposes the snapshot and diff helpers the session control uses, so a narrower
-    per-test claim is made against the same tuple rather than a second copy of it.
+    Hands back the same snapshot, diff and message the session control uses, so a
+    per-test assertion is made against one definition rather than a second copy.
     """
-    return _snapshot_build_output, _changed_build_output, _build_output_message
-
-
-@pytest.fixture(scope="session", autouse=True)
-def no_build_output_in_checkout():
-    """Fail the session if it changed a gitignored build path in the checkout."""
-    before = _snapshot_build_output()
-    yield
-    after = _snapshot_build_output()
-    changed = _changed_build_output(before, after)
-    assert not changed, _build_output_message(
-        changed, before, after, "this test session"
+    root = _CHECKOUT_ROOT
+    return (
+        lambda: _no_build_output.snapshot(root),
+        _no_build_output.changed,
+        lambda moved, _before, _after, what: _no_build_output.message(
+            moved, root, what
+        ),
     )
 
 
