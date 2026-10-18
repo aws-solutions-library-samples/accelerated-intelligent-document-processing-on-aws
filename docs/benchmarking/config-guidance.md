@@ -24,7 +24,10 @@ measurement of the two reference corpora since the v0.6.8 edition and the first 
 kind for Claude Sonnet 5.5.
 
 ⚠️ **Three cost figures in §5 are lower bounds, not measurements, and no cost *ratio* is
-published for any of the three models.** `pricing.yaml` holds one flat rate per model and
+published for any of the three models.** Where §5 does compare one of them on cost, it
+states two dollar figures from the same grid and a **one-sided bound** over them ("at
+least X% less") — which is what a lower bound supports and a ratio is not.
+`pricing.yaml` holds one flat rate per model and
 cannot express a usage-dependent band, and three swept models need one:
 
 - **Claude Haiku 5.5** is billed 5× on every token type above 100,000 input tokens, and
@@ -824,7 +827,7 @@ are §3's territory, not this table's.
 | extraction model | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | % conf leaves < 0.9 |
 |---|---:|---:|---|---|---:|---|---|
 | **Claude Opus 5.5** | 133 | 130 | **1.0000** | **1.0000** | **83,790** | **$101.67** | 2.03% |
-| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 | 0.40% |
+| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 ◊ | 0.40% |
 | Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 0.96% |
 | Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 0.71% |
 | Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 0.63% |
@@ -839,12 +842,15 @@ about the rows an arm *did* return. A 1.0000 cell accuracy over 73,570 cells (So
 and the same figure over 83,790 (Opus 5.5) are not the same achievement.
 
 **The ranking is not the one the price list predicts, and the top of it is new.**
-**Claude Opus 5.5 is the only arm with both perfect recall and perfect cell accuracy**,
-over the largest denominator of any arm, at **less than half GPT-6 Astra's cost**. Astra
-also returns every row but has the **lowest cell accuracy of the premium set** (0.9737) —
-not a denominator artefact, since it compared essentially as many cells as Opus 5.5 did.
-So the most expensive arm is beaten on accuracy, cost and tie-on-completeness by one that
-costs 51% less.
+**Claude Opus 5.5 is the only arm with both perfect recall and perfect cell accuracy** —
+1.0000 and 1.0000 over 83,790 cells, the largest denominator of any arm — for **$101.67
+against GPT-6 Astra's $209.28 over the same grid**. Astra also returns every row but has
+the **lowest cell accuracy of the premium set** (0.9737 over 83,788 cells) — not a
+denominator artefact, since it compared essentially as many cells as Opus 5.5 did. So the
+most expensive arm is matched on recall and beaten on cell accuracy by an arm costing **at
+least 51% less**. That gap is stated as a bound rather than a ratio because Astra's
+$209.28 is itself a lower bound (◊): its true cost can only be higher, so the saving can
+only be larger.
 
 ⚠️ **Opus 5.5's three incomplete runs are not a model property.** All three are the
 `AssessmentStep` memory failure on one 17-page document
@@ -897,6 +903,10 @@ dollar figure is a lower bound.
 published per-token prices are **identical to Sonnet 5's**, while `pricing.yaml` prices
 Sonnet 5 at Sonnet 4.6's rates. The $62.85 against Sonnet 5's $86.10 is therefore a
 pricing-table artefact and **not** evidence that Sonnet 5.5 is cheaper.
+◊ GPT-6 Astra's $209.28 is a lower bound for the third reason in the header — it moves to
+a long-context band above 272,000 input tokens that `pricing.yaml` cannot express — so no
+cost *ratio* is published for it either, and the one cost comparison drawn against it
+above is a one-sided bound.
 
 **The cheap end does not fail, it silently under-returns**, which is the more dangerous
 shape:
@@ -912,66 +922,49 @@ rows**. Nova Pro's 0.9361 cell accuracy is computed over 6,960 cells against the
 39,462 — it is "94% accurate on the rows it chose to return", not 94% accurate. The one
 genuinely reassuring number is Nova Lite's **70.7% of confidence leaves below 0.9**: the
 model's own confidence signal flags the problem even though the run reports success. Nova
-Pro's does not (0.7%), so on that arm the under-return is close to silent.
+Pro's does not (0.7%), so on that arm the under-return is close to silent. **Neither model
+is viable for list extraction at any size this corpus covers**, and their dollar figures
+are not comparable with the seven-arm grid above: they ran the smaller `simplegrid`
+matrix, so the only row they can be priced against is that matrix's own Sonnet 4.6
+control ($29.17 over 39,462 cells).
 
-**Accuracy and reliability are separate columns here, and both matter.** Accuracy is
-computed over the **116 (cell, document) pairs every arm completed**, so no model is
-advantaged by the documents it could not finish; reliability is the `fail` column. An
-accuracy figure averaged over each arm's own completed runs would rank Opus 5.5 first
-(recall 1.000, having dropped 13 runs) and Sonnet 5 last (0.939, having dropped none),
-because the dropped runs are the hardest documents. On the common subset the arms sit within
-about two points of each other.
+Two value statements follow from the seven-arm grid above, both anchored to its own
+numbers and their denominators.
 
-| extraction model | runs | fails | recall | scalar acc | cell acc | cost/doc | wall/doc | cells compared |
-|---|---|---|---|---|---|---|---|---|
-| Sonnet 4.6 (control) | 399 | 19 | 0.998 | 0.978 | **1.000** | **$0.432** | **133 s** | 175,520 |
-| **Sonnet 5** (shipped default) | 133 | **0** | 0.995 | 0.948 | 0.999 | $0.571 | 168 s | 58,748 |
-| Sonnet 5 `:1m` | 133 | **0** | 0.995 | 0.935 | 0.999 | $0.567 | 171 s | 58,748 |
-| **Claude Haiku 5.5** | 133 | 4 | 0.981 | 0.978 | 0.999 | *$0.149 (lower bound)* | 157 s | 57,432 |
-| Claude Opus 5 | 133 | 1 | 0.992 | **1.000** | **1.000** | $0.765 | 173 s | 58,276 |
-| Claude Opus 5.5 | 133 | **13** | **1.000** | **1.000** | **1.000** | $0.663 | 274 s | 58,990 |
-| GPT-6 Astra | 133 | 1 | **1.000** | **1.000** | 0.974 | *$1.335 (lower bound)* | 185 s | 58,990 |
+**Claude Opus 5 is dominated by Opus 5.5 on this corpus.** It is one of the three arms at
+a perfect 1.0000 cell accuracy, over 82,190 cells, at recall 0.9925 — against the shipped
+default that is 3.6 points of row recall (0.9925 against 0.9563) for $126.55 against
+$86.10 over the same grid, 47% more. Opus 5.5 reaches a *higher* recall (1.0000) over a
+*larger* denominator (83,790 cells against 82,190) for **$101.67 against Opus 5's
+$126.55, 20% less** — more complete, no less accurate, and cheaper, at once. Both are
+flat-rate measurements, which is why this one pair can be quoted as a ratio at all.
 
-| (separate grid) | runs | fails | recall | scalar acc | cell acc | cost/doc | wall/doc |
-|---|---|---|---|---|---|---|---|
-| Nova Lite — `simplegrid` | 63 | 0 | **0.476** | 0.992 | 0.748 | $0.140 | 130 s |
-| Nova Pro — `simplegrid` | 63 | 0 | **0.473** | 0.802 | 0.948 | $0.171 | 145 s |
+**Claude Haiku 5.5 matches the default's per-cell accuracy, and its cost cannot be
+quoted.** At 0.9990 cell accuracy over 70,406 cells it is indistinguishable from Sonnet
+5's 0.9996 over 74,652 — but the denominators are the point: what it gives up is **row
+recall, 0.9269 against 0.9563**, which leaves it the smallest denominator of the seven
+arms (70,406 cells against the grid's largest, 83,790). It also carries the highest share
+of low-confidence leaves of the seven (2.54%). Its $26.30 is the cheapest figure in the
+table and is a **lower bound** (†) — see the banded-pricing warning in the header — so no
+cost *ratio* for it appears in this paper. Choose it for accuracy parity on the rows it
+does return, never on a quoted saving.
 
-Four things this grid says.
-
-**The premium end does not earn its price on this corpus.** Astra costs **2.3×** Sonnet 5
-(at least — its figure is a lower bound) and is the **only arm below 0.99 cell accuracy**
-(0.974). Opus 5.5 reaches the joint-best accuracy on every measure, but at 274 s/doc it is
-the slowest arm by 63% and it cannot complete a large document in simple mode at all. Opus 5
-is the most convincing premium arm — 1.000 scalar and cell accuracy at 1 failure — and still
-costs 34% more than Sonnet 5 for about half a point of recall.
-
-**Reliability and accuracy do not rank the same way, and reliability is the column to read
-first.** The two Sonnet 5 arms are the only ones with **zero** failures. Opus 5.5 lost 13
-runs, every one of them `large_narrow` in *simple* mode, while completing all six *advanced*
-cells 7/7 — a per-request limit (the 300 s non-streaming read timeout), not an accuracy
-limit, and advanced mode is a complete remedy. Haiku 5.5 lost 4 the same way. Even the
-control model lost 19 of 399.
-
-**Haiku 5.5 matches the default's per-cell accuracy, and its cost cannot be quoted.** At
-0.999 cell accuracy over 57,432 cells it is indistinguishable from Sonnet 5; it gives up
-1.4 points of row recall and 4 of 13 simple-mode cells on the largest document. Its
-$0.149/doc is a **lower bound** — see the banded-pricing warning in the header — so no cost
-*ratio* for it appears in this paper.
-
-**Nova Lite and Nova Pro are not viable for list extraction at any size on this corpus**:
-recall 0.476 and 0.473 means less than half the rows come back. Their scalar accuracy is
-respectable (0.992 / 0.802), so they read *forms* adequately; it is tables they cannot
-finish. They are also on a different, simpler grid, so their cost figures are not
-comparable with the block above.
-
-> ⚠️ **`nova_lite`, `nova_pro`, `sonnet5_1m` and `opus5` were not measured on v0.6.9, and
-> `opus55` has never been measured.** The seven-model table below is from **v0.6.8** and is
-> retained because it is the only measured comparison of the first four. Its Sonnet 4.6 /
-> Sonnet 5 / Astra columns are superseded by the table above; do not mix rows across the two.
-> Claude Opus 5.5 has no row in either table — its rate card is cheaper than Opus 5 in every
-> category and its launch claim adds "fewer tokens for the same task", which is three
-> compounding factors, so quote no figure for it before `opus55value` has run.
+> ⚠️ **The v0.6.8 block below is superseded for the model *ranking*, and is retained only
+> for its per-document-size detail.** Every swept model has a v0.6.12 row in the tables
+> above, so for *which model to pick* read those. What the v0.6.8 grid still carries that
+> the v0.6.12 grid does not is a breakdown **by document size**: its simple-mode and
+> advanced-mode tables report each model per document, from a 5-row form to an 800-row,
+> 17-page statement, where the v0.6.12 table reports one grid-wide mean per arm. That
+> shape is the only reason to read it.
+>
+> **Do not mix rows across the two generations.** They were produced on different releases
+> and, as the header notes, with a different evaluation comparator (`stickler-eval` 0.5.0 →
+> 1.0.0 now infers comparators per field), so a v0.6.8 accuracy is not like-for-like with a
+> v0.6.12 one, and the dollars are from a different `pricing.yaml`. Claude Opus 5.5, Claude
+> Haiku 5.5 and Claude Sonnet 5.5 have no row below at all: their only measured figures are
+> in the tables above, plus — for Opus 5.5 against Opus 5 on the two small documents — the
+> `opus55value` pair, which has run (40 runs, recall 1.0000, cell accuracy 1.0000 over
+> 20,000 cells, $24.18).
 
 #### Carried over from v0.6.8 — the full seven-model grid
 
@@ -1020,7 +1013,8 @@ The two core cells, which are what a customer actually chooses between:
    only in price.** Advanced mode returned every row with every value right — 4,410 cells
    compared per model — on Sonnet 4.6, Sonnet 5, Sonnet 5 `:1m`, Opus 5 and Astra, at
    $1.22 / $1.66 / $2.50 / $2.35 / $2.65 per document. Opus 5 costs 41% more than Sonnet 5
-   for the same result; Astra 60% more. ⚠️ The `:1m` figure ($2.50) is inflated by the
+   for the same result; Astra **at least** 60% more, a bound rather than a ratio because
+   its dollar figure is a lower bound (see the header). ⚠️ The `:1m` figure ($2.50) is inflated by the
    pricing defect described in finding 4 and is not the variant's price — `:1m` is billed
    at exactly plain Sonnet 5's rates. The other four figures are unaffected.
 2. **The cheap end is not usable on lists.** Nova Lite in simple mode returns every row of a
