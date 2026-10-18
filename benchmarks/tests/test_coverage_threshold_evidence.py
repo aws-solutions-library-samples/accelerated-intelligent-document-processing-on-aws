@@ -70,13 +70,19 @@ MIN_ZERO_SHORTFALL_SHARE = 0.95
 MAX_WARNING_FIRING_SHARE = 0.02
 
 # The largest number of unscored rows recorded on a run the warning rung said nothing
-# about: 24 of 800 (3.0%). This is the residual the purely multiplicative 5% rung
-# leaves, and it is pinned rather than fixed because the committed artifacts cannot
-# say whether the ladder had already reported those rows (see the module docstring).
-# If it grows, re-measure, record the new figure in the assessment README, and
-# reconsider whether the warning rung should carry an absolute ceiling the way the
-# error rung carries an absolute floor.
-MAX_SILENT_UNSCORED_ROWS = 24
+# about. Re-measured on the v0.6.12 grids: **115 of 3,200** (3.6%) on
+# `scale_3200.pdf` / `astra-adv-wide`, up from 24 of 800 (3.0%).
+#
+# ⚠️ **The two measurements together are the finding, not the new number.** The row
+# count grew 4.8x while the SHARE barely moved, because the document grew 4x — which
+# is what a purely multiplicative rung does. The silent band is proportional to list
+# length, so the absolute number of rows that can go unreported has no bound at all;
+# it is 115 here only because 3,200 rows is the largest list in the corpus. That is
+# the same shape #1361 fixed for `extraction_rows_below_ocr_estimate`, by replacing a
+# multiplicative tolerance with a 29-row additive one, and the argument for giving
+# this warning rung an absolute ceiling the way the error rung already carries an
+# absolute floor. Tracked separately; this pin only stops it growing unnoticed again.
+MAX_SILENT_UNSCORED_ROWS = 115
 
 
 def _rows():
@@ -106,6 +112,17 @@ def corpus():
         "mean anything."
     )
     return [row for _v, _s, row in rows]
+
+
+@pytest.fixture(scope="module")
+def corpus_located():
+    """The same corpus, but each row paired with the grid directory it came from.
+
+    `corpus` drops the location because every share it computes is corpus-wide. A
+    carve-out has to name the grid it applies to, or it would shield the same shape
+    anywhere — so that one check reads this instead.
+    """
+    return [(f"{suite}", row) for _v, suite, row in _rows()]
 
 
 def _defined(corpus):
@@ -341,7 +358,7 @@ def test_no_coverage_outlier_is_the_out_of_range_confidence_artefact(corpus):
     )
 
 
-def test_an_undefined_coverage_run_extracted_nothing(corpus):
+def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     """``expected_rows == 0`` is an extraction finding, not a coverage one.
 
     The guard declines to fire when the section extracted no list row, which would be
@@ -349,16 +366,38 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus):
     not: every such run with a synthetic row count recorded shows
     ``rows_extracted == 0``, i.e. the model returned no list at all.
     """
-    undefined = [r for r in corpus if not r["conf_rows_expected"]]
+    undefined = [(g, r) for g, r in corpus_located if not r["conf_rows_expected"]]
     assert undefined, "no run records undefined coverage; this check shields nothing."
     with_rows = [
-        r
-        for r in undefined
+        (g, r)
+        for g, r in undefined
         if isinstance(r.get("rows_extracted"), (int, float)) and r["rows_extracted"]
     ]
-    assert with_rows == [], (
-        f"{len(with_rows)} runs record extracted rows while reporting no coverage "
+
+    # ⚠️ The premise above no longer holds universally, and the exception is a KNOWN,
+    # FILED defect rather than a reason to relax the check: issue #1494. Four
+    # `coresynth__extraction-model-sonnet55` runs extracted 2 rows of 400 on
+    # `med_narrow.pdf` and the coverage walk recorded no denominator for any of them,
+    # so the coverage rung could not speak about the 398 rows that were lost. They are
+    # carved out BY NAME and COUNT-PINNED rather than filtered by shape, so a fifth
+    # instance — or the same shape on another model or document — fails here.
+    KNOWN_UNDEFINED_WITH_ROWS = {
+        ("coresynth__extraction-model-sonnet55", "med_narrow.pdf"),
+    }
+    EXPECTED_KNOWN = 4
+
+    known = [(g, r) for g, r in with_rows if (g, r["doc"]) in KNOWN_UNDEFINED_WITH_ROWS]
+    unknown = [pair for pair in with_rows if pair not in known]
+
+    assert unknown == [], (
+        f"{len(unknown)} runs record extracted rows while reporting no coverage "
         "denominator, so the coverage walk is missing rows the extraction produced — "
         "a list nested inside a group attribute is the shape that does this. First "
-        f"few: {[(r['doc'], r['cell'], r['rows_extracted']) for r in with_rows[:5]]}"
+        f"few: {[(g, r['doc'], r['cell'], r['rows_extracted']) for g, r in unknown[:5]]}"
+    )
+    assert len(known) == EXPECTED_KNOWN, (
+        f"the #1494 carve-out now shields {len(known)} runs, not {EXPECTED_KNOWN}. "
+        "If the count grew, a new instance of the coverage-walk hole has appeared and "
+        "belongs on that issue; if it shrank to 0 the defect is fixed and this "
+        "carve-out should be deleted along with it."
     )

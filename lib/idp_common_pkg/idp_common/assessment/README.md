@@ -517,9 +517,19 @@ before it existed.
 **undefined**, not perfect: `scored_fraction` is `None` so an aggregate drops it. A
 corpus mean that scored those as 1.0 would be reporting the share of list-free
 documents. The gate declines to fire there for the same reason — there is nothing to
-score, and in the committed grids every such run also records `rows_extracted == 0`,
-i.e. extraction returned no list at all, which is an extraction finding rather than
-a coverage one.
+score, which is an extraction finding rather than a coverage one.
+
+⚠️ **"Undefined coverage" is not always "extraction returned no list", and the
+difference is a hole.** On almost every committed run an undefined denominator does
+coincide with `rows_extracted == 0`. Four do not: `coresynth__extraction-model-sonnet55`
+on `med_narrow.pdf` extracted **2 rows of 400** while the coverage walk recorded no
+denominator at all, so the rung could say nothing about the 398 that were lost
+([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)).
+Where the walk sees no denominator it is reporting that it could not measure, not that
+there was nothing to measure, and those two are indistinguishable downstream.
+`benchmarks/tests/test_coverage_threshold_evidence.py::test_an_undefined_coverage_run_extracted_nothing`
+carves those four out by grid **and** count, so a fifth instance or the same shape on
+another model fails there.
 
 The benchmark harness records it per document
 (`benchmarks/harness/analyze.py::score_confidence_coverage` → `conf_rows_expected`,
@@ -532,22 +542,34 @@ one document at 0.
 ##### The observed distribution
 
 Computed over every committed `benchmarks/results/*/*/summary.json` row that
-carries the metric — 6,672 coverage-bearing document-runs across 38 grids,
-v0.6.8 → v0.6.11, on Claude and Nova extraction and confidence models — and
+carries the metric — **10,240 coverage-bearing document-runs across 150 grids,
+v0.6.8 → v0.6.12**, on Claude, Nova and GPT extraction and confidence models — and
 re-derived on every test run by
 `benchmarks/tests/test_coverage_threshold_evidence.py`, which classifies each
 recorded `(expected, unscored)` pair by calling `audit_explainability` itself rather
 than re-stating the rungs:
 
+Shares are over the **10,033 runs where coverage is defined**; the other 207 record an
+undefined denominator and are counted in neither column (see the warning above for what
+that does and does not mean).
+
 | Shortfall | Runs | Share |
 |---|---|---|
-| exactly 0 unscored rows — no issue | 6,493 | 97.32% |
-| above 0 but below the 5% rung — no issue | 135 | 2.02% |
-| the rung fires | 44 | 0.66% |
-| …of those, at **warning** severity | 16 | 0.24% |
-| …of those, at **error** severity | 28 | 0.42% |
-| ……by the fraction **and** the 10-row floor | 7 | 0.10% |
-| ……by having no scored row at all | 21 | 0.31% |
+| exactly 0 unscored rows — no issue | 9,769 | 97.37% |
+| above 0 but below the 5% rung — no issue | 206 | 2.05% |
+| the rung fires | 58 | 0.58% |
+| …of those, at **warning** severity | 21 | 0.21% |
+| …of those, at **error** severity | 37 | 0.37% |
+
+⚠️ **The residual the warning rung leaves is proportional, which is the property to
+act on.** The largest shortfall it says nothing about is **115 unscored rows of 3,200**
+(3.6%) on `scale_3200.pdf`; the previous measurement was 24 of 800 (3.0%). The share
+barely moved while the row count grew 4.8×, because the document grew 4× — a purely
+multiplicative rung has no absolute bound, so the number of rows that can go unreported
+is limited only by how long the longest list is. That is the same shape #1361 fixed for
+`extraction_rows_below_ocr_estimate` by replacing a multiplicative tolerance with a
+29-row additive one, and it is the argument for giving this rung an absolute ceiling the
+way the error rung already carries an absolute floor.
 
 The two error paths are disjoint on this corpus, and together they account for
 every run at or above 25%. The median, p90 and p95 are all exactly 0; p99 is

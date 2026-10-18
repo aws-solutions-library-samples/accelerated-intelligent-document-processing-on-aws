@@ -789,7 +789,7 @@ are §3's territory, not this table's.
 | Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 0.96% |
 | Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 0.71% |
 | Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 0.63% |
-| **Claude Sonnet 5.5** *(new)* | 133 | 132 | 0.9041 | **1.0000** | 73,570 | $62.85 ‡ | 1.12% |
+| **Claude Sonnet 5.5** *(new)* | 133 | 132 | **0.9041** ※ | 1.0000 ※ | 73,570 | $62.85 ‡ | 1.12% |
 | Claude Haiku 5.5 | 133 | 133 | 0.9269 | 0.9990 | 70,406 | $26.30 † | 2.54% |
 
 ⚠️ **Read `cells_compared` alongside the accuracy columns, not after them.** A cell the
@@ -813,10 +813,33 @@ costs 51% less.
 which struck eleven different cells across seven arms in this session and is unrelated to
 which extraction model is in use. Opus 5 (132) and Sonnet 5.5 (132) carry the same cause.
 
-**Claude Sonnet 5.5 is the cheapest arm with perfect cell accuracy, and the one with the
-most caveats.** It returns the fewest rows of any Claude arm except Haiku 5.5 (recall
-0.9041) but is exactly right on the rows it returns. Three things make its other columns
-non-comparable, and all three are properties of the model rather than of this measurement:
+※ ⚠️ **Do not read Sonnet 5.5's row as "cheap and perfectly accurate". Its mean recall
+hides a bimodal failure, and its cell accuracy is computed on the rows it chose to
+return.** 13 of its 133 runs lose almost the entire list, and they are not marginal:
+
+| recall | rows returned | documents | cells compared | cell accuracy on those runs |
+|---|---|---|---:|---|
+| 0.005 | **2 of 400** | `med_narrow` × 4 cells | *none recorded* | *not scored* |
+| 0.025 | **10 of 400** | `med_narrow`, `wide_400`, `manylists_400` × 9 cells | 20 | 1.000 |
+
+So "cell accuracy 1.0000" on those runs means **100% correct on the 10 rows it returned
+out of 400**. Every one of the 13 is a **400-row** document; the smaller documents in the
+grid are unaffected, which is why a mean of 0.9041 looks survivable and is not. On a
+400-row list this model is the **worst** arm in the table, not the cheapest good one.
+
+**Detection is mostly there, but not at the extreme.** 9 of the 13 carry
+`extraction_rows_below_ocr_estimate`. The four worst — the 2-of-400 runs — carry only
+`extraction_validation_failed` on three of them and **no completeness issue at all** on
+the fourth, and the coverage walk recorded no denominator for any of the four, so the
+coverage rung could not speak either. Those four are also why
+`benchmarks/tests/test_coverage_threshold_evidence.py::test_an_undefined_coverage_run_extracted_nothing`
+fails on this data set: its premise is that a run with no coverage denominator extracted
+nothing, and these extracted 2 rows.
+
+**Recommendation: do not select Claude Sonnet 5.5 for list extraction on documents of a
+few hundred rows or more until this is understood.** It is sound on the smaller documents
+in this grid. Three further properties of the model make its remaining columns
+non-comparable, independent of the above:
 
 - It **rejects a forced `toolChoice`**, so Schema Enforcement falls back to the prose
   schema and `extraction.forced_tool` is recorded as skipped. Any `forcing` or
