@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Guards for three ways this suite silently stopped testing things.
+"""Guards for four ways this suite silently stopped testing things.
 
 **1. A test module must not replace a real installed package globally.**
 Five modules under ``tests/unit/agents/`` did ``sys.modules["strands"] =
@@ -37,6 +37,28 @@ tests passed. 300.1 s each, measured serially, against 1.2 s for the other 197
 tests in that module put together (#1380). ``tests/conftest.py``'s
 ``bounded_real_sleep`` now fails a unit test on the sleep that would carry it
 past a one-second budget, before that sleep is served.
+
+**4. The guard for (1) was here, and looked at a two-name list.** Lesson 1's
+check shipped with ``_REAL_PACKAGES = ("strands", "bedrock_agentcore")`` — the
+two packages that had already caused a problem. ``munkres``, the
+Hungarian-assignment library the pinned ``stickler-eval`` depends on, was being
+stubbed at module scope in ``tests/unit/evaluation/test_evaluation_service.py``,
+and the check never looked at it. Six Stickler tests failed whenever that module
+and the two Stickler suites landed in the same process — four reporting ``fd: 0``
+where four false discoveries were expected, two as golden drift — which made CI
+red on **every** branch while several local configurations passed, because
+whether the poisoned process is the one that runs the Stickler files depends on
+pytest's rootdir and on how xdist distributes them.
+
+So the universe is now **derived**: any module-level ``sys.modules["X"]`` where
+``X`` resolves in this environment. A name that resolves to nothing (``index``,
+``cfnresponse``, ``idp_common_pkg`` — handler siblings and paths that are not
+packages) is a stub standing in for something absent, which is the legitimate use.
+The two original names are asserted to still be *covered*, from distribution
+metadata rather than from the derivation itself, so a derived rule that narrowed
+what the hand-written list reached fails rather than reading as a pass. The
+general lesson is the one this file is accumulating: a control whose scope is a
+list of the instances that have already bitten is a control over the past.
 """
 
 from __future__ import annotations
@@ -51,9 +73,55 @@ import pytest
 
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: Packages a test module may never install a global stub for, because they are
-#: real dependencies of an extra the dev/CI environments install.
-_REAL_PACKAGES = ("strands", "bedrock_agentcore")
+#: The two packages this guard was written for. They are asserted to still be
+#: *covered* rather than used as the universe: the universe is derived below, because
+#: a hand-written list is only as good as whoever last remembered to extend it, and
+#: this one was not extended. ``munkres`` — the Hungarian-assignment library the
+#: pinned ``stickler-eval`` depends on — was stubbed at module scope in
+#: ``tests/unit/evaluation/test_evaluation_service.py`` for as long as that file has
+#: existed, and took six Stickler tests down with it whenever the two landed in the
+#: same process. This guard was already here and did not look at it.
+_GUARD_WAS_WRITTEN_FOR = ("strands", "bedrock_agentcore")
+
+
+def _is_importable(name: str) -> bool:
+    """Whether ``name``'s top-level package resolves in THIS environment.
+
+    This is the derived universe: any name that resolves is a real module some other
+    test can legitimately import, so replacing it process-wide is the defect. A name
+    that does not resolve (``index``, ``cfnresponse``, ``idp_common_pkg`` — handler
+    siblings and paths that are not packages) is a stub standing in for something
+    absent, which is the legitimate use and is left alone.
+
+    ``find_spec`` imports parent packages, so it is called on the top-level name only
+    and its failures are swallowed: an environment where the probe itself raises must
+    not decide the verdict.
+    """
+    import importlib.util
+
+    root = name.split(".")[0]
+    try:
+        return importlib.util.find_spec(root) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _distribution_provides(name: str) -> bool:
+    """Whether an installed distribution ships ``name`` as a top-level package.
+
+    Read from ``importlib.metadata``, which is an independent source from
+    ``find_spec`` — this exists so the coverage assertion below is not the derivation
+    confirming itself. ``packages_distributions`` maps import name to distribution
+    names and so answers exactly the question asked.
+    """
+    import importlib.metadata
+
+    try:
+        mapping = importlib.metadata.packages_distributions()
+    except Exception:  # pragma: no cover - metadata unreadable
+        return False
+    return bool(mapping.get(name.split(".")[0]))
+
 
 #: ``conftest.py`` owns the conditional stubbing and is therefore exempt.
 _EXEMPT = {"conftest.py"}
@@ -91,8 +159,7 @@ def _global_sysmodules_writes(path):
                 and isinstance(target.slice.value, str)
             ):
                 name = target.slice.value
-                root = name.split(".")[0]
-                if root in _REAL_PACKAGES:
+                if _is_importable(name):
                     hits.append((name, node.lineno))
     return hits
 
@@ -118,6 +185,79 @@ def test_no_module_globally_stubs_a_real_package():
         + "\nLet tests/conftest.py stub conditionally instead, or scope the mock "
         "with patch.dict(sys.modules, ...) inside the test."
     )
+
+
+@pytest.mark.unit
+def test_the_guard_covers_what_it_was_written_for():
+    """The universe above is derived, so this pins that the derivation did not
+    *narrow* it. Both original names must still be recognised as real packages when
+    they are installed — a derived rule that stopped resolving them would read as a
+    pass while covering less than the hand-written list it replaced.
+
+    Installedness is read from the **distribution metadata**, not from
+    ``find_spec``, so this is not the derivation checking itself. That also sidesteps
+    a trap: ``tests/conftest.py`` stubs these two into ``sys.modules`` when they are
+    genuinely absent, and ``find_spec`` on a module already in ``sys.modules`` with
+    no ``__spec__`` raises ``ValueError`` rather than answering — so asking
+    ``find_spec`` here would fail on precisely the environment where there is nothing
+    to protect.
+    """
+    for name in _GUARD_WAS_WRITTEN_FOR:
+        if not _distribution_provides(name):
+            pytest.skip(f"no installed distribution provides {name} here")
+        assert _is_importable(name), (
+            f"an installed distribution provides the top-level package {name!r}, but "
+            "the derived universe does not recognise it, so a module-level "
+            "sys.modules stub over it would no longer be reported. This guard named "
+            "it explicitly before the universe was derived; the derivation must "
+            "cover at least as much."
+        )
+
+
+@pytest.mark.unit
+def test_a_stub_over_an_installed_package_is_detected():
+    """Guard-the-guard, positively: the sweep above reports nothing today, so
+    without this the whole check is indistinguishable from one that cannot fire.
+
+    The probe is written against a package that IS installed here and is reached by
+    another suite — ``munkres``, which Stickler uses to pair list items — because
+    that is the exact shape that went undetected: a module-level stub over a real
+    transitive dependency, in a file whose own tests pass either way.
+    """
+    import importlib.util
+    import tempfile
+
+    if importlib.util.find_spec("munkres") is None:
+        pytest.skip("munkres not installed; the probe needs a real package to shadow")
+
+    source = (
+        "import sys\n"
+        "from unittest.mock import MagicMock\n"
+        'sys.modules["munkres"] = MagicMock()\n'
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
+        fh.write(source)
+        probe = fh.name
+    try:
+        hits = _global_sysmodules_writes(probe)
+        assert hits == [("munkres", 3)], (
+            "the module-level sys.modules detector did not report a stub over an "
+            f"installed package; got {hits}. Every other assertion in this group is "
+            "vacuous while that is true."
+        )
+        # And the opposite direction: a stub over a name that resolves to nothing is
+        # the legitimate case and must stay unreported, or the guard would fail every
+        # Lambda handler suite that stands in for its own `index` sibling.
+        absent = source.replace("munkres", "a_module_that_does_not_exist_anywhere")
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
+            fh.write(absent)
+            probe_absent = fh.name
+        try:
+            assert _global_sysmodules_writes(probe_absent) == []
+        finally:
+            os.unlink(probe_absent)
+    finally:
+        os.unlink(probe)
 
 
 @pytest.mark.unit
