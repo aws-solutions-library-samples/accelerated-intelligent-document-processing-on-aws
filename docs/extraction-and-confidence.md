@@ -1479,20 +1479,25 @@ extraction:
 >    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
 >    #894 (an Assessment Lambda hitting its 900 s limit three times,
 >    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
->    extraction) is **not explained by this loop**, so treat it as still open: the
->    same-model retry rung already stopped on no progress before this change, and the
->    ladder's wall-clock deadline guard was already in place in the release where
->    those timeouts were observed. The single gap in that guard has since been closed
->    (#958): every recovery call — retry and escalation alike — now checks the
->    Lambda's remaining time before it is made, as further bisections already did, so
->    a run that would have spent its whole budget on partially-successful retry
->    rounds stops at the last call that fits and keeps every row it recovered. With
->    rows still unscored the section reports `assessment_incomplete` naming the time
->    budget (the `assessment_deadline_reached` warning is for a run that was cut
->    short and scored every row regardless). That was the most concrete lead on the
->    timeout, but it is not confirmed as its cause. Until #894 is fixed, score such a class
->    with a large-output-cap confidence model (`escalation_model`), or split the inner
->    list into its own class.
+>    extraction) is **not explained by this loop**. What bounds the wall clock is a
+>    separate guard that now covers **every** dispatch the pass makes: each batch of
+>    the sequential loop, the cache-warming batch, each wave of the concurrent
+>    fan-out (#1488) and every recovery call, retry and escalation alike (#958), as
+>    further bisections already did. A dispatch the remaining invocation time cannot
+>    hold is refused rather than started, which is what keeps a long list — 48 model
+>    calls for 1,200 rows at the shipped 25-row ceiling — from running into the
+>    900 s wall; a Lambda killed there raises no Python exception, so the degrade
+>    path never ran and the document was discarded with its already-persisted
+>    extraction. With rows still unscored the section reports
+>    `assessment_incomplete` naming the time budget, and those rows carry a per-row
+>    reason naming it too (the `assessment_deadline_reached` warning is for a run
+>    that was cut short and scored every row regardless). ⚠️ Two routes to this
+>    symptom are **not** covered: an out-of-memory kill, which is equally
+>    exception-free and which nothing here bounds, and the sizing bug itself —
+>    a wrongly large batch size makes the pass issue few big calls rather than many
+>    small ones, which is not the shape a per-dispatch guard refuses. Until #894 is
+>    fixed, score such a class with a large-output-cap confidence model
+>    (`escalation_model`), or split the inner list into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,

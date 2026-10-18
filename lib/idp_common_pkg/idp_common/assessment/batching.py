@@ -66,13 +66,27 @@ _BBOX_GEOMETRY_MULTIPLIER_FALLBACK = 3.0
 # "Lambda timeout & resume".
 _DEADLINE_SAFETY_RESERVE_SECONDS = 90.0
 
-# Assumed cost of one confidence model call when estimating whether the next round
-# fits before the deadline. Every wall-clock guard in this module floors its
-# estimate at this value even when it has a measured duration to hand: a call that
-# has just been made is the best evidence available, but the call that matters is
-# the NEXT one, and the shapes this guard exists for (a single oversized row
-# against a small output cap) are the slow ones. #894 recorded ~60 s per call on
-# Nova Lite.
+# Assumed cost of one confidence model call when estimating whether the next
+# dispatch fits before the deadline. #894 recorded ~60 s per call on Nova Lite.
+#
+# This value is the FLOOR, never a ceiling, and which guards have more than the
+# floor to work with differs — so do not read it as "every guard prices a call at
+# max(measured, 60)".
+#
+#   * Where a measured duration IS in hand, the guard floors at this value rather
+#     than trusting it: a call that has just been made is the best evidence
+#     available, but the call that matters is the NEXT one, and the shapes these
+#     guards exist for (a single oversized row against a small output cap) are the
+#     slow ones. That is ``_assess_slice_adaptive`` (the duration of the call it
+#     just made, before deciding to bisect) and ``_splice_missing_rows`` (the
+#     duration of the previous recovery chunk).
+#   * Where none is in hand the bare constant is the whole estimate. That is the
+#     primary pass — its first batch has made no call yet — including the
+#     cache-warming call and each wave of the concurrent fan-out, and the
+#     round-level check in ``_retry_missing_rows``. Under-pricing a slow model is
+#     self-correcting on those paths rather than unbounded, because each one
+#     re-reads the clock before the next dispatch and refuses it on what the
+#     previous one actually cost in wall-clock terms.
 _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 
 # --- Confidence-coverage shortfall thresholds (#901 item 3) -------------------
@@ -390,6 +404,50 @@ def enrich_assessment_with_thresholds(
     return enriched, alerts
 
 
+#: Per-row ``confidence_reason`` for a row reconciliation had to pad because the
+#: model's assessment held fewer items than the data — the model was asked about
+#: the row and did not answer about it.
+_UNASSESSED_SHORT_RESPONSE_REASON = (
+    "Not individually assessed (assessment returned fewer items than were extracted)."
+)
+
+#: Per-row ``confidence_reason`` for a row whose confidence batch was never
+#: DISPATCHED, because the remaining invocation time could not hold it (#1488).
+#: Distinct from the reason above because this is the text an operator reads PER
+#: FIELD in the UI, and the two have different remedies: a short response points
+#: at the model's output budget, where this points at the time budget, whose
+#: levers are the Assessment function's timeout and the work per section. Saying
+#: the assessment "returned fewer items" here would be false — no call was made.
+_UNASSESSED_DEADLINE_REASON = (
+    "Not individually assessed (the Lambda invocation time budget was reached "
+    "before this row's confidence batch was dispatched; allow more Assessment "
+    "function time, or reduce the work per section)."
+)
+
+
+def _row_placeholder(
+    data_row: Any, reason: str = _UNASSESSED_SHORT_RESPONSE_REASON
+) -> dict[str, Any]:
+    """A null-confidence placeholder shaped like ``data_row``, carrying ``reason``.
+
+    Module-level and reason-parameterised so a caller that KNOWS why a row is
+    unscored can say so; ``reconcile_assessment_to_data`` keeps the default,
+    which is the only cause it can infer from its own two arguments.
+    """
+    # Mirror the data row's sub-fields so grounding can attach a box per
+    # populated sub-field from its actual value.
+    if isinstance(data_row, dict):
+        leaves = {
+            sub: {"confidence": None, "confidence_reason": reason}
+            for sub, sv in data_row.items()
+            if sv is not None and not isinstance(sv, (dict, list))
+        }
+        if leaves:
+            return leaves
+    # Scalar row element (or all-null/nested row): single neutral leaf.
+    return {"confidence": None, "confidence_reason": reason}
+
+
 def reconcile_assessment_to_data(
     assessment: dict[str, Any], extraction_results: dict[str, Any]
 ) -> dict[str, Any]:
@@ -421,24 +479,6 @@ def reconcile_assessment_to_data(
     """
     if not isinstance(assessment, dict):
         return assessment
-
-    def _row_placeholder(data_row: Any) -> dict[str, Any]:
-        reason = (
-            "Not individually assessed (assessment returned fewer items "
-            "than were extracted)."
-        )
-        # Mirror the data row's sub-fields so grounding can attach a box per
-        # populated sub-field from its actual value.
-        if isinstance(data_row, dict):
-            leaves = {
-                sub: {"confidence": None, "confidence_reason": reason}
-                for sub, sv in data_row.items()
-                if sv is not None and not isinstance(sv, (dict, list))
-            }
-            if leaves:
-                return leaves
-        # Scalar row element (or all-null/nested row): single neutral leaf.
-        return {"confidence": None, "confidence_reason": reason}
 
     def _expand_row_to_per_column(row_assess: Any, data_row: Any) -> Any:
         """Normalize a per-ROW confidence into per-COLUMN leaves.
@@ -1267,6 +1307,15 @@ def build_assessment_issues(
         # DID truncate, the rows were attempted and the model could not fit them --
         # saying they "were not attempted" would be false, and more time would not
         # help; a smaller batch or a larger-output model is the fix.
+        #
+        # Both causes can also be true of DIFFERENT rows of one section, and this
+        # message cannot split them: ``truncated_calls`` is a section-wide count
+        # and ``unrecoverable`` is counted after recovery, so neither attributes a
+        # cause to a row. The per-row attribution lives on the row instead, in the
+        # ``confidence_reason`` reconciliation and the dispatch guard write
+        # (``_UNASSESSED_SHORT_RESPONSE_REASON`` /
+        # ``_UNASSESSED_DEADLINE_REASON``), where the boundary is exact. Do not add
+        # a third variant here that claims a split these aggregates cannot support.
         truncated_any = bool(stats.get("truncated_calls"))
         if timed_out and not truncated_any:
             budget = (
@@ -2083,6 +2132,14 @@ def assess_results_batched(
     merged_alerts: list[dict[str, Any]] = []
     merged_metering: dict[str, Any] = {}
     big_field_acc: list[Any] = []
+    # Reports whether the model's JSON could be READ, not whether it was asked.
+    # The batched path has nothing that sets it False — truncation is handled by
+    # the adaptive splitter and reported as ``truncated_calls`` — so a run that
+    # made no call at all because the deadline refused every batch also reports
+    # True. Do NOT overload it to mean "assessment happened": that would route a
+    # wall-clock stop into the parse-failure surface, whose remedy is a different
+    # model or a smaller batch. ``deadline_reached`` plus ``batch_count`` are what
+    # say how much was actually run.
     parsing_succeeded = True
     duration_seconds = 0.0
 
@@ -2090,6 +2147,11 @@ def assess_results_batched(
         rows[start : start + effective_batch_size]
         for start in range(0, len(rows), effective_batch_size)
     ]
+    # Planned, not final: ``batch_count`` is re-set from the batches that were
+    # actually DISPATCHED once the dispatch below is done, because the processing
+    # report and the UI both read it as "confidence assessment ran in N batch(es)"
+    # and a deadline stop leaves a trailing suffix of these planned batches
+    # unrun (#1488).
     split_stats["batch_count"] = len(chunks)
     split_stats["concurrent_batches"] = 1
 
@@ -2198,6 +2260,8 @@ def assess_results_batched(
                 remaining_rows[s : s + effective_batch_size]
                 for s in range(0, len(remaining_rows), effective_batch_size)
             ]
+        # Planned again (see the note at the first assignment): the authoritative
+        # count is set from the dispatched batches below.
         split_stats["batch_count"] = 1 + len(rest)
 
         if rest:
@@ -2243,11 +2307,21 @@ def assess_results_batched(
             #
             # The cost of the wave boundary is the straggler — a wave is only as
             # fast as its slowest call, where one continuous ``pool.map`` over every
-            # chunk would refill a free worker immediately. That is the price of
-            # having an observation point at all, and it is paid only on the
-            # concurrent path in a Lambda with a deadline threaded in.
+            # chunk refills a free worker the moment it frees up. That cost buys the
+            # observation point, so it is paid only where there is a budget to
+            # observe: with no ``deadline_epoch`` there is nothing to re-read and
+            # nothing to refuse, so that caller keeps the single continuous map it
+            # had before #1488 rather than paying a straggler per wave for a guard
+            # that is inert for it. Both branches dispatch the same chunks in the
+            # same order; the only difference is how many ``map`` calls it takes.
             dispatched = 0
             with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
+                if deadline_epoch is None:
+                    # map preserves input order → results stay index-aligned.
+                    sliced_results.extend(
+                        pool.map(_assess_chunk, rest, per_chunk_stats)
+                    )
+                    dispatched = len(rest)
                 while dispatched < len(rest):
                     if not _deadline_allows(
                         deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS
@@ -2323,6 +2397,15 @@ def assess_results_batched(
                     _record_min_batch(split_stats, cs_min)
             split_stats["concurrent_batches"] = workers
 
+    # The batches that actually RAN. One entry per dispatched chunk, so this is
+    # the planned count minus whatever trailing suffix the deadline refused —
+    # which is what makes the metric agree with ``deadline_reached`` instead of
+    # reporting batches that were never sent. The processing report renders it as
+    # "Confidence list batches: N" and the UI as "ran in N batch(es)", so a
+    # planned figure there would be a false claim about work done; 0 is the honest
+    # answer when even the cache-warming batch was refused.
+    split_stats["batch_count"] = len(sliced_results)
+
     # Accumulate per-row assessments IN ORDER (chunks were built in order and
     # concurrency preserved it), so big_field_acc lines up with rows.
     for sliced in sliced_results:
@@ -2332,6 +2415,23 @@ def assess_results_batched(
         duration_seconds += sliced["duration"]
         if not merged_assessment and sliced["scalars"]:
             merged_assessment = dict(sliced["scalars"])
+    # Rows past the last DISPATCHED chunk get their own per-row reason before the
+    # reconciliation below pads the remainder (#1488). Reconciliation can only
+    # infer one cause from its two arguments — "the assessment returned fewer
+    # items than were extracted" — and that is false here: no call was made for
+    # these rows. This is the string an operator reads PER FIELD in the UI, and
+    # the two causes have different remedies, so the distinction has to reach the
+    # row and not only the section-level issue. The boundary is exact: everything
+    # from ``len(big_field_acc)`` on is a trailing suffix no chunk covered, while
+    # a null row BELOW it really is a model that answered short, which keeps the
+    # default reason. ``_row_confidence_missing`` reads the confidence and not the
+    # reason, so these rows are still offered to every recovery rung and a rung
+    # that scores one replaces the placeholder wholesale.
+    if split_stats.get("deadline_reached") and len(big_field_acc) < len(rows):
+        big_field_acc.extend(
+            _row_placeholder(rows[i], _UNASSESSED_DEADLINE_REASON)
+            for i in range(len(big_field_acc), len(rows))
+        )
     merged_assessment[big_field] = big_field_acc
     # Final alignment against the full extraction (pads any residual gap).
     merged_assessment = reconcile_assessment_to_data(

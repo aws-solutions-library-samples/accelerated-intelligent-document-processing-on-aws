@@ -1330,5 +1330,191 @@ def test_a_fast_model_is_not_refused_work_the_clock_allowed(monkeypatch):
     assert (deadline - clock["now"]) > mod._DEADLINE_SAFETY_RESERVE_SECONDS
 
 
+class ShortAnswerService:
+    """Answers about only the first ``answered`` rows of every slice handed to it.
+
+    A genuinely SHORT response rather than a truncated one: ``truncated`` is False,
+    so the adaptive splitter does not bisect and reconciliation is what pads the
+    rows the model skipped. That is the other cause of an unscored row, and the
+    point of the service is to produce it in the SAME run as a deadline stop, so
+    the two per-row reasons can be told apart by index.
+    """
+
+    def __init__(self, list_field: str, clock: dict, answered: int):
+        self.list_field = list_field
+        self.clock = clock
+        self.answered = answered
+        self.calls: list[int] = []
+        self._lock = threading.Lock()
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        with self._lock:
+            self.calls.append(len(rows))
+            self.clock["now"] += mod._ESTIMATED_MODEL_CALL_SECONDS
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: [
+                    {"amount": {"confidence": 0.9}} for _ in rows[: self.answered]
+                ],
+                "account_holder": {"confidence": 0.95},
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=0.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+        )
+
+
+def test_a_skipped_row_says_the_time_budget_and_not_a_short_response(monkeypatch):
+    """The per-row reason names the cause that applies to THAT row.
+
+    ``confidence_reason`` is the string an operator reads per field in the UI, and
+    the two causes of an empty confidence have different remedies: a model that
+    answered about fewer rows than it was asked about points at the output budget,
+    where a batch that was never dispatched points at the time budget. Reporting
+    the first for the second sends an operator to the wrong knob, and the
+    section-level issue naming the time budget one level up does not undo a row-level
+    string that contradicts it.
+
+    One run produces both: the model answers about 6 rows of every 10-row batch,
+    and the budget covers only 2 of the 5 batches.
+    """
+    clock = {"now": 7_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    deadline = (
+        clock["now"]
+        + (2 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    svc = ShortAnswerService("transactions", clock, answered=6)
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(50), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=10,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        max_concurrent_batches=1,
+        max_retries=0,  # no recovery rung: every unscored row stays unscored
+        deadline_epoch=deadline,
+    )
+
+    assert result["split_stats"]["deadline_reached"] is True
+    # Two batches ran, and `batch_count` reports what RAN rather than what was
+    # planned — the processing report and the UI both render it as batches the
+    # confidence pass ran in.
+    assert len(svc.calls) == 2
+    assert result["split_stats"]["batch_count"] == 2
+
+    rows_out = result["assessment"]["transactions"]
+    assert len(rows_out) == 50
+
+    def _reason(i: int) -> str | None:
+        return rows_out[i]["amount"].get("confidence_reason")
+
+    # Rows the model answered about.
+    for i in (0, 5, 10, 15):
+        assert rows_out[i]["amount"]["confidence"] == 0.9
+
+    # Rows inside a DISPATCHED batch that the model's answer did not cover: the
+    # model really did return fewer items than were extracted.
+    for i in (6, 9, 16, 19):
+        assert rows_out[i]["amount"]["confidence"] is None
+        assert _reason(i) == mod._UNASSESSED_SHORT_RESPONSE_REASON
+
+    # Rows whose batch was never dispatched. No call was made for them, so the
+    # reason above would be false; the deadline reason names the time budget and
+    # its levers.
+    for i in (20, 35, 49):
+        assert rows_out[i]["amount"]["confidence"] is None
+        assert _reason(i) == mod._UNASSESSED_DEADLINE_REASON
+        assert "time budget" in (_reason(i) or "")
+        assert "returned fewer items" not in (_reason(i) or "")
+
+    # Every never-dispatched row carries the deadline reason, and no dispatched
+    # row does — the boundary is the last dispatched chunk, not a guess.
+    deadline_reason_rows = [
+        i for i in range(50) if _reason(i) == mod._UNASSESSED_DEADLINE_REASON
+    ]
+    assert deadline_reason_rows == list(range(20, 50))
+
+
+def _map_counting_pool_class(record: list):
+    """A ThreadPoolExecutor that records how many times ``map`` was called."""
+    import concurrent.futures as _cf
+
+    class _Counting(_cf.ThreadPoolExecutor):
+        def map(self, *args, **kwargs):
+            record.append(1)
+            return super().map(*args, **kwargs)
+
+    return _Counting
+
+
+def test_a_deadline_free_fan_out_keeps_one_continuous_map(monkeypatch):
+    """With no deadline the fan-out is NOT dispatched in waves.
+
+    A wave boundary costs a straggler — the wave is only as fast as its slowest
+    call, where one continuous ``pool.map`` refills a free worker the moment it
+    frees up. That cost buys the observation point the budget needs, so a caller
+    with no ``deadline_epoch`` must not pay it: there is nothing to re-read and
+    nothing it could refuse. 20 batches, 19 of them fanned out, must therefore
+    reach the pool in ONE map call rather than ten.
+    """
+    clock = {"now": 8_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    maps: list[int] = []
+    monkeypatch.setattr(
+        "concurrent.futures.ThreadPoolExecutor", _map_counting_pool_class(maps)
+    )
+
+    svc, result = _clean_scorer_run(
+        None, clock=clock, rows=200, batch_size=10, max_concurrent_batches=2
+    )
+
+    assert len(maps) == 1
+    assert len(svc.primary_calls) == 20  # 1 cache-warm + 19 fanned out
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 200
+
+
+def test_a_deadline_bearing_fan_out_dispatches_in_waves(monkeypatch):
+    """The other side of the branch above: with a deadline, one map per wave.
+
+    Same shape and a budget nothing is refused on, so the two tests differ only in
+    whether a deadline was threaded in. 19 fanned-out batches across 2 workers is
+    10 waves, so a single map call here would mean the clock is read once and the
+    guard cannot stop anything after the first wave.
+    """
+    clock = {"now": 9_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    maps: list[int] = []
+    monkeypatch.setattr(
+        "concurrent.futures.ThreadPoolExecutor", _map_counting_pool_class(maps)
+    )
+    deadline = (
+        clock["now"] + 10_000.0 + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )  # generous: nothing is refused
+
+    svc, result = _clean_scorer_run(
+        deadline,
+        clock=clock,
+        rows=200,
+        batch_size=10,
+        max_concurrent_batches=2,
+        seconds_per_call=1.0,
+    )
+
+    assert len(maps) == 10  # ceil(19 / 2)
+    assert len(svc.primary_calls) == 20
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 200
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
