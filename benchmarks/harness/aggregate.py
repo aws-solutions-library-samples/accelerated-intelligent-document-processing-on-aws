@@ -198,6 +198,22 @@ CSV_COLS = [
     "page_count",
     "completeness_recall",
     "truncation_prefix",
+    # `completeness_recall`'s own denominator problem, beside it (#1500). The recall
+    # is distinct rows recovered over truth rows, and a reader cannot tell a run that
+    # lost rows from one whose row IDENTIFIERS collapsed unless the identifier
+    # figures are in the same table: `rows_tagged` is how many tags came back,
+    # `rows_id_repaired` how many of them the canonicalisation had to repair, and
+    # `unverified_row_shortfall` names the shape, if any, that says this run's
+    # shortfall is not row loss.
+    # `DictWriter(extrasaction="ignore")` drops any row key not listed here, so a
+    # column absent from this list is a column no reader of the CSV ever sees.
+    "rows_truth",
+    "rows_extracted",
+    "rows_tagged",
+    "rows_id_repaired",
+    "rows_id_unresolved",
+    "dups",
+    "unverified_row_shortfall",
     "scalar_accuracy",
     "typed_accuracy",
     "cell_accuracy",
@@ -430,6 +446,20 @@ def cell_stats(rows):
             # Successful runs whose section objects could not all be read, so they
             # contribute to none of the quality statistics below.
             "n_sections_unread": sum(1 for r in succ if r.get("sections_unread")),
+            # Successful runs whose row shortfall is not evidence of a missing row,
+            # because row identity was not readable on them (#1500). The mean
+            # `completeness_recall` below is the figure a release A/B reads, and a
+            # single run of nine carrying this shape is what moved the one cell the
+            # v0.6.12 audit trail reported — so the count belongs beside the mean,
+            # not only on the rows. It is 0 on a cell whose identifiers all resolved.
+            "n_unverified_row_shortfall": sum(
+                1 for r in succ if r.get("unverified_row_shortfall")
+            ),
+            # Runs on which the OCR backend perturbed identifier widths and the
+            # canonicalisation repaired them. A finding about the backend, not about
+            # completeness — and its absence from the artifact is why the same
+            # instrumentation artifact read as a product regression four times.
+            "n_rows_id_repaired": sum(1 for r in succ if r.get("rows_id_repaired")),
             "max_repeat": max((r.get("repeat", 0) for r in rs), default=0) + 1,
             # How this cell's successful runs split between the two scorers (#1364).
             # A `core` cell holds both — 21 synthetic runs and 120 reference-corpus
@@ -1186,6 +1216,26 @@ def compare_cells(summary_path, baseline_path):
                 f"{lbl} {d:+.3f} ({bm:.3f}->{cm:.3f}); paired per-doc deltas "
                 f"n={len(deltas)} spread±{spread:.3f}"
             )
+            # Say so when the recall move is over runs whose row identity was not
+            # readable (#1500). This is the exact finding that was published as a
+            # product signal on four consecutive releases: one run of nine on a
+            # `bedrock_llm` arm, reported as recall 1.000 -> 0.958, with the
+            # discriminating figure (`dups` at or above the shortfall) recorded on
+            # the row and consulted by nothing. It is printed rather than suppressed
+            # — the delta is real arithmetic over the recorded numbers — but a reader
+            # must not take it for row loss without reading those runs.
+            if m == "completeness_recall":
+                flagged = [
+                    f"{side} {n}/{stats.get('n_success') or 0}"
+                    for side, stats in (("baseline", b), ("current", c))
+                    if (n := stats.get("n_unverified_row_shortfall") or 0)
+                ]
+                if flagged:
+                    tag += (
+                        "  [NOT ROW LOSS on " + ", ".join(flagged) + " run(s): their "
+                        "shortfall is matched by `dups` or by unresolved row ids — "
+                        "see `unverified_row_shortfall` on the rows (#1500)]"
+                    )
             if abs(d) <= spread:
                 weak.append(
                     (
