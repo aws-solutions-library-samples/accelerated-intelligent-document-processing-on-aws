@@ -104,54 +104,97 @@ types and sizes** (synthetic documents with exact ground truth, plus two real la
 corpora). We quantify seven dimensions per configuration: success/failure, list
 completeness, per-row field accuracy, confidence calibration, latency, token use, and cost.
 
-Headline results at v0.6.9:
+Headline results at v0.6.12:
 
-1. **The over-splitting that shaped the v0.6.7 edition is gone, and with it most of the
-   agentic cost premium's *variance*.** Every one of the 133 grid runs produced exactly one
-   section per document (the truth). At the cross-version control model (Sonnet 4.6) the
-   same-document cost spread of advanced mode fell from CV 5–47% at v0.6.7 to **3–13%**; at
-   the shipped default, Sonnet 5, it is still **25–40%** — so the remaining agentic
-   unpredictability is the model's turn count, not the classifier (§4).
-2. **Completeness and per-row accuracy remain solved for Textract-backed cells in both
-   modes up to 400 rows, and the two v0.6.7 hazards are closed.** `integrated` confidence
-   with simple extraction — 0.294 at v0.6.5, 0.936 at v0.6.7 — is **1.000 on all 7 documents
-   and 8 of 8 repeats**, at the same price as `separate` ($0.729 vs $0.721/doc), because
-   list-bearing classes are now routed to a separate pass automatically (#795). The
-   advanced-mode tool-decline list loss is **0 of 8** (§2.1).
-3. **🚨 Simple mode's true ceiling is now visible: ~800 rows / 17 pages is a coin flip, and
-   it depends on the OCR backend.** With one section per document the single-response
-   limit is no longer masked. Textract TABLES + Sonnet 5 completed the 800-row document in
-   **8 of 11** draws across three suites at v0.6.8 and **1 of 2** at v0.6.9; the same
-   document under BDA OCR, Bedrock-LLM OCR, forced tool use, or Sonnet 5 `:1m` returned
-   **43–92 of 800 rows** with status `COMPLETED`. ⚠️ **On v0.6.9, above 800 rows nothing
-   refuses.** Where v0.6.8 rejected 1,200+ rows outright, v0.6.9 returns 43–101 of
-   1,200–1,600 rows as `COMPLETED`; only 3,200 rows exceeds the input window. From 0.6.10
-   `extraction.row_shortfall_action: fail` makes such a run resolve to `FAILED` again, after
-   writing the rows it did get — opt-in, for the reason in §3. §3 also has the arithmetic
-   isolating why v0.6.8 refused: the size of the request its page images made, not the token
-   window, which is why no input-size gate could have fixed this.
-4. **Advanced mode holds recall 1.000 and cell accuracy 1.000 through 3,200 rows / 66
-   pages at every model tested** — Sonnet 4.6 ($11.39), Sonnet 5 ($24.93), Opus 5 and GPT-6
-   Astra ($22.5–24.0) — so above ~400 rows the choice is only about cost and wall-clock (§3, §5).
-5. **A premium model does not earn its price here, and the cheap end is not free either.**
-   On the four-document premium study, advanced Sonnet 5 is already at ceiling (recall
-   1.000, accuracy ≥0.999) and GPT-6 Astra matches it at **1.7–2.6× the cost**. In simple
-   mode Astra's larger window makes the request *accepted* where Sonnet 5's is refused — and
-   then returns an **empty response** (5 of 5, 17-page document) or rows whose descriptions
-   it has rewritten (26-page document: dates 250/250 by position, amounts 209/250, every
-   identifier dropped). At the other end, **Nova Lite cannot run the agentic path**: 247
-   `invalid sequence as part of ToolUse` stream errors in one grid, each retried as
-   transient ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)). §5 gives the per-profile recommendation.
-6. **Bedrock-LLM OCR is still the only backend that gets values wrong** — cell accuracy
-   0.979–0.988 on the 400-row documents and 0.926 on the 800-row one, against 1.000 for every
-   Textract and BDA cell — and it now also loses 9–10% of rows on ordinary 400-row
-   documents (§2, finding 4).
-7. **Two new product defects, both found by cells this edition adds.** A configuration
-   stored compressed that carries a float fails every Test Studio run at submit
-   ([#892](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/892),
-   fix in PR #893), and a class wrapped with `x-aws-idp-multi-instance` whose instances hold
-   a long list can never finish confidence assessment — three 900-second Lambda timeouts
-   and a failed document ([#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894)) (§7).
+1. **The model axis is measured in full for the first time, and Claude Opus 5.5 tops it.**
+   All nine swept extraction models ran on this one release, as did all three arms of both
+   the classification and the confidence axis. On the 19-cell × 7-document grid **Opus 5.5
+   is the only arm at both perfect recall and perfect cell accuracy** — 1.0000 and 1.0000
+   over **83,790 `cells_compared`, the largest denominator of any arm** — for **$101.67
+   against GPT-6 Astra's $209.28 over the same grid**. So the most expensive arm in the
+   sweep is matched on recall and beaten on cell accuracy (0.9737 over 83,788 cells) by one
+   costing **at least 51% less**, a bound rather than a ratio because Astra's figure is
+   itself a lower bound. What the completeness costs is wall-clock: Opus 5.5 averages
+   **376 s per document against the next-slowest arm's 221 s**, a gap concentrated in simple
+   mode on the 17-page document and absent in advanced mode (§5.1, §5.5).
+2. **On a real labelled corpus simple mode beats advanced at about half the cost — and the
+   synthetic grid cannot see it.** On RealKIE-FCC-Verified (20 documents, all 19 cells,
+   scored by the product's own evaluation) the **eleven highest-scoring cells are all simple
+   mode**, at 0.8029–0.8119 weighted accuracy, and **every one of the six advanced cells
+   falls below them**, at 0.7584–0.7911. The matched pair costs $0.1423 simple against
+   $0.2757 advanced. The two simple cells that do not clear the advanced band are the two
+   with a known handicap — forced tool use (0.7892) and Bedrock-LLM OCR (0.7661). The
+   exact-ground-truth synthetic grid scores 1.000 on recall and cell accuracy almost
+   everywhere and so ranks nothing, which is why the reference corpora earn their run cost.
+   These rows carry no `cells_compared`: a reference document's truth lives on the stack, so
+   the metric is `weighted_accuracy` over 20 documents per cell (§2c).
+3. **🚨 Claude Sonnet 5.5 loses nearly the whole list on 400-row documents**
+   ([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)).
+   13 of its 133 grid runs return **2 or 10 rows of 400** — four at recall 0.005, nine at
+   0.025 — and every one of the 13 is a 400-row document: per-document recall **0.6366 on
+   `med_narrow` (9,660 cells)** and **0.7434 on `manylists_400` (11,300)**, against 1.0000
+   on every document of 100 rows or fewer *and* on the 800-row one. Its grid cell accuracy
+   of 1.0000 is computed on the rows it chose to return, over 73,570 cells against the
+   grid's largest 83,790 — so the row reads "cheap and perfect" only if the denominator is
+   ignored. On a 400-row list it is the worst arm in the table (§5.1).
+4. **Mode, not model, decides an 800-row document — and simple mode still reports success
+   on a truncated list.** On the 17-page, 800-row document **all seven `coresynth` arms
+   return 800 of 800 rows in advanced mode**: 6 of 6 runs each, recall 1.0000 and cell
+   accuracy 1.0000 over 9,600 cells per arm, no exceptions. In simple mode the same seven
+   split. Three return everything (20,800 cells), Opus 5 returns ~738 of 800 (19,200), and
+   Sonnet 5, Sonnet 5 `:1m` and Haiku 5.5 return **~454, ~401 and ~351 of 800** while
+   reaching `COMPLETED` in 13 of 13 cells each — with cell accuracy 0.9985–1.0000 **because
+   it is computed on the rows they returned**, over 9,136 to 11,814 cells. Nothing
+   downstream flags it. Rank by completeness, never by completion rate, and never by an
+   accuracy figure without its denominator (§5.5, §3).
+5. **Advanced mode holds the 3,200-row / 66-page ceiling; widening the shard breaks it
+   silently.** At default shards both models measured at that size returned 3,200 of 3,200
+   rows at cell accuracy 1.0000 over **12,800 cells each** — Sonnet 5 at **$5.80 and
+   $5.82**, Astra at **$18.39 and $16.25**, so Sonnet 5 is **at least 66% less** — while
+   *simple* mode refuses the same document up front with `ExtractionInputTooLarge`, which is
+   the correct behaviour. The 25-page "wide" shard setting is the one that fails: all four
+   runs reached `COMPLETED` and returned **1,982 to 3,200 of 3,200 rows**, at cell accuracy
+   1.0000 on denominators 19% and 30% smaller, and on Sonnet 5 at a *higher* price than the
+   default shard. Leave `shard_pages` at its default at this size (§5.2, §6).
+6. **Neither premium knob on the other two model axes earns its price.** Upgrading the
+   **classification** model buys nothing measurable and costs **29% more**: the section
+   boundary is right on 132 of 133 runs under the Nova 2 Lite default and 132 of 133 under
+   Sonnet 5, downstream recall is identical to four decimal places (0.9982 both) and cell
+   accuracy marginally *worse* (0.9991 against 0.9995) on denominators within 0.2% of each
+   other, while the grid bill goes from **$88.15 to $113.81**. Sonnet 5 as the **confidence**
+   model is not an accuracy upgrade either — it is **a far more conservative scorer**,
+   flagging about **283 of 119,980** confidence leaves below 0.9 against the default's **8 of
+   119,943**, for **$199.95 against $91.20 over the same grid**. Its cell accuracy (0.9995
+   over 83,562 cells) is a rounding difference from the default's (0.9991 over 83,396). That
+   conservatism is worth paying for only where the corpus contains wrong values, and §5.4
+   measures the one grid cell that does (§5.3, §5.4).
+7. **Both standing list-loss hazards are closed, and the over-splitting that shaped the
+   v0.6.7 edition is gone.** `integrated` confidence with simple extraction — 0.294 at
+   v0.6.5, 0.936 at v0.6.7 — is recall 1.000 and cell accuracy 1.000 on **8 of 8 repeats
+   over 1,600 cells**, at the same cost to the cent as `separate` ($0.207 against $0.208),
+   because list-bearing classes are now routed to a separate pass automatically (#795). The
+   advanced-mode tool-decline list loss is **0 of 8**, likewise 1.000 and 1.000 over 1,600
+   cells (§2.1). And **132 of the 133 grid runs produced exactly one section, which is the
+   truth** — the single exception is the Bedrock-LLM OCR cell on `manylists_400`, which split
+   one statement in two. Agentic cost is still run-to-run variable on a fixed document and
+   must be budgeted as a range rather than a mean; §4 measures that with repeats.
+8. **Bedrock-LLM OCR is still the only backend that gets *values* wrong.** It is the only
+   one of the 19 cells with any cell accuracy below 1.000 anywhere in the grid: **0.9793 and
+   0.9876 over 724 cells each and 0.990 over 800** on the three 400-row documents, and
+   **0.981 over 1,524 cells** on the 800-row one, where every Textract and BDA cell is
+   1.000. It also loses rows on ordinary documents — recall **0.905** on two of the three
+   400-row documents against 1.000 on the third. It is the cheapest cell in the grid and the
+   only one that corrupts identifiers (§2, finding 4).
+9. **The cheap end completes everything and returns half the rows.** Neither Nova model can
+   finish the agentic path — 247 `invalid sequence as part of ToolUse` stream errors in one
+   grid, each retried as transient
+   ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895))
+   — so both ran the smaller `simplegrid` matrix instead, where they completed **63 of 63
+   runs with no error** at mean recall **0.4809** (Nova Pro) and **0.4690** (Nova Lite).
+   Nova Pro's 0.9361 cell accuracy is over **6,960 cells** against the same matrix's Sonnet
+   4.6 control at **39,462** — "94% accurate on the rows it chose to return", not 94%
+   accurate. Their own confidence does not catch it either: 0.007% and 0.707% of leaves fall
+   below 0.9 (§5.1).
 
 > **What changed between releases** is tracked separately in the
 > [Release Audit Trail](releases/) — this paper focuses on *choosing a configuration at the
@@ -188,7 +231,7 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
 | Forcing | off (shipped default) · on |
 | Schema restatement | on (shipped default) · off |
 | Section splitting | `llm_determined` (shipped default) · `disabled` |
-| **Extraction model** (§5) | Nova Lite · Nova Pro · **Sonnet 5** (default) · Sonnet 5 `:1m` · Opus 5 · Opus 5.5 (declared, not yet measured) · GPT-6 Astra (`us.` and `global.`) · Sonnet 4.6 (control) |
+| **Extraction model** (§5) | Nova Lite · Nova Pro · **Sonnet 5** (default) · Sonnet 5 `:1m` · Sonnet 5.5 · Opus 5 · Opus 5.5 · Haiku 5.5 · GPT-6 Astra (`us.` and `global.`) · Sonnet 4.6 (control) — all nine measured on this release |
 | **Classification model** (§5) | **Nova 2 Lite** (default) · Sonnet 5 · Haiku 4.5 |
 | **Confidence model** (§5) | **Nova Lite** (default) · Nova 2 Lite · Sonnet 5 |
 | Confidence batch size | shipped (ceiling 12 since #861) · pinned 8 · pinned 13 |
@@ -824,15 +867,15 @@ and ran `simplegrid` instead, so they are reported separately below and never av
 Note the grid's documents run to **800 rows**; the larger sizes where models diverge most
 are §3's territory, not this table's.
 
-| extraction model | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | % conf leaves < 0.9 |
-|---|---:|---:|---|---|---:|---|---|
-| **Claude Opus 5.5** | 133 | 130 | **1.0000** | **1.0000** | **83,790** | **$101.67** | 0.020% |
-| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 ◊ | 0.004% |
-| Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 0.010% |
-| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 0.007% |
-| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 0.006% |
-| **Claude Sonnet 5.5** *(new)* | 133 | 132 | **0.9041** ※ | 1.0000 ※ | 73,570 | $62.85 ‡ | 0.011% |
-| Claude Haiku 5.5 | 133 | 133 | 0.9269 | 0.9990 | 70,406 | $26.30 † | 0.025% |
+| extraction model | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | wall/doc | % conf leaves < 0.9 |
+|---|---:|---:|---|---|---:|---|---:|---|
+| **Claude Opus 5.5** | 133 | 130 | **1.0000** | **1.0000** | **83,790** | **$101.67** | **376 s** ¶ | 0.020% |
+| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 ◊ | 199 s | 0.004% |
+| Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 221 s ¶ | 0.010% |
+| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 196 s | 0.007% |
+| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 193 s | 0.006% |
+| **Claude Sonnet 5.5** *(new)* | 133 | 132 | **0.9041** ※ | 1.0000 ※ | 73,570 | $62.85 ‡ | 165 s | 0.011% |
+| Claude Haiku 5.5 | 133 | 133 | 0.9269 | 0.9990 | 70,406 | $26.30 † | 153 s | 0.025% |
 
 ⚠️ **Read `cells_compared` alongside the accuracy columns, not after them.** A cell the
 arm never returned is a cell it is not scored on, so an arm that returns fewer rows is
@@ -851,6 +894,37 @@ most expensive arm is matched on recall and beaten on cell accuracy by an arm co
 least 51% less**. That gap is stated as a bound rather than a ratio because Astra's
 $209.28 is itself a lower bound (◊): its true cost can only be higher, so the saving can
 only be larger.
+
+⚠️ **The completeness recommendation is paid for in wall-clock, and that is the one column
+where Opus 5.5 is last by a wide margin.** Its grid mean is **376 s per document against
+the next-slowest arm's 221 s — 70% more** — on a grid whose fastest arm (Haiku 5.5, and
+the least complete) averages 153 s. Three things locate that figure, and all three matter
+before a throughput plan rests on it.
+
+The distribution is heavily right-skewed, so the mean is not the typical run. Opus 5.5's
+**median** run is 164 s, within a second of Opus 5's 165 s, and the whole of the gap
+between the two means is **four runs of the 133** — all on the 17-page `large_narrow`
+document, at 2,211 s, 3,601 s, 5,869 s and 8,938 s. Drop those four and the arm averages
+228 s against Opus 5's 221 s. Three of the four carry an assessment issue code
+(`assessment_recovered_with_retries` twice, `assessment_incomplete` once), which places
+the retry activity in the confidence pass rather than in extraction; these artifacts
+record no per-phase wall, so what share of those runs is assessment cannot be quantified
+from them.
+
+The penalty is not only in that tail, though. **Opus 5.5 has the highest per-document mean
+wall of the seven arms on every one of the seven documents** — 24 s, 96 s, 156 s, 304 s,
+310 s, 312 s and 1,429 s from `tiny_form` to `large_narrow`, against the next-slowest
+arm's 20 s, 77 s, 139 s, 250 s, 294 s, 260 s and 537 s. So it is 5–25% slower up to 400
+rows and **2.7× slower on the 17-page document**.
+
+**Mode decides whether any of this matters.** On `large_narrow` in **advanced** mode all
+seven arms land between 179 s and 294 s and Opus 5.5 is mid-pack at 208 s — faster than
+the shipped default's 294 s — with every arm at recall 1.0000 and cell accuracy 1.0000
+over 9,600 cells. In **simple** mode on the same document Opus 5.5 averages **1,993 s**
+(median 641 s, slowest run 8,938 s) against GPT-6 Astra's 530 s and Sonnet 5.5's 520 s,
+the two other arms that also return all 800 rows there. The latency cost of buying
+completeness from this arm is therefore a **simple-mode** cost on the largest document,
+and advanced mode removes it.
 
 ⚠️ **Opus 5.5's three incomplete runs are not a model property.** All three are the
 `AssessmentStep` memory failure on one 17-page document
@@ -907,6 +981,12 @@ pricing-table artefact and **not** evidence that Sonnet 5.5 is cheaper.
 a long-context band above 272,000 input tokens that `pricing.yaml` cannot express — so no
 cost *ratio* is published for it either, and the one cost comparison drawn against it
 above is a one-sided bound.
+¶ `wall/doc` is the mean of each run's end-to-end `wall_s`, which covers OCR,
+classification, extraction and the confidence pass together. It is populated on all 133
+rows of six of the seven arms; **Opus 5's 221 s is the mean of 132**, because its
+`core-llm-simple-sep` run on `large_narrow` was left in `EXTRACTING` and recorded no wall.
+Read Opus 5.5's 376 s with the paragraphs above it rather than on its own — the arm's
+median run is 164 s.
 
 **The cheap end does not fail, it silently under-returns**, which is the more dangerous
 shape:
@@ -951,10 +1031,11 @@ quoted.** At 0.9990 cell accuracy over 70,406 cells it is indistinguishable from
 5's 0.9996 over 74,652 — but the denominators are the point: what it gives up is **row
 recall, 0.9269 against 0.9563**, which leaves it the smallest denominator of the seven
 arms (70,406 cells against the grid's largest, 83,790). It also carries the highest share
-of low-confidence leaves of the seven (2.54%). Its $26.30 is the cheapest figure in the
-table and is a **lower bound** (†) — see the banded-pricing warning in the header — so no
-cost *ratio* for it appears in this paper. Choose it for accuracy parity on the rows it
-does return, never on a quoted saving.
+of low-confidence leaves of the seven — **0.025%**, the top of a range that runs from
+0.004%, so that column is a ranking and not a usable alert rate at any point in it. Its
+$26.30 is the cheapest figure in the table and is a **lower bound** (†) — see the
+banded-pricing warning in the header — so no cost *ratio* for it appears in this paper.
+Choose it for accuracy parity on the rows it does return, never on a quoted saving.
 
 > ⚠️ **The v0.6.8 block below is superseded for the model *ranking*, and is retained only
 > for its per-document-size detail.** Every swept model has a v0.6.12 row in the tables
@@ -1453,10 +1534,22 @@ on that profile's documents, on a denominator stated in the same cell.
 set.** The one thing the premium end buys is a complete 800-row list in *simple* mode, where
 only Sonnet 5.5, Opus 5.5 and Astra reach 1.0000 — and advanced mode gets all seven arms
 there at 9,600 cells and accuracy 1.0000 for a fraction of the price. If simple mode is a
-hard constraint on a document that size, **Opus 5.5 is the arm to pick**: recall 1.0000 and
-cell accuracy 1.0000 over 20,800 cells, where Sonnet 5.5 is sound at 800 rows but unusable
-at 400 and Astra is the only arm in the grid below 0.99 cell accuracy (0.9737 over 83,788
-cells).
+hard constraint on a document that size, **Opus 5.5 is the arm to pick on quality**: recall
+1.0000 and cell accuracy 1.0000 over 20,800 cells, where Sonnet 5.5 is sound at 800 rows but
+unusable at 400 and Astra is the only arm in the grid below 0.99 cell accuracy (0.9737 over
+83,788 cells).
+
+⚠️ **On that one cell it is also the slowest arm by a factor of about four, so it is the
+wrong pick for a high-volume profile.** Across the thirteen simple-mode cells on this
+document Opus 5.5 averages **1,993 s per document** (median 641 s, slowest run 8,938 s)
+against **Astra's 530 s** and **Sonnet 5.5's 520 s** — the two other arms at recall 1.0000
+there. What Astra charges for its 530 s is cell accuracy: 0.9615 against Opus 5.5's 1.0000
+on the same 20,800 cells. So where throughput binds and simple mode is forced, that trade is
+the one on offer, and where neither binds, **advanced mode is the answer to both at once** —
+all seven arms finish this document in 179–294 s at recall 1.0000 and cell accuracy 1.0000
+over 9,600 cells, and Opus 5.5 is mid-pack there at 208 s. The latency penalty in §5.1's
+`wall/doc` column is a simple-mode penalty on documents this size; it does not follow the
+model onto the agentic path.
 
 **Over the grid as a whole the accuracy-per-dollar and the completeness-per-dollar answers
 are not the same arm, and the gap between them is 18%.** **Claude Opus 5.5 is the only arm
@@ -1473,6 +1566,16 @@ everywhere. **Pay 18% more for Opus 5.5** is right where a complete, exactly-cor
 is worth 18% — and it is the only arm in this edition that delivers one on every document in
 the grid. Nothing above those two is worth buying: the most expensive arm in the sweep is
 matched on recall and beaten on cell accuracy by one costing at least half as much.
+
+⚠️ **The 18% is dollars only. On wall-clock the same arm is the slowest in the sweep** —
+**376 s per document against the shipped default's 196 s** over the same grid — so paying
+for Opus 5.5 is a throughput decision as well as a cost one, and on a high-volume profile
+the throughput side is likely to bind first. §5.1 breaks that figure down: the median run is
+164 s and the gap is concentrated in simple mode on the 17-page document (1,993 s against
+the default's 367 s), while in advanced mode the two arms are 208 s and 294 s on that same
+document with both at recall 1.0000 and cell accuracy 1.0000 over 9,600 cells. Which is the
+same conclusion again from a third direction: **advanced mode is what buys completeness
+here cheaply, and it buys it quickly too.**
 
 ## 6. Product improvement backlog (surfaced by this study)
 
@@ -1502,17 +1605,39 @@ ordered by how much data they can cost a customer.
    by Step Functions; advanced-mode documents sat in the shard map for over 45 minutes. The
    error should be classified as non-retryable for the model, and Nova Lite documented as
    simple-mode-only (§5).
-4. **GPT-6 Astra's 1.05M window is not usable in one request with page images (P2, new).**
-   A 66-page simple request estimated at ~794,000 tokens is refused by Bedrock as too long,
-   and a 25-page agentic shard is refused the same way, on Astra as on Sonnet 5 (§5). Either
-   the token estimator under-counts Astra's image tokens or the model's per-request limit
-   with images is below its nominal window; either way the `max_pages_per_shard` guidance
-   for Astra should not assume the nominal figure.
-5. **Astra in simple mode returns an empty response on a 17-page document, 13 of 13 (P2,
-   new).** `raw_output: ""`, `parsing_succeeded: false`, an `extraction_incomplete` warning —
-   and `COMPLETED`. The same request on Sonnet 5 returns 800 rows or truncates; Astra returns
-   nothing. Whether this is a model behaviour on long inputs or a response-format mismatch
-   is not established here; until it is, Astra is an advanced-mode-only model in this guide.
+4. **GPT-6 Astra's 1.05M window is not usable in one request with page images, and the
+   wide agentic shard under-returns rather than refusing (P2).** Two findings on the
+   66-page ceiling, and they are opposite shapes. In **simple** mode the request — ~794,000
+   estimated tokens, §5.2 — is refused by Bedrock as too long, on Astra as on Sonnet 5: 4
+   of 4 runs `FAILED` with `ExtractionInputTooLarge`, nothing attempted and nothing wrong
+   returned, which is the right behaviour. The **25-page "wide" shard** on the agentic path,
+   the setting that exists so a large-window model can use its window, refuses nothing:
+   all four runs reached `COMPLETED` and returned **2,416 and 2,031 of 3,200 rows on Sonnet
+   5 and 3,200 and 1,982 on Astra**, every returned value correct — cell accuracy 1.0000
+   throughout — on denominators of 8,894 and 10,364 cells against the default-shard arms'
+   12,800, 30% and 19% smaller. On Sonnet 5 it is also **dearer** than the default shard
+   ($8.31 and $7.98 against $5.80 and $5.82). So two things need fixing: the
+   `max_pages_per_shard` guidance for Astra should not assume the nominal window (either
+   the token estimator under-counts Astra's image tokens or the per-request limit with
+   images is below the nominal figure), and a shard that drops a third of its rows while
+   reporting `COMPLETED` with a perfect accuracy column needs the row-count check item 2
+   asks for in simple mode. §5.2 has the per-repeat table.
+5. **GPT-6 Astra returns a full-looking result whose every row key is unusable on a 26-page
+   document (P2).** The 17-page document is not where this happens: Astra returns all **800
+   rows in 13 of 13 simple-mode `coresynth` cells** (20,800 cells at cell accuracy 0.9615)
+   and in **5 of 5** `astravalue` repeats on both the `us.` and the `global.` endpoint, so
+   it is not an advanced-mode-only model. Where it does fail is `dense_250` — 26 pages, 250
+   rows, 8 columns, 4 interleaved lists — in simple mode, 5 of 5 on each endpoint, and the
+   shape is nastier than an empty response: **0 of 250 rows match a truth key and all 250
+   truth ids are recorded as gaps, while the run carries 757 confidence leaves — the same
+   count as the advanced runs that returned all 250 rows.** Status `COMPLETED`, **zero**
+   processing issues, confidence coverage 1.000, mean confidence 0.99, and $1.02–1.32 a
+   document — a lower bound, as every Astra dollar figure in this paper is.
+   Nothing in the run reports a problem, so a consumer reading status, cost,
+   coverage or confidence sees a complete extraction. Whether the keys are a response-format
+   mismatch or a model behaviour on long inputs is not established here; what is clear is
+   that the failure needs to be *detectable*, since on this evidence the confidence pass
+   will score an empty keyspace as a full one. §5.2 has the per-cell table.
 6. **The agentic cost variance at Sonnet 5 is the model, not the classifier (P2).** With one
    section per document the Sonnet 4.6 advanced cells run at CV 3–13%; Sonnet 5's run at
    25–40% on the same document (§4). Bounding the agent's turn count, or surfacing it in the
