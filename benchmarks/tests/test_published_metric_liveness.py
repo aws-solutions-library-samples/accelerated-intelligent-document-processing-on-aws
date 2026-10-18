@@ -31,17 +31,21 @@ What these tests pin
    the evidence is the committed artifacts rather than a figure in a docstring.
 
    ⚠️ That makes this one check a function of the **retention policy** as well as of
-   the harness. ``benchmarks/results/RETENTION.md`` guarantees only
-   ``v<RELEASE>/corefast/`` and ``baseline.json``, and ``corefast`` is
-   ``[tiny_form, small_narrow, longdesc_100]`` — all ``bank_statement``, which by this
-   change's own design can never carry ``typed_accuracy``. Its only non-null evidence
-   is in four one-off ``kv_form`` slices, which that policy permits pruning once their
-   finding is written into a ``docs/benchmarking/`` page. So a prune can turn this red
-   with the harness working perfectly; the assertion message names that as a distinct
-   cause with its own remedy, because the other two remedies do not apply to it. The
-   contract tests further down are the ones that are **not** coupled to the tree: they
-   re-score the corpus's generators, so they answer "does the harness still produce
-   it" on its own.
+   the harness, and for one metric the policy had to be changed to carry it.
+   ``typed_accuracy`` is defined only for a document whose truth declares
+   ``fields_typed`` — the ``kv_form`` generator alone today — and ``corefast`` is
+   ``[tiny_form, small_narrow, longdesc_100]``, all ``bank_statement``, so **no release
+   grid can carry it**. Its only non-null evidence is 24 rows across four one-off
+   ``kv_form`` slices, which the pruning rule permits removing once their finding is
+   written into a ``docs/benchmarking/`` page — i.e. a policy-compliant prune could turn
+   this red with the harness working perfectly.
+   ``RETENTION.md`` therefore gives one of those slices an explicit Keep row, and
+   ``test_the_kept_slice_backing_typed_accuracy_is_still_policy_protected`` below pins
+   that, so the coupling fails as a named condition rather than as a mystery. The
+   assertion message still names the prune as a distinct cause with its own remedy,
+   because the other two remedies do not apply to it. The contract tests further down
+   are the ones that are **not** coupled to the tree: they re-score the corpus's
+   generators, so they answer "does the harness still produce it" on its own.
 2. **The typed-scalar pair is absent, never present-and-null, on a document that has no
    typed scalar truth** — and present and *measuring* on one that does. Closed over the
    corpus's generators, derived from the generator directory and
@@ -125,18 +129,20 @@ def published_metrics() -> list[str]:
     return list(published_metric_rows())
 
 
-def committed_rows():
-    """Every scored row in the committed results tree.
+def committed_rows(root: str = RESULTS):
+    """Every scored row in the committed results tree, or in one subtree of it.
 
     Every committed JSON carrying a ``rows`` list, selected by that shape rather than
     by filename. Most are ``summary.json``, but not all — ``boundary_prompt-*.json``
     and ``prefix_survey_32_classes.json`` are scored grids under another name — and a
     future artifact of the same shape should be read too.
+
+    ``root`` is parameterised so a check about **one** slice reads it the same way the
+    whole-tree liveness check does; a second, slightly different reader is how the two
+    would come to disagree about whether a metric is present.
     """
     rows = []
-    for path in sorted(
-        glob.glob(os.path.join(RESULTS, "**", "*.json"), recursive=True)
-    ):
+    for path in sorted(glob.glob(os.path.join(root, "**", "*.json"), recursive=True)):
         try:
             with open(path) as fh:
                 blob = json.load(fh)
@@ -199,14 +205,58 @@ class TestEveryPublishedMetricIsLive:
             "they re-score the corpus's generators and do not read the results tree at "
             "all; (2) no committed suite runs a document it applies to, in which case "
             "the page must say so rather than letting the column render blank (#1490); "
-            "or (3) THE EVIDENCE WAS PRUNED. benchmarks/results/RETENTION.md guarantees "
-            "only `v<RELEASE>/corefast/` and `baseline.json`, and `corefast` is "
-            "[tiny_form, small_narrow, longdesc_100], all bank_statement — so a metric "
-            "whose only evidence sits in a one-off slice is removable by a "
+            "or (3) THE EVIDENCE WAS PRUNED. The Keep table in "
+            "benchmarks/results/RETENTION.md is what a metric's evidence has to be "
+            "named in to survive, and only one one-off slice is named there — so a "
+            "metric whose evidence sits in any other one-off slice is removable by a "
             "policy-compliant prune with the harness working perfectly. Remedy for (3) "
             "is to restore the slice (`git checkout <SHA> -- benchmarks/results/<dir>/`) "
             "and give it a Keep row in RETENTION.md, or to run a slice that produces the "
             "metric into the release grid."
+        )
+
+    def test_the_kept_slice_backing_typed_accuracy_is_still_policy_protected(self):
+        """The one metric with no release-grid evidence needs a named Keep row.
+
+        ``typed_accuracy`` is measurable only on a document whose truth declares
+        ``fields_typed``, and no document in ``corefast`` does, so the liveness check
+        above rests on a one-off slice that the pruning rule would otherwise permit
+        removing. This asserts the two halves of that protection together — the slice
+        is on disk **and** RETENTION.md names it — because either half alone is the
+        state the check was already in: present but unprotected, or protected on paper
+        with the bytes gone.
+        """
+        policy = os.path.join(RESULTS, "RETENTION.md")
+        with open(policy) as fh:
+            text = fh.read()
+        keep_rows = [
+            ln
+            for ln in text.splitlines()
+            if ln.startswith("|") and "v0.6.8/enforcement-kvform/" in ln
+        ]
+        slice_dir = os.path.join(RESULTS, "v0.6.8", "enforcement-kvform")
+        on_disk = os.path.isdir(slice_dir)
+
+        assert keep_rows and on_disk, (
+            "`typed_accuracy` is the one published metric no release grid can carry "
+            "(it needs a document whose truth declares `fields_typed`; corefast has "
+            "none), so its liveness evidence is a one-off kv_form slice and must be "
+            "protected explicitly. State found: RETENTION.md Keep row for "
+            f"v0.6.8/enforcement-kvform/ = {bool(keep_rows)}, directory present = "
+            f"{on_disk}. If the slice was deliberately replaced, point BOTH this test "
+            "and the Keep row at the replacement in the same change; if a release grid "
+            "now runs a typed-truth document, delete the Keep row and this test "
+            "together."
+        )
+
+        live = [
+            r for r in committed_rows(slice_dir) if r.get("typed_accuracy") is not None
+        ]
+        assert live, (
+            f"{slice_dir} is kept and present but carries 0 rows with a non-null "
+            "`typed_accuracy`, so the Keep row protects nothing and the liveness check "
+            "above is passing on some other slice that is NOT protected. Find which "
+            "slice is carrying it and move the Keep row there."
         )
 
 
