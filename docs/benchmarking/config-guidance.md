@@ -1622,7 +1622,7 @@ actually populates the confidence-alerts filter.
 wrong in it**, and the one grid cell that does is Bedrock-LLM OCR (`core-llm-simple-sep`,
 7 runs per arm), where 1–2% of cells are corrupted:
 
-| confidence model | cell accuracy on that cell | `cells_compared` | mean confidence there | leaves below 0.9 |
+| confidence model | cell accuracy on that cell | `cells_compared` | mean confidence on that cell | leaves below 0.9 |
 |---|---|---:|---|---|
 | Nova Lite *(default)* | 0.9824 | 4,016 | 0.9961 | ~**3** of 6,667 |
 | Nova 2 Lite | 0.9843 | 4,256 | 1.0000 | **0** of 6,661 |
