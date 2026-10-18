@@ -991,6 +991,46 @@ def unread_sections_row(read):
     }
 
 
+TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS = (
+    "no typed scalar truth: this document's truth file declares no `fields_typed`, so "
+    "typed_accuracy / typed_fields do not apply to this row and are absent, not zero. "
+    "Only a document whose generator emits typed scalar expectations carries them "
+    "(`kv_form`); for a transaction-list document the per-value instrument is "
+    "cell_accuracy, with cells_compared as its denominator, and scalar_accuracy "
+    "compares the text the document renders."
+)
+
+
+def typed_scalar_keys(hits, total):
+    """The typed-scalar metric keys a scored row carries — or the reason it carries none.
+
+    ``typed_accuracy`` is only defined for a document whose truth declares
+    ``fields_typed``, which in this corpus means the ``kv_form`` generator and nothing
+    else: ``bank_statement``'s two scalar fields are an account number with leading
+    zeros and a date RANGE, both of which a typed schema correctly leaves as strings,
+    so there is no typed scalar to score and never will be without changing ``FIELDS``
+    — which would move ``scalar_accuracy``'s denominator and break the comparability
+    that metric exists to preserve.
+
+    So the pair is ABSENT on such a row rather than present-and-null, and a reason
+    column says so. This is the same contract as ``scored_against_keys`` below, for
+    the same reason stated there: presence-and-null is already this harness's signal
+    for "measured, and there was nothing to join", so a metric that was never
+    applicable must not borrow it. It was borrowing it, on every row of every suite
+    the published tables are built from — 7,434 of the 7,458 committed rows that
+    carry the key — which is how a column the release procedure asks for came to
+    render as blank cells in a table instead of as a missing measurement
+    (GitHub #1490).
+    """
+    if not total:
+        return {"typed_truth_unavailable": TYPED_TRUTH_UNAVAILABLE_NO_TYPED_SCALARS}
+    return {
+        "typed_accuracy": round(hits / total, 4),
+        "typed_fields": total,
+        "typed_truth_unavailable": None,
+    }
+
+
 def score_synthetic(bucket, doc_prefix, truth):
     """Exact completeness + accuracy from SEQ tags and known field values.
 
@@ -1037,7 +1077,8 @@ def score_synthetic(bucket, doc_prefix, truth):
         if got is not None and str(got).strip() == str(exp).strip():
             scalar_hits += 1
     # Typed accuracy: a SEPARATE metric, not a redefinition of the one above.
-    # Only populated for truth files that declare `fields_typed`.
+    # Defined only for truth files that declare `fields_typed`; see
+    # `typed_scalar_keys` for what a row carries when they do not.
     for label, exp in fields_typed.items():
         typed_tot += 1
         if typed_match(exp, got_fields.get(label.lower())):
@@ -1074,8 +1115,7 @@ def score_synthetic(bucket, doc_prefix, truth):
         "dups": len(seqs) - len(extracted),
         "n_gaps": len(truth_ids - extracted),
         "scalar_accuracy": round(scalar_hits / scalar_tot, 4) if scalar_tot else None,
-        "typed_accuracy": round(typed_hits / typed_tot, 4) if typed_tot else None,
-        "typed_fields": typed_tot or None,
+        **typed_scalar_keys(typed_hits, typed_tot),
         "cell_accuracy": cell_accuracy,
         "cells_compared": cell_tot or None,
         **confidence_distribution(confs, f"{doc_prefix}sections/*/result.json"),
