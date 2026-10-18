@@ -5,8 +5,9 @@
 
 What this is for
 ----------------
-``assessment_coverage_incomplete`` fires at 5% of extracted list rows unscored for a
-warning and at 25% plus 10 absolute unscored rows for an error. Those numbers were
+``assessment_coverage_incomplete`` fires at 5% of extracted list rows unscored **or**
+10 unscored rows in absolute terms for a warning, and at 25% plus 10 absolute unscored
+rows for an error. Those numbers were
 argued from the reconciliation code path — a run whose model scored every row should
 land at 0% shortfall — and for a while nothing recorded coverage on real output, so
 the rate at which the warning rung fires on a *healthy* document was unknown. It is
@@ -65,18 +66,27 @@ MIN_RUNS = 6000
 # 5% rung is firing on healthy documents after all.
 MIN_ZERO_SHORTFALL_SHARE = 0.95
 
-# The share of runs the warning rung fires on. Measured 0.66%. A rung that is noise
-# shows up here.
+# The share of runs the rung fires on, at either severity. Measured 0.70% over the
+# grids committed here and 0.64% over those plus the v0.6.12 grids of PR #1487, both
+# with the absolute ceiling of #1495 live. A rung that is noise shows up here.
 MAX_WARNING_FIRING_SHARE = 0.02
 
-# The largest number of unscored rows recorded on a run the warning rung said nothing
-# about: 24 of 800 (3.0%). This is the residual the purely multiplicative 5% rung
-# leaves, and it is pinned rather than fixed because the committed artifacts cannot
-# say whether the ladder had already reported those rows (see the module docstring).
-# If it grows, re-measure, record the new figure in the assessment README, and
-# reconsider whether the warning rung should carry an absolute ceiling the way the
-# error rung carries an absolute floor.
-MAX_SILENT_UNSCORED_ROWS = 24
+# The largest number of unscored rows recorded on a run the warning rung says nothing
+# about: 6 of 400 (1.5%). Re-measured for #1495, when the warning rung gained the
+# absolute ceiling the error rung's absolute floor always had. The figure it replaces
+# was 24 of 800 (3.0%) over the grids up to v0.6.11 and 115 of 3,200 (3.6%) once a
+# 3,200-row document was benchmarked — the count grew 4.8x on a 4x larger document at
+# a near-identical share, which is what a purely multiplicative rung does and why the
+# ceiling exists.
+#
+# This figure is now a measurement UNDER a structural bound rather than the only thing
+# standing between the band and the longest list anyone benchmarks: the ceiling caps it
+# at ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS - 1`` whatever the document's
+# size, which ``test_the_silent_band_residual_is_pinned`` asserts separately from this
+# pin. A grid that lands between 7 and 9 unscored rows therefore fails this pin while
+# the structural bound still holds; re-pin it in that case. A grid at or above the
+# ceiling means the ceiling is not being enforced, which is a defect in the guard.
+MAX_SILENT_UNSCORED_ROWS = 6
 
 
 def _rows():
@@ -192,7 +202,7 @@ def test_the_warning_rung_is_not_firing_at_a_rate_that_makes_it_noise(
     share = len(fired) / len(defined)
     assert share <= MAX_WARNING_FIRING_SHARE, (
         f"the coverage rung would fire on {share:.2%} of {len(defined)} runs "
-        f"(measured 0.66%). Past a couple of percent it is a document-level alarm on "
+        f"(measured 0.70%). Past a couple of percent it is a document-level alarm on "
         "the healthy path, which is the condition #997 asked about."
     )
 
@@ -283,15 +293,28 @@ def test_every_sub_floor_error_shortfall_is_a_total_one(corpus, severities):
 
 
 def test_the_silent_band_residual_is_pinned(corpus, severities):
-    """What the purely multiplicative warning fraction lets through, in absolute rows.
+    """What the warning rung lets through, in absolute rows — bound, then measurement.
 
-    The 5% rung scales its slack with the list, while one half of its justification
-    ("a 1-2 row gap on an 800-row table is ``assessment_incomplete``'s business") names
-    an absolute quantity. So the number of unscored rows that emits no coverage issue
-    grows with the section: 0 at 20 rows, 19 at 400, 39 at 800. This pins the largest
-    one actually observed, so the residual is a recorded figure rather than an
-    arithmetic possibility, and so growth in it is visible.
+    The 5% fraction scales its slack with the list, while one half of its
+    justification ("a 1-2 row gap on an 800-row table is ``assessment_incomplete``'s
+    business") names an absolute quantity. A fraction alone therefore leaves a silent
+    band that grows with the section — 19 rows at 400, 39 at 800, 159 at 3,200 — and
+    observing it grow is exactly what happened: 24 unscored rows of 800 over the grids
+    up to v0.6.11, then 115 of 3,200 at a near-identical share once a 4x larger
+    document was benchmarked (#1495).
+
+    Two assertions, in order of strength. The first is the **structural** bound the
+    absolute ceiling gives: no run can be silent at or above
+    ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS`` unscored rows, whatever the list
+    length, and that is a property of the guard rather than of the corpus — it is read
+    off the shipped constant so re-tuning the constant moves it rather than breaking
+    it. The second is the **measurement** under that bound, which keeps the observed
+    residual a recorded figure rather than an arithmetic possibility.
     """
+    from idp_common.assessment.batching import (
+        _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS as CEILING,
+    )
+
     silent = [
         r
         for r in _defined(corpus)
@@ -299,17 +322,67 @@ def test_the_silent_band_residual_is_pinned(corpus, severities):
         and severities[(r["conf_rows_expected"], r["conf_rows_unscored"])] is None
     ]
     assert silent, (
-        "no committed run sits between 0 and the warning fraction, so there is no "
+        "no committed run sits between 0 and the warning rung, so there is no "
         "observed residual to pin and this assertion shields nothing."
     )
     worst = max(silent, key=lambda r: r["conf_rows_unscored"])
+    assert worst["conf_rows_unscored"] < CEILING, (
+        f"{worst['conf_rows_unscored']} unscored rows of "
+        f"{worst['conf_rows_expected']} ({worst['doc']}, {worst['cell']}) emit no "
+        f"coverage issue, at or above the {CEILING}-row absolute ceiling the warning "
+        "rung carries. The ceiling is not being enforced — that is a defect in "
+        "``audit_explainability``, not a figure to re-pin."
+    )
     assert worst["conf_rows_unscored"] <= MAX_SILENT_UNSCORED_ROWS, (
         f"{worst['conf_rows_unscored']} unscored rows of "
         f"{worst['conf_rows_expected']} ({worst['doc']}, {worst['cell']}) emit no "
         f"coverage issue, above the {MAX_SILENT_UNSCORED_ROWS} rows recorded when "
-        "this was measured. The residual the multiplicative rung leaves has grown: "
-        "re-measure, update 'Coverage: measured' in the assessment README, and weigh "
-        "an absolute ceiling on the warning rung against the firing rate it would add."
+        "this was measured. The ceiling still holds (the assertion above passed), so "
+        "this is a new observation inside the band the fraction deliberately leaves "
+        "to ``assessment_incomplete``: re-measure, record the new figure in "
+        "'Coverage: measured' in the assessment README, and re-pin."
+    )
+
+
+def test_nothing_the_absolute_ceiling_newly_reports_is_an_error(corpus, severities):
+    """The ceiling reports; it never escalates (#1495).
+
+    A run that crosses the absolute ceiling without crossing the 5% fraction is below
+    the 25% error fraction by arithmetic, so the ceiling cannot reach error severity —
+    and ``extraction.row_shortfall_action`` does not govern this code, so no
+    deployment can turn it into a failure either. Asserted over the corpus because it
+    is the property that decides whether this change can break a document that
+    completes today: every run the ceiling newly speaks about must be a warning.
+    """
+    from idp_common.assessment.batching import (
+        _COVERAGE_SHORTFALL_WARNING_FRACTION as WARNING_FRACTION,
+    )
+    from idp_common.assessment.batching import (
+        _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS as CEILING,
+    )
+
+    ceiling_only = [
+        r
+        for r in _defined(corpus)
+        if r["conf_rows_unscored"] >= CEILING
+        and r["conf_rows_unscored"] / r["conf_rows_expected"] < WARNING_FRACTION
+    ]
+    assert ceiling_only, (
+        "no committed run is reported by the absolute ceiling alone, so the ceiling "
+        "currently shields nothing on this corpus and this assertion is vacuous — "
+        "which would also mean the firing-rate figures in 'Coverage: measured' can no "
+        "longer be reproduced from these artifacts."
+    )
+    offenders = [
+        (r["doc"], r["cell"], r["conf_rows_unscored"], r["conf_rows_expected"])
+        for r in ceiling_only
+        if severities[(r["conf_rows_expected"], r["conf_rows_unscored"])] != "warning"
+    ]
+    assert offenders == [], (
+        f"{len(offenders)} of {len(ceiling_only)} runs reported by the absolute "
+        "ceiling alone are not at warning severity. The ceiling exists to make a "
+        "shortfall visible, not to fail a document that completes today. First few: "
+        f"{offenders[:5]}"
     )
 
 

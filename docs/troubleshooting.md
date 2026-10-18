@@ -216,7 +216,9 @@ three you are most likely to see. These are recorded on the
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit
-`assessment_coverage_incomplete` — a warning past 5% of rows unscored, an error at
+`assessment_coverage_incomplete` — a warning past 5% of rows unscored or past 10
+unscored rows in absolute terms, whichever comes first (a proportion alone leaves a
+silent band that grows with the document: 39 rows at 800, 159 at 3,200), an error at
 25% or more **and** at least 10 unscored rows (a proportion alone would make one
 unscored row in a four-row list an error) — carrying the expected/scored/unscored
 counts and a per-field breakdown. The extracted values themselves are unaffected;

@@ -6,7 +6,8 @@
 What was missing
 ----------------
 The ``assessment_coverage_incomplete`` guard fires when extracted list rows carry
-no confidence — 5% of rows unscored for a warning, 25% plus 10 absolute unscored
+no confidence — 5% of rows unscored or 10 unscored rows in absolute terms for a
+warning, 25% plus 10 absolute unscored
 rows for an error. Those rungs rest on the expectation that a healthy run sits at
 or near 0% shortfall, which is a property read off the reconciliation code path and
 was never measured: no benchmark artifact, evaluation report or release-validation
@@ -33,9 +34,10 @@ What these tests pin
 4. The keys reach ``CSV_COLS``. A row key absent from that list is dropped by
    ``DictWriter(extrasaction="ignore")`` in silence, which is how ``n_conf_leaves``
    came to be computed by the scorer and readable from nothing.
-5. The per-field **denominator** is recorded beside the per-field numerator. Both
-   rungs divide by the section-wide list-row total, so an attribute that is wholly
-   unscored beside a large fully-scored one sits below the warning fraction — and
+5. The per-field **denominator** is recorded beside the per-field numerator. The
+   fraction divides by the section-wide list-row total, so a short attribute that is
+   wholly unscored beside a large fully-scored one sits below it — and under 10 rows
+   below the absolute ceiling as well — while
    ``conf_unscored_by_field`` on its own cannot distinguish 4 unscored rows of 4 from
    4 of 400. ``benchmarks/tests/test_coverage_threshold_evidence.py`` is where the
    recorded distribution is measured against the rungs.
