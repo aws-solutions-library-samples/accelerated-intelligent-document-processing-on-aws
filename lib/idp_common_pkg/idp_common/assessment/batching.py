@@ -166,6 +166,33 @@ def _deadline_allows(deadline_epoch: float | None, estimated_seconds: float) -> 
     return remaining - _DEADLINE_SAFETY_RESERVE_SECONDS >= estimated_seconds
 
 
+def _chunks_the_deadline_allows(
+    deadline_epoch: float | None, n_chunks: int, workers: int
+) -> int:
+    """How many of ``n_chunks`` can be dispatched before the deadline.
+
+    The escalation rungs call ``_deadline_allows`` for ONE prospective call. This
+    answers the question the primary fan-out asks instead: the batches are the
+    bulk of the work, there are ``ceil(n / workers)`` waves of them, and nothing
+    was refusing to start a wave the invocation could not hold. A 1,200-row list
+    at the default 25-row batch size is ~48 calls in one 900-second invocation,
+    which overruns it — and a Lambda killed on the wall clock raises no exception,
+    so the handler's degrade path (#901) never runs and a complete, validated,
+    already-persisted extraction is discarded with the document (#1488).
+
+    Returns ``n_chunks`` unchanged when no deadline was threaded in, so behaviour
+    outside Lambda is unchanged.
+    """
+    if deadline_epoch is None or n_chunks <= 0:
+        return n_chunks
+    workers = max(1, workers)
+    budget = (deadline_epoch - time.time()) - _DEADLINE_SAFETY_RESERVE_SECONDS
+    if budget <= 0:
+        return 0
+    waves = int(budget // _ESTIMATED_MODEL_CALL_SECONDS)
+    return max(0, min(n_chunks, waves * workers))
+
+
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         if v is None or (isinstance(v, str) and not v.strip()):
@@ -2114,15 +2141,47 @@ def assess_results_batched(
     # Thread-safety: each concurrent chunk gets its OWN split-stats accumulator;
     # they are merged back into the shared split_stats deterministically after the
     # pool joins (no concurrent mutation of the shared dict).
+    # ⚠️ Every dispatch below is bounded by the remaining invocation time. Only a
+    # TRAILING suffix of chunks is ever skipped, never one in the middle: rows are
+    # accumulated positionally into ``big_field_acc``, so dropping a middle chunk
+    # would slide later rows' confidence and bounding boxes onto earlier rows —
+    # the defect 0.6.12 fixed by making partial per-shard collation discard rather
+    # than emit. Skipping a suffix leaves the tail rows simply unscored, which the
+    # coverage check reports.
     sliced_results: list[dict[str, Any]] = []
     if not chunks:
         pass
     elif max_concurrent_batches <= 1 or len(chunks) == 1:
-        for chunk in chunks:
+        for idx, chunk in enumerate(chunks):
+            if not _deadline_allows(deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS):
+                split_stats["deadline_reached"] = True
+                logger.warning(
+                    "assess_results_batched: stopping before batch %d/%d — the "
+                    "remaining invocation time cannot hold another confidence "
+                    "call. %d row(s) will be left unscored rather than losing the "
+                    "section to a hard task timeout (#1488).",
+                    idx + 1,
+                    len(chunks),
+                    sum(len(c) for c in chunks[idx:]),
+                )
+                break
             sliced_results.append(_assess_chunk(chunk, split_stats))
     else:
         # Warm the cache with batch 0 (writes directly to shared stats).
-        sliced_results.append(_assess_chunk(chunks[0], split_stats))
+        warmed = _deadline_allows(deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS)
+        if warmed:
+            sliced_results.append(_assess_chunk(chunks[0], split_stats))
+        else:
+            # No time even for the cache-warming batch. Score nothing rather than
+            # be killed: `scored_rows == 0` is an error-severity coverage issue at
+            # any list length, which is a reported outcome instead of a lost one.
+            split_stats["deadline_reached"] = True
+            logger.warning(
+                "assess_results_batched: no invocation time left for any of %d "
+                "confidence batch(es); leaving all %d row(s) unscored (#1488).",
+                len(chunks),
+                len(rows),
+            )
 
         # B3 — Fan-out inherits the batch size batch 0 actually SUCCEEDED on. If
         # batch 0 truncated and the adaptive splitter had to shrink it (recorded as
@@ -2131,7 +2190,10 @@ def assess_results_batched(
         # size instead of letting every fanned-out batch independently re-discover
         # the truncation (N parallel truncation storms). Only ever shrinks.
         proven = split_stats.get("min_batch_size_used")
-        remaining_rows = rows[len(chunks[0]) :]
+        # Nothing was warmed, so nothing after it may run either: the suffix rule
+        # above means the skipped rows have to be a suffix, and with batch 0
+        # skipped that suffix is every row.
+        remaining_rows = rows[len(chunks[0]) :] if warmed else []
         if (
             proven
             and proven < effective_batch_size
@@ -2155,6 +2217,32 @@ def assess_results_batched(
                 for s in range(0, len(remaining_rows), effective_batch_size)
             ]
         split_stats["batch_count"] = 1 + len(rest)
+
+        # Bound the fan-out by the remaining invocation time BEFORE dispatching
+        # any of it. `ceil(n/workers)` waves of ~_ESTIMATED_MODEL_CALL_SECONDS
+        # each is the cost, and a trailing suffix that will not fit is dropped
+        # rather than started — starting it is what loses the whole document
+        # (#1488). Recomputed against `rest` as trimmed, so `workers` never
+        # exceeds the work left.
+        if rest:
+            _planned_workers = min(int(max_concurrent_batches), len(rest))
+            allowed = _chunks_the_deadline_allows(
+                deadline_epoch, len(rest), _planned_workers
+            )
+            if allowed < len(rest):
+                split_stats["deadline_reached"] = True
+                logger.warning(
+                    "assess_results_batched: the remaining invocation time holds "
+                    "%d of %d fan-out batch(es) at %d worker(s); leaving %d row(s) "
+                    "unscored rather than losing the section to a hard task "
+                    "timeout (#1488).",
+                    allowed,
+                    len(rest),
+                    _planned_workers,
+                    sum(len(c) for c in rest[allowed:]),
+                )
+                rest = rest[:allowed]
+
         if rest:
             import concurrent.futures as _cf
 

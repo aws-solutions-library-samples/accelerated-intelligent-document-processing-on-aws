@@ -389,9 +389,19 @@ def test_deadline_reached_propagates_from_concurrent_workers():
         geometry_mode="llm_grounded",
         escalation_enabled=False,
         max_concurrent_batches=5,  # force concurrent fan-out
-        deadline_epoch=_time.time() + 1.0,  # below the 90s reserve
+        # Enough for the cache-warm batch and one fan-out wave, and no more.
+        # ⚠️ It cannot be a near-now deadline any more: since #1488 the primary
+        # fan-out consults the deadline too, so `now + 1.0` refuses the warm batch
+        # and nothing is dispatched concurrently — which would leave this test
+        # asserting nothing about the worker merge it exists for. 60 rows at batch
+        # 10 is 6 chunks: 1 warm + 5 fanned out across 5 workers = one wave.
+        deadline_epoch=_time.time()
+        + (2 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS,
     )
 
+    # The fan-out must actually have run concurrently, or the merge this test is
+    # about never happened.
     assert result["split_stats"]["concurrent_batches"] and (
         result["split_stats"]["concurrent_batches"] > 1
     )
@@ -492,21 +502,62 @@ def _partial_progress_run(deadline_epoch, *, max_retries=4, rows=12):
     return svc, result
 
 
-def test_deadline_stops_a_retry_round_that_is_still_making_progress():
+def test_deadline_stops_a_retry_round_that_is_still_making_progress(monkeypatch):
     """#958: the same-model retry rung consults the wall-clock deadline too.
 
     The stand-in recovers a row on every call and never truncates, so neither of
     the rung's pre-existing stopping conditions applies — before this change the
     rung ran all ``max_retries`` rounds however little time the Lambda had left.
-    With a near-now deadline it must now stop at the round boundary, flag
-    ``deadline_reached`` and return cleanly.
-    """
-    import time as _time
+    It must stop at the round boundary, flag ``deadline_reached`` and return
+    cleanly.
 
-    svc, result = _partial_progress_run(_time.time() + 1.0)  # below the 90s reserve
+    ⚠️ **The clock has to advance with the work for this to test anything.** Every
+    deadline guard in this module measures `deadline_epoch - time.time()` against
+    the same per-call estimate, and in a test with stand-in model calls no real
+    time passes — so a fixed near-now deadline refuses the *first pass* as well
+    (#1488 made that pass consult the deadline too, which is the whole point of
+    it) and a generous one refuses nothing. Neither isolates the rung. The clock
+    below reads `start + _ESTIMATED_MODEL_CALL_SECONDS × calls_made`, i.e. it
+    charges each model call exactly what the guards budget for it, so the first
+    pass legitimately consumes the budget and the retry round is refused for the
+    reason it would be refused in a Lambda.
+    """
+    start = 1_000_000.0
+    svc_holder: dict = {}
+
+    def _clock():
+        svc = svc_holder.get("svc")
+        calls = len(svc.primary_calls) if svc is not None else 0
+        return start + (mod._ESTIMATED_MODEL_CALL_SECONDS * calls)
+
+    monkeypatch.setattr(mod.time, "time", _clock)
+
+    # 3 first-pass batches cost 3 × 60 = 180s. Allow those plus the reserve, and
+    # nothing more: the retry round's next call cannot fit.
+    deadline = (
+        start
+        + (3 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + (mod._DEADLINE_SAFETY_RESERVE_SECONDS)
+    )
+
+    svc = PartialProgressService("transactions")
+    svc_holder["svc"] = svc
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(12), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=4,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,  # isolate rung 1: only its own guard can stop it
+        deadline_epoch=deadline,
+    )
 
     assert result["split_stats"]["deadline_reached"] is True
-    # Only the first pass ran: 12 rows at batch 4 → 3 batches. No retry round.
+    # The whole first pass ran: 12 rows at batch 4 → 3 batches. No retry round.
     assert len(svc.primary_calls) == 3
     # Rows stay unscored and are REPORTED as such, rather than the call raising.
     assert result["split_stats"]["unrecoverable_rows"] > 0
@@ -1018,6 +1069,102 @@ def test_validly_typed_list_field_still_escalates():
     assert svc.escalation_calls  # escalation still happened for the valid list
     assert result["split_stats"]["rows_recovered_by_escalation"] == 8
     assert not result["split_stats"]["schema_mismatch_fields"]
+
+
+# --------------------------------------------------------------------------- #
+# #1488 — the primary fan-out must not start work the invocation cannot hold
+# --------------------------------------------------------------------------- #
+
+
+def _clean_scorer_run(deadline_epoch, *, clock, rows=50, batch_size=10):
+    """A run whose stand-in scores every row it is handed, with a driven clock.
+
+    `scored_per_call >= batch_size` makes every row of each slice come back with a
+    real confidence, so "which rows were scored" is readable from the output — the
+    property these tests are about. `seconds_per_call` charges each model call
+    exactly what the deadline guards budget for it, so the budget below is spent by
+    doing the work rather than by wall-clock luck.
+    """
+    svc = PartialProgressService(
+        "transactions",
+        scored_per_call=batch_size,
+        clock=clock,
+        seconds_per_call=mod._ESTIMATED_MODEL_CALL_SECONDS,
+    )
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(rows), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=batch_size,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        max_concurrent_batches=1,  # sequential: one guard check per batch
+        deadline_epoch=deadline_epoch,
+        max_retries=0,  # isolate the first pass; no recovery rung
+    )
+    return svc, result
+
+
+def _scored_flags(result):
+    """Per row, whether the output carries a real confidence."""
+    return [
+        row.get("amount", {}).get("confidence") is not None
+        for row in result["assessment"]["transactions"]
+    ]
+
+
+def test_primary_batches_stop_at_the_deadline_instead_of_overrunning(monkeypatch):
+    """The first pass is bounded, and the rows it skips are a reported suffix.
+
+    #1488: a Lambda killed on the wall clock raises no exception, so the handler's
+    deterministic-failure degrade path (#901) never runs and a complete, validated,
+    already-persisted extraction is discarded along with the document. The fan-out
+    therefore has to refuse a batch it cannot finish rather than start it.
+    """
+    clock = {"now": 2_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+    # Budget for exactly two of the five batches.
+    deadline = (
+        clock["now"]
+        + (2 * mod._ESTIMATED_MODEL_CALL_SECONDS)
+        + mod._DEADLINE_SAFETY_RESERVE_SECONDS
+    )
+
+    _svc, result = _clean_scorer_run(deadline, clock=clock)
+
+    assert result["split_stats"]["deadline_reached"] is True
+
+    # The skipped rows are a TRAILING suffix: rows accumulate positionally, so
+    # dropping a middle batch would slide later rows' confidence and bounding boxes
+    # onto earlier rows — the defect 0.6.12 closed by making partial per-shard
+    # collation discard rather than emit.
+    flags = _scored_flags(result)
+    assert flags[:20] == [True] * 20, "the batches that DID run must be scored"
+    assert flags[20:] == [False] * 30, (
+        "the skipped rows must be a contiguous unscored suffix, not a hole"
+    )
+
+    # ⚠️ Not asserted on the model-call count: the guard bounds CHUNKS, and the
+    # adaptive splitter can make several calls inside one chunk, so a call count
+    # measures the splitter rather than this guard.
+
+
+def test_no_deadline_leaves_the_primary_fan_out_unbounded(monkeypatch):
+    """With no deadline (local / non-Lambda) every batch still runs.
+
+    The guard must be inert where `deadline_epoch` is None, or it would silently
+    shorten every local run.
+    """
+    clock = {"now": 3_000_000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+
+    _svc, result = _clean_scorer_run(None, clock=clock)
+
+    assert result["split_stats"]["deadline_reached"] is False
+    assert _scored_flags(result) == [True] * 50
 
 
 if __name__ == "__main__":
