@@ -2391,6 +2391,54 @@ signals make both loud without changing what is extracted:
   alone. That matters here specifically: taken against `ocr_matched_table_rows` instead, the
   #1361 case reads 0.501 rather than 0.511 and nothing else in the issue looks wrong.
   `tests/unit/extraction/test_partial_row_shortfall.py` is the whole surface.
+- `extraction_row_count_unverified` (info, **always**) — the two codes above did not run,
+  which until this one existed produced the same output as their running and finding
+  nothing: no issue, and `Status: SUCCESS`. ⚠️ **Both are grounded in the same evidence —
+  OCR tables whose column count EQUALS the item schema's property count — and that evidence
+  is routinely zero.** At zero matched rows `expected < _OCR_ROW_ESTIMATE_MIN` holds for
+  every extracted count and every document size, so neither check is merely quiet: both are
+  structurally unable to fire. This code reports that condition, so "could not check" is
+  distinguishable from "checked and found complete".
+
+  It fires when a list of objects came back with at least `_OCR_ROW_ESTIMATE_MIN` (30) rows
+  while the section's OCR text holds fewer than that many rows in tables of the list's own
+  width. ⚠️ **It is a statement about the EVIDENCE, never about the result**, and it is the
+  correct answer on a complete extraction — which is why the message says the count is
+  unverified and equally consistent with a complete list, and why the severity is `info`.
+  Two ordinary configurations reach it with nothing wrong: an item schema carrying a
+  property the rendered table does not have (a derived `Balance`), and an OCR configuration
+  that emits no Markdown tables at all. At `warning` those runs' reports would move from
+  `SUCCESS` to `COMPLETED WITH WARNINGS` for a condition the operator may have chosen, so
+  `info` is what keeps the status line while still putting the code in `processing_issues`,
+  in the processing report's issue list and in the UI's — which is the whole of what
+  distinguishability needs. `extraction.row_shortfall_action` does **not** govern it, for
+  the reason it governs neither `extraction_output_truncated` nor
+  `extraction_partial_row_shortfall`.
+
+  **Which OCR renderings reach it, measured rather than assumed.** On a 3-property item
+  schema, `_ocr_tables` plus the exact-width match sum to **0** rows of evidence for a
+  GitHub-legal pipe table written without leading pipes, for the same table carrying a
+  fourth column the schema does not have, for one carrying an added row-number column, and
+  for a list rendered as bullets. Textractor's `TABLES` rendering produces none of those
+  shapes, which is why a table-emitting backend does not reach this; an LLM OCR backend
+  renders its own Markdown and can produce any of them. The two causes need different
+  remedies and the issue tells them apart: `details["ocr_table_widths"]` holds every table
+  width that WAS found in the section, so `[]` means no table was recognised while `[4]`
+  against `item_property_count: 3` means the evidence is there and the wrong shape.
+
+  ⚠️ **The exact-width match is deliberately NOT loosened, not even as a fallback reachable
+  only when the exact-width evidence is empty.** "Empty" is the ordinary state for a schema
+  with a derived property, so a tolerance would be reachable on the backends where detection
+  works today — a two-column key/value block counting against a three-column list and
+  reporting a shortfall that is not one, against a population currently at 48-of-49
+  detection. Carrying the widths in `details` gives a reader the same diagnosis with no
+  count tolerated into any sum. ⚠️ **The residual is the other end of the floor:** a list
+  that came back with fewer than 30 rows and has no evidence either still reports nothing
+  here, because without evidence a 5-row list cannot be told from a correct one;
+  `extraction_incomplete`, `extraction_sparse` and a declared `minItems` are the signals
+  that cover a list that small. `tests/unit/extraction/test_row_count_unverified.py` is the
+  whole surface, and it pins the exact-width match in the direction a future tolerance would
+  have to break deliberately.
 - `extraction_list_truncated` (warning) — a non-empty list came back under its schema
   `minItems`. The one completeness signal with no false positives by construction, because
   the config author declared the floor rather than a heuristic inferring it. ⚠️ **What
