@@ -178,13 +178,26 @@ Headline results at v0.6.12:
    truth** — the single exception is the Bedrock-LLM OCR cell on `manylists_400`, which split
    one statement in two. Agentic cost is still run-to-run variable on a fixed document and
    must be budgeted as a range rather than a mean; §4 measures that with repeats.
-8. **Bedrock-LLM OCR is still the only backend that gets *values* wrong.** It is the only
-   one of the 19 cells with any cell accuracy below 1.000 anywhere in the grid: **0.9793 and
-   0.9876 over 724 cells each and 0.990 over 800** on the three 400-row documents, and
-   **0.981 over 1,524 cells** on the 800-row one, where every Textract and BDA cell is
-   1.000. It also loses rows on ordinary documents — recall **0.905** on two of the three
-   400-row documents against 1.000 on the third. It is the cheapest cell in the grid and the
-   only one that corrupts identifiers (§2, finding 4).
+8. **Bedrock-LLM OCR is still the only backend that gets *values* wrong, and the evidence
+   for that is its scalar fields rather than its rows.** `scalar_accuracy` compares the two
+   top-level scalar fields **by label**, so it does not key on the row identifier this
+   backend perturbs and is unaffected by the measurement defect below: this cell gets **7 of
+   its 14 scalar fields right, where every other cell gets 13 or 14 of 14** — and one of the
+   two fields is `Account Number`, a fixed-width identifier. On rows, it is the only cell of
+   the nineteen with any cell accuracy below 1.000, measured at **0.990 over 800
+   `cells_compared`** on `manylists_400`, the one affected document whose identifier join is
+   bijective (`dups` 0, `n_gaps` 0, a full 400-row prefix). It is also the cheapest cell in
+   the grid. See §2, finding 4.
+   ⚠️ **No recall figure and no other cell-accuracy figure is quoted for this cell, because
+   they are not measurements.** Its apparent row loss is
+   [#1500](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1500):
+   `rows_extracted` counted distinct recognisable identifiers, this backend duplicates a
+   leading zero, and ids collapsed onto one another with no row lost. Three of this cell's
+   runs carry that signature exactly — `dups` 38 with `n_gaps` 38, the arithmetic of a
+   one-to-one collapse — while the identifier-free `conf_rows_expected` and
+   `conf_rows_scored` read the full truth count on all three. The same identifier keys the
+   cell-accuracy join, so the figures computed over those shrunken denominators are artefacts
+   of the join rather than value errors.
 9. **The cheap end completes everything and returns half the rows.** Neither Nova model can
    finish the agentic path — 247 `invalid sequence as part of ToolUse` stream errors in one
    grid, each retried as transient
@@ -478,8 +491,13 @@ not long lists, so this is a statement about labelled real-world forms rather th
 tabular extraction generally.
 
 OCR-Benchmark does not discriminate the same way — every cell lands between 0.965 and
-0.998, with `core-llm-simple-sep` the only one below 0.99 (0.965), consistent with the
-`bedrock_llm` arm being the noisiest throughout this edition.
+0.998, with `core-llm-simple-sep` the only one below 0.99 (0.965). ⚠️ **Do not read that
+as the `bedrock_llm` arm being noisy in general.** Much of what made that arm look noisy
+across this and earlier editions was a measurement defect in the row identifier
+([#1500](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1500)).
+These reference-corpus figures are scored by the product's own evaluation against labels
+rather than by that identifier, so they are unaffected — but the *grid* figures for the
+same cell largely were, and §2 finding 4 withholds the ones that rest on it.
 
 ⚠️ **This is one arm, so it is not a model comparison.** Only the control ran, so the
 v0.6.8 two-model pair below is still the only like-for-like comparison of the shipped
@@ -1745,10 +1763,15 @@ ordered by how much data they can cost a customer.
    instance, and give up (and report) when a batch of one still truncates.
 2. **🚨 Simple mode still reports `COMPLETED` on a truncated list (P0, narrowed).** #843 made
    the truncation *visible* (`extraction_rows_below_ocr_estimate` on every truncated run in
-   this study) but not *terminal*: a 43-of-800 result completes and costs less than a full
-   one. §3 shows the same document completing or truncating depending on OCR backend and
-   output format. A row-count check against the OCR estimate that fails the section (or
-   routes it to advanced mode) would close the last silent path.
+   this study) but not *terminal*: a truncated result completes and costs less than a full
+   one. ⚠️ **The evidence for this item is no longer §2 or §3, and the narrowing matters.**
+   §2's grid returns 800 of 800 in all 19 cells, and §3's simple-mode truncation at 1,200
+   and 1,600 rows now *fails* the document rather than completing it — though for a
+   different reason (#1488's assessment timeout), not because a row-count check caught it.
+   The live case is §5.5's model-axis table, where Sonnet 5, Sonnet 5 `:1m` and Haiku 5.5
+   each return a partial list on the 17-page document with status `COMPLETED`. A row-count
+   check against the OCR estimate that fails the section (or routes it to advanced mode)
+   would close the last silent path.
 3. **Nova Lite cannot run the agentic path, and the product treats each failure as
    transient —
    [#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895) (P1, new).**
