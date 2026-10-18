@@ -216,13 +216,23 @@ three you are most likely to see. These are recorded on the
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit
-`assessment_coverage_incomplete` — a warning past 5% of rows unscored or past 10
-unscored rows in absolute terms, whichever comes first (a proportion alone leaves a
-silent band that grows with the document: 39 rows at 800, 159 at 3,200), an error at
-25% or more **and** at least 10 unscored rows (a proportion alone would make one
-unscored row in a four-row list an error) — carrying the expected/scored/unscored
-counts and a per-field breakdown. The extracted values themselves are unaffected;
-treat it as "do not trust this section's confidence surface as a whole". It is
+`assessment_coverage_incomplete` — a warning at 5% of rows unscored or more, or at
+10 or more unscored rows in absolute terms, whichever comes first (a proportion alone
+leaves a silent band that grows with the document: 39 rows at 800, 159 at 3,200), an
+error at 25% or more **and** at least 10 unscored rows (a proportion alone would make
+one unscored row in a four-row list an error) — carrying the expected/scored/unscored
+counts and a per-field breakdown.
+
+The extracted values themselves are unaffected, and **which of the two warning rungs
+spoke decides how to read it.** The message says which. One that opens *"Only N of M
+extracted list row(s) (X%) carry a confidence score"* is the 5% fraction, and means
+"do not trust this section's confidence surface as a whole". One that opens with the
+**unscored row count** — *"N of M extracted list row(s) carry no confidence score …
+that is only X% of the section"* — is the absolute rung on a shortfall under 5%: the
+section's confidence surface is still broadly intact, and what needs attention is
+those N rows specifically, so read the per-field breakdown and check them
+individually rather than discounting the section. A message opening *"None of the M"*
+is the error case, where the section has no confidence surface at all. It is
 suppressed when the self-healing ladder already reported an error for the same
 section (`assessment_incomplete`, `assessment_row_too_large`,
 `assessment_schema_mismatch`), because that issue describes the same unscored rows

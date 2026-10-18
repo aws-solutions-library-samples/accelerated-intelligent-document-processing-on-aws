@@ -804,6 +804,13 @@ def test_the_fraction_rung_compares_the_exact_ratio_not_the_rounded_one():
     emitted either way. The two rungs are distinguishable in the message, because a
     shortfall under the fraction leads with the row count rather than the share, and
     that is the discriminator used here.
+
+    Two assertions carry that between them, and the second is what keeps the
+    sensitivity direct rather than a consequence of how a mutation happens to be
+    written: the SHIPPED reporting value on this case equals the threshold exactly,
+    and the fraction rung did not fire on it. A rung reading
+    ``coverage["unscored_fraction"]`` would therefore take the proportional branch,
+    which the message assertion catches.
     """
     assert 100 >= _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS, (
         "this case no longer crosses the absolute ceiling, so the message-based "
@@ -827,6 +834,15 @@ def test_the_fraction_rung_compares_the_exact_ratio_not_the_rounded_one():
         f"exact ratio. Got: {found[0].message}"
     )
     assert found[0].severity == "warning"
+    # The comparand a mutation would substitute, read off the shipped issue rather
+    # than recomputed: it is equal to the threshold while the rung above declined.
+    assert (
+        found[0].details["unscored_fraction"] == _COVERAGE_SHORTFALL_WARNING_FRACTION
+    ), (
+        f"the reported fraction is {found[0].details['unscored_fraction']}, not the "
+        f"{_COVERAGE_SHORTFALL_WARNING_FRACTION} threshold, so this case no longer "
+        "distinguishes the exact ratio from the reported one — pick a new one"
+    )
 
     # One row further and it is genuinely past the fraction, which the proportional
     # phrasing is what shows — so the fraction rung itself still works.

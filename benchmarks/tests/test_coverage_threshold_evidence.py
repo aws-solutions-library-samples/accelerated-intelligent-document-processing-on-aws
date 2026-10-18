@@ -151,13 +151,43 @@ def _severity_for(expected: int, unscored: int) -> str | None:
     return found[0].severity if found else None
 
 
+def _severity_without_the_ceiling(expected: int, unscored: int) -> str | None:
+    """The same, with the warning rung's absolute ceiling lifted.
+
+    "Reported by the ceiling alone" is a statement about the guard, so it is read off
+    the guard with that one instrument disabled rather than by restating the
+    fraction's comparand here — which would make the subset agree with the guard for
+    a reason unrelated to the guard, and stop meaning what it says the moment either
+    comparand moved. ``audit_explainability`` reads the constant from its module at
+    call time, so raising it out of reach is enough; it is restored unconditionally.
+    """
+    from idp_common.assessment import batching
+
+    name = "_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS"
+    saved = getattr(batching, name)
+    setattr(batching, name, 10**9)
+    try:
+        return _severity_for(expected, unscored)
+    finally:
+        setattr(batching, name, saved)
+
+
+def _pairs(corpus):
+    return {
+        (r["conf_rows_expected"], r["conf_rows_unscored"]) for r in _defined(corpus)
+    }
+
+
 @pytest.fixture(scope="module")
 def severities(corpus):
     """``(expected, unscored) -> severity|None`` for every shape in the corpus."""
-    pairs = {
-        (r["conf_rows_expected"], r["conf_rows_unscored"]) for r in _defined(corpus)
-    }
-    return {pair: _severity_for(*pair) for pair in pairs}
+    return {pair: _severity_for(*pair) for pair in _pairs(corpus)}
+
+
+@pytest.fixture(scope="module")
+def severities_without_the_ceiling(corpus):
+    """The same mapping as the fraction alone would produce (#1495)."""
+    return {pair: _severity_without_the_ceiling(*pair) for pair in _pairs(corpus)}
 
 
 def _share(rows, predicate):
@@ -344,7 +374,9 @@ def test_the_silent_band_residual_is_pinned(corpus, severities):
     )
 
 
-def test_nothing_the_absolute_ceiling_newly_reports_is_an_error(corpus, severities):
+def test_nothing_the_absolute_ceiling_newly_reports_is_an_error(
+    corpus, severities, severities_without_the_ceiling
+):
     """The ceiling reports; it never escalates (#1495).
 
     A run that crosses the absolute ceiling without crossing the 5% fraction is below
@@ -353,19 +385,19 @@ def test_nothing_the_absolute_ceiling_newly_reports_is_an_error(corpus, severiti
     deployment can turn it into a failure either. Asserted over the corpus because it
     is the property that decides whether this change can break a document that
     completes today: every run the ceiling newly speaks about must be a warning.
-    """
-    from idp_common.assessment.batching import (
-        _COVERAGE_SHORTFALL_WARNING_FRACTION as WARNING_FRACTION,
-    )
-    from idp_common.assessment.batching import (
-        _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS as CEILING,
-    )
 
+    The subset is "the guard speaks, and would not with the ceiling lifted" — read
+    from ``audit_explainability`` twice rather than from a restated comparand, so it
+    keeps meaning "reported by the ceiling alone" whatever the rungs are expressed in.
+    """
     ceiling_only = [
         r
         for r in _defined(corpus)
-        if r["conf_rows_unscored"] >= CEILING
-        and r["conf_rows_unscored"] / r["conf_rows_expected"] < WARNING_FRACTION
+        if severities[(r["conf_rows_expected"], r["conf_rows_unscored"])] is not None
+        and severities_without_the_ceiling[
+            (r["conf_rows_expected"], r["conf_rows_unscored"])
+        ]
+        is None
     ]
     assert ceiling_only, (
         "no committed run is reported by the absolute ceiling alone, so the ceiling "

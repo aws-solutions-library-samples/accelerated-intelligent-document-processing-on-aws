@@ -506,7 +506,16 @@ Five deliberate choices in those thresholds:
   list field), and it would break `assessment_schema_mismatch`'s "emitted alone"
   contract by appending a coverage note under it. Callers pass the ladder's issues in
   as `audit_explainability(..., ladder_issues=...)`; a `warning`/`info` ladder issue
-  does not suppress it.
+  does not suppress it. The absolute ceiling widens that last overlap, and it is
+  accepted rather than overlooked: a shortfall of 10 rows or more on a long list now
+  emits a coverage warning where the fraction alone was silent, so a section can
+  carry both a `warning`-severity `assessment_incomplete` and a coverage warning
+  about the same rows. The double-count argument above is about an **error** the
+  ladder has already diagnosed; two warnings naming the same rows cost a reader
+  nothing they cannot reconcile. How often the pair actually occurs is not answerable
+  from the grids measured below — 6 runs cross the ceiling without crossing 5%, and
+  `processing_issues` is null on every one of those grids, so whether any of the 6
+  also carried a ladder warning is unrecorded.
 
 Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
@@ -641,16 +650,17 @@ report:
 | 3 | 126 | 1.2559% | 1.4652% | 2 |
 | 5 | 15 | 0.1495% | 0.3588% | 4 |
 | **10** (shipped) | **6** | **0.0598%** | **0.2691%** | **6** |
-| 29 | 1 | 0.0100% | 0.2193% | 24 |
+| 30 | 1 | 0.0100% | 0.2193% | 24 |
 | none | 0 | 0 | 0.2093% | 115 |
 
 The mass is at 1–4 unscored rows, which is the band the fraction deliberately leaves
 to `assessment_incomplete`, so a ceiling of 5 would buy a 4-row band at 2.5× the new
 firing and one of 3 a 2-row band at 21× it, where 10 closes the part that grows with
-the document for 6 runs. 29 — the sibling check's constant — would leave the 24-of-800
-shortfall silent; that one absorbs an additive OCR imprecision (a column heading
-reprinted per page) and this one absorbs nothing comparable, because reconciliation
-pads one assessment entry per extracted row and healthy runs land at exactly 0.
+the document for 6 runs. 30 — the sibling check's own constant, `_OCR_ROW_GAP_MIN`,
+which leaves it a silent band of 29 rows — would leave the 24-of-800 shortfall
+silent; that one absorbs an additive OCR imprecision (a column heading reprinted per
+page) and this one absorbs nothing comparable, because reconciliation pads one
+assessment entry per extracted row and healthy runs land at exactly 0.
 
 Severity at the ceiling is always `warning`, structurally: a run crossing the ceiling
 without crossing 5% is below the 25% error fraction by arithmetic, and
