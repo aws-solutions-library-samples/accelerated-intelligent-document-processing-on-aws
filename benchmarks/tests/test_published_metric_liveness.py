@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""A metric the guidance paper publishes must not be able to go dark (#1490).
+"""A metric the guidance paper publishes must not be able to go dark (#1490, #1497).
 
 What was wrong
 --------------
@@ -56,6 +56,18 @@ What these tests pin
    without a word, which is the state ``typed_fields`` was in: written by the scorer and
    readable from nothing, so the CSV carried a ratio and not the count it was taken
    over.
+4. **The same contract for the per-cell pair, on the other axis** (#1497), where there
+   are THREE states rather than two and two of them used to encode identically: no list
+   attribute (both keys absent), a list that joined nothing (``cell_accuracy`` null and
+   ``cells_compared`` the literal 0 — a measurement, so it keeps the present-and-null
+   encoding), and a list with cells joined. The three are asserted **pairwise distinct**
+   as triples, which is the contract rather than any one branch of it. The reference
+   path, where the whole exact-key family is absent and ``exact_truth_unavailable``
+   explains it, is a fourth shape this change must leave untouched, and is pinned too.
+   ``cell_accuracy`` is the column the configuration guidance leans on hardest, and an
+   accuracy figure whose denominator reads as a blank is the specific error that hides
+   row loss: a model returning 10 rows of 400 scores 1.000 over the 20 cells it
+   returned.
 """
 
 from __future__ import annotations
@@ -324,8 +336,16 @@ def _perfect_sections(truth):
     return [{"inference_result": result}]
 
 
-def _score(truth):
-    sections = _perfect_sections(truth)
+def _score(truth, sections=None):
+    """``score_synthetic`` over ``sections``, defaulting to a correct extraction.
+
+    The override is what reaches the third per-cell state (#1497): a document that HAS
+    a list attribute and returned not one of its rows. That is a real measurement over
+    an empty join and must stay distinguishable from a document that has no list at
+    all, so the suite has to be able to produce both.
+    """
+    if sections is None:
+        sections = _perfect_sections(truth)
     original = analyze.lib.read_sections
     analyze.lib.read_sections = lambda *a, **k: analyze.lib.SectionRead(sections)
     try:
@@ -350,6 +370,12 @@ def scored_by_generator(tmp_path_factory):
             truth = json.load(fh)
         out[gen] = (truth, _score(truth))
     return out
+
+
+@pytest.fixture(scope="module")
+def truth_by_generator(scored_by_generator):
+    """``{generator: truth}``, so a test can re-score the same document differently."""
+    return {gen: truth for gen, (truth, _row) in scored_by_generator.items()}
 
 
 TYPED_KEYS = ("typed_accuracy", "typed_fields")
@@ -482,4 +508,197 @@ class TestTypedScalarKeysAreAbsentRatherThanNull:
         a ratio without the count it was taken over, the same blind spot
         ``cells_compared`` was added to close.
         """
+        assert column in aggregate.CSV_COLS
+
+
+# --------------------------------------------------------------------------- #
+# The per-cell pair, on the other axis — and its THIRD state
+# --------------------------------------------------------------------------- #
+# `cell_accuracy` had the identical defect to the typed pair above, and it matters
+# more, because it is the column the configuration guidance leans on hardest: every
+# per-model and per-cell table in its §5 quotes it. On a `kv_form` row — a document
+# with no list attribute — it was present and null for structurally the same reason:
+# there were no cells to compare, not zero correct cells.
+#
+# What makes this one not a copy of the typed case is that there are THREE states here,
+# not two, and two of them used to encode identically:
+#
+#   1. no list attribute        -> both keys ABSENT, `cell_truth_unavailable` says why
+#   2. a list, nothing joined   -> `cell_accuracy` null (0/0), `cells_compared` == 0
+#   3. a list, cells joined     -> the ratio and its denominator
+#
+# State 2 is a real measurement and keeps the present-and-null encoding, which is what
+# that encoding means in this harness. It also used to write `cells_compared: None` via
+# `cell_tot or None`, so the honest 0 was folded onto the absent one and a reader of
+# either the row or the CSV got a blank for both. An accuracy figure whose denominator
+# reads as a blank is the specific error that hides row loss: a model returning 10 rows
+# of 400 scores 1.000 over the 20 cells it returned (#1497).
+CELL_KEYS = ("cell_accuracy", "cells_compared")
+CELL_REASON_KEY = "cell_truth_unavailable"
+
+
+def _empty_sections():
+    """One section that extracted nothing — reaches state 2 on a document with a list."""
+    return [{"inference_result": {}}]
+
+
+@pytest.mark.unit
+class TestCellKeysAreAbsentRatherThanNull:
+    def test_both_cell_branches_are_exercised(self, scored_by_generator):
+        """One generator must declare per-row truth and one must not.
+
+        Same closure requirement as the typed pair: if every generator fell on the
+        same side of this, one of the assertions below would report green while
+        testing nothing.
+        """
+        declares = {
+            gen
+            for gen, (truth, _) in scored_by_generator.items()
+            if truth.get("rows_typed")
+        }
+        assert declares, "no generator declares `rows_typed`; cell_accuracy is dead"
+        assert set(scored_by_generator) - declares, (
+            "every generator declares `rows_typed`, so the absence contract below "
+            "is untested"
+        )
+
+    def test_a_generator_with_a_list_populates_the_pair(self, scored_by_generator):
+        """State 3, and MEASURING — not merely present."""
+        for gen, (truth, row) in scored_by_generator.items():
+            if not truth.get("rows_typed"):
+                continue
+            assert row["cell_accuracy"] == 1.0, (gen, row["cell_accuracy"])
+            expected = sum(len(cells or {}) for cells in truth["rows_typed"].values())
+            assert row["cells_compared"] == expected, gen
+            assert row[CELL_REASON_KEY] is None, gen
+
+    def test_a_generator_without_a_list_carries_neither_key(self, scored_by_generator):
+        """State 1 — the #1497 regression, stated directly."""
+        for gen, (truth, row) in scored_by_generator.items():
+            if truth.get("rows_typed"):
+                continue
+            for key in CELL_KEYS:
+                assert key not in row, (
+                    f"{gen}: `{key}` is present (value {row.get(key)!r}) on a document "
+                    "with no list attribute. There were no cells to compare, not zero "
+                    "correct cells — and present-and-null here is indistinguishable "
+                    "from a list that joined nothing, which IS a measurement (#1497)."
+                )
+            reason = row[CELL_REASON_KEY]
+            assert reason, gen
+            # The reason must name what is missing and what to read instead, or it is
+            # a flag rather than an explanation.
+            for word in CELL_KEYS + ("rows_typed", "scalar_accuracy", "typed_accuracy"):
+                assert word in reason, (gen, word, reason)
+            assert "absent, not zero" in reason, gen
+            # Nothing went wrong on this row: the rest of it is a complete measurement.
+            assert row["scalar_accuracy"] is not None, gen
+
+    def test_a_list_that_joined_nothing_is_measured_not_absent(
+        self, truth_by_generator
+    ):
+        """State 2, which must NOT be absent — it is a measurement over an empty join.
+
+        This is the half of the fix that is easy to get wrong in the other direction.
+        A run that returned none of a 400-row table has been measured: the right
+        encoding is `cell_accuracy` null, because 0/0 is undefined and a 1.0 there
+        would be the "a null column scores 1.000" blind spot in its purest form, with
+        `cells_compared` the literal 0 it compared.
+        """
+        measured = 0
+        for gen, truth in truth_by_generator.items():
+            if not truth.get("rows_typed"):
+                continue
+            row = _score(truth, _empty_sections())
+            measured += 1
+            for key in CELL_KEYS:
+                assert key in row, (
+                    f"{gen}: `{key}` is absent on a document that HAS a list and "
+                    "returned none of it. That is a measurement, not an inapplicable "
+                    "metric, and absence is reserved for the latter (#1497)."
+                )
+            assert row["cell_accuracy"] is None, (gen, row["cell_accuracy"])
+            # The denominator is the honest 0, not a blank a reader fills in by
+            # guessing correctly. `cell_tot or None` used to fold it onto state 1.
+            assert row["cells_compared"] == 0, (gen, row["cells_compared"])
+            assert row[CELL_REASON_KEY] is None, gen
+        assert measured, "no generator reached state 2; this test proved nothing"
+
+    def test_the_three_states_are_pairwise_distinguishable(self, truth_by_generator):
+        """The contract itself, rather than any one of its three branches.
+
+        Read on the three keys together, which is what a consumer of the row, the CSV
+        or a table built from either actually does. Before #1497 states 1 and 2 were
+        the same triple — `(absent-as-None, absent-as-None, no reason)` — which is how
+        "this document has no list" came to render in a published table as a blank
+        cell indistinguishable from "this run returned nothing".
+        """
+        with_list = [t for t in truth_by_generator.values() if t.get("rows_typed")]
+        without = [t for t in truth_by_generator.values() if not t.get("rows_typed")]
+        assert with_list and without
+
+        def signature(row):
+            return tuple(
+                (key, key in row, row.get(key))
+                for key in CELL_KEYS + (CELL_REASON_KEY,)
+            )
+
+        states = {
+            "no list attribute": signature(_score(without[0])),
+            "list, nothing joined": signature(_score(with_list[0], _empty_sections())),
+            "list, cells joined": signature(_score(with_list[0])),
+        }
+        assert len(set(states.values())) == 3, states
+
+    def test_the_reference_path_keeps_its_own_handling(self):
+        """A fourth row shape, which this change must leave exactly as it was.
+
+        A reference corpus is scored by the stack's own evaluation against the corpus
+        labels, so the whole exact-key family is absent there and has been since
+        #1364 — explained by `exact_truth_unavailable`, not by this change's reason
+        column. Pinned because the two absences look identical on a row and the
+        remedies are different: one wants a document with a list, the other cannot
+        have one at all.
+        """
+        keys = set(analyze.scored_against_keys(None))
+        assert keys == {"scored_against", "exact_truth_unavailable"}
+        assert (
+            analyze.scored_against_keys(None)["exact_truth_unavailable"]
+            == analyze.EXACT_TRUTH_UNAVAILABLE_REFERENCE
+        )
+        # It names the cell columns, so a reader of a reference row is sent to
+        # `weighted_accuracy` rather than to this change's reason column.
+        for word in CELL_KEYS + ("weighted_accuracy",):
+            assert word in analyze.EXACT_TRUTH_UNAVAILABLE_REFERENCE, word
+        # And the two reasons are distinct strings, so a row carrying one is never
+        # mistaken for a row carrying the other.
+        assert (
+            analyze.CELL_TRUTH_UNAVAILABLE_NO_LIST
+            != analyze.EXACT_TRUTH_UNAVAILABLE_REFERENCE
+        )
+
+    def test_a_list_free_synthetic_row_is_still_identified_as_exact_truth(
+        self, scored_by_generator
+    ):
+        """`row_scored_against`'s shape fallback must survive the two keys going away.
+
+        It falls back to `any(k in row for k in EXACT_TRUTH_METRICS)`, and two of
+        those four are now conditional on the document — `cells_compared` and
+        `cell_accuracy` here, `typed_accuracy` in #1490. A `kv_form` row is left
+        carrying `scalar_accuracy` and `completeness_recall`, which `score_synthetic`
+        writes unconditionally; if that ever stopped being true, a list-free synthetic
+        row would be classified as "unknown" and drop out of `n_scored_exact_truth`.
+        """
+        for gen, (truth, row) in scored_by_generator.items():
+            if truth.get("rows_typed"):
+                continue
+            shape_only = {k: v for k, v in row.items() if k != "scored_against"}
+            shape_only["sub_doc"] = None
+            assert (
+                aggregate.row_scored_against(shape_only) == analyze.SCORED_EXACT_TRUTH
+            ), gen
+
+    @pytest.mark.parametrize("column", CELL_KEYS + (CELL_REASON_KEY,))
+    def test_the_cell_columns_reach_the_csv(self, column):
+        """``DictWriter(extrasaction="ignore")`` drops an unlisted key in silence."""
         assert column in aggregate.CSV_COLS

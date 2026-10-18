@@ -215,6 +215,13 @@ CSV_COLS = [
     # scorer has always written it and `METHODOLOGY.md` has always said it is printed
     # beside `cell_accuracy`; `DictWriter(extrasaction="ignore")` was dropping it.
     "cells_compared",
+    # ...and the reason column that tells the two blanks apart (#1497). A document
+    # with no list attribute now carries NEITHER of the two columns above, because
+    # there were no cells to compare rather than zero correct ones, and this says so.
+    # A document that has a list and joined nothing still carries both, with
+    # `cells_compared` the literal 0 — so a blank in either of those two columns now
+    # means "does not apply to this row" and nothing else.
+    "cell_truth_unavailable",
     # Mean over repeats IS the boundary-detection pass rate.
     "sections_correct",
     "weighted_accuracy",
@@ -300,6 +307,14 @@ CSV_COLS = [
 # The accuracy family `score_synthetic` owns and `score_reference` cannot produce.
 # Presence of ANY of them identifies the exact-truth scorer on a row written before
 # `scored_against` existed; membership is what `row_scored_against` falls back to.
+#
+# ANY is load-bearing, not a convenience: two of the four are now conditional on the
+# document. `cells_compared` and `cell_accuracy` are absent on a synthetic row with no
+# list attribute (#1497) and `typed_accuracy` on one with no typed scalars (#1490), so a
+# `kv_form` row is identified by the two that are unconditional — `scalar_accuracy` and
+# `completeness_recall`, which `score_synthetic` writes on every row it scores. A row
+# scored by current code also records `scored_against` outright, so this fallback only
+# has to classify the committed grids.
 EXACT_TRUTH_METRICS = (
     "cells_compared",
     "cell_accuracy",

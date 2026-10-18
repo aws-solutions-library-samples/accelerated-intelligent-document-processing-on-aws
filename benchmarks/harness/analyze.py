@@ -226,6 +226,12 @@ def score_cells(sections, rows_typed, list_key):
     Returns ``(hits, total, rows_matched)``. ``total`` counts only cells the
     truth declares AND whose row was recovered, so this metric is about VALUE
     fidelity and does not double-count the truncation that recall already reports.
+
+    ``(None, None, None)`` means the truth declares no ``rows_typed`` — the document
+    has no list attribute, so this metric does not apply to it at all. That is a
+    different answer from ``(0, 0, 0)``, which means a list was declared and not one
+    of its rows came back, and ``cell_metric_keys`` is what keeps the two
+    distinguishable on the row (#1497).
     """
     if not rows_typed:
         return None, None, None
@@ -1031,6 +1037,58 @@ def typed_scalar_keys(hits, total):
     }
 
 
+CELL_TRUTH_UNAVAILABLE_NO_LIST = (
+    "no per-cell truth: this document has no list attribute — its truth file declares "
+    "no `rows_typed` — so cell_accuracy / cells_compared do not apply to this row and "
+    "are absent, not zero. Only a document whose generator emits per-row typed "
+    "expectations carries them (`bank_statement`); for a flat key/value form the "
+    "per-value instruments are scalar_accuracy, which compares the text the document "
+    "renders, and typed_accuracy, which compares the schema-typed target."
+)
+
+
+def cell_metric_keys(hits, total):
+    """The per-cell metric keys a scored row carries — or the reason it carries none.
+
+    ``score_cells`` answers in three states, and two of them used to encode
+    identically. It returns ``(None, None, None)`` when the truth declares no
+    ``rows_typed`` at all — the document has no list attribute, so there is nothing a
+    per-cell metric could be about — and ``(0, 0, ...)`` when a list IS declared and
+    not one of its rows came back, which is a real measurement over an empty join.
+    Both produced ``cell_accuracy: None`` and ``cells_compared: None``, because
+    ``cell_tot or None`` folded the honest ``0`` onto the same value as the absent one.
+
+    So this splits them, by the contract ``typed_scalar_keys`` above and
+    ``scored_against_keys`` below already use, for the reason stated there:
+    presence-and-null is already this harness's signal for "measured, and there was
+    nothing to join", so a metric that was never *applicable* must not borrow it.
+
+    * **No list attribute** — both keys ABSENT, and ``cell_truth_unavailable`` says
+      why and names the instruments that do apply. ``aggregate._stats`` drops an
+      absent key exactly as it drops a null one, so ``cell_stats`` is unchanged; what
+      changes is that a reader of the row, the CSV or a table built from either can
+      tell "not applicable here" from "measured nothing".
+    * **A list, and nothing joined** — ``cell_accuracy`` present and null (0/0 is
+      undefined, and a 1.0 there would be the "a null column scores 1.000" blind spot
+      in its purest form), with ``cells_compared`` the literal ``0`` it measured
+      rather than a blank a reader fills in as zero by guessing correctly.
+    * **A list, and cells joined** — the ratio and its denominator, as before.
+
+    This matters more than the typed pair it follows (#1490) because ``cell_accuracy``
+    is the column the configuration guidance leans on hardest: every per-model and
+    per-cell table in its §5 quotes it, and an accuracy figure whose denominator reads
+    as a blank is the specific shape that hides row loss — a model returning 10 rows of
+    400 scores 1.000 over the 20 cells it returned (GitHub #1497).
+    """
+    if hits is None or total is None:
+        return {"cell_truth_unavailable": CELL_TRUTH_UNAVAILABLE_NO_LIST}
+    return {
+        "cell_accuracy": round(hits / total, 4) if total else None,
+        "cells_compared": total,
+        "cell_truth_unavailable": None,
+    }
+
+
 def score_synthetic(bucket, doc_prefix, truth):
     """Exact completeness + accuracy from SEQ tags and known field values.
 
@@ -1086,9 +1144,6 @@ def score_synthetic(bucket, doc_prefix, truth):
     cell_hits, cell_tot, _rows_matched = score_cells(
         sections, truth.get("rows_typed"), truth.get("list_key")
     )
-    cell_accuracy = (
-        round(cell_hits / cell_tot, 4) if cell_hits is not None and cell_tot else None
-    )
     # Section count vs the truth's expectation. This is the metric boundary
     # detection is judged on, and nothing else can see it: a document split into
     # 3 sections instead of 1 still reports completeness_recall 1.0 and status
@@ -1116,8 +1171,7 @@ def score_synthetic(bucket, doc_prefix, truth):
         "n_gaps": len(truth_ids - extracted),
         "scalar_accuracy": round(scalar_hits / scalar_tot, 4) if scalar_tot else None,
         **typed_scalar_keys(typed_hits, typed_tot),
-        "cell_accuracy": cell_accuracy,
-        "cells_compared": cell_tot or None,
+        **cell_metric_keys(cell_hits, cell_tot),
         **confidence_distribution(confs, f"{doc_prefix}sections/*/result.json"),
         **score_confidence_coverage(sections),
         # Calibration and discrimination against the exact per-cell truth (#935).
