@@ -8,46 +8,64 @@ title: "Configuration Guidance"
 
 # GenAIIDP Configuration Guidance — Empirical Guidance for Document Extraction at Scale
 
-**Release:** v0.6.11 · **Region:** us-west-2 · **Stack:** `IDPUpg0610to0611R` (created from the
-published `idp-main_0.6.10.yaml` and upgraded in place to the published `idp-main_0.6.11.yaml`;
-see the [release-validation record](../release-validation/v0.6.11.md))
+**Release:** v0.6.12 · **Region:** us-west-2 · **Stack:** `IDPUpg0611to0612` (created from the
+published `idp-main_0.6.11.yaml` and upgraded in place to the published `idp-main_0.6.12.yaml`;
+the v0.6.12 record in [release-validation](../release-validation/) carries the stack's
+provenance and the failure census these runs contributed to)
 **Models:** extraction Claude Sonnet 4.6 — **the cross-version control, not the shipped
 default** — in §2–§4 and §7; the extraction, classification and confidence models are
 *varied* in §5 · classification Nova 2 Lite (the shipped default) · confidence Nova Lite
 (the shipped default) · summarization disabled (unscored)
-**Pricing:** `config_library/pricing.yaml` (sha256 `7726240470f1…`; rates as of 2026-10; intro
+**Pricing:** `config_library/pricing.yaml` (sha256 `44a79aa06c15…`; rates as of 2026-10; intro
 pricing may apply)
-**Measured:** 2026-10-11 → 2026-10-12, in one session, on one stack — **4,794 scored rows
-from 2,628 runs across 23 result sets**, the first full refresh of this paper since v0.6.7.
+**Measured:** 2026-10-17 23:37 → 2026-10-18 06:22 UTC, in one session, on one stack —
+**3,248 scored rows from 2,488 runs across 29 result sets**, including the first
+measurement of the two reference corpora since the v0.6.8 edition and the first of any
+kind for Claude Sonnet 5.5.
 
-⚠️ **Two cost figures in §5 are lower bounds, not measurements, and no cost *ratio* is
-published for either model.** `pricing.yaml` holds one flat rate per model and cannot
-express a usage-dependent band, but two swept models have one: **Claude Haiku 5.5** is
-billed 5× on every token type above 100,000 input tokens, and **GPT-6 Astra** moves to a
-long-context band above 272,000. Both thresholds are crossed in practice here — 105 of
-Haiku 5.5's 129 completed runs exceed 100,000 input tokens (median 543,675, maximum
-10.96M). Every other arm in the sweep has a single flat rate and its cost figure is a true
+⚠️ **Three cost figures in §5 are lower bounds, not measurements, and no cost *ratio* is
+published for any of the three models.** `pricing.yaml` holds one flat rate per model and
+cannot express a usage-dependent band, and three swept models need one:
+
+- **Claude Haiku 5.5** is billed 5× on every token type above 100,000 input tokens, and
+  that threshold is crossed in practice here.
+- **GPT-6 Astra** moves to a long-context band above 272,000 input tokens.
+- **Claude Sonnet 5.5** is a different problem with the same consequence: its published
+  per-token input and output prices are **identical to Sonnet 5's** ($2.20/$11.00 per
+  MTok, `us.`/`eu.`), differing only on cache reads ($0.11 vs $0.22) — but the Sonnet 5
+  rows in `pricing.yaml` carry Sonnet 4.6's rates by a separately-tracked decision, so a
+  report shows Sonnet 5.5 as roughly a third cheaper than Sonnet 5 when the price list
+  says they are the same. Compare those two from the AWS price list, never from here.
+
+Every other arm in the sweep has a single flat rate and its cost figure is a true
 measurement. See each model's row in
 [Benchmarking](index.md#which-models-are-actually-measured).
 
 ### What this edition re-measured, and what it did not
 
-Every number below is either re-measured on v0.6.9 or explicitly marked as carried over. Read
+Every number below is either re-measured on v0.6.12 or explicitly marked as carried over. Read
 this table before citing a figure.
 
-| Section | On v0.6.9? | Data |
+| Section | On v0.6.12? | Data |
 |---|---|---|
-| §2 configuration matrix (19 cells × 7 synthetic docs) | ✅ re-measured | `coresynth__extraction-model-sonnet5` (133 runs) |
-| §2c real-corpus accuracy | ⚠️ **carried over, both arms** | The two-model comparison is the v0.6.8 pair (`core` and `core__extraction-model-sonnet5`, 760 documents each). This release ran the corpora at the **control** only, so refreshing one arm would turn the model comparison into a cross-release one — the current-release control figures are quoted in §2c instead |
-| §2.1 integrated + simple hazard | ✅ re-measured | `intconf` (8 runs) |
-| §3 scaling | ✅ re-measured | `scaling__extraction-model-sonnet5`, `scalingsimple__extraction-model-sonnet5`, `scaling` (control) |
-| §4 cost level and variance | ✅ re-measured | `cost__extraction-model-sonnet5`, `cost` (control), n=5 each |
-| §5.1 extraction-model sweep | ⚠️ **3 of 8 models** | Sonnet 4.6, Sonnet 5, GPT-6 Astra re-measured. `nova_lite`, `nova_pro`, `sonnet5_1m`, `opus5` and `opus55` are **not measured on this release** — see §5.1 |
-| §5.2 premium head-to-head | ⚠️ **Astra pair only** | `astravalue` (100 runs), `astracap` (12). The `opus55value` pair (Opus 5.5 vs Opus 5) is declared and **has not run** — see §5.2 |
-| §5.3 classification model | ⚠️ **2 of 3** | Nova 2 Lite (default) and Sonnet 5. `haiku45` not measured |
-| §5.4 confidence model | ⚠️ **2 of 3** | Nova Lite (default) and Nova 2 Lite. Sonnet 5 not measured |
-| §6 standing hazards | ✅ re-measured | `intconf`, `advverify__extraction-model-sonnet5` |
-| §7 knob A/Bs | ✅ mostly | `enforcement`, `forcing`, `restatement`, `splitcost`, `advsplitcost`, `boundaryab`, `multiinstance`. **`sizerab` ran its committed-default arm only**, so §7's confidence-batch-sizing figures are carried over from v0.6.8 |
+| §2 configuration matrix (19 cells × 7 synthetic docs) | ✅ re-measured | `core` synthetic slice (133 runs, exact ground truth) |
+| §2c real-corpus accuracy | ✅ **re-measured, ONE arm** | `core` reference slice — **756 scored rows over 760 documents** across both corpora, at the **control** model. ⚠️ The *two-model* comparison the previous editions published is **not** refreshed: only the control arm ran, so the Sonnet-5 side would be a cross-release figure. Treat §2c as a cross-configuration result on this release, not a model comparison |
+| §2.1 integrated + simple hazard | ✅ re-measured | `intconf` (8 runs) — **closed**, 8/8 complete |
+| §3 scaling | ✅ re-measured | `scaling` (14 runs, 25→3,200 rows) |
+| §4 cost level and variance | ✅ re-measured | `cost` (control) and `cost__extraction-model-sonnet5`, n=5 each |
+| §5.1 extraction-model sweep | ✅ **all 9 models** | `coresynth__extraction-model-*` for `sonnet5`, `sonnet5_1m`, `opus5`, `opus55`, `astra`, `haiku55`, **`sonnet55`** (133 runs each); `simplegrid__extraction-model-*` for `nova_lite` and `nova_pro` (63 each — neither finishes the agentic path, #895), with `simplegrid` as their comparable control |
+| §5.2 premium head-to-head | ✅ **all three pairs** | `astravalue` (100 runs), `astracap` (12), and **`opus55value` (40) — run for the first time** |
+| §5.3 classification model | ✅ **all 3** | `nova_2_lite` (default), `sonnet5`, `haiku55`, 133 runs each |
+| §5.4 confidence model | ✅ **all 3** | `nova_lite` (default), `nova_2_lite`, `sonnet5`, 133 runs each |
+| §6 standing hazards | ✅ re-measured | `intconf`, `advverify__extraction-model-sonnet5` — **both closed**, 8/8 each |
+| §7 knob A/Bs | ⚠️ **4 of the set** | `enforcement`, `enforcecost`, `forcing` and the restatement arms inside `core` were re-measured. **`splitcost`, `advsplitcost`, `boundaryab`, `multiinstance` and `sizerab` did not run**, so those subsections carry figures from earlier editions and say so in place |
+
+⚠️ **`typed_accuracy` is absent from every table in this edition, and that is a gap rather
+than a choice.** The metric is emitted as `null` on all 3,248 scored rows
+([#1490](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1490)),
+so no per-model typed-accuracy column can be produced. It is the one metric that would
+separate a value extracted with the right *type* from one that merely matches as a
+string.
 
 Appendix A lists the exact directory behind every section.
 
@@ -748,21 +766,91 @@ computed by the same scorer on the same documents; rows are directly comparable.
 
 Models: Amazon Nova Lite and Nova Pro (the cheap end), Claude Sonnet 4.6 (the study's
 cross-version control), **Claude Sonnet 5 (the shipped default)**, Sonnet 5 `:1m` (the
-1M-token-context variant), Claude Opus 5, and OpenAI GPT-6 Astra (`us.` and `global.`).
-Claude Opus 5.5 is in the sweep as well but carries no run yet, so it appears in no table
-below; see §5.2 for what its comparison is built to answer.
+1M-token-context variant), Claude Opus 5, Claude Opus 5.5, Claude Haiku 5.5,
+**Claude Sonnet 5.5 (new in v0.6.12)**, and OpenAI GPT-6 Astra (`us.` and `global.`).
 Nova 2 Lite classification and Nova Lite confidence are held at their defaults except where
 they are the axis.
 
 ### 5.1 Extraction model — the full grid
 
-**All eight selectable models were swept on v0.6.11** — the first time the whole axis has
-been measured in one session. Six ran the 19-cell × 7-document `coresynth` grid; the two
-Nova models cannot complete the agentic path
+**All nine swept models were measured on v0.6.12**, including Claude Sonnet 5.5, whose own
+changelog entry states it was in no benchmark sweep — it was added to the axis for this
+edition. Seven ran the 19-cell × 7-document `coresynth` grid; the two Nova models cannot
+complete the agentic path
 ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895))
 and ran `simplegrid` instead, so they are reported separately below and never averaged in.
-Note the grid's documents run to **400 rows**; the 800-row and larger sizes where models
-diverge most are §3's territory, not this table's.
+Note the grid's documents run to **800 rows**; the larger sizes where models diverge most
+are §3's territory, not this table's.
+
+| extraction model | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | % conf leaves < 0.9 |
+|---|---:|---:|---|---|---:|---|---|
+| **Claude Opus 5.5** | 133 | 130 | **1.0000** | **1.0000** | **83,790** | **$101.67** | 2.03% |
+| GPT-6 Astra | 133 | 133 | **1.0000** | 0.9737 | 83,788 | $209.28 | 0.40% |
+| Claude Opus 5 | 133 | 132 | 0.9925 | **1.0000** | 82,190 | $126.55 | 0.96% |
+| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9563 | 0.9996 | 74,652 | $86.10 | 0.71% |
+| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9484 | 0.9992 | 73,334 | $87.42 | 0.63% |
+| **Claude Sonnet 5.5** *(new)* | 133 | 132 | 0.9041 | **1.0000** | 73,570 | $62.85 ‡ | 1.12% |
+| Claude Haiku 5.5 | 133 | 133 | 0.9269 | 0.9990 | 70,406 | $26.30 † | 2.54% |
+
+⚠️ **Read `cells_compared` alongside the accuracy columns, not after them.** A cell the
+arm never returned is a cell it is not scored on, so an arm that returns fewer rows is
+graded on a smaller denominator — the range here is 70,406 to 83,790, a 19% spread. That
+is why the recall column is the one to rank on and the accuracy column is a statement
+about the rows an arm *did* return. A 1.0000 cell accuracy over 73,570 cells (Sonnet 5.5)
+and the same figure over 83,790 (Opus 5.5) are not the same achievement.
+
+**The ranking is not the one the price list predicts, and the top of it is new.**
+**Claude Opus 5.5 is the only arm with both perfect recall and perfect cell accuracy**,
+over the largest denominator of any arm, at **less than half GPT-6 Astra's cost**. Astra
+also returns every row but has the **lowest cell accuracy of the premium set** (0.9737) —
+not a denominator artefact, since it compared essentially as many cells as Opus 5.5 did.
+So the most expensive arm is beaten on accuracy, cost and tie-on-completeness by one that
+costs 51% less.
+
+⚠️ **Opus 5.5's three incomplete runs are not a model property.** All three are the
+`AssessmentStep` memory failure on one 17-page document
+([#1488](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1488)),
+which struck eleven different cells across seven arms in this session and is unrelated to
+which extraction model is in use. Opus 5 (132) and Sonnet 5.5 (132) carry the same cause.
+
+**Claude Sonnet 5.5 is the cheapest arm with perfect cell accuracy, and the one with the
+most caveats.** It returns the fewest rows of any Claude arm except Haiku 5.5 (recall
+0.9041) but is exactly right on the rows it returns. Three things make its other columns
+non-comparable, and all three are properties of the model rather than of this measurement:
+
+- It **rejects a forced `toolChoice`**, so Schema Enforcement falls back to the prose
+  schema and `extraction.forced_tool` is recorded as skipped. Any `forcing` or
+  `enforcement` comparison involving this model measures the prose path whatever the knob
+  says.
+- It rejects `temperature`/`top_p`/`top_k`; the accelerator strips them for this model id,
+  so this is invisible here but will fail a call made by any other route.
+- **1M is its default window with no `:1m` id**, which makes the derived agentic shard
+  budget 578,400 tokens against Sonnet 5's 18,400. Wide shards defeat prompt caching, so
+  its cost per document is not comparable with Sonnet 5's on the agentic path unless
+  `extraction.agentic.shard_token_budget` is pinned.
+
+† No cost *ratio* is published for Haiku 5.5 — two-band pricing, see the header. Its
+dollar figure is a lower bound.
+‡ No cost *ratio* is published for Sonnet 5.5 either, for a different reason: its
+published per-token prices are **identical to Sonnet 5's**, while `pricing.yaml` prices
+Sonnet 5 at Sonnet 4.6's rates. The $62.85 against Sonnet 5's $86.10 is therefore a
+pricing-table artefact and **not** evidence that Sonnet 5.5 is cheaper.
+
+**The cheap end does not fail, it silently under-returns**, which is the more dangerous
+shape:
+
+| extraction model (`simplegrid`) | runs | completed | mean recall | mean cell accuracy | `cells_compared` | grid cost | % confidence leaves < 0.9 |
+|---|---:|---:|---|---|---:|---|---|
+| `simplegrid` control (Sonnet 4.6) | 63 | 61 | 0.9962 | 0.9990 | 39,462 | $29.17 | — |
+| Amazon Nova Pro | 63 | **63** | **0.4809** | 0.9361 | 6,960 | $10.89 | 0.7% |
+| Amazon Nova Lite | 63 | **63** | **0.4690** | 0.7525 | 8,418 | $8.76 | **70.7%** |
+
+Both Nova arms completed **every run with no error** and returned **less than half the
+rows**. Nova Pro's 0.9361 cell accuracy is computed over 6,960 cells against the control's
+39,462 — it is "94% accurate on the rows it chose to return", not 94% accurate. The one
+genuinely reassuring number is Nova Lite's **70.7% of confidence leaves below 0.9**: the
+model's own confidence signal flags the problem even though the run reports success. Nova
+Pro's does not (0.7%), so on that arm the under-return is close to silent.
 
 **Accuracy and reliability are separate columns here, and both matter.** Accuracy is
 computed over the **116 (cell, document) pairs every arm completed**, so no model is
