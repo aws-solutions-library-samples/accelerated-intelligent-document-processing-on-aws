@@ -166,33 +166,6 @@ def _deadline_allows(deadline_epoch: float | None, estimated_seconds: float) -> 
     return remaining - _DEADLINE_SAFETY_RESERVE_SECONDS >= estimated_seconds
 
 
-def _chunks_the_deadline_allows(
-    deadline_epoch: float | None, n_chunks: int, workers: int
-) -> int:
-    """How many of ``n_chunks`` can be dispatched before the deadline.
-
-    The escalation rungs call ``_deadline_allows`` for ONE prospective call. This
-    answers the question the primary fan-out asks instead: the batches are the
-    bulk of the work, there are ``ceil(n / workers)`` waves of them, and nothing
-    was refusing to start a wave the invocation could not hold. A 1,200-row list
-    at the default 25-row batch size is ~48 calls in one 900-second invocation,
-    which overruns it — and a Lambda killed on the wall clock raises no exception,
-    so the handler's degrade path (#901) never runs and a complete, validated,
-    already-persisted extraction is discarded with the document (#1488).
-
-    Returns ``n_chunks`` unchanged when no deadline was threaded in, so behaviour
-    outside Lambda is unchanged.
-    """
-    if deadline_epoch is None or n_chunks <= 0:
-        return n_chunks
-    workers = max(1, workers)
-    budget = (deadline_epoch - time.time()) - _DEADLINE_SAFETY_RESERVE_SECONDS
-    if budget <= 0:
-        return 0
-    waves = int(budget // _ESTIMATED_MODEL_CALL_SECONDS)
-    return max(0, min(n_chunks, waves * workers))
-
-
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         if v is None or (isinstance(v, str) and not v.strip()):
@@ -1904,6 +1877,15 @@ def assess_results_batched(
     order is preserved (ordered chunks + ``pool.map``). ``max_concurrent_batches
     <= 1`` keeps the original fully-sequential behavior.
 
+    **Wall-clock bound (#1488).** When ``deadline_epoch`` is given, no dispatch is
+    started that the remaining invocation time cannot hold: per batch on the
+    sequential path, before the cache-warming batch, and before each wave of the
+    fan-out, which re-reads the clock between waves so a model faster than the
+    estimate is not refused work it had time for. What a stop leaves out is always
+    a TRAILING suffix of batches, whose rows come back present and unscored with
+    ``deadline_reached`` set — never a batch from the middle, which would slide
+    later rows' confidence and bounding boxes onto earlier rows.
+
     ``assessment_service`` must expose the pure inference core
     ``assess_results(class_label, extraction_results, document_text, page_images,
     ocr_text_confidence) -> AssessmentCoreResult``.
@@ -2218,31 +2200,6 @@ def assess_results_batched(
             ]
         split_stats["batch_count"] = 1 + len(rest)
 
-        # Bound the fan-out by the remaining invocation time BEFORE dispatching
-        # any of it. `ceil(n/workers)` waves of ~_ESTIMATED_MODEL_CALL_SECONDS
-        # each is the cost, and a trailing suffix that will not fit is dropped
-        # rather than started — starting it is what loses the whole document
-        # (#1488). Recomputed against `rest` as trimmed, so `workers` never
-        # exceeds the work left.
-        if rest:
-            _planned_workers = min(int(max_concurrent_batches), len(rest))
-            allowed = _chunks_the_deadline_allows(
-                deadline_epoch, len(rest), _planned_workers
-            )
-            if allowed < len(rest):
-                split_stats["deadline_reached"] = True
-                logger.warning(
-                    "assess_results_batched: the remaining invocation time holds "
-                    "%d of %d fan-out batch(es) at %d worker(s); leaving %d row(s) "
-                    "unscored rather than losing the section to a hard task "
-                    "timeout (#1488).",
-                    allowed,
-                    len(rest),
-                    _planned_workers,
-                    sum(len(c) for c in rest[allowed:]),
-                )
-                rest = rest[:allowed]
-
         if rest:
             import concurrent.futures as _cf
 
@@ -2258,10 +2215,66 @@ def assess_results_batched(
             # Each concurrent chunk accumulates into its OWN stats dict; merge
             # them into the shared split_stats after the pool joins.
             per_chunk_stats = [_new_split_stats() for _ in rest]
+
+            # The fan-out is dispatched in WAVES of up to ``workers`` chunks, and
+            # the remaining invocation time is re-read before each one, against the
+            # price of ONE model call — a wave runs concurrently, so a wave costs
+            # about one call. When the clock runs out the undispatched trailing
+            # suffix is left unscored rather than started; starting it is what gets
+            # the invocation killed on the wall clock, and a Lambda killed that way
+            # raises no exception, so the handler's degrade path (#901) never runs
+            # and a complete, validated, already-persisted extraction is discarded
+            # with the document (#1488).
+            #
+            # ⚠️ Do NOT price the whole fan-out up front as
+            # ``(budget // one_call) * workers`` chunks. That is not a bound on
+            # time, it is a cap on chunk COUNT: it refuses a trailing suffix on a
+            # worst-case estimate that a fast model never reaches, and the error is
+            # worst exactly where the chunk count is large relative to the budget —
+            # a 200-row list at a token-aware batch size of 4 is ~50 chunks, where
+            # the rows it refuses are rows the model would have scored in under a
+            # second each, and those come back ``confidence: null`` and can trip the
+            # error rung of the coverage check on a section that would otherwise
+            # have scored completely. #958 rejected that arithmetic for the recovery
+            # rungs for the same reason; the primary pass is held to it too.
+            # Re-reading the clock per wave self-corrects instead: calls that return
+            # faster than the estimate leave the budget intact and the next wave is
+            # allowed on the evidence rather than on the guess.
+            #
+            # The cost of the wave boundary is the straggler — a wave is only as
+            # fast as its slowest call, where one continuous ``pool.map`` over every
+            # chunk would refill a free worker immediately. That is the price of
+            # having an observation point at all, and it is paid only on the
+            # concurrent path in a Lambda with a deadline threaded in.
+            dispatched = 0
             with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
-                # map preserves input order → results stay index-aligned.
-                sliced_results.extend(pool.map(_assess_chunk, rest, per_chunk_stats))
-            for cs in per_chunk_stats:
+                while dispatched < len(rest):
+                    if not _deadline_allows(
+                        deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS
+                    ):
+                        split_stats["deadline_reached"] = True
+                        logger.warning(
+                            "assess_results_batched: stopping the fan-out after %d "
+                            "of %d batch(es) — the remaining invocation time cannot "
+                            "hold another wave of %d. Leaving %d row(s) unscored "
+                            "rather than losing the section to a hard task timeout "
+                            "(#1488).",
+                            dispatched,
+                            len(rest),
+                            workers,
+                            sum(len(c) for c in rest[dispatched:]),
+                        )
+                        break
+                    wave = slice(dispatched, dispatched + workers)
+                    # map preserves input order → results stay index-aligned, so
+                    # what a stop leaves out is always a TRAILING suffix.
+                    sliced_results.extend(
+                        pool.map(_assess_chunk, rest[wave], per_chunk_stats[wave])
+                    )
+                    dispatched += len(rest[wave])
+            # Only the dispatched prefix ran; the rest hold untouched zero-valued
+            # accumulators, and merging those would be a no-op either way.
+            for cs in per_chunk_stats[:dispatched]:
                 # Sum every counter a worker could have incremented (including the
                 # escalation counters — a worker can escalate inside its adaptive
                 # split), and OR-merge the wall-clock `deadline_reached` flag so a
@@ -2425,11 +2438,17 @@ def _splice_missing_rows(
         # through here -- so the cheap rung can no longer be refused while the
         # slower, dearer one proceeds.
         #
-        # This bounds RECOVERY, not the whole invocation. Two overruns remain, both
-        # pre-existing: a chunk that bisects makes one unchecked call per pending
-        # sibling, so it can finish roughly (bisection depth x one call) past the
-        # deadline; and the INITIAL batch pass consults no deadline at all. The
-        # second is the larger term for the 900s timeouts #894 reports.
+        # The residual: this bounds CHUNKS, not CALLS, and a chunk can be more than
+        # one call. Every rung reaches the model through _assess_slice_adaptive,
+        # whose first one_call() is unconditional -- the deadline is consulted
+        # before the chunk and then again only before each further BISECTION, which
+        # clears two calls at a time -- so a chunk the model keeps truncating can
+        # finish roughly (bisection depth x one call) past the point this check
+        # cleared it for. That applies identically to the primary batch pass and the
+        # concurrent fan-out, which consult the same predicate at the same
+        # granularity. Pricing a prospective bisection TREE here instead would mean
+        # refusing a chunk on a worst case a non-truncating model never reaches,
+        # which is the chunk-COUNT cap this guard exists to avoid.
         est_call_seconds = max(
             measured_call_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
         )

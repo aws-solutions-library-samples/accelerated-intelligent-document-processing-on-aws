@@ -634,36 +634,54 @@ added in #1378 answer this directly on the next grid, at no extra cost.
 
 ### Lambda wall-clock budget & resume safety
 
-The escalation ladder adds sequential model calls inside the 900s
-Extraction/Assessment Lambdas. To avoid a hard timeout, both handlers thread the
-Lambda's `context.get_remaining_time_in_millis()` down as an absolute
-`deadline_epoch`. Every path that can spend a model call consults it, and all of
-them price a call at `_ESTIMATED_MODEL_CALL_SECONDS` (60s) or the last measured
-duration, whichever is larger, against the remaining time minus a 90s safety
-reserve:
+The primary confidence pass and the escalation ladder behind it both spend model
+calls inside the 900s Extraction/Assessment Lambdas. To avoid a hard timeout, both
+handlers thread the Lambda's `context.get_remaining_time_in_millis()` down as an
+absolute `deadline_epoch`. Every path that can spend a model call consults it, and
+all of them price a call at `_ESTIMATED_MODEL_CALL_SECONDS` (60s) or the last
+measured duration, whichever is larger, against the remaining time minus a 90s
+safety reserve:
 
 | Where | Granularity | Added |
 |---|---|---|
+| Every batch of the primary pass's sequential loop (`assess_results_batched`) | per batch | #1488 |
+| The cache-warming batch that precedes a concurrent fan-out | per pass | #1488 |
+| Each wave of the concurrent fan-out (up to `max_concurrent_batches` batches) | **per wave** | #1488 |
 | Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | 1.5 |
 | Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | #958 |
 | Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | 1.5 |
 
-When a check fails the ladder stops, keeps everything already recovered, and sets
-`deadline_reached` — converting a would-be timeout into a soft, flagged, complete
-document.
+When a check fails the pass or the ladder stops, keeps everything already scored or
+recovered, and sets `deadline_reached` — converting a would-be timeout into a soft,
+flagged, complete document. On the primary pass the batches it does not run are
+always a **trailing suffix**, because rows accumulate positionally and dropping a
+middle batch would slide later rows' confidence and bounding boxes onto earlier
+rows.
 
-The retry rung was the last to be covered: until #958 it stopped only after
-`max_retries` rounds or on a round that recovered nothing, so rounds that each made
-partial progress were unbounded in wall-clock terms. Note **why that check is per
-chunk and not per round.** A round-level check has to price a whole round before
-making any of its calls, and the only safe price is a worst case — chunks × 60s.
-That is not a bound on time, it is a cap on chunk COUNT: with 800s remaining it
-refuses any round past 11 chunks however fast the model actually is, which for a
-200-row list at a token-aware batch size of 4 discarded recovery that measurably
-took under a second and turned a clean section into an error-severity
-`assessment_incomplete`. Pricing one call at a time bounds the wall clock exactly,
-keeps every row the budget did cover, and treats both rungs alike — before #958 the
-cheap same-model rung could be refused while the slower, dearer escalation rung
+The granularity column is the honest unit: the check bounds a **dispatch unit**,
+not a call. Every path reaches the model through `_assess_slice_adaptive`, whose
+first call is unconditional once the unit has been cleared, and a truncating model
+bisects from there — each further split is checked, but a cleared split makes two
+calls. So a chunk the model keeps truncating can finish roughly (bisection depth ×
+one call) past the point it was cleared for. That residual is deliberate; pricing a
+prospective bisection tree would reintroduce the count cap described next.
+
+**Why none of these checks prices more than one call at a time.** A check that
+covers a whole round, or a whole fan-out, has to price it before making any of its
+calls, and the only safe price is a worst case — chunks × 60s. That is not a bound
+on time, it is a cap on chunk COUNT: with 800s remaining it refuses any round past
+11 chunks however fast the model actually is, which for a 200-row list at a
+token-aware batch size of 4 discarded recovery that measurably took under a second
+and turned a clean section into an error-severity `assessment_incomplete`. Pricing
+one call at a time bounds the wall clock exactly and keeps every row the budget did
+cover. The concurrent fan-out is held to the same rule, which is why it dispatches
+in waves and re-reads the clock before each: a wave runs concurrently so it costs
+about one call, and calls that return faster than the estimate leave the budget
+intact, so the next wave is allowed on the evidence instead of refused on the
+guess. The price of the wave boundary is the straggler — a wave is only as fast as
+its slowest call — which buys the observation point that makes the budget
+self-correcting. The rule also treats the rungs alike: before #958 the cheap
+same-model rung could be refused while the slower, dearer escalation rung
 proceeded, because the two sized their chunks differently.
 
 **What an operator sees.** With rows still unscored the section reports
