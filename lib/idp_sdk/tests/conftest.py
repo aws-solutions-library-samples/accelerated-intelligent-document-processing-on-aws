@@ -83,34 +83,70 @@ no_outbound_aws = _no_outbound_aws_fixture()
 # `python3 publish.py …` writes these very paths in the checkout it runs from, so
 # demanding absence would fail on any tree that has published and blame the test
 # run for a file it did not create.
-_CHECKOUT_BUILD_PATHS = (".aws-sam",)
+# ⚠️ **Watch each artefact, not only its directory.** A directory's mtime moves when
+# an entry is created, deleted or renamed — NOT when an existing file is rewritten in
+# place. So on the very trees the note above calls legitimate and common, a re-leak of
+# #1491's own file would truncate and rewrite it while `.aws-sam`'s own mtime stayed
+# put. Watching the directory alone would pass exactly the case this control exists for.
+#
+# One definition, imported rather than copied — the convention `no_outbound_aws` states
+# above. The per-test guard in
+# `unit/test_multi_doc_discovery_source_zip.py` reaches the same tuple and the same
+# snapshot through `checkout_build_output` below, so the two cannot drift; they did, on
+# the first edit, when each kept its own list and its own derivation of the repo root.
+CHECKOUT_BUILD_PATHS = (
+    ".aws-sam",
+    ".aws-sam/multi-doc-discovery-source.zip",
+)
+
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _build_output_state():
-    """``(exists, st_mtime_ns)`` per watched repo-root build path."""
-    root = Path(__file__).resolve().parents[3]
+def _snapshot_build_output():
+    """``{rel: (exists, st_mtime_ns)}`` for every watched repo-root path."""
     state = {}
-    for rel in _CHECKOUT_BUILD_PATHS:
-        p = root / rel
+    for rel in CHECKOUT_BUILD_PATHS:
+        p = _CHECKOUT_ROOT / rel
         state[rel] = (p.exists(), p.stat().st_mtime_ns if p.exists() else None)
-    return root, state
+    return state
+
+
+def _changed_build_output(before, after):
+    """Which watched paths differ between two snapshots."""
+    return [rel for rel in CHECKOUT_BUILD_PATHS if after[rel] != before[rel]]
+
+
+def _build_output_message(changed, before, after, what):
+    return (
+        f"{what} changed {', '.join(repr(c) for c in changed)} under "
+        f"{_CHECKOUT_ROOT} (before={before}, after={after}). A build or packaging "
+        f"step ran with the cwd set to the repository root instead of a staging "
+        f"directory. `make srt-scan` degrades when an .aws-sam directory is present, "
+        f"so this makes the security gate depend on whether the test suite ran first "
+        f"— see issue #1491 and the chdir section in "
+        f".claude/skills/testing-qa.md. `make srt-clean` removes it."
+    )
+
+
+@pytest.fixture(scope="session")
+def checkout_build_output():
+    """The shared watch, for a test that wants to assert over its own call.
+
+    Exposes the snapshot and diff helpers the session control uses, so a narrower
+    per-test claim is made against the same tuple rather than a second copy of it.
+    """
+    return _snapshot_build_output, _changed_build_output, _build_output_message
 
 
 @pytest.fixture(scope="session", autouse=True)
 def no_build_output_in_checkout():
     """Fail the session if it changed a gitignored build path in the checkout."""
-    root, before = _build_output_state()
+    before = _snapshot_build_output()
     yield
-    _, after = _build_output_state()
-    changed = [rel for rel in _CHECKOUT_BUILD_PATHS if after[rel] != before[rel]]
-    assert not changed, (
-        f"this test session changed {', '.join(repr(c) for c in changed)} under "
-        f"{root} (before={before}, after={after}). A build or packaging step ran "
-        f"with the cwd set to the repository root instead of a staging directory. "
-        f"`make srt-scan` degrades when an .aws-sam directory is present, so this "
-        f"makes the security gate depend on whether the test suite ran first — see "
-        f"issue #1491 and the chdir section in .claude/skills/testing-qa.md. "
-        f"`make srt-clean` removes it."
+    after = _snapshot_build_output()
+    changed = _changed_build_output(before, after)
+    assert not changed, _build_output_message(
+        changed, before, after, "this test session"
     )
 
 

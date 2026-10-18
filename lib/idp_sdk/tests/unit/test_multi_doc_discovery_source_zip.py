@@ -353,37 +353,14 @@ def staging_checkout(monkeypatch, tmp_path):
     return staging
 
 
-#: What the guard below snapshots in the checkout, relative to the repo root.
-#:
-#: ⚠️ **The directory is watched as well as the zip, and that is not redundant.**
-#: What degrades `make srt-scan` is the `.aws-sam` **directory** — it globs the
-#: project root for one (`scripts/srt/run.py`). For today's packaging step the two
-#: are inseparable, since it `makedirs(".aws-sam")` and then writes the zip, both
-#: cwd-relative. But the fixture this file replaced created the directory on its
-#: own, for a lock file, without the zip being what leaked — so a future helper
-#: doing the same would slip past a zip-only guard while still degrading the scan.
-_WATCHED_CHECKOUT_PATHS = (
-    ".aws-sam",
-    ".aws-sam/multi-doc-discovery-source.zip",
-)
-
-
-def _checkout_zip_state() -> dict[str, tuple[bool, int | None]]:
-    """`(exists, st_mtime_ns)` per watched repo-root path.
-
-    The pair, not bare existence, is what the guard below compares: a developer
-    tree that has run `publish.py` legitimately carries these exact paths, so
-    "absent" is not the property worth asserting.
-    """
-    state: dict[str, tuple[bool, int | None]] = {}
-    for rel in _WATCHED_CHECKOUT_PATHS:
-        p = _REPO_ROOT / rel
-        state[rel] = (p.exists(), p.stat().st_mtime_ns if p.exists() else None)
-    return state
+#: The watched paths, the snapshot and the diff all come from the
+#: `checkout_build_output` fixture in `../conftest.py` — one definition for the
+#: suite-wide control and this narrower per-call claim, so the two cannot drift.
+#: They did drift on the first edit, when each kept its own list.
 
 
 @pytest.fixture
-def packaging_run(monkeypatch, staging_checkout):
+def packaging_run(monkeypatch, staging_checkout, checkout_build_output):
     """One real packaging call, with the checkout's zip state either side of it.
 
     Runs against the actual repo tree — the zip content IS the contract — but
@@ -399,17 +376,18 @@ def packaging_run(monkeypatch, staging_checkout):
     working tree because the step's only write is `.aws-sam/`, which is not a
     staged path — not because the staging root isolates writes.
     """
+    snapshot, _changed, _message = checkout_build_output
     staging = staging_checkout
     publisher = _quiet_publisher(monkeypatch)
     zip_path = staging / ".aws-sam" / "multi-doc-discovery-source.zip"
-    before = _checkout_zip_state()
+    before = snapshot()
     try:
         publisher.package_multi_doc_discovery_source()
     except (SystemExit, Exception):  # noqa: B014
         # The upload stage needs S3 config we deliberately don't provide.
         if not zip_path.exists():
             raise
-    after = _checkout_zip_state()
+    after = snapshot()
     with zipfile.ZipFile(zip_path) as zf:
         return zf.namelist(), before, after
 
@@ -421,7 +399,9 @@ def publisher_zip_names(packaging_run):
     return names
 
 
-def test_packaging_leaves_no_build_output_in_the_checkout(packaging_run):
+def test_packaging_leaves_no_build_output_in_the_checkout(
+    packaging_run, checkout_build_output
+):
     """A packaging call must not write `.aws-sam/` into the repo tree.
 
     Regression guard for #1491. Asserted through a real packaging call rather
@@ -434,16 +414,11 @@ def test_packaging_leaves_no_build_output_in_the_checkout(packaging_run):
     that ran `make test` before this guard existed. Asserting absence would turn
     those into a red test blaming the current run for a file it did not create.
     """
+    _snapshot, changed_paths, message = checkout_build_output
     names, before, after = packaging_run
     assert names, "fixture produced no archive, so it proved nothing"
-    changed = [rel for rel in _WATCHED_CHECKOUT_PATHS if after[rel] != before[rel]]
-    assert not changed, (
-        f"{', '.join(changed)} under {_REPO_ROOT} changed while this test ran "
-        f"(before={before}, after={after}) — the packaging call is the only "
-        f"plausible writer. `make srt-scan` degrades when an .aws-sam directory is "
-        f"present, so this makes the security gate depend on whether the test suite "
-        f"ran first — see issue #1491. `make srt-clean` removes it."
-    )
+    changed = changed_paths(before, after)
+    assert not changed, message(changed, before, after, "this test")
 
 
 def test_requirements_file_is_parseable_and_pins_pillow(monkeypatch):
