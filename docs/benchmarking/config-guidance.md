@@ -965,6 +965,15 @@ does return, never on a quoted saving.
 > in the tables above, plus — for Opus 5.5 against Opus 5 on the two small documents — the
 > `opus55value` pair, which has run (40 runs, recall 1.0000, cell accuracy 1.0000 over
 > 20,000 cells, $24.18).
+>
+> ⚠️ **Where a per-document claim below disagrees with the v0.6.12 grid, the grid is the
+> current result.** One does: finding 6 and the simple-mode table record GPT-6 Astra
+> returning an **empty response** on the 800-row, 17-page `large_narrow` document in every
+> simple-mode cell. That is not Astra's behaviour on v0.6.12 — it completed 133 of 133 runs
+> at recall **1.0000** over **83,788** cells, which is the full grid including that
+> document, so a whole document returning nothing is arithmetically excluded. Read that
+> finding as a v0.6.8 observation of a behaviour this release does not reproduce, not as a
+> standing property of the model.
 
 #### Carried over from v0.6.8 — the full seven-model grid
 
