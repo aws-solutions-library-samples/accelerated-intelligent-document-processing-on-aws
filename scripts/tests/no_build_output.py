@@ -45,27 +45,65 @@ directories alone would pass the case this control exists for.
 watched paths would leave a test that leaks `patterns/unified/.aws-sam` degrading
 `srt-scan` with this control green.
 
-The predicate below is therefore **the same one the scanner uses** — `**/.aws-sam`,
-`is_dir()`, excluding anything under `node_modules` — so the control and the scanner
-agree about what counts by construction rather than by two lists being kept in step.
+The glob below is the same shape the scanner's warning uses — `**/.aws-sam`,
+`is_dir()` — so a path this misses is a path that degrades the scan with the control
+green.
+
+⚠️ **The parity with `scripts/srt/run.py` is partial, and the difference is the
+scanner's advantage.** Its `abort_on_nested_checkouts` *refuses to scan* a tree that
+contains a nested checkout, so on the machines where this control has the most to go
+wrong — one holding agent worktrees — the scanner never evaluates these paths at all.
+This control cannot refuse, because it has to let the suite run. So it prunes local
+work instead, below.
+
+## Why local work is pruned, and why `.aws-sam` is put back
+
+`scratch/`, `.claude/worktrees/` and `.ai-review/base/` routinely hold **whole copies
+of this tree**, and a copy that has been built carries its own `.aws-sam`. Watching
+those turns a concurrent `publish.py` or `sam build` in another session's worktree into
+a failure of *this* suite, with a message blaming this test run — the defect class
+`scripts/tests/test_repo_walk_guards_prune_local_work.py` exists for, which records 157
+of 158 failures in one release validation coming from 74 agent worktrees.
+
+The prune set is therefore `repo_files.FALLBACK_PRUNE_DIRS`, reused rather than
+restated — minus `.aws-sam` itself, which that set carries because every other walker
+in the tree wants to skip build output and this one is looking for it. That subtraction
+is the one place this module may not simply inherit the shared list, so it is explicit
+and named.
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-#: Mirrors `scripts/srt/run.py`'s own discovery. Keep the two identical: a path this
-#: misses is a path that degrades the scan with the control green.
 _GLOB = "**/.aws-sam"
-_EXCLUDED_PART = "node_modules"
+
+#: The directory name this control is looking for, so it must survive the prune set.
+_WANTED = ".aws-sam"
+
+
+def _prune_dirs() -> frozenset[str]:
+    """Local-work directory names to skip, from the shared definition."""
+    here = str(Path(__file__).resolve().parent)
+    inserted = here not in sys.path
+    if inserted:
+        sys.path.insert(0, here)
+    try:
+        from repo_files import FALLBACK_PRUNE_DIRS
+    finally:
+        if inserted:
+            sys.path.remove(here)
+    return frozenset(FALLBACK_PRUNE_DIRS) - {_WANTED}
 
 
 def build_output_dirs(project_root: Path) -> list[Path]:
-    """Every SAM build directory the SRT scan would discover under `project_root`."""
+    """Every SAM build directory under `project_root`, excluding local-work copies."""
+    pruned = _prune_dirs()
     return sorted(
         p
         for p in project_root.glob(_GLOB)
-        if p.is_dir() and _EXCLUDED_PART not in p.parts
+        if p.is_dir() and not (set(p.relative_to(project_root).parts) & pruned)
     )
 
 
