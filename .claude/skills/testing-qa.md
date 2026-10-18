@@ -172,12 +172,18 @@ depend on whether the test suite ran first** — it stops being the scan CI runs
 shipped once ([#1491](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1491)).
 
 Build the staging root out of **symlinks** to the paths the step reads, under
-`tmp_path`. Archive members are written relative to the cwd, so the artefact is
-byte-identical to one built in the checkout, which keeps whatever content contract the
-test is asserting. `staging_checkout` in
-`lib/idp_sdk/tests/unit/test_multi_doc_discovery_source_zip.py` is the worked example.
+`tmp_path`. `staging_checkout` in
+`lib/idp_sdk/tests/unit/test_multi_doc_discovery_source_zip.py` is the worked example,
+and `no_build_output_in_checkout` in `lib/idp_sdk/tests/conftest.py` is the suite-wide
+control that catches the class rather than one instance.
 
-Three things that are easy to get wrong:
+Check, rather than assume, that the artefact is identical to one built in the checkout.
+It is for that step because it derives each archive name with
+`os.path.relpath(file_path, ".")`, which is cwd-relative — but a step that builds its
+member names from an absolute path would embed the staging root instead, and the content
+contract the test asserts would quietly change.
+
+Five things that are easy to get wrong:
 
 - **A test that only expects the step to *fail* leaks too.** The artefact is usually
   written before the validation that raises, so an aborting call still writes.
@@ -185,11 +191,23 @@ Three things that are easy to get wrong:
   these paths in a developer's checkout, so a guard that demands absence goes red on an
   ordinary built tree and blames the current run. Snapshot existence and mtime either
   side of the call instead.
+- **Watch the directory, not only the file.** What degrades `make srt-scan` is an
+  `.aws-sam` *directory*; a helper that creates one without writing the artefact — for a
+  lock file, say — slips past a file-only guard while still degrading the scan.
+- **Stage the top of each walk, never a child of a directory the step walks.**
+  `os.walk` traverses a symlinked top but, with `followlinks=False`, descends into no
+  symlinked *sub*directory. So staging `a/b` and `a/c` as links and letting the step
+  `os.walk("a")` yields neither — a silently short artefact and a passing content test.
 - **`mkdir(parents=True)` follows an existing symlink.** If the set of staged paths ever
   contains one nested inside another, creating the second link's parent creates a real
   directory *inside the repository* — the exact thing being prevented. Assert no staged
   path is a prefix of another, especially when the set is imported from elsewhere and can
   grow without the test being touched.
+
+⚠️ **A staging root of symlinks is an alias, not a sandbox.** Writes the step makes
+*under* a staged path land in the real tree and no checkout guard will see them. What
+makes the arrangement safe is that the step's writes go somewhere that is not a staged
+path — verify that, do not assume it.
 
 ## Moto Usage
 Always use `@mock_aws` decorator:

@@ -353,17 +353,33 @@ def staging_checkout(monkeypatch, tmp_path):
     return staging
 
 
-def _checkout_zip_state() -> tuple[bool, int | None]:
-    """Whether the repo-root source zip exists, and its mtime if it does.
+#: What the guard below snapshots in the checkout, relative to the repo root.
+#:
+#: ⚠️ **The directory is watched as well as the zip, and that is not redundant.**
+#: What degrades `make srt-scan` is the `.aws-sam` **directory** — it globs the
+#: project root for one (`scripts/srt/run.py`). For today's packaging step the two
+#: are inseparable, since it `makedirs(".aws-sam")` and then writes the zip, both
+#: cwd-relative. But the fixture this file replaced created the directory on its
+#: own, for a lock file, without the zip being what leaked — so a future helper
+#: doing the same would slip past a zip-only guard while still degrading the scan.
+_WATCHED_CHECKOUT_PATHS = (
+    ".aws-sam",
+    ".aws-sam/multi-doc-discovery-source.zip",
+)
 
-    The pair, not the bare existence, is what the guard below compares: a
-    developer tree that has run `publish.py` legitimately carries this exact
-    path, so "absent" is not the property worth asserting.
+
+def _checkout_zip_state() -> dict[str, tuple[bool, int | None]]:
+    """`(exists, st_mtime_ns)` per watched repo-root path.
+
+    The pair, not bare existence, is what the guard below compares: a developer
+    tree that has run `publish.py` legitimately carries these exact paths, so
+    "absent" is not the property worth asserting.
     """
-    leaked = _REPO_ROOT / ".aws-sam" / "multi-doc-discovery-source.zip"
-    if not leaked.exists():
-        return False, None
-    return True, leaked.stat().st_mtime_ns
+    state: dict[str, tuple[bool, int | None]] = {}
+    for rel in _WATCHED_CHECKOUT_PATHS:
+        p = _REPO_ROOT / rel
+        state[rel] = (p.exists(), p.stat().st_mtime_ns if p.exists() else None)
+    return state
 
 
 @pytest.fixture
@@ -374,6 +390,14 @@ def packaging_run(monkeypatch, staging_checkout):
     from `staging_checkout`, so nothing lands in the working tree. The before and
     after snapshots let the guard below assert what it is actually about: that
     *this run* did not write to the repo root.
+
+    ⚠️ **The staging root is an alias, not a sandbox**, and that is the property to
+    keep in mind when extending this. `lib/idp_common_pkg` and
+    `src/lambda/multi_doc_discovery` are symlinks to the real tree, so a write the
+    step made *under* either one would land in the checkout and neither the guard
+    below nor `conftest`'s session control would see it. Nothing lands in the
+    working tree because the step's only write is `.aws-sam/`, which is not a
+    staged path — not because the staging root isolates writes.
     """
     staging = staging_checkout
     publisher = _quiet_publisher(monkeypatch)
@@ -412,12 +436,13 @@ def test_packaging_leaves_no_build_output_in_the_checkout(packaging_run):
     """
     names, before, after = packaging_run
     assert names, "fixture produced no archive, so it proved nothing"
-    assert after == before, (
-        f"packaging wrote {_REPO_ROOT / '.aws-sam' / 'multi-doc-discovery-source.zip'} "
-        f"during this run (state {before} -> {after}). `make srt-scan` degrades "
-        f"when an .aws-sam directory is present, so this makes the security gate "
-        f"depend on whether the test suite ran first — see issue #1491. "
-        f"`make srt-clean` removes it."
+    changed = [rel for rel in _WATCHED_CHECKOUT_PATHS if after[rel] != before[rel]]
+    assert not changed, (
+        f"{', '.join(changed)} under {_REPO_ROOT} changed while this test ran "
+        f"(before={before}, after={after}) — the packaging call is the only "
+        f"plausible writer. `make srt-scan` degrades when an .aws-sam directory is "
+        f"present, so this makes the security gate depend on whether the test suite "
+        f"ran first — see issue #1491. `make srt-clean` removes it."
     )
 
 
