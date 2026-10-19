@@ -66,13 +66,27 @@ _BBOX_GEOMETRY_MULTIPLIER_FALLBACK = 3.0
 # "Lambda timeout & resume".
 _DEADLINE_SAFETY_RESERVE_SECONDS = 90.0
 
-# Assumed cost of one confidence model call when estimating whether the next round
-# fits before the deadline. Every wall-clock guard in this module floors its
-# estimate at this value even when it has a measured duration to hand: a call that
-# has just been made is the best evidence available, but the call that matters is
-# the NEXT one, and the shapes this guard exists for (a single oversized row
-# against a small output cap) are the slow ones. #894 recorded ~60 s per call on
-# Nova Lite.
+# Assumed cost of one confidence model call when estimating whether the next
+# dispatch fits before the deadline. #894 recorded ~60 s per call on Nova Lite.
+#
+# This value is the FLOOR, never a ceiling, and which guards have more than the
+# floor to work with differs — so do not read it as "every guard prices a call at
+# max(measured, 60)".
+#
+#   * Where a measured duration IS in hand, the guard floors at this value rather
+#     than trusting it: a call that has just been made is the best evidence
+#     available, but the call that matters is the NEXT one, and the shapes these
+#     guards exist for (a single oversized row against a small output cap) are the
+#     slow ones. That is ``_assess_slice_adaptive`` (the duration of the call it
+#     just made, before deciding to bisect) and ``_splice_missing_rows`` (the
+#     duration of the previous recovery chunk).
+#   * Where none is in hand the bare constant is the whole estimate. That is the
+#     primary pass — its first batch has made no call yet — including the
+#     cache-warming call and each wave of the concurrent fan-out, and the
+#     round-level check in ``_retry_missing_rows``. Under-pricing a slow model is
+#     self-correcting on those paths rather than unbounded, because each one
+#     re-reads the clock before the next dispatch and refuses it on what the
+#     previous one actually cost in wall-clock terms.
 _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 
 # --- Confidence-coverage shortfall thresholds (#901 item 3) -------------------
@@ -92,17 +106,18 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 # document-level alarm — 5% is the point where a reader should stop trusting the
 # confidence surface as a whole rather than a few rows in it.
 #
-# Note that those are two justifications of different shapes sharing one constant.
-# "Stop trusting the surface as a whole" is proportional and a fraction is the right
-# instrument for it; "a 1-2 row gap is the other issue's business" is ABSOLUTE, and a
-# fraction scales it with the list, so the number of unscored rows this rung passes
-# in silence is 0 at 20 rows and 39 at 800. The backstop that discharges the second
-# justification is narrower than it reads, too: ``split_stats["unrecoverable_rows"]``
-# is computed for the LARGEST list field only. That residual is measured (the worst
-# observed is 24 unscored rows of 800) and left in place rather than patched with a
-# second constant, because the committed grids cannot say whether the ladder already
-# reported those rows — ``processing_issues`` postdates all of them. See "The shape
-# of the warning fraction, and the residual it leaves" in this package's README.
+# Note that those are two justifications of different shapes, and only one of them is
+# proportional. "Stop trusting the surface as a whole" is a share and a fraction is
+# the right instrument for it; "a 1-2 row gap is the other issue's business" is
+# ABSOLUTE, and a fraction alone scales it with the list, so a rung expressed only as
+# a fraction passes 39 unscored rows in silence at 800 rows and 159 at 3,200. The
+# backstop that would otherwise discharge the second justification is narrower than
+# it reads, too: ``split_stats["unrecoverable_rows"]`` is computed for the LARGEST
+# list field only, so a residual confined to a smaller list attribute reaches neither
+# ``assessment_incomplete`` nor — being divided by the section-wide total — the
+# fraction. ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS`` below is the absolute
+# instrument for the absolute half of the justification. See "The shape of the warning
+# fraction, and the ceiling under it" in this package's README.
 #
 # What the fraction does to a SHORT list is arithmetic: a single unscored row is a
 # shortfall of 1/N, so one unscored row fires the warning for any section totalling
@@ -154,6 +169,58 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 _COVERAGE_SHORTFALL_WARNING_FRACTION = 0.05
 _COVERAGE_SHORTFALL_ERROR_FRACTION = 0.25
 _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS = 10
+
+# Why an ABSOLUTE CEILING on the warning rung as well as the fraction (#1495), and
+# why it introduces no new number.
+#
+# A fraction bounds the silent band in PROPORTION to the list, so the number of rows
+# that can be left unscored with no report at all is bounded only by how long the
+# longest list is: 39 rows at 800, 159 at 3,200, 199 at 4,000. Measured, the largest
+# silent shortfall in the committed benchmark grids moved from 24 unscored rows of
+# 800 (3.0%) to 115 of 3,200 (3.6%) when a 3,200-row document was first benchmarked —
+# the count grew 4.8x while the share barely moved, because the document grew 4x. 115
+# is not a worse state of the world than 24, it is the same state measured on a
+# bigger document, which is the signature of a purely multiplicative rung.
+#
+# ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` already names the quantity this
+# needs: "more unscored rows than a reviewer can be assumed to spot-check by hand".
+# The error rung reads it in one direction — below it, a large PROPORTION of a tiny
+# list must not render a section red — and the warning rung needs the same quantity
+# read in the other: at or above it, that much unreviewable data must be said out
+# loud whatever the list length. So this is DERIVED from that constant rather than
+# tuned, exactly as ``_OCR_ROW_GAP_MIN = _OCR_ROW_ESTIMATE_MIN`` is in
+# ``extraction/service.py`` (#1361, the same defect in the sibling check). Below it,
+# the fraction and the ladder's own ``assessment_incomplete`` — which names the exact
+# rows — remain the right instruments.
+#
+# What the derived value costs is MEASURED, over the artifacts the fractions were
+# measured on extended with the v0.6.12 grids of PR #1487, where the 3,200-row
+# document lives: 10,240 coverage-bearing document-runs, of which 10,033 have
+# coverage defined. 206 of those sit in the silent band, and their distribution
+# is 1 row (62 runs), 2 (18), 3 (94), 4 (17), 5 (7), 6 (2), 12 (4), 24 (1), 115 (1) —
+# EMPTY between 7 and 11, so the data cannot distinguish any ceiling in [7, 12] and
+# the derived 10 sits inside that band. It newly reports 6 runs, 0.0598% of the
+# defined runs, taking the warning rung from 0.2093% to 0.2691% and leaving a largest
+# silent shortfall of 6 rows (from 115). A ceiling of 5 would cost 15 runs (0.1495%)
+# and one of 3 would cost 126 (1.2559%), because that is where the mass is — the
+# small gaps the fraction deliberately leaves to ``assessment_incomplete``. The curve
+# and the method are written up under "The shape of the warning fraction, and the
+# ceiling under it" in this package's README. The curve itself is a one-off
+# measurement and that write-up is where it lives;
+# ``benchmarks/tests/test_coverage_threshold_evidence.py`` re-derives the parts a
+# committed corpus can carry on every test run — the zero-shortfall premise, the
+# firing share, the silent-band residual, and that nothing the ceiling newly reports
+# is an error — each through the real ``audit_explainability`` rather than a restated
+# rung.
+#
+# Severity at the ceiling is always ``warning``, and structurally so rather than by
+# convention: a run that crosses the ceiling without crossing
+# ``_COVERAGE_SHORTFALL_WARNING_FRACTION`` is by arithmetic below
+# ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` as well, and ``scored_rows == 0`` implies a
+# shortfall of 1.0, so neither error path is reachable from the ceiling alone.
+_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS = (
+    _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+)
 
 
 def _deadline_allows(deadline_epoch: float | None, estimated_seconds: float) -> bool:
@@ -390,6 +457,50 @@ def enrich_assessment_with_thresholds(
     return enriched, alerts
 
 
+#: Per-row ``confidence_reason`` for a row reconciliation had to pad because the
+#: model's assessment held fewer items than the data — the model was asked about
+#: the row and did not answer about it.
+_UNASSESSED_SHORT_RESPONSE_REASON = (
+    "Not individually assessed (assessment returned fewer items than were extracted)."
+)
+
+#: Per-row ``confidence_reason`` for a row whose confidence batch was never
+#: DISPATCHED, because the remaining invocation time could not hold it (#1488).
+#: Distinct from the reason above because this is the text an operator reads PER
+#: FIELD in the UI, and the two have different remedies: a short response points
+#: at the model's output budget, where this points at the time budget, whose
+#: levers are the Assessment function's timeout and the work per section. Saying
+#: the assessment "returned fewer items" here would be false — no call was made.
+_UNASSESSED_DEADLINE_REASON = (
+    "Not individually assessed (the Lambda invocation time budget was reached "
+    "before this row's confidence batch was dispatched; allow more Assessment "
+    "function time, or reduce the work per section)."
+)
+
+
+def _row_placeholder(
+    data_row: Any, reason: str = _UNASSESSED_SHORT_RESPONSE_REASON
+) -> dict[str, Any]:
+    """A null-confidence placeholder shaped like ``data_row``, carrying ``reason``.
+
+    Module-level and reason-parameterised so a caller that KNOWS why a row is
+    unscored can say so; ``reconcile_assessment_to_data`` keeps the default,
+    which is the only cause it can infer from its own two arguments.
+    """
+    # Mirror the data row's sub-fields so grounding can attach a box per
+    # populated sub-field from its actual value.
+    if isinstance(data_row, dict):
+        leaves = {
+            sub: {"confidence": None, "confidence_reason": reason}
+            for sub, sv in data_row.items()
+            if sv is not None and not isinstance(sv, (dict, list))
+        }
+        if leaves:
+            return leaves
+    # Scalar row element (or all-null/nested row): single neutral leaf.
+    return {"confidence": None, "confidence_reason": reason}
+
+
 def reconcile_assessment_to_data(
     assessment: dict[str, Any], extraction_results: dict[str, Any]
 ) -> dict[str, Any]:
@@ -421,24 +532,6 @@ def reconcile_assessment_to_data(
     """
     if not isinstance(assessment, dict):
         return assessment
-
-    def _row_placeholder(data_row: Any) -> dict[str, Any]:
-        reason = (
-            "Not individually assessed (assessment returned fewer items "
-            "than were extracted)."
-        )
-        # Mirror the data row's sub-fields so grounding can attach a box per
-        # populated sub-field from its actual value.
-        if isinstance(data_row, dict):
-            leaves = {
-                sub: {"confidence": None, "confidence_reason": reason}
-                for sub, sv in data_row.items()
-                if sv is not None and not isinstance(sv, (dict, list))
-            }
-            if leaves:
-                return leaves
-        # Scalar row element (or all-null/nested row): single neutral leaf.
-        return {"confidence": None, "confidence_reason": reason}
 
     def _expand_row_to_per_column(row_assess: Any, data_row: Any) -> Any:
         """Normalize a per-ROW confidence into per-COLUMN leaves.
@@ -1267,6 +1360,15 @@ def build_assessment_issues(
         # DID truncate, the rows were attempted and the model could not fit them --
         # saying they "were not attempted" would be false, and more time would not
         # help; a smaller batch or a larger-output model is the fix.
+        #
+        # Both causes can also be true of DIFFERENT rows of one section, and this
+        # message cannot split them: ``truncated_calls`` is a section-wide count
+        # and ``unrecoverable`` is counted after recovery, so neither attributes a
+        # cause to a row. The per-row attribution lives on the row instead, in the
+        # ``confidence_reason`` reconciliation and the dispatch guard write
+        # (``_UNASSESSED_SHORT_RESPONSE_REASON`` /
+        # ``_UNASSESSED_DEADLINE_REASON``), where the boundary is exact. Do not add
+        # a third variant here that claims a split these aggregates cannot support.
         truncated_any = bool(stats.get("truncated_calls"))
         if timed_out and not truncated_any:
             budget = (
@@ -1410,9 +1512,11 @@ def coverage_from_gaps(
     ``expected_rows_by_field`` is the DENOMINATOR beside the existing
     ``unscored_rows_by_field`` numerator, so a per-field coverage ratio is
     recoverable from the figure a run records. Without it a section with two list
-    attributes is unreadable in the one direction that matters: the rungs divide by
-    the section-wide row total, so an attribute that is *wholly* unscored beside a
-    large, fully-scored one lands below the warning fraction, and the ladder's own
+    attributes is unreadable in the one direction that matters: the fractions divide
+    by the section-wide row total, so a SHORT attribute that is *wholly* unscored
+    beside a large, fully-scored one lands below the warning fraction — and, while it
+    is shorter than ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS``, below the
+    warning rung's absolute ceiling as well — and the ladder's own
     ``unrecoverable_rows`` cannot cover it either, because that counts only the
     LARGEST list field. Both numbers are per field here so that case can be read off
     a recorded artifact rather than reasoned about (#997).
@@ -1495,8 +1599,11 @@ def audit_explainability(
     - Confidence values are within [0, 1].
     - **Coverage (#901 item 3):** the share of extracted list rows that actually
       carry a confidence. A materially short section emits
-      ``assessment_coverage_incomplete`` — ``warning`` past
-      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` for a *partial* shortfall
+      ``assessment_coverage_incomplete`` — ``warning`` at or above
+      ``_COVERAGE_SHORTFALL_WARNING_FRACTION`` of the rows **or** at or above
+      ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS`` unscored rows in absolute
+      terms, whichever comes first, so the band this rung passes in silence does not
+      grow with the list (#1495), ``error`` for a *partial* shortfall
       only past ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` **and**
       ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` absolute unscored rows (a
       fraction alone makes a one-row gap in a four-row list an error), and ``error``
@@ -1624,7 +1731,14 @@ def audit_explainability(
         # rounds to exactly 0.05 and would fire a warning that the threshold does not
         # actually call for.
         shortfall = unscored_list_rows / total_list_rows
-        if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
+        # Two instruments, deliberately: the fraction answers "can this section's
+        # confidence surface still be trusted as a whole", the absolute ceiling
+        # answers "is this more unreviewable data than a reviewer can hand-check",
+        # and the second question does not scale with the list (#1495).
+        if (
+            shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION
+            or unscored_list_rows >= _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS
+        ):
             scored = coverage["scored_rows"]
             # A PARTIAL shortfall needs BOTH a large proportion and a large absolute
             # number of unscored rows to be an error — see
@@ -1658,6 +1772,23 @@ def audit_explainability(
                     "confidence surface at all and confidence-based review (HITL "
                     "thresholds) does not apply to any of it. The extracted values "
                     "themselves were kept; treat every row as unverified."
+                )
+            elif shortfall < _COVERAGE_SHORTFALL_WARNING_FRACTION:
+                # Reached on the absolute ceiling alone, so the share is small and
+                # leading with it would understate the finding: "96% of rows carry a
+                # confidence score" is the true sentence about 115 unscored rows of
+                # 3,200 that a reader would act least on. Lead with the row count,
+                # which is the quantity this rung is about (#1495). The message says
+                # what is true of the document, not how the guard decided — the
+                # reasoning for the rung lives on the constant above.
+                message = (
+                    f"{unscored_list_rows} of {total_list_rows} extracted list "
+                    f"row(s) carry no confidence score ({worst_str}). That is only "
+                    f"{shortfall:.1%} of the section, so confidence-based review "
+                    "(HITL thresholds) still covers most of it — but it does not "
+                    "cover these rows, and there are enough of them to need "
+                    "checking individually. The extracted values themselves are "
+                    "unaffected; treat the unscored rows as unverified."
                 )
             else:
                 message = (
@@ -1877,6 +2008,15 @@ def assess_results_batched(
     order is preserved (ordered chunks + ``pool.map``). ``max_concurrent_batches
     <= 1`` keeps the original fully-sequential behavior.
 
+    **Wall-clock bound (#1488).** When ``deadline_epoch`` is given, no dispatch is
+    started that the remaining invocation time cannot hold: per batch on the
+    sequential path, before the cache-warming batch, and before each wave of the
+    fan-out, which re-reads the clock between waves so a model faster than the
+    estimate is not refused work it had time for. What a stop leaves out is always
+    a TRAILING suffix of batches, whose rows come back present and unscored with
+    ``deadline_reached`` set — never a batch from the middle, which would slide
+    later rows' confidence and bounding boxes onto earlier rows.
+
     ``assessment_service`` must expose the pure inference core
     ``assess_results(class_label, extraction_results, document_text, page_images,
     ocr_text_confidence) -> AssessmentCoreResult``.
@@ -2074,6 +2214,14 @@ def assess_results_batched(
     merged_alerts: list[dict[str, Any]] = []
     merged_metering: dict[str, Any] = {}
     big_field_acc: list[Any] = []
+    # Reports whether the model's JSON could be READ, not whether it was asked.
+    # The batched path has nothing that sets it False — truncation is handled by
+    # the adaptive splitter and reported as ``truncated_calls`` — so a run that
+    # made no call at all because the deadline refused every batch also reports
+    # True. Do NOT overload it to mean "assessment happened": that would route a
+    # wall-clock stop into the parse-failure surface, whose remedy is a different
+    # model or a smaller batch. ``deadline_reached`` plus ``batch_count`` are what
+    # say how much was actually run.
     parsing_succeeded = True
     duration_seconds = 0.0
 
@@ -2081,6 +2229,11 @@ def assess_results_batched(
         rows[start : start + effective_batch_size]
         for start in range(0, len(rows), effective_batch_size)
     ]
+    # Planned, not final: ``batch_count`` is re-set from the batches that were
+    # actually DISPATCHED once the dispatch below is done, because the processing
+    # report and the UI both read it as "confidence assessment ran in N batch(es)"
+    # and a deadline stop leaves a trailing suffix of these planned batches
+    # unrun (#1488).
     split_stats["batch_count"] = len(chunks)
     split_stats["concurrent_batches"] = 1
 
@@ -2114,15 +2267,47 @@ def assess_results_batched(
     # Thread-safety: each concurrent chunk gets its OWN split-stats accumulator;
     # they are merged back into the shared split_stats deterministically after the
     # pool joins (no concurrent mutation of the shared dict).
+    # ⚠️ Every dispatch below is bounded by the remaining invocation time. Only a
+    # TRAILING suffix of chunks is ever skipped, never one in the middle: rows are
+    # accumulated positionally into ``big_field_acc``, so dropping a middle chunk
+    # would slide later rows' confidence and bounding boxes onto earlier rows —
+    # the defect 0.6.12 fixed by making partial per-shard collation discard rather
+    # than emit. Skipping a suffix leaves the tail rows simply unscored, which the
+    # coverage check reports.
     sliced_results: list[dict[str, Any]] = []
     if not chunks:
         pass
     elif max_concurrent_batches <= 1 or len(chunks) == 1:
-        for chunk in chunks:
+        for idx, chunk in enumerate(chunks):
+            if not _deadline_allows(deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS):
+                split_stats["deadline_reached"] = True
+                logger.warning(
+                    "assess_results_batched: stopping before batch %d/%d — the "
+                    "remaining invocation time cannot hold another confidence "
+                    "call. %d row(s) will be left unscored rather than losing the "
+                    "section to a hard task timeout (#1488).",
+                    idx + 1,
+                    len(chunks),
+                    sum(len(c) for c in chunks[idx:]),
+                )
+                break
             sliced_results.append(_assess_chunk(chunk, split_stats))
     else:
         # Warm the cache with batch 0 (writes directly to shared stats).
-        sliced_results.append(_assess_chunk(chunks[0], split_stats))
+        warmed = _deadline_allows(deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS)
+        if warmed:
+            sliced_results.append(_assess_chunk(chunks[0], split_stats))
+        else:
+            # No time even for the cache-warming batch. Score nothing rather than
+            # be killed: `scored_rows == 0` is an error-severity coverage issue at
+            # any list length, which is a reported outcome instead of a lost one.
+            split_stats["deadline_reached"] = True
+            logger.warning(
+                "assess_results_batched: no invocation time left for any of %d "
+                "confidence batch(es); leaving all %d row(s) unscored (#1488).",
+                len(chunks),
+                len(rows),
+            )
 
         # B3 — Fan-out inherits the batch size batch 0 actually SUCCEEDED on. If
         # batch 0 truncated and the adaptive splitter had to shrink it (recorded as
@@ -2131,7 +2316,10 @@ def assess_results_batched(
         # size instead of letting every fanned-out batch independently re-discover
         # the truncation (N parallel truncation storms). Only ever shrinks.
         proven = split_stats.get("min_batch_size_used")
-        remaining_rows = rows[len(chunks[0]) :]
+        # Nothing was warmed, so nothing after it may run either: the suffix rule
+        # above means the skipped rows have to be a suffix, and with batch 0
+        # skipped that suffix is every row.
+        remaining_rows = rows[len(chunks[0]) :] if warmed else []
         if (
             proven
             and proven < effective_batch_size
@@ -2154,7 +2342,10 @@ def assess_results_batched(
                 remaining_rows[s : s + effective_batch_size]
                 for s in range(0, len(remaining_rows), effective_batch_size)
             ]
+        # Planned again (see the note at the first assignment): the authoritative
+        # count is set from the dispatched batches below.
         split_stats["batch_count"] = 1 + len(rest)
+
         if rest:
             import concurrent.futures as _cf
 
@@ -2170,10 +2361,76 @@ def assess_results_batched(
             # Each concurrent chunk accumulates into its OWN stats dict; merge
             # them into the shared split_stats after the pool joins.
             per_chunk_stats = [_new_split_stats() for _ in rest]
+
+            # The fan-out is dispatched in WAVES of up to ``workers`` chunks, and
+            # the remaining invocation time is re-read before each one, against the
+            # price of ONE model call — a wave runs concurrently, so a wave costs
+            # about one call. When the clock runs out the undispatched trailing
+            # suffix is left unscored rather than started; starting it is what gets
+            # the invocation killed on the wall clock, and a Lambda killed that way
+            # raises no exception, so the handler's degrade path (#901) never runs
+            # and a complete, validated, already-persisted extraction is discarded
+            # with the document (#1488).
+            #
+            # ⚠️ Do NOT price the whole fan-out up front as
+            # ``(budget // one_call) * workers`` chunks. That is not a bound on
+            # time, it is a cap on chunk COUNT: it refuses a trailing suffix on a
+            # worst-case estimate that a fast model never reaches, and the error is
+            # worst exactly where the chunk count is large relative to the budget —
+            # a 200-row list at a token-aware batch size of 4 is ~50 chunks, where
+            # the rows it refuses are rows the model would have scored in under a
+            # second each, and those come back ``confidence: null`` and can trip the
+            # error rung of the coverage check on a section that would otherwise
+            # have scored completely. #958 rejected that arithmetic for the recovery
+            # rungs for the same reason; the primary pass is held to it too.
+            # Re-reading the clock per wave self-corrects instead: calls that return
+            # faster than the estimate leave the budget intact and the next wave is
+            # allowed on the evidence rather than on the guess.
+            #
+            # The cost of the wave boundary is the straggler — a wave is only as
+            # fast as its slowest call, where one continuous ``pool.map`` over every
+            # chunk refills a free worker the moment it frees up. That cost buys the
+            # observation point, so it is paid only where there is a budget to
+            # observe: with no ``deadline_epoch`` there is nothing to re-read and
+            # nothing to refuse, so that caller keeps the single continuous map it
+            # had before #1488 rather than paying a straggler per wave for a guard
+            # that is inert for it. Both branches dispatch the same chunks in the
+            # same order; the only difference is how many ``map`` calls it takes.
+            dispatched = 0
             with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
-                # map preserves input order → results stay index-aligned.
-                sliced_results.extend(pool.map(_assess_chunk, rest, per_chunk_stats))
-            for cs in per_chunk_stats:
+                if deadline_epoch is None:
+                    # map preserves input order → results stay index-aligned.
+                    sliced_results.extend(
+                        pool.map(_assess_chunk, rest, per_chunk_stats)
+                    )
+                    dispatched = len(rest)
+                while dispatched < len(rest):
+                    if not _deadline_allows(
+                        deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS
+                    ):
+                        split_stats["deadline_reached"] = True
+                        logger.warning(
+                            "assess_results_batched: stopping the fan-out after %d "
+                            "of %d batch(es) — the remaining invocation time cannot "
+                            "hold another wave of %d. Leaving %d row(s) unscored "
+                            "rather than losing the section to a hard task timeout "
+                            "(#1488).",
+                            dispatched,
+                            len(rest),
+                            workers,
+                            sum(len(c) for c in rest[dispatched:]),
+                        )
+                        break
+                    wave = slice(dispatched, dispatched + workers)
+                    # map preserves input order → results stay index-aligned, so
+                    # what a stop leaves out is always a TRAILING suffix.
+                    sliced_results.extend(
+                        pool.map(_assess_chunk, rest[wave], per_chunk_stats[wave])
+                    )
+                    dispatched += len(rest[wave])
+            # Only the dispatched prefix ran; the rest hold untouched zero-valued
+            # accumulators, and merging those would be a no-op either way.
+            for cs in per_chunk_stats[:dispatched]:
                 # Sum every counter a worker could have incremented (including the
                 # escalation counters — a worker can escalate inside its adaptive
                 # split), and OR-merge the wall-clock `deadline_reached` flag so a
@@ -2222,6 +2479,15 @@ def assess_results_batched(
                     _record_min_batch(split_stats, cs_min)
             split_stats["concurrent_batches"] = workers
 
+    # The batches that actually RAN. One entry per dispatched chunk, so this is
+    # the planned count minus whatever trailing suffix the deadline refused —
+    # which is what makes the metric agree with ``deadline_reached`` instead of
+    # reporting batches that were never sent. The processing report renders it as
+    # "Confidence list batches: N" and the UI as "ran in N batch(es)", so a
+    # planned figure there would be a false claim about work done; 0 is the honest
+    # answer when even the cache-warming batch was refused.
+    split_stats["batch_count"] = len(sliced_results)
+
     # Accumulate per-row assessments IN ORDER (chunks were built in order and
     # concurrency preserved it), so big_field_acc lines up with rows.
     for sliced in sliced_results:
@@ -2231,6 +2497,23 @@ def assess_results_batched(
         duration_seconds += sliced["duration"]
         if not merged_assessment and sliced["scalars"]:
             merged_assessment = dict(sliced["scalars"])
+    # Rows past the last DISPATCHED chunk get their own per-row reason before the
+    # reconciliation below pads the remainder (#1488). Reconciliation can only
+    # infer one cause from its two arguments — "the assessment returned fewer
+    # items than were extracted" — and that is false here: no call was made for
+    # these rows. This is the string an operator reads PER FIELD in the UI, and
+    # the two causes have different remedies, so the distinction has to reach the
+    # row and not only the section-level issue. The boundary is exact: everything
+    # from ``len(big_field_acc)`` on is a trailing suffix no chunk covered, while
+    # a null row BELOW it really is a model that answered short, which keeps the
+    # default reason. ``_row_confidence_missing`` reads the confidence and not the
+    # reason, so these rows are still offered to every recovery rung and a rung
+    # that scores one replaces the placeholder wholesale.
+    if split_stats.get("deadline_reached") and len(big_field_acc) < len(rows):
+        big_field_acc.extend(
+            _row_placeholder(rows[i], _UNASSESSED_DEADLINE_REASON)
+            for i in range(len(big_field_acc), len(rows))
+        )
     merged_assessment[big_field] = big_field_acc
     # Final alignment against the full extraction (pads any residual gap).
     merged_assessment = reconcile_assessment_to_data(
@@ -2337,11 +2620,17 @@ def _splice_missing_rows(
         # through here -- so the cheap rung can no longer be refused while the
         # slower, dearer one proceeds.
         #
-        # This bounds RECOVERY, not the whole invocation. Two overruns remain, both
-        # pre-existing: a chunk that bisects makes one unchecked call per pending
-        # sibling, so it can finish roughly (bisection depth x one call) past the
-        # deadline; and the INITIAL batch pass consults no deadline at all. The
-        # second is the larger term for the 900s timeouts #894 reports.
+        # The residual: this bounds CHUNKS, not CALLS, and a chunk can be more than
+        # one call. Every rung reaches the model through _assess_slice_adaptive,
+        # whose first one_call() is unconditional -- the deadline is consulted
+        # before the chunk and then again only before each further BISECTION, which
+        # clears two calls at a time -- so a chunk the model keeps truncating can
+        # finish roughly (bisection depth x one call) past the point this check
+        # cleared it for. That applies identically to the primary batch pass and the
+        # concurrent fan-out, which consult the same predicate at the same
+        # granularity. Pricing a prospective bisection TREE here instead would mean
+        # refusing a chunk on a worst case a non-truncating model never reaches,
+        # which is the chunk-COUNT cap this guard exists to avoid.
         est_call_seconds = max(
             measured_call_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
         )
