@@ -42,6 +42,7 @@ from idp_common.classification.models import (
     DocumentSection,
     DocumentType,
     PageClassification,
+    Segment,
 )
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
@@ -506,25 +507,37 @@ class ClassificationService:
         """
         Pre-load text and image content for all pages when context is needed.
 
+        Each modality is loaded only when the active configuration will actually
+        send it. The image half is the one that matters: this method loads
+        **every** page of the document (any page can be some other page's
+        context), so an S3 GET plus a Pillow resize per page was being paid for
+        images a text-only prompt then discarded.
+
         Args:
             document: Document with pages to load
-            context_size: Number of context pages (determines if images should be loaded)
+            context_size: Number of context pages either side. Zero means the
+                caller is not using context at all and nothing is loaded.
 
         Returns:
             Dictionary mapping page_id to PageContextData with loaded content
         """
         page_content_cache: Dict[str, PageContextData] = {}
 
+        if context_size <= 0:
+            return page_content_cache
+
         # Type-safe access to image config
         target_width = self.config.classification.image.target_width
         target_height = self.config.classification.image.target_height
+
+        send_text, send_images = self._resolve_modality()
 
         for page_id, page in document.pages.items():
             text_content = None
             image_content = None
 
             # Load text content
-            if page.parsed_text_uri:
+            if page.parsed_text_uri and send_text:
                 try:
                     text_content = s3.get_text_content(page.parsed_text_uri)
                 except Exception as e:
@@ -533,7 +546,7 @@ class ClassificationService:
                     )
 
             # Load image content
-            if page.image_uri:
+            if page.image_uri and send_images:
                 try:
                     image_content = image.prepare_image(
                         page.image_uri, target_width, target_height
@@ -550,7 +563,11 @@ class ClassificationService:
             )
 
         logger.info(
-            f"Pre-loaded content for {len(page_content_cache)} pages for context-aware classification"
+            "Pre-loaded content for %d pages for context-aware classification "
+            "(text=%s, images=%s)",
+            len(page_content_cache),
+            send_text,
+            send_images,
         )
         return page_content_cache
 
@@ -1214,9 +1231,13 @@ class ClassificationService:
         config["system_prompt"] = system_prompt
 
         # Validate task prompt
-        task_prompt = self.config.classification.task_prompt
+        task_prompt = self._raw_task_prompt()
         if not task_prompt:
             raise ValueError("No task_prompt found in classification configuration")
+        # Modality normalisation runs BEFORE the class-confidence splice: the
+        # splice positions its block relative to the document/cache-point marker,
+        # and rewriting placeholders afterwards could move content across it.
+        task_prompt = self._apply_modality_to_prompt(task_prompt)
         config["task_prompt"] = self._compose_class_confidence_prompt(task_prompt)
 
         return config
@@ -1276,6 +1297,109 @@ class ClassificationService:
                 f" (top {top_k} candidates)" if top_k else "",
             )
         return composed
+
+    def _raw_task_prompt(self) -> str:
+        """The configured task prompt for the active granularity, un-normalised.
+
+        "Un-normalised" means before the modality rewrite and before the
+        class-confidence splice — this is the template whose placeholders the
+        modality *inference* reads, so it has to be the operator's own text.
+        """
+        return self.config.classification.task_prompt
+
+    def _resolve_modality(self, task_prompt: Optional[str] = None) -> tuple[bool, bool]:
+        """Resolve ``(send_text, send_images)`` for a classification call.
+
+        An unset flag is inferred from the prompt's placeholders, which is
+        exactly the behaviour that existed before the setting: a prompt holding
+        ``{DOCUMENT_TEXT}`` was sent text, one holding ``{DOCUMENT_IMAGE}`` was
+        sent the image, and deleting a placeholder was the documented way to get
+        a single modality. Inference is therefore not a compatibility shim
+        bolted on beside the real behaviour — it *is* the real behaviour, and an
+        explicit flag overrides it.
+
+        Args:
+            task_prompt: Template to infer from. Defaults to the configured
+                prompt for the active granularity.
+        """
+        modality = self.config.classification.modality
+        template = task_prompt if task_prompt is not None else self._raw_task_prompt()
+
+        send_text = (
+            modality.text
+            if modality.text is not None
+            else ("{DOCUMENT_TEXT}" in template)
+        )
+        send_images = (
+            modality.images
+            if modality.images is not None
+            else ("{DOCUMENT_IMAGE}" in template)
+        )
+        return send_text, send_images
+
+    def _apply_modality_to_prompt(self, task_prompt: str) -> str:
+        """Rewrite a prompt template so its placeholders match the modality.
+
+        Only an **explicitly set** flag causes a rewrite; an inferred one agrees
+        with the template by construction, so the overwhelmingly common path
+        returns the operator's prompt untouched.
+
+        Removal takes the placeholder's wrapping element with it when the
+        element contains nothing else — ``<document-image>{DOCUMENT_IMAGE}
+        </document-image>`` becomes nothing rather than an empty tag pair,
+        because an empty element announcing a modality that is switched off is a
+        misleading thing to put in a prompt. A placeholder that is not wrapped
+        that way is simply deleted.
+
+        Addition appends a wrapped placeholder at the end of the template. The
+        position is a guess — the operator's prompt said nothing about where the
+        content goes — so it is both the least surprising choice (the content is
+        the last thing the model reads) and logged, since a prompt the operator
+        did not write is something they need to be able to see.
+        """
+        modality = self.config.classification.modality
+        result = task_prompt
+
+        for flag, placeholder, element in (
+            (modality.text, "{DOCUMENT_TEXT}", "document-ocr-data"),
+            (modality.images, "{DOCUMENT_IMAGE}", "document-image"),
+        ):
+            if flag is None:
+                continue
+            present = placeholder in result
+            if flag and not present:
+                result = f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
+                logger.info(
+                    "classification.modality turned %s on but the task prompt had "
+                    "no %s placeholder; appended one.",
+                    element,
+                    placeholder,
+                )
+            elif not flag and present:
+                result = self._strip_placeholder(result, placeholder, element)
+                logger.info(
+                    "classification.modality turned %s off; removed %s from the "
+                    "task prompt so the content is neither sent nor paid for.",
+                    element,
+                    placeholder,
+                )
+
+        return result
+
+    @staticmethod
+    def _strip_placeholder(template: str, placeholder: str, element: str) -> str:
+        """Remove ``placeholder``, and its wrapping ``<element>`` if that is all it held."""
+        import re
+
+        wrapped = re.compile(
+            rf"[ \t]*<{re.escape(element)}>\s*{re.escape(placeholder)}\s*"
+            rf"</{re.escape(element)}>[ \t]*\n?",
+            re.IGNORECASE,
+        )
+        stripped, count = wrapped.subn("", template)
+        if count:
+            return stripped
+        return template.replace(placeholder, "")
 
     def _prepare_prompt_from_template(
         self,
@@ -1579,13 +1703,15 @@ class ClassificationService:
         document_text: str,
         class_names_and_descriptions: str,
         image_content: Optional[bytes] = None,
-        before_texts: Optional[List[str]] = None,
-        after_texts: Optional[List[str]] = None,
-        before_images: Optional[List[bytes]] = None,
-        after_images: Optional[List[bytes]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build content array with support for optional FEW_SHOT_EXAMPLES and DOCUMENT_IMAGE placeholders.
+
+        The four context-page arguments this used to declare
+        (``before_texts``/``after_texts``/``before_images``/``after_images``)
+        were never referenced by the body — the context path has always been a
+        separate builder, now :meth:`_build_context_content` — so accepting them
+        advertised a capability this method did not have.
 
         Args:
             task_prompt_template: The task prompt template that may contain placeholders
@@ -1633,6 +1759,140 @@ class ClassificationService:
 
         return content
 
+    def _build_context_content(
+        self,
+        task_prompt_template: str,
+        document_text: str,
+        image_content: Optional[bytes],
+        before_images: List[bytes],
+        after_images: List[bytes],
+    ) -> List[Dict[str, Any]]:
+        """Build the request content for the ``contextPagesCount > 0`` path.
+
+        The context path used to be a separate, simpler content builder, and it
+        diverged from :meth:`_build_content` in two ways that were both silent:
+
+        - **``{FEW_SHOT_EXAMPLES}`` was never substituted.** Nothing split the
+          template on it and ``_build_classification_substitutions`` has no such
+          key, so the placeholder reached the model as the literal eight-word
+          string and every configured ``x-aws-idp-examples`` was dropped.
+          Examples defined but not sent is exactly the failure the placeholder
+          was added to the default prompt to prevent.
+        - **Images were attached whether or not the prompt asked for them.** The
+          no-placeholder branch appended the page images anyway, so a
+          deliberately text-only prompt (the documented way to get text-only
+          classification before ``modality.images`` existed) silently paid for
+          and sent every context page's image.
+
+        This builder has the same two-level structure as :meth:`_build_content`
+        — split on ``{FEW_SHOT_EXAMPLES}`` first, then handle
+        ``{DOCUMENT_IMAGE}`` within each part — so the two paths now agree on
+        both questions. The only thing it does differently is attach the
+        *labelled* context images via :meth:`_build_images_with_context` rather
+        than the single current-page image.
+        """
+        parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
+
+        if len(parts) != 2:
+            # No placeholder (or a malformed repeat) — render as one segment,
+            # matching _build_content's fallback.
+            return self._build_context_content_segment(
+                task_prompt_template,
+                document_text,
+                image_content,
+                before_images,
+                after_images,
+            )
+
+        content: List[Dict[str, Any]] = []
+        content.extend(
+            self._build_context_content_segment(
+                parts[0], document_text, image_content, before_images, after_images
+            )
+        )
+        content.extend(build_few_shot_examples_content(self.config))
+        content.extend(
+            self._build_context_content_segment(
+                parts[1], document_text, image_content, before_images, after_images
+            )
+        )
+        return content
+
+    def _build_context_content_segment(
+        self,
+        prompt_segment: str,
+        document_text: str,
+        image_content: Optional[bytes],
+        before_images: List[bytes],
+        after_images: List[bytes],
+    ) -> List[Dict[str, Any]]:
+        """Render one segment of a context-path prompt, inserting context images.
+
+        A segment with no ``{DOCUMENT_IMAGE}`` placeholder gets **no images**.
+        That is the fix: the caller may hold images for the current page and its
+        neighbours, and a prompt that does not ask for them must not receive
+        them.
+
+        Blank segments produce no content block at all — Bedrock rejects an empty
+        text block, and a segment is legitimately blank when
+        ``{FEW_SHOT_EXAMPLES}`` sits at one end of the template.
+        """
+        substitutions = self._build_classification_substitutions(
+            document_text, self._format_classes_list()
+        )
+
+        if "{DOCUMENT_IMAGE}" not in prompt_segment:
+            rendered = self._prepare_prompt_from_template(
+                prompt_segment, substitutions, required_placeholders=[]
+            )
+            return [{"text": rendered}] if rendered.strip() else []
+
+        image_parts = prompt_segment.split("{DOCUMENT_IMAGE}")
+        if len(image_parts) != 2:
+            logger.warning(
+                "Invalid DOCUMENT_IMAGE placeholder usage in the context-pages "
+                "prompt (%d occurrences); appending images after the text instead "
+                "of at the placeholder.",
+                len(image_parts) - 1,
+            )
+            rendered = self._prepare_prompt_from_template(
+                prompt_segment.replace("{DOCUMENT_IMAGE}", ""),
+                substitutions,
+                required_placeholders=[],
+            )
+            content: List[Dict[str, Any]] = (
+                [{"text": rendered}] if rendered.strip() else []
+            )
+            content.extend(
+                self._build_images_with_context(
+                    current_image=image_content,
+                    before_images=before_images,
+                    after_images=after_images,
+                )
+            )
+            return content
+
+        before_image = self._prepare_prompt_from_template(
+            image_parts[0], substitutions, required_placeholders=[]
+        )
+        after_image = self._prepare_prompt_from_template(
+            image_parts[1], substitutions, required_placeholders=[]
+        )
+
+        content = []
+        if before_image.strip():
+            content.append({"text": before_image})
+        content.extend(
+            self._build_images_with_context(
+                current_image=image_content,
+                before_images=before_images,
+                after_images=after_images,
+            )
+        )
+        if after_image.strip():
+            content.append({"text": after_image})
+        return content
+
     def classify_page_bedrock(
         self,
         page_id: str,
@@ -1664,7 +1924,15 @@ class ClassificationService:
         text_content = None
         image_content = None
 
-        # Load text content from URI
+        # Load text content from URI.
+        #
+        # Deliberately NOT gated on the text modality, unlike the image load
+        # below. The page-content regex shortcut
+        # (``x-aws-idp-page-content-regex``) runs against this text and can
+        # decide the page's class with no inference at all, so an images-only
+        # configuration still needs it read. It is also the cheap half: one S3
+        # GET against an image's GET plus a Pillow resize. The modality decides
+        # what is *sent*, which the prompt rewrite handles.
         if text_uri:
             try:
                 text_content = s3.get_text_content(text_uri)
@@ -1672,8 +1940,12 @@ class ClassificationService:
                 logger.warning(f"Failed to load text content from {text_uri}: {e}")
                 # Continue without text content
 
-        # Load image content from URI with configurable dimensions
-        if image_uri:
+        # Load image content from URI with configurable dimensions.
+        # Skipped entirely when the modality says images are not being sent —
+        # loading one costs an S3 GET and a Pillow resize per page, and the
+        # content builders would then discard it.
+        _, send_images = self._resolve_modality()
+        if image_uri and send_images:
             try:
                 # Type-safe access to image config
                 target_width = self.config.classification.image.target_width
@@ -1738,57 +2010,13 @@ class ClassificationService:
                 after_texts=after_texts or [],
             )
 
-            # Build content array - start with text prompt
-            task_prompt = self._prepare_prompt_from_template(
-                config["task_prompt"],
-                self._build_classification_substitutions(
-                    document_text, self._format_classes_list()
-                ),
-                required_placeholders=[],
+            content = self._build_context_content(
+                task_prompt_template=config["task_prompt"],
+                document_text=document_text,
+                image_content=image_content,
+                before_images=before_images or [],
+                after_images=after_images or [],
             )
-
-            # Check if prompt uses DOCUMENT_IMAGE placeholder
-            if "{DOCUMENT_IMAGE}" in config["task_prompt"]:
-                # Split around image placeholder and insert context images
-                parts = task_prompt.split("{DOCUMENT_IMAGE}")
-                if len(parts) == 2:
-                    content = []
-                    if parts[0].strip():
-                        content.append({"text": parts[0]})
-
-                    # Add images with context
-                    content.extend(
-                        self._build_images_with_context(
-                            current_image=image_content,
-                            before_images=before_images or [],
-                            after_images=after_images or [],
-                        )
-                    )
-
-                    if parts[1].strip():
-                        content.append({"text": parts[1]})
-                else:
-                    # Fallback - add text then images
-                    content = [{"text": task_prompt}]
-                    content.extend(
-                        self._build_images_with_context(
-                            current_image=image_content,
-                            before_images=before_images or [],
-                            after_images=after_images or [],
-                        )
-                    )
-            else:
-                # No image placeholder - just use text
-                content = [{"text": task_prompt}]
-                # If images exist, append them with context
-                if image_content or before_images or after_images:
-                    content.extend(
-                        self._build_images_with_context(
-                            current_image=image_content,
-                            before_images=before_images or [],
-                            after_images=after_images or [],
-                        )
-                    )
 
             logger.info(
                 f"Classifying page {page_id} with context: {len(before_texts or [])} pages before, {len(after_texts or [])} pages after"
@@ -2880,14 +3108,384 @@ class ClassificationService:
         Returns:
             Document with sections created according to splitting strategy
         """
+        segments = self._fold_page_verdicts_to_segments(page_results)
+        return self._sections_from_segments(
+            document, segments, page_results=page_results
+        )
+
+    def _fold_page_verdicts_to_segments(
+        self, page_results: List[PageClassification]
+    ) -> List[Segment]:
+        """Fold per-page class + ``document_boundary`` verdicts into segments.
+
+        This is the BIO-style (Begin-Inside-Outside) fold that page-level
+        classification has always performed: walk the pages in order and start a
+        new segment whenever the class changes **or** the page reports itself as
+        a ``start``. It is now a step in its own right rather than being welded
+        to section building, because the result — a list of
+        :class:`~idp_common.classification.models.Segment` — is the same thing a
+        packet-level call returns directly. One fold, one section builder, both
+        granularities.
+        """
+        sorted_results = self._sort_page_results(page_results)
+        if not sorted_results:
+            return []
+
+        self._log_boundary_signals(sorted_results)
+
+        segments: List[Segment] = []
+        current_type = sorted_results[0].classification.doc_type
+        current_pages = [sorted_results[0]]
+
+        def close_group() -> None:
+            segments.append(
+                Segment(
+                    page_ids=[p.page_id for p in current_pages],
+                    doc_class=current_type,
+                    confidence=aggregate_page_confidence(
+                        [p.classification.confidence for p in current_pages]
+                    ),
+                )
+            )
+
+        for result in sorted_results[1:]:
+            # str() rather than a bare .lower(): the value comes from model
+            # output, and a model that answered with a number or a list used to
+            # raise AttributeError here.
+            boundary = str(
+                result.classification.metadata.get("document_boundary", "continue")
+            ).lower()
+
+            if result.classification.doc_type == current_type and boundary != "start":
+                current_pages.append(result)
+            else:
+                close_group()
+                current_type = result.classification.doc_type
+                current_pages = [result]
+
+        close_group()
+        return segments
+
+    def _log_boundary_signals(
+        self, sorted_results: List[PageClassification]
+    ) -> None:
+        """Emit the per-page boundary signals as one line.
+
+        The per-page ``document_boundary`` signal drives every merge decision in
+        the fold, and for a long time it was persisted nowhere: the DynamoDB page
+        record and the S3 ``document.json`` page dict both carried ``Class``
+        only. Emitting the whole map as one line is what lets "why did these two
+        documents end up in one section?" be answered without correlating N
+        interleaved per-page classification logs from the thread pool.
+
+        An absent key is reported distinctly from a literal ``continue``, because
+        the two have very different diagnoses: the model omitting the field (the
+        fold defaults to ``continue``) merges pages by accident, whereas an
+        explicit ``continue`` is the model's judgement. That distinction is the
+        one that was expensive to recover in #565.
+        """
+        boundary_map = {
+            r.page_id: (
+                str(r.classification.metadata["document_boundary"]).lower()
+                if "document_boundary" in r.classification.metadata
+                else "(absent)"
+            )
+            for r in sorted_results
+        }
+        # Capped: a 500-page packet would otherwise put every page's signal in one
+        # log record. The pages that matter for diagnosing a merge are the ones
+        # that said "start" plus the ones where the field was absent, so those are
+        # always named; the rest are counted. The full per-page value is persisted
+        # on the page record anyway (Page.document_boundary).
+        notable = {
+            page_id: signal
+            for page_id, signal in boundary_map.items()
+            if signal != "continue"
+        }
+        if len(boundary_map) <= 50:
+            logger.info(f"Page document_boundary signals: {boundary_map}")
+        else:
+            logger.info(
+                "Page document_boundary signals over %d pages: %d 'continue', "
+                "notable (start/absent): %s",
+                len(boundary_map),
+                len(boundary_map) - len(notable),
+                dict(list(notable.items())[:50]),
+            )
+
+    def _sections_from_segments(
+        self,
+        document: Document,
+        segments: List[Segment],
+        page_results: Optional[List[PageClassification]] = None,
+    ) -> Document:
+        """Build ``document.sections`` from segments, honouring ``sectionSplitting``.
+
+        **The single section builder.** Both granularities route through it, so
+        the three ``sectionSplitting`` strategies have one implementation each
+        instead of one per granularity. The duplicate set is what let the two
+        paths drift apart — most visibly on ``disabled``, where the page path
+        voted across pages while the packet path took the first segment's class
+        and assigned it to a section spanning segments the model had labelled
+        differently.
+
+        Every strategy also writes each page's class and confidence to agree
+        with the section that page ended up in, so a page's own record never
+        contradicts its section.
+
+        Args:
+            document: Document to attach sections to.
+            segments: Segments to build from, in page order.
+            page_results: The per-page results the segments were folded from,
+                when there are any. Passed explicitly rather than read back off
+                ``document.pages`` because only ONE of the two granularities has
+                a per-page signal at all, and the difference is load-bearing:
+                page-level classification scores every page separately, so
+                ``sectionSplitting: page`` must report each page's own score
+                rather than its segment's (which is the minimum across the
+                segment and would make every page look as uncertain as the
+                worst one). A packet-level call has no per-page signal to pass,
+                and then the segment's score is the best available.
+        """
         strategy = self.config.classification.sectionSplitting.lower()
 
+        if not segments:
+            logger.warning(
+                "No segments to build sections from; leaving document.sections as-is"
+            )
+            return document
+
+        verdicts = {
+            r.page_id: (r.classification.doc_type, r.classification.confidence)
+            for r in (page_results or [])
+        }
+
         if strategy == "disabled":
-            return self._create_single_section(document, page_results)
-        elif strategy == "page":
-            return self._create_per_page_sections(document, page_results)
-        else:  # llm_determined (default)
-            return self._create_llm_determined_sections(document, page_results)
+            return self._single_section_from_segments(document, segments, verdicts)
+        if strategy == "page":
+            return self._per_page_sections_from_segments(document, segments, verdicts)
+        return self._section_per_segment(document, segments, verdicts)
+
+    def _single_section_from_segments(
+        self,
+        document: Document,
+        segments: List[Segment],
+        verdicts: Dict[str, tuple[str, Optional[float]]],
+    ) -> Document:
+        """One section over every page (``sectionSplitting: disabled``).
+
+        The class is chosen by **page-weighted vote** across the segments,
+        counting only classes that are in the configured vocabulary, with ties
+        broken by earliest page. For page-level classification that is
+        identical to the per-page vote this replaced (a folded segment is
+        homogeneous in class, so one vote per page and one vote per page of each
+        segment are the same count).
+
+        For packet-level classification it is a change, and a deliberate one:
+        that path used to take ``segments[0]``'s class, which is an arbitrary
+        choice when the model reported several — the first segment may be a
+        single cover page and the rest of the packet something else. The vote
+        is the same rule the page path already used.
+
+        A page that did **not** predict the winning class ends up labelled with
+        a class it did not choose, so its confidence — which was about a
+        different class — becomes ``None`` rather than being carried over or
+        rewritten to 1.0.
+        """
+        from collections import Counter
+
+        # Each page's own verdict, so the "did this page vote for the winner?"
+        # test below is about what the page actually said. A page with no
+        # verdict of its own falls back to its segment's: it did not predict
+        # something *else*, so there is nothing for the winning class to
+        # contradict. That covers both a packet-level call (no per-page signal
+        # exists) and the zero-inference paths, where a single-class
+        # configuration or a document-name-regex match asserts the class
+        # directly — treating "silent" as "disagreed" would discard the
+        # confidence those paths assert.
+        segment_by_page = {
+            page_id: segment
+            for page_id, segment in self._pages_in_segment_order(segments)
+        }
+        predicted_by_page: Dict[str, Optional[str]] = {}
+        confidence_by_page: Dict[str, Optional[float]] = {}
+        for page_id in document.pages:
+            if page_id in verdicts:
+                predicted_by_page[page_id], confidence_by_page[page_id] = verdicts[
+                    page_id
+                ]
+            elif page_id in segment_by_page:
+                predicted_by_page[page_id] = segment_by_page[page_id].doc_class
+                confidence_by_page[page_id] = segment_by_page[page_id].confidence
+            else:
+                predicted_by_page[page_id] = None
+                confidence_by_page[page_id] = None
+
+        votes: Counter[str] = Counter()
+        for segment in segments:
+            if segment.doc_class in self.valid_doc_types:
+                votes[segment.doc_class] += len(segment.page_ids)
+
+        if votes:
+            top_count = max(votes.values())
+            tied = [cls for cls, count in votes.items() if count == top_count]
+            if len(tied) > 1:
+                # Tie-breaker: the class of the earliest segment among the tied.
+                winner = next(
+                    (s.doc_class for s in segments if s.doc_class in tied), tied[0]
+                )
+                logger.info(
+                    f"Classification tie detected ({sorted(tied)}), using earliest "
+                    f"segment's class: '{winner}'"
+                )
+            else:
+                winner = tied[0]
+            logger.info(
+                f"Classification voting results: {dict(votes)} -> selected '{winner}'"
+            )
+        else:
+            winner = segments[0].doc_class
+            logger.warning(
+                f"No segment carries a configured class; using the first "
+                f"segment's class: '{winner}'"
+            )
+
+        for page_id in document.pages:
+            document.pages[page_id].classification = winner
+            document.pages[page_id].confidence = (
+                confidence_by_page.get(page_id)
+                if predicted_by_page.get(page_id) == winner
+                else None
+            )
+
+        document.sections = [
+            Section(
+                section_id="1",
+                classification=winner,
+                confidence=aggregate_page_confidence(
+                    [document.pages[page_id].confidence for page_id in document.pages]
+                ),
+                page_ids=list(document.pages.keys()),
+            )
+        ]
+        logger.info(
+            f"Created single section with {len(document.pages)} pages, "
+            f"class='{winner}' (sectionSplitting=disabled)"
+        )
+        return document
+
+    def _per_page_sections_from_segments(
+        self,
+        document: Document,
+        segments: List[Segment],
+        verdicts: Dict[str, tuple[str, Optional[float]]],
+    ) -> Document:
+        """One section per page (``sectionSplitting: page``).
+
+        Each page keeps its **own** score where one exists: page-level
+        classification scores pages separately, and a segment's score is the
+        minimum across its pages, so using the segment's here would report every
+        page of a segment as being as uncertain as its worst page — in the one
+        strategy whose whole purpose is per-page granularity. A packet-level
+        call supplies no per-page verdicts, and then the segment's score is the
+        best available and every page of a segment shares it.
+
+        Iterates the pages the segments actually cover, in order, rather than
+        every page of the document. A page no segment covers has no classified
+        result to put in a section — the packet path used to give it one anyway,
+        carrying whatever its ``classification`` field happened to hold, which
+        for an uncovered page is nothing.
+        """
+        document.sections = []
+
+        for idx, (page_id, segment) in enumerate(
+            self._pages_in_segment_order(segments), start=1
+        ):
+            confidence = (
+                verdicts[page_id][1] if page_id in verdicts else segment.confidence
+            )
+            if page_id in document.pages:
+                document.pages[page_id].classification = segment.doc_class
+                document.pages[page_id].confidence = confidence
+
+            document.sections.append(
+                Section(
+                    section_id=str(idx),
+                    classification=segment.doc_class,
+                    confidence=confidence,
+                    page_ids=[page_id],
+                )
+            )
+
+        logger.info(
+            f"Created {len(document.sections)} sections (one per page) with "
+            f"sectionSplitting=page"
+        )
+        return document
+
+    def _section_per_segment(
+        self,
+        document: Document,
+        segments: List[Segment],
+        verdicts: Dict[str, tuple[str, Optional[float]]],
+    ) -> Document:
+        """One section per segment (``sectionSplitting: llm_determined``, the default).
+
+        The section's score is the segment's. A page keeps its own score when it
+        has one, so a reviewer looking at a merged section can still see which
+        page in it the classifier was least sure about.
+        """
+        document.sections = []
+
+        for idx, segment in enumerate(segments, start=1):
+            page_ids = [pid for pid in segment.page_ids if pid in document.pages]
+            if not page_ids:
+                logger.warning(
+                    f"Segment {idx} ({segment.start_page}-{segment.end_page}) "
+                    f"covers no page of this document; skipping"
+                )
+                continue
+
+            for page_id in page_ids:
+                document.pages[page_id].classification = segment.doc_class
+                document.pages[page_id].confidence = (
+                    verdicts[page_id][1] if page_id in verdicts else segment.confidence
+                )
+
+            document.sections.append(
+                Section(
+                    section_id=str(len(document.sections) + 1),
+                    classification=segment.doc_class,
+                    confidence=segment.confidence,
+                    page_ids=page_ids,
+                )
+            )
+
+        logger.info(
+            f"Created {len(document.sections)} sections from "
+            f"{len(segments)} segments (sectionSplitting=llm_determined)"
+        )
+        return document
+
+    @staticmethod
+    def _pages_in_segment_order(
+        segments: List[Segment],
+    ) -> List[tuple[str, Segment]]:
+        """Every page the segments cover, in segment then page order, deduplicated.
+
+        Deduplication matters for windowed packet classification, where adjacent
+        windows deliberately overlap: the same page can appear in two windows'
+        segments, and a page must still produce exactly one section.
+        """
+        seen: Set[str] = set()
+        ordered: List[tuple[str, Segment]] = []
+        for segment in segments:
+            for page_id in segment.page_ids:
+                if page_id in seen:
+                    continue
+                seen.add(page_id)
+                ordered.append((page_id, segment))
+        return ordered
 
     def _needs_boundary_detection(self, document: Document) -> bool:
         """True when the configured ``sectionSplitting`` needs a model signal.
@@ -3071,299 +3669,15 @@ class ClassificationService:
             for page_id in document.pages
         ]
 
-        strategy = self.config.classification.sectionSplitting.lower()
-
-        if strategy == "page":
-            return self._create_per_page_sections(document, page_results)
-
-        # `disabled`, or any strategy on a single-page document — one section.
-        # A multi-page `llm_determined` document never reaches here (it goes
-        # through real classification), so there is nothing to warn about.
-        return self._create_single_section(document, page_results)
-
-    def _create_single_section(
-        self, document: Document, page_results: List[PageClassification]
-    ) -> Document:
-        """
-        Create single section containing all pages using majority voting.
-
-        Uses voting/mode strategy to determine the document classification:
-        - Counts occurrences of each classification across all pages
-        - Selects the most common classification (mode)
-        - If tied, uses the first page's classification for determinism
-        - Excludes unclassifiable/blank pages from voting to prevent them
-          from dominating when they complete processing first
-
-        This addresses GitHub Issue #167 where blank pages could incorrectly
-        determine the document classification.
-
-        Args:
-            document: Document to update
-            page_results: List of page classification results
-
-        Returns:
-            Document with single section containing all pages
-        """
-        from collections import Counter
-
-        if not page_results:
-            return document
-
-        # Sort results by page ID for consistent ordering
-        sorted_results = self._sort_page_results(page_results)
-
-        # Only include classifications that match valid document types from config
-        # This automatically excludes any classification not defined in the config:
-        # - blank pages (unclassifiable_blank_page, blank, etc.)
-        # - errors (error (backoff/retry), unclassified)
-        # - LLM hallucinations or typos
-        votable_classifications = [
-            r.classification.doc_type
-            for r in sorted_results
-            if r.classification.doc_type in self.valid_doc_types
-        ]
-
-        if votable_classifications:
-            # Use voting: most common classification wins
-            classification_counts = Counter(votable_classifications)
-            most_common = classification_counts.most_common()
-
-            # Check for ties - if tied, use the classification from the earliest page
-            top_count = most_common[0][1]
-            tied_classes = [cls for cls, count in most_common if count == top_count]
-
-            if len(tied_classes) > 1:
-                # Tie-breaker: use first occurrence in page order
-                for result in sorted_results:
-                    if result.classification.doc_type in tied_classes:
-                        first_classification = result.classification.doc_type
-                        logger.info(
-                            f"Classification tie detected ({tied_classes}), using first page's class: '{first_classification}'"
-                        )
-                        break
-                else:
-                    first_classification = most_common[0][0]
-            else:
-                first_classification = most_common[0][0]
-
-            logger.info(
-                f"Classification voting results: {dict(classification_counts)} -> selected '{first_classification}'"
-            )
-        else:
-            # All pages are unclassifiable, use first page's classification
-            first_classification = sorted_results[0].classification.doc_type
-            logger.warning(
-                f"All pages are unclassifiable types, using first page's class: '{first_classification}'"
-            )
-
-        # Set all pages to this classification.
-        #
-        # A page that voted for the winning class keeps its own score; a page
-        # that predicted something else is now labelled with a class it did NOT
-        # predict, so its score (which was about a different class) says nothing
-        # about this one and becomes unscored. Previously every page was
-        # rewritten to 1.0, which asserted certainty precisely where the pages
-        # had disagreed.
-        confidence_by_page = {
-            r.page_id: r.classification.confidence for r in sorted_results
-        }
-        predicted_by_page = {
-            r.page_id: r.classification.doc_type for r in sorted_results
-        }
-        for page_id in document.pages:
-            document.pages[page_id].classification = first_classification
-            document.pages[page_id].confidence = (
-                confidence_by_page.get(page_id)
-                if predicted_by_page.get(page_id) == first_classification
-                else None
-            )
-
-        # Create single section with all pages
-        section = Section(
-            section_id="1",
-            classification=first_classification,
-            confidence=aggregate_page_confidence(
-                [document.pages[page_id].confidence for page_id in document.pages]
-            ),
-            page_ids=list(document.pages.keys()),
-        )
-        document.sections = [section]
-
-        logger.info(
-            f"Created single section with {len(document.pages)} pages, class='{first_classification}' (sectionSplitting=disabled)"
-        )
-        return document
-
-    def _create_per_page_sections(
-        self, document: Document, page_results: List[PageClassification]
-    ) -> Document:
-        """
-        Create one section per page, preventing any joining of same-type documents.
-
-        Args:
-            document: Document to update
-            page_results: List of page classification results
-
-        Returns:
-            Document with one section per page
-        """
-        document.sections = []
-
-        sorted_results = self._sort_page_results(page_results)
-
-        for idx, page_result in enumerate(sorted_results, start=1):
-            page_id = page_result.page_id
-            doc_type = page_result.classification.doc_type
-
-            # Update page classification
-            if page_id in document.pages:
-                document.pages[page_id].classification = doc_type
-                document.pages[
-                    page_id
-                ].confidence = page_result.classification.confidence
-
-            # Create individual section for this page
-            section = Section(
-                section_id=str(idx),
-                classification=doc_type,
-                confidence=page_result.classification.confidence,
-                page_ids=[page_id],
-            )
-            document.sections.append(section)
-
-        logger.info(
-            f"Created {len(document.sections)} sections (one per page) with sectionSplitting=page"
-        )
-        return document
-
-    def _create_llm_determined_sections(
-        self, document: Document, page_results: List[PageClassification]
-    ) -> Document:
-        """
-        Create sections using LLM boundary detection (current default behavior).
-
-        Uses document_boundary metadata ("start" or "continue") to determine
-        section boundaries. This is the BIO-like tagging approach.
-
-        Args:
-            document: Document to update
-            page_results: List of page classification results
-
-        Returns:
-            Document with sections created using LLM boundary detection
-        """
-        document.sections = []
-        sorted_results = self._sort_page_results(page_results)
-
-        if not sorted_results:
-            return document
-
-        # The per-page document_boundary signal drives every merge decision
-        # below, but it is persisted nowhere: the DynamoDB page record and the
-        # S3 document.json page dict both carry `Class` only. Emit the whole map
-        # as one line so "why did these two documents end up in one section?"
-        # can be answered without correlating N interleaved per-page
-        # classification logs from the thread pool.
-        #
-        # An absent key is reported distinctly from a literal "continue",
-        # because the two have very different diagnoses: the model omitting the
-        # field (we default to "continue" below and at :1681) merges pages by
-        # accident, whereas an explicit "continue" is the model's judgement.
-        # That distinction is the one that was expensive to recover in #565.
-        boundary_map = {
-            r.page_id: (
-                str(r.classification.metadata["document_boundary"]).lower()
-                if "document_boundary" in r.classification.metadata
-                else "(absent)"
-            )
-            for r in sorted_results
-        }
-        # Capped: a 500-page packet would otherwise put every page's signal in one
-        # log record. The pages that matter for diagnosing a merge are the ones
-        # that said "start" plus the ones where the field was absent, so those are
-        # always named; the rest are counted. The full per-page value is persisted
-        # on the page record anyway (Page.document_boundary).
-        _notable = {
-            page_id: signal
-            for page_id, signal in boundary_map.items()
-            if signal != "continue"
-        }
-        if len(boundary_map) <= 50:
-            logger.info(f"Page document_boundary signals: {boundary_map}")
-        else:
-            logger.info(
-                "Page document_boundary signals over %d pages: %d 'continue', "
-                "notable (start/absent): %s",
-                len(boundary_map),
-                len(boundary_map) - len(_notable),
-                dict(list(_notable.items())[:50]),
-            )
-
-        current_group = 1
-        current_type = sorted_results[0].classification.doc_type
-        current_pages = [sorted_results[0]]
-
-        for result in sorted_results[1:]:
-            boundary = result.classification.metadata.get(
-                "document_boundary", "continue"
-            ).lower()
-
-            if result.classification.doc_type == current_type and boundary != "start":
-                current_pages.append(result)
-            else:
-                # Create section with current group. The section's confidence is
-                # the weakest page in it (None if any page is unscored) — see
-                # aggregate_page_confidence.
-                section = self._create_section(
-                    section_id=str(current_group),
-                    doc_type=current_type,
-                    pages=[p.page_id for p in current_pages],
-                    confidence=aggregate_page_confidence(
-                        [p.classification.confidence for p in current_pages]
-                    ),
-                )
-                if isinstance(section, Section):
-                    document.sections.append(section)
-                else:
-                    document.sections.append(
-                        Section(
-                            section_id=section.section_id,
-                            classification=section.classification.doc_type,
-                            confidence=section.classification.confidence,
-                            page_ids=[page.page_id for page in section.pages],
-                        )
-                    )
-
-                # Start new group
-                current_group += 1
-                current_type = result.classification.doc_type
-                current_pages = [result]
-
-        # Add final section
-        section = self._create_section(
-            section_id=str(current_group),
-            doc_type=current_type,
-            pages=[p.page_id for p in current_pages],
-            confidence=aggregate_page_confidence(
-                [p.classification.confidence for p in current_pages]
-            ),
-        )
-        if isinstance(section, Section):
-            document.sections.append(section)
-        else:
-            document.sections.append(
-                Section(
-                    section_id=section.section_id,
-                    classification=section.classification.doc_type,
-                    confidence=section.classification.confidence,
-                    page_ids=[page.page_id for page in section.pages],
-                )
-            )
-
-        logger.info(
-            f"Created {len(document.sections)} sections using LLM boundary detection (sectionSplitting=llm_determined)"
-        )
-        return document
+        # Routed through the shared fold + section builder like every other
+        # path. The synthesized results carry no `document_boundary`, so the
+        # fold produces exactly ONE segment spanning every page (same class, no
+        # page claiming to be a start), and the three strategies then land where
+        # this method used to send them by hand: `page` gives one section per
+        # page, `disabled` gives one section, and `llm_determined` — which only
+        # reaches here for a single-page document — gives one section over that
+        # page. Nothing is special-cased on the strategy any more.
+        return self._apply_section_splitting_strategy(document, page_results)
 
     def _sort_page_results(
         self, results: List[PageClassification]
@@ -3609,24 +3923,183 @@ class ClassificationService:
         Returns:
             Dictionary mapping page_id to text content
         """
+        return self._format_pages_with_coverage(document)[0]
+
+    def _format_pages_with_coverage(
+        self, document: Document
+    ) -> tuple[Dict[str, str], int]:
+        """Format document pages as text, and report how many carry real text.
+
+        The count is what distinguishes "this packet has a few image-only pages"
+        from "this packet has no text at all", and only the caller can decide
+        which matters. Packet classification needs the distinction because a
+        page with no text is substituted with the placeholder string
+        ``[No text content for page N]``: readable in a prompt, and indentical
+        in shape to real content as far as the model is concerned. With the OCR
+        backend set to ``none`` EVERY page is that placeholder, so a text-only
+        packet call used to classify the whole packet from nothing at all and
+        return a confident, meaningless answer. See the guard in
+        :meth:`_assert_packet_text_available`.
+
+        Returns:
+            ``(pages_content, pages_with_text)`` where ``pages_with_text``
+            counts pages whose text was actually loaded and non-empty.
+        """
         pages_content = {}
+        pages_with_text = 0
 
         for page_id, page in document.pages.items():
             # Fetch page text content from S3 if available
             if page.parsed_text_uri:
                 try:
-                    pages_content[page_id] = s3.get_text_content(page.parsed_text_uri)
+                    text = s3.get_text_content(page.parsed_text_uri)
                 except Exception as e:
                     logger.warning(
                         f"Failed to load text content from {page.parsed_text_uri}: {e}"
                     )
                     # Continue with empty content
                     pages_content[page_id] = f"[Error loading page {page_id} content]"
+                else:
+                    pages_content[page_id] = text
+                    if text and text.strip():
+                        pages_with_text += 1
             else:
                 # Page has no text content
                 pages_content[page_id] = f"[No text content for page {page_id}]"
 
-        return pages_content
+        return pages_content, pages_with_text
+
+    def _parse_model_segments(
+        self,
+        raw_segments: List[Any],
+        document: Document,
+        forced_class: Optional[str] = None,
+        page_id_offset: int = 0,
+    ) -> List[Segment]:
+        """Turn a packet call's ``segments`` array into :class:`Segment` objects.
+
+        The model reports **ordinal** page numbers — 1 for the first page it was
+        shown — which is why ``page_id_offset`` exists: a windowed packet call
+        sees a slice of the document, so its ordinal 1 is not the document's
+        page 1. For an unwindowed call the offset is zero and the ordinals are
+        the page IDs, which is what the single-window path has always assumed.
+
+        A segment missing any required field is skipped with a warning rather
+        than failing the document, and a segment whose range covers no page of
+        this document is dropped the same way: a model that invents page 40 of a
+        12-page packet should not take the other eleven segments down with it.
+
+        Args:
+            raw_segments: The parsed ``segments`` array from the model.
+            document: Document whose page IDs the ordinals resolve against.
+            forced_class: When set, the model's confidence does not describe the
+                class being assigned (the operator's regex match does), so each
+                segment is left unscored.
+            page_id_offset: Added to each ordinal before resolving it to a page
+                ID. Zero for a whole-packet call.
+
+        Returns:
+            Segments in the order the model reported them, each covering at
+            least one page of ``document``.
+        """
+        parsed: List[Segment] = []
+
+        for i, segment in enumerate(raw_segments):
+            if not isinstance(segment, dict):
+                logger.warning(f"Segment {i} is not an object; skipping")
+                continue
+            if not all(
+                k in segment for k in ("ordinal_start_page", "ordinal_end_page", "type")
+            ):
+                logger.warning(f"Segment {i} is missing required fields")
+                continue
+
+            try:
+                start_page = int(segment["ordinal_start_page"]) + page_id_offset
+                end_page = int(segment["ordinal_end_page"]) + page_id_offset
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Segment {i} has unreadable page ordinals "
+                    f"({segment.get('ordinal_start_page')!r}, "
+                    f"{segment.get('ordinal_end_page')!r}); skipping"
+                )
+                continue
+
+            if end_page < start_page:
+                logger.warning(
+                    f"Segment {i} ends before it starts ({start_page}-{end_page}); "
+                    f"skipping"
+                )
+                continue
+
+            doc_type = segment["type"]
+            if doc_type not in self.valid_doc_types:
+                logger.warning(f"Unknown document type '{doc_type}', using anyway")
+
+            # Optional, exactly as on the page-level path: used when the packet
+            # prompt asks each segment for a confidence, None otherwise. A
+            # forced class is the operator's own assertion, so the model's
+            # number does not describe it.
+            confidence = (
+                None
+                if forced_class
+                else parse_confidence(segment.get("confidence"), context=f"segment {i}")
+            )
+
+            page_ids = [
+                str(page_idx)
+                for page_idx in range(start_page, end_page + 1)
+                if str(page_idx) in document.pages
+            ]
+            if not page_ids:
+                logger.warning(
+                    f"Segment {i} ({start_page}-{end_page}) covers no page of this "
+                    f"document; skipping"
+                )
+                continue
+
+            parsed.append(
+                Segment(page_ids=page_ids, doc_class=doc_type, confidence=confidence)
+            )
+
+        return parsed
+
+    def _packet_text_unavailable_error(
+        self, document: Document, pages_with_text: int
+    ) -> Optional[str]:
+        """Message to fail a packet call that would be sent with no text at all.
+
+        Packet classification sends text. When no page has any — the shape an
+        OCR backend of ``none`` produces — every page is substituted with
+        ``[No text content for page N]`` and the request still goes out, so the
+        model returns segments and classes derived from nothing. The result is a
+        document that completes green with fabricated boundaries, which is worse
+        than a failure because nothing downstream can tell it apart from a real
+        one.
+
+        Returns ``None`` when the call can legitimately proceed: at least one
+        page has text, or (from Phase 2 onwards) images are being sent and the
+        packet call therefore has real content to look at even with no OCR.
+        """
+        if pages_with_text > 0:
+            return None
+        if not document.pages:
+            return None
+
+        _, send_images = self._resolve_modality()
+        if send_images:
+            # Images carry the content; a packet call with images and no OCR
+            # text is a legitimate image-only configuration.
+            return None
+
+        return (
+            f"Packet classification has no text to classify: none of the "
+            f"{len(document.pages)} pages has OCR text, and the classification "
+            f"prompt is text-only. This is what an OCR backend of 'none' "
+            f"produces. Either set the OCR backend to a real engine "
+            f"(Textract/Bedrock), or enable Classification > Modality > images "
+            f"so the page images are sent instead."
+        )
 
     def holistic_classify_document(
         self, document: Document, forced_class: Optional[str] = None
@@ -3682,7 +4155,16 @@ class ClassificationService:
 
         try:
             # Format document pages as text
-            pages_content = self._format_pages(document)
+            pages_content, pages_with_text = self._format_pages_with_coverage(document)
+
+            no_text_error = self._packet_text_unavailable_error(
+                document, pages_with_text
+            )
+            if no_text_error:
+                logger.error(no_text_error)
+                return self._update_document_status(
+                    document, success=False, error_message=no_text_error
+                )
 
             # Get classification configuration
             config = self._get_classification_config()
@@ -3768,148 +4250,13 @@ class ClassificationService:
                         if isinstance(segment, dict):
                             segment["type"] = forced_class
 
-                # Per-segment confidence, keyed by the segment's index so the
-                # section builders below can reuse what was parsed here.
-                segment_confidences: Dict[int, Optional[float]] = {}
+                parsed_segments = self._parse_model_segments(
+                    segments, document, forced_class=forced_class
+                )
 
-                # Update page classifications based on segments
-                for i, segment in enumerate(segments):
-                    # Validate segment data
-                    if not all(
-                        k in segment
-                        for k in ["ordinal_start_page", "ordinal_end_page", "type"]
-                    ):
-                        logger.warning(f"Segment {i} is missing required fields")
-                        continue
-
-                    # Normalize page IDs (convert from 1-based to actual page IDs in the document)
-                    start_page = segment["ordinal_start_page"]
-                    end_page = segment["ordinal_end_page"]
-                    doc_type = segment["type"]
-                    # Optional, exactly as on the page-level path: used when the
-                    # holistic prompt asks each segment for a confidence, None
-                    # otherwise. A forced class is the operator's own assertion,
-                    # so the model's number does not describe it.
-                    segment_confidence = (
-                        None
-                        if forced_class
-                        else parse_confidence(
-                            segment.get("confidence"), context=f"segment {i}"
-                        )
-                    )
-                    segment_confidences[i] = segment_confidence
-
-                    # Check if the doc_type is valid
-                    if doc_type not in self.valid_doc_types:
-                        logger.warning(
-                            f"Unknown document type '{doc_type}', using anyway"
-                        )
-
-                    # Update page classifications
-                    try:
-                        for page_idx in range(start_page, end_page + 1):
-                            page_id = str(page_idx)
-                            if page_id in document.pages:
-                                # Update page classification
-                                document.pages[page_id].classification = doc_type
-                                # Every page in a segment inherits the segment's
-                                # score — the holistic method makes ONE decision
-                                # per segment, so there is no per-page signal to
-                                # report (and no basis for claiming 1.0).
-                                document.pages[page_id].confidence = segment_confidence
-                    except Exception as e:
-                        logger.error(f"Error processing segment {i}: {e}")
-                        continue
-
-                # Apply section splitting strategy based on configuration
-                strategy = self.config.classification.sectionSplitting.lower()
-
-                if strategy == "disabled":
-                    # Create single section with all pages using first segment's classification
-                    if segments:
-                        first_classification = segments[0]["type"]
-                        document.sections = [
-                            Section(
-                                section_id="1",
-                                classification=first_classification,
-                                # One section spanning segments the model may
-                                # have scored differently: the weakest of them,
-                                # unscored if any segment had no score.
-                                confidence=aggregate_page_confidence(
-                                    [
-                                        page.confidence
-                                        for page in document.pages.values()
-                                    ]
-                                ),
-                                page_ids=list(document.pages.keys()),
-                            )
-                        ]
-                        logger.info(
-                            f"Created single section with all pages, class='{first_classification}' (sectionSplitting=disabled)"
-                        )
-                elif strategy == "page":
-                    # Create one section per page with its assigned classification
-                    document.sections = []
-                    sorted_page_ids = sorted(
-                        document.pages.keys(),
-                        key=lambda x: int(x) if x.isdigit() else float("inf"),
-                    )
-                    for idx, page_id in enumerate(sorted_page_ids, start=1):
-                        page = document.pages[page_id]
-                        document.sections.append(
-                            Section(
-                                section_id=str(idx),
-                                classification=page.classification,
-                                confidence=page.confidence,
-                                page_ids=[page_id],
-                            )
-                        )
-                    logger.info(
-                        f"Created {len(document.sections)} sections (one per page) with sectionSplitting=page"
-                    )
-                else:  # llm_determined (default)
-                    # Use LLM-determined segments as sections
-                    document.sections = []
-                    for i, segment in enumerate(segments):
-                        if not all(
-                            k in segment
-                            for k in ["ordinal_start_page", "ordinal_end_page", "type"]
-                        ):
-                            continue
-
-                        start_page = segment["ordinal_start_page"]
-                        end_page = segment["ordinal_end_page"]
-                        doc_type = segment["type"]
-
-                        # Find corresponding page IDs
-                        page_ids = []
-                        try:
-                            for page_idx in range(start_page, end_page + 1):
-                                page_id = str(page_idx)
-                                if page_id in document.pages:
-                                    page_ids.append(page_id)
-                        except Exception as e:
-                            logger.error(f"Error processing segment {i}: {e}")
-                            continue
-
-                        if not page_ids:
-                            logger.warning(f"No valid pages found for segment {i}")
-                            continue
-
-                        # Create and add the section, carrying the confidence the
-                        # model reported for this segment (None if it reported
-                        # none — see the parse above).
-                        document.sections.append(
-                            Section(
-                                section_id=str(i + 1),
-                                classification=doc_type,
-                                confidence=segment_confidences.get(i),
-                                page_ids=page_ids,
-                            )
-                        )
-                    logger.info(
-                        f"Created {len(document.sections)} sections using LLM-determined segments (sectionSplitting=llm_determined)"
-                    )
+                # One section builder for both granularities — see
+                # _sections_from_segments.
+                document = self._sections_from_segments(document, parsed_segments)
 
                 # Update document metering and status
                 document.metering = utils.merge_metering_data(

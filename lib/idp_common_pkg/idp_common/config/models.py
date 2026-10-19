@@ -1539,6 +1539,98 @@ class ClassificationClassConfidenceConfig(BaseModel):
         return int(v)
 
 
+def _parse_tristate_bool(v: Any, field: str) -> Optional[bool]:
+    """Parse a bool that has a third state: ``None`` meaning "not configured".
+
+    Stored configurations are string-typed (the UI writes strings, and so does
+    DynamoDB), so ``""`` has to mean unset rather than ``False``. Getting that
+    wrong on a modality flag is the difference between "infer from the prompt,
+    as every existing config does" and "send nothing", so an unreadable value
+    raises instead of defaulting either way.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if not s:
+            return None
+        if s in ("true", "yes", "y", "on", "1"):
+            return True
+        if s in ("false", "no", "n", "off", "0"):
+            return False
+        raise ValueError(
+            f"{field} must be true, false, or empty (meaning 'infer from the "
+            f"prompt's placeholders'), got {v!r}"
+        )
+    if isinstance(v, (int, float)):
+        return bool(v)
+    raise ValueError(f"{field} must be a boolean or empty, got {v!r}")
+
+
+class ClassificationModalityConfig(BaseModel):
+    """What each classification call sees: the page's text, its image, or both.
+
+    Both flags are **tri-state**, and ``None`` — the default — means *infer from
+    the prompt's placeholders*, which is precisely what the service did before
+    this setting existed: ``{DOCUMENT_TEXT}`` present meant text was sent and
+    ``{DOCUMENT_IMAGE}`` present meant the image was. Defaulting to ``None``
+    rather than ``True`` is what makes every configuration written before this
+    option a literal no-op, including the documented workaround of deleting a
+    placeholder to get a single modality.
+
+    Setting a flag explicitly takes over from the inference and the prompt is
+    normalised to match: ``images: false`` removes the image placeholder (and so
+    the image), ``images: true`` adds one if the prompt has none. The two
+    directions are logged, because a prompt the operator did not write is a
+    thing they need to be able to see.
+    """
+
+    text: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Send each page's OCR text. Empty (default) infers it from whether "
+            "the task prompt contains {DOCUMENT_TEXT}. Forced to false by an OCR "
+            "backend of 'none', which produces no text to send."
+        ),
+    )
+    images: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Send each page's image. Empty (default) infers it from whether the "
+            "task prompt contains {DOCUMENT_IMAGE}. Usually the largest input "
+            "cost per page (roughly 1.1K-4.8K tokens depending on the model and "
+            "the image size), so turning it off is the main lever on "
+            "image-dominated classification cost."
+        ),
+    )
+
+    @field_validator("text", "images", mode="before")
+    @classmethod
+    def parse_tristate(cls, v: Any, info: ValidationInfo) -> Optional[bool]:
+        return _parse_tristate_bool(v, f"classification.modality.{info.field_name}")
+
+    @model_validator(mode="after")
+    def refuse_no_modality(self) -> "ClassificationModalityConfig":
+        """Refuse the one combination that sends the model nothing to look at.
+
+        Raised at configuration-save time (every save validates through
+        ``IDPConfig``), so the message lands in the UI next to the setting
+        rather than as a failed document an hour later. Only the *explicit*
+        pair is refused — if either flag is unset it is inferred from the
+        prompt, and a prompt with neither placeholder is a deliberate,
+        long-standing way to write a classifier that works from the class
+        descriptions alone.
+        """
+        if self.text is False and self.images is False:
+            raise ValueError(
+                "classification.modality has both text and images turned off, "
+                "which leaves nothing to classify. Turn at least one on."
+            )
+        return self
+
+
 class ClassificationConfig(BaseModel):
     """Document classification configuration"""
 
@@ -1625,6 +1717,15 @@ class ClassificationConfig(BaseModel):
         ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)
+    modality: ClassificationModalityConfig = Field(
+        default_factory=ClassificationModalityConfig,
+        description=(
+            "What each classification call sees — text, images, or both. "
+            "Independent of granularity: the same two flags apply to page-level "
+            "and packet-level calls. See ClassificationModalityConfig; both "
+            "default to 'infer from the prompt'."
+        ),
+    )
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
@@ -4173,6 +4274,39 @@ class IDPConfig(BaseModel):
             log_ignored_config_keys(data, cls)
 
         return data
+
+    @model_validator(mode="after")
+    def refuse_classification_with_no_content(self) -> "IDPConfig":
+        """Refuse a classification modality that can only ever send empty content.
+
+        One cross-section combination is unsatisfiable and silent: an OCR
+        backend of ``none`` produces no page text at all, so a classification
+        configuration that also turns images **off** has nothing left. Before
+        this check the request still went out, with every page substituted as
+        the literal string ``[No text content for page N]``, and the model
+        returned a confident class derived from nothing — a document that
+        completes green with a fabricated answer.
+
+        Only the explicit ``images: false`` is refused here. When ``images`` is
+        unset it is inferred from the prompt, and the prompt the inference reads
+        depends on the granularity, so the residual case is caught at the point
+        the request is built instead (see
+        ``ClassificationService._packet_text_unavailable_error``). That split is
+        deliberate: a config-load failure must be a thing the operator can act
+        on from the message alone.
+        """
+        if (
+            self.ocr.backend
+            and self.ocr.backend.strip().lower() == "none"
+            and self.classification.modality.images is False
+        ):
+            raise ValueError(
+                "ocr.backend is 'none' (no page text is produced) and "
+                "classification.modality.images is false, so classification "
+                "would have no text and no images to work from. Either choose a "
+                "real OCR backend, or turn classification.modality.images on."
+            )
+        return self
 
     def to_dict(self, **extra_fields: Any) -> Dict[str, Any]:
         """
