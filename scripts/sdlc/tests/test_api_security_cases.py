@@ -1553,3 +1553,339 @@ class TestInboxSeeding:
             "PK": {"S": keys.partition_key("test-rbac-admin@example.invalid")},
             "SK": {"S": keys.message_sk(nid)},
         }
+
+
+class TestInboxIdorSuiteEdges:
+    def test_an_unloadable_key_module_is_an_error_and_seeds_nothing(self, monkeypatch):
+        def broken():
+            raise ImportError("No module named 'idp_common'")
+
+        monkeypatch.setattr(sec, "notification_keys", broken)
+        api = _FakeInboxApi()
+
+        rec, results = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "inbox-idor-seed"
+        assert "ImportError" in rec.rows[0]["detail"]
+        assert api.messages == {} and api.calls == []
+        assert harness.hard_failures(results) == rec.rows
+
+    def test_a_cleanup_that_raises_does_not_discard_the_results(self):
+        api = _FakeInboxApi()
+
+        def cleanup(notification_id):
+            raise RuntimeError("delete-item throttled")
+
+        rec = _Recorder()
+        results = []
+        sec.run_inbox_idor_suite(
+            CTX,
+            rec,
+            results,
+            {"Admin": "a", "userB": "b"},
+            seed_fn=api.seed,
+            call_body=api,
+            cleanup_fn=cleanup,
+        )
+
+        assert [r["principal"] for r in rec.rows] == INBOX_PRINCIPALS
+        assert {r["outcome"] for r in rec.rows} == {"PASS"}
+
+    @pytest.mark.parametrize(
+        ("response", "reason"),
+        [
+            ((403, '{"errors":[]}'), "owner list answered 403"),
+            ((200, '{"unexpected": true}'), "owner list body has no items array"),
+        ],
+    )
+    def test_an_owner_list_that_cannot_show_the_seed_fails_the_control(
+        self, response, reason
+    ):
+        api = _FakeInboxApi(status={("listInboxMessages", "a", "plain"): response})
+
+        rec, _ = _run_inbox(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert reason in rec.rows[0]["detail"]
+        assert not [c for c in api.calls if c[1] == "b"]
+
+
+# --------------------------------------------------------------------------- #
+# IDOR (2.1) — review queues: only the claimer acts on a claimed item
+# --------------------------------------------------------------------------- #
+REVIEW_KEY = "batch-1/claim.pdf"
+REVIEW_CYCLE = "cycle-1"
+_FORBIDDEN = (403, '{"errors":[{"errorType":"Forbidden"}]}')
+
+
+class _FakeReviewApi:
+    """An in-memory stand-in for the review-queue operations behind ``call_body``.
+
+    Token ``"A"`` holds the claim, ``"B"`` is a fellow queue member and ``"C"`` is
+    not a member. By default it behaves like the real resolver; ``status``
+    overrides one ``(field, token)`` response to break one property.
+    """
+
+    def __init__(self, **knobs):
+        self.knobs = knobs
+        self.calls = []
+        self.cleaned = []
+
+    def seed(self):
+        if self.knobs.get("seed_raises"):
+            raise RuntimeError("put-item failed")
+        if self.knobs.get("no_table"):
+            return None
+        return {
+            "tokens": {"A": "A", "B": "B", "C": "C"},
+            "object_key": REVIEW_KEY,
+            "cycle_id": REVIEW_CYCLE,
+        }
+
+    def cleanup(self, seeded):
+        if self.knobs.get("cleanup_raises"):
+            raise RuntimeError("cleanup failed")
+        self.cleaned.append(seeded)
+
+    def __call__(self, api_base, field, args, token):
+        self.calls.append((field, token, dict(args)))
+        override = self.knobs.get("status", {}).get((field, token))
+        if override is not None:
+            return override
+        if field == "getReviewItem":
+            if token == "C":  # nosec B105 - fake test token id, not a credential
+                return _FORBIDDEN
+            return 200, json.dumps({"objectKey": args["objectKey"]})
+        if field == "listMyReviewWork":
+            mine = [{"objectKey": REVIEW_KEY}] if token == "A" else []  # nosec B105
+            return 200, json.dumps({"items": mine, "nextToken": None})
+        # Every other operation acts on the claim, which only A holds, and A is
+        # never asked to: B and C are refused.
+        return _FORBIDDEN
+
+
+def _run_review(api, seed=True, call=True):
+    rec = _Recorder()
+    results = []
+    sec.run_review_queue_idor_suite(
+        CTX,
+        rec,
+        results,
+        seed_fn=api.seed if seed else None,
+        call_body=api if call else None,
+        cleanup_fn=api.cleanup,
+    )
+    return rec, results
+
+
+REVIEW_ROWS = [
+    ("getReviewItem", "review-claimer(positive control)"),
+    ("getReviewItem", "member-B(preview)"),
+    ("renewReviewLease", "member-B(acts on A's claim)"),
+    ("releaseReviewItem", "member-B(acts on A's claim)"),
+    ("saveReviewDraft", "member-B(acts on A's claim)"),
+    ("completeReviewItem", "member-B(acts on A's claim)"),
+    ("listMyReviewWork", "member-B(My Work)"),
+    ("getReviewItem", "non-member-C"),
+    ("claimReviewItem", "non-member-C"),
+]
+
+
+def _review_outcome(rec, op, principal):
+    rows = [r for r in rec.rows if r["op"] == op and r["principal"] == principal]
+    assert len(rows) == 1, f"expected one row for {op}/{principal}, got {rows}"
+    return rows[0]["outcome"]
+
+
+class TestReviewQueueIdorSuite:
+    def test_a_resolver_that_enforces_the_claim_passes_every_check(self):
+        api = _FakeReviewApi()
+
+        rec, results = _run_review(api)
+
+        assert [(r["op"], r["principal"]) for r in rec.rows] == REVIEW_ROWS
+        assert {r["outcome"] for r in rec.rows} == {"PASS"}
+        assert harness.hard_failures(results) == []
+        assert api.cleaned == [api.seed()]
+
+    def test_the_probes_name_the_seeded_item_with_each_callers_token(self):
+        api = _FakeReviewApi()
+
+        _run_review(api)
+
+        item_args = {"objectKey": REVIEW_KEY, "cycleId": REVIEW_CYCLE}
+        b_acts = {f: a for f, t, a in api.calls if t == "B" and f != "getReviewItem"}
+        assert b_acts["renewReviewLease"] == item_args
+        assert b_acts["releaseReviewItem"] == item_args
+        assert b_acts["completeReviewItem"] == item_args
+        assert b_acts["saveReviewDraft"] == {
+            **item_args,
+            "sectionId": "1",
+            "data": "{}",
+        }
+        c_calls = {f: a for f, t, a in api.calls if t == "C"}
+        assert c_calls == {
+            "getReviewItem": {"objectKey": REVIEW_KEY},
+            "claimReviewItem": item_args,
+        }
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "renewReviewLease",
+            "releaseReviewItem",
+            "saveReviewDraft",
+            "completeReviewItem",
+        ],
+    )
+    def test_a_member_acting_on_another_members_claim_is_a_fail(self, field):
+        api = _FakeReviewApi(status={(field, "B"): (200, "{}")})
+
+        rec, results = _run_review(api)
+
+        assert _review_outcome(rec, field, "member-B(acts on A's claim)") == "FAIL"
+        others = [r for r in rec.rows if r["op"] != field]
+        assert {r["outcome"] for r in others} == {"PASS"}
+        assert harness.hard_failures(results)
+
+    @pytest.mark.parametrize(
+        ("op", "token", "principal"),
+        [
+            ("releaseReviewItem", "B", "member-B(acts on A's claim)"),
+            ("claimReviewItem", "C", "non-member-C"),
+        ],
+    )
+    def test_a_refusal_with_any_status_but_403_is_a_fail(self, op, token, principal):
+        """The suite asserts the authorization refusal itself: a 404 or a 400
+        may come from a validation step that ran before the ownership check, so
+        it does not show the claim was enforced."""
+        api = _FakeReviewApi(status={(op, token): (404, '{"errors":[]}')})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, op, principal) == "FAIL"
+
+    def test_a_member_refused_a_preview_is_a_fail(self):
+        api = _FakeReviewApi(status={("getReviewItem", "B"): _FORBIDDEN})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "getReviewItem", "member-B(preview)") == "FAIL"
+
+    def test_the_claim_appearing_in_another_members_work_is_a_fail(self):
+        leaked = (200, json.dumps({"items": [{"objectKey": REVIEW_KEY}]}))
+        api = _FakeReviewApi(status={("listMyReviewWork", "B"): leaked})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "listMyReviewWork", "member-B(My Work)") == "FAIL"
+
+    def test_a_non_member_served_the_item_is_a_fail(self):
+        api = _FakeReviewApi(status={("getReviewItem", "C"): (200, "{}")})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "getReviewItem", "non-member-C") == "FAIL"
+        assert _review_outcome(rec, "claimReviewItem", "non-member-C") == "PASS"
+
+    def test_a_refusal_that_echoes_the_item_key_is_a_fail(self):
+        echo = (403, json.dumps({"errors": [{"message": f"{REVIEW_KEY} is claimed"}]}))
+        api = _FakeReviewApi(status={("claimReviewItem", "C"): echo})
+
+        rec, _ = _run_review(api)
+
+        assert _review_outcome(rec, "claimReviewItem", "non-member-C") == "FAIL"
+
+    def test_a_member_act_that_did_not_complete_is_an_error_not_a_pass(self):
+        api = _FakeReviewApi(
+            status={
+                ("renewReviewLease", "B"): (0, "<request error: timeout>"),
+                ("listMyReviewWork", "B"): (502, "Bad Gateway"),
+                ("getReviewItem", "B"): (0, "<request error: reset>"),
+            }
+        )
+
+        rec, results = _run_review(api)
+
+        acts = "member-B(acts on A's claim)"
+        assert _review_outcome(rec, "renewReviewLease", acts) == "ERROR"
+        assert _review_outcome(rec, "releaseReviewItem", acts) == "PASS"
+        assert _review_outcome(rec, "listMyReviewWork", "member-B(My Work)") == "ERROR"
+        assert _review_outcome(rec, "getReviewItem", "member-B(preview)") == "ERROR"
+        assert harness.hard_failures(results)
+
+    @pytest.mark.parametrize(
+        ("status", "reason"),
+        [
+            ({("listMyReviewWork", "A"): (200, '{"items": []}')}, "item listed: False"),
+            ({("listMyReviewWork", "A"): (200, "not json")}, "item listed: False"),
+            ({("getReviewItem", "A"): (0, "<request error: x>")}, "did not complete"),
+            ({("getReviewItem", "A"): _FORBIDDEN}, "claimer preview 403"),
+        ],
+        ids=["not-in-my-work", "unreadable-my-work", "timeout", "claimer-refused"],
+    )
+    def test_a_failed_positive_control_is_an_error_and_runs_no_leak_check(
+        self, status, reason
+    ):
+        api = _FakeReviewApi(status=status)
+
+        rec, results = _run_review(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "review-claimer(positive control)"
+        assert reason in rec.rows[0]["detail"]
+        assert not [c for c in api.calls if c[1] != "A"]
+        assert harness.hard_failures(results) == rec.rows
+        assert len(api.cleaned) == 1
+
+    def test_a_missing_table_output_is_a_skip_and_cleans_nothing(self):
+        api = _FakeReviewApi(no_table=True)
+
+        rec, results = _run_review(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert "HITLTableName" in rec.rows[0]["detail"]
+        assert api.calls == [] and api.cleaned == []
+        assert harness.hard_failures(results) == []
+
+    def test_a_seed_that_raises_is_an_error(self):
+        api = _FakeReviewApi(seed_raises=True)
+
+        rec, results = _run_review(api)
+
+        assert [r["outcome"] for r in rec.rows] == ["ERROR"]
+        assert rec.rows[0]["principal"] == "review-idor-seed"
+        assert "RuntimeError" in rec.rows[0]["detail"]
+        assert api.calls == [] and api.cleaned == []
+        assert harness.hard_failures(results) == rec.rows
+
+    @pytest.mark.parametrize(("seed", "call"), [(False, True), (True, False)])
+    def test_missing_preconditions_skip(self, seed, call):
+        api = _FakeReviewApi()
+
+        rec, results = _run_review(api, seed=seed, call=call)
+
+        assert [r["outcome"] for r in rec.rows] == ["SKIP"]
+        assert rec.rows[0]["principal"] == "review-idor"
+        assert api.calls == [] and api.cleaned == []
+        assert harness.hard_failures(results) == []
+
+    def test_a_cleanup_that_raises_does_not_discard_the_results(self):
+        api = _FakeReviewApi(cleanup_raises=True)
+
+        rec, results = _run_review(api)
+
+        assert [(r["op"], r["principal"]) for r in rec.rows] == REVIEW_ROWS
+        assert harness.hard_failures(results) == []
+
+
+class TestReviewPageKeys:
+    def test_object_keys_are_read_and_non_dict_items_ignored(self):
+        body = json.dumps({"items": [{"objectKey": "a"}, "junk", {"objectKey": "b"}]})
+
+        assert sec._review_page_keys(body) == ["a", "b"]
+
+    @pytest.mark.parametrize("body", [None, "", "not json", "[]", '{"items": {}}'])
+    def test_an_unreadable_page_is_none(self, body):
+        assert sec._review_page_keys(body) is None
