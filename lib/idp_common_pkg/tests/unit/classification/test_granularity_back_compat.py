@@ -102,7 +102,7 @@ class TestAliasTable:
     def test_the_shipped_defaults_resolve_to_page_granularity_single_pass(self):
         service = _service(_shipped_classification())
         assert service.granularity == ClassificationService.GRANULARITY_PAGE
-        assert service.strategy == ClassificationService.STRATEGY_SINGLE_PASS
+        assert service.strategy == ClassificationService.STRATEGY_ONE_STAGE
         assert service.granularity_is_explicit is False
 
     def test_multimodal_page_level_maps_to_page_with_text_and_images(self):
