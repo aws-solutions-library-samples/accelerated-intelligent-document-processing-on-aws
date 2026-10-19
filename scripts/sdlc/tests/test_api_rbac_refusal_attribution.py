@@ -808,31 +808,51 @@ _DOCUMENT_BYTES_FIELDS = (
 )
 
 
-def test_the_document_bytes_arm_exists_and_the_scope_suite_runs_it():
+def test_the_document_bytes_suite_exists_and_is_invoked_from_main():
     """What brought the ``get_file_contents_resolver`` sites inside the bound above.
 
     The registry's rule is "convert a site the live harness can reach", so the
-    conversion and the arm that reaches it have to stand or fall together. Asserted
-    on the harness **source**: the arm is defined, ``run_scope_suite`` calls it, and
-    the suite itself is invoked — a function defined and never called would satisfy
-    an attribute check while driving nothing.
+    conversion and the suite that reaches it have to stand or fall together.
+
+    It is a **sibling** of ``run_scope_suite``, not an arm inside it, so the thing
+    that could silently remove it is its call site in ``main``. That is what is
+    asserted, and asserted inside ``main``'s own body rather than anywhere in the
+    file: a function defined and never called satisfies an attribute check while
+    driving nothing, and a call left in a dead helper satisfies a whole-file
+    substring search while doing the same.
     """
     source = _HARNESS.read_text()
 
     assert hasattr(h, "run_document_bytes_scope_suite"), (
-        "the per-document arm is gone, so nothing live reaches the refusals listed "
+        "the per-document suite is gone, so nothing live reaches the refusals listed "
         "in _DECLARED_RESOURCE_REFUSALS for get_file_contents_resolver"
     )
-    assert "run_document_bytes_scope_suite(ctx, tokens, results)" in source, (
-        "run_document_bytes_scope_suite is defined but never called — the suite has to "
-        "run, not merely exist"
+
+    tree = ast.parse(source)
+    called = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "main":
+            called = {
+                sub.func.id
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+            }
+            break
+    else:  # pragma: no cover - the harness is the subject of this assertion
+        raise AssertionError("test_api_rbac.py has no top-level main()")
+
+    assert "run_document_bytes_scope_suite" in called, (
+        "run_document_bytes_scope_suite is defined but main() does not call it — "
+        "the suite has to run, not merely exist, or the sites it exercises are "
+        "ratcheted by nothing live"
     )
-    assert re.search(r"\brun_scope_suite\(", source), (
-        "run_scope_suite is no longer invoked, so the arm it carries never runs"
+    assert "run_scope_suite" in called, (
+        "run_scope_suite is no longer invoked from main(); the two are siblings and "
+        "the per-document one is not a substitute for it"
     )
 
 
-def test_the_document_bytes_arm_demands_the_resource_label():
+def test_the_document_bytes_suite_demands_the_resource_label():
     """The arm's verdict has to turn on the label, not merely on the 403.
 
     Both controls answer ``403``/``Unauthorized`` here, so an arm asserting only
@@ -921,11 +941,22 @@ def test_nothing_in_the_dispatcher_process_calls_the_s3_helper():
 #     failed query) is a fail-closed refusal about the deployment, and the resolvers
 #     spell it with one shared message;
 #   * no resolvable caller identity at all is a refusal about the principal;
-#   * an empty set of wired bucket names is a template fault.
+#   * an empty set of wired bucket names is a template fault;
+#   * a tracking-table read that stayed throttled is a fact about the table;
+#   * a refusal that folds this resolver's own GROUP check into the same exception as
+#     its per-object one cannot carry `resource` without losing the group refusal,
+#     which is the one misattribution direction that matters.
 #
 # Relabelling one cannot create a false pass — the per-object label only ever moves
 # a verdict from FAIL to ERROR, both blocking — but it would move a real fault out of
 # the row a reader looks at first, and it would make the documented boundary false.
+#
+# ⚠️ **A boundary stated only in prose is the defect this list exists for**, which is
+# why the get_file_contents_resolver sites are here: #1478 converted that resolver's
+# per-object refusals and argued in prose for keeping four of its neighbours
+# unattributed, which is exactly the state the review above found and measured —
+# relabelling one survived every suite. The four are now ratcheted on the same terms
+# as the converted ones.
 _UNATTRIBUTED_REFUSAL_SITES = (
     ("test_set_resolver/index.py", "_caller_config_scope", "scope cannot be evaluated"),
     (
@@ -933,11 +964,87 @@ _UNATTRIBUTED_REFUSAL_SITES = (
         "handler",
         "no resolvable caller identity",
     ),
+    (
+        "get_file_contents_resolver/document_scope.py",
+        "resolve_caller_scope",
+        "no identity, no claims, or a scope that cannot be evaluated",
+    ),
+    (
+        "get_file_contents_resolver/key_scope.py",
+        "_claims",
+        "no verified identity on the event",
+    ),
+    (
+        "get_file_contents_resolver/key_scope.py",
+        "_assert_test_set_allowed",
+        "folds this resolver's own group check into the same exception, so `resource` "
+        "would lose a group refusal",
+    ),
 )
 
 
 def test_the_unattributed_site_list_is_not_empty():
-    assert len(_UNATTRIBUTED_REFUSAL_SITES) >= 2
+    assert len(_UNATTRIBUTED_REFUSAL_SITES) >= 5
+
+
+#: The two unattributed sites in that resolver that are METHODS, so the per-function
+#: walk above cannot address them: ``DocumentResolver._fetch`` (a tracking-table read
+#: that stayed throttled — a fact about the table) and
+#: ``_DocumentScope._document_resolver`` (an unwired table name — a template fault).
+#: Named by their enclosing class, which is still per site, because nothing else in
+#: either class raises an authorization refusal — asserted below rather than assumed.
+_UNATTRIBUTED_REFUSAL_CLASSES = (
+    (
+        "get_file_contents_resolver/document_scope.py",
+        "DocumentResolver",
+        "a tracking-table read that stayed throttled is a fact about the table",
+    ),
+    (
+        "get_file_contents_resolver/index.py",
+        "_DocumentScope",
+        "an unwired tracking table is a template fault",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "relative,klass,why",
+    _UNATTRIBUTED_REFUSAL_CLASSES,
+    ids=[f"{k}" for _, k, _ in _UNATTRIBUTED_REFUSAL_CLASSES],
+)
+def test_an_unattributed_refusal_inside_a_class_stays_unattributed(
+    relative, klass, why
+):
+    """The same ratchet as the parametrised test above, one scope wider.
+
+    Wider is the cost of the sites being methods, and it is bounded by the second
+    assertion: each class must still hold a refusal, so the entry cannot go vacuous
+    by the raise being deleted rather than relabelled.
+    """
+    source = (_RESOLVERS / relative).read_text()
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ClassDef) and node.name == klass:
+            raised = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Raise) and sub.exc is not None:
+                    exc = sub.exc
+                    callee = exc.func if isinstance(exc, ast.Call) else exc
+                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
+                    if name:
+                        raised.add(name)
+            break
+    else:  # pragma: no cover - the class is the subject of this assertion
+        raise AssertionError(f"{relative} has no class named {klass}")
+
+    assert "ResourceAccessDenied" not in raised, (
+        f"{why}, not a decision about the object the caller named, so it must keep "
+        "the unattributed class and the strict reading that gets it into the row an "
+        f"operator reads first; raised {sorted(raised)}"
+    )
+    assert "PermissionError" in raised, (
+        f"{relative}:{klass} no longer refuses at all, so this entry now ratchets "
+        f"nothing; raised {sorted(raised)}"
+    )
 
 
 @pytest.mark.parametrize(

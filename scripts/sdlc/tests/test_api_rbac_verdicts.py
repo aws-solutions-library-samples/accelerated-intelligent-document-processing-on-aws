@@ -742,7 +742,14 @@ class TestThePerDocumentSuiteClassifiesInconclusiveResults:
                     None,
                     "rid",
                     control=h.CONTROL_RESOURCE,
-                    message="denied: https://bucket.s3.amazonaws.com/doc.pdf?X-Amz=1",
+                    message="Unauthorized: you are not permitted to read that object.",
+                    # In a field OTHER than the message, which is the half a
+                    # message-only check cannot see.
+                    body=(
+                        '{"errors":[{"message":"Unauthorized: you are not permitted '
+                        'to read that object."}],"url":"https://b.example/doc.pdf'
+                        '?X-Amz-Signature=deadbeef"}'
+                    ),
                 )
             return h.ApiResult(200, None, None, "rid")
 

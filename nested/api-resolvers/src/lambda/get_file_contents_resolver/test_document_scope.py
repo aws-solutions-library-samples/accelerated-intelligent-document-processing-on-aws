@@ -332,7 +332,7 @@ def test_a_per_document_refusal_declares_itself_as_a_per_object_control(
     Leaving it undeclared is not a silent cost. The live RBAC harness reads an
     unattributed refusal strictly (``refusal_is_resource_level`` answers False for
     everything but an explicit ``resource``), so the per-document cell in
-    ``test_api_rbac.run_document_bytes_scope_arm`` goes to a hard failure on a
+    ``test_api_rbac.run_document_bytes_scope_suite`` goes to a hard failure on a
     deployment whose authorization is correct — the shape that published
     ``RBAC dynamic — FAIL`` for a sound release once already (#1308, #1478).
 
@@ -351,6 +351,74 @@ def test_a_per_document_refusal_declares_itself_as_a_per_object_control(
     )
 
 
+def _raised_class_names(function):
+    """Every class name raised directly inside one top-level function, with repeats.
+
+    A **list** rather than a set, because the count is what the assertion below
+    turns on, and ``.attr`` as well as ``.id`` so a qualified
+    ``s3_targets.ResourceAccessDenied(...)`` is read as the class it names rather
+    than as nothing. ``AsyncFunctionDef`` is accepted for the same reason: a
+    reader converting this module to ``async def`` should get the real verdict,
+    not "the function is missing".
+    """
+    import ast
+
+    import document_scope
+
+    source = pathlib.Path(document_scope.__file__).read_text()
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function
+        ):
+            names = []
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Raise) and sub.exc is not None:
+                    callee = sub.exc.func if isinstance(sub.exc, ast.Call) else sub.exc
+                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
+                    if name:
+                        names.append(name)
+            return names
+    raise AssertionError(f"document_scope has no top-level {function}")
+
+
+#: Every key shape that would make :func:`document_key_candidates` return an empty
+#: list. All of them are refused as malformed before it gets that far — see the test
+#: below, which is why that refusal branch is unreachable rather than untested.
+_KEYS_THAT_NAME_NO_OBJECT = ("", "/", "//", ".", "..", "a/", "/a", "a//b")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key", _KEYS_THAT_NAME_NO_OBJECT)
+def test_a_key_naming_no_object_is_refused_as_malformed_before_the_scope_check(key):
+    """Why the empty-candidate refusal is unreachable, measured rather than assumed.
+
+    ``assert_document_in_scope`` raises on an empty candidate list, and no caller can
+    produce one: ``document_key_candidates`` calls
+    ``key_scope.assert_canonical_key`` first, which rejects every key shape that
+    would yield one with a ``ValueError`` — a 400, not a 403. So the branch is
+    defence in depth behind a guard, and **this ordering is the real property**: the
+    branch stays because an unreachable fail-closed refusal costs nothing and a
+    reordering that exposed it should find a refusal there rather than a fall-through.
+
+    Asserted here rather than left implicit because it is the one thing the
+    handler-driven tests above cannot show, and because the count pinned in
+    ``test_the_label_does_not_distinguish_one_per_document_refusal_from_another``
+    counts that raise — a reader checking the three per-object refusals against live
+    coverage would otherwise find one of them has none and reasonably conclude the
+    test is loose.
+    """
+    import document_scope
+
+    with pytest.raises(ValueError, match="canonical form"):
+        document_scope.document_key_candidates(
+            INPUT_BUCKET,
+            key,
+            input_bucket=INPUT_BUCKET,
+            output_bucket=OUTPUT_BUCKET,
+        )
+
+
 @pytest.mark.unit
 def test_the_label_does_not_distinguish_one_per_document_refusal_from_another():
     """Uniformity across the per-object branches, which is the load-bearing part.
@@ -360,41 +428,28 @@ def test_the_label_does_not_distinguish_one_per_document_refusal_from_another():
     oracle at the API, over documents entirely outside the caller's scope, and
     exactly what the single shared refusal string exists to prevent. The status, the
     message and the class are therefore all three identical across every branch of
-    ``assert_document_in_scope``, and the test is written over the module's **source**
-    so a branch added later is covered without being listed here.
+    ``assert_document_in_scope``.
+
+    ⚠️ **The COUNT is pinned, not just the set**, and that is the whole strength of
+    this test. A set is satisfied by routing one branch through a helper that raises
+    the unattributed class while the other two keep raising directly: the set is
+    unchanged, every behavioural test still passes, and the oracle is back. A count
+    fails that mutation. It also means a branch added to this function fails here
+    until it is accounted for, which is the intended cost — the alternative is a
+    source-shaped assertion that silently stops covering what it describes.
 
     The ``resolver`` branches leak nothing by contrast and are asserted the other
     way below: none of them varies with the key, so they answer the same for every
     object a given caller names.
     """
-    import ast
-
-    import document_scope
-
-    source = pathlib.Path(document_scope.__file__).read_text()
-    for node in ast.parse(source).body:
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "assert_document_in_scope"
-        ):
-            raised = {
-                getattr(
-                    sub.exc.func if isinstance(sub.exc, ast.Call) else sub.exc,
-                    "id",
-                    None,
-                )
-                for sub in ast.walk(node)
-                if isinstance(sub, ast.Raise) and sub.exc is not None
-            }
-            break
-    else:  # pragma: no cover - the function is the subject of this file
-        raise AssertionError("document_scope has no assert_document_in_scope")
+    raised = _raised_class_names("assert_document_in_scope")
 
     # RuntimeError is the defensive `resolver is None` branch: a caller-side
     # programming error that must surface as a 500, not an authorization answer.
-    assert raised == {"ResourceAccessDenied", "RuntimeError"}, (
-        "every refusal in assert_document_in_scope must raise the same class, or "
-        f"the label tells a caller which branch answered; raised {sorted(raised)}"
+    assert sorted(raised) == ["ResourceAccessDenied"] * 3 + ["RuntimeError"], (
+        "every refusal in assert_document_in_scope must raise the same class, and "
+        "all three of them must raise it HERE rather than through a helper that "
+        f"could raise a different one; raised {sorted(raised)}"
     )
 
 
@@ -439,9 +494,9 @@ def test_a_fail_closed_refusal_stays_unattributed(resolver, monkeypatch, why, pr
             ),
             None,
         )
-    assert type(raised.value).__name__ == "PermissionError", (
+    assert type(raised.value).__name__ != "ResourceAccessDenied", (
         f"{why}, so it must stay unattributed; it now arrives as "
-        f"{type(raised.value).__name__}"
+        f"{type(raised.value).__name__}, which the dispatcher labels 'resource'"
     )
 
 

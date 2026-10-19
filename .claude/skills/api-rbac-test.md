@@ -302,8 +302,10 @@ principal is unscoped, so a config-scope control is a no-op for all of them and 
 cell fails as NOT REFUSED. Those belong in the config-version scope suite, where a
 seeded scoped Author exists — `run_document_bytes_scope_suite` is the pattern: refuse
 the scoped caller a real document's bytes, require `resource` on the refusal, and
-assert an unrestricted Admin is served the same URI so the first arm cannot pass on
-a deployment that refuses the object to everybody.
+assert an unrestricted Admin is **not refused** the same URI so the first arm cannot
+pass on a deployment that refuses the object to everybody. "Not refused" rather than
+"served" on purpose: a 400 `File not found` is the honest answer on a stack whose
+input bucket has been swept, and requiring a 200 would fail there.
 
 ⚠️ **An absent label is not the same as `resolver`.** `None` means the deployment
 did not say — a stack older than the field, the route's Cognito authorizer answering

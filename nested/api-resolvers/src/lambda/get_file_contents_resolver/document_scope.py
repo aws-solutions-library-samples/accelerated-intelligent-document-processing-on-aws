@@ -46,10 +46,11 @@ Three properties, each with its own test:
   an answer from the table rather than a failure to get one.
 * **A refusal discloses nothing.** Every denial raises the same refusal text — the
   identical string ``key_scope`` uses — naming neither the bucket, the key, the
-  document, the profile, nor whether any of them exist. The object is never read, so S3 is never asked a question whose answer
-  could be timed. This matters more for the batch field than for the single one:
-  per-entry refusals would turn one call into an N-key authorization oracle, so
-  the batch handler refuses the **whole** request instead (see ``index.py``).
+  document, the profile, nor whether any of them exist. The object is never read, so
+  S3 is never asked a question whose answer could be timed. This matters more for
+  the batch field than for the single one: per-entry refusals would turn one call
+  into an N-key authorization oracle, so the batch handler refuses the **whole**
+  request instead (see ``index.py``).
 * **Bounded work.** The owning document is found by walking the key's ``/``
   boundaries from longest to shortest, so the candidates per key are bounded by its
   segment count; every answer is memoised per invocation, and a document's N page

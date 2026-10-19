@@ -790,12 +790,29 @@ class ApiResult(tuple):
     ``authz_control`` is the dispatcher's ``errors[0].authzControl`` or ``None``;
     ``message`` is ``errors[0].message``, which the report prints so a refusal can
     be read without a CloudWatch query.
+
+    ``body`` is the WHOLE response text, and it is here because a check that reads
+    only ``message`` answers a narrower question than it looks like: a refusal that
+    carried a presigned URL in a top-level field, or in a second ``errors`` entry,
+    satisfies every status assertion and hands over the object. Carrying the raw
+    text means the leak check and the verdict are made against the SAME response —
+    a second call for the body would leave the two about different ones.
     """
 
-    def __new__(cls, status, error_type, in_band, request_id, control=None, message=""):
+    def __new__(
+        cls,
+        status,
+        error_type,
+        in_band,
+        request_id,
+        control=None,
+        message="",
+        body="",
+    ):
         self = tuple.__new__(cls, (status, error_type, in_band, request_id))
         self.authz_control = control
         self.message = message
+        self.body = body
         return self
 
 
@@ -845,8 +862,9 @@ def call(api_base, field, args, token):
         # matrix, and it must not be mistaken for a refusal either.
         return ApiResult(0, None, None, f"<request error: {e}>")
 
+    text = (raw or b"").decode("utf-8", "replace")
     if not (raw or b"").strip():
-        return ApiResult(status, UNREADABLE_BODY, None, request_id)
+        return ApiResult(status, UNREADABLE_BODY, None, request_id, body=text)
 
     et = None
     in_band = None
@@ -855,7 +873,7 @@ def call(api_base, field, args, token):
     try:
         p = json.loads(raw)
     except (ValueError, TypeError):
-        return ApiResult(status, UNREADABLE_BODY, None, request_id)
+        return ApiResult(status, UNREADABLE_BODY, None, request_id, body=text)
     if isinstance(p, dict):
         errors = p.get("errors")
         if isinstance(errors, list) and errors:
@@ -882,7 +900,9 @@ def call(api_base, field, args, token):
         err = p.get("error")
         if isinstance(err, dict):
             in_band = err.get("type")
-    return ApiResult(status, et, in_band, request_id, control=control, message=message)
+    return ApiResult(
+        status, et, in_band, request_id, control=control, message=message, body=text
+    )
 
 
 def call_body(api_base, field, args, token):
@@ -1783,11 +1803,18 @@ def run_document_bytes_scope_suite(ctx, tokens, results):
       it established neither;
     * **Admin** is *not* refused the same URI. Without this arm the first one passes
       on a deployment that refuses the object to everybody — a broken bucket
-      allow-list, an unwired tracking table — and reports the scope working.
+      allow-list, an unwired tracking table — and reports the scope working. ⚠️ It
+      asserts "not refused" rather than "served": a 400 `File not found`, which is
+      what a tracking row outliving its S3 object produces, passes this arm. That is
+      deliberate — the arm exists to rule out a blanket refusal, and requiring a 200
+      would make it fail on a stack whose input bucket has been swept.
 
-    No URL may appear in the refusal body either: the point of the control is that
-    the capability is never minted, and a 403 carrying one would satisfy every
-    status assertion above while handing over the object.
+    No signed URL may appear anywhere in the refusal, and that is checked over the
+    **whole response text** rather than over `errors[0].message`: the point of the
+    control is that the capability is never minted, and a 403 carrying the URL in a
+    top-level field or in a second `errors` entry would satisfy every status
+    assertion above while handing over the object. It is the same response the label
+    came from, which is why `ApiResult` carries the body.
 
     An inconclusive call carries ``_inconclusive_gap`` like every other arm in this
     file, so a 5xx is a WARN that still reports itself as having established
@@ -1834,7 +1861,12 @@ def run_document_bytes_scope_suite(ctx, tokens, results):
     why = inconclusive(st, et)
     control = res.authz_control
     message = res.message or ""
-    leaked = "https://" in message
+    # Two markers, because either alone is reachable without the other: a URL built
+    # from a VPC endpoint or a custom domain need not contain "s3", and an
+    # unsigned bucket URL is not a capability. `X-Amz-Signature` is what makes a
+    # presigned GET usable by whoever holds it.
+    body = res.body or ""
+    leaked = "https://" in body or "X-Amz-Signature" in body
     if why:
         detail, passed, outcome = f"INCONCLUSIVE: {why}", False, "ERROR"
     elif not _denied(st, et, ib):
@@ -1846,7 +1878,7 @@ def run_document_bytes_scope_suite(ctx, tokens, results):
         )
     elif leaked:
         detail, passed, outcome = (
-            "REFUSED but the body carries a presigned URL, so the capability was "
+            "REFUSED but the response carries a signed URL, so the capability was "
             "minted anyway",
             False,
             None,
@@ -1906,7 +1938,8 @@ def run_document_bytes_scope_suite(ctx, tokens, results):
         ok,
         f"INCONCLUSIVE: {why}"
         if why
-        else f"expect the same URI served to an unrestricted caller; got {st}/{et}/{ib}",
+        else f"expect the same URI NOT refused an unrestricted caller; "
+        f"got {st}/{et}/{ib}",
         et,
         ib,
         rid,
