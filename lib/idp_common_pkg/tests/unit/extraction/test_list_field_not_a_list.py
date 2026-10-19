@@ -138,12 +138,13 @@ RETURNED_INSTEAD_OF_A_LIST = {
     "an object keyed by index": {"0": {"Date": "d0"}, "1": {"Date": "d1"}},
 }
 
-#: Blank values, which are deliberately NOT this code. ``""`` carries the same
-#: information as ``[]`` — there were no rows — and a genuinely empty section is
-#: legitimate, which is the reason ``extraction_incomplete`` is a ``warning``. The
-#: ``error`` rationale ("a declared type and a returned value leave nothing to
-#: estimate") holds for a refusal sentence and does not hold for a blank, so these
-#: route to the empty-list signal instead. See ``TestABlankIsNotALostList``.
+#: Blank values, which the service routes to the empty-list signal instead. ``""``
+#: carries the same information as ``[]`` — there were no rows — and a genuinely
+#: empty section is legitimate, which is the reason ``extraction_incomplete`` is a
+#: ``warning``. The ``error`` rationale ("a declared type and a returned value
+#: leave nothing to estimate") holds for a refusal sentence and fails for a blank.
+#: Each of these is asserted to produce a reported issue, at the milder severity —
+#: see ``TestABlankIsNotALostList``.
 BLANK = {
     "an empty string": "",
     "whitespace only": "   ",
