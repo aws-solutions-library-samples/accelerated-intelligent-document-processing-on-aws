@@ -4,7 +4,7 @@ import React from 'react';
 import { Badge } from '@cloudscape-design/components';
 import type { SideNavigationProps } from '@cloudscape-design/components';
 
-import { FAVORITES_PATH, MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH } from '../../routes/constants';
+import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH } from '../../routes/constants';
 
 export const HITL_SECTION = 'HITL';
 export const MY_WORK_SECTION = 'My Work';
@@ -24,16 +24,11 @@ export const buildMyTasksNavLink = (count: number | null): SideNavigationProps.L
   return link;
 };
 
-/** The "My Work" section (Annotators): Inbox, Tasks, Queues (the queues that list the caller) and Favorites. */
+/** The "My Work" section (Annotators): Inbox, Tasks and Queues (the queues that list the caller). */
 export const buildMyWorkNavSection = (inboxLink: SideNavigationProps.Link, taskCount: number | null): SideNavigationProps.Section => ({
   type: 'section',
   text: MY_WORK_SECTION,
-  items: [
-    inboxLink,
-    buildMyTasksNavLink(taskCount),
-    { type: 'link', text: 'Queues', href: `#${MY_QUEUES_PATH}` },
-    { type: 'link', text: 'Favorites', href: `#${FAVORITES_PATH}` },
-  ],
+  items: [inboxLink, buildMyTasksNavLink(taskCount), { type: 'link', text: 'Queues', href: `#${MY_QUEUES_PATH}` }],
 });
 
 /** The "HITL" section (Admins): Queue Management, where queues are defined and work is assigned. */

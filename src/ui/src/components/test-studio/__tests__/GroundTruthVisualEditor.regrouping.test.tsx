@@ -169,7 +169,7 @@ describe('GroundTruthVisualEditor page regrouping', () => {
     renderEditor();
     await openBoard();
 
-    // Matched on the consequence copy specifically: "Reviewed (human)" alone also hits
+    // Matched on the consequence copy specifically: "Reviewed" alone also hits
     // the provenance badge rendered above the editor.
     expect(screen.getByText(/provenance and the edit history are all kept/)).toBeInTheDocument();
     expect(screen.getByText(/ground truth for how the packet splits/)).toBeInTheDocument();

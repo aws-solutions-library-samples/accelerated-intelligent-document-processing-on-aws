@@ -28,7 +28,7 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
 | **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (My Work: Inbox, Tasks, Favorites). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (My Work: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -127,7 +127,7 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     documents, adds the test set to their `allowedTestSets`. Taking them off the
     list doesn't remove it.
 - **What the console shows.** A user whose only app group is `Annotator` sees
-  exactly My Work: Inbox, Tasks, Queues and Favorites. Users without `Annotator` have
+  exactly My Work: Inbox, Tasks and Queues. Users without `Annotator` have
   no My Work and no Inbox (no navigation entry, no bell, no Inbox page). **HITL ›
   Queue Management** is Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,

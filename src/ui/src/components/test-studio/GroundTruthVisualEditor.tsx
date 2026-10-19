@@ -526,8 +526,8 @@ const GroundTruthVisualEditor = ({
           consequence={
             <>
               Moving pages rewrites this document&apos;s <b>section grouping</b> — the ground truth for how the packet splits. Your
-              extracted field values, their <b>Reviewed (human)</b> provenance and the edit history are all kept. Sections are renumbered so
-              their ids follow page order.
+              extracted field values, their <b>Reviewed</b> provenance and the edit history are all kept. Sections are renumbered so their
+              ids follow page order.
             </>
           }
           saveLabel="Save page grouping"

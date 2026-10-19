@@ -60,8 +60,8 @@ a profile that leaves them off keeps the existing
 
 ## Annotator guide
 
-An Annotator sees only **My Work** (**Inbox**, **Tasks**, **Queues** and
-**Favorites**) and the notifications bell. Only Annotators have My Work and an
+An Annotator sees only **My Work** (**Inbox**, **Tasks** and **Queues**) and the
+notifications bell. Only Annotators have My Work and an
 Inbox; other users have neither.
 
 - **Queues** lists the Production and Test Studio queues you're listed on (a queue's
@@ -162,12 +162,12 @@ To work a queue, open its page, select items, and choose one of:
 deleted with the set. Its page shows **Queue Progress**, a progress bar on its own,
 and **Key metrics**: **Status** (percent of documents completed), **Pending**,
 **Assigned** and **Annotators**, then the label-accuracy estimate (**Estimated label
-accuracy**, **Evidence** and **Quality**) once there is one. Below that are the
+accuracy** and **Evidence**) once there is one. Below that are the
 draft-labeling status, the ground-truth version being annotated toward, and every
 document, worst first, with columns **Document**, **Labels**, **Confidence** and
 **Assigned** (Yes or No; the assignee shows on hover). The document list filters to
-**All documents**, **Assigned** or **Not assigned**; **Not assigned** is exactly the
-documents that can still be claimed.
+**All documents**, **Assigned** or **Not assigned**, and opens on **Not assigned**,
+which is exactly the documents that can still be claimed.
 Each row's menu offers **View** (the source document), **Annotate**, and for Admins
 **Assign** and **Delete** (removes the document from the test set, after a
 confirmation). An Admin can also select several documents and choose **Assign to…** to

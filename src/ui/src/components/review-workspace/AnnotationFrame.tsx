@@ -94,7 +94,7 @@ interface AnnotationFrameProps {
   title: string;
   /** The full object key, shown under the title. */
   objectKey: string;
-  /** Beside the title: status, kind badge, favorite. */
+  /** Beside the title: status and kind badge. */
   badges?: React.ReactNode;
   /** Under the title: where the item comes from and who it is assigned to. */
   meta?: React.ReactNode;

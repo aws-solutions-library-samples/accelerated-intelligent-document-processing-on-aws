@@ -106,12 +106,10 @@ describe('how precisely the label-accuracy estimate is printed', () => {
     expect(SOURCE).toMatch(/formatPct\(1 - impact\.residualError, estimateDecimals\)/);
   });
 
-  it('and to the tier beside them, which renders its own copy of the number', () => {
-    // renderQualityTier is shared with the Test Sets list and hardcoded .toFixed(1),
-    // so without this the same row showed "92%" and "92.2% est." together.
-    expect(SOURCE).toMatch(
-      /renderQualityTier\(impact\.qualityTier, impact\.qualityTierReason, 1 - impact\.baselineError, estimateDecimals\)/,
-    );
+  it('is the only copy of the number on the queue page, with no quality tier beside it', () => {
+    // Key Metrics carries no Quality metric, so the estimate is printed once. The tier
+    // renderer stays shared with the Test Sets list and still takes the precision.
+    expect(SOURCE).not.toMatch(/renderQualityTier/);
     expect(TIER).toMatch(/\(accuracy \* 100\)\.toFixed\(decimals\)/);
   });
 

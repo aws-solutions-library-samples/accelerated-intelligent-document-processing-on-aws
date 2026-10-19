@@ -16,7 +16,6 @@ import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { MY_QUEUES_PATH, productionQueuePath, reviewItemHref } from '../../routes/constants';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
-import FavoriteButton from '../review-queues/FavoriteButton';
 import RejectModal from '../review-queues/RejectModal';
 import ReviewPresence from '../review-queues/ReviewPresence';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
@@ -189,20 +188,7 @@ const ProductionAnnotation = ({ objectKey }: { objectKey: string }): React.JSX.E
       <AnnotationFrame
         title={name}
         objectKey={item.objectKey}
-        badges={
-          <>
-            <StatusIndicator type={stateView.type}>{stateView.label}</StatusIndicator>
-            <FavoriteButton
-              favorite={{
-                id: `review-item:${item.objectKey}`,
-                kind: 'review-item',
-                name,
-                href: reviewItemHref(item.objectKey),
-                context: `Queue ${item.queue}`,
-              }}
-            />
-          </>
-        }
+        badges={<StatusIndicator type={stateView.type}>{stateView.label}</StatusIndicator>}
         meta={
           <SpaceBetween direction="horizontal" size="l" alignItems="center">
             <Box variant="small" color="text-body-secondary">{`Queue ${item.queue} · ${item.profile} · priority ${item.priority}`}</Box>

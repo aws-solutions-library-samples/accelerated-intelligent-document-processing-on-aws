@@ -31,9 +31,8 @@ import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { MY_QUEUES_PATH, testSetAnnotateHref, testSetItemPath, testSetQueuePath } from '../../routes/constants';
+import { MY_QUEUES_PATH, testSetAnnotateHref, testSetQueuePath } from '../../routes/constants';
 import FileViewer from '../document-viewer/FileViewer';
-import FavoriteButton from '../review-queues/FavoriteButton';
 import ReviewPresence from '../review-queues/ReviewPresence';
 import { claimTestSetDocument } from '../review-queues/reviewer-assignment';
 import GroundTruthVisualEditor from '../test-studio/GroundTruthVisualEditor';
@@ -276,15 +275,6 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
           <StatusIndicator type={doc.reviewed ? 'success' : doc.skipped ? 'stopped' : 'pending'}>
             {doc.reviewed ? 'Reviewed' : doc.skipped ? 'Skipped' : 'To review'}
           </StatusIndicator>
-          <FavoriteButton
-            favorite={{
-              id: `test-set-item:${testSetId}/${objectKey}`,
-              kind: 'test-set-item',
-              name: objectKey,
-              href: `#${testSetItemPath(testSetId, objectKey)}`,
-              context: `Test set ${testSetId}`,
-            }}
-          />
         </>
       }
       meta={

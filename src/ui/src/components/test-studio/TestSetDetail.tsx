@@ -107,7 +107,7 @@ export interface TestSetDocumentItem {
  */
 export const LABEL_SOURCE_BADGES: Record<string, { color: 'blue' | 'green' | 'grey' | 'severity-neutral'; text: string }> = {
   'draft-machine': { color: 'blue', text: 'Draft (machine)' },
-  'reviewed-human': { color: 'green', text: 'Reviewed (human)' },
+  'reviewed-human': { color: 'green', text: 'Reviewed' },
   synthetic: { color: 'grey', text: 'Synthetic' },
   uploaded: { color: 'grey', text: 'Uploaded' },
 };

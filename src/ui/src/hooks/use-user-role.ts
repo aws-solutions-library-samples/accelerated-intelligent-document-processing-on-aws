@@ -101,7 +101,7 @@ interface UserRoleReturn {
   isReviewerOnly: boolean;
   /**
    * True if Annotator is the user's only app group. These users get a minimal
-   * shell: My Work (Inbox, Tasks, Favorites) and the notifications bell, nothing
+   * shell: My Work (Inbox, Tasks, Queues) and the notifications bell, nothing
    * else. A user who is Annotator plus any other app group gets the normal shell.
    */
   isAnnotatorOnly: boolean;

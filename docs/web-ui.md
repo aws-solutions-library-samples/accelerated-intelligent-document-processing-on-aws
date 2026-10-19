@@ -32,7 +32,7 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Favorites) and one annotation screen; Admins create review queues and assign their items in HITL › Queue Management (see [HITL](#hitl))
+- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues) and one annotation screen; Admins create review queues and assign their items in HITL › Queue Management (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -641,7 +641,7 @@ production documents held in review queues, and test sets that need ground truth
 The pages are described in [review-queues.md](review-queues.md). In outline:
 
 - **Navigation.** A user whose only role is Annotator sees exactly **My Work**
-  (**Inbox**, **Tasks**, **Queues**, **Favorites**). Other users have no My Work and no Inbox.
+  (**Inbox**, **Tasks**, **Queues**). Other users have no My Work and no Inbox.
   They see the usual sections their roles
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
@@ -659,7 +659,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   one opens it. The **Tasks** badge counts them; completing, rejecting or skipping an
   item removes it from the list and the count straight away (**Skip** gives the item
   back to its queue, unassigned and not completed), and work assigned to you by an
-  Admin appears within about 30 seconds. **Favorites** lists the queues, test sets and documents you starred.
+  Admin appears within about 30 seconds.
 - **The annotation screen** is the same for every item, whether you open it from
   Tasks, an Inbox message or Queue Management. Production documents are at
   `#/review-queues/items/<document>` and test-set documents at

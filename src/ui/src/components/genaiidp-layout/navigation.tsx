@@ -41,7 +41,6 @@ import {
   MY_QUEUES_PATH,
   MY_TASKS_PATH,
   MY_WORK_PATH,
-  FAVORITES_PATH,
   REVIEW_QUEUES_PATH,
 } from '../../routes/constants';
 
@@ -357,7 +356,7 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
   const { isAdmin, isAuthor, isReviewerOnly, isViewerOnly, isAnnotator } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
-  // My Work (Inbox, Tasks, Favorites) is for Annotators, who are assigned HITL work;
+  // My Work (Inbox, Tasks, Queues) is for Annotators, who are assigned HITL work;
   // nobody else has an Inbox. HITL › Queue Management is Admin-only.
   const showMyWork = isAnnotator;
   const showHitl = isAdmin;
@@ -510,8 +509,6 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
     activeHref = `#${CUSTOM_MODELS_PATH}`;
   } else if (path.includes(CAPACITY_PLANNING_PATH)) {
     activeHref = `#${CAPACITY_PLANNING_PATH}`;
-  } else if (path.startsWith(FAVORITES_PATH)) {
-    activeHref = `#${FAVORITES_PATH}`;
   } else if (path.startsWith(MY_QUEUES_PATH)) {
     activeHref = `#${MY_QUEUES_PATH}`;
   } else if (path.startsWith(MY_WORK_PATH)) {
@@ -637,7 +634,7 @@ const FullNavigation = ({ header, items, onFollowHandler = defaultOnFollowHandle
 };
 
 /**
- * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Queues, Favorites)
+ * Navigation for an Annotator-only user: My Work (Inbox, Tasks, Queues)
  * and nothing else. Mounts no feature, catalog or version hooks.
  */
 const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: NavigationProps): React.JSX.Element => {
@@ -649,8 +646,7 @@ const AnnotatorNavigation = ({ onFollowHandler = defaultOnFollowHandler }: Navig
   // The annotation screens (under /review-queues/.../items) are opened from Tasks; a
   // queue's own page (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
-  if (path.startsWith(FAVORITES_PATH)) activeHref = `#${FAVORITES_PATH}`;
-  else if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
+  if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
   else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
     activeHref = `#${MY_QUEUES_PATH}`;
   return (

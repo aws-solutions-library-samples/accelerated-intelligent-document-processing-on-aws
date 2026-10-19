@@ -51,9 +51,8 @@ import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
-import { testSetAnnotateHref, testSetItemPath, testSetQueuePath } from '../../routes/constants';
+import { testSetAnnotateHref, testSetItemPath } from '../../routes/constants';
 import AssignModal from '../review-queues/AssignModal';
-import FavoriteButton from '../review-queues/FavoriteButton';
 import QueueDefinitionModal from '../review-queues/QueueDefinitionModal';
 import type { TestSetQueueTarget } from '../review-queues/QueueDefinitionModal';
 import {
@@ -65,7 +64,7 @@ import {
 } from '../review-queues/reviewer-assignment';
 import AnnotationScreen from '../review-workspace/AnnotationScreen';
 import type { AnnotationQueue, QueueItem } from '../review-workspace/test-set-adapter';
-import { renderAlertCount, renderLabelSource, renderQualityTier } from './TestSetDetail';
+import { renderAlertCount, renderLabelSource } from './TestSetDetail';
 import {
   REVIEWED_HIDDEN_HINT,
   annotationQueueLink,
@@ -83,10 +82,10 @@ export type { QueueItem } from '../review-workspace/test-set-adapter';
 const client = generateClient();
 const logger = new ConsoleLogger('AnnotationWorkspace');
 
-/** The queue table's status filter. Every document of the set is listed by default. */
+/** The queue table's status filter. The documents nobody holds yet are listed by default. */
 type DocStatusFilter = 'all' | 'assigned' | 'unassigned';
 
-const DEFAULT_STATUS_FILTER: DocStatusFilter = 'all';
+const DEFAULT_STATUS_FILTER: DocStatusFilter = 'unassigned';
 
 const STATUS_FILTER_OPTIONS: (SelectProps.Option & { value: DocStatusFilter })[] = [
   { value: 'all', label: 'All documents' },
@@ -590,15 +589,6 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                     Settings
                   </Button>
                 )}
-                <FavoriteButton
-                  favorite={{
-                    id: `test-set:${testSetId}`,
-                    kind: 'test-set',
-                    name: testSetId,
-                    href: `#${testSetQueuePath(testSetId)}`,
-                    context: 'Test Studio',
-                  }}
-                />
                 {!isAnnotatorOnly && (
                   <CopyToClipboard
                     variant="button"
@@ -644,7 +634,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         )}
 
         {queue && (
-          <Container header={<Header variant="h2">Key metrics</Header>}>
+          <Container header={<Header variant="h2">Key Metrics</Header>}>
             <SpaceBetween size="l">
               {/* One grid for every metric, so a second row stays in the first row's columns. */}
               <ColumnLayout columns={4} variant="text-grid">
@@ -668,12 +658,6 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                     impact.estimateConfidence === 'prior'
                       ? 'measurements — estimate still based on other sets'
                       : `measurements — ${impact.estimateConfidence.replace('-', ' ')} on this set`,
-                  )}
-                {/* Shared with the Test Sets list: one vocabulary and color map. */}
-                {impact &&
-                  metric(
-                    'Quality',
-                    renderQualityTier(impact.qualityTier, impact.qualityTierReason, 1 - impact.baselineError, estimateDecimals),
                   )}
               </ColumnLayout>
               {/* Worst-first ordering only ranks the documents inspected so far. */}
@@ -872,7 +856,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
                   <Box>
                     {queueFilter
                       ? queueEmptyText(queueFilter)
-                      : statusFilter === DEFAULT_STATUS_FILTER
+                      : !queue?.totalDocs
                         ? 'This test set has no documents yet.'
                         : 'No documents match this filter. Choose All documents to see the rest of the set.'}
                   </Box>

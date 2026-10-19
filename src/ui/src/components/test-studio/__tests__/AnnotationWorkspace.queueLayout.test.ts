@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The Test Studio queue page as an Annotator works it: three document filters, the
+ * The Test Studio queue page as an Annotator works it: three document filters (opening
+ * on Not assigned), the
  * progress bar on its own, every key metric in one grid, and claiming several
  * documents at once. Checked against the component source, as the neighbouring
  * AnnotationWorkspace suites are.
@@ -22,11 +23,11 @@ const between = (start: string, end: string): string => {
 };
 
 describe('document filters', () => {
-  it('offers exactly All documents, Assigned and Not assigned, in that order', () => {
+  it('offers exactly All documents, Assigned and Not assigned, in that order, opening on Not assigned', () => {
     const options = between('const STATUS_FILTER_OPTIONS', '];');
     const labels = [...options.matchAll(/label: '([^']+)'/g)].map((m) => m[1]);
     expect(labels).toEqual(['All documents', 'Assigned', 'Not assigned']);
-    expect(SOURCE).toMatch(/const DEFAULT_STATUS_FILTER: DocStatusFilter = 'all';/);
+    expect(SOURCE).toMatch(/const DEFAULT_STATUS_FILTER: DocStatusFilter = 'unassigned';/);
   });
 
   it('makes Not assigned the documents an Annotator can claim', () => {
@@ -39,7 +40,7 @@ describe('document filters', () => {
 
 describe('queue progress and key metrics', () => {
   const progress = between('<Header variant="h2">Queue Progress</Header>', '</Container>');
-  const metrics = between('<Header variant="h2">Key metrics</Header>', '</Container>');
+  const metrics = between('<Header variant="h2">Key Metrics</Header>', '</Container>');
 
   it('shows the progress bar on its own, taller than the default', () => {
     expect(progress).toContain('<ProgressBar');
@@ -50,9 +51,10 @@ describe('queue progress and key metrics', () => {
   it('lays every metric out in one grid, so later rows keep the first row’s columns', () => {
     const grids = metrics.match(/<ColumnLayout /g) ?? [];
     expect(grids).toHaveLength(1);
-    for (const label of ['Status', 'Pending', 'Assigned', 'Annotators', 'Estimated label accuracy', 'Evidence', 'Quality']) {
+    for (const label of ['Status', 'Pending', 'Assigned', 'Annotators', 'Estimated label accuracy', 'Evidence']) {
       expect(metrics).toContain(`'${label}'`);
     }
+    expect(metrics).not.toContain(`'Quality'`);
   });
 });
 
