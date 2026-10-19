@@ -78,6 +78,12 @@ class TestModel:
             HITLNotificationsConfig(**{field: value})
         assert exc.value.errors()[0]["loc"] == (field,)
 
+    @pytest.mark.parametrize("value", [[30], {"days": 30}])
+    def test_a_non_scalar_is_rejected_naming_its_type(self, value):
+        with pytest.raises(ValidationError) as exc:
+            HITLNotificationsConfig(retention_days=value)
+        assert f"got {type(value).__name__}" in exc.value.errors()[0]["msg"]
+
     def test_missing_section_gets_defaults(self):
         cfg = IDPConfig.model_validate({"hitl": {"enabled": True}})
         assert cfg.hitl.enabled is True
