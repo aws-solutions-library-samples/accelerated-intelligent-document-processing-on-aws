@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
 import pytest
+
 from idp_common.classification.models import Segment
 from idp_common.classification.service import ClassificationService
 from idp_common.models import Document, Page
@@ -103,7 +104,9 @@ def _service(
     return ClassificationService(
         region="us-west-2",
         config={
-            "classes": classes if classes is not None else _classes("invoice", "receipt"),
+            "classes": classes
+            if classes is not None
+            else _classes("invoice", "receipt"),
             "classification": cfg,
         },
     )
@@ -509,9 +512,7 @@ class TestPacketRequestContent:
 
     def test_the_per_page_text_is_labelled_by_ordinal_and_page_id(self):
         service = _service()
-        rendered = service._format_paged_text(
-            {"6": "six", "7": "seven"}, ["6", "7"]
-        )
+        rendered = service._format_paged_text({"6": "six", "7": "seven"}, ["6", "7"])
         assert "<page-number>1</page-number> (document page 6)" in rendered
         assert "<page-number>2</page-number> (document page 7)" in rendered
         assert "six" in rendered and "seven" in rendered
@@ -587,7 +588,9 @@ class TestPacketClassifyDocument:
         with (
             patch("idp_common.s3.get_text_content", return_value="page text"),
             patch("idp_common.image.prepare_image", return_value=_png()),
-            patch.object(service, "_invoke_bedrock_model", side_effect=replies) as invoke,
+            patch.object(
+                service, "_invoke_bedrock_model", side_effect=replies
+            ) as invoke,
         ):
             result = service.packet_classify_document(document)
 
@@ -611,9 +614,7 @@ class TestPacketClassifyDocument:
         ):
             result = service.packet_classify_document(document)
 
-        assert (
-            result.metering["Classification/bedrock/nova"]["inputTokens"] == 200
-        )
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 200
 
     def test_one_window_failing_does_not_discard_the_others(self):
         """On a long packet that would turn a transient throttle into a total
@@ -685,9 +686,7 @@ class TestPacketClassifyDocument:
         assert invoke.call_count == 1
 
     def test_a_single_class_configuration_still_skips_the_backend(self):
-        service = _service(
-            classes=_classes("invoice"), sectionSplitting="disabled"
-        )
+        service = _service(classes=_classes("invoice"), sectionSplitting="disabled")
         with patch.object(service, "_invoke_bedrock_model") as invoke:
             result = service.packet_classify_document(_document(3))
         invoke.assert_not_called()

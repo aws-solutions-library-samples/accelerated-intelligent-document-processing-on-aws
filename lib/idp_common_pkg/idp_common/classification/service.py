@@ -1415,8 +1415,7 @@ class ClassificationService:
         # were found. The packet block describes a `segments` array Stage B
         # does not return.
         packet = (
-            self.granularity == self.GRANULARITY_PACKET
-            and stage != self.STAGE_LABELING
+            self.granularity == self.GRANULARITY_PACKET and stage != self.STAGE_LABELING
         )
 
         if packet and not self.granularity_is_explicit:
@@ -1447,7 +1446,8 @@ class ClassificationService:
             # written before packet granularity working rather than silently
             # dropping the request.
             block = (
-                confidence_cfg.task_prompt_topk_packet or confidence_cfg.task_prompt_topk
+                confidence_cfg.task_prompt_topk_packet
+                or confidence_cfg.task_prompt_topk
                 if packet
                 else confidence_cfg.task_prompt_topk
             )
@@ -1551,10 +1551,7 @@ class ClassificationService:
             # Fall through to the single-pass resolution below.
 
         flat = getattr(self.config.classification, field)
-        if (
-            self.granularity == self.GRANULARITY_PACKET
-            and self.granularity_is_explicit
-        ):
+        if self.granularity == self.GRANULARITY_PACKET and self.granularity_is_explicit:
             packet_prompt = getattr(self.config.classification.packet, field)
             if packet_prompt:
                 return packet_prompt
@@ -1630,7 +1627,9 @@ class ClassificationService:
                 continue
             present = placeholder in result
             if flag and not present:
-                result = f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
+                result = (
+                    f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
+                )
                 logger.info(
                     "classification.modality turned %s on but the task prompt had "
                     "no %s placeholder; appended one.",
@@ -3323,9 +3322,7 @@ class ClassificationService:
         # deprecated classificationMethod). Two-stage honours granularity
         # inside Stage A, so the two settings compose rather than nest.
         if self.strategy == self.STRATEGY_TWO_STAGE:
-            return self.two_stage_classify_document(
-                document, forced_class=forced_class
-            )
+            return self.two_stage_classify_document(document, forced_class=forced_class)
 
         if self.granularity == self.GRANULARITY_PACKET:
             return self.packet_classify_document(document, forced_class=forced_class)
@@ -3448,9 +3445,7 @@ class ClassificationService:
         close_group()
         return segments
 
-    def _log_boundary_signals(
-        self, sorted_results: List[PageClassification]
-    ) -> None:
+    def _log_boundary_signals(self, sorted_results: List[PageClassification]) -> None:
         """Emit the per-page boundary signals as one line.
 
         The per-page ``document_boundary`` signal drives every merge decision in
@@ -4351,7 +4346,8 @@ class ClassificationService:
             page_ids = [
                 page_id
                 for page_id in (
-                    resolve(ordinal) for ordinal in range(start_ordinal, end_ordinal + 1)
+                    resolve(ordinal)
+                    for ordinal in range(start_ordinal, end_ordinal + 1)
                 )
                 if page_id is not None and page_id in document.pages
             ]
@@ -4632,7 +4628,9 @@ class ClassificationService:
         content: List[Dict[str, Any]] = []
         for ordinal, (page_id, image_bytes) in enumerate(page_images, start=1):
             content.append(
-                {"text": f"<page-number>{ordinal}</page-number> (document page {page_id})"}
+                {
+                    "text": f"<page-number>{ordinal}</page-number> (document page {page_id})"
+                }
             )
             content.append(image.prepare_bedrock_image_attachment(image_bytes))
         return content
@@ -4678,9 +4676,7 @@ class ClassificationService:
         return loaded
 
     @staticmethod
-    def _format_paged_text(
-        pages_content: Dict[str, str], page_ids: List[str]
-    ) -> str:
+    def _format_paged_text(pages_content: Dict[str, str], page_ids: List[str]) -> str:
         """Render the packet's per-page text, each page labelled by its ordinal.
 
         The ordinal is what the model is asked to report, and it is **not** the
@@ -5080,8 +5076,9 @@ class ClassificationService:
             document.errors.extend(errors)
 
             if not segments:
-                error_msg = "Two-stage segmentation (Stage A) produced no segments: " + (
-                    "; ".join(errors) if errors else "the model returned none"
+                error_msg = (
+                    "Two-stage segmentation (Stage A) produced no segments: "
+                    + ("; ".join(errors) if errors else "the model returned none")
                 )
                 return self._update_document_status(
                     document, success=False, error_message=error_msg
@@ -5317,9 +5314,7 @@ class ClassificationService:
             page_ids = self._labeling_pages(segment)
             paged_text = self._format_paged_text(pages_content, page_ids)
             page_images = (
-                self._load_packet_page_images(document, page_ids)
-                if send_images
-                else []
+                self._load_packet_page_images(document, page_ids) if send_images else []
             )
             content = self._build_packet_content(
                 config["task_prompt"], paged_text, page_images
@@ -5336,9 +5331,7 @@ class ClassificationService:
             with lock:
                 segment.doc_class = doc_type
                 segment.confidence = confidence
-                metering.update(
-                    utils.merge_metering_data(metering, call_metering)
-                )
+                metering.update(utils.merge_metering_data(metering, call_metering))
                 for page_id in segment.page_ids:
                     if page_id not in document.pages:
                         continue
@@ -5408,9 +5401,7 @@ class ClassificationService:
         validation_error: Optional[str] = None
 
         for attempt in range(max_retries + 1):
-            result = self._invoke_bedrock_model(
-                content=attempt_content, config=config
-            )
+            result = self._invoke_bedrock_model(content=attempt_content, config=config)
             metering = (
                 result.get("metering", {})
                 if not metering

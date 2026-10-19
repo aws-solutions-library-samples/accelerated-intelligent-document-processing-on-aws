@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
+
 from idp_common.classification.service import ClassificationService
 from idp_common.config.models import IDPConfig
 from idp_common.models import Document, Page
@@ -75,7 +76,9 @@ def _service(
     return ClassificationService(
         region="us-west-2",
         config={
-            "classes": classes if classes is not None else _classes("invoice", "receipt"),
+            "classes": classes
+            if classes is not None
+            else _classes("invoice", "receipt"),
             "classification": cfg,
         },
     )

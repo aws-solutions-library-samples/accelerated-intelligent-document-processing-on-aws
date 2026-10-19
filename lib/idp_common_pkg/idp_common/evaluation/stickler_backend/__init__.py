@@ -24,6 +24,11 @@ Public surface:
   ``confusion_matrix.fields`` and ``.aggregate``.
 - ``load_sections_for_doc_split(...)`` and ``compute_graded_packet_metrics(...)``
   — the thin adapters over ``stickler.doc_split.*``.
+- ``compute_boundary_and_label_accuracy(...)`` — splits section accuracy into
+  its boundary half and its label half, which upstream's
+  ``split_accuracy_without_order`` conflates (it requires both to match, so a
+  wrong boundary and a wrong label read identically). Computed here rather than
+  in Stickler because it is derived from data this adapter already loaded.
 """
 
 # Re-exported so ``service.py`` and any other backend consumers don't need a
@@ -37,6 +42,7 @@ from idp_common.evaluation.stickler_backend.comparators import (
 from idp_common.evaluation.stickler_backend.doc_split import (
     DocSplitClassificationMetrics,
     attach_page_confidence,
+    compute_boundary_and_label_accuracy,
     compute_graded_packet_metrics,
     load_sections_for_doc_split,
 )
@@ -50,6 +56,7 @@ __all__ = [
     "SticklerConfigMapper",
     "StructuredModel",
     "attach_page_confidence",
+    "compute_boundary_and_label_accuracy",
     "compute_graded_packet_metrics",
     "get_stickler_model",
     "load_sections_for_doc_split",

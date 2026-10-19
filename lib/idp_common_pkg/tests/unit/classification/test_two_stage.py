@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
 import pytest
+
 from idp_common.classification.service import ClassificationService
 from idp_common.models import Document, Page
 
@@ -141,7 +142,9 @@ def _document(page_count: int) -> Document:
     )
 
 
-def _reply(payload: Dict[str, Any], context: str, model: str = "nova") -> Dict[str, Any]:
+def _reply(
+    payload: Dict[str, Any], context: str, model: str = "nova"
+) -> Dict[str, Any]:
     return {
         "response": {
             "output": {"message": {"content": [{"text": json.dumps(payload)}]}}
@@ -188,7 +191,9 @@ class _Router:
             label = self.labels.pop(0) if self.labels else "invoice"
             return _reply({"class": label}, "Labeling")
 
-        return _reply({"class": "invoice", "document_boundary": "start"}, "Classification")
+        return _reply(
+            {"class": "invoice", "document_boundary": "start"}, "Classification"
+        )
 
 
 def _page_texts():

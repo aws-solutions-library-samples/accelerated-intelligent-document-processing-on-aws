@@ -1913,8 +1913,7 @@ class ClassificationLabelingConfig(BaseModel):
             return int(v)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"classification.labeling.k must be a whole number of pages, "
-                f"got {v!r}"
+                f"classification.labeling.k must be a whole number of pages, got {v!r}"
             ) from exc
 
 

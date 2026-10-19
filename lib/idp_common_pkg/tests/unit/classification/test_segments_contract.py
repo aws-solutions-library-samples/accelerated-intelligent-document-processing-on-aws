@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
+
 from idp_common.classification.models import (
     DocumentClassification,
     PageClassification,
@@ -283,7 +284,8 @@ class TestSectionsFromSegments:
         service = _service(section_splitting="page")
         document = _document(2)
         document = service._sections_from_segments(
-            document, [Segment(page_ids=["1", "2"], doc_class="invoice", confidence=0.6)]
+            document,
+            [Segment(page_ids=["1", "2"], doc_class="invoice", confidence=0.6)],
         )
         assert [s.confidence for s in document.sections] == [0.6, 0.6]
 
@@ -399,9 +401,7 @@ class TestZeroInferencePaths:
     document would see "no prediction" and discard the asserted 1.0."""
 
     @pytest.mark.parametrize("strategy", ["disabled", "page", "llm_determined"])
-    def test_a_single_class_configuration_keeps_its_asserted_confidence(
-        self, strategy
-    ):
+    def test_a_single_class_configuration_keeps_its_asserted_confidence(self, strategy):
         service = _service(classes=["invoice"], section_splitting=strategy)
         document = _document(1 if strategy == "llm_determined" else 3)
         document = service._create_single_class_sections(document)
