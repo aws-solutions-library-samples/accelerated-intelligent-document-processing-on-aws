@@ -18,7 +18,6 @@ arrangement so that regression cannot come back unnoticed.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import os
 import zipfile
@@ -80,9 +79,16 @@ class TestSourceZipContents:
                 f"egg-info metadata leaked into the zip: {name}"
             )
 
+    @pytest.mark.usefixtures("staging_checkout")
     def test_missing_build_input_fails_loudly(self, monkeypatch):
-        """A missing build input must abort publish, not ship a broken image."""
-        monkeypatch.chdir(_REPO_ROOT)
+        """A missing build input must abort publish, not ship a broken image.
+
+        Takes `staging_checkout` through `usefixtures` — it is wanted only for its
+        chdir, and naming it as a parameter would be an unused one. It is needed
+        because the zip is written before the check that raises, so even this
+        aborting call leaks `.aws-sam/` into the tree when run from the repo
+        root (#1491).
+        """
         publisher = _quiet_publisher(monkeypatch)
         # Pretend the Dockerfile isn't there.
         real_isfile = os.path.isfile
@@ -272,32 +278,147 @@ def _quiet_publisher(monkeypatch):
     return publisher
 
 
-@pytest.fixture
-def publisher_zip_names(monkeypatch):
-    """Member names of the real source zip produced by the packaging step.
+#: Every path `package_multi_doc_discovery_source` reads, relative to the repo
+#: root. The packaging step resolves all of them — and its own `.aws-sam` output
+#: directory — against the process's cwd, which is what lets the staging root
+#: below stand in for the checkout.
+#:
+#: ⚠️ No entry may be nested inside another, and `_assert_no_nested_inputs`
+#: enforces it. `staging_checkout` creates each link's parent with
+#: `mkdir(parents=True)`, which **follows an existing symlink** — so a nested
+#: entry such as `src/lambda/multi_doc_discovery/docker/requirements.txt` would
+#: create a real directory inside the repository, which is the exact class this
+#: fixture exists to prevent. The set is not local either: it splices in
+#: `MULTI_DOC_DISCOVERY_BUILD_INPUTS` from `publish.py`, so it can grow without
+#: this file being edited.
+_PACKAGING_INPUTS = (
+    "lib/idp_common_pkg",
+    "src/lambda/multi_doc_discovery",
+    *MULTI_DOC_DISCOVERY_BUILD_INPUTS,
+)
 
-    Runs against the actual repo tree (the zip content IS the contract), and
-    stops at the S3 upload — the zip is fully written before that point.
+
+def _assert_no_nested_inputs() -> None:
+    """Refuse a `_PACKAGING_INPUTS` entry that sits inside another entry."""
+    for inner in _PACKAGING_INPUTS:
+        for outer in _PACKAGING_INPUTS:
+            if inner != outer and Path(inner).is_relative_to(Path(outer)):
+                raise AssertionError(
+                    f"_PACKAGING_INPUTS entry {inner!r} is nested inside {outer!r}. "
+                    f"Linking it would mkdir through the {outer!r} symlink and "
+                    f"create a real directory inside the repository. Extend "
+                    f"staging_checkout to copy or stage that subtree instead of "
+                    f"adding a nested link."
+                )
+
+
+@pytest.fixture
+def staging_checkout(monkeypatch, tmp_path):
+    """Chdir to a throwaway root that **symlinks** every packaging input.
+
+    ⚠️ **Any test that calls `package_multi_doc_discovery_source` must use this
+    rather than chdir to the repo root.** The packaging step resolves both its
+    inputs and its `.aws-sam` output against the cwd, so running it in the
+    checkout leaves ~7 MB of gitignored build output in the working tree
+    (issue #1491). That matters beyond tidiness: `make srt-scan` detects an
+    `.aws-sam` directory and drops into a degraded mode — phantom LOCAL-ONLY
+    findings, and a documented risk of crashing checkov on the largest templates
+    — so `make test` before `make srt-scan` silently made the security gate
+    something other than the one CI runs.
+
+    ⚠️ It also applies to a test that only expects the step to **fail**: the zip
+    is written before the build-input check raises, so an aborting call leaks too.
+    `test_missing_build_input_fails_loudly` is therefore covered by this fixture
+    even though it never reaches the upload, and
+    `test_packaging_leaves_no_build_output_in_the_checkout` asserts the property
+    separately rather than relying on either call site.
+
+    The symlinks preserve the relative layout, and the step writes each member
+    under `os.path.relpath(file_path, ".")`, so every archive name is
+    byte-identical to what packaging from the checkout produces. `os.walk` does
+    not follow symlinked *sub*directories, but each entry here is either a file or
+    the top of its own walk, which `os.walk` does traverse.
+
+    `tmp_path` is unique per test invocation, so this also removes the need for
+    the cross-process lock the zip path used to require: two pytest-xdist workers
+    can no longer write the same archive and read each other's half-written copy.
     """
-    monkeypatch.chdir(_REPO_ROOT)
+    _assert_no_nested_inputs()
+    staging = tmp_path / "checkout"
+    for rel in _PACKAGING_INPUTS:
+        link = staging / rel
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(_REPO_ROOT / rel)
+    monkeypatch.chdir(staging)
+    return staging
+
+
+@pytest.fixture
+def packaging_run(monkeypatch, staging_checkout, checkout_build_output):
+    """One real packaging call, with the checkout's zip state either side of it.
+
+    Runs against the actual repo tree — the zip content IS the contract — but
+    from `staging_checkout`, so nothing lands in the working tree. The before and
+    after snapshots let the guard below assert what it is actually about: that
+    *this run* did not write to the repo root.
+
+    ⚠️ **The staging root is an alias, not a sandbox**, and that is the property to
+    keep in mind when extending this. `lib/idp_common_pkg` and
+    `src/lambda/multi_doc_discovery` are symlinks to the real tree, so a write the
+    step made *under* either one would land in the checkout and neither the guard
+    below nor `conftest`'s session control would see it. Nothing lands in the
+    working tree because the step's only write is `.aws-sam/`, which is not a
+    staged path — not because the staging root isolates writes.
+
+    The watched paths, the snapshot and the diff come from the
+    `checkout_build_output` fixture rather than being defined here. Keep it that
+    way: a second copy here and in the session control can diverge without either
+    one failing, and this assertion is meant to be the narrower claim about the
+    same set, not a parallel set.
+    """
+    snapshot, _changed, _message = checkout_build_output
+    staging = staging_checkout
     publisher = _quiet_publisher(monkeypatch)
-    zip_path = _REPO_ROOT / ".aws-sam" / "multi-doc-discovery-source.zip"
-    # The zip path is fixed by the packaging step, so two pytest-xdist workers
-    # running the tests that use this fixture write the same file at the same
-    # time — one then reads a half-written archive and fails with BadZipFile.
-    # Serialize package-and-read across processes with an exclusive lock.
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = zip_path.with_suffix(".lock")
-    with open(lock_path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            publisher.package_multi_doc_discovery_source()
-        except (SystemExit, Exception):  # noqa: B014
-            # The upload stage needs S3 config we deliberately don't provide.
-            if not zip_path.exists():
-                raise
-        with zipfile.ZipFile(zip_path) as zf:
-            return zf.namelist()
+    zip_path = staging / ".aws-sam" / "multi-doc-discovery-source.zip"
+    before = snapshot()
+    try:
+        publisher.package_multi_doc_discovery_source()
+    except (SystemExit, Exception):  # noqa: B014
+        # The upload stage needs S3 config we deliberately don't provide.
+        if not zip_path.exists():
+            raise
+    after = snapshot()
+    with zipfile.ZipFile(zip_path) as zf:
+        return zf.namelist(), before, after
+
+
+@pytest.fixture
+def publisher_zip_names(packaging_run):
+    """Member names of the real source zip produced by the packaging step."""
+    names, _before, _after = packaging_run
+    return names
+
+
+def test_packaging_leaves_no_build_output_in_the_checkout(
+    packaging_run, checkout_build_output
+):
+    """A packaging call must not write `.aws-sam/` into the repo tree.
+
+    Regression guard for #1491. Asserted through a real packaging call rather
+    than against an untouched tree.
+
+    ⚠️ **The property is "unchanged by this run", not "absent".** A genuine
+    `python3 publish.py …` writes precisely
+    `.aws-sam/multi-doc-discovery-source.zip` relative to the repository root, so
+    plenty of legitimate developer trees carry that exact path — as does any tree
+    that ran `make test` before this guard existed. Asserting absence would turn
+    those into a red test blaming the current run for a file it did not create.
+    """
+    _snapshot, changed_paths, message = checkout_build_output
+    names, before, after = packaging_run
+    assert names, "fixture produced no archive, so it proved nothing"
+    changed = changed_paths(before, after)
+    assert not changed, message(changed, before, after, "this test")
 
 
 def test_requirements_file_is_parseable_and_pins_pillow(monkeypatch):

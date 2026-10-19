@@ -41,6 +41,7 @@ A scalable, serverless solution for automated document processing and informatio
 
 https://github.com/user-attachments/assets/fc2652b5-a9cc-42d7-9975-887c8320a2f5
 
+> **Hands-on workshop:** Learn the accelerator end to end in the [GenAI IDP Workshop on AWS Workshop Studio](https://catalog.workshops.aws/workshops/c384d63d-3090-44c9-a639-e06dd6d9164f). It is best taken at an AWS-hosted event, such as an enablement session or hands-on workshop for your team, where each participant gets a temporary AWS account with the solution pre-deployed. AWS customers can request a session through their AWS account team or Solutions Architect. A self-paced option in your own account is also available. See [Hands-on Workshops](./docs/workshops.md).
 
 Concierge support for customization, deployment, and integration of production use cases is available through [AWS Professional Services](https://aws.amazon.com/professional-services/).
 
@@ -191,6 +192,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 
 - [Architecture](./docs/architecture.md) - Detailed component architecture and data flow
 - [Demo Videos](./docs/demo-videos.md) - Comprehensive collection of feature demonstration videos
+- [Hands-on Workshops](./docs/workshops.md) - The instructor-led GenAI IDP Workshop on AWS Workshop Studio, and the self-guided Amazon Quick integration workshop
 - [Deployment](./docs/deployment.md) - Build, publish, deploy, and test instructions
 - [Headless Deployment](./docs/headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) for API-only use cases
 - [GovCloud Deployment](./docs/govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
