@@ -454,14 +454,15 @@ caller discarded that, so a section could return a fraction of its rows scored a
 still report unqualified success (one run scored 1,146 leaves where 5-page shards
 scored 4,807 — ~24% coverage, no issue raised; the *reason* coverage fell rather
 than failing was never established, and this issue makes no claim about it). When
-unscored rows exceed **5%** of the extracted list rows the gate emits
+unscored rows reach **5%** of the extracted list rows **or 10 unscored rows in
+absolute terms**, whichever comes first, the gate emits
 `assessment_coverage_incomplete` — **warning** up to 25% unscored, **error** at or
 above 25% **and** at least **10 unscored rows**, and **error** at any list length
 when *no* row was scored — carrying `expected_rows`, `scored_rows`,
 `unscored_rows` and a per-field breakdown of both the unscored rows and the
 expected ones.
 
-Four deliberate choices in those thresholds:
+Five deliberate choices in those thresholds:
 
 - **5%, not 0%.** Reconciliation pads one assessment entry per extracted row, so a
   run whose model scored every row lands at 0%. Small residual shortfalls are also
@@ -472,6 +473,15 @@ Four deliberate choices in those thresholds:
   any section totalling 20 list rows or fewer**. Whether a healthy run ever produces
   that single unscored row is measured, not reasoned, and the answer is that it does
   not — see *Coverage: measured* below.
+- **An absolute ceiling of 10 unscored rows on the warning rung.** The 5% above is a
+  share, and the second half of its justification — "a 1-2 row gap is
+  `assessment_incomplete`'s business" — is not: it names an absolute quantity, which a
+  ratio then scales with the document. Expressed only as a fraction the rung passes 39
+  unscored rows in silence at 800 rows and 159 at 3,200. So the shortfall is read both
+  ways and whichever rung speaks first wins. The ceiling is the error rung's absolute
+  floor read in the other direction rather than a second tuned number, and what it
+  costs is measured — see *The shape of the warning fraction, and the ceiling under
+  it* below.
 - **An absolute floor of 10 unscored rows on the error rung.** A fraction alone makes
   short lists fire hardest: one unscored row in a four-row list is 25%, and an error
   renders the section red ("Incomplete") in the Sections panel. Short list attributes
@@ -496,7 +506,16 @@ Four deliberate choices in those thresholds:
   list field), and it would break `assessment_schema_mismatch`'s "emitted alone"
   contract by appending a coverage note under it. Callers pass the ladder's issues in
   as `audit_explainability(..., ladder_issues=...)`; a `warning`/`info` ladder issue
-  does not suppress it.
+  does not suppress it. The absolute ceiling widens that last overlap, and it is
+  accepted rather than overlooked: a shortfall of 10 rows or more on a long list now
+  emits a coverage warning where the fraction alone was silent, so a section can
+  carry both a `warning`-severity `assessment_incomplete` and a coverage warning
+  about the same rows. The double-count argument above is about an **error** the
+  ladder has already diagnosed; two warnings naming the same rows cost a reader
+  nothing they cannot reconcile. How often the pair actually occurs is not answerable
+  from the grids measured below — 6 runs cross the ceiling without crossing 5%, and
+  `processing_issues` is null on every one of those grids, so whether any of the 6
+  also carried a ladder warning is unrecorded.
 
 Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
@@ -509,9 +528,9 @@ and rendered in the extraction processing report.
 It calls `audit_explainability` rather than re-deriving "is this row scored?", so a
 measurement and the guard that ships are one computation; `audit_explainability`
 puts the very same dict in the issue's `details`. Use it whenever you want the
-number unconditionally, because the issue only carries it once the shortfall has
-already crossed 5%, which is the reason nothing recorded coverage on healthy runs
-before it existed.
+number unconditionally, because the issue only carries it once one of the rungs has
+fired, which is the reason nothing recorded coverage on healthy runs before it
+existed.
 
 `expected_rows == 0` (a section with no list attribute) means coverage is
 **undefined**, not perfect: `scored_fraction` is `None` so an aggregate drops it. A
@@ -542,9 +561,10 @@ than re-stating the rungs:
 | Shortfall | Runs | Share |
 |---|---|---|
 | exactly 0 unscored rows — no issue | 6,493 | 97.32% |
-| above 0 but below the 5% rung — no issue | 135 | 2.02% |
-| the rung fires | 44 | 0.66% |
-| …of those, at **warning** severity | 16 | 0.24% |
+| above 0 but below both warning rungs — no issue | 132 | 1.98% |
+| the gate fires | 47 | 0.70% |
+| …of those, at **warning** severity | 19 | 0.28% |
+| ……reported by the 10-row ceiling alone, under 5% | 3 | 0.04% |
 | …of those, at **error** severity | 28 | 0.42% |
 | ……by the fraction **and** the 10-row floor | 7 | 0.10% |
 | ……by having no scored row at all | 21 | 0.31% |
@@ -585,14 +605,19 @@ would score the same section at `(cells − 1) / cells`. A list nested *inside* 
 group attribute is not a top-level list and so contributes to neither the numerator
 nor the denominator.
 
-##### The shape of the warning fraction, and the residual it leaves
+##### The shape of the warning fraction, and the ceiling under it
 
-The 5% rung is purely multiplicative, and one half of its justification is not: "a
-1-2 row gap on an 800-row table is `assessment_incomplete`'s business" names an
-**absolute** quantity, which a ratio then scales with the list. The number of
-unscored rows that emits no coverage issue is therefore 0 at `N ≤ 20`, 19 at
-`N = 400`, 39 at `N = 800` and 199 at `N = 4,000`. Measured, 135 runs sit in that
-band and the largest is **24 unscored rows of 800** (3.0%).
+The 5% rung is multiplicative and one half of its justification is not: "a 1-2 row
+gap on an 800-row table is `assessment_incomplete`'s business" names an **absolute**
+quantity, which a ratio then scales with the list. A rung expressed only as a
+fraction therefore leaves a silent band proportional to the section — 0 rows at
+`N ≤ 20`, 19 at `N = 400`, 39 at `N = 800`, 159 at `N = 3,200`, 199 at
+`N = 4,000` — and that band was observed growing exactly that way: the largest silent
+shortfall in the committed grids was **24 unscored rows of 800** (3.0%) until a
+3,200-row document was benchmarked, at which point it was **115 of 3,200** (3.6%).
+The count grew 4.8× on a 4× larger document at a near-identical share, so 115 is the
+same state of the world as 24 rather than a worse one
+([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The additive backstop the sentence relies on is real but narrower than it reads:
 `split_stats["unrecoverable_rows"]` is computed for the **largest** list field only,
@@ -600,15 +625,55 @@ so a residual confined to a smaller list attribute reaches neither
 `assessment_incomplete` nor — being divided by the section-wide total — the 5% rung.
 `expected_rows_by_field` exists so a recorded run can be read for that case.
 
-That residual is left as-is rather than fixed with a second constant, because
-choosing an absolute warning ceiling would mean picking a number the available data
-cannot distinguish: the committed grids do not say whether those 135 runs were
-already reported by the ladder. `processing_issues` postdates every one of them
-(null on all rows), so the recorded shortfall is the symptom without the product's
-verdict beside it, and the firing shares in the table are an **upper bound** on how
-often the rung actually spoke — `_ladder_reported_error` suppresses it whenever the
-ladder got there first. The `processing_issues`/`processing_issue_codes` columns
-added in #1378 answer this directly on the next grid, at no extra cost.
+So the warning rung reads the shortfall in absolute rows as well, at a ceiling of
+**10 unscored rows**, and the band is now bounded at 9 rows whatever the document's
+size. The number is **derived, not tuned**:
+`_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS` already names "more unscored rows than
+a reviewer can be assumed to spot-check by hand", which the error rung reads in one
+direction (below it, a large proportion of a tiny list must not render a section red)
+and the warning rung needs in the other (at or above it, that much unreviewable data
+is worth saying whatever the list length). This is the move
+[#1361](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1361)
+made for the sibling check in `extraction/service.py`, where `_OCR_ROW_GAP_MIN` is
+defined as `_OCR_ROW_ESTIMATE_MIN` for the same reason.
+
+What the derived value costs is measured over the same artifacts, at 10,033 runs with
+coverage defined once the v0.6.12 grids are included (PR #1487, where the 3,200-row
+document lives). 206 runs sit in the silent band, distributed by unscored rows as 1
+(62 runs), 2 (18), 3 (94), 4 (17), 5 (7), 6 (2), 12 (4), 24 (1), 115 (1) — **empty
+between 7 and 11**, so the data cannot distinguish any ceiling in `[7, 12]` and the
+derived 10 falls inside that band. The curve of what each candidate would newly
+report:
+
+| Ceiling | Newly reported runs | Share of defined runs | Warning-rung firing rate after | Largest silent shortfall after |
+|---:|---:|---:|---:|---:|
+| 3 | 126 | 1.2559% | 1.4652% | 2 |
+| 5 | 15 | 0.1495% | 0.3588% | 4 |
+| **10** (shipped) | **6** | **0.0598%** | **0.2691%** | **6** |
+| 30 | 1 | 0.0100% | 0.2193% | 24 |
+| none | 0 | 0 | 0.2093% | 115 |
+
+The mass is at 1–4 unscored rows, which is the band the fraction deliberately leaves
+to `assessment_incomplete`, so a ceiling of 5 would buy a 4-row band at 2.5× the new
+firing and one of 3 a 2-row band at 21× it, where 10 closes the part that grows with
+the document for 6 runs. 30 — the sibling check's own constant, `_OCR_ROW_GAP_MIN`,
+which leaves it a silent band of 29 rows — would leave the 24-of-800 shortfall
+silent; that one absorbs an additive OCR imprecision (a column heading reprinted per
+page) and this one absorbs nothing comparable, because reconciliation pads one
+assessment entry per extracted row and healthy runs land at exactly 0.
+
+Severity at the ceiling is always `warning`, structurally: a run crossing the ceiling
+without crossing 5% is below the 25% error fraction by arithmetic, and
+`scored_rows == 0` implies a shortfall of 1.0, so neither error path is reachable
+from the ceiling alone. `extraction.row_shortfall_action` does not govern this code
+either, so no deployment can turn it into a failure.
+
+One limit on every firing share above. `processing_issues` postdates every grid
+measured here (null on all rows), so the recorded shortfall is the symptom without
+the product's verdict beside it, and the shares are an **upper bound** on how often
+the gate actually spoke — `_ladder_reported_error` suppresses it whenever the ladder
+got there first. The `processing_issues`/`processing_issue_codes` columns added in
+#1378 answer this directly on the next grid, at no extra cost.
 
 ##### The other limits on the figures above
 

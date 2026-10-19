@@ -98,9 +98,10 @@ def score_confidence_coverage(sections):
         "conf_rows_unscored": expected - scored,
         "conf_coverage": round(scored / expected, 4) if expected else None,
         "conf_unscored_by_field": by_field or None,
-        # The denominator beside that numerator. The rungs divide by the
-        # section-wide row total, so an attribute that is wholly unscored beside a
-        # large fully-scored one lands below the warning fraction; without a
+        # The denominator beside that numerator. The fractions divide by the
+        # section-wide row total, so a SHORT attribute that is wholly unscored beside
+        # a large fully-scored one lands below the warning fraction — and under 10
+        # rows, below the warning rung's absolute ceiling as well; without a
         # per-field denominator a recorded run cannot be read for that case at all.
         "conf_rows_expected_by_field": expected_by_field or None,
     }

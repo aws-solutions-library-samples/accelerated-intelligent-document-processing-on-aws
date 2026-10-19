@@ -106,17 +106,18 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 # document-level alarm — 5% is the point where a reader should stop trusting the
 # confidence surface as a whole rather than a few rows in it.
 #
-# Note that those are two justifications of different shapes sharing one constant.
-# "Stop trusting the surface as a whole" is proportional and a fraction is the right
-# instrument for it; "a 1-2 row gap is the other issue's business" is ABSOLUTE, and a
-# fraction scales it with the list, so the number of unscored rows this rung passes
-# in silence is 0 at 20 rows and 39 at 800. The backstop that discharges the second
-# justification is narrower than it reads, too: ``split_stats["unrecoverable_rows"]``
-# is computed for the LARGEST list field only. That residual is measured (the worst
-# observed is 24 unscored rows of 800) and left in place rather than patched with a
-# second constant, because the committed grids cannot say whether the ladder already
-# reported those rows — ``processing_issues`` postdates all of them. See "The shape
-# of the warning fraction, and the residual it leaves" in this package's README.
+# Note that those are two justifications of different shapes, and only one of them is
+# proportional. "Stop trusting the surface as a whole" is a share and a fraction is
+# the right instrument for it; "a 1-2 row gap is the other issue's business" is
+# ABSOLUTE, and a fraction alone scales it with the list, so a rung expressed only as
+# a fraction passes 39 unscored rows in silence at 800 rows and 159 at 3,200. The
+# backstop that would otherwise discharge the second justification is narrower than
+# it reads, too: ``split_stats["unrecoverable_rows"]`` is computed for the LARGEST
+# list field only, so a residual confined to a smaller list attribute reaches neither
+# ``assessment_incomplete`` nor — being divided by the section-wide total — the
+# fraction. ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS`` below is the absolute
+# instrument for the absolute half of the justification. See "The shape of the warning
+# fraction, and the ceiling under it" in this package's README.
 #
 # What the fraction does to a SHORT list is arithmetic: a single unscored row is a
 # shortfall of 1/N, so one unscored row fires the warning for any section totalling
@@ -168,6 +169,58 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 _COVERAGE_SHORTFALL_WARNING_FRACTION = 0.05
 _COVERAGE_SHORTFALL_ERROR_FRACTION = 0.25
 _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS = 10
+
+# Why an ABSOLUTE CEILING on the warning rung as well as the fraction (#1495), and
+# why it introduces no new number.
+#
+# A fraction bounds the silent band in PROPORTION to the list, so the number of rows
+# that can be left unscored with no report at all is bounded only by how long the
+# longest list is: 39 rows at 800, 159 at 3,200, 199 at 4,000. Measured, the largest
+# silent shortfall in the committed benchmark grids moved from 24 unscored rows of
+# 800 (3.0%) to 115 of 3,200 (3.6%) when a 3,200-row document was first benchmarked —
+# the count grew 4.8x while the share barely moved, because the document grew 4x. 115
+# is not a worse state of the world than 24, it is the same state measured on a
+# bigger document, which is the signature of a purely multiplicative rung.
+#
+# ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` already names the quantity this
+# needs: "more unscored rows than a reviewer can be assumed to spot-check by hand".
+# The error rung reads it in one direction — below it, a large PROPORTION of a tiny
+# list must not render a section red — and the warning rung needs the same quantity
+# read in the other: at or above it, that much unreviewable data must be said out
+# loud whatever the list length. So this is DERIVED from that constant rather than
+# tuned, exactly as ``_OCR_ROW_GAP_MIN = _OCR_ROW_ESTIMATE_MIN`` is in
+# ``extraction/service.py`` (#1361, the same defect in the sibling check). Below it,
+# the fraction and the ladder's own ``assessment_incomplete`` — which names the exact
+# rows — remain the right instruments.
+#
+# What the derived value costs is MEASURED, over the artifacts the fractions were
+# measured on extended with the v0.6.12 grids of PR #1487, where the 3,200-row
+# document lives: 10,240 coverage-bearing document-runs, of which 10,033 have
+# coverage defined. 206 of those sit in the silent band, and their distribution
+# is 1 row (62 runs), 2 (18), 3 (94), 4 (17), 5 (7), 6 (2), 12 (4), 24 (1), 115 (1) —
+# EMPTY between 7 and 11, so the data cannot distinguish any ceiling in [7, 12] and
+# the derived 10 sits inside that band. It newly reports 6 runs, 0.0598% of the
+# defined runs, taking the warning rung from 0.2093% to 0.2691% and leaving a largest
+# silent shortfall of 6 rows (from 115). A ceiling of 5 would cost 15 runs (0.1495%)
+# and one of 3 would cost 126 (1.2559%), because that is where the mass is — the
+# small gaps the fraction deliberately leaves to ``assessment_incomplete``. The curve
+# and the method are written up under "The shape of the warning fraction, and the
+# ceiling under it" in this package's README. The curve itself is a one-off
+# measurement and that write-up is where it lives;
+# ``benchmarks/tests/test_coverage_threshold_evidence.py`` re-derives the parts a
+# committed corpus can carry on every test run — the zero-shortfall premise, the
+# firing share, the silent-band residual, and that nothing the ceiling newly reports
+# is an error — each through the real ``audit_explainability`` rather than a restated
+# rung.
+#
+# Severity at the ceiling is always ``warning``, and structurally so rather than by
+# convention: a run that crosses the ceiling without crossing
+# ``_COVERAGE_SHORTFALL_WARNING_FRACTION`` is by arithmetic below
+# ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` as well, and ``scored_rows == 0`` implies a
+# shortfall of 1.0, so neither error path is reachable from the ceiling alone.
+_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS = (
+    _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+)
 
 
 def _deadline_allows(deadline_epoch: float | None, estimated_seconds: float) -> bool:
@@ -1459,9 +1512,11 @@ def coverage_from_gaps(
     ``expected_rows_by_field`` is the DENOMINATOR beside the existing
     ``unscored_rows_by_field`` numerator, so a per-field coverage ratio is
     recoverable from the figure a run records. Without it a section with two list
-    attributes is unreadable in the one direction that matters: the rungs divide by
-    the section-wide row total, so an attribute that is *wholly* unscored beside a
-    large, fully-scored one lands below the warning fraction, and the ladder's own
+    attributes is unreadable in the one direction that matters: the fractions divide
+    by the section-wide row total, so a SHORT attribute that is *wholly* unscored
+    beside a large, fully-scored one lands below the warning fraction — and, while it
+    is shorter than ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS``, below the
+    warning rung's absolute ceiling as well — and the ladder's own
     ``unrecoverable_rows`` cannot cover it either, because that counts only the
     LARGEST list field. Both numbers are per field here so that case can be read off
     a recorded artifact rather than reasoned about (#997).
@@ -1544,8 +1599,11 @@ def audit_explainability(
     - Confidence values are within [0, 1].
     - **Coverage (#901 item 3):** the share of extracted list rows that actually
       carry a confidence. A materially short section emits
-      ``assessment_coverage_incomplete`` — ``warning`` past
-      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` for a *partial* shortfall
+      ``assessment_coverage_incomplete`` — ``warning`` at or above
+      ``_COVERAGE_SHORTFALL_WARNING_FRACTION`` of the rows **or** at or above
+      ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS`` unscored rows in absolute
+      terms, whichever comes first, so the band this rung passes in silence does not
+      grow with the list (#1495), ``error`` for a *partial* shortfall
       only past ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` **and**
       ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` absolute unscored rows (a
       fraction alone makes a one-row gap in a four-row list an error), and ``error``
@@ -1673,7 +1731,14 @@ def audit_explainability(
         # rounds to exactly 0.05 and would fire a warning that the threshold does not
         # actually call for.
         shortfall = unscored_list_rows / total_list_rows
-        if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
+        # Two instruments, deliberately: the fraction answers "can this section's
+        # confidence surface still be trusted as a whole", the absolute ceiling
+        # answers "is this more unreviewable data than a reviewer can hand-check",
+        # and the second question does not scale with the list (#1495).
+        if (
+            shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION
+            or unscored_list_rows >= _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS
+        ):
             scored = coverage["scored_rows"]
             # A PARTIAL shortfall needs BOTH a large proportion and a large absolute
             # number of unscored rows to be an error — see
@@ -1707,6 +1772,23 @@ def audit_explainability(
                     "confidence surface at all and confidence-based review (HITL "
                     "thresholds) does not apply to any of it. The extracted values "
                     "themselves were kept; treat every row as unverified."
+                )
+            elif shortfall < _COVERAGE_SHORTFALL_WARNING_FRACTION:
+                # Reached on the absolute ceiling alone, so the share is small and
+                # leading with it would understate the finding: "96% of rows carry a
+                # confidence score" is the true sentence about 115 unscored rows of
+                # 3,200 that a reader would act least on. Lead with the row count,
+                # which is the quantity this rung is about (#1495). The message says
+                # what is true of the document, not how the guard decided — the
+                # reasoning for the rung lives on the constant above.
+                message = (
+                    f"{unscored_list_rows} of {total_list_rows} extracted list "
+                    f"row(s) carry no confidence score ({worst_str}). That is only "
+                    f"{shortfall:.1%} of the section, so confidence-based review "
+                    "(HITL thresholds) still covers most of it — but it does not "
+                    "cover these rows, and there are enough of them to need "
+                    "checking individually. The extracted values themselves are "
+                    "unaffected; treat the unscored rows as unverified."
                 )
             else:
                 message = (
