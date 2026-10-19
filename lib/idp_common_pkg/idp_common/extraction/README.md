@@ -2438,9 +2438,20 @@ signals make both loud without changing what is extracted:
   schema, `_ocr_tables` plus the exact-width match sum to **0** rows of evidence for a
   GitHub-legal pipe table written without leading pipes, for the same table carrying a
   fourth column the schema does not have, for one carrying an added row-number column, and
-  for a list rendered as bullets. Textractor's `TABLES` rendering produces none of those
-  shapes, which is why a table-emitting backend does not reach this; an LLM OCR backend
-  renders its own Markdown and can produce any of them. The two causes need different
+  for a list rendered as bullets. An LLM OCR backend renders its own Markdown and can
+  produce any of them.
+
+  ⚠️ **A table-emitting backend reaches this too, and the deciding factor is the width
+  rather than the backend.** Textractor's `TABLES` rendering does not produce the four
+  shapes above, but it renders the table the document actually has — and if the list
+  item's schema carries one property more than that table has columns (a derived or
+  document-level field is the ordinary case), the exact-width match rejects it and the
+  evidence sums to 0 just the same. Measured on a live stack running the shipped
+  `lending-package-sample` preset: a 5-property `transaction_details` returned 68 rows
+  while the section rendered tables **2 and 3 columns wide**, so
+  `ocr_matched_table_rows` was 0 and the issue fired on a list that looks complete.
+
+  The two causes need different
   remedies and the issue tells them apart: `details["ocr_table_widths"]` holds every table
   width that WAS found in the section, so `[]` means no table was recognised while `[4]`
   against `item_property_count: 3` means the evidence is there and the wrong shape.
