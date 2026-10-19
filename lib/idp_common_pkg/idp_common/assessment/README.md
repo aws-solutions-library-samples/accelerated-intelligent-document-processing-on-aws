@@ -536,9 +536,19 @@ existed.
 **undefined**, not perfect: `scored_fraction` is `None` so an aggregate drops it. A
 corpus mean that scored those as 1.0 would be reporting the share of list-free
 documents. The gate declines to fire there for the same reason — there is nothing to
-score, and in the committed grids every such run also records `rows_extracted == 0`,
-i.e. extraction returned no list at all, which is an extraction finding rather than
-a coverage one.
+score, which is an extraction finding rather than a coverage one.
+
+⚠️ **"Undefined coverage" is not always "extraction returned no list", and the
+difference is a hole.** On almost every committed run an undefined denominator does
+coincide with `rows_extracted == 0`. Four do not: `coresynth__extraction-model-sonnet55`
+on `med_narrow.pdf` extracted **2 rows of 400** while the coverage walk recorded no
+denominator at all, so the rung could say nothing about the 398 that were lost
+([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)).
+Where the walk sees no denominator it is reporting that it could not measure, not that
+there was nothing to measure, and those two are indistinguishable downstream.
+`benchmarks/tests/test_coverage_threshold_evidence.py::test_an_undefined_coverage_run_extracted_nothing`
+carves those four out by grid **and** count, so a fifth instance or the same shape on
+another model fails there.
 
 The benchmark harness records it per document
 (`benchmarks/harness/analyze.py::score_confidence_coverage` → `conf_rows_expected`,
@@ -551,23 +561,36 @@ one document at 0.
 ##### The observed distribution
 
 Computed over every committed `benchmarks/results/*/*/summary.json` row that
-carries the metric — 6,672 coverage-bearing document-runs across 38 grids,
-v0.6.8 → v0.6.11, on Claude and Nova extraction and confidence models — and
+carries the metric — **10,240 coverage-bearing document-runs across 150 grids,
+v0.6.8 → v0.6.12**, on Claude, Nova and GPT extraction and confidence models — and
 re-derived on every test run by
 `benchmarks/tests/test_coverage_threshold_evidence.py`, which classifies each
 recorded `(expected, unscored)` pair by calling `audit_explainability` itself rather
 than re-stating the rungs:
 
+Shares are over the **10,033 runs where coverage is defined**; the other 207 record an
+undefined denominator and are counted in neither column (see the warning above for what
+that does and does not mean).
+
 | Shortfall | Runs | Share |
 |---|---|---|
-| exactly 0 unscored rows — no issue | 6,493 | 97.32% |
-| above 0 but below both warning rungs — no issue | 132 | 1.98% |
-| the gate fires | 47 | 0.70% |
-| …of those, at **warning** severity | 19 | 0.28% |
-| ……reported by the 10-row ceiling alone, under 5% | 3 | 0.04% |
-| …of those, at **error** severity | 28 | 0.42% |
-| ……by the fraction **and** the 10-row floor | 7 | 0.10% |
-| ……by having no scored row at all | 21 | 0.31% |
+| exactly 0 unscored rows — no issue | 9,769 | 97.37% |
+| above 0 but below both warning rungs — no issue | 200 | 1.99% |
+| the gate fires | 64 | 0.64% |
+| …of those, at **warning** severity | 27 | 0.27% |
+| ……reported by the 10-row ceiling alone, under 5% | 6 | 0.06% |
+| …of those, at **error** severity | 37 | 0.37% |
+| ……by the fraction **and** the 10-row floor | 9 | 0.09% |
+| ……by having no scored row at all | 28 | 0.28% |
+
+⚠️ **The residual the warning rung leaves is now bounded in rows, not proportional.**
+Before the ceiling, the largest shortfall this rung said nothing about was **115
+unscored rows of 3,200** (3.6%) on `scale_3200.pdf`, against 24 of 800 (3.0%) when it
+was last measured — the share barely moved while the row count grew 4.8×, because the
+document grew 4×, which is what a purely multiplicative rung does. With the 10-row
+ceiling the largest silent shortfall over this whole corpus is **6 unscored rows of
+400** (1.5%), and it cannot exceed 9 whatever the list's length
+([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The two error paths are disjoint on this corpus, and together they account for
 every run at or above 25%. The median, p90 and p95 are all exactly 0; p99 is
@@ -577,10 +600,10 @@ reconciliation pads one assessment entry per extracted row — holds as an obser
 property, not only a code-path reading.
 
 **On short lists, which is the regime #997 asked about, the warning rung has not
-been observed firing on a partial gap at all.** 2,452 single-section runs extracted
+been observed firing on a partial gap at all.** 3,511 runs extracted
 20 rows or fewer, the range where one unscored row crosses 5%. The number of those
 showing a *partial* shortfall — some rows scored, at least one not — is **zero**.
-The 21 that do fire there have `scored_rows == 0`: no confidence anywhere in the
+The 28 that do fire there have `scored_rows == 0`: no confidence anywhere in the
 section, each one `realkie`'s `LineItems` with the document's scalar block scored
 and the list not. Those are the strongest true positives the gate can report, and
 they are why `scored_rows == 0` is now an error rather than being held at warning by
@@ -678,10 +701,10 @@ got there first. The `processing_issues`/`processing_issue_codes` columns added 
 ##### The other limits on the figures above
 
 - **A document-level ratio can dilute a per-section one.** The harness sums over a
-  document's sections; the gate runs per section. 6,228 of the 6,672 runs are
+  document's sections; the gate runs per section. 9,992 of the 10,033 runs are
   single-section (or record no section count), where the two coincide, and a 0
-  aggregate implies 0 in every section — so the 97.32% figure is exact rather than
-  averaged. For the 179 nonzero runs the recorded ratio is a *lower* bound on the
+  aggregate implies 0 in every section — so the 97.37% figure is exact rather than
+  averaged. For the 264 nonzero runs the recorded ratio is a *lower* bound on the
   worst section's.
 - **No multi-record corpus has been run.** The measured row shapes are flat (three
   or eight scalar cells from
