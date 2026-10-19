@@ -324,7 +324,9 @@ def test_recent_completions_falls_back_when_a_document_has_no_id_or_duration():
 
     assert _cells(table, 0) == ["unknown"]
     assert _cells(table, 1) == ["✓ Success"]
-    assert _cells(table, 2) == ["0.0s"]
+    # Review column: a document that was never routed to a review queue.
+    assert _cells(table, 2) == ["—"]
+    assert _cells(table, 3) == ["0.0s"]
 
 
 @pytest.mark.unit
@@ -333,7 +335,16 @@ def test_recent_completions_renders_the_duration_to_one_decimal():
         _status_data(total=1, completed=[_doc(duration=123.456)])
     )
 
-    assert _cells(table, 2) == ["123.5s"]
+    assert _cells(table, 3) == ["123.5s"]
+
+
+@pytest.mark.unit
+def test_recent_completions_shows_the_review_status_of_a_routed_document():
+    table = display.create_recent_completions_table(
+        _status_data(total=1, completed=[_doc(review_status="rejected")])
+    )
+
+    assert _cells(table, 2) == ["rejected"]
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +672,8 @@ def test_json_single_completed_document_exits_zero_and_carries_its_section_count
         "duration": 12.5,
         "start_time": "2025-01-10T10:00:00Z",
         "end_time": "2025-01-10T10:05:00Z",
+        # None for a document never routed to a review queue.
+        "review_status": None,
         "num_sections": 3,
         "exit_code": 0,
     }
