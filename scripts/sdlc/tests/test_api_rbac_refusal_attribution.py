@@ -727,7 +727,7 @@ def test_the_three_operations_still_send_the_argument_that_reaches_the_floor(op_
 # site no run provokes is churn on the authorization path, and leaving one the
 # harness *does* provoke undeclared turns a correct refusal into a hard failure the
 # first time a cell reaches it. The document-bytes arm in
-# `test_api_rbac.run_document_bytes_scope_arm` drives the scoped caller at a real
+# `test_api_rbac.run_document_bytes_scope_suite` drives the scoped caller at a real
 # document, which is what brought the `get_file_contents_resolver` sites below
 # inside the bound (#1478); its own existence is asserted further down, so this
 # list and the run that exercises it cannot drift apart.
@@ -819,12 +819,12 @@ def test_the_document_bytes_arm_exists_and_the_scope_suite_runs_it():
     """
     source = _HARNESS.read_text()
 
-    assert hasattr(h, "run_document_bytes_scope_arm"), (
+    assert hasattr(h, "run_document_bytes_scope_suite"), (
         "the per-document arm is gone, so nothing live reaches the refusals listed "
         "in _DECLARED_RESOURCE_REFUSALS for get_file_contents_resolver"
     )
-    assert "run_document_bytes_scope_arm(ctx, tokens, results)" in source, (
-        "run_document_bytes_scope_arm is defined but never called — the arm has to "
+    assert "run_document_bytes_scope_suite(ctx, tokens, results)" in source, (
+        "run_document_bytes_scope_suite is defined but never called — the suite has to "
         "run, not merely exist"
     )
     assert re.search(r"\brun_scope_suite\(", source), (
@@ -841,7 +841,7 @@ def test_the_document_bytes_arm_demands_the_resource_label():
     about, reproduced in the one cell added to detect it.
     """
     source = _HARNESS.read_text()
-    arm = source.split("def run_document_bytes_scope_arm", 1)[1].split("\ndef ", 1)[0]
+    arm = source.split("def run_document_bytes_scope_suite", 1)[1].split("\ndef ", 1)[0]
 
     assert "refusal_is_resource_level" in arm, (
         "the arm no longer consults the label, so it cannot tell the per-document "
@@ -866,14 +866,14 @@ def test_the_document_bytes_fields_declare_no_object_scoped_roles(field):
 
     Declaring it here is therefore not the second half of the attribution fix — it
     would red-line three fields on a correct deployment. The live assertion lives in
-    ``run_document_bytes_scope_arm`` instead, where a genuinely scoped caller exists.
+    ``run_document_bytes_scope_suite`` instead, where a genuinely scoped caller exists.
     """
     entry = _expectations()[field]
 
     assert not entry.get("object_scoped_roles"), (
         f"{field} declares object_scoped_roles, but the matrix drives only unscoped "
         "principals and the per-document control is a no-op for them — the cell "
-        "would fail as NOT REFUSED. Assert this in run_document_bytes_scope_arm."
+        "would fail as NOT REFUSED. Assert this in run_document_bytes_scope_suite."
     )
 
 

@@ -1375,8 +1375,13 @@ def _input_bucket(ctx):
                 "text",
                 region=ctx["region"],
             )
-    except RuntimeError as e:
-        print(f"  could not resolve the input bucket: {e}")
+    except (RuntimeError, KeyError) as e:
+        # KeyError as well as RuntimeError, because "never raises" has to be true of
+        # the ctx and not only of the AWS call: `ctx["stack"]` and `ctx["region"]`
+        # are read inside this `try`, and a caller holding a partial ctx — every
+        # offline test of a suite that reaches this does — got a KeyError out of a
+        # function whose contract is to answer "" and let the caller SKIP.
+        print(f"  could not resolve the input bucket: {e!r}")
         name = ""
     ctx["input_bucket"] = "" if (not name or name == "None") else name
     return ctx["input_bucket"]
@@ -1743,8 +1748,6 @@ def run_scope_suite(ctx, tokens, results):
         f"({'OK' if ok else 'unexpectedly denied'})"
     )
 
-    run_document_bytes_scope_arm(ctx, tokens, results)
-
 
 #: The operation the document-bytes arm drives. The single-object presign rather
 #: than ``getFileContents``, because it is the capability-issuing one — a refusal
@@ -1754,15 +1757,21 @@ def run_scope_suite(ctx, tokens, results):
 _DOCUMENT_BYTES_FIELD = "getFilePresignedUrl"
 
 
-def run_document_bytes_scope_arm(ctx, tokens, results):
+def run_document_bytes_scope_suite(ctx, tokens, results):
     """The per-DOCUMENT scope on object bytes, and the label it declares.
 
-    The group matrix cannot assert this. Every principal it drives is unscoped, and
-    ``document_scope.assert_document_in_scope`` is a documented no-op for an
-    unscoped caller, so the matrix's nonexistent-key argument never reaches the
-    control at all — which is also why ``object_scoped_roles:`` is the wrong vehicle
-    for these fields: that key declares a ROLE the per-object control refuses, and
-    the axis here is ``allowedConfigVersions``, not a group.
+    Its own suite rather than a fourth arm of :func:`run_scope_suite`, because its
+    preconditions are different in kind: that one needs only the scoped user's
+    token, this one needs a resolvable input bucket **and** a processed document in
+    the stack, so it SKIPs where the other three still reach a verdict. Folding it
+    in would make one suite answer two availability questions.
+
+    The group matrix cannot assert this either. Every principal it drives is
+    unscoped, and ``document_scope.assert_document_in_scope`` is a documented no-op
+    for an unscoped caller, so the matrix's nonexistent-key argument never reaches
+    the control at all — which is also why ``object_scoped_roles:`` is the wrong
+    vehicle for these fields: that key declares a ROLE the per-object control
+    refuses, and the axis here is ``allowedConfigVersions``, not a group.
 
     Two arms, and both have to hold:
 
@@ -1779,7 +1788,25 @@ def run_document_bytes_scope_arm(ctx, tokens, results):
     No URL may appear in the refusal body either: the point of the control is that
     the capability is never minted, and a 403 carrying one would satisfy every
     status assertion above while handing over the object.
+
+    An inconclusive call carries ``_inconclusive_gap`` like every other arm in this
+    file, so a 5xx is a WARN that still reports itself as having established
+    nothing rather than an ERROR indistinguishable from a real refusal.
     """
+    print("\n=== PER-DOCUMENT SCOPE ON OBJECT BYTES ===")
+    if "scoped" not in tokens:
+        print("  SKIP (scoped user unavailable)")
+        _record(
+            results,
+            _DOCUMENT_BYTES_FIELD,
+            "scoped(document bytes)",
+            "SKIP",
+            False,
+            "scoped user unavailable",
+            outcome="SKIP",
+        )
+        return
+
     bucket = _input_bucket(ctx)
     key = resolve_document_object_key(ctx, tokens) if bucket else None
     if not bucket or not key:
@@ -1788,7 +1815,7 @@ def run_document_bytes_scope_arm(ctx, tokens, results):
             if not bucket
             else "no processed document found in this stack"
         )
-        print(f"  {_DOCUMENT_BYTES_FIELD}: SKIP ({why})")
+        print(f"  SKIP ({why})")
         _record(
             results,
             _DOCUMENT_BYTES_FIELD,
@@ -1859,6 +1886,7 @@ def run_document_bytes_scope_arm(ctx, tokens, results):
         rid,
         control=control,
         message=message,
+        gap=_inconclusive_gap(st) if why else None,
         outcome=outcome,
     )
     print(
@@ -1884,6 +1912,7 @@ def run_document_bytes_scope_arm(ctx, tokens, results):
         rid,
         control=res.authz_control,
         message=res.message,
+        gap=_inconclusive_gap(st) if why else None,
         outcome="ERROR" if why else None,
     )
     print(
@@ -2315,6 +2344,7 @@ def main():
         skip_fields = apply_dynamic_args(ops, ctx, tokens)
         run_group_matrix(ops, ctx, tokens, results, skip_fields)
         run_scope_suite(ctx, tokens, results)
+        run_document_bytes_scope_suite(ctx, tokens, results)
         run_token_negatives(ctx, tokens, results)
 
         # --- Mandatory security-focused test cases (checklist 2.1-4) ---------

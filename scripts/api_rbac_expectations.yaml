@@ -238,7 +238,7 @@ operations:
       `object_scoped_roles:` declares a ROLE a per-object control refuses, and this
       axis is allowedConfigVersions rather than a group, so declaring it here
       would score a cell that was correctly NOT refused as a failure. The live
-      assertion is `run_document_bytes_scope_arm` in scripts/test_api_rbac.py,
+      assertion is `run_document_bytes_scope_suite` in scripts/test_api_rbac.py,
       driven as the seeded ScopedAuthor against a real document, and it requires
       the refusal to carry `authzControl: "resource"` — which is why the three
       per-object refusals in `document_scope` raise `ResourceAccessDenied` (#1478).
