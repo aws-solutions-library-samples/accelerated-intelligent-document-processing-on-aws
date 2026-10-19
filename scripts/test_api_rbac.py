@@ -1938,7 +1938,7 @@ def run_document_bytes_scope_suite(ctx, tokens, results):
         ok,
         f"INCONCLUSIVE: {why}"
         if why
-        else f"expect the same URI NOT refused an unrestricted caller; "
+        else "expect the same URI NOT refused an unrestricted caller; "
         f"got {st}/{et}/{ib}",
         et,
         ib,

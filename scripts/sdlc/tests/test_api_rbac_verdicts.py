@@ -819,12 +819,23 @@ class TestThePerDocumentSuiteClassifiesInconclusiveResults:
         assert [r["outcome"] for r in results] == ["SKIP"]
 
 
-def test_the_per_document_suite_runs_in_the_same_pass_as_the_scope_suite():
-    """It is a separate suite, so the thing that could silently remove it is the
-    call site rather than a deleted assertion."""
-    source = (Path(__file__).resolve().parents[2] / "test_api_rbac.py").read_text()
+def test_the_per_document_suite_takes_the_same_arguments_as_its_siblings():
+    """It is wired into ``main`` beside ``run_scope_suite``, so its signature has to
+    match theirs — a fourth parameter would make the call site a TypeError at the
+    end of a run that had already created Cognito users and seeded table rows.
 
-    assert "run_document_bytes_scope_suite(ctx, tokens, results)" in source
+    The call site's PRESENCE is asserted in
+    ``test_api_rbac_refusal_attribution.py::test_the_document_bytes_suite_exists_and_is_invoked_from_main``,
+    which reads ``main``'s own body; this is the complementary half and the two are
+    not interchangeable.
+    """
+    import inspect
+
+    expected = list(inspect.signature(h.run_scope_suite).parameters)
+
+    assert list(inspect.signature(h.run_document_bytes_scope_suite).parameters) == (
+        expected
+    ), f"the per-document suite must take {expected}, like every sibling suite"
 
 
 # A structurally valid JWT shape: the token-negatives suite base64url-decodes the

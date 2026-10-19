@@ -33,6 +33,7 @@ No AWS and no network: the matrix is driven with a fake ``call``.
 from __future__ import annotations
 
 import ast
+import collections
 import importlib.util
 import json
 import re
@@ -732,8 +733,9 @@ def test_the_three_operations_still_send_the_argument_that_reaches_the_floor(op_
 # inside the bound (#1478); its own existence is asserted further down, so this
 # list and the run that exercises it cannot drift apart.
 #
-# ⚠️ Three refusal sites in that resolver are deliberately NOT here, and the line is
-# the same one `_UNATTRIBUTED_REFUSAL_SITES` draws: `document_scope`'s throttled
+# ⚠️ Several refusal sites in that resolver are deliberately NOT here — no figure,
+# because `_UNATTRIBUTED_REFUSAL_SITES` and `_MIXED_REFUSAL_SITES` carry the set and a
+# number here would drift from them. The line is the same one those lists draw: `document_scope`'s throttled
 # tracking-table read and `resolve_caller_scope` are facts about the deployment and
 # the principal, and `key_scope._assert_test_set_allowed` folds a RESOLVER GROUP
 # CHECK into the same exception as its per-object one (`assert_can_access_test_set`
@@ -751,6 +753,43 @@ _DECLARED_RESOURCE_REFUSALS = (
     ("get_file_contents_resolver/index.py", "_budget_refusal"),
     ("get_file_contents_resolver/key_scope.py", "_assert_config_profile_allowed"),
 )
+
+
+def _raised_names_list(path: Path, function: str) -> list:
+    """Like :func:`_raised_names` but keeping repeats, for the count-pinned sites."""
+    source = path.read_text()
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function
+        ):
+            names = []
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Raise) and sub.exc is not None:
+                    exc = sub.exc
+                    callee = exc.func if isinstance(exc, ast.Call) else exc
+                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
+                    if name:
+                        names.append(name)
+            return names
+    raise AssertionError(f"{path.name} has no top-level function named {function}")
+
+
+def _raised_names_in_class(path: Path, klass: str) -> set:
+    """The class names raised anywhere inside one top-level class."""
+    source = path.read_text()
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ClassDef) and node.name == klass:
+            names = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Raise) and sub.exc is not None:
+                    exc = sub.exc
+                    callee = exc.func if isinstance(exc, ast.Call) else exc
+                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
+                    if name:
+                        names.add(name)
+            return names
+    raise AssertionError(f"{path.name} has no class named {klass}")
 
 
 def _raised_names(path: Path, function: str) -> set:
@@ -928,14 +967,12 @@ def test_nothing_in_the_dispatcher_process_calls_the_s3_helper():
         )
 
 
-# The complement of the list above: refusal sites this change deliberately leaves
-# UNATTRIBUTED, each asserted to still raise the unattributed class. An independent
-# review measured the gap — relabelling the test-set resolver's scope-lookup refusal
-# as the per-object class survived every suite — so the prose claim had nothing
-# holding it.
+# The complement of the list above: refusal sites that must raise ONLY the
+# unattributed class, each asserted to still do so and to not have acquired the
+# per-object one.
 #
-# Why these must not be relabelled, which is the same question in each case: none is
-# a decision about an object the caller named.
+# The rule, which is the same question in each case: none of these is a decision
+# about an object the caller named.
 #
 #   * a scope that could not be EVALUATED (no UsersTable wired, no email claim, a
 #     failed query) is a fail-closed refusal about the deployment, and the resolvers
@@ -951,19 +988,15 @@ def test_nothing_in_the_dispatcher_process_calls_the_s3_helper():
 # a verdict from FAIL to ERROR, both blocking — but it would move a real fault out of
 # the row a reader looks at first, and it would make the documented boundary false.
 #
-# ⚠️ **A boundary stated only in prose is the defect this list exists for**, which is
-# why the get_file_contents_resolver sites are here: #1478 converted that resolver's
-# per-object refusals and argued in prose for keeping four of its neighbours
-# unattributed, which is exactly the state the review above found and measured —
-# relabelling one survived every suite. The four are now ratcheted on the same terms
-# as the converted ones.
+# ⚠️ **Without this list that mutation passes every other suite**, and that is the
+# whole reason it exists: a resource-label assertion can only check the label is
+# PRESENT, never that it is absent, so `_DECLARED_RESOURCE_REFUSALS` is satisfied by a
+# function in which every branch has been converted. The boundary is only as real as
+# the assertion on this side of it.
+#
+# No count is quoted here; `len` below carries it, so prose cannot drift from the set.
 _UNATTRIBUTED_REFUSAL_SITES = (
     ("test_set_resolver/index.py", "_caller_config_scope", "scope cannot be evaluated"),
-    (
-        "get_agent_chat_messages_resolver/index.py",
-        "handler",
-        "no resolvable caller identity",
-    ),
     (
         "get_file_contents_resolver/document_scope.py",
         "resolve_caller_scope",
@@ -983,12 +1016,37 @@ _UNATTRIBUTED_REFUSAL_SITES = (
 )
 
 
+#: Functions that legitimately raise BOTH classes, where neither list above can be
+#: the ratchet: a presence assertion is satisfied by converting the other branch, and
+#: an absence assertion is false by construction. The per-class **count** is pinned
+#: instead, which is the only form that holds a mixed site — and these are the sites
+#: where the boundary is finest, so they are the ones a sweep is most likely to make
+#: uniform "for consistency".
+_MIXED_REFUSAL_SITES = (
+    (
+        "get_agent_chat_messages_resolver/index.py",
+        "handler",
+        {"ResourceAccessDenied": 1, "PermissionError": 1},
+        "a session the caller does not own is per-object; no resolvable caller "
+        "identity is about the principal",
+    ),
+    (
+        "get_file_contents_resolver/key_scope.py",
+        "_assert_config_profile_allowed",
+        {"ResourceAccessDenied": 1, "PermissionError": 1},
+        "the requested profile being outside the caller's scope is per-object; a "
+        "`ScopeLookupError` is a fact about the deployment",
+    ),
+)
+
+
 def test_the_unattributed_site_list_is_not_empty():
-    assert len(_UNATTRIBUTED_REFUSAL_SITES) >= 5
+    assert len(_UNATTRIBUTED_REFUSAL_SITES) >= 4
+    assert len(_MIXED_REFUSAL_SITES) >= 2
 
 
 #: The two unattributed sites in that resolver that are METHODS, so the per-function
-#: walk above cannot address them: ``DocumentResolver._fetch`` (a tracking-table read
+#: walk below cannot address them: ``DocumentResolver._fetch`` (a tracking-table read
 #: that stayed throttled — a fact about the table) and
 #: ``_DocumentScope._document_resolver`` (an unwired table name — a template fault).
 #: Named by their enclosing class, which is still per site, because nothing else in
@@ -1015,26 +1073,13 @@ _UNATTRIBUTED_REFUSAL_CLASSES = (
 def test_an_unattributed_refusal_inside_a_class_stays_unattributed(
     relative, klass, why
 ):
-    """The same ratchet as the parametrised test above, one scope wider.
+    """The same ratchet as the parametrised test below, one scope wider.
 
     Wider is the cost of the sites being methods, and it is bounded by the second
     assertion: each class must still hold a refusal, so the entry cannot go vacuous
     by the raise being deleted rather than relabelled.
     """
-    source = (_RESOLVERS / relative).read_text()
-    for node in ast.parse(source).body:
-        if isinstance(node, ast.ClassDef) and node.name == klass:
-            raised = set()
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Raise) and sub.exc is not None:
-                    exc = sub.exc
-                    callee = exc.func if isinstance(exc, ast.Call) else exc
-                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
-                    if name:
-                        raised.add(name)
-            break
-    else:  # pragma: no cover - the class is the subject of this assertion
-        raise AssertionError(f"{relative} has no class named {klass}")
+    raised = _raised_names_in_class(_RESOLVERS / relative, klass)
 
     assert "ResourceAccessDenied" not in raised, (
         f"{why}, not a decision about the object the caller named, so it must keep "
@@ -1048,6 +1093,31 @@ def test_an_unattributed_refusal_inside_a_class_stays_unattributed(
 
 
 @pytest.mark.parametrize(
+    "relative,function,expected,why",
+    _MIXED_REFUSAL_SITES,
+    ids=[f"{r.split('/')[0]}:{f}" for r, f, _, _ in _MIXED_REFUSAL_SITES],
+)
+def test_a_mixed_refusal_site_keeps_both_classes_in_the_same_proportion(
+    relative, function, expected, why
+):
+    """Neither presence nor absence can hold a function that raises both.
+
+    Converting the unattributed branch of one of these leaves
+    ``_DECLARED_RESOURCE_REFUSALS`` satisfied — the per-object class is still there
+    — and an absence assertion could never have been written for it. The count is
+    what fails.
+    """
+    raised = collections.Counter(_raised_names_list(_RESOLVERS / relative, function))
+
+    for klass, count in expected.items():
+        assert raised[klass] == count, (
+            f"{relative}:{function} ({why}) now raises {klass} {raised[klass]} "
+            f"time(s), not {count}. A branch converted in either direction here "
+            f"moves the deployment/object boundary; raised {dict(raised)}"
+        )
+
+
+@pytest.mark.parametrize(
     "relative,function,why",
     _UNATTRIBUTED_REFUSAL_SITES,
     ids=[f"{r.split('/')[0]}:{f}" for r, f, _ in _UNATTRIBUTED_REFUSAL_SITES],
@@ -1057,6 +1127,11 @@ def test_a_deliberately_unattributed_refusal_stays_unattributed(
 ):
     raised = _raised_names(_RESOLVERS / relative, function)
 
+    assert "ResourceAccessDenied" not in raised, (
+        f"{relative}:{function} ({why}) now declares itself as a per-object "
+        "refusal, which labels a fact about the deployment or the principal "
+        f"`resource`; raised {sorted(raised)}"
+    )
     assert "PermissionError" in raised, (
         f"{relative}:{function} ({why}) no longer raises the unattributed class; "
         f"raised {sorted(raised)}"
