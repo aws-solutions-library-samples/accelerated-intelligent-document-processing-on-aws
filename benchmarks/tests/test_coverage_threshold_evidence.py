@@ -462,8 +462,11 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
 
     The guard declines to fire when the section extracted no list row, which would be
     a hole if those runs were producing rows the measurement could not see. They are
-    not: every such run with a synthetic row count recorded shows
-    ``rows_extracted == 0``, i.e. the model returned no list at all.
+    not: every such run with a synthetic row count recorded returned no list at all.
+
+    ``rows_extracted == 0`` is how that reads on all but four runs, and the exception
+    is this scorer rather than the walk — see the carve-out below, which is the one
+    place in this suite where a non-zero row count does not mean rows.
     """
     undefined = [(g, r) for g, r in corpus_located if not r["conf_rows_expected"]]
     assert undefined, "no run records undefined coverage; this check shields nothing."
@@ -473,12 +476,28 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
         if isinstance(r.get("rows_extracted"), (int, float)) and r["rows_extracted"]
     ]
 
-    # ⚠️ The premise above no longer holds universally, and the exception is a KNOWN,
-    # FILED defect rather than a reason to relax the check: issue #1494. Four
-    # `coresynth__extraction-model-sonnet55` runs extracted 2 rows of 400 on
-    # `med_narrow.pdf` and the coverage walk recorded no denominator for any of them,
-    # so the coverage rung could not speak about the 398 rows that were lost. They are
-    # carved out BY NAME and COUNT-PINNED rather than filtered by shape, so a fifth
+    # ⚠️ Four runs record a non-zero `rows_extracted` here, and the defect is in
+    # THIS SCORER rather than in the coverage walk (#1505). On four
+    # `coresynth__extraction-model-sonnet55` runs over `med_narrow.pdf` the
+    # `Transactions` field came back as a prose refusal — "The statement contains 400
+    # transactions (SEQ00000 to SEQ00399). They are too many to list in full here
+    # ..." — so there was no array, and `expected_rows == 0` is the coverage walk
+    # answering CORRECTLY. What produced the 2 is
+    # `score_synthetic`'s identifier scan, which reads `json.dumps(inference_result)`
+    # whole: the refusal sentence names `SEQ00000` and `SEQ00399`, those are two of
+    # this document's truth ids, and the scan cannot tell a row from a model quoting
+    # a row. `test_row_identity_collapse.py::test_a_prose_refusal_inflates_the_row_count`
+    # executes that rather than leaving it stated here.
+    #
+    # So the carve-out stands but the premise it carves out of is intact: no rows were
+    # extracted on these runs, and the extraction-side signal for the shape is
+    # `extraction_list_field_not_a_list` (#1505), which postdates this grid.
+    # `rows_extracted` is deliberately NOT re-derived: the raw section objects these
+    # grids were scored from are not committed, so a changed scan cannot be
+    # re-measured over them and would leave two incomparable definitions in one
+    # corpus.
+    #
+    # Carved out BY NAME and COUNT-PINNED rather than filtered by shape, so a fifth
     # instance — or the same shape on another model or document — fails here.
     KNOWN_UNDEFINED_WITH_ROWS = {
         ("coresynth__extraction-model-sonnet55", "med_narrow.pdf"),
@@ -490,13 +509,15 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
 
     assert unknown == [], (
         f"{len(unknown)} runs record extracted rows while reporting no coverage "
-        "denominator, so the coverage walk is missing rows the extraction produced — "
-        "a list nested inside a group attribute is the shape that does this. First "
+        "denominator. Either the coverage walk is missing rows the extraction "
+        "produced — a list nested inside a group attribute is the shape that does "
+        "that — or the row count is counting something that is not a row, as in the "
+        "#1505 carve-out below. Establish which before relaxing anything. First "
         f"few: {[(g, r['doc'], r['cell'], r['rows_extracted']) for g, r in unknown[:5]]}"
     )
     assert len(known) == EXPECTED_KNOWN, (
-        f"the #1494 carve-out now shields {len(known)} runs, not {EXPECTED_KNOWN}. "
-        "If the count grew, a new instance of the coverage-walk hole has appeared and "
-        "belongs on that issue; if it shrank to 0 the defect is fixed and this "
-        "carve-out should be deleted along with it."
+        f"the #1505 carve-out now shields {len(known)} runs, not {EXPECTED_KNOWN}. "
+        "If the count grew, a new instance has appeared and belongs on that issue; if "
+        "it shrank to 0 the grids carrying it are gone and this carve-out should be "
+        "deleted along with it."
     )

@@ -2391,6 +2391,50 @@ class ExtractionService:
     #: ``extraction_sparse`` is ``info`` for the same reason.
     NO_OCR_EVIDENCE_CODE = "extraction_row_count_unverified"
 
+    #: The ``ProcessingIssue.code`` for a field the class schema declares as an
+    #: array that came back as something else — a string, a number, a bool or an
+    #: object. The whole list is lost, and unlike every other code in this family
+    #: that is not an estimate: the declared type and the returned value are both
+    #: in hand, so there is nothing to infer (#1505).
+    #:
+    #: The shape that motivated it is a model declining *inside the field*.
+    #: Measured on the v0.6.12 benchmark grid, ``Transactions`` came back as
+    #: ``'The statement contains 400 transactions (SEQ00000 to SEQ00399). They are
+    #: too many to list in full here without risking errors, so this field is not
+    #: populated.'`` — 400 rows of 400 lost on a run reporting ``COMPLETED``.
+    #:
+    #: ⚠️ **Detected here rather than left to validation, because validation is a
+    #: toggle and this loss is not conditional on it.** Full-schema validation does
+    #: report it, as ``extraction_validation_failed`` — but only when
+    #: ``extraction.validation.enabled`` is true, and at ``warning`` severity with
+    #: a message ("N schema violation(s) remain ... The values are stored as
+    #: extracted") that reads the same for a total loss as for a coerced date. On
+    #: the grid, the one affected run that recorded **no issue of any kind** was
+    #: the one with enforcement off. Coercion sees it too and correctly refuses
+    #: (cross-family coercion is forbidden by design), which is likewise gated on
+    #: ``extraction.coercion.enabled`` and emits no issue. This check reads the
+    #: class schema against the final extracted fields, so it needs neither.
+    #:
+    #: ``error`` severity, unconditionally. That is a statement about the RESULT
+    #: and not about the evidence — the distinction that keeps
+    #: ``NO_OCR_EVIDENCE_CODE`` and ``extraction_sparse`` at ``info`` — and it puts
+    #: the section's processing report at ``COMPLETED WITH ERRORS``. It does NOT
+    #: fail the section: ``_generate_processing_report`` fails only on
+    #: ``ROW_SHORTFALL_CODE`` at ``error``, and ``extraction.row_shortfall_action``
+    #: deliberately does not govern this code, for the reason it governs neither
+    #: ``OUTPUT_TRUNCATED_CODE`` nor ``PARTIAL_ROW_SHORTFALL_CODE``: widening that
+    #: knob would start failing runs that complete today on a deployment that has
+    #: already opted into ``fail``. Whether a lost list should fail the section is
+    #: a product decision; detection is what is fixed here.
+    LIST_FIELD_NOT_A_LIST_CODE = "extraction_list_field_not_a_list"
+
+    #: How much of the offending value to carry in the issue's ``details``. The
+    #: value IS the diagnostic for this code — a refusal sentence says why the
+    #: model declined, which nothing else in the pipeline records — but it is
+    #: model-authored text of unbounded length going into a DynamoDB item, so it
+    #: is truncated rather than trusted.
+    _NOT_A_LIST_PREVIEW_CHARS = 300
+
     def _row_shortfall_action(self) -> str:
         """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
 
@@ -3764,6 +3808,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           on a 25-page statement). When extraction is NOT already agentic, the
           message recommends toggling to Advanced (agentic) extraction, whose
           deterministic table parser is built for exactly this.
+        - **A list field that is not a list** (``extraction_list_field_not_a_list``,
+          error): a field the schema declares as an array came back as a string, a
+          number, a bool or an object — the live shape is a model declining inside
+          the field ("too many to list in full here"). The whole list is lost, and
+          this is the one signal here that is not an estimate. See
+          :data:`LIST_FIELD_NOT_A_LIST_CODE` for why it is detected here rather
+          than left to full-schema validation, which reports it only when enabled.
         - **Below-threshold population** (``extraction_sparse``, info): reuses the
           existing ``population_check`` heuristic when present.
         - **A response the model did not finish** (``extraction_output_truncated``,
@@ -3778,8 +3829,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           evidence, never a shortfall, and it is the signal that keeps "could not
           check" distinguishable from "checked and found complete".
 
-        Best-effort and advisory: a genuinely empty section (no such data in the
-        document) will also flag, so these are warning/info, never hard errors.
+        The estimates here are best-effort and advisory: a genuinely empty section
+        (no such data in the document) will also flag, so they are warning/info.
+        ``extraction_list_field_not_a_list`` is the exception and is ``error``,
+        because a declared type and a returned value leave nothing to estimate.
+        None of them fails the section — see :meth:`_generate_processing_report`,
+        which fails only on ``ROW_SHORTFALL_CODE`` at ``error``.
         """
         from idp_common.config.schema_constants import (
             SCHEMA_PROPERTIES,
@@ -3867,6 +3922,85 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     ),
                     section_id=section_id,
                     details={"empty_list_fields": empty_lists, "agentic": is_agentic},
+                )
+            )
+
+        # 1a) A declared array field that came back as something that is not a
+        # list at all (#1505).
+        #
+        # Disjoint from `empty_lists` above by construction: that set is the
+        # absent, the None and the empty-list cases, so a value reaching here is
+        # present, not None, and not a list. Nothing upstream converts it —
+        # `coercion.py` forbids cross-family coercion on purpose ("no scalar →
+        # single-element array"), which is the right call and leaves the value
+        # standing — so this is the final state of the field.
+        #
+        # The live shape is a model declining inside the field: a sentence
+        # explaining that the list was too long to reproduce, sitting where 400
+        # rows belong. A dict is included too (`{"0": {...}, "1": {...}}` for an
+        # array is the other shape that reaches here) because the consequence is
+        # identical: the assessment coverage walk finds no rows to score, both
+        # OCR-grounded row checks have no count to compare, and
+        # `extraction_incomplete` does not fire because the key is present and
+        # non-empty.
+        not_a_list = {
+            name: extracted_fields[name]
+            for name in array_fields
+            if name in extracted_fields
+            and extracted_fields[name] is not None
+            and not isinstance(extracted_fields[name], list)
+        }
+        if not_a_list:
+            # `str(name)` for the same reason as the join above: a schema read
+            # from YAML can carry a bare numeric key, and this function runs with
+            # no enclosing `try`.
+            fields_str = ", ".join(str(name) for name in not_a_list)
+            returned = {
+                str(name): type(value).__name__ for name, value in not_a_list.items()
+            }
+            previews = {
+                str(name): (
+                    value
+                    if len(value) <= self._NOT_A_LIST_PREVIEW_CHARS
+                    else value[: self._NOT_A_LIST_PREVIEW_CHARS] + "…"
+                )
+                for name, value in not_a_list.items()
+                if isinstance(value, str)
+            }
+            rec = (
+                " This document has large/tabular fields; Advanced (agentic) "
+                "extraction with table parsing is recommended for it."
+                if not is_agentic
+                else ""
+            )
+            issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="error",
+                    code=self.LIST_FIELD_NOT_A_LIST_CODE,
+                    message=(
+                        f"List field(s) {fields_str} came back as "
+                        f"{', '.join(sorted(set(returned.values())))} rather than a "
+                        f"list, so every row of each is lost. The model answered in "
+                        f"the field instead of filling it — the value it returned is "
+                        f"in this issue's details. Scalar fields are unaffected and "
+                        f"can still score perfectly, and the row-count checks have "
+                        f"no list to count, so no other signal flags this unless "
+                        f"schema validation happens to be enabled.{rec}"
+                    ),
+                    root_cause=(
+                        f"{'agentic' if is_agentic else 'traditional'} extraction "
+                        f"with model "
+                        f"{self._pending_extraction_model or self.config.extraction.model}; "
+                        f"array field(s) returned as a non-list: {fields_str}"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "not_a_list_fields": sorted(returned),
+                        "returned_types": returned,
+                        "returned_values": previews,
+                        "agentic": is_agentic,
+                    },
                 )
             )
 
