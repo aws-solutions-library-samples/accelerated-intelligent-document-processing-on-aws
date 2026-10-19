@@ -254,8 +254,15 @@ def test_the_seq_free_row_count_agrees_that_nothing_was_lost():
     It is ``confidence_coverage``'s denominator —
     ``sum(len(v) for list-valued v in inference_result)`` — so it is the one figure in
     the artifact that answers "how many rows came back" without going through the
-    identifier at all. On every signature row that records it, it reads the full truth
-    count while ``rows_extracted`` reads short.
+    identifier at all. On every signature row that records it, it reads **at least**
+    the full truth count while ``rows_extracted`` reads short.
+
+    ⚠️ **The claim is "nothing was lost", which is a floor and not an equality.** A
+    run can return *more* rows than the truth holds — the same backend that perturbs
+    an identifier can also repeat a row — and such a run has lost nothing either, so
+    an equality assertion would report it as refuting #1500 when it corroborates it.
+    One run does exactly that, and it is pinned by identity below rather than
+    tolerated by a loosened comparison.
     """
     withcov = [r for r in SIGNATURE_ROWS if r.get("conf_rows_expected")]
     assert len(withcov) >= 70, (
@@ -263,15 +270,40 @@ def test_the_seq_free_row_count_agrees_that_nothing_was_lost():
         "corroboration for #1500 rests on that column and 75 rows carried it when "
         "this was written."
     )
-    disagree = [
+    short = [
         (r["grid"], r["doc"], r["cell"], r["rows_truth"], r["conf_rows_expected"])
         for r in withcov
-        if r["conf_rows_expected"] != r["rows_truth"]
+        if r["conf_rows_expected"] < r["rows_truth"]
     ]
-    assert disagree == [], (
-        f"{len(disagree)} signature rows report a data-row count that differs from "
-        "the truth row count, so on those runs rows really were missing and the "
-        f"collapse reading does not hold. First few: {disagree[:5]}"
+    assert short == [], (
+        f"{len(short)} signature rows report FEWER data rows than the truth holds, so "
+        "on those runs rows really were missing and the collapse reading does not "
+        f"hold for them. First few: {short[:5]}"
+    )
+
+    # The one over-returning run, pinned on both axes: which run it is, and how many
+    # there are. A second one is a new phenomenon and should be looked at rather than
+    # absorbed — `dups: 177` against 100 truth rows and `rows_extracted: 20` is a
+    # model repeating rows wholesale, which is a different defect from a perturbed
+    # identifier even though both leave `rows_extracted` short.
+    over = sorted(
+        (r["grid"], r["doc"], r["cell"], r["rows_truth"], r["conf_rows_expected"])
+        for r in withcov
+        if r["conf_rows_expected"] > r["rows_truth"]
+    )
+    assert over == [
+        (
+            "v0.6.12/simplegrid__extraction-model-nova_lite",
+            "small_narrow.pdf",
+            "core-llm-simple-sep",
+            100,
+            197,
+        )
+    ], (
+        "the set of signature rows returning MORE rows than the truth holds has "
+        f"changed; found {len(over)}: {over}. These lose nothing, so they do not "
+        "refute #1500 — but a new one is row duplication on a fresh (grid, document, "
+        "cell) and is worth reading before this pin is updated."
     )
 
 

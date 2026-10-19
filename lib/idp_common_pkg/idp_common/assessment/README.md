@@ -701,10 +701,10 @@ got there first. The `processing_issues`/`processing_issue_codes` columns added 
 ##### The other limits on the figures above
 
 - **A document-level ratio can dilute a per-section one.** The harness sums over a
-  document's sections; the gate runs per section. 6,228 of the 6,672 runs are
+  document's sections; the gate runs per section. 9,992 of the 10,033 runs are
   single-section (or record no section count), where the two coincide, and a 0
-  aggregate implies 0 in every section — so the 97.32% figure is exact rather than
-  averaged. For the 179 nonzero runs the recorded ratio is a *lower* bound on the
+  aggregate implies 0 in every section — so the 97.37% figure is exact rather than
+  averaged. For the 264 nonzero runs the recorded ratio is a *lower* bound on the
   worst section's.
 - **No multi-record corpus has been run.** The measured row shapes are flat (three
   or eight scalar cells from
