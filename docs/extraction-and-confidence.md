@@ -1479,20 +1479,25 @@ extraction:
 >    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
 >    #894 (an Assessment Lambda hitting its 900 s limit three times,
 >    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
->    extraction) is **not explained by this loop**, so treat it as still open: the
->    same-model retry rung already stopped on no progress before this change, and the
->    ladder's wall-clock deadline guard was already in place in the release where
->    those timeouts were observed. The single gap in that guard has since been closed
->    (#958): every recovery call — retry and escalation alike — now checks the
->    Lambda's remaining time before it is made, as further bisections already did, so
->    a run that would have spent its whole budget on partially-successful retry
->    rounds stops at the last call that fits and keeps every row it recovered. With
->    rows still unscored the section reports `assessment_incomplete` naming the time
->    budget (the `assessment_deadline_reached` warning is for a run that was cut
->    short and scored every row regardless). That was the most concrete lead on the
->    timeout, but it is not confirmed as its cause. Until #894 is fixed, score such a class
->    with a large-output-cap confidence model (`escalation_model`), or split the inner
->    list into its own class.
+>    extraction) is **not explained by this loop**. What bounds the wall clock is a
+>    separate guard that now covers **every** dispatch the pass makes: each batch of
+>    the sequential loop, the cache-warming batch, each wave of the concurrent
+>    fan-out (#1488) and every recovery call, retry and escalation alike (#958), as
+>    further bisections already did. A dispatch the remaining invocation time cannot
+>    hold is refused rather than started, which is what keeps a long list — 48 model
+>    calls for 1,200 rows at the shipped 25-row ceiling — from running into the
+>    900 s wall; a Lambda killed there raises no Python exception, so the degrade
+>    path never ran and the document was discarded with its already-persisted
+>    extraction. With rows still unscored the section reports
+>    `assessment_incomplete` naming the time budget, and those rows carry a per-row
+>    reason naming it too (the `assessment_deadline_reached` warning is for a run
+>    that was cut short and scored every row regardless). ⚠️ Two routes to this
+>    symptom are **not** covered: an out-of-memory kill, which is equally
+>    exception-free and which nothing here bounds, and the sizing bug itself —
+>    a wrongly large batch size makes the pass issue few big calls rather than many
+>    small ones, which is not the shape a per-dispatch guard refuses. Until #894 is
+>    fixed, score such a class with a large-output-cap confidence model
+>    (`escalation_model`), or split the inner list into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
@@ -2207,7 +2212,7 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Four signals are raised as processing
+So it must be detected structurally. The signals below are raised as processing
 issues — reaching the document list's **Processing Issues** column, the
 **Processing Report** tab and the tracking table's sparse
 `HasProcessingIssues` attribute — on **both** Simple and Advanced modes:
@@ -2218,9 +2223,37 @@ issues — reaching the document list's **Processing Issues** column, the
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
 | `extraction_rows_below_ocr_estimate` | warning (**error** under `row_shortfall_action: fail`, which is then the only one of these that changes the document's status — see below) | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a table of a *different* width, a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. ⚠️ Matching is on width **only**, and matched tables are summed over the whole section: a table of the *same* width that has nothing to do with the list — a two-column Daily Balance table beside a two-property account summary — is counted as evidence about it. The check needs OCR that emits Markdown tables: Textract with the `TABLES` feature, or BDA. **That is the shipped default** (`ocr.features: [TABLES, LAYOUT, SIGNATURES]`), so the check is live on every shipped preset except the two `ocr-benchmark` ones, which set LAYOUT only; a config that removes `TABLES` has no pipe tables and the check is inert. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
-
 | `extraction_partial_row_shortfall` | warning, **always** (`row_shortfall_action` does not govern it — see below) | A list of objects returned **fewer rows than the matched OCR tables actually hold** — by more than their reprinted column headings can explain — but **not fewer than half**, so `extraction_rows_below_ocr_estimate` above does not fire. It is the same evidence, the same width matching, the same group sum and the same `maxItems` ceiling as that check, read against the OCR's **data**-row count instead of half the heading-inflated one. ⚠️ **It exists because the half ratio went silent well before half.** On a 17-page 800-row statement the matched evidence is 817 rows, of which 17 are the heading reprinted once per page, and half of 817 is 408.5: an extraction returning **409 of the 800 rows — 48.9% of the document lost** — crossed no bar, carried no processing issue, and its own processing report read `Status: SUCCESS`. The half ratio is a *multiplicative* slack standing in for an *additive* imprecision, so it was about 24x the inflation it was chosen to absorb at 17 pages and the factor grows with the page count. **The residual tolerance is a row gap, not a ratio:** a shortfall smaller than 30 rows is still not reported, so up to **29 rows** can go missing silently — but 29 whatever the document's size, where before the silent band was 408 rows at 800 and 1,600 at 3,200. ⚠️ It inherits the same width-only attribution, and that can only ever *inflate* the evidence, so a firing is a shortfall to **confirm** rather than a certain loss; the issue's `details` carry `ocr_matched_table_rows`, `ocr_heading_rows`, `ocr_estimated_rows` (the bar) and `missing_rows` so the arithmetic is auditable without re-reading the OCR. It needs the same table-emitting OCR, and on a section whose matched evidence is under 60 rows the two bars meet, so no document that small produces it. |
 | `extraction_output_truncated` | warning (both modes — see below) | The model's response **stopped before it finished**, so the result holds only the part that was emitted and every list in it is a prefix. The one certain signal in this table — the others are estimates. It comes from the response's own `stopReason` — Bedrock Converse's `max_tokens`, or the `incomplete` that the OpenAI Responses adapter carries over from that API's `status` — or from the JSON repair reader finding an unterminated structure. It needs neither OCR nor a list, so it is the one completeness signal that is live on a LAYOUT-only OCR configuration. ⚠️ Its absence is **not** evidence that the output is complete: a model that abbreviates a long list on its own stops with `end_turn` and a syntactically complete answer, and that is the shape measured on an 800-row statement, where the short runs spent about 2.3k extraction output tokens against the complete runs' 38.5k on the same model — no ceiling was reached. `extraction_rows_below_ocr_estimate` is what covers that case. Both can fire on one section and neither suppresses the other: this one names the cause, that one counts the rows. Severity is `warning` unconditionally — `row_shortfall_action` governs `extraction_rows_below_ocr_estimate` only. **Advanced mode reaches this** by its own route: a shard whose agent turn is cut off at the output ceiling keeps the extraction its tool calls had already committed and validated, and records the truncation, instead of failing the section — which is what it used to do, discarding rows that were complete. That matters most under `confidence.mode: integrated`, where the turn that overruns is the per-field confidence one AFTER the data is safe. Two bounds: only an output-ceiling stop is kept this way (any other agent failure still fails the section), and only an extraction the class schema accepts — an empty result is never invented. Confidence for such a section is scored by the standalone Assessment step instead, so it is complete rather than partial. |
+| `extraction_row_count_unverified` | info, **always** (`row_shortfall_action` does not govern it) | The two OCR-grounded checks above **did not run** for a list field. Both need OCR tables whose column count **equals** the item schema's property count, and when the section's text holds fewer than 30 such rows neither can say anything either way — at zero matched rows neither is merely quiet, both are structurally unable to fire. Until this code existed that produced exactly what their running and finding nothing produces: no issue, and a processing report reading `Status: SUCCESS`. It fires when a list of objects came back with **30 or more rows** while the matched evidence is under that floor. ⚠️ **It is a statement about the evidence, never about the result** — the row count is *unverified*, equally consistent with a complete list — which is also why it is `info`: two ordinary configurations reach it with nothing wrong, an item schema carrying a property the rendered table does not have (a derived `Balance`) and an OCR configuration that emits no Markdown tables, so at `warning` their reports would move from `SUCCESS` to `COMPLETED WITH WARNINGS` for a condition the operator may have chosen. The `details` tell the two causes apart: `ocr_table_widths` holds every table width found in the section, so `[]` means no table was recognised while `[4]` against `item_property_count: 3` means the evidence is present and the wrong shape. **To restore the checks:** use an OCR backend that renders tables (Textract with the `TABLES` feature, or BDA) and give the item schema one property per rendered column. |
+
+⚠️ **Two of those signals depend on the OCR backend, and the dependency is not
+visible from the extraction configuration.** `extraction_rows_below_ocr_estimate`
+and `extraction_partial_row_shortfall` both count rows in the section's OCR text,
+in Markdown tables whose column count equals the item schema's property count.
+Textract with the `TABLES` feature and BDA render tables in that form. The
+`bedrock` OCR backend asks a model to transcribe the page and renders whatever
+Markdown it returns, so the table may arrive without leading pipes, with an extra
+column, with a row-number column added, or as a bulleted list — all of which sum
+to **zero** matched rows, at which point neither check is applicable. Choosing
+that backend therefore removes two of the completeness signals, and
+`extraction_row_count_unverified` is what says so on the affected sections.
+`extraction_incomplete`, `extraction_list_truncated`, `extraction_sparse` and
+`extraction_output_truncated` read the extraction result rather than the OCR
+text, so they are unaffected by the backend.
+
+⚠️ **`info` severity keeps the report's status line, but it is not invisible, and
+on such a backend `extraction_row_count_unverified` will be common.** Two UI
+surfaces count issues without reading severity, so an `info` issue moves them
+exactly as a warning would: the section's status indicator goes from **OK** to the
+generic info label **Auto-recovered** (the same label `extraction_sparse` gets),
+and the document list's **Processing Issues** count becomes non-zero. Both happen
+on every section holding a 30-or-more-row object list, including sections where
+nothing is wrong — which is the trade for being able to tell "could not check"
+from "checked and found complete" at all. The shipped default OCR configuration
+carries `TABLES`, so a default deployment does not see this; the two
+`ocr-benchmark` presets set `LAYOUT` only and a `bedrock` backend renders its own
+Markdown, and those are the configurations where it applies.
 
 One further issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
