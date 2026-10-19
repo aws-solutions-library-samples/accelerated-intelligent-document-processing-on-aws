@@ -3,6 +3,14 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`munkres` is pinned to 1.1.4, the last release by its original maintainer.** Stickler declares it only as `munkres>=1.1.4`, so every build installed the newest release. 2.0.0 and 3.0.0, published in October 2026, are a rewrite with a native extension by a different uploader, and 3.0.0 broke list-item scoring in the unit suite. **Action:** none; Evaluation Lambdas built from this release bundle 1.1.4.
+
+- **`aiohttp` is updated to 3.14.5** in `lib/idp_common_pkg/uv.lock`, resolving two HIGH advisories against 3.14.3: unbounded memory and CPU use (GHSA-2g87-pp6c-29x5) and a missing initial request/header timeout in the aiohttp server (GHSA-5wr8-gcqf-gqf3).
+
 ## [0.6.12]
 
 ### Added
@@ -26,6 +34,8 @@ SPDX-License-Identifier: MIT-0
 - **Documents now record *where* their Configuration Profile came from.** `ConfigSource` on the tracking record, surfaced under Config Profile in the document panel and in every export, says whether the profile was specified at upload, assigned by a prefix mapping (with `ConfigMappingPrefix` naming which one), taken from the active profile, kept from a previous run, chosen when reprocessing, pinned by the submitting feature, or — for a document a refusing mapping failed at ingest — refused, with no configuration applied. There were already three sources before prefix mappings existed and the document recorded none of them, so "why did this process under `lending` r7?" could only be answered by correlating logs across two Lambdas.
 
 - **A whole document's page images are presigned in one API call** ([#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)). The new `getFilePresignedUrls(files: [FilePresignRequest!]!)` query returns one presigned GET URL per named object, takes an optional `versionId` **per entry** so a past document version's pages can each be pinned to their own object version, and echoes every `s3Uri` back so a caller can join the results to its request. It exists because the document read path moved behind the resolver (see Changed): the page-image viewer and the page-thumbnail hook each sign a document's whole page array, so a per-object field would mean a resolver invocation per page per panel on every document view, re-issued on each poll. Every entry is authorized individually, and all of them before the first URL is minted; a refusal fails the **whole** request rather than being reported per entry, so the operation cannot be used to learn key by key which documents are in the caller's scope. The list is capped server-side at 1,000 objects and a longer one is refused with a **400 rather than truncated**, because a truncated list renders blank pages with no error. **Action:** none.
+
+- **The hands-on workshops are now linked from the repository and the docs site.** A new [Hands-on Workshops](docs/workshops.md) page covers both workshops. The GenAI IDP Workshop runs on AWS Workshop Studio. It is best taken at an AWS-hosted event, where each participant gets a temporary account with the solution pre-deployed, and AWS customers can request a session through their account team. It can also be done self-paced in your own account. The self-guided Amazon Quick integration workshop runs in your own account. The page explains when to use each. `workshop/README.md` and the top of `README.md` point to it.
 
 ### Changed
 
