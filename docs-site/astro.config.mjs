@@ -36,6 +36,7 @@ export default defineConfig({
               label: "Blogs, Customer Stories & Research",
               slug: "references",
             },
+            { label: "Hands-on Workshops", slug: "workshops" },
           ],
         },
         {
