@@ -200,6 +200,13 @@ CSV_COLS = [
     "truncation_prefix",
     "scalar_accuracy",
     "typed_accuracy",
+    # `typed_accuracy`'s DENOMINATOR, and the reason column that distinguishes "this
+    # document has no typed scalar truth, so the pair is absent" from "measured and
+    # there was nothing to join" (#1490). `typed_fields` was written by the scorer and
+    # readable from nothing, the same way `cells_compared` was: a ratio in the CSV
+    # without the count it was taken over, and a blank cell a reader fills in as zero.
+    "typed_fields",
+    "typed_truth_unavailable",
     "cell_accuracy",
     # `cell_accuracy`'s DENOMINATOR, beside it. Without it the CSV carries a ratio and
     # not the count it was taken over, which is the "a null column scores 1.000" blind
