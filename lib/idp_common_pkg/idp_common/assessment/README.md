@@ -634,36 +634,69 @@ added in #1378 answer this directly on the next grid, at no extra cost.
 
 ### Lambda wall-clock budget & resume safety
 
-The escalation ladder adds sequential model calls inside the 900s
-Extraction/Assessment Lambdas. To avoid a hard timeout, both handlers thread the
-Lambda's `context.get_remaining_time_in_millis()` down as an absolute
-`deadline_epoch`. Every path that can spend a model call consults it, and all of
-them price a call at `_ESTIMATED_MODEL_CALL_SECONDS` (60s) or the last measured
-duration, whichever is larger, against the remaining time minus a 90s safety
-reserve:
+The primary confidence pass and the escalation ladder behind it both spend model
+calls inside the 900s Extraction/Assessment Lambdas. To avoid a hard timeout, both
+handlers thread the Lambda's `context.get_remaining_time_in_millis()` down as an
+absolute `deadline_epoch`. Every path that can spend a model call consults it
+against the remaining time minus a 90s safety reserve, pricing one call at
+`_ESTIMATED_MODEL_CALL_SECONDS` (60s):
 
-| Where | Granularity | Added |
-|---|---|---|
-| Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | 1.5 |
-| Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | #958 |
-| Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | 1.5 |
+| Where | Granularity | Price of one call | Added |
+|---|---|---|---|
+| Every batch of the primary pass's sequential loop (`assess_results_batched`) | per batch | flat 60s | #1488 |
+| The cache-warming batch that precedes a concurrent fan-out | per pass | flat 60s | #1488 |
+| Each wave of the concurrent fan-out (up to `max_concurrent_batches` batches) | **per wave** | flat 60s | #1488 |
+| Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | `max(measured, 60s)` | 1.5 |
+| Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | `max(measured, 60s)` | #958 |
+| Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | flat 60s | 1.5 |
 
-When a check fails the ladder stops, keeps everything already recovered, and sets
-`deadline_reached` — converting a would-be timeout into a soft, flagged, complete
-document.
+**60s is a floor, not a ceiling.** Which rows have more than the floor to work
+with is a property of where the check sits.
+The two `max(measured, 60s)` rows have a just-completed
+call of their own to measure — the call that truncated, and the previous recovery
+chunk — and they floor it because the next call is the one that matters and these
+guards exist for the slow shapes. The four flat rows have no measurement in hand:
+the primary pass's first batch has made no call yet, and the fan-out's waves and
+the escalation round are priced before they start. On those paths under-pricing a
+slow model is self-correcting rather than unbounded, because each one re-reads the
+clock before its next dispatch, so a model that ran long is charged in full on the
+next decision.
 
-The retry rung was the last to be covered: until #958 it stopped only after
-`max_retries` rounds or on a round that recovered nothing, so rounds that each made
-partial progress were unbounded in wall-clock terms. Note **why that check is per
-chunk and not per round.** A round-level check has to price a whole round before
-making any of its calls, and the only safe price is a worst case — chunks × 60s.
-That is not a bound on time, it is a cap on chunk COUNT: with 800s remaining it
-refuses any round past 11 chunks however fast the model actually is, which for a
-200-row list at a token-aware batch size of 4 discarded recovery that measurably
-took under a second and turned a clean section into an error-severity
-`assessment_incomplete`. Pricing one call at a time bounds the wall clock exactly,
-keeps every row the budget did cover, and treats both rungs alike — before #958 the
-cheap same-model rung could be refused while the slower, dearer escalation rung
+When a check fails the pass or the ladder stops, keeps everything already scored or
+recovered, and sets `deadline_reached` — converting a would-be timeout into a soft,
+flagged, complete document. On the primary pass the batches it does not run are
+always a **trailing suffix**, because rows accumulate positionally and dropping a
+middle batch would slide later rows' confidence and bounding boxes onto earlier
+rows.
+
+The granularity column is the honest unit: the check bounds a **dispatch unit**,
+not a call. Every path reaches the model through `_assess_slice_adaptive`, whose
+first call is unconditional once the unit has been cleared, and a truncating model
+bisects from there — each further split is checked, but a cleared split makes two
+calls. So a chunk the model keeps truncating can finish roughly (bisection depth ×
+one call) past the point it was cleared for. That residual is deliberate; pricing a
+prospective bisection tree would reintroduce the count cap described next.
+
+**Why none of these checks prices more than one call at a time.** A check that
+covers a whole round, or a whole fan-out, has to price it before making any of its
+calls, and the only safe price is a worst case — chunks × 60s. That is not a bound
+on time, it is a cap on chunk COUNT: with 800s remaining it refuses any round past
+11 chunks however fast the model actually is, which for a 200-row list at a
+token-aware batch size of 4 discarded recovery that measurably took under a second
+and turned a clean section into an error-severity `assessment_incomplete`. Pricing
+one call at a time bounds the wall clock exactly and keeps every row the budget did
+cover. The concurrent fan-out is held to the same rule, which is why it dispatches
+in waves and re-reads the clock before each: a wave runs concurrently so it costs
+about one call, and calls that return faster than the estimate leave the budget
+intact, so the next wave is allowed on the evidence instead of refused on the
+guess. The price of the wave boundary is the straggler — a wave is only as fast as
+its slowest call, where one continuous `pool.map` refills a free worker the moment
+it frees up — which buys the observation point that makes the budget
+self-correcting. That price is paid only where there is a budget to observe: a
+caller with no `deadline_epoch` (a local run, a notebook) keeps the single
+continuous map, because for it the guard is inert and there is nothing to re-read.
+The rule also treats the rungs alike: before #958 the cheap
+same-model rung could be refused while the slower, dearer escalation rung
 proceeded, because the two sized their chunks differently.
 
 **What an operator sees.** With rows still unscored the section reports
@@ -671,7 +704,28 @@ proceeded, because the two sized their chunks differently.
 remedy — more Lambda time, or less work per section. It does **not** report
 `assessment_deadline_reached`: that rung sits below `assessment_incomplete` in the
 severity ladder and the guard only fires while rows are missing, so the warning is
-reachable only when a later rung went on to score every row anyway. As defense in depth, the Step Functions
+reachable only when a later rung went on to score every row anyway.
+
+Per row, the text an operator reads beside the empty confidence in the UI names
+the same cause: a row whose batch was never dispatched carries
+`_UNASSESSED_DEADLINE_REASON` ("the Lambda invocation time budget was reached
+before this row's confidence batch was dispatched"), where a row the model was
+asked about and answered short carries `_UNASSESSED_SHORT_RESPONSE_REASON`
+("assessment returned fewer items than were extracted"). The boundary is exact
+rather than inferred — everything past the last dispatched chunk is the
+never-dispatched suffix — and the distinction matters because the two have
+different remedies: the first is the time budget, the second is the model's
+output budget.
+
+`batch_count` in `metadata.assessment_batch_split_stats` counts the batches that
+were **dispatched**, not the batches that were planned, which is how it stays
+consistent with `deadline_reached`; the processing report renders it as
+"Confidence list batches: N" and the UI as "ran in N batch(es)". `0` is the
+honest value for a pass whose cache-warming batch was already refused. Note that
+`assessment_parsing_succeeded` is about whether the model's JSON could be *read*
+and is `True` on such a pass — it is not evidence that any call was made.
+
+As defense in depth, the Step Functions
 `ExtractionStep`/`AssessmentStep`/`ShardExtractionStep` retry sets include
 `States.Timeout` / `Lambda.Unknown`, so a genuine timeout is retried and resumes
 via the per-shard S3 persistence and the Assessment step's "skip if
