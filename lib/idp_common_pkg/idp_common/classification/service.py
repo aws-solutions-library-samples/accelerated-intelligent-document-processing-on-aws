@@ -79,6 +79,15 @@ logger = logging.getLogger(__name__)
 UNCLASSIFIED_FAILED = "failed"
 UNCLASSIFIED_NO_CONTENT = "no_content"
 
+# Which call's configuration is being resolved. These are not three
+# classification *methods* — they are the one single-pass call, and the two
+# halves of the two-stage strategy, which need different prompts, may use
+# different models, and are metered separately so that a two-stage deployment's
+# cost table shows where the money went instead of summing both under one line.
+STAGE_SINGLE_PASS = "classification"
+STAGE_SEGMENTATION = "segmentation"
+STAGE_LABELING = "labeling"
+
 # Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
 # text comes from model output or a service error message, and the issue rides to
 # DynamoDB inside the section map, whose 400 KB item ceiling the assessment path
@@ -135,6 +144,26 @@ class ClassificationService:
     # `classificationMethod` values, each of which bundled one of each.
     GRANULARITY_PAGE = "page"
     GRANULARITY_PACKET = "packet"
+
+    # Strategy: whether boundaries and classes come from one call or two.
+    STRATEGY_SINGLE_PASS = "single_pass"
+    STRATEGY_TWO_STAGE = "two_stage"
+
+    # Stage names, re-exported on the class for callers and tests.
+    STAGE_SINGLE_PASS = STAGE_SINGLE_PASS
+    STAGE_SEGMENTATION = STAGE_SEGMENTATION
+    STAGE_LABELING = STAGE_LABELING
+
+    # The metering context each stage's tokens are billed under. Single-pass
+    # stays `Classification` with unchanged units, so a cost comparison across
+    # this change is a straight read; two-stage splits into two lines, which is
+    # what makes "is Stage B actually cheaper than labeling every page?"
+    # answerable from the cost table.
+    STAGE_METERING_CONTEXT = {
+        STAGE_SINGLE_PASS: "Classification",
+        STAGE_SEGMENTATION: "Segmentation",
+        STAGE_LABELING: "Labeling",
+    }
 
     # Soft cap on the number of schema attribute names emitted per class
     # when rendering the optional {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}
@@ -264,7 +293,22 @@ class ClassificationService:
                 method = self.MULTIMODAL_PAGE_LEVEL
             self.classification_method = method
 
+        self.strategy = self.config.classification.strategy
+
         send_text, send_images = self._resolve_modality()
+        if self.strategy == self.STRATEGY_TWO_STAGE:
+            labeling = self.config.classification.labeling
+            logger.info(
+                "Using TWO-STAGE classification: Stage A finds boundaries at %s "
+                "granularity (boundary_hints=%s), Stage B labels each segment "
+                "with one %s call over its %s page(s). Metered separately as "
+                "Segmentation and Labeling.",
+                self.granularity,
+                self.config.classification.segmentation.boundary_hints,
+                labeling.method,
+                labeling.k if labeling.pages == "first_k" else labeling.pages,
+            )
+
         if self.granularity == self.GRANULARITY_PACKET:
             packet_cfg = self.config.classification.packet
             logger.info(
@@ -1271,9 +1315,21 @@ class ClassificationService:
 
         return header + "\n".join(rows)
 
-    def _get_classification_config(self) -> Dict[str, Any]:
+    def _get_classification_config(
+        self, stage: str = STAGE_SINGLE_PASS
+    ) -> Dict[str, Any]:
         """
         Get and validate the classification configuration.
+
+        Args:
+            stage: Which call's configuration to resolve —
+                :data:`STAGE_SINGLE_PASS` (the default: one call returns both
+                boundaries and classes), :data:`STAGE_SEGMENTATION` (two-stage
+                Stage A) or :data:`STAGE_LABELING` (two-stage Stage B). The
+                stage decides which prompts are used, which model, and the
+                **metering context** the call is billed under, so that a
+                two-stage deployment's cost table separates the two halves
+                instead of adding them together under one line.
 
         Returns:
             Dict with validated classification configuration parameters
@@ -1283,33 +1339,57 @@ class ClassificationService:
         """
         # Type-safe access to classification config (no .get() needed!)
         config = {
-            "model_id": self.bedrock_model,
+            "model_id": self._stage_model(stage),
             "temperature": self.config.classification.temperature,
             "top_k": self.config.classification.top_k,
             "top_p": self.config.classification.top_p,
             "max_tokens": self.config.classification.max_tokens,
             "reasoning_effort": self.config.classification.reasoning_effort,
+            "metering_context": self.STAGE_METERING_CONTEXT[stage],
+            "stage": stage,
         }
 
         # Validate system prompt
-        system_prompt = self._raw_system_prompt()
+        system_prompt = self._raw_system_prompt(stage)
         if not system_prompt:
-            raise ValueError("No system_prompt found in classification configuration")
+            raise ValueError(
+                f"No system_prompt found for the {stage} stage of classification"
+            )
         config["system_prompt"] = system_prompt
 
         # Validate task prompt
-        task_prompt = self._raw_task_prompt()
+        task_prompt = self._raw_task_prompt(stage)
         if not task_prompt:
-            raise ValueError("No task_prompt found in classification configuration")
+            raise ValueError(
+                f"No task_prompt found for the {stage} stage of classification"
+            )
         # Modality normalisation runs BEFORE the class-confidence splice: the
         # splice positions its block relative to the document/cache-point marker,
         # and rewriting placeholders afterwards could move content across it.
         task_prompt = self._apply_modality_to_prompt(task_prompt)
-        config["task_prompt"] = self._compose_class_confidence_prompt(task_prompt)
+        config["task_prompt"] = self._compose_class_confidence_prompt(
+            task_prompt, stage
+        )
 
         return config
 
-    def _compose_class_confidence_prompt(self, task_prompt: str) -> str:
+    def _stage_model(self, stage: str) -> str:
+        """The Bedrock model for one stage, falling back to the shared one.
+
+        Naming a model per stage is most of the point of two-stage: boundary
+        detection may want a capable multimodal model looking at a whole packet,
+        while labeling a clean segment is often a much easier problem that a
+        cheaper model answers just as well.
+        """
+        if stage == self.STAGE_SEGMENTATION:
+            return self.config.classification.segmentation.model or self.bedrock_model
+        if stage == self.STAGE_LABELING:
+            return self.config.classification.labeling.model or self.bedrock_model
+        return self.bedrock_model
+
+    def _compose_class_confidence_prompt(
+        self, task_prompt: str, stage: str = STAGE_SINGLE_PASS
+    ) -> str:
         """Splice the class-confidence instruction block in, when enabled.
 
         No-op in the default ``off`` mode, so the shipped prompt stays exactly as
@@ -1323,7 +1403,21 @@ class ClassificationService:
         if mode == "off":
             return task_prompt
 
-        packet = self.granularity == self.GRANULARITY_PACKET
+        if stage == self.STAGE_SEGMENTATION:
+            # Stage A reports no class, so there is no class to be confident
+            # about. Scoring belongs to Stage B, which is where the class is
+            # decided — and spending output tokens here would buy a number
+            # describing nothing.
+            return task_prompt
+
+        # Stage B is always one call about one segment, so it takes the PAGE
+        # block shape (one class, one score) regardless of how the boundaries
+        # were found. The packet block describes a `segments` array Stage B
+        # does not return.
+        packet = (
+            self.granularity == self.GRANULARITY_PACKET
+            and stage != self.STAGE_LABELING
+        )
 
         if packet and not self.granularity_is_explicit:
             # A LEGACY holistic configuration (classificationMethod with no
@@ -1384,8 +1478,8 @@ class ClassificationService:
             )
         return composed
 
-    def _raw_task_prompt(self) -> str:
-        """The configured task prompt for the active granularity, un-normalised.
+    def _raw_task_prompt(self, stage: str = STAGE_SINGLE_PASS) -> str:
+        """The configured task prompt for a stage and granularity, un-normalised.
 
         "Un-normalised" means before the modality rewrite and before the
         class-confidence splice — this is the template whose placeholders the
@@ -1402,17 +1496,60 @@ class ClassificationService:
         prompt, and ``granularity: packet`` uses ``packet.task_prompt``, which is
         also the field the configuration panel shows for that granularity.
         """
-        return self._granularity_prompt("task_prompt")
+        return self._stage_prompt(stage, "task_prompt")
 
-    def _raw_system_prompt(self) -> str:
-        """The configured system prompt for the active granularity.
+    def _raw_system_prompt(self, stage: str = STAGE_SINGLE_PASS) -> str:
+        """The configured system prompt for a stage and granularity.
 
-        Same resolution rule as :meth:`_raw_task_prompt`.
+        Same resolution rules as :meth:`_raw_task_prompt`.
         """
-        return self._granularity_prompt("system_prompt")
+        return self._stage_prompt(stage, "system_prompt")
 
-    def _granularity_prompt(self, field: str) -> str:
-        """Resolve one prompt field for the active granularity."""
+    def _stage_prompt(self, stage: str, field: str) -> str:
+        """Resolve one prompt field for a stage and the active granularity.
+
+        Stage B (labeling) is **not** granularity-dependent: it is always one
+        call about one segment's pages, whichever way the boundaries were found.
+        Stage A and single-pass both are, because both are asked either about
+        one page or about a whole packet.
+        """
+        if stage == self.STAGE_LABELING:
+            labeling = self.config.classification.labeling
+            value = getattr(labeling, field)
+            if value:
+                return value
+            logger.warning(
+                "classification.labeling.%s is empty, so Stage B has no prompt "
+                "of its own and is falling back to the single-pass "
+                "classification.%s — which asks for a document_boundary this "
+                "stage does not need. Restore it from the system defaults "
+                "(base-classification.yaml).",
+                field,
+                field,
+            )
+            return getattr(self.config.classification, field)
+
+        if stage == self.STAGE_SEGMENTATION:
+            segmentation = self.config.classification.segmentation
+            source = (
+                segmentation.packet
+                if self.granularity == self.GRANULARITY_PACKET
+                else segmentation
+            )
+            value = getattr(source, field)
+            if value:
+                return value
+            logger.warning(
+                "The %s granularity Stage A %s is empty, so segmentation is "
+                "falling back to the single-pass prompt — which carries the "
+                "whole class vocabulary, the saving two-stage exists for. "
+                "Restore it from the system defaults "
+                "(base-classification.yaml).",
+                self.granularity,
+                field,
+            )
+            # Fall through to the single-pass resolution below.
+
         flat = getattr(self.config.classification, field)
         if (
             self.granularity == self.GRANULARITY_PACKET
@@ -1579,6 +1716,12 @@ class ClassificationService:
         return {
             "DOCUMENT_TEXT": document_text,
             "CLASS_NAMES_AND_DESCRIPTIONS": class_names_and_descriptions,
+            # Two-stage Stage A only. Renders empty under the default
+            # `boundary_hints: none`, which is the point: a boundary call that
+            # carries no class vocabulary is the prefix saving two-stage exists
+            # for. Included unconditionally because format_prompt substitutes
+            # only placeholders the template actually references.
+            "BOUNDARY_HINTS": self._format_boundary_hints(),
             # Opt-in placeholder: included unconditionally in the
             # substitutions dict because format_prompt only substitutes
             # placeholders that actually appear in the template, so this
@@ -2606,7 +2749,10 @@ class ClassificationService:
             top_k=config["top_k"],
             top_p=config["top_p"],
             max_tokens=config["max_tokens"],
-            context="Classification",
+            # Single-pass keeps "Classification" with unchanged units, so a cost
+            # comparison across this change is a straight read. Two-stage bills
+            # its halves under "Segmentation" and "Labeling".
+            context=config.get("metering_context", "Classification"),
             model_lambda_hook_arn=self.config.classification.model_lambda_hook_arn,
             reasoning_effort=config.get("reasoning_effort"),
         )
@@ -3148,7 +3294,11 @@ class ClassificationService:
                 # maxPagesForClassification still overrides sectionSplitting here
                 # — a pre-existing limitation of that setting, not specific to the
                 # regex path.
-                if self.granularity == self.GRANULARITY_PACKET:
+                if self.strategy == self.STRATEGY_TWO_STAGE:
+                    classified_limited = self.two_stage_classify_document(
+                        limited_document, forced_class=forced_class
+                    )
+                elif self.granularity == self.GRANULARITY_PACKET:
                     logger.info(
                         f"Classifying limited document with "
                         f"{len(limited_document.pages)} pages using packet "
@@ -3168,8 +3318,15 @@ class ClassificationService:
                 )
                 return document
 
-        # Dispatch on the resolved granularity (see __init__: `granularity`
-        # when set, otherwise derived from the deprecated classificationMethod).
+        # Dispatch on strategy first, then on the resolved granularity (see
+        # __init__: `granularity` when set, otherwise derived from the
+        # deprecated classificationMethod). Two-stage honours granularity
+        # inside Stage A, so the two settings compose rather than nest.
+        if self.strategy == self.STRATEGY_TWO_STAGE:
+            return self.two_stage_classify_document(
+                document, forced_class=forced_class
+            )
+
         if self.granularity == self.GRANULARITY_PACKET:
             return self.packet_classify_document(document, forced_class=forced_class)
 
@@ -4100,6 +4257,7 @@ class ClassificationService:
         document: Document,
         forced_class: Optional[str] = None,
         window_page_ids: Optional[List[str]] = None,
+        require_class: bool = True,
     ) -> List[Segment]:
         """Turn a packet call's ``segments`` array into :class:`Segment` objects.
 
@@ -4128,12 +4286,19 @@ class ClassificationService:
             window_page_ids: The page IDs this call was shown, in the order it
                 was shown them. ``None`` for a call that saw the whole document
                 with its own page IDs.
+            require_class: Whether a segment must carry a ``type``. False for
+                two-stage Stage A, which is asked for page ranges only and
+                whose segments are deliberately unlabeled — the whole reason
+                ``Segment.doc_class`` is optional.
 
         Returns:
             Segments in the order the model reported them, each covering at
             least one page of ``document``.
         """
         parsed: List[Segment] = []
+        required_keys = ("ordinal_start_page", "ordinal_end_page") + (
+            ("type",) if require_class else ()
+        )
 
         def resolve(ordinal: int) -> Optional[str]:
             if window_page_ids is None:
@@ -4147,9 +4312,7 @@ class ClassificationService:
             if not isinstance(segment, dict):
                 logger.warning(f"Segment {i} is not an object; skipping")
                 continue
-            if not all(
-                k in segment for k in ("ordinal_start_page", "ordinal_end_page", "type")
-            ):
+            if not all(k in segment for k in required_keys):
                 logger.warning(f"Segment {i} is missing required fields")
                 continue
 
@@ -4171,8 +4334,8 @@ class ClassificationService:
                 )
                 continue
 
-            doc_type = segment["type"]
-            if doc_type not in self.valid_doc_types:
+            doc_type = segment.get("type")
+            if doc_type is not None and doc_type not in self.valid_doc_types:
                 logger.warning(f"Unknown document type '{doc_type}', using anyway")
 
             # Optional, exactly as on the page-level path: used when the packet
@@ -4412,6 +4575,7 @@ class ClassificationService:
         substitutions = {
             "DOCUMENT_TEXT": paged_text,
             "CLASS_NAMES_AND_DESCRIPTIONS": self._format_classes_and_descriptions(),
+            "BOUNDARY_HINTS": self._format_boundary_hints(),
             # The packet path uses the markdown-table variant of the optional
             # schema-attribute placeholder so it matches the surrounding class
             # table format.
@@ -4534,6 +4698,76 @@ class ClassificationService:
             )
         return "\n".join(rendered)
 
+    def _packet_segments(
+        self,
+        document: Document,
+        stage: str = STAGE_SINGLE_PASS,
+        forced_class: Optional[str] = None,
+    ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
+        """Run every packet window and merge the result into one segment list.
+
+        Shared by single-pass packet classification and by two-stage Stage A at
+        packet granularity: the two differ only in which prompt and model the
+        stage resolves and whether a class comes back, both of which are
+        properties of ``stage``.
+
+        Returns:
+            ``(segments, metering, errors)``. ``segments`` is empty only when
+            every window failed; ``errors`` names each window that did, so a
+            partial result is still reported as partial rather than as a clean
+            run over fewer pages.
+        """
+        pages_content, _ = self._format_pages_with_coverage(document)
+        config = self._get_classification_config(stage)
+        _, send_images = self._resolve_modality()
+
+        sorted_page_ids = sorted(
+            document.pages.keys(),
+            key=lambda x: int(x) if x.isdigit() else float("inf"),
+        )
+        windows = self._packet_windows(sorted_page_ids)
+
+        window_segments: List[List[Segment]] = []
+        metering: Dict[str, Any] = {}
+        errors: List[str] = []
+
+        for window_index, window_page_ids in enumerate(windows, start=1):
+            try:
+                segments, window_metering = self._classify_one_packet_window(
+                    document=document,
+                    config=config,
+                    pages_content=pages_content,
+                    window_page_ids=window_page_ids,
+                    window_label=f"{window_index}/{len(windows)}",
+                    send_images=send_images,
+                    forced_class=forced_class,
+                )
+            except Exception as e:
+                # One window failing must not discard the others: on a long
+                # packet that would turn a transient throttle into a total loss
+                # of a 40-page document's boundaries.
+                error_msg = (
+                    f"Packet window {window_index}/{len(windows)} "
+                    f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
+                    f"failed: {e}"
+                )
+                logger.error(error_msg)
+                errors.append(error_msg)
+                continue
+
+            window_segments.append(segments)
+            metering = (
+                window_metering
+                if not metering
+                else utils.merge_metering_data(metering, window_metering)
+            )
+
+        if not window_segments:
+            return [], metering, errors
+
+        merged = self._merge_window_segments(window_segments, sorted_page_ids)
+        return merged, metering, errors
+
     def packet_classify_document(
         self, document: Document, forced_class: Optional[str] = None
     ) -> Document:
@@ -4602,10 +4836,8 @@ class ClassificationService:
         )
 
         try:
-            pages_content, pages_with_text = self._format_pages_with_coverage(document)
-
             no_text_error = self._packet_text_unavailable_error(
-                document, pages_with_text
+                document, self._format_pages_with_coverage(document)[1]
             )
             if no_text_error:
                 logger.error(no_text_error)
@@ -4613,66 +4845,22 @@ class ClassificationService:
                     document, success=False, error_message=no_text_error
                 )
 
-            config = self._get_classification_config()
-
-            sorted_page_ids = sorted(
-                document.pages.keys(),
-                key=lambda x: int(x) if x.isdigit() else float("inf"),
+            merged, metering, errors = self._packet_segments(
+                document,
+                stage=self.STAGE_SINGLE_PASS,
+                forced_class=forced_class,
             )
-            windows = self._packet_windows(sorted_page_ids)
-
-            window_segments: List[List[Segment]] = []
-            metering: Dict[str, Any] = {}
-            window_errors: List[str] = []
-
-            for window_index, window_page_ids in enumerate(windows, start=1):
-                try:
-                    segments, window_metering = self._classify_one_packet_window(
-                        document=document,
-                        config=config,
-                        pages_content=pages_content,
-                        window_page_ids=window_page_ids,
-                        window_label=f"{window_index}/{len(windows)}",
-                        send_images=send_images,
-                        forced_class=forced_class,
-                    )
-                except Exception as e:
-                    # One window failing must not discard the others: on a long
-                    # packet that would turn a transient throttle into a total
-                    # loss of a 40-page document's boundaries.
-                    error_msg = (
-                        f"Packet window {window_index}/{len(windows)} "
-                        f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
-                        f"failed: {e}"
-                    )
-                    logger.error(error_msg)
-                    window_errors.append(error_msg)
-                    continue
-
-                window_segments.append(segments)
-                metering = (
-                    window_metering
-                    if not metering
-                    else utils.merge_metering_data(metering, window_metering)
-                )
 
             document.metering = utils.merge_metering_data(document.metering, metering)
-            document.errors.extend(window_errors)
+            document.errors.extend(errors)
 
-            if not window_segments:
-                error_msg = (
-                    "Packet classification produced no segments: "
-                    + (
-                        "; ".join(window_errors)
-                        if window_errors
-                        else "the model returned none"
-                    )
+            if not merged:
+                error_msg = "Packet classification produced no segments: " + (
+                    "; ".join(errors) if errors else "the model returned none"
                 )
                 return self._update_document_status(
                     document, success=False, error_message=error_msg
                 )
-
-            merged = self._merge_window_segments(window_segments, sorted_page_ids)
 
             # One section builder for both granularities — see
             # _sections_from_segments.
@@ -4773,6 +4961,9 @@ class ClassificationService:
             document,
             forced_class=forced_class,
             window_page_ids=window_page_ids,
+            # Stage A is asked for ranges only — requiring a type here would
+            # reject every segment it correctly returns.
+            require_class=config.get("stage") != self.STAGE_SEGMENTATION,
         )
         if not segments:
             raise ValueError(
@@ -4791,3 +4982,503 @@ class ClassificationService:
         so the name no longer describes anything in the configuration.
         """
         return self.packet_classify_document(document, forced_class=forced_class)
+
+    def _format_boundary_hints(self) -> str:
+        """Render ``{BOUNDARY_HINTS}`` for two-stage Stage A.
+
+        Empty under the default ``boundary_hints: none``, and that is the point:
+        a boundary call carrying no class vocabulary at all is the prefix saving
+        two-stage exists for. ``class_names`` sends the **names only** — not the
+        descriptions and not the few-shot examples, which are the bulk of the
+        prefix — for the case where a boundary is marked by a form number or
+        title the class names happen to mention.
+        """
+        if (
+            self.config.classification.segmentation.boundary_hints != "class_names"
+            or not self.document_types
+        ):
+            return ""
+        names = ", ".join(dt.type_name for dt in self.document_types)
+        return (
+            "<document-type-hints>\n"
+            "These are the kinds of document this packet may contain. They are "
+            "a hint about what a document's opening page may be titled; do NOT "
+            "report a type, only where each document starts and ends.\n"
+            f"{names}\n"
+            "</document-type-hints>"
+        )
+
+    def two_stage_classify_document(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
+        """Classify by finding boundaries first, then labeling each segment.
+
+        Opt in with ``classification.strategy: two_stage``. Single-pass stays
+        the default.
+
+        A single-pass call does two different jobs at once, and pays for it in
+        two ways. **Every boundary decision carries the whole class vocabulary**
+        — the class list, every description and every few-shot example — even
+        though finding a boundary does not depend on any of it; at page
+        granularity that prefix is paid N times. And **labeling scales with
+        pages rather than documents**: a 40-page statement is labeled forty
+        times to produce one answer.
+
+        Two-stage splits them. Stage A reuses the granularity, modality,
+        windowing and context-page settings, with a prompt that asks only where
+        documents start and returns segments with no class. Stage B makes one
+        call per segment, carrying the vocabulary and the examples, over the
+        pages ``labeling.pages`` selects.
+
+        The two halves are metered separately, under ``Segmentation`` and
+        ``Labeling``, which is what makes "is this actually cheaper on my
+        documents?" answerable from the cost table rather than from arithmetic.
+        It also separates a wrong boundary from a wrong label, which one
+        section-level outcome cannot.
+
+        Args:
+            document: Document object to classify
+            forced_class: When set, Stage B is **skipped entirely** — the class
+                is already known from the document-name regex match, so there is
+                nothing to label and the only question was where the documents
+                start.
+
+        Returns:
+            Document: Updated Document object with classifications and sections
+        """
+        if not document.pages:
+            logger.warning("Document has no pages to classify")
+            return self._update_document_status(
+                document,
+                success=False,
+                error_message="Document has no pages to classify",
+            )
+
+        # Identical reasoning to both single-pass paths: a predetermined class
+        # still needs real boundaries unless sectionSplitting asks for none
+        # (GitHub issues #686 and #705).
+        if self._can_skip_backend_for_single_class(document):
+            logger.info(
+                f"Only one document class '{self.single_class_name}' is defined "
+                f"and sectionSplitting needs no boundary detection. Classifying "
+                f"all pages as this class without calling backend."
+            )
+            document = self._create_single_class_sections(document)
+            return self._update_document_status(document)
+
+        t0 = time.time()
+        logger.info(
+            "Classifying document with %d pages using two-stage classification "
+            "(%s granularity)",
+            len(document.pages),
+            self.granularity,
+        )
+
+        try:
+            segments, metering, errors = self._segment_document(document)
+            document.metering = utils.merge_metering_data(document.metering, metering)
+            document.errors.extend(errors)
+
+            if not segments:
+                error_msg = "Two-stage segmentation (Stage A) produced no segments: " + (
+                    "; ".join(errors) if errors else "the model returned none"
+                )
+                return self._update_document_status(
+                    document, success=False, error_message=error_msg
+                )
+
+            logger.info(
+                "Stage A found %d segment(s) across %d pages",
+                len(segments),
+                len(document.pages),
+            )
+
+            if forced_class:
+                # The document's NAME asserts the class, so there is nothing for
+                # Stage B to decide. Skipping it is the whole saving on this
+                # path: a name-matched 40-page packet costs its boundary calls
+                # and no labeling calls at all.
+                logger.info(
+                    "Skipping Stage B: the document name regex already asserts "
+                    "the class '%s' for every segment.",
+                    forced_class,
+                )
+                for segment in segments:
+                    segment.doc_class = forced_class
+                    segment.confidence = None
+            else:
+                segments, label_metering, label_errors = self._label_segments(
+                    document, segments
+                )
+                document.metering = utils.merge_metering_data(
+                    document.metering, label_metering
+                )
+                document.errors.extend(label_errors)
+
+            document = self._sections_from_segments(document, segments)
+            document = self._update_document_status(document)
+
+            logger.info(
+                "Document classified into %d sections using two-stage "
+                "classification in %.2f seconds",
+                len(document.sections),
+                time.time() - t0,
+            )
+
+        except Exception as e:
+            error_msg = f"Error in two-stage classification: {str(e)}"
+            document = self._update_document_status(
+                document, success=False, error_message=error_msg
+            )
+            raise
+
+        return document
+
+    def _segment_document(
+        self, document: Document
+    ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
+        """Stage A: find where each document starts, with no class vocabulary.
+
+        Honours ``granularity``: a packet-granularity Stage A is one call (or
+        one per window) asking for page ranges, and a page-granularity Stage A
+        is one call per page asking only ``start`` or ``continue``. The page
+        form still makes N calls, but each one drops the class list, the
+        descriptions and the few-shot examples, which is the dominant per-call
+        cost at that granularity.
+        """
+        if self.granularity == self.GRANULARITY_PACKET:
+            no_text_error = self._packet_text_unavailable_error(
+                document, self._format_pages_with_coverage(document)[1]
+            )
+            if no_text_error:
+                return [], {}, [no_text_error]
+            return self._packet_segments(document, stage=self.STAGE_SEGMENTATION)
+        return self._segment_pages(document)
+
+    def _segment_pages(
+        self, document: Document
+    ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
+        """Stage A at page granularity: one boundary-only call per page."""
+        config = self._get_classification_config(self.STAGE_SEGMENTATION)
+        send_text, send_images = self._resolve_modality()
+        context_size = self.config.classification.contextPagesCount
+
+        page_content_cache = self._preload_page_content(document, context_size)
+        sorted_page_ids = sorted(
+            document.pages.keys(),
+            key=lambda x: int(x) if x.isdigit() else float("inf"),
+        )
+
+        verdicts: Dict[str, PageClassification] = {}
+        metering: Dict[str, Any] = {}
+        errors: List[str] = []
+        lock = threading.Lock()
+
+        def boundary_for(page_id: str) -> None:
+            page = document.pages[page_id]
+            text_content = None
+            if page.parsed_text_uri and send_text:
+                try:
+                    text_content = s3.get_text_content(page.parsed_text_uri)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load text content for page {page_id}: {e}"
+                    )
+            image_content = None
+            if page.image_uri and send_images:
+                try:
+                    image_content = image.prepare_image(
+                        page.image_uri,
+                        self.config.classification.image.target_width,
+                        self.config.classification.image.target_height,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to load image for page {page_id}: {e}")
+
+            if context_size > 0:
+                context = self._get_context_for_page(
+                    page_id, sorted_page_ids, page_content_cache, context_size
+                )
+                content = self._build_context_content(
+                    task_prompt_template=config["task_prompt"],
+                    document_text=self._build_text_with_context(
+                        current_text=text_content or "",
+                        before_texts=context["before_texts"],
+                        after_texts=context["after_texts"],
+                    ),
+                    image_content=image_content,
+                    before_images=context["before_images"],
+                    after_images=context["after_images"],
+                )
+            else:
+                content = self._build_content(
+                    config["task_prompt"],
+                    text_content or "",
+                    # Stage A sends no vocabulary unless boundary_hints asks
+                    # for the names, so the class listing is deliberately
+                    # empty here. A Stage A prompt that references
+                    # {CLASS_NAMES_AND_DESCRIPTIONS} anyway gets nothing
+                    # rather than silently reintroducing the prefix.
+                    "",
+                    image_content,
+                )
+
+            result = self._invoke_bedrock_model(content=content, config=config)
+            response = result["response"]
+            content_array = response["output"]["message"].get("content", [])
+            text = "".join(
+                item["text"]
+                for item in content_array
+                if isinstance(item, dict) and isinstance(item.get("text"), str)
+            )
+            data, _ = extract_structured_data_from_text(text)
+            boundary = "continue"
+            reason = None
+            if isinstance(data, dict):
+                boundary = str(data.get("document_boundary", "continue")).lower()
+                reason = data.get("boundary_reason")
+
+            with lock:
+                verdicts[page_id] = PageClassification(
+                    page_id=page_id,
+                    # Stage A reports no class. The placeholder is not a
+                    # classification: Stage B overwrites it, and a segment whose
+                    # labeling fails keeps it so the failure is visible rather
+                    # than appearing as a confident class.
+                    classification=DocumentClassification(
+                        doc_type=UNCLASSIFIED_CLASS,
+                        confidence=None,
+                        metadata={"document_boundary": boundary},
+                    ),
+                )
+                if reason:
+                    document.pages[page_id].classification_reason = str(reason)
+                document.pages[page_id].document_boundary = boundary
+                metering.update(
+                    utils.merge_metering_data(metering, result.get("metering", {}))
+                )
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(boundary_for, page_id): page_id
+                for page_id in sorted_page_ids
+            }
+            for future in as_completed(futures):
+                page_id = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    error_msg = f"Stage A failed for page {page_id}: {e}"
+                    logger.error(error_msg)
+                    with lock:
+                        errors.append(error_msg)
+
+        if not verdicts:
+            return [], metering, errors
+
+        segments = self._fold_page_verdicts_to_segments(
+            [verdicts[pid] for pid in sorted_page_ids if pid in verdicts]
+        )
+        # The fold carries each page's class through, which for Stage A is the
+        # unclassified placeholder. Clear it so the segments really are
+        # unlabeled: a Segment with doc_class set is one Stage B would be
+        # entitled to leave alone.
+        for segment in segments:
+            segment.doc_class = None
+            segment.confidence = None
+        return segments, metering, errors
+
+    def _label_segments(
+        self, document: Document, segments: List[Segment]
+    ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
+        """Stage B: one call per segment to decide its class.
+
+        **Per segment, not per page** — the other half of the two-stage saving.
+        Which pages represent the segment is ``labeling.pages``; the default
+        ``first_k`` sends the opening two, because a document's identity is
+        almost always on its opening pages while ``all`` makes labeling a long
+        segment cost what page-level classification cost to classify it.
+
+        A segment whose labeling call fails keeps ``doc_class = None`` and is
+        recorded in the returned errors. It is **not** given a fallback class:
+        the segment's boundaries are still good, and an invented class would
+        propagate into extraction as though it had been decided.
+        """
+        config = self._get_classification_config(self.STAGE_LABELING)
+        _, send_images = self._resolve_modality()
+        pages_content, _ = self._format_pages_with_coverage(document)
+
+        metering: Dict[str, Any] = {}
+        errors: List[str] = []
+        lock = threading.Lock()
+
+        def label(index: int) -> None:
+            segment = segments[index]
+            page_ids = self._labeling_pages(segment)
+            paged_text = self._format_paged_text(pages_content, page_ids)
+            page_images = (
+                self._load_packet_page_images(document, page_ids)
+                if send_images
+                else []
+            )
+            content = self._build_packet_content(
+                config["task_prompt"], paged_text, page_images
+            )
+
+            doc_type, confidence, candidates, reason, call_metering = (
+                self._invoke_with_class_validation(
+                    content=content,
+                    config=config,
+                    label=f"segment {index + 1} (pages {segment.start_page}-{segment.end_page})",
+                )
+            )
+
+            with lock:
+                segment.doc_class = doc_type
+                segment.confidence = confidence
+                metering.update(
+                    utils.merge_metering_data(metering, call_metering)
+                )
+                for page_id in segment.page_ids:
+                    if page_id not in document.pages:
+                        continue
+                    if reason:
+                        document.pages[page_id].classification_reason = str(reason)
+                    if candidates:
+                        document.pages[page_id].classification_candidates = candidates
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(label, index): index for index in range(len(segments))
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    segment = segments[index]
+                    error_msg = (
+                        f"Stage B failed for segment {index + 1} "
+                        f"(pages {segment.start_page}-{segment.end_page}): {e}"
+                    )
+                    logger.error(error_msg)
+                    with lock:
+                        errors.append(error_msg)
+
+        logger.info(
+            "Stage B labeled %d/%d segment(s)",
+            sum(1 for s in segments if s.doc_class),
+            len(segments),
+        )
+        return segments, metering, errors
+
+    def _labeling_pages(self, segment: Segment) -> List[str]:
+        """Which of a segment's pages Stage B sends, per ``labeling.pages``."""
+        labeling = self.config.classification.labeling
+        if labeling.pages == "first":
+            return segment.page_ids[:1]
+        if labeling.pages == "all":
+            return list(segment.page_ids)
+        return segment.page_ids[: max(1, labeling.k)]
+
+    def _invoke_with_class_validation(
+        self,
+        content: List[Dict[str, Any]],
+        config: Dict[str, Any],
+        label: str,
+    ) -> tuple[
+        str, Optional[float], List[Dict[str, Any]], Optional[str], Dict[str, Any]
+    ]:
+        """Invoke one labeling call, re-prompting on an out-of-vocabulary class.
+
+        Same contract as the page-level validation loop — ``enforceValidClasses``,
+        ``maxValidationRetries`` and ``invalidClassFallback`` all apply, because
+        a class outside the vocabulary is exactly as wrong whether a page or a
+        segment produced it.
+        """
+        enforce = self.config.classification.enforceValidClasses
+        max_retries = self.config.classification.maxValidationRetries if enforce else 0
+
+        attempt_content = content
+        metering: Dict[str, Any] = {}
+        doc_type = ""
+        confidence: Optional[float] = None
+        candidates: List[Dict[str, Any]] = []
+        reason: Optional[str] = None
+        validation_error: Optional[str] = None
+
+        for attempt in range(max_retries + 1):
+            result = self._invoke_bedrock_model(
+                content=attempt_content, config=config
+            )
+            metering = (
+                result.get("metering", {})
+                if not metering
+                else utils.merge_metering_data(metering, result.get("metering", {}))
+            )
+
+            content_array = result["response"]["output"]["message"].get("content", [])
+            if not content_array:
+                raise ValueError(
+                    f"Labeling failed for {label}: LLM returned empty response"
+                )
+            text = "".join(
+                item["text"]
+                for item in content_array
+                if isinstance(item, dict) and isinstance(item.get("text"), str)
+            )
+
+            # Reset per attempt so a retry's values never leak from the
+            # rejected attempt: the confidence reported for a class we threw
+            # away does not apply to the new one.
+            confidence = None
+            candidates = []
+            reason = None
+
+            data, _ = extract_structured_data_from_text(text)
+            if isinstance(data, dict):
+                doc_type = str(data.get("class", "") or "")
+                reason = data.get("classification_reason")
+                confidence, candidates = resolve_class_and_confidence(
+                    reported_class=doc_type,
+                    reported_confidence=data.get("confidence"),
+                    reported_candidates=data.get("candidates"),
+                    valid_classes=self.valid_doc_types,
+                )
+            else:
+                doc_type = ""
+
+            if not enforce or doc_type in self.valid_doc_types:
+                return doc_type, confidence, candidates, reason, metering
+
+            validation_error = (
+                f"Model returned invalid class '{doc_type or '(empty)'}' for {label}"
+            )
+            if attempt < max_retries:
+                logger.warning(
+                    "%s (attempt %d/%d); re-prompting with valid classes.",
+                    validation_error,
+                    attempt + 1,
+                    max_retries + 1,
+                )
+                attempt_content = content + [
+                    {
+                        "text": (
+                            f"Your previous answer used the type "
+                            f"'{doc_type or '(empty)'}', which is not one of the "
+                            f"valid types. Choose exactly one of: "
+                            f"{', '.join(sorted(self.valid_doc_types))}. Reply "
+                            f"with the same JSON format."
+                        )
+                    }
+                ]
+
+        fallback = self.config.classification.invalidClassFallback
+        logger.error(
+            "%s after %d attempt(s); assigned fallback '%s'.",
+            validation_error,
+            max_retries + 1,
+            fallback,
+        )
+        # The fallback is not a prediction, so it carries no score.
+        return fallback, None, [], reason, metering

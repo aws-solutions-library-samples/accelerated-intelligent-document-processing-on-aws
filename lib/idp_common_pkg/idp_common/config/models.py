@@ -1744,6 +1744,180 @@ class ClassificationPacketConfig(BaseModel):
         return self
 
 
+class ClassificationStagePromptsConfig(BaseModel):
+    """Packet-granularity prompt overrides for a two-stage stage.
+
+    Separate from the page-granularity prompts for the same reason
+    ``classification.packet`` is separate from ``classification``: a page-level
+    call and a packet-level call are asked for different output shapes, so they
+    need different prompts and are read by different parsers.
+    """
+
+    system_prompt: str = Field(default="")
+    task_prompt: str = Field(default="")
+
+
+class ClassificationSegmentationConfig(BaseModel):
+    """Stage A of two-stage classification: where each document starts and ends.
+
+    Only read when ``classification.strategy`` is ``two_stage``. Stage A reuses
+    ``granularity``, ``modality``, ``image.*``, ``contextPagesCount`` and
+    ``packet.window_pages``/``overlap_pages`` — it is the same call shape as
+    single-pass classification, asked a smaller question.
+
+    **The saving is the prefix.** A single-pass call carries the class list,
+    every class description and every few-shot example on every call, even
+    though finding a boundary does not depend on the class vocabulary. Stage A
+    drops all of it, which on a page-granularity configuration is the dominant
+    per-call cost and is paid N times.
+    """
+
+    model: str = Field(
+        default="",
+        description=(
+            "Bedrock model for Stage A. Empty uses classification.model. The "
+            "point of naming it separately is that the two stages have "
+            "different needs: boundary detection may want a capable multimodal "
+            "model looking at a whole packet, while labeling a clean segment is "
+            "often a much easier problem."
+        ),
+    )
+    boundary_hints: str = Field(
+        default="none",
+        description=(
+            "Whether Stage A is told the class NAMES as hints for where a new "
+            "document starts. 'none' (default) sends no vocabulary at all. "
+            "'class_names' sends the names only — not the descriptions and not "
+            "the examples — which can help when boundaries are marked by a form "
+            "number or title the names mention, at the cost of a small prefix."
+        ),
+    )
+    system_prompt: str = Field(
+        default="",
+        description="Stage A system prompt for page granularity.",
+    )
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Stage A task prompt for page granularity: asks only whether this "
+            "page starts a new document, with no class list and no class in the "
+            "answer."
+        ),
+    )
+    packet: ClassificationStagePromptsConfig = Field(
+        default_factory=ClassificationStagePromptsConfig,
+        description=(
+            "Stage A prompts for packet granularity: ask for page RANGES only, "
+            "with no type per range."
+        ),
+    )
+
+    @field_validator("boundary_hints", mode="before")
+    @classmethod
+    def validate_boundary_hints(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "none"
+        v_str = str(v).strip().lower()
+        if v_str not in ("none", "class_names"):
+            raise ValueError(
+                "classification.segmentation.boundary_hints must be 'none' or "
+                f"'class_names', got {v!r}"
+            )
+        return v_str
+
+
+class ClassificationLabelingConfig(BaseModel):
+    """Stage B of two-stage classification: what class each segment is.
+
+    Only read when ``classification.strategy`` is ``two_stage``. **One call per
+    segment, not per page** — which is the other half of the two-stage saving: a
+    40-page statement is labeled once instead of forty times.
+
+    ``method`` is deliberately a single-value enum today. Embeddings and
+    external classifier endpoints are the other two methods #1329 describes, and
+    both need a measurement before their defaults can be set honestly (which
+    embeddings model, text or image or both, how many exemplars a class needs to
+    be labeled reliably). Shipping the enum with one value means adding one
+    later is not a breaking change to anyone's configuration.
+    """
+
+    method: str = Field(
+        default="llm",
+        description=(
+            "How each segment gets its class. 'llm' (the only value today) makes "
+            "one LLM call per segment with the class vocabulary and the few-shot "
+            "examples."
+        ),
+    )
+    model: str = Field(
+        default="",
+        description="Bedrock model for Stage B. Empty uses classification.model.",
+    )
+    pages: str = Field(
+        default="first_k",
+        description=(
+            "Which pages of a segment represent it for labeling. 'first' sends "
+            "only the first page, 'first_k' the first `k`, 'all' every page. "
+            "'first_k' is the default because a document's identity is almost "
+            "always on its opening pages, while 'all' makes a long segment cost "
+            "as much to label as page-level classification cost to classify it."
+        ),
+    )
+    k: int = Field(
+        default=2,
+        ge=1,
+        description="How many pages 'first_k' sends.",
+    )
+    system_prompt: str = Field(default="", description="Stage B system prompt.")
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Stage B task prompt: given a segment's pages, return its class. "
+            "Carries the class vocabulary and {FEW_SHOT_EXAMPLES}."
+        ),
+    )
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def validate_method(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "llm"
+        v_str = str(v).strip().lower()
+        if v_str != "llm":
+            raise ValueError(
+                f"classification.labeling.method must be 'llm', got {v!r}. "
+                "'embeddings' and 'classifier' are planned but not implemented; "
+                "see GitHub issue #1329."
+            )
+        return v_str
+
+    @field_validator("pages", mode="before")
+    @classmethod
+    def validate_pages(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "first_k"
+        v_str = str(v).strip().lower()
+        if v_str not in ("first", "first_k", "all"):
+            raise ValueError(
+                "classification.labeling.pages must be 'first', 'first_k', or "
+                f"'all', got {v!r}"
+            )
+        return v_str
+
+    @field_validator("k", mode="before")
+    @classmethod
+    def parse_k(cls, v: Any) -> int:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return 2
+        try:
+            return int(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"classification.labeling.k must be a whole number of pages, "
+                f"got {v!r}"
+            ) from exc
+
+
 class ClassificationConfig(BaseModel):
     """Document classification configuration"""
 
@@ -1823,6 +1997,31 @@ class ClassificationConfig(BaseModel):
             "Settings used only when granularity is 'packet': the window size, "
             "the overlap between windows, and the packet-level prompts."
         ),
+    )
+    strategy: str = Field(
+        default="single_pass",
+        description=(
+            "'single_pass' (default): one call returns both the boundaries and "
+            "the classes, which is what classification has always done. "
+            "'two_stage': boundaries first with no class vocabulary in the "
+            "prompt, then one call per segment to label it. Two-stage saves the "
+            "class list and the few-shot examples on every boundary call, and "
+            "labels once per document rather than once per page; it also "
+            "separates a wrong boundary from a wrong label, which a single "
+            "section-level outcome cannot."
+        ),
+    )
+    segmentation: ClassificationSegmentationConfig = Field(
+        default_factory=ClassificationSegmentationConfig,
+        description=(
+            "Stage A of two-stage classification (strategy: two_stage). Not to "
+            "be confused with `sectionSplitting`, which decides how the "
+            "resulting segments become sections and applies to both strategies."
+        ),
+    )
+    labeling: ClassificationLabelingConfig = Field(
+        default_factory=ClassificationLabelingConfig,
+        description="Stage B of two-stage classification (strategy: two_stage).",
     )
     sectionSplitting: str = Field(
         default="llm_determined",
@@ -1908,6 +2107,25 @@ class ClassificationConfig(BaseModel):
                 return "ALL"
             return v.strip()
         return str(v)
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def validate_strategy(cls, v: Any) -> str:
+        """Normalize the strategy; reject an unknown value loudly.
+
+        Not a silent fallback, for the same reason as ``granularity``: the two
+        strategies make a different number of calls with different prompts, so
+        quietly picking one is a cost decision the operator did not make.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "single_pass"
+        v_str = str(v).strip().lower()
+        if v_str not in ("single_pass", "two_stage"):
+            raise ValueError(
+                "classification.strategy must be 'single_pass' or 'two_stage', "
+                f"got {v!r}"
+            )
+        return v_str
 
     @field_validator("granularity", mode="before")
     @classmethod
