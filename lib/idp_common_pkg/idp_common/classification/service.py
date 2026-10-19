@@ -126,9 +126,15 @@ class ClassificationService:
     INITIAL_BACKOFF = 2  # seconds
     MAX_BACKOFF = 300  # 5 minutes
 
-    # Classification method options
+    # Classification method options (deprecated; see GRANULARITY_* below)
     MULTIMODAL_PAGE_LEVEL = "multimodalPageLevelClassification"
     TEXTBASED_HOLISTIC = "textbasedHolisticClassification"
+
+    # Granularity: how many calls classification makes. Orthogonal to modality
+    # (what each call sees) — which is the whole point of replacing the two
+    # `classificationMethod` values, each of which bundled one of each.
+    GRANULARITY_PAGE = "page"
+    GRANULARITY_PACKET = "packet"
 
     # Soft cap on the number of schema attribute names emitted per class
     # when rendering the optional {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}
@@ -225,27 +231,88 @@ class ClassificationService:
                 f"Initialized classification service with SageMaker backend using endpoint {endpoint_name}"
             )
 
-        # Get classification method from typed config
-        self.classification_method = self.config.classification.classificationMethod
-
         # Get max pages for classification (1 to ALL)
         self.max_pages_for_classification = (
             self.config.classification.maxPagesForClassification
         )
 
-        # Log classification method
-        if self.classification_method == self.TEXTBASED_HOLISTIC:
-            logger.info("Using textbased holistic packet classification method")
-        else:
-            # Default to multimodal page-level classification if value is invalid
-            if self.classification_method != self.MULTIMODAL_PAGE_LEVEL:
-                logger.warning(
-                    f"Invalid classification method '{self.classification_method}', falling back to '{self.MULTIMODAL_PAGE_LEVEL}'"
-                )
-                self.classification_method = self.MULTIMODAL_PAGE_LEVEL
-            logger.info(
-                "Using multimodal page-level classification method with document boundary detection"
+        # Resolve granularity. `granularity` is authoritative when set; when
+        # empty it is derived from the deprecated `classificationMethod`, so an
+        # existing configuration keeps its behaviour with no edit.
+        configured_granularity = self.config.classification.granularity
+        self.granularity_is_explicit = bool(configured_granularity)
+        self.granularity = configured_granularity or self.GRANULARITY_PAGE
+
+        if self.granularity_is_explicit:
+            # Keep the deprecated field consistent with the resolved
+            # granularity, so the several places that still branch on it (the
+            # extraction and assessment services read it to decide whether a
+            # per-page signal exists) agree with what actually ran.
+            self._classification_method = (
+                self.TEXTBASED_HOLISTIC
+                if self.granularity == self.GRANULARITY_PACKET
+                else self.MULTIMODAL_PAGE_LEVEL
             )
+        else:
+            # Assigning through the property derives granularity from it.
+            method = self.config.classification.classificationMethod
+            if method not in (self.MULTIMODAL_PAGE_LEVEL, self.TEXTBASED_HOLISTIC):
+                logger.warning(
+                    f"Invalid classification method '{method}', falling back to "
+                    f"'{self.MULTIMODAL_PAGE_LEVEL}'"
+                )
+                method = self.MULTIMODAL_PAGE_LEVEL
+            self.classification_method = method
+
+        send_text, send_images = self._resolve_modality()
+        if self.granularity == self.GRANULARITY_PACKET:
+            packet_cfg = self.config.classification.packet
+            logger.info(
+                "Using PACKET classification granularity (text=%s, images=%s, "
+                "window_pages=%s, overlap_pages=%s)%s",
+                send_text,
+                send_images,
+                packet_cfg.window_pages or "unwindowed",
+                packet_cfg.overlap_pages,
+                ""
+                if self.granularity_is_explicit
+                else " derived from classificationMethod",
+            )
+        else:
+            logger.info(
+                "Using PAGE classification granularity with document boundary "
+                "detection (text=%s, images=%s)",
+                send_text,
+                send_images,
+            )
+
+    @property
+    def classification_method(self) -> str:
+        """The deprecated ``classificationMethod`` value, kept in sync with granularity.
+
+        A property rather than a plain attribute because assigning it after
+        construction is an established way to switch methods — the shipped
+        notebooks do it, and so does the test suite. Dispatch now reads
+        ``granularity``, so a plain attribute would have left every such
+        assignment silently inert: the caller sets holistic, the service runs
+        page-level, and nothing says so.
+
+        Assignment is ignored for granularity purposes when ``granularity`` was
+        set explicitly in the configuration, since that is the authoritative
+        setting and the deprecated one must not override it.
+        """
+        return self._classification_method
+
+    @classification_method.setter
+    def classification_method(self, value: str) -> None:
+        self._classification_method = value
+        if getattr(self, "granularity_is_explicit", False):
+            return
+        self.granularity = (
+            self.GRANULARITY_PACKET
+            if value == self.TEXTBASED_HOLISTIC
+            else self.GRANULARITY_PAGE
+        )
 
     def _load_document_types(self) -> List[DocumentType]:
         """Load document types from configuration with regex patterns."""
@@ -1225,7 +1292,7 @@ class ClassificationService:
         }
 
         # Validate system prompt
-        system_prompt = self.config.classification.system_prompt
+        system_prompt = self._raw_system_prompt()
         if not system_prompt:
             raise ValueError("No system_prompt found in classification configuration")
         config["system_prompt"] = system_prompt
@@ -1256,18 +1323,23 @@ class ClassificationService:
         if mode == "off":
             return task_prompt
 
-        if self.classification_method != self.MULTIMODAL_PAGE_LEVEL:
-            # The holistic prompt returns segments, not one object per page, so
-            # the page-level block would describe the wrong shape. Its per-segment
-            # `confidence` IS parsed, so a holistic deployment can still be scored
-            # by asking for it in its own prompt.
+        packet = self.granularity == self.GRANULARITY_PACKET
+
+        if packet and not self.granularity_is_explicit:
+            # A LEGACY holistic configuration (classificationMethod with no
+            # granularity) runs a hand-written packet prompt — the shipped
+            # default has always been the page prompt — so there is nothing here
+            # whose output shape we can describe. Its per-segment `confidence`
+            # IS parsed, so such a deployment can still be scored by asking for
+            # it in its own prompt.
             logger.warning(
-                "classification.confidence.mode=%s is only composed for %s; "
-                "%s prompts must request confidence themselves (a per-segment "
-                "'confidence' key is parsed if present).",
+                "classification.confidence.mode=%s is not composed for a legacy "
+                "%s configuration, whose task_prompt is hand-written; request "
+                "confidence in that prompt instead (a per-segment 'confidence' "
+                "key is parsed if present). Set classification.granularity: "
+                "packet to use the composed per-segment block.",
                 mode,
-                self.MULTIMODAL_PAGE_LEVEL,
-                self.classification_method,
+                self.TEXTBASED_HOLISTIC,
             )
             return task_prompt
 
@@ -1275,10 +1347,24 @@ class ClassificationService:
             top_k = resolve_top_k(
                 confidence_cfg.top_k_candidates, len(self.valid_doc_types)
             )
-            block = confidence_cfg.task_prompt_topk
+            # The packet variant names the key it goes in and scopes the
+            # instruction per segment; the page one speaks about "this page".
+            # Falling back to the page block keeps a custom configuration
+            # written before packet granularity working rather than silently
+            # dropping the request.
+            block = (
+                confidence_cfg.task_prompt_topk_packet or confidence_cfg.task_prompt_topk
+                if packet
+                else confidence_cfg.task_prompt_topk
+            )
         else:  # verbalized
             top_k = None
-            block = confidence_cfg.task_prompt_verbalized
+            block = (
+                confidence_cfg.task_prompt_verbalized_packet
+                or confidence_cfg.task_prompt_verbalized
+                if packet
+                else confidence_cfg.task_prompt_verbalized
+            )
 
         if not block:
             logger.warning(
@@ -1304,8 +1390,47 @@ class ClassificationService:
         "Un-normalised" means before the modality rewrite and before the
         class-confidence splice — this is the template whose placeholders the
         modality *inference* reads, so it has to be the operator's own text.
+
+        ⚠️ **The packet prompt is only preferred when granularity was set
+        explicitly.** A configuration carrying
+        ``classificationMethod: textbasedHolisticClassification`` and no
+        ``granularity`` is a pre-existing holistic deployment, and the only way
+        that ever worked was a hand-written packet-shaped ``task_prompt`` — the
+        shipped default has always been the page prompt, and no preset set that
+        method. Preferring the new packet default there would silently replace
+        the operator's own prompt with ours. So: legacy holistic keeps the flat
+        prompt, and ``granularity: packet`` uses ``packet.task_prompt``, which is
+        also the field the configuration panel shows for that granularity.
         """
-        return self.config.classification.task_prompt
+        return self._granularity_prompt("task_prompt")
+
+    def _raw_system_prompt(self) -> str:
+        """The configured system prompt for the active granularity.
+
+        Same resolution rule as :meth:`_raw_task_prompt`.
+        """
+        return self._granularity_prompt("system_prompt")
+
+    def _granularity_prompt(self, field: str) -> str:
+        """Resolve one prompt field for the active granularity."""
+        flat = getattr(self.config.classification, field)
+        if (
+            self.granularity == self.GRANULARITY_PACKET
+            and self.granularity_is_explicit
+        ):
+            packet_prompt = getattr(self.config.classification.packet, field)
+            if packet_prompt:
+                return packet_prompt
+            logger.warning(
+                "classification.granularity is 'packet' but "
+                "classification.packet.%s is empty; falling back to "
+                "classification.%s, which is written for PAGE granularity and "
+                "asks for a different output shape. Restore the packet prompt "
+                "from the system defaults (base-classification.yaml).",
+                field,
+                field,
+            )
+        return flat
 
     def _resolve_modality(self, task_prompt: Optional[str] = None) -> tuple[bool, bool]:
         """Resolve ``(send_text, send_images)`` for a classification call.
@@ -3023,11 +3148,13 @@ class ClassificationService:
                 # maxPagesForClassification still overrides sectionSplitting here
                 # — a pre-existing limitation of that setting, not specific to the
                 # regex path.
-                if self.classification_method == self.TEXTBASED_HOLISTIC:
+                if self.granularity == self.GRANULARITY_PACKET:
                     logger.info(
-                        f"Classifying limited document with {len(limited_document.pages)} pages using holistic packet method"
+                        f"Classifying limited document with "
+                        f"{len(limited_document.pages)} pages using packet "
+                        f"granularity"
                     )
-                    classified_limited = self.holistic_classify_document(
+                    classified_limited = self.packet_classify_document(
                         limited_document, forced_class=forced_class
                     )
                 else:
@@ -3041,12 +3168,10 @@ class ClassificationService:
                 )
                 return document
 
-        # Use the appropriate classification method based on configuration
-        if self.classification_method == self.TEXTBASED_HOLISTIC:
-            logger.info(
-                f"Classifying document with {len(document.pages)} pages using holistic packet method"
-            )
-            return self.holistic_classify_document(document, forced_class=forced_class)
+        # Dispatch on the resolved granularity (see __init__: `granularity`
+        # when set, otherwise derived from the deprecated classificationMethod).
+        if self.granularity == self.GRANULARITY_PACKET:
+            return self.packet_classify_document(document, forced_class=forced_class)
 
         return self._classify_pages_multimodal(document, forced_class=forced_class)
 
@@ -3974,15 +4099,20 @@ class ClassificationService:
         raw_segments: List[Any],
         document: Document,
         forced_class: Optional[str] = None,
-        page_id_offset: int = 0,
+        window_page_ids: Optional[List[str]] = None,
     ) -> List[Segment]:
         """Turn a packet call's ``segments`` array into :class:`Segment` objects.
 
         The model reports **ordinal** page numbers — 1 for the first page it was
-        shown — which is why ``page_id_offset`` exists: a windowed packet call
+        shown — which is why ``window_page_ids`` exists: a windowed packet call
         sees a slice of the document, so its ordinal 1 is not the document's
-        page 1. For an unwindowed call the offset is zero and the ordinals are
-        the page IDs, which is what the single-window path has always assumed.
+        page 1. Mapping is positional rather than by arithmetic offset, because
+        a window's pages are not guaranteed to be a contiguous integer run:
+        ``maxPagesForClassification`` already produces documents whose page set
+        is a subset.
+
+        With no window given, an ordinal is read as a page ID directly, which is
+        what the unwindowed packet path has always assumed.
 
         A segment missing any required field is skipped with a warning rather
         than failing the document, and a segment whose range covers no page of
@@ -3991,18 +4121,27 @@ class ClassificationService:
 
         Args:
             raw_segments: The parsed ``segments`` array from the model.
-            document: Document whose page IDs the ordinals resolve against.
+            document: Document whose pages the ordinals resolve against.
             forced_class: When set, the model's confidence does not describe the
                 class being assigned (the operator's regex match does), so each
                 segment is left unscored.
-            page_id_offset: Added to each ordinal before resolving it to a page
-                ID. Zero for a whole-packet call.
+            window_page_ids: The page IDs this call was shown, in the order it
+                was shown them. ``None`` for a call that saw the whole document
+                with its own page IDs.
 
         Returns:
             Segments in the order the model reported them, each covering at
             least one page of ``document``.
         """
         parsed: List[Segment] = []
+
+        def resolve(ordinal: int) -> Optional[str]:
+            if window_page_ids is None:
+                page_id = str(ordinal)
+                return page_id if page_id in document.pages else None
+            if 1 <= ordinal <= len(window_page_ids):
+                return window_page_ids[ordinal - 1]
+            return None
 
         for i, segment in enumerate(raw_segments):
             if not isinstance(segment, dict):
@@ -4015,8 +4154,8 @@ class ClassificationService:
                 continue
 
             try:
-                start_page = int(segment["ordinal_start_page"]) + page_id_offset
-                end_page = int(segment["ordinal_end_page"]) + page_id_offset
+                start_ordinal = int(segment["ordinal_start_page"])
+                end_ordinal = int(segment["ordinal_end_page"])
             except (TypeError, ValueError):
                 logger.warning(
                     f"Segment {i} has unreadable page ordinals "
@@ -4025,10 +4164,10 @@ class ClassificationService:
                 )
                 continue
 
-            if end_page < start_page:
+            if end_ordinal < start_ordinal:
                 logger.warning(
-                    f"Segment {i} ends before it starts ({start_page}-{end_page}); "
-                    f"skipping"
+                    f"Segment {i} ends before it starts "
+                    f"({start_ordinal}-{end_ordinal}); skipping"
                 )
                 continue
 
@@ -4047,14 +4186,16 @@ class ClassificationService:
             )
 
             page_ids = [
-                str(page_idx)
-                for page_idx in range(start_page, end_page + 1)
-                if str(page_idx) in document.pages
+                page_id
+                for page_id in (
+                    resolve(ordinal) for ordinal in range(start_ordinal, end_ordinal + 1)
+                )
+                if page_id is not None and page_id in document.pages
             ]
             if not page_ids:
                 logger.warning(
-                    f"Segment {i} ({start_page}-{end_page}) covers no page of this "
-                    f"document; skipping"
+                    f"Segment {i} (ordinals {start_ordinal}-{end_ordinal}) covers "
+                    f"no page of this document; skipping"
                 )
                 continue
 
@@ -4101,19 +4242,321 @@ class ClassificationService:
             f"so the page images are sent instead."
         )
 
-    def holistic_classify_document(
+    def _packet_windows(self, sorted_page_ids: List[str]) -> List[List[str]]:
+        """Split a packet's pages into the windows each packet call will see.
+
+        A packet smaller than the window is one window, which is the common case
+        and is byte-identical to the unwindowed call that preceded this: the
+        model sees every page, its ordinals are the document's page IDs, and its
+        segments are used directly.
+
+        Above the window size the packet is split with ``overlap_pages`` repeated
+        between neighbours. The overlap exists so the window **after** a junction
+        can see the pages before its own first page — without it, a document
+        boundary landing on a window's first page has to be judged with no
+        preceding context, which is precisely the judgement page-level
+        classification is bad at and packet granularity exists to improve.
+
+        ``window_pages: 0`` means never window. That is what legacy holistic
+        classification did, and it is kept reachable because it is the only way
+        to guarantee the model sees the packet as a single whole — at the cost of
+        failing outright on a packet larger than the context window.
+        """
+        packet_cfg = self.config.classification.packet
+        window = packet_cfg.window_pages
+        overlap = packet_cfg.overlap_pages
+        total = len(sorted_page_ids)
+
+        if window <= 0 or total <= window:
+            return [sorted_page_ids]
+
+        # Guaranteed >= 1 by ClassificationPacketConfig.refuse_non_advancing_window,
+        # which refuses overlap >= window at config-load time. Clamped anyway so
+        # a service constructed from a hand-built dict cannot loop forever.
+        step = max(1, window - overlap)
+
+        windows: List[List[str]] = []
+        start = 0
+        while start < total:
+            windows.append(sorted_page_ids[start : start + window])
+            if start + window >= total:
+                break
+            start += step
+
+        logger.info(
+            "Packet of %d pages split into %d windows of up to %d pages with %d "
+            "page(s) of overlap",
+            total,
+            len(windows),
+            window,
+            overlap,
+        )
+        return windows
+
+    def _merge_window_segments(
+        self, window_segments: List[List[Segment]], sorted_page_ids: List[str]
+    ) -> List[Segment]:
+        """Merge the segments several windows reported into one segment list.
+
+        **The earlier window wins for an overlapping page.** The overlap pages
+        are the trailing pages of window *k* and the leading pages of window
+        *k+1*: window *k* saw everything before them, window *k+1* sees only
+        what follows. "Does a new document start here?" is answered mostly by
+        what came before — whether the previous document has ended — so the
+        window holding that context is the one whose verdict is taken. Window
+        *k+1* still needs those pages in its request, as the context for the
+        pages after them, which is the whole reason the overlap is sent.
+
+        The merge projects each window's segments onto per-page
+        ``(class, boundary)`` verdicts and then runs them back through
+        :meth:`_fold_page_verdicts_to_segments` — the same fold page-level
+        classification uses. One fold, so a windowed packet and a page-level
+        document cannot disagree about how verdicts become segments, and a
+        boundary the model reported inside a window survives as a ``start``.
+        """
+        if len(window_segments) == 1:
+            # Unwindowed: use the model's segments directly, exactly as the
+            # unwindowed packet path always has. Going through the fold would
+            # give the same answer but is a pointless round trip, and the
+            # direct path is the one with years of behaviour behind it.
+            return window_segments[0]
+
+        verdicts: Dict[str, PageClassification] = {}
+        for window_index, segments in enumerate(window_segments):
+            for segment in segments:
+                for position, page_id in enumerate(segment.page_ids):
+                    if page_id in verdicts:
+                        continue
+                    verdicts[page_id] = PageClassification(
+                        page_id=page_id,
+                        classification=DocumentClassification(
+                            doc_type=segment.doc_class or UNCLASSIFIED_CLASS,
+                            confidence=segment.confidence,
+                            metadata={
+                                "document_boundary": (
+                                    "start" if position == 0 else "continue"
+                                ),
+                                "window_index": window_index,
+                            },
+                        ),
+                    )
+
+        uncovered = [pid for pid in sorted_page_ids if pid not in verdicts]
+        if uncovered:
+            # Not fatal: the pages that were classified still form sections, and
+            # a page with no segment simply gets none. Worth a line, because a
+            # model repeatedly skipping the tail of a window is a prompt problem
+            # rather than a data problem.
+            logger.warning(
+                "%d page(s) were covered by no window's segments and will not "
+                "appear in any section: %s",
+                len(uncovered),
+                uncovered[:20],
+            )
+
+        merged = self._fold_page_verdicts_to_segments(
+            [verdicts[pid] for pid in sorted_page_ids if pid in verdicts]
+        )
+        logger.info(
+            "Merged %d window(s) into %d segments",
+            len(window_segments),
+            len(merged),
+        )
+        return merged
+
+    def _build_packet_content(
+        self,
+        task_prompt_template: str,
+        paged_text: str,
+        page_images: List[tuple[str, bytes]],
+    ) -> List[Dict[str, Any]]:
+        """Build the request content for one packet call.
+
+        Same two-level structure as the page-level builders — split on
+        ``{FEW_SHOT_EXAMPLES}``, then handle ``{DOCUMENT_IMAGE}`` within each
+        part — so all three paths agree about both placeholders. Before packet
+        granularity existed this path sent one text block and nothing else: no
+        images, and ``{FEW_SHOT_EXAMPLES}`` left in the prompt as a literal
+        string, which is the same defect the context path had.
+        """
+        parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
+
+        if len(parts) != 2:
+            return self._build_packet_content_segment(
+                task_prompt_template, paged_text, page_images
+            )
+
+        content: List[Dict[str, Any]] = []
+        content.extend(
+            self._build_packet_content_segment(parts[0], paged_text, page_images)
+        )
+        content.extend(build_few_shot_examples_content(self.config))
+        content.extend(
+            self._build_packet_content_segment(parts[1], paged_text, page_images)
+        )
+        return content
+
+    def _build_packet_content_segment(
+        self,
+        prompt_segment: str,
+        paged_text: str,
+        page_images: List[tuple[str, bytes]],
+    ) -> List[Dict[str, Any]]:
+        """Render one segment of a packet prompt, inserting the page images.
+
+        Each image is preceded by its page number. The model is asked for page
+        *ranges*, so it has to be able to say which image it is looking at —
+        unlabelled images in a 20-page request leave it counting attachments,
+        and a miscount shifts every boundary it reports.
+        """
+        substitutions = {
+            "DOCUMENT_TEXT": paged_text,
+            "CLASS_NAMES_AND_DESCRIPTIONS": self._format_classes_and_descriptions(),
+            # The packet path uses the markdown-table variant of the optional
+            # schema-attribute placeholder so it matches the surrounding class
+            # table format.
+            "CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS": (
+                self._format_classes_and_attributes_table()
+            ),
+        }
+
+        if "{DOCUMENT_IMAGE}" not in prompt_segment:
+            rendered = self._prepare_prompt_from_template(
+                prompt_segment, substitutions, required_placeholders=[]
+            )
+            return [{"text": rendered}] if rendered.strip() else []
+
+        image_parts = prompt_segment.split("{DOCUMENT_IMAGE}")
+        if len(image_parts) != 2:
+            logger.warning(
+                "Invalid DOCUMENT_IMAGE placeholder usage in the packet prompt "
+                "(%d occurrences); appending page images after the text instead "
+                "of at the placeholder.",
+                len(image_parts) - 1,
+            )
+            rendered = self._prepare_prompt_from_template(
+                prompt_segment.replace("{DOCUMENT_IMAGE}", ""),
+                substitutions,
+                required_placeholders=[],
+            )
+            content: List[Dict[str, Any]] = (
+                [{"text": rendered}] if rendered.strip() else []
+            )
+            content.extend(self._packet_image_blocks(page_images))
+            return content
+
+        before_images = self._prepare_prompt_from_template(
+            image_parts[0], substitutions, required_placeholders=[]
+        )
+        after_images = self._prepare_prompt_from_template(
+            image_parts[1], substitutions, required_placeholders=[]
+        )
+
+        content = []
+        if before_images.strip():
+            content.append({"text": before_images})
+        content.extend(self._packet_image_blocks(page_images))
+        if after_images.strip():
+            content.append({"text": after_images})
+        return content
+
+    @staticmethod
+    def _packet_image_blocks(
+        page_images: List[tuple[str, bytes]],
+    ) -> List[Dict[str, Any]]:
+        """Labelled image blocks, one pair of blocks per page."""
+        content: List[Dict[str, Any]] = []
+        for ordinal, (page_id, image_bytes) in enumerate(page_images, start=1):
+            content.append(
+                {"text": f"<page-number>{ordinal}</page-number> (document page {page_id})"}
+            )
+            content.append(image.prepare_bedrock_image_attachment(image_bytes))
+        return content
+
+    def _load_packet_page_images(
+        self, document: Document, page_ids: List[str]
+    ) -> List[tuple[str, bytes]]:
+        """Load and resize the page images one packet call will carry.
+
+        A page whose image cannot be loaded is omitted rather than failing the
+        call: the text for that page is still in the request, and the remaining
+        images still tell the model where the other documents start.
+        """
+        target_width = self.config.classification.image.target_width
+        target_height = self.config.classification.image.target_height
+
+        loaded: List[tuple[str, bytes]] = []
+        for page_id in page_ids:
+            page = document.pages.get(page_id)
+            if page is None or not page.image_uri:
+                continue
+            try:
+                loaded.append(
+                    (
+                        page_id,
+                        image.prepare_image(
+                            page.image_uri, target_width, target_height
+                        ),
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load image for page {page_id}: {e}")
+
+        if loaded and len(loaded) > image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD:
+            logger.info(
+                "This packet call carries %d images, above Bedrock's %d-image "
+                "threshold, so each will be downscaled to %dpx. Reduce "
+                "classification.packet.window_pages to keep full resolution.",
+                len(loaded),
+                image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD,
+                image.BEDROCK_MANY_IMAGE_MAX_DIMENSION,
+            )
+        return loaded
+
+    @staticmethod
+    def _format_paged_text(
+        pages_content: Dict[str, str], page_ids: List[str]
+    ) -> str:
+        """Render the packet's per-page text, each page labelled by its ordinal.
+
+        The ordinal is what the model is asked to report, and it is **not** the
+        page ID once windowing is on: window 2 of a 40-page packet starts at
+        document page 19 but is shown that page as ordinal 1. The document page
+        ID is given alongside so a reasoning trace naming either one is
+        readable, but the prompt asks for the ordinal.
+        """
+        rendered = []
+        for ordinal, page_id in enumerate(page_ids, start=1):
+            text = pages_content.get(page_id, f"[No text content for page {page_id}]")
+            rendered.append(
+                f"<page-number>{ordinal}</page-number> "
+                f"(document page {page_id})\n{text}\n"
+            )
+        return "\n".join(rendered)
+
+    def packet_classify_document(
         self, document: Document, forced_class: Optional[str] = None
     ) -> Document:
-        """
-        Classify a document using holistic packet classification.
+        """Classify a document with one call per packet (or per window).
 
-        This method uses an LLM to analyze the entire document and identify page ranges
-        that belong to specific document types. Unlike page-by-page classification,
-        this method can handle documents where individual pages might not be clearly
-        classifiable on their own.
+        The model is shown the whole packet and returns the segments directly,
+        rather than being asked about each page in isolation and having the
+        boundaries pieced together from per-page verdicts. Three things that
+        were not previously possible:
+
+        - **Images.** The packet call sent text only, so no setting produced
+          packet-level classification that could see page layout. Every page's
+          image is now attached, labelled with its ordinal, subject to
+          ``modality.images``.
+        - **Few-shot examples.** ``{FEW_SHOT_EXAMPLES}`` was never substituted
+          on this path either, so a configured example reached the model as a
+          literal placeholder string.
+        - **Windowing.** A packet larger than the context window failed
+          outright. It is now split into overlapping windows whose results are
+          merged.
 
         Single-class configurations short-circuit the class decision here too,
-        and honor ``sectionSplitting`` the same way — see
+        and honour ``sectionSplitting`` the same way — see
         ``_create_single_class_sections`` and GitHub issue #686.
 
         Args:
@@ -4127,7 +4570,7 @@ class ClassificationService:
             Document: Updated Document object with classifications and sections
         """
         if not document.pages:
-            logger.warning("Document has no pages to classify with holistic method")
+            logger.warning("Document has no pages to classify with the packet method")
             return self._update_document_status(
                 document,
                 success=False,
@@ -4135,9 +4578,9 @@ class ClassificationService:
             )
 
         # Same as the page-level path: the class is predetermined, but the
-        # section boundaries are not (GitHub issue #686). Holistic packet
-        # classification returns segment ranges, which IS boundary detection, so
-        # llm_determined falls through to it rather than being skipped.
+        # section boundaries are not (GitHub issue #686). A packet call returns
+        # segment ranges, which IS boundary detection, so llm_determined falls
+        # through to it rather than being skipped.
         if self._can_skip_backend_for_single_class(document):
             logger.info(
                 f"Only one document class '{self.single_class_name}' is defined "
@@ -4149,12 +4592,16 @@ class ClassificationService:
             return document
 
         t0 = time.time()
+        send_text, send_images = self._resolve_modality()
         logger.info(
-            f"Classifying document with {len(document.pages)} pages using holistic packet method"
+            "Classifying document with %d pages using packet granularity "
+            "(text=%s, images=%s)",
+            len(document.pages),
+            send_text,
+            send_images,
         )
 
         try:
-            # Format document pages as text
             pages_content, pages_with_text = self._format_pages_with_coverage(document)
 
             no_text_error = self._packet_text_unavailable_error(
@@ -4166,119 +4613,181 @@ class ClassificationService:
                     document, success=False, error_message=no_text_error
                 )
 
-            # Get classification configuration
             config = self._get_classification_config()
 
-            # Prepare paged document text
-            doc_text = ""
-            for page_id, page_text in sorted(
-                pages_content.items(),
-                key=lambda x: int(x[0]) if x[0].isdigit() else float("inf"),
-            ):
-                doc_text += f"<page-number>{page_id}</page-number>\n{page_text}\n\n"
-
-            # Prepare document classes and descriptions as a table
-            classes_table = self._format_classes_and_descriptions()
-
-            # Prepare prompt using common function. The holistic path uses
-            # the markdown-table variant of the optional schema-attribute
-            # placeholder so it matches the surrounding class table format.
-            prepared_prompt = self._prepare_prompt_from_template(
-                config["task_prompt"],
-                {
-                    "DOCUMENT_TEXT": doc_text,
-                    "CLASS_NAMES_AND_DESCRIPTIONS": classes_table,
-                    "CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS": (
-                        self._format_classes_and_attributes_table()
-                    ),
-                },
-                required_placeholders=[],
+            sorted_page_ids = sorted(
+                document.pages.keys(),
+                key=lambda x: int(x) if x.isdigit() else float("inf"),
             )
+            windows = self._packet_windows(sorted_page_ids)
 
-            # Invoke Bedrock to get the holistic classification
-            logger.info("Invoking Bedrock for holistic packet classification")
+            window_segments: List[List[Segment]] = []
+            metering: Dict[str, Any] = {}
+            window_errors: List[str] = []
 
-            response_with_metering = self._invoke_bedrock_model(
-                content=[{"text": prepared_prompt}], config=config
-            )
+            for window_index, window_page_ids in enumerate(windows, start=1):
+                try:
+                    segments, window_metering = self._classify_one_packet_window(
+                        document=document,
+                        config=config,
+                        pages_content=pages_content,
+                        window_page_ids=window_page_ids,
+                        window_label=f"{window_index}/{len(windows)}",
+                        send_images=send_images,
+                        forced_class=forced_class,
+                    )
+                except Exception as e:
+                    # One window failing must not discard the others: on a long
+                    # packet that would turn a transient throttle into a total
+                    # loss of a 40-page document's boundaries.
+                    error_msg = (
+                        f"Packet window {window_index}/{len(windows)} "
+                        f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
+                        f"failed: {e}"
+                    )
+                    logger.error(error_msg)
+                    window_errors.append(error_msg)
+                    continue
 
-            t1 = time.time()
-            logger.info(
-                f"Time taken for holistic classification: {t1 - t0:.2f} seconds"
-            )
-
-            response = response_with_metering["response"]
-            metering = response_with_metering["metering"]
-
-            # Extract classification result
-            # Defensive: Handle case where LLM returns empty content array
-            content_array = response["output"]["message"].get("content", [])
-            if not content_array or len(content_array) == 0:
-                logger.error(
-                    "LLM returned empty content array in holistic classification response",
-                    extra={"response": response},
-                )
-                raise ValueError(
-                    "Holistic classification failed: LLM returned empty response"
-                )
-
-            # Reasoning models (Claude Sonnet 5 / 4.6+, extended thinking on) emit
-            # reasoningContent block(s) before the answer text block, so content[0]
-            # may not be the text. Concatenate all text blocks.
-            classification_text = "".join(
-                item["text"]
-                for item in content_array
-                if isinstance(item, dict) and isinstance(item.get("text"), str)
-            )
-
-            # Try to extract JSON from the response
-            try:
-                classification_json = extract_json_from_text(classification_text)
-                classification_data = json.loads(classification_json)
-                segments = classification_data.get("segments", [])
-
-                if not segments:
-                    raise ValueError("No segments found in the classification result")
-
-                if forced_class:
-                    # The document's NAME already asserts the class; the model was
-                    # invoked only for the segment RANGES (GitHub issue #705).
-                    # Setting the key unconditionally also rescues a segment whose
-                    # type the model omitted, which the validation below would
-                    # otherwise drop along with its boundary.
-                    for segment in segments:
-                        if isinstance(segment, dict):
-                            segment["type"] = forced_class
-
-                parsed_segments = self._parse_model_segments(
-                    segments, document, forced_class=forced_class
+                window_segments.append(segments)
+                metering = (
+                    window_metering
+                    if not metering
+                    else utils.merge_metering_data(metering, window_metering)
                 )
 
-                # One section builder for both granularities — see
-                # _sections_from_segments.
-                document = self._sections_from_segments(document, parsed_segments)
+            document.metering = utils.merge_metering_data(document.metering, metering)
+            document.errors.extend(window_errors)
 
-                # Update document metering and status
-                document.metering = utils.merge_metering_data(
-                    document.metering, metering
+            if not window_segments:
+                error_msg = (
+                    "Packet classification produced no segments: "
+                    + (
+                        "; ".join(window_errors)
+                        if window_errors
+                        else "the model returned none"
+                    )
                 )
-                document = self._update_document_status(document)
-
-                logger.info(
-                    f"Document classified with {len(document.sections)} sections using holistic method"
-                )
-
-            except Exception as e:
-                error_msg = f"Error parsing holistic classification result: {str(e)}"
-                document = self._update_document_status(
+                return self._update_document_status(
                     document, success=False, error_message=error_msg
                 )
 
+            merged = self._merge_window_segments(window_segments, sorted_page_ids)
+
+            # One section builder for both granularities — see
+            # _sections_from_segments.
+            document = self._sections_from_segments(document, merged)
+            document = self._update_document_status(document)
+
+            logger.info(
+                "Document classified into %d sections using packet granularity "
+                "in %.2f seconds",
+                len(document.sections),
+                time.time() - t0,
+            )
+
         except Exception as e:
-            error_msg = f"Error in holistic classification: {str(e)}"
+            error_msg = f"Error in packet classification: {str(e)}"
             document = self._update_document_status(
                 document, success=False, error_message=error_msg
             )
             raise
 
         return document
+
+    def _classify_one_packet_window(
+        self,
+        document: Document,
+        config: Dict[str, Any],
+        pages_content: Dict[str, str],
+        window_page_ids: List[str],
+        window_label: str,
+        send_images: bool,
+        forced_class: Optional[str],
+    ) -> tuple[List[Segment], Dict[str, Any]]:
+        """Run one packet call and parse its segments."""
+        paged_text = self._format_paged_text(pages_content, window_page_ids)
+        page_images = (
+            self._load_packet_page_images(document, window_page_ids)
+            if send_images
+            else []
+        )
+
+        content = self._build_packet_content(
+            config["task_prompt"], paged_text, page_images
+        )
+
+        logger.info(
+            "Invoking Bedrock for packet window %s (pages %s-%s, %d image(s))",
+            window_label,
+            window_page_ids[0],
+            window_page_ids[-1],
+            len(page_images),
+        )
+        response_with_metering = self._invoke_bedrock_model(
+            content=content, config=config
+        )
+
+        response = response_with_metering["response"]
+        window_metering = response_with_metering.get("metering", {})
+
+        # Defensive: handle the case where the LLM returns an empty content array
+        content_array = response["output"]["message"].get("content", [])
+        if not content_array:
+            logger.error(
+                "LLM returned empty content array in packet classification response",
+                extra={"response": response},
+            )
+            raise ValueError(
+                "Packet classification failed: LLM returned empty response"
+            )
+
+        # Reasoning models (Claude Sonnet 5 / 4.6+, extended thinking on) emit
+        # reasoningContent block(s) before the answer text block, so content[0]
+        # may not be the text. Concatenate all text blocks.
+        classification_text = "".join(
+            item["text"]
+            for item in content_array
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        )
+
+        classification_json = extract_json_from_text(classification_text)
+        classification_data = json.loads(classification_json)
+        raw_segments = classification_data.get("segments", [])
+
+        if not raw_segments:
+            raise ValueError("No segments found in the classification result")
+
+        if forced_class:
+            # The document's NAME already asserts the class; the model was
+            # invoked only for the segment RANGES (GitHub issue #705). Setting
+            # the key unconditionally also rescues a segment whose type the
+            # model omitted, which validation would otherwise drop along with
+            # its boundary.
+            for segment in raw_segments:
+                if isinstance(segment, dict):
+                    segment["type"] = forced_class
+
+        segments = self._parse_model_segments(
+            raw_segments,
+            document,
+            forced_class=forced_class,
+            window_page_ids=window_page_ids,
+        )
+        if not segments:
+            raise ValueError(
+                "Every segment the model returned was unusable (see warnings above)"
+            )
+        return segments, window_metering
+
+    def holistic_classify_document(
+        self, document: Document, forced_class: Optional[str] = None
+    ) -> Document:
+        """Deprecated alias for :meth:`packet_classify_document`.
+
+        Kept because it is a public method name that notebooks and external
+        callers use. "Holistic" named one specific combination — one call per
+        packet, text only — and the combination is now two independent settings,
+        so the name no longer describes anything in the configuration.
+        """
+        return self.packet_classify_document(document, forced_class=forced_class)

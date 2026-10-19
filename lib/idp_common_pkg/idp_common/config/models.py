@@ -1515,6 +1515,24 @@ class ClassificationClassConfidenceConfig(BaseModel):
             "splice rules as task_prompt_topk."
         ),
     )
+    task_prompt_topk_packet: str = Field(
+        default="",
+        description=(
+            "The 'topk' block for PACKET granularity. A separate template "
+            "because the unit differs: a page-level call scores one page's "
+            "class, a packet-level call scores each segment it returns, so the "
+            "instruction has to name the key it goes in and the per-segment "
+            "scope. Empty falls back to task_prompt_topk."
+        ),
+    )
+    task_prompt_verbalized_packet: str = Field(
+        default="",
+        description=(
+            "The 'verbalized' block for PACKET granularity, on the same "
+            "per-segment rules as task_prompt_topk_packet. Empty falls back to "
+            "task_prompt_verbalized."
+        ),
+    )
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -1631,6 +1649,101 @@ class ClassificationModalityConfig(BaseModel):
         return self
 
 
+class ClassificationPacketConfig(BaseModel):
+    """Settings that apply only to ``granularity: packet``.
+
+    Grouped rather than flattened so the configuration panel can show or hide
+    the whole block on one condition, and so the packet prompts sit beside the
+    windowing they interact with.
+
+    **The prompts here are separate from ``classification.task_prompt`` because
+    granularity is not orthogonal to the prompt**, even though modality is. A
+    page-level call is asked for one class plus a ``start``/``continue`` verdict;
+    a packet-level call is asked for a list of segments. Different output
+    schemas, so different prompts and different parsers. Sharing one key is what
+    made the old ``classificationMethod`` dropdown unusable: selecting holistic
+    sent the page prompt — which asks for ``{"class", "document_boundary"}`` —
+    to the packet parser, which reads ``segments``, and the document failed with
+    "No segments found in the classification result". No shipped preset set that
+    value, so the enum was effectively unreachable from the UI.
+    """
+
+    window_pages: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Maximum pages per packet call. A larger packet is split into "
+            "overlapping windows whose results are merged. 0 means never window "
+            "— one call for the whole packet, which is what legacy holistic "
+            "classification did and which fails outright on a packet larger "
+            "than the model's context window. The default of 20 is where "
+            "Bedrock starts downscaling images: above 20 image blocks in one "
+            "request every image is shrunk to 2,000px, so a wider window with "
+            "images on silently halves its own page resolution."
+        ),
+    )
+    overlap_pages: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Pages repeated between adjacent windows, so a document boundary "
+            "falling at a window edge is still seen with the pages before it. "
+            "Costs `overlap` extra pages per additional window."
+        ),
+    )
+    system_prompt: str = Field(
+        default="",
+        description=(
+            "System prompt for packet-level calls. Empty falls back to "
+            "classification.system_prompt."
+        ),
+    )
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Task prompt for packet-level calls. Asks for a `segments` array "
+            "rather than one class plus a boundary verdict, so it is a separate "
+            "key from classification.task_prompt. Empty falls back to "
+            "classification.task_prompt, which is what a configuration "
+            "predating this setting and using "
+            "classificationMethod: textbasedHolisticClassification relies on."
+        ),
+    )
+
+    @field_validator("window_pages", "overlap_pages", mode="before")
+    @classmethod
+    def parse_page_count(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse from a string (stored configs are string-typed) or number."""
+        default = 20 if info.field_name == "window_pages" else 2
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return default
+        try:
+            return int(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"classification.packet.{info.field_name} must be a whole number "
+                f"of pages, got {v!r}"
+            ) from exc
+
+    @model_validator(mode="after")
+    def refuse_non_advancing_window(self) -> "ClassificationPacketConfig":
+        """Refuse an overlap that would make the window stop advancing.
+
+        With ``overlap >= window`` each window starts no later than the last, so
+        a packet larger than one window never terminates — or, with the step
+        clamped to 1, costs one call per page while claiming to be the
+        cost-saving granularity.
+        """
+        if self.window_pages and self.overlap_pages >= self.window_pages:
+            raise ValueError(
+                f"classification.packet.overlap_pages ({self.overlap_pages}) must "
+                f"be smaller than window_pages ({self.window_pages}); an overlap "
+                f"at least as large as the window means each window covers no new "
+                f"pages, so a long packet would cost one call per page."
+            )
+        return self
+
+
 class ClassificationConfig(BaseModel):
     """Document classification configuration"""
 
@@ -1678,7 +1791,39 @@ class ClassificationConfig(BaseModel):
         default="ALL",
         description="Max pages to use for classification. 'ALL' = all pages, or a number to limit to N pages",
     )
-    classificationMethod: str = Field(default="multimodalPageLevelClassification")
+    classificationMethod: str = Field(
+        default="multimodalPageLevelClassification",
+        description=(
+            "DEPRECATED, read only when `granularity` is empty. Superseded by "
+            "`granularity` plus `modality`, which are independent: this key tied "
+            "how many calls are made to what each call sees, so there was no way "
+            "to classify a whole packet from its images, or a single page from "
+            "text alone, without editing the prompt. "
+            "multimodalPageLevelClassification maps to granularity: page, and "
+            "textbasedHolisticClassification to granularity: packet."
+        ),
+    )
+    granularity: str = Field(
+        default="",
+        description=(
+            "How many calls classification makes. 'page': one call per page, "
+            "each returning that page's class and whether it starts a new "
+            "document. 'packet': one call per packet (or per window), returning "
+            "the segments directly — the prefix, the instructions, the class "
+            "list and the few-shot examples are paid for once instead of per "
+            "page. Image tokens are the same either way, so packet granularity "
+            "with images off is the large cost lever. Empty (the default) is "
+            "derived from the deprecated `classificationMethod`, so an existing "
+            "configuration keeps its behaviour with no edit."
+        ),
+    )
+    packet: ClassificationPacketConfig = Field(
+        default_factory=ClassificationPacketConfig,
+        description=(
+            "Settings used only when granularity is 'packet': the window size, "
+            "the overlap between windows, and the packet-level prompts."
+        ),
+    )
     sectionSplitting: str = Field(
         default="llm_determined",
         description="Section splitting strategy: 'disabled' (entire doc as one section), 'page' (one section per page), 'llm_determined' (use LLM boundary detection)",
@@ -1763,6 +1908,27 @@ class ClassificationConfig(BaseModel):
                 return "ALL"
             return v.strip()
         return str(v)
+
+    @field_validator("granularity", mode="before")
+    @classmethod
+    def validate_granularity(cls, v: Any) -> str:
+        """Normalize granularity; empty means "derive from classificationMethod".
+
+        An unrecognised value raises rather than falling back, because the two
+        values produce different prompts, different parsers and a roughly
+        N-fold difference in call count — silently picking one would be a cost
+        and accuracy decision the operator did not make. (``sectionSplitting``
+        below does fall back, which predates this and is a smaller difference.)
+        """
+        if v is None:
+            return ""
+        v_str = str(v).strip().lower()
+        if v_str in ("", "page", "packet"):
+            return v_str
+        raise ValueError(
+            f"classification.granularity must be 'page', 'packet', or empty "
+            f"(derive from classificationMethod), got {v!r}"
+        )
 
     @field_validator("sectionSplitting", mode="before")
     @classmethod
