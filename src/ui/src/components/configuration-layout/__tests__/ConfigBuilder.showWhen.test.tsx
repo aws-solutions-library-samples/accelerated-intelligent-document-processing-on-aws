@@ -175,6 +175,25 @@ describe('ConfigBuilder showWhen', () => {
     expect(screen.queryAllByText('Always visible').length).toBeGreaterThan(0);
   });
 
+  it('shows a "not yet set" field for both an empty value and an absent key', () => {
+    // The real gate on the deprecated `classificationMethod` field, which must
+    // be visible exactly while `granularity` has not been set. An absent key is
+    // the state of every configuration written before granularity existed, and
+    // it does NOT equal '' — so `values: ['', null]` would hide the field in
+    // precisely the case it exists for, besides being a literal null that
+    // CloudFormation refuses in a template.
+    const showWhen = [{ field: 'granularity', notValues: ['page', 'packet'] }];
+
+    renderConfig(schemaWith(showWhen), values({ granularity: '' }));
+    expect(isVisible()).toBe(true);
+  });
+
+  it('hides the "not yet set" field once granularity is chosen', () => {
+    const showWhen = [{ field: 'granularity', notValues: ['page', 'packet'] }];
+    renderConfig(schemaWith(showWhen), values({ granularity: 'packet' }));
+    expect(isVisible()).toBe(false);
+  });
+
   it('ignores a malformed condition rather than hiding the field', () => {
     // A guard that fails closed on bad schema makes a typo invisible instead of
     // loud, and the schema is reviewed while the rendered form is not.

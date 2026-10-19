@@ -1297,7 +1297,15 @@ Resources:
                     "textbasedHolisticClassification",
                   ]
                 order: 3.5
-                showWhen: [{ field: "granularity", values: ["", null] }]
+                # "granularity has not been set" covers both an empty string and
+                # the key being absent entirely, which is the state of every
+                # configuration written before granularity existed. Expressed as
+                # the negative rather than `values: ["", null]` for two reasons:
+                # CloudFormation refuses a literal `null` anywhere in a template,
+                # and an absent value does not EQUAL "" either, so the positive
+                # form would have hidden this field in exactly the case it exists
+                # for.
+                showWhen: [{ field: "granularity", notValues: ["page", "packet"] }]
               strategy:
                 type: string
                 title: Strategy
