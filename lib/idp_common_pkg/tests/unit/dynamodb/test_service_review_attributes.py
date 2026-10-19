@@ -104,9 +104,15 @@ class TestRunKind:
         assert "RunKind" not in self._run_item()
 
     def test_run_kind_is_keyword_only(self):
+        # Deliberately one positional argument too many: run_kind must be refused.
         with pytest.raises(TypeError):
             self.service.create_document_run(
-                self.doc, "r1", "s3://out/m.json", 0, None, "review_final"
+                self.doc,
+                "r1",
+                "s3://out/m.json",
+                0,
+                None,
+                "review_final",  # pyright: ignore[reportCallIssue]
             )
 
 
