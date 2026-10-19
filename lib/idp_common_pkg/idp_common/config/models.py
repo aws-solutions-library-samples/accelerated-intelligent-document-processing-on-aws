@@ -1176,36 +1176,6 @@ DEFAULT_REJECT_REASONS: Tuple[str, ...] = (
     "Other (see note)",
 )
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
-
-
-def _dedupe(values: List[str]) -> List[str]:
-    seen: set = set()
-    out: List[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            out.append(value)
-    return out
-
-
-def _as_list(v: Any) -> List[Any]:
-    if v is None or v == "":
-        return []
-    if isinstance(v, (list, tuple)):
-        return list(v)
-    raise ValueError(f"must be a list, got {type(v).__name__}")
-
-
-def _bounded_text_list(v: Any, *, what: str, max_len: int = 200) -> List[str]:
-    out = []
-    for item in _as_list(v):
-        text = str(item).strip()
-        if not 1 <= len(text) <= max_len:
-            raise ValueError(f"each {what} must be 1-{max_len} characters")
-        out.append(text)
-    return out
-
 
 class HITLReviewQueuesConfig(BaseModel):
     """Review queues for low-confidence documents (``idp_common.review_queues``).

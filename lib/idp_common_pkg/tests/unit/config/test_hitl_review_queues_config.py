@@ -20,9 +20,6 @@ from idp_common.config.models import (
     REVIEW_QUEUE_MEMBER_GROUPS,
     HITLReviewQueuesConfig,
     IDPConfig,
-    _as_list,
-    _bounded_text_list,
-    _dedupe,
     review_queue_display_name,
 )
 from idp_common.review_queues.queue_defs import QueueDefinition
@@ -168,36 +165,3 @@ class TestDisplayName:
     @pytest.mark.parametrize("queue_id", ["___", "", "-.-"])
     def test_an_id_of_only_separators_is_returned_unchanged(self, queue_id):
         assert review_queue_display_name(queue_id) == queue_id
-
-
-@pytest.mark.unit
-class TestListHelpers:
-    """The list-normalising helpers beside the review-queue models."""
-
-    def test_dedupe_keeps_the_first_occurrence_in_order(self):
-        assert _dedupe(["b", "a", "b", "c", "a"]) == ["b", "a", "c"]
-
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [(None, []), ("", []), ([], []), (["x"], ["x"]), (("x", "y"), ["x", "y"])],
-    )
-    def test_as_list_accepts_empty_lists_and_tuples(self, value, expected):
-        assert _as_list(value) == expected
-
-    @pytest.mark.parametrize("value", ["x", 3, {"a": 1}])
-    def test_as_list_refuses_anything_else(self, value):
-        with pytest.raises(ValueError, match=f"got {type(value).__name__}"):
-            _as_list(value)
-
-    def test_bounded_text_list_strips_and_stringifies(self):
-        assert _bounded_text_list(["  Blurry ", 42], what="reason") == ["Blurry", "42"]
-
-    @pytest.mark.parametrize("bad", ["   ", "x" * 201])
-    def test_bounded_text_list_refuses_empty_or_overlong_items(self, bad):
-        with pytest.raises(ValueError, match="each reason must be 1-200 characters"):
-            _bounded_text_list(["ok", bad], what="reason")
-
-    def test_bounded_text_list_honours_a_custom_bound(self):
-        assert _bounded_text_list(["abc"], what="tag", max_len=3) == ["abc"]
-        with pytest.raises(ValueError, match="each tag must be 1-3 characters"):
-            _bounded_text_list(["abcd"], what="tag", max_len=3)
