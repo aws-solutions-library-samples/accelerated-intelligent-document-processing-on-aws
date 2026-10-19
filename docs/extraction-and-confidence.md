@@ -2251,10 +2251,26 @@ generic info label **Auto-recovered** (the same label `extraction_sparse` gets),
 and the document list's **Processing Issues** count becomes non-zero. Both happen
 on every section holding a 30-or-more-row object list, including sections where
 nothing is wrong — which is the trade for being able to tell "could not check"
-from "checked and found complete" at all. The shipped default OCR configuration
-carries `TABLES`, so a default deployment does not see this; the two
-`ocr-benchmark` presets set `LAYOUT` only and a `bedrock` backend renders its own
-Markdown, and those are the configurations where it applies.
+from "checked and found complete" at all.
+
+⚠️ **A default deployment does see this, and carrying Textract's `TABLES` feature is
+not enough to avoid it.** The evidence is matched on column width, so what decides
+whether the check is reachable is whether the rendered table is **exactly as wide as
+the list item's property count** — not whether a table was rendered at all. An item
+schema with a derived or document-level property has one column more than the table
+and matches nothing. Measured on a live stack running the shipped
+`lending-package-sample` preset (Textract with `LAYOUT`, `TABLES` and `SIGNATURES`):
+`bank-statement-multipage.pdf` extracted 68 rows for a 5-property
+`transaction_details`, the section's OCR text rendered tables **2 and 3 columns
+wide**, and the issue fired with `ocr_matched_table_rows: 0` on a list that looks
+complete. `details["ocr_table_widths"]` is what tells that case apart from "no table
+was recognised": `[2, 3]` against `item_property_count: 5` means the evidence is
+present and the wrong shape.
+
+So the configurations where it applies are **any** where an item schema's property
+count differs from the rendered table width — which includes shipped presets — plus
+the two `ocr-benchmark` presets, which set `LAYOUT` only, and a `bedrock` backend,
+which renders its own Markdown and can produce a shape the match rejects.
 
 One further issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
