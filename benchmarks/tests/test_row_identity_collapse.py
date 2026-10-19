@@ -611,6 +611,100 @@ def test_each_excuse_is_bounded_by_the_shortfall_it_can_account_for():
 
 
 # --------------------------------------------------------------------------- #
+# The other direction: a row count that counts something that is not a row
+# --------------------------------------------------------------------------- #
+def test_a_prose_refusal_inflates_the_row_count(monkeypatch):
+    """#1505: the identifier scan cannot tell a row from a model quoting a row.
+
+    ``score_synthetic`` reads identifiers out of ``json.dumps(inference_result)``
+    whole, which is what lets it find a tag wherever an OCR backend put it. The
+    cost is that a model declining *inside the field* — ``Transactions`` coming
+    back as a sentence instead of an array — contributes every truth id its
+    sentence happens to name.
+
+    This is the recorded explanation for the four
+    ``coresynth__extraction-model-sonnet55`` runs over ``med_narrow.pdf`` that
+    report ``rows_extracted: 2`` against ``conf_rows_expected: 0``: the refusal
+    names ``SEQ00000`` and ``SEQ00399``, so the scan returns rows 0 and 399 and the
+    count reads 2 where the right answer is 0. The coverage walk, which counts rows
+    of list-valued attributes and knows nothing about ``SEQ``, is the one that gets
+    it right — which is why the carve-out in
+    ``test_coverage_threshold_evidence.py`` points at this scorer and not at it.
+
+    ``rows_extracted`` is deliberately left as it is. The raw section objects the
+    committed grids were scored from are not in the repository, so a narrowed scan
+    cannot be re-measured over them, and changing it would leave two incomparable
+    definitions of the same column inside one corpus. The extraction-side signal is
+    ``ExtractionService.LIST_FIELD_NOT_A_LIST_CODE``, which is emitted at ``error``
+    regardless of whether schema validation is enabled, and which this grid
+    predates.
+    """
+    refusal = (
+        "The statement contains 400 transactions (SEQ00000 to SEQ00399). They are "
+        "too many to list in full here without risking errors, so this field is "
+        "not populated."
+    )
+    sections = [
+        {
+            "inference_result": {"Account Number": "1", "Transactions": refusal},
+            "explainability_info": [{}],
+        }
+    ]
+    truth = {
+        "seq_ids": [f"SEQ{s:05d}" for s in range(400)],
+        "list_key": "Transactions",
+        "rows_typed": {f"SEQ{s:05d}": {"Amount": float(s)} for s in range(400)},
+    }
+    monkeypatch.setattr(lib, "read_sections", lambda *a, **k: lib.SectionRead(sections))
+    row = analyze.score_synthetic("bucket", "prefix/", truth)
+
+    assert row["rows_extracted"] == 2, (
+        "the artifact's figure is 2; if this moved, the scan changed and the "
+        "carve-out in test_coverage_threshold_evidence.py needs re-deriving."
+    )
+    assert row["completeness_recall"] == 0.005
+    assert row["n_gaps"] == 398
+    # And the ids it found are exactly the two the sentence names, which is the
+    # whole of the mechanism. Asserted on `.ids`: `read_seq_ids` returns a
+    # four-field NamedTuple, so the bare call is truthy even when it finds nothing
+    # and an assertion on it would pass whatever the scan did.
+    reading = lib.read_seq_ids(
+        json.dumps(sections[0]["inference_result"]), set(range(400))
+    )
+    assert tuple(sorted(set(reading.ids))) == (0, 399), (
+        "the 2 is rows 0 and 399 — SEQ00000 and SEQ00399, the two identifiers the "
+        f"refusal sentence names. Got {sorted(set(reading.ids))}."
+    )
+
+
+def test_the_same_scan_is_silent_when_the_refusal_names_no_identifier(monkeypatch):
+    """Non-vacuity for the above: it is the quoted ids, not the string itself.
+
+    A refusal phrased without naming a row contributes nothing, so the inflation
+    above is attributable to the identifiers in the sentence rather than to any
+    non-list value being counted as one row.
+    """
+    sections = [
+        {
+            "inference_result": {
+                "Account Number": "1",
+                "Transactions": "There are too many transactions to list here.",
+            },
+            "explainability_info": [{}],
+        }
+    ]
+    truth = {
+        "seq_ids": [f"SEQ{s:05d}" for s in range(400)],
+        "list_key": "Transactions",
+        "rows_typed": {f"SEQ{s:05d}": {"Amount": float(s)} for s in range(400)},
+    }
+    monkeypatch.setattr(lib, "read_sections", lambda *a, **k: lib.SectionRead(sections))
+    row = analyze.score_synthetic("bucket", "prefix/", truth)
+    assert row["rows_extracted"] == 0
+    assert row["completeness_recall"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
 # The canonicaliser itself
 # --------------------------------------------------------------------------- #
 class TestCanonicalSeq:
