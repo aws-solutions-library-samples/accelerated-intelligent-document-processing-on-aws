@@ -11,6 +11,8 @@ SPDX-License-Identifier: MIT-0
 
 - **`aiohttp` is updated to 3.14.5** in `lib/idp_common_pkg/uv.lock`, resolving two HIGH advisories against 3.14.3: unbounded memory and CPU use (GHSA-2g87-pp6c-29x5) and a missing initial request/header timeout in the aiohttp server (GHSA-5wr8-gcqf-gqf3).
 
+- **The integration build's Step 0 BDA sweep no longer deletes the BDA projects and blueprints of a run that still has a stack, whatever that stack's status or name suffix** ([#1440](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1440)). When it cannot read which runs still have a stack, it now deletes nothing and reports one warning, rather than skipping only the runs it could not read. **Action:** none; this changes only what the integration deploy harness deletes and how it reports.
+
 ## [0.6.12]
 
 ### Added
