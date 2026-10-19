@@ -107,25 +107,42 @@ so such a class still cannot be fully assessed; what it now gets is an actionabl
 message naming the real cause.
 
 ⚠️ If your symptom is instead **the document stuck in `ASSESSING` with the Assessment
-Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**
-— the symptom originally reported on #894 — note that this guard is not known to fix
-it. The cause of that timeout has not been established: the same-model retry rung
-already stopped on no progress before this change, and the ladder's wall-clock
-deadline guard was already in place in the release where the timeouts were observed.
-The one gap in that guard has since been closed (#958): every recovery call now
-checks the remaining Lambda time before it is made, not just further bisections and
-whole escalation rounds, so a run that would previously have spent its entire budget
-on partially-successful retries now stops at the last call that fits and keeps
-everything it recovered. When that happens with rows still unscored the section
-reports `assessment_incomplete` (error) with the time budget named in its message —
-**not** `assessment_deadline_reached`, which is reserved for the case where recovery
-was cut short and every row ended up scored anyway; `deadline_reached` is also set in
-`metadata.assessment_batch_split_stats`. Whether any of this was the cause of the
-reported timeouts is still unknown. Attach your Assessment Lambda log (the per-call timings
-and `stopReason` lines) to #894. Until #894 is fixed, either point that class at a large-output-cap confidence model
+Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**,
+the guard above is not what addresses it. **Every dispatch in the confidence pass
+consults the remaining invocation time (#1488):** per batch in the sequential loop,
+before the cache-warming batch, and before each wave of the concurrent fan-out,
+alongside the recovery ladder's own per-chunk check (#958). A dispatch the
+remaining time cannot hold is refused rather than started, so a 1,200-row list —
+roughly 48 model calls at the shipped 25-row ceiling — now stops at the last batch
+that fits instead of running into the wall. That matters because **a Lambda killed
+on the wall clock raises no Python exception**, so the degrade path that exists for
+a failed confidence pass never ran and Step Functions discarded a document whose
+extraction had already succeeded and been persisted.
+
+When a stop leaves rows unscored the section reports `assessment_incomplete`
+(error) with the time budget named in its message, and the unscored rows carry a
+per-row reason naming the time budget too — **not**
+`assessment_deadline_reached`, which is reserved for the case where recovery was
+cut short and every row ended up scored anyway. `deadline_reached` is also set in
+`metadata.assessment_batch_split_stats`, whose `batch_count` there counts the
+batches that were dispatched. Only a trailing suffix of batches is ever skipped,
+never one in the middle. The remedies the message names are more Assessment
+function time, a higher `extraction.agentic.max_concurrent_batches` so the same
+rows cost fewer waves, or smaller sections; *lowering*
+`extraction.confidence.list_batch_size` makes a stop **more** likely, because it
+buys smaller calls by making more of them.
+
+Two things that will still produce this symptom. **An out-of-memory kill is
+equally exception-free and nothing above bounds memory** — read the kill reason in
+the function's log rather than assuming the wall clock. And the multi-instance
+sizing bug #894 reports is a different route: its wrapper makes the batch sizer
+measure the outer row, so it derives a batch size far too large and the pass makes
+*few* big calls rather than many small ones, which is not the shape #1488
+bounds. For that class, either point it at a large-output-cap confidence model
 (`extraction.confidence.escalation_model`, or the per-class
 `x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
-class rather than a field inside a multi-instance instance.
+class rather than a field inside a multi-instance instance; attach your Assessment
+Lambda log (the per-call timings and `stopReason` lines) to #894.
 
 **`ValidationException: Input is too long for requested model.` from the Assessment
 step.** This is deterministic — retrying sends the identical oversized request — and

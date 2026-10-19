@@ -111,8 +111,22 @@ reference:
 # --- Doc groupings referenced by suites in config_matrix.yaml ------------------
 # NOTE: core_docs are all bank_statement-class (transaction-list) documents, scored
 # against that schema. kv_form is a FLAT key/value form and must NOT be scored under
-# the bank_statement schema (it pins scalar_accuracy to a meaningless ~0.04); it needs
-# its own doc-class config (future work) — so it is intentionally excluded here.
+# the bank_statement schema (it pins scalar_accuracy to a meaningless ~0.04). It has had
+# its own doc-class config since v0.6.7 — the generator emits `kv_form.pdf.classes.yaml`
+# and make_configs.BASE_CONFIG reads it — but configs are built per class, so a group
+# naming it would need a SECOND run of the suite with `--class kv_form`, and
+# run_matrix._docs_for_class would skip it (with a note) on the bank_statement run.
+# Every group here is therefore single-class on purpose, and the suites that want both
+# name kv_form directly: `enforcement` and `forcing`.
+#
+# The cost of that is one metric: `typed_accuracy` scores scalar fields against
+# `fields_typed`, and kv_form is the only generator that emits any, so no group below
+# can produce it and the model table in config-guidance.md omits the column. On a
+# bank_statement row the pair is absent rather than null, with
+# `typed_truth_unavailable` naming `cell_accuracy` as the per-value instrument there
+# (#1490). Adding typed scalars to bank_statement is not the way out: `FIELDS` is
+# scalar_accuracy's denominator, and that metric exists to stay comparable with the
+# committed baseline.
 groups:
   core_docs:      [tiny_form, small_narrow, med_narrow, large_narrow, wide_400, manylists_400, longdesc_100, realkie, ocr_bench]
   # corefast: the reliably-completable subset (all lists <=100 rows). Advanced/

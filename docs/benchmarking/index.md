@@ -53,12 +53,60 @@ wrong conclusions here before:
 | Metric | Reads | Use it for |
 |---|---|---|
 | `scalar_accuracy` | The text the document **renders** (`"$685.50"`) | Comparability with historical baselines. Do **not** use it to judge value normalization — a correctly-typed `685.5` scores as a miss. |
-| `typed_accuracy` | The schema-**typed** target (`685.5`) | Whether values came back correctly typed. Populated only for truth files declaring `fields_typed`. |
-| `cell_accuracy` | Per-cell typed match on list rows, matched by `SEQ` tag | Value fidelity *inside* lists. Completeness answers "did the row come back"; this answers "with the right value". |
+| `typed_accuracy` | The schema-**typed** target (`685.5`) | Whether **scalar** values came back correctly typed. Defined only for a document whose truth declares `fields_typed`, which is the `kv_form` document and nothing else — see below. Absent, not zero, on every other row. |
+| `cell_accuracy` | Per-cell typed match on list rows, matched by `SEQ` tag | Value fidelity *inside* lists. Completeness answers "did the row come back"; this answers "with the right value". Defined only for a document that has a list attribute — absent, not zero, on a flat key/value form. Read it with `cells_compared`. |
 | `sections_correct` | Section count vs `expected_sections`, as 1.0/0.0 | Boundary detection. Nothing else can see an over-split: a document split into 3 sections still reports `completeness_recall` 1.0 and status `COMPLETED`. The mean over repeats **is** the pass rate. |
 | `n_gaps` | Truth `SEQ` ids **absent** from the extraction | Completeness. It is an *extraction* metric and says nothing about confidence — a document can have `n_gaps` 0 and every recovered row unscored. |
 | `conf_coverage` | Extracted list rows carrying a confidence, over all extracted list rows | Whether the confidence surface covers the data. This is the quantity the `assessment_coverage_incomplete` guard fires on, computed by the same function (`idp_common.assessment.batching.confidence_coverage`) so the measurement and the guard cannot drift apart. |
 | `mean_confidence` | The mean of the confidence values that **exist** | The calibration question. It is silent about rows that have no confidence at all — that is `conf_coverage`'s job, and the two move independently. |
+
+**`typed_accuracy` is a scalar-field metric and only one corpus document can carry
+it.** `kv_form` is the flat key/value form, and its generator emits the typed scalar
+expectations the metric scores against. Every other synthetic document comes from the
+`bank_statement` generator, whose two scalar fields are an account number with leading
+zeros and a date *range* — both of which a typed schema correctly leaves as strings, so
+there is no typed scalar to score. On those rows the pair is **absent rather than
+null**, and `typed_truth_unavailable` says so and names `cell_accuracy` as the
+per-value instrument that does apply there. Null would have claimed the other thing a
+missing value means in these artifacts — measured, and nothing to join — which reads in
+a published table as a blank cell instead of as a metric that was never applicable.
+
+So the grid the model table is computed on (`core_synth`, all `bank_statement`) cannot
+carry a typed-accuracy column, and the configuration guidance omits it rather than
+printing blanks. The suites that do produce it are `enforcement` and `forcing`, both of
+which name `kv_form` and must be run with `--class kv_form` for it, because configs are
+built per document class.
+
+**`cells_compared` is the column whose blank means one thing, and `cell_accuracy` is
+not.** On a document with no list attribute — `kv_form`, the flat key/value form —
+`cell_accuracy` and `cells_compared` are both **absent**, with
+`cell_truth_unavailable` saying so and naming `scalar_accuracy` and `typed_accuracy`
+as the per-value instruments that apply there. On a document that *has* a list and
+returned none of its rows, both columns are present: `cell_accuracy` is null, because
+0/0 is undefined and a `1.0` there would be the "a null column scores 1.000" blind
+spot in its purest form, and `cells_compared` is the literal `0` it compared. In
+`summary.json` those two states differ on `cell_accuracy` alone — absent against
+present-and-null. **In the CSV they do not**, because `DictWriter` renders an absent
+key and a null value as the same empty cell: a blank `cells_compared` means "this
+document has no list" and nothing else, while a blank `cell_accuracy` is either that
+or a list that joined nothing, which `cells_compared`'s `0` and
+`cell_truth_unavailable` tell apart. Both states used to be the same pair of blanks in
+both artifacts, so a reader could not tell a metric that never applied from a run that
+returned nothing — which is the reading that hides row loss, since a model returning
+10 rows of 400 scores 1.000 over the 20 cells it returned. **Never read
+`cell_accuracy` without `cells_compared` beside it**; both are in `summary.json` and
+in the CSV.
+
+**Which encoding a grid you are reading uses is told by the reason columns, not by the
+blank.** A row carrying `typed_truth_unavailable` and `cell_truth_unavailable` was
+scored under the encoding above, so an absent metric there means "never applicable"
+and nothing else. A row carrying neither column was scored under the earlier one,
+where both pairs are present and null on a document they do not apply to, and a blank
+is therefore *not* distinguishable from a measurement that came back empty. Every grid
+committed under `benchmarks/results/` up to and including `v0.6.11` is of that earlier
+vintage — they are not rescored, since scoring is a point-in-time read of a stack's
+output and `RETENTION.md` records how short that window is — so check for the columns
+before reading one of their blanks.
 
 `conf_coverage` is `None`, not `1.0`, for a document with no list attribute: coverage
 is undefined there, and `cell_stats` drops it rather than averaging it in. The cell
