@@ -3312,9 +3312,9 @@ def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
 
     All of them are top-level and older than the age gate. The long-lived stack
     and `idp-ux-nightly-iam` are counted as set aside for it, and the throwaway pair
-    is reaped with the old run, so a sweep that went back to sparing every
-    `idp-ux-nightly-<x>` fails here, and so does one that stopped sparing either
-    of the two names it keeps.
+    is reaped with the old run, so a sweep that spared every `idp-ux-nightly-<x>`
+    fails here, and so does one that stopped sparing either of the two names it
+    keeps.
     """
     sweep = "cleanup_stale_idp_stacks"
     owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
