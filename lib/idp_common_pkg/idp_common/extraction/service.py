@@ -2365,6 +2365,32 @@ class ExtractionService:
     #: what is fixed here; the consequence is unchanged.
     PARTIAL_ROW_SHORTFALL_CODE = "extraction_partial_row_shortfall"
 
+    #: The ``ProcessingIssue.code`` for "this check did not run", as distinct from
+    #: "this check ran and found nothing". Both row checks above need OCR tables
+    #: whose column count EQUALS the item schema's property count, and below
+    #: ``_OCR_ROW_ESTIMATE_MIN`` matched rows neither can say anything either way —
+    #: at zero matched rows they are structurally unable to fire at all. Until this
+    #: code existed that produced the same output as a verified-complete list:
+    #: no issue, and a processing report reading ``Status: SUCCESS``. A reader who
+    #: knows about ``ROW_SHORTFALL_CODE`` reads that as a checked list, which is the
+    #: defect — the checks being unable to fire is tolerable, appearing to have
+    #: fired is not (#1489).
+    #:
+    #: ``info`` severity, always, and NOT governed by
+    #: ``extraction.row_shortfall_action`` — for the reason neither
+    #: ``OUTPUT_TRUNCATED_CODE`` nor ``PARTIAL_ROW_SHORTFALL_CODE`` is. It is also
+    #: ``info`` rather than ``warning`` because of how often it is the CORRECT
+    #: answer rather than a finding: an item schema carrying a property the table
+    #: lacks (a derived Balance) and an OCR configuration that renders no pipe
+    #: tables at all both reach it on a perfectly complete extraction, so at
+    #: ``warning`` it would flip those runs' reports from ``SUCCESS`` to
+    #: ``COMPLETED WITH WARNINGS`` for a condition that is a statement about the
+    #: EVIDENCE and not about the result. ``info`` keeps the status line and still
+    #: puts the code in ``processing_issues``, in the processing report's issue
+    #: list and in the UI's — which is the whole of what distinguishability needs.
+    #: ``extraction_sparse`` is ``info`` for the same reason.
+    NO_OCR_EVIDENCE_CODE = "extraction_row_count_unverified"
+
     def _row_shortfall_action(self) -> str:
         """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
 
@@ -3744,6 +3770,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           warning): ``metadata["output_truncated"]``, set from the response's own
           ``stopReason`` or from the JSON repair reader. The only certain signal
           here; the others are estimates.
+        - **A row count nothing could check** (``extraction_row_count_unverified``,
+          info): a list of objects came back with at least
+          ``_OCR_ROW_ESTIMATE_MIN`` rows while the section's OCR text holds fewer
+          than that many rows in tables of the list's own width, so neither
+          OCR-grounded row check was applicable. It reports the ABSENCE of
+          evidence, never a shortfall, and it is the signal that keeps "could not
+          check" distinguishable from "checked and found complete".
 
         Best-effort and advisory: a genuinely empty section (no such data in the
         document) will also flag, so these are warning/info, never hard errors.
@@ -4038,7 +4071,157 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     1 for _lb, rows, _mx in members for r in rows if isinstance(r, dict)
                 )
                 if expected < self._OCR_ROW_ESTIMATE_MIN:
-                    continue  # too little evidence to say anything either way
+                    # Too little evidence to say anything either way — so SAY THAT,
+                    # rather than emitting nothing and leaving this
+                    # indistinguishable from a list the checks read and found
+                    # complete (#1489).
+                    #
+                    # Measured, not assumed: on a 3-property item schema,
+                    # `_ocr_tables` + the exact-width match return 0 rows of
+                    # evidence for a GitHub-legal Markdown table written without
+                    # leading pipes, for the same table rendered with a 4th column
+                    # the schema does not carry, for one carrying an added
+                    # row-number column, and for a list rendered as bullets — four
+                    # renderings an LLM OCR backend can produce where textractor
+                    # produces none of them. At 0 evidence `expected < 30` holds
+                    # unconditionally, so both checks above are not merely quiet,
+                    # they are unreachable.
+                    #
+                    # Gated on the EXTRACTED side, because the OCR side is exactly
+                    # what is missing. `extracted >= _OCR_ROW_ESTIMATE_MIN` is the
+                    # same floor the checks themselves use, read against the only
+                    # count available here: a list that came back with 30+ rows is
+                    # one where a row-completeness answer would have been worth
+                    # having. ⚠️ The residual is the other end — a list that came
+                    # back with FEWER than that floor and has no evidence either
+                    # (5 rows where the document held 400) still reports nothing
+                    # here, because without evidence a 5-row list cannot be told
+                    # from a correct one, and `extraction_incomplete` /
+                    # `extraction_sparse` / a declared `minItems` are the signals
+                    # that cover a list that small.
+                    #
+                    # The widths that WERE found travel in the details rather than
+                    # being tolerated into the sum. That is the deliberate smaller
+                    # change: a width-tolerant count reachable only when the
+                    # exact-width evidence is empty would still let a two-column
+                    # key/value block stand in for a three-column list and report a
+                    # shortfall that is not one, where `ocr_table_widths` lets a
+                    # reader see a 4-vs-3 mismatch and fix the schema or the OCR
+                    # backend with no false finding anywhere.
+                    #
+                    # ⚠️ Read against `ocr_rows`, NOT against the `expected` the
+                    # branch itself is gated on. `expected` is
+                    # `min(ocr_rows, group_cap)`, so this branch is also reached
+                    # with the OCR evidence PLENTIFUL and the group's summed
+                    # declared `maxItems` under the floor — 400 matched rows
+                    # against `maxItems: 20`. Every string below describes the
+                    # absent-evidence half of that disjunction, so emitting there
+                    # would state a contradiction ("the OCR text holds only 400
+                    # row(s) ... under the 30-row floor"), and the condition is
+                    # genuinely different: the evidence is present and it is the
+                    # author's own ceiling that makes the comparison inapplicable.
+                    # That case is reachable rather than hypothetical, because
+                    # `shard_validation_schema` strips `maxItems` for a shard on
+                    # purpose ("a shard whose pages hold more rows than the
+                    # section's maxItems must not be told to drop rows before the
+                    # merge counts them"), so a merged section can carry more rows
+                    # than the cap. It stays silent here, exactly as it was before
+                    # this code existed — the residual this narrowing accepts.
+                    # Narrowing rather than widening is also what keeps the change
+                    # additive: this condition is strictly inside the branch's own
+                    # gate, since `ocr_rows < 30` forces `expected < 30`.
+                    if (
+                        extracted >= self._OCR_ROW_ESTIMATE_MIN
+                        and ocr_rows < self._OCR_ROW_ESTIMATE_MIN
+                    ):
+                        fields_str = ", ".join(labels)
+                        widths = sorted({tb["cols"] for tb in tables})
+                        evidence_clause = (
+                            f"no {n_props}-column table at all"
+                            + (
+                                f" (the table(s) found are "
+                                f"{', '.join(str(w) for w in widths)} columns wide)"
+                                if widths
+                                else " (no Markdown table was found in the section's "
+                                "OCR text)"
+                            )
+                            if ocr_rows == 0
+                            else f"only {ocr_rows} row(s) in {n_props}-column "
+                            f"table(s) of that shape"
+                        )
+                        # "Equally consistent with a complete list" is true of
+                        # THIS issue's own evidence and false of the section when
+                        # the response is known to have stopped early. Nothing
+                        # suppresses either issue, so without this clause a reader
+                        # gets one issue saying the output certainly stopped early
+                        # and another saying the row count is as likely complete as
+                        # not. `extraction_output_truncated` is the one certain
+                        # completeness signal here, so defer to it by name.
+                        truncated_clause = (
+                            f" ⚠️ This section also reports "
+                            f"{self.OUTPUT_TRUNCATED_CODE}: the response stopped "
+                            "before it finished, so every list in it is a prefix. "
+                            "That is a certain signal and it governs — read the "
+                            "'equally consistent' statement above as being about "
+                            "this check's evidence, not about the section."
+                            if metadata.get("output_truncated")
+                            else ""
+                        )
+                        issues.append(
+                            ProcessingIssue(
+                                stage="extraction",
+                                severity="info",
+                                code=self.NO_OCR_EVIDENCE_CODE,
+                                message=(
+                                    f"Extracted {extracted} row(s) for list field(s) "
+                                    f"{fields_str}, but the section's OCR text holds "
+                                    f"{evidence_clause} — under the "
+                                    f"{self._OCR_ROW_ESTIMATE_MIN}-row floor both "
+                                    f"OCR-grounded row checks need, so "
+                                    f"{self.ROW_SHORTFALL_CODE} and "
+                                    f"{self.PARTIAL_ROW_SHORTFALL_CODE} did not run "
+                                    "for this field. This is NOT a report of a "
+                                    "shortfall: the row count is UNVERIFIED, and it "
+                                    "is equally consistent with a complete list. "
+                                    "The evidence is matched on column width, so an "
+                                    "item schema carrying a property the table does "
+                                    "not have (a derived Balance) reaches this, as "
+                                    "does an OCR configuration that emits no "
+                                    "Markdown tables. To restore the check, use an "
+                                    "OCR backend that renders tables (Textract with "
+                                    "the TABLES feature, or BDA) and give the item "
+                                    "schema one property per rendered column."
+                                    + truncated_clause
+                                ),
+                                root_cause=(
+                                    f"{'agentic' if is_agentic else 'traditional'} "
+                                    f"extraction with model "
+                                    f"{self._pending_extraction_model or self.config.extraction.model}; "
+                                    f"{ocr_rows} matching OCR table row(s) for "
+                                    f"{n_props}-column {fields_str} — below the "
+                                    f"{self._OCR_ROW_ESTIMATE_MIN}-row floor, so the "
+                                    "row-completeness checks were not applicable"
+                                ),
+                                section_id=section_id,
+                                details={
+                                    "list_fields": labels,
+                                    "item_property_count": n_props,
+                                    "extracted_rows": extracted,
+                                    "ocr_matched_table_rows": ocr_rows,
+                                    # The diagnostic the width match otherwise
+                                    # throws away: every table width `_ocr_tables`
+                                    # DID find in the section, so a reader can see
+                                    # whether the evidence is absent (empty) or
+                                    # merely the wrong shape ([4] against 3).
+                                    "ocr_table_widths": widths,
+                                    "ocr_evidence_floor": self._OCR_ROW_ESTIMATE_MIN,
+                                    "declared_max_items": group_cap,
+                                    "ocr_tables": tables,
+                                    "agentic": is_agentic,
+                                },
+                            )
+                        )
+                    continue
                 if extracted >= expected * self._OCR_ROW_SHORTFALL_RATIO:
                     # The band #843's half ratio left silent. At 409 extracted of
                     # 817 summed OCR rows — 409 of the document's 800 real rows,

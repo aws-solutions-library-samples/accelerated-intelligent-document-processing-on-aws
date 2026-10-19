@@ -130,10 +130,13 @@ evaluation = [
   # EvaluationFunction Lambda fails at import time with
   # ``stickler.doc_split requires pandas``.
   "stickler-eval[docsplit]==1.0.0",
-  # munkres (stickler's Hungarian matcher) 3.0.0, released 2026-10-18, changes
-  # list-item pairing: the list-scoring tests in evaluation/ stop pairing items
-  # and score every item as unmatched. 2.x behaves as 1.1.4 did.
-  "munkres>=1.1.4,<3",
+  # munkres is Stickler's Hungarian-matching dependency, declared there only as
+  # ``munkres>=1.1.4``. Pinned to 1.1.4, the last release by the original
+  # maintainer: 2.0.0 (2026-10-06) and 3.0.0 (2026-10-18) are a rewrite with a
+  # native extension, published by a different uploader and not yet vetted, and
+  # 3.0.0 changed import-time behaviour enough to break a nightly. Revisit after
+  # reviewing the new upstream.
+  "munkres==1.1.4",
   "genson==1.3.0",  # For automatic JSON Schema generation from data
   # Numpy pin relaxed: stickler-eval declares ``numpy>=1.26,<3``; an exact 1.26.4
   # pin invited resolver conflicts on upgrade. Kept above 1.26 so the eval
@@ -271,8 +274,7 @@ test = [
   "mypy-boto3-bedrock-runtime>=1.39.0", # Required for bedrock_utils tests
   # Evaluation module dependencies (from evaluation group)
   "stickler-eval[docsplit]==1.0.0",
-  # Capped for the same reason as in [evaluation].
-  "munkres>=1.1.4,<3",
+  "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
   "numpy>=1.26,<3",
   "build==1.3.0",
@@ -315,8 +317,7 @@ test = [
 # Full package with all dependencies
 all = [
   "stickler-eval[docsplit]==1.0.0",
-  # Capped for the same reason as in [evaluation].
-  "munkres>=1.1.4,<3",
+  "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
   "Pillow==12.3.0",
   "pypdfium2>=5.5.0",

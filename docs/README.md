@@ -23,6 +23,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [IDP CLI](./idp-cli.md) - Command line interface for batch processing and evaluation workflows
 - [IDP SDK](./idp-sdk.md) - Python SDK for programmatic access
 - [Demo Videos](./demo-videos.md) - Comprehensive collection of feature demonstration videos
+- [Hands-on Workshops](./workshops.md) - The GenAI IDP Workshop on AWS Workshop Studio and the self-guided Amazon Quick integration workshop
 - [Troubleshooting](./troubleshooting.md) - Troubleshooting and performance guides
 - [Error Analyzer](./error-analyzer.md) - AI-powered error diagnosis
 
