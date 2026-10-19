@@ -512,7 +512,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
         "denominator. Either the coverage walk is missing rows the extraction "
         "produced — a list nested inside a group attribute is the shape that does "
         "that — or the row count is counting something that is not a row, as in the "
-        "#1505 carve-out below. Establish which before relaxing anything. First "
+        "#1505 carve-out above. Establish which before relaxing anything. First "
         f"few: {[(g, r['doc'], r['cell'], r['rows_extracted']) for g, r in unknown[:5]]}"
     )
     assert len(known) == EXPECTED_KNOWN, (

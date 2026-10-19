@@ -34,21 +34,49 @@ Why the existing signals do not cover it, which is what
   off. ``TestNeitherToggleGovernsDetection`` runs this check with validation and
   coercion both off, which is that run's configuration.
 
-What is pinned about the issue itself: ``error`` severity unconditionally, that
-``extraction.row_shortfall_action: fail`` neither raises nor lowers it and does
-not fail the section (``COMPLETED WITH ERRORS``, not ``FAILED``), and that the
-offending value travels in ``details`` truncated — the refusal sentence is the
-only record of *why* the model declined, and it is unbounded model-authored text
-going into a DynamoDB item.
+What is pinned about the issue itself: ``error`` severity for a value carrying
+content, that ``extraction.row_shortfall_action: fail`` neither raises nor lowers
+it and does not fail the section (``COMPLETED WITH ERRORS``, not ``FAILED``), and
+that the offending value travels in ``details`` truncated — the refusal sentence
+is the only record of *why* the model declined, and 300 characters is a
+readability bound rather than the DynamoDB one, which
+``ProcessingIssue._bound_details`` already applies.
+
+Two scope decisions have their own classes, because both are places where a silent
+report must not be read as "the shape did not occur":
+
+* ``TestABlankIsNotALostList`` — ``""`` and whitespace carry what ``[]`` carries,
+  so they are routed to ``extraction_incomplete`` at ``warning`` rather than
+  reported as an error. The ``error`` rationale is that a declared type and a
+  returned value leave nothing to estimate, and that is true of a refusal sentence
+  and false of a blank.
+* ``TestItReachesANestedList`` — the traversal matches ``_object_list_targets``
+  (top level plus one level into an instance array), because the nested shape is in
+  shipped configuration: ``checkpoints[].items``, ``glossarySections[].terms`` and
+  ``employees[].shifts`` in both ``ocr-benchmark`` presets.
 """
 
 from __future__ import annotations
+
+import re
+from pathlib import Path
 
 import pytest
 
 from idp_common.assessment.batching import confidence_coverage
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.service import ExtractionService
+
+
+def _repo_root() -> Path:
+    """The checkout this test file belongs to.
+
+    Asserted by ``test_the_repository_root_resolves`` rather than assumed: a wrong
+    depth turns every document assertion into a ``FileNotFoundError`` about the
+    wrong tree, which reads as an infrastructure problem.
+    """
+    return Path(__file__).resolve().parents[5]
+
 
 NOT_A_LIST = ExtractionService.LIST_FIELD_NOT_A_LIST_CODE
 INCOMPLETE = "extraction_incomplete"
@@ -99,16 +127,27 @@ LIVE_REFUSALS = {
     ),
 }
 
-#: Every non-list a declared array field can come back as. The scalars are the
-#: measured shape; the dict is the other one that reaches here (a model keying an
-#: array by index), and it is included because the consequence is identical —
-#: nothing downstream finds rows to count or to score.
+#: Every non-list a declared array field can come back as CARRYING CONTENT. The
+#: scalars are the measured shape; the dict is the other one that reaches here (a
+#: model keying an array by index), and it is included because the consequence is
+#: identical — nothing downstream finds rows to count or to score.
 RETURNED_INSTEAD_OF_A_LIST = {
     "a refusal sentence": LIVE_REFUSALS["cites the risk of error"],
-    "an empty string": "",
     "a number": 400,
     "a bool": False,
     "an object keyed by index": {"0": {"Date": "d0"}, "1": {"Date": "d1"}},
+}
+
+#: Blank values, which are deliberately NOT this code. ``""`` carries the same
+#: information as ``[]`` — there were no rows — and a genuinely empty section is
+#: legitimate, which is the reason ``extraction_incomplete`` is a ``warning``. The
+#: ``error`` rationale ("a declared type and a returned value leave nothing to
+#: estimate") holds for a refusal sentence and does not hold for a blank, so these
+#: route to the empty-list signal instead. See ``TestABlankIsNotALostList``.
+BLANK = {
+    "an empty string": "",
+    "whitespace only": "   ",
+    "a newline": "\n",
 }
 
 
@@ -266,6 +305,162 @@ class TestItDoesNotFireOnAnythingElse:
             section_id="1",
         )
         assert NOT_A_LIST not in {i.code for i in issues}
+
+
+class TestABlankIsNotALostList:
+    """``""`` carries ``[]``'s information, so it gets ``[]``'s severity.
+
+    An `error` here would put a benign section — a model emitting `""` for a table
+    the document genuinely does not have — at ``COMPLETED WITH ERRORS`` with an
+    **Incomplete** badge, where the same answer spelled ``[]`` produces a warning.
+    The asymmetry is the finding, not the blank.
+    """
+
+    @pytest.mark.parametrize("label", sorted(BLANK))
+    def test_a_blank_reports_incomplete_at_warning(self, label):
+        _svc_obj, issues = _issues(BLANK[label])
+        codes = {i.code for i in issues}
+        assert NOT_A_LIST not in codes
+        assert INCOMPLETE in codes
+        incomplete = next(i for i in issues if i.code == INCOMPLETE)
+        assert incomplete.severity == "warning"
+
+    @pytest.mark.parametrize("label", sorted(BLANK))
+    def test_the_field_is_named_in_the_empty_list_issue(self, label):
+        """It must not merely be silent — the loss is still reported, just milder."""
+        _svc_obj, issues = _issues(BLANK[label])
+        incomplete = next(i for i in issues if i.code == INCOMPLETE)
+        assert "Transactions" in incomplete.message
+        assert "Transactions" in incomplete.details["empty_list_fields"]
+
+    def test_a_blank_and_an_empty_list_are_reported_identically(self):
+        """The whole claim of this class, read off both outputs rather than stated."""
+        blank = {(i.code, i.severity) for i in _issues("")[1]}
+        empty = {(i.code, i.severity) for i in _issues([])[1]}
+        assert blank == empty
+
+    def test_a_string_with_content_is_still_an_error(self):
+        """Non-vacuity: the blank routing has not silenced the code itself."""
+        codes = _codes("N/A — but here is a sentence about it")
+        assert NOT_A_LIST in codes
+
+
+class TestItReachesANestedList:
+    """Scope matches ``_object_list_targets``: one level into an instance array.
+
+    The nested shape is shipped configuration, not hypothetical — both
+    ``ocr-benchmark`` presets declare ``checkpoints[].items``,
+    ``glossarySections[].terms`` and ``employees[].shifts`` — so a model declining
+    inside one of those would be exactly as silent as the top-level case this code
+    was written for if the traversal stopped at top-level ``properties``.
+    """
+
+    NESTED = {
+        "type": "object",
+        "properties": {
+            "employees": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "shifts": {"type": "array", "items": ROW},
+                    },
+                },
+            }
+        },
+    }
+
+    def _nested_issues(self, shifts_value):
+        svc = _svc()
+        svc._class_schema = self.NESTED
+        svc._document_text = textractor()
+        return svc._build_extraction_issues(
+            extracted_fields={
+                "employees": [{"name": "A", "shifts": shifts_value}],
+            },
+            metadata={},
+            section_id="1",
+        )
+
+    def test_a_nested_refusal_is_reported(self):
+        issues = self._nested_issues(LIVE_REFUSALS["cites the risk of error"])
+        issue = next(i for i in issues if i.code == NOT_A_LIST)
+        assert issue.details["returned_types"] == {"employees[].shifts": "str"}
+
+    def test_the_label_names_the_path(self):
+        issues = self._nested_issues(LIVE_REFUSALS["declines and says so"])
+        issue = next(i for i in issues if i.code == NOT_A_LIST)
+        assert "employees[].shifts" in issue.message
+
+    def test_a_populated_nested_list_is_silent(self):
+        issues = self._nested_issues([{"Date": "d0", "Description": "SEQ00000"}])
+        assert NOT_A_LIST not in {i.code for i in issues}
+
+    def test_the_outer_list_being_a_refusal_is_reported_as_the_outer_field(self):
+        """The outer loss shadows the inner, which cannot be read through it."""
+        svc = _svc()
+        svc._class_schema = self.NESTED
+        svc._document_text = textractor()
+        issues = svc._build_extraction_issues(
+            extracted_fields={"employees": LIVE_REFUSALS["explains at length"]},
+            metadata={},
+            section_id="1",
+        )
+        issue = next(i for i in issues if i.code == NOT_A_LIST)
+        assert issue.details["returned_types"] == {"employees": "str"}
+
+    def test_the_traversal_matches_the_shipped_presets(self):
+        """The three shipped nested paths resolve through the real walker.
+
+        Read from the schema shape the presets use rather than from a copy of one,
+        so this fails if the walker stops descending — which is the mutation that
+        would make the scope claim in both doc tiers false.
+        """
+        from idp_common.extraction.service import ExtractionService
+
+        for outer, inner in (
+            ("checkpoints", "items"),
+            ("glossarySections", "terms"),
+            ("employees", "shifts"),
+        ):
+            schema = {
+                "type": "object",
+                "properties": {
+                    outer: {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {inner: {"type": "array", "items": ROW}},
+                        },
+                    }
+                },
+            }
+            found = ExtractionService._declared_array_non_lists(
+                schema, {outer: [{inner: "a sentence"}]}
+            )
+            assert list(found) == [f"{outer}[].{inner}"]
+
+    def test_a_ref_in_the_items_is_resolved(self):
+        """``$ref``/``$defs`` is how every shipped preset declares its rows."""
+        from idp_common.extraction.service import ExtractionService
+
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Emp": {
+                    "type": "object",
+                    "properties": {"shifts": {"type": "array", "items": ROW}},
+                }
+            },
+            "properties": {
+                "employees": {"type": "array", "items": {"$ref": "#/$defs/Emp"}}
+            },
+        }
+        found = ExtractionService._declared_array_non_lists(
+            schema, {"employees": [{"shifts": "a sentence"}]}
+        )
+        assert list(found) == ["employees[].shifts"]
 
 
 class TestNothingElseSpeaksOnThisShape:
@@ -484,3 +679,55 @@ class TestItCannotTakeDownTheSave:
         )
         issue = next(i for i in issues if i.code == NOT_A_LIST)
         assert issue.details["returned_types"] == {"7": "str"}
+
+
+class TestBothDocTiersCarryTheCode:
+    """A ratchet on the two doc entries, as ``test_partial_row_shortfall.py`` has.
+
+    Without it the README section that calls this file "the whole surface" for the
+    code is true of the behaviour and false of the documentation: either entry
+    could be deleted with every test green.
+    """
+
+    TIERS = [
+        "docs/extraction-and-confidence.md",
+        "lib/idp_common_pkg/idp_common/extraction/README.md",
+    ]
+
+    def test_the_repository_root_resolves(self):
+        assert (_repo_root() / "CHANGELOG.md").is_file(), _repo_root()
+
+    @pytest.mark.parametrize("rel", TIERS)
+    def test_the_code_is_described(self, rel):
+        assert NOT_A_LIST in (_repo_root() / rel).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("rel", TIERS)
+    def test_each_tier_states_that_a_blank_is_not_this_code(self, rel):
+        """The one thing a reader must not get backwards.
+
+        A reader who takes this as "any non-list is an error" will expect an error
+        on a legitimately empty section and read its absence as a missed
+        detection, when the blank was routed to ``extraction_incomplete`` on
+        purpose.
+        """
+        text = re.sub(
+            r"[*`#\s]+", " ", (_repo_root() / rel).read_text(encoding="utf-8")
+        )
+        assert "blank" in text.lower(), (
+            f"{rel} does not tell a reader that a blank value is deliberately not "
+            f"this code"
+        )
+
+    @pytest.mark.parametrize("rel", TIERS)
+    def test_each_tier_states_the_traversal_scope(self, rel):
+        """A silent report must not be read as "the nested shape did not occur"."""
+        text = (_repo_root() / rel).read_text(encoding="utf-8")
+        assert "outer[].inner" in text or "[].shifts" in text, (
+            f"{rel} does not state how deep this check looks, so a reader cannot "
+            f"tell a clean report from an unexamined one"
+        )
+
+    def test_the_changelog_records_the_measurement(self):
+        text = (_repo_root() / "CHANGELOG.md").read_text(encoding="utf-8")
+        assert NOT_A_LIST in text
+        assert "13 of 39" in text

@@ -2419,20 +2419,44 @@ class ExtractionService:
     #: and not about the evidence — the distinction that keeps
     #: ``NO_OCR_EVIDENCE_CODE`` and ``extraction_sparse`` at ``info`` — and it puts
     #: the section's processing report at ``COMPLETED WITH ERRORS``. It does NOT
-    #: fail the section: ``_generate_processing_report`` fails only on
-    #: ``ROW_SHORTFALL_CODE`` at ``error``, and ``extraction.row_shortfall_action``
-    #: deliberately does not govern this code, for the reason it governs neither
-    #: ``OUTPUT_TRUNCATED_CODE`` nor ``PARTIAL_ROW_SHORTFALL_CODE``: widening that
-    #: knob would start failing runs that complete today on a deployment that has
-    #: already opted into ``fail``. Whether a lost list should fail the section is
-    #: a product decision; detection is what is fixed here.
+    #: fail the section: the only issue this service fails a section on is
+    #: ``ROW_SHORTFALL_CODE`` at ``error``, which
+    #: :meth:`_fail_on_row_shortfall` raises on, and
+    #: ``extraction.row_shortfall_action`` deliberately does not govern this code,
+    #: for the reason it governs neither ``OUTPUT_TRUNCATED_CODE`` nor
+    #: ``PARTIAL_ROW_SHORTFALL_CODE``: widening that knob would start failing runs
+    #: that complete today on a deployment that has already opted into ``fail``.
+    #: Whether a lost list should fail the section is a product decision;
+    #: detection is what is fixed here.
+    #:
+    #: ⚠️ **A BLANK value is deliberately not this code.** ``""`` or ``"   "`` in
+    #: an array field says what ``[]`` says — there were no rows — and a genuinely
+    #: empty section is legitimate, which is the stated reason the empty-list
+    #: signal is a ``warning``. The ``error`` rationale above ("a declared type
+    #: and a returned value leave nothing to estimate") holds for a refusal
+    #: sentence and does not hold for a blank, so a blank is routed to
+    #: ``extraction_incomplete`` instead and only a value carrying content
+    #: reaches this code.
+    #:
+    #: Scope is :meth:`_declared_array_non_lists`, which matches
+    #: :meth:`_object_list_targets` — top-level declared arrays plus one level
+    #: into an array of instances — rather than top-level ``properties`` alone,
+    #: because the nested shape ships (``checkpoints[].items``,
+    #: ``glossarySections[].terms``, ``employees[].shifts`` in both
+    #: ``ocr-benchmark`` presets). Two levels down is not reached, and no shipped
+    #: preset declares one.
     LIST_FIELD_NOT_A_LIST_CODE = "extraction_list_field_not_a_list"
 
     #: How much of the offending value to carry in the issue's ``details``. The
     #: value IS the diagnostic for this code — a refusal sentence says why the
     #: model declined, which nothing else in the pipeline records — but it is
-    #: model-authored text of unbounded length going into a DynamoDB item, so it
-    #: is truncated rather than trusted.
+    #: model-authored text, so it is truncated rather than trusted.
+    #:
+    #: This is a READABILITY bound rather than the DynamoDB defence:
+    #: ``ProcessingIssue._bound_details`` already caps every string leaf in
+    #: ``details`` at ``MAX_DETAIL_STRING_BYTES`` (1024), so the item ceiling is
+    #: defended there whatever this value is. 300 is chosen so the issue reads as
+    #: one sentence in a report, not so that it fits.
     _NOT_A_LIST_PREVIEW_CHARS = 300
 
     def _row_shortfall_action(self) -> str:
@@ -2529,6 +2553,73 @@ class ExtractionService:
         except Exception:  # noqa: BLE001 - see the contract in the docstring
             return None
         return as_int if exact and as_int >= 0 else None
+
+    @classmethod
+    def _declared_array_non_lists(
+        cls, schema: dict[str, Any], values: Any
+    ) -> dict[str, Any]:
+        """``{label: value}`` for every declared array that came back as a non-list.
+
+        The traversal deliberately matches :meth:`_object_list_targets` — top-level
+        declared arrays, ``items`` resolved through ``$ref``, and one level into an
+        array of instances — rather than reading top-level ``properties`` alone.
+        The nested shape is live in shipped configuration, not hypothetical: both
+        ``ocr-benchmark`` presets declare ``checkpoints[].items``,
+        ``glossarySections[].terms`` and ``employees[].shifts``, so a model
+        declining inside one of those would be exactly as silent as the top-level
+        case this check was written for (#1505).
+
+        Only *values* are judged here; the schema side decides which locations are
+        looked at. A location whose value is absent, ``None`` or a genuine list is
+        not returned — those belong to the empty-list signal, which this is
+        disjoint from by construction.
+
+        An instance array reports one label per inner list, with the FIRST
+        offending value: the label is the thing an operator acts on, and a model
+        that answers in prose for one instance's list has generally done it for
+        every instance.
+        """
+        from idp_common.config.schema_utils import deref_schema
+
+        root = schema or {}
+        out: dict[str, Any] = {}
+        props = root.get("properties") or {}
+
+        def _items_props(spec: dict[str, Any]) -> dict[str, Any] | None:
+            items = spec.get("items")
+            if not isinstance(items, dict):
+                return None
+            items = deref_schema(items, root)
+            iprops = items.get("properties") if isinstance(items, dict) else None
+            return iprops if isinstance(iprops, dict) and iprops else None
+
+        def _offending(value: Any) -> bool:
+            return value is not None and not isinstance(value, list)
+
+        for name, spec in props.items():
+            if not isinstance(spec, dict) or spec.get("type") != "array":
+                continue
+            present = isinstance(values, dict) and name in values
+            value = values.get(name) if present else None
+            if present and _offending(value):
+                out[str(name)] = value
+                continue
+            # The outer list came back as a list, so its instances can be read for
+            # an inner list that did not.
+            iprops = _items_props(spec)
+            if not iprops or not isinstance(value, list):
+                continue
+            for iname, ispec in iprops.items():
+                ispec = deref_schema(ispec, root) if isinstance(ispec, dict) else ispec
+                if not isinstance(ispec, dict) or ispec.get("type") != "array":
+                    continue
+                for inst in value:
+                    if not isinstance(inst, dict) or iname not in inst:
+                        continue
+                    if _offending(inst.get(iname)):
+                        out.setdefault(f"{name}[].{iname}", inst[iname])
+                        break
+        return out
 
     @classmethod
     def _object_list_targets(
@@ -3799,8 +3890,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """Detect extraction shortfalls and emit structured ProcessingIssues.
 
         Runs for BOTH traditional (simple) and agentic extraction so an
-        under-produced extraction is never silently reported as SUCCESS. Two
-        signals:
+        under-produced extraction is never silently reported as SUCCESS. The
+        signals below are the ones about a list's SHAPE and population; the three
+        OCR-grounded row-count checks are built further down the same method and
+        are described at their own constants (``ROW_SHORTFALL_CODE``,
+        ``PARTIAL_ROW_SHORTFALL_CODE``, ``NO_OCR_EVIDENCE_CODE``):
 
         - **Empty schema-defined list fields** (``extraction_incomplete``,
           warning): a field the schema declares as an array came back empty. This
@@ -3809,10 +3903,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           message recommends toggling to Advanced (agentic) extraction, whose
           deterministic table parser is built for exactly this.
         - **A list field that is not a list** (``extraction_list_field_not_a_list``,
-          error): a field the schema declares as an array came back as a string, a
-          number, a bool or an object — the live shape is a model declining inside
-          the field ("too many to list in full here"). The whole list is lost, and
-          this is the one signal here that is not an estimate. See
+          error): a field the schema declares as an array came back as a string
+          carrying content, a number, a bool or an object — the live shape is a
+          model declining inside the field ("too many to list in full here"). None
+          of that field's rows reaches anything downstream, and this is the one
+          signal here that is not an estimate. A BLANK string joins the
+          empty-list signal above instead. See
           :data:`LIST_FIELD_NOT_A_LIST_CODE` for why it is detected here rather
           than left to full-schema validation, which reports it only when enabled.
         - **Below-threshold population** (``extraction_sparse``, info): reuses the
@@ -3829,12 +3925,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           evidence, never a shortfall, and it is the signal that keeps "could not
           check" distinguishable from "checked and found complete".
 
-        The estimates here are best-effort and advisory: a genuinely empty section
-        (no such data in the document) will also flag, so they are warning/info.
-        ``extraction_list_field_not_a_list`` is the exception and is ``error``,
-        because a declared type and a returned value leave nothing to estimate.
-        None of them fails the section — see :meth:`_generate_processing_report`,
-        which fails only on ``ROW_SHORTFALL_CODE`` at ``error``.
+        The estimates in the bullets above are best-effort and advisory: a genuinely
+        empty section (no such data in the document) will also flag, so they are
+        warning/info. ``extraction_list_field_not_a_list`` is the exception and is
+        ``error``, because a declared type and a returned value leave nothing to
+        estimate.
+
+        ⚠️ **One issue this method builds does fail the section, and it is not one of
+        those.** Under ``extraction.row_shortfall_action: fail`` the row-shortfall
+        code is emitted at ``error`` and :meth:`_fail_on_row_shortfall` — reached
+        from ``_save_results`` after the report is written — raises. Everything else
+        here, this code included, leaves the section standing;
+        :meth:`_generate_processing_report` only writes the status line that says so.
         """
         from idp_common.config.schema_constants import (
             SCHEMA_PROPERTIES,
@@ -3876,6 +3978,33 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 self._integrated_downgrade_reason
             )
 
+        # Declared arrays that came back as something other than a list, split by
+        # whether the value carries content (#1505). A BLANK string is not a lost
+        # list: `""` or `"   "` says the same thing `[]` says — there were no rows —
+        # and a genuinely empty section is legitimate (an account with no fees, a
+        # period with no deposits), which is the stated reason the empty-list signal
+        # is a `warning`. So a blank joins that signal rather than reporting an
+        # error, and only a value holding content reaches the error below.
+        #
+        # Note what is NOT widened here: a blank is added to `empty_lists`, but a
+        # nested EMPTY LIST is not. `empty_lists` has always been top-level and
+        # list-valued, and pulling nested empty lists into it would fire
+        # `extraction_incomplete` on runs that complete today — a change to that
+        # code's population, which is not this one's business.
+        non_lists = self._declared_array_non_lists(
+            self._class_schema or {}, extracted_fields
+        )
+        blank_values = {
+            label: value
+            for label, value in non_lists.items()
+            if isinstance(value, str) and not value.strip()
+        }
+        not_a_list = {
+            label: value
+            for label, value in non_lists.items()
+            if label not in blank_values
+        }
+
         empty_lists = [
             name
             for name in array_fields
@@ -3885,6 +4014,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 isinstance(extracted_fields.get(name), list)
                 and len(extracted_fields[name]) == 0
             )
+        ]
+        # Compared through `str` because `array_fields` carries whatever the schema
+        # had — a YAML schema can hold a bare numeric key, which arrives as an
+        # `int` — while a label from `_declared_array_non_lists` is always a string.
+        # A top-level blank is NOT already in the list above (it is present,
+        # non-`None` and not a list), so this is what adds it.
+        _already = {str(name) for name in empty_lists}
+        empty_lists = empty_lists + [
+            label for label in blank_values if label not in _already
         ]
         if empty_lists:
             # `map(str, ...)` because these names come from the class SCHEMA, not
@@ -3925,15 +4063,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
             )
 
-        # 1a) A declared array field that came back as something that is not a
-        # list at all (#1505).
+        # 1a) A declared array field that came back holding something that is not a
+        # list at all (#1505). Computed above, with the blanks already routed to the
+        # empty-list signal.
         #
-        # Disjoint from `empty_lists` above by construction: that set is the
-        # absent, the None and the empty-list cases, so a value reaching here is
-        # present, not None, and not a list. Nothing upstream converts it —
-        # `coercion.py` forbids cross-family coercion on purpose ("no scalar →
-        # single-element array"), which is the right call and leaves the value
-        # standing — so this is the final state of the field.
+        # Disjoint from `empty_lists` by construction: that set is the absent, the
+        # `None` and the empty-list cases, so a value reaching here is present,
+        # non-`None` and not a list.
         #
         # The live shape is a model declining inside the field: a sentence
         # explaining that the list was too long to reproduce, sitting where 400
@@ -3943,28 +4079,22 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # OCR-grounded row checks have no count to compare, and
         # `extraction_incomplete` does not fire because the key is present and
         # non-empty.
-        not_a_list = {
-            name: extracted_fields[name]
-            for name in array_fields
-            if name in extracted_fields
-            and extracted_fields[name] is not None
-            and not isinstance(extracted_fields[name], list)
-        }
         if not_a_list:
-            # `str(name)` for the same reason as the join above: a schema read
-            # from YAML can carry a bare numeric key, and this function runs with
-            # no enclosing `try`.
-            fields_str = ", ".join(str(name) for name in not_a_list)
+            # Labels here are already strings (`_declared_array_non_lists` casts
+            # them), which matters for the same reason the join above does it: a
+            # schema read from YAML can carry a bare numeric key, and this function
+            # runs with no enclosing `try`.
+            fields_str = ", ".join(not_a_list)
             returned = {
-                str(name): type(value).__name__ for name, value in not_a_list.items()
+                label: type(value).__name__ for label, value in not_a_list.items()
             }
             previews = {
-                str(name): (
+                label: (
                     value
                     if len(value) <= self._NOT_A_LIST_PREVIEW_CHARS
                     else value[: self._NOT_A_LIST_PREVIEW_CHARS] + "…"
                 )
-                for name, value in not_a_list.items()
+                for label, value in not_a_list.items()
                 if isinstance(value, str)
             }
             rec = (
@@ -3981,12 +4111,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     message=(
                         f"List field(s) {fields_str} came back as "
                         f"{', '.join(sorted(set(returned.values())))} rather than a "
-                        f"list, so every row of each is lost. The model answered in "
-                        f"the field instead of filling it — the value it returned is "
-                        f"in this issue's details. Scalar fields are unaffected and "
-                        f"can still score perfectly, and the row-count checks have "
-                        f"no list to count, so no other signal flags this unless "
-                        f"schema validation happens to be enabled.{rec}"
+                        f"list, so none of their rows is available to anything "
+                        f"downstream — confidence scoring, evaluation and every "
+                        f"consumer of the result read no rows there. The usual cause "
+                        f"is the model answering in the field instead of filling it; "
+                        f"the value it returned is in this issue's details, and "
+                        f"reading it is how to tell that apart from a row payload "
+                        f"that arrived in the wrong shape. Scalar fields are "
+                        f"unaffected and can still score perfectly, and the "
+                        f"row-count checks have no list to count, so no other signal "
+                        f"flags this unless schema validation happens to be "
+                        f"enabled.{rec}"
                     ),
                     root_cause=(
                         f"{'agentic' if is_agentic else 'traditional'} extraction "

@@ -665,9 +665,15 @@ def test_a_prose_refusal_inflates_the_row_count(monkeypatch):
     assert row["completeness_recall"] == 0.005
     assert row["n_gaps"] == 398
     # And the ids it found are exactly the two the sentence names, which is the
-    # whole of the mechanism.
-    assert lib.read_seq_ids(
+    # whole of the mechanism. Asserted on `.ids`: `read_seq_ids` returns a
+    # four-field NamedTuple, so the bare call is truthy even when it finds nothing
+    # and an assertion on it would pass whatever the scan did.
+    reading = lib.read_seq_ids(
         json.dumps(sections[0]["inference_result"]), set(range(400))
+    )
+    assert tuple(sorted(set(reading.ids))) == (0, 399), (
+        "the 2 is rows 0 and 399 — SEQ00000 and SEQ00399, the two identifiers the "
+        f"refusal sentence names. Got {sorted(set(reading.ids))}."
     )
 
 
