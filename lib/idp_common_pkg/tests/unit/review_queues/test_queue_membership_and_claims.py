@@ -105,8 +105,10 @@ class TestProductionClaims:
 
         assert claimed.state == "CLAIMED"
         record = service.store.get_item("a.pdf")
+        assert record is not None
         assert record.owner_email == ANN
         # Like an Admin assignment: no practical expiry, a reminder at the time limit.
+        assert record.lease_expires_at_ms is not None and record.sweep_at_ms is not None
         assert record.lease_expires_at_ms > before + 365 * 24 * 3600 * 1000
         assert before + 29 * 60_000 < record.sweep_at_ms < before + 31 * 60_000
         # It is in the Annotator's own work (My Work › Tasks).
