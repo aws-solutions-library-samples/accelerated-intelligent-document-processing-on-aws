@@ -201,19 +201,59 @@ def typed_match(expected, got):
     return isinstance(got, str) and got.strip() == str(expected).strip()
 
 
-def _seq_of(row):
-    """The SEQnnnnn tag embedded in any string cell of an extracted row."""
+def _truth_seq(tag):
+    """The row id a truth file's `rows_typed` key names. `SEQ00042` or `42`."""
+    text = str(tag)
+    return int(text[3:]) if text.startswith("SEQ") else int(text)
+
+
+def _seq_of(row, truth_ids=None):
+    """The truth row id the `SEQnnnnn` tag in any string cell of this row names.
+
+    Canonicalised against `truth_ids` (#1500), so a tag whose width the OCR backend
+    perturbed resolves to the row it came from instead of onto a neighbour. That
+    matters more here than for the row count, and in a worse direction: a tag read as
+    the wrong id joins this row's values to ANOTHER row's cell truth, and
+    `cell_accuracy` then reports value errors that are artefacts of the join.
+    Returns `None` for a tag that names no truth row, which drops the row from the
+    comparison rather than mispairing it.
+    """
     if not isinstance(row, dict):
         return None
     for v in row.values():
         if isinstance(v, str):
             m = lib.SEQ.search(v)
             if m:
-                return int(m.group(1))
+                return lib.canonical_seq(m.group(1), truth_ids)
     return None
 
 
-def score_cells(sections, rows_typed, list_key):
+def _canonicalisation_ids(rows_typed, seq_ids=None):
+    """The id set :func:`_seq_of` canonicalises against — the DOCUMENT's, not the
+    instrument's (#1500).
+
+    `rows_typed` declares the rows that carry cell truth and `seq_ids` every row the
+    document contains, and the two coincide only while the generator emits typed
+    cells for every row. They have diverged before: `rows_typed` used to be written
+    for the value-noise variants alone, which is the gap "An instrument only exists
+    where the truth file declares it" in `benchmarks/matrices/METHODOLOGY.md`
+    records.
+
+    ⚠️ **Canonicalising against a SUBSET is worse than not canonicalising.** A
+    one-edit repair is taken when exactly one candidate names a truth row, so
+    narrowing the set does not make the repair fail — it makes a different candidate
+    unique. `SEQ000042` yields readings `{42, 2, 4}`; against the whole document that
+    is ambiguous and reported unresolved, but against a set declaring only row 4 it
+    resolves, confidently, to the wrong row — and that row's values are then compared
+    against another row's cell truth. So the join target is the full set whenever the
+    truth file carries one, and `rows_typed` is only the fallback.
+    """
+    ids = {_truth_seq(tag) for tag in rows_typed or {}}
+    ids |= {_truth_seq(tag) for tag in seq_ids or ()}
+    return ids
+
+
+def score_cells(sections, rows_typed, list_key, seq_ids=None):
     """Per-CELL accuracy over list rows, matched to truth by SEQ tag.
 
     Completeness (``completeness_recall``) answers "did every row come back";
@@ -235,6 +275,7 @@ def score_cells(sections, rows_typed, list_key):
     """
     if not rows_typed:
         return None, None, None
+    truth_ids = _canonicalisation_ids(rows_typed, seq_ids)
     by_seq = {}
     for sec in sections:
         ir = sec.get("inference_result") or {}
@@ -248,12 +289,12 @@ def score_cells(sections, rows_typed, list_key):
                 if not isinstance(val, list):
                     continue
                 for row in val:
-                    seq = _seq_of(row)
+                    seq = _seq_of(row, truth_ids)
                     if seq is not None:
                         by_seq.setdefault(seq, row)
     hits = total = 0
     for seq_tag, cells in rows_typed.items():
-        seq = int(str(seq_tag)[3:]) if str(seq_tag).startswith("SEQ") else int(seq_tag)
+        seq = _truth_seq(seq_tag)
         row = by_seq.get(seq)
         if row is None:
             continue  # not recovered at all -> recall's business, not ours
@@ -318,7 +359,7 @@ def _assert_row_alignment(section, prefix, field, data_rows):
     )
 
 
-def confidence_observations(sections, rows_typed, list_key):
+def confidence_observations(sections, rows_typed, list_key, seq_ids=None):
     """``(confidence, correct)`` per list CELL, joined to exact truth by SEQ tag.
 
     This is the join #935 is about. A confidence score is only a calibration
@@ -373,9 +414,12 @@ def confidence_observations(sections, rows_typed, list_key):
         return []
     truth = {}
     for tag, cells in rows_typed.items():
-        text = str(tag)
-        seq = int(text[3:]) if text.startswith("SEQ") else int(text)
-        truth[seq] = {str(c).lower(): e for c, e in (cells or {}).items()}
+        truth[_truth_seq(tag)] = {str(c).lower(): e for c, e in (cells or {}).items()}
+    # The full document's ids, not `truth`'s keys — see `_canonicalisation_ids`. A
+    # tag resolving to a row this instrument does not declare is then skipped below
+    # for want of cell truth, which is the right outcome; resolving it onto a
+    # declared row would pair it with the wrong truth.
+    truth_ids = _canonicalisation_ids(rows_typed, seq_ids)
 
     observations = []
     seen = set()
@@ -392,7 +436,7 @@ def confidence_observations(sections, rows_typed, list_key):
                     continue
                 _assert_row_alignment(sec, prefix, field, value)
                 for index, row in enumerate(value):
-                    seq = _seq_of(row)
+                    seq = _seq_of(row, truth_ids)
                     cells = truth.get(seq) if seq is not None else None
                     if not cells or seq in seen:
                         continue
@@ -412,7 +456,7 @@ def confidence_observations(sections, rows_typed, list_key):
     return observations
 
 
-def score_calibration(sections, rows_typed, list_key, observations=None):
+def score_calibration(sections, rows_typed, list_key, observations=None, seq_ids=None):
     """Is this run's confidence CALIBRATED, and does it RANK errors? (#935)
 
     ``mean_confidence`` and ``pct_conf_below_0.9`` next door describe the shape of
@@ -476,7 +520,7 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
     them in rather than have the join run twice over the same sections.
     """
     if observations is None:
-        observations = confidence_observations(sections, rows_typed, list_key)
+        observations = confidence_observations(sections, rows_typed, list_key, seq_ids)
     if not observations:
         return {
             "calibration_observations": 0,
@@ -1119,7 +1163,13 @@ def score_synthetic(bucket, doc_prefix, truth):
     read = lib.read_sections(bucket, doc_prefix)
     if not read.complete:
         return unread_sections_row(read)
+    # The whole document's ids: the recall denominator and the canonicalisation join
+    # target are the same set here, which is the property `_canonicalisation_ids`
+    # restores for the per-cell scorers.
+    truth_ids = _canonicalisation_ids(None, truth.get("seq_ids"))
     seqs, confs = [], []
+    tagged = repaired = 0
+    unresolved = []
     scalar_hits = scalar_tot = 0
     typed_hits = typed_tot = 0
     fields = truth.get("fields") or {}
@@ -1129,7 +1179,13 @@ def score_synthetic(bucket, doc_prefix, truth):
     for sec in sections:
         ir = sec.get("inference_result", {}) or {}
         blob = json.dumps(ir)
-        seqs += [int(m) for m in lib.SEQ.findall(blob)]
+        # Row identity, canonicalised against this document's own truth ids rather
+        # than read off a fixed-width regex — see lib.canonical_seq and #1500.
+        reading = lib.read_seq_ids(blob, truth_ids)
+        seqs += list(reading.ids)
+        tagged += reading.tagged
+        repaired += reading.repaired
+        unresolved += list(reading.unresolved)
         confs += lib.confidence_values(sec.get("explainability_info"))
         # capture scalar fields (top-level, case-insensitive)
         # Unwrap a multi-instance result so its records' fields are visible; a
@@ -1137,7 +1193,6 @@ def score_synthetic(bucket, doc_prefix, truth):
         for record in scalar_bearing_records(ir):
             for k, v in record.items():
                 got_fields.setdefault(k.lower(), v)
-    truth_ids = set(int(s[3:]) for s in truth.get("seq_ids", []))
     extracted = set(seqs)
     n_truth = len(truth_ids)
     recall = len(extracted & truth_ids) / n_truth if n_truth else None
@@ -1160,7 +1215,7 @@ def score_synthetic(bucket, doc_prefix, truth):
         if typed_match(exp, got_fields.get(label.lower())):
             typed_hits += 1
     cell_hits, cell_tot, _rows_matched = score_cells(
-        sections, truth.get("rows_typed"), truth.get("list_key")
+        sections, truth.get("rows_typed"), truth.get("list_key"), truth.get("seq_ids")
     )
     # Section count vs the truth's expectation. This is the metric boundary
     # detection is judged on, and nothing else can see it: a document split into
@@ -1187,6 +1242,33 @@ def score_synthetic(bucket, doc_prefix, truth):
         "truncation_prefix": prefix if n_truth else None,
         "dups": len(seqs) - len(extracted),
         "n_gaps": len(truth_ids - extracted),
+        # The three identifier figures beside the row count, so a collapse is
+        # VISIBLE in the artifact rather than only correct (#1500). `rows_extracted`
+        # is a count of distinct rows recovered and `rows_tagged` of identifiers
+        # seen, and the published defect is what happens when a reader has only the
+        # first and takes it for the second. `rows_id_repaired` says how much of the
+        # agreement between them was bought by canonicalisation — non-zero means the
+        # OCR backend perturbed identifier widths on this run, which is a finding
+        # about the backend and not about completeness. `rows_id_unresolved` is the
+        # only genuinely unmeasured bucket: tags naming no truth row, which this
+        # scorer declines to attribute by proximity.
+        #
+        # All three are written as plain integers, 0 included, like `dups` and
+        # `n_gaps` above and unlike the `x or None` ratios below them. A zero here is
+        # a measurement — "no tag needed repair" — and `or None` would blank the CSV
+        # cell, which in this harness already means "measured, nothing to join" (see
+        # the `SCORED_EXACT_TRUTH` comment below) and which a reader fills in by
+        # guessing. Reading a blank as 0 is how a scorer that produced nothing came
+        # to be published as a result.
+        "rows_tagged": tagged,
+        "rows_id_repaired": repaired,
+        "rows_id_unresolved": len(unresolved),
+        # Backstop, not the fix: a shortfall is only evidence of a missing row if
+        # row identity was readable, and this names the two shapes that say it was
+        # not. Null on every run whose identifiers canonicalised cleanly.
+        "unverified_row_shortfall": lib.unverified_row_shortfall(
+            n_truth, len(extracted), len(seqs) - len(extracted), len(unresolved)
+        ),
         "scalar_accuracy": round(scalar_hits / scalar_tot, 4) if scalar_tot else None,
         **typed_scalar_keys(typed_hits, typed_tot),
         **cell_metric_keys(cell_hits, cell_tot),
@@ -1196,7 +1278,12 @@ def score_synthetic(bucket, doc_prefix, truth):
         # Only the synthetic corpus can carry these: a reference corpus is scored by
         # the stack's own evaluation, which does not expose a per-cell verdict to
         # join a per-cell confidence to.
-        **score_calibration(sections, truth.get("rows_typed"), truth.get("list_key")),
+        **score_calibration(
+            sections,
+            truth.get("rows_typed"),
+            truth.get("list_key"),
+            seq_ids=truth.get("seq_ids"),
+        ),
     }
 
 

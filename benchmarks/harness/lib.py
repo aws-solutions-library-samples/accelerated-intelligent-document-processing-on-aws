@@ -8,7 +8,7 @@ All AWS access uses the 'default' profile (the deployment account).
 import json
 import os
 import re
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NamedTuple, NoReturn
 
 import boto3
 import yaml
@@ -829,7 +829,165 @@ def read_sections(bucket, doc_prefix) -> SectionRead:
 
 
 # ----------------------------------------------------------------------------- GT matching
-SEQ = re.compile(r"SEQ(\d{5})")
+# The corpus embeds a `SEQnnnnn` tag in one string cell of every generated row, and
+# row identity across this whole harness is read from it. Two patterns, because the
+# width is not reliable in the output and reading it as though it were is GitHub
+# #1500.
+#
+# ⚠️ **A digit count is not a row count.** `SEQ_STRICT` requires EXACTLY five digits
+# and the regex engine is happy to take the first five of six, so a tag that came
+# back a digit wider is not *missed* — it is silently read as some OTHER row. The
+# `bedrock_llm` OCR backend duplicates the leading zero of a fixed-width identifier
+# on the pages it corrupts, so `SEQ00042` arrives as `SEQ000042` and `SEQ(\d{5})`
+# returns `int("00004") == 4`: the tag lands on row 4, which is already present, and
+# the DISTINCT count drops by one with no row anywhere missing. Scored that way,
+# `small_narrow` read 62/100 rows and `completeness_recall` 0.620 on a run that
+# returned all 100 — the same figure on every run of four consecutive releases,
+# because both the corpus and the corruption are deterministic. It was read as a
+# product regression each time.
+#
+# `SEQ` is therefore width-tolerant, and :func:`canonical_seq` reconciles what it
+# matches against the truth file's own id set. That is a join, not a guess: the truth
+# file carries every id the document contains, so `int("000042") == 42` IS a truth
+# row and needs no inference. Nothing is matched by proximity or by order.
+SEQ_WIDTH = 5
+SEQ_STRICT = re.compile(rf"SEQ(\d{{{SEQ_WIDTH}}})")
+SEQ = re.compile(r"SEQ(\d{4,8})")
+
+
+class SeqReading(NamedTuple):
+    """Every `SEQ` tag found in one blob, canonicalised against the truth ids.
+
+    `ids` holds one entry per RESOLVED tag and keeps repeats, so
+    `len(ids) - len(set(ids))` is a count of genuinely duplicated rows rather than of
+    identifiers that collided on the way in. `tagged` counts every tag the pattern
+    matched, resolvable or not, which is the "did the rows come back" figure that
+    `rows_extracted` was being mistaken for. `repaired` counts the tags whose
+    canonical id differs from what `SEQ_STRICT` would have read — the shortfall #1500
+    is about, now a recorded number instead of a silent subtraction. `unresolved`
+    holds the raw digit runs that name no truth row, which is the one bucket a reader
+    has to treat as unmeasured.
+    """
+
+    ids: tuple[int, ...]
+    tagged: int
+    repaired: int
+    unresolved: tuple[str, ...]
+
+
+def _one_edit_candidates(digits: str) -> set[int]:
+    """Every id one inserted-or-deleted digit away from `digits`, as integers.
+
+    Only in the direction the width says: a run wider than `SEQ_WIDTH` had a digit
+    put in, so a deletion is undone; a narrower one lost a digit, so an insertion is.
+    A run of the right width that names no truth row had a digit CHANGED (or was
+    invented), and a substitution has ten readings per position with nothing to
+    choose between them — so it gets no candidates and is reported unresolved.
+    """
+    if len(digits) > SEQ_WIDTH:
+        return {int(digits[:i] + digits[i + 1 :]) for i in range(len(digits))}
+    if len(digits) < SEQ_WIDTH:
+        return {
+            int(digits[:i] + d + digits[i:])
+            for i in range(len(digits) + 1)
+            for d in "0123456789"
+        }
+    return set()
+
+
+def canonical_seq(digits: str, truth_ids=None) -> int | None:
+    """The truth row a matched `SEQ` digit run names, or `None` if it names none.
+
+    `int()` does the work for the perturbation this corpus actually sees, because an
+    inserted leading zero is not information: `int("000042")` is already 42. The
+    strict pattern failed on it only by refusing to look past the fifth digit.
+
+    ⚠️ **The plain integer reading is only safe for a run at least `SEQ_WIDTH` wide.**
+    A tag that came back a digit SHORT reads as a perfectly plausible other row of the
+    same corpus — `SEQ00042` arriving as `SEQ0042` is `int("0042") == 42` on the way
+    out but 4 on the way in — so accepting it would trade the collapse this function
+    exists to fix for a quieter version of the same thing. A short run is reconciled
+    through :func:`_one_edit_candidates` like any other perturbation.
+
+    Every repair is accepted only when exactly ONE candidate names a truth row.
+    Ambiguity returns `None` and is counted, never resolved by picking the nearest; a
+    wrong row id is worse here than an unmeasured one, because it would be joined to
+    another row's cell truth and reported as a value error.
+
+    With no `truth_ids` to join against (``score_cells`` on a truth file that declares
+    no `rows_typed`) the plain integer reading is returned, which is what every
+    well-formed tag reads as anyway.
+    """
+    value = int(digits)
+    if not truth_ids:
+        return value
+    if len(digits) >= SEQ_WIDTH and value in truth_ids:
+        return value
+    candidates = _one_edit_candidates(digits) & set(truth_ids)
+    return candidates.pop() if len(candidates) == 1 else None
+
+
+def read_seq_ids(text: str, truth_ids=None) -> SeqReading:
+    """Read every row identifier out of one serialised blob. See :class:`SeqReading`."""
+    tags = SEQ.findall(text)
+    ids, repaired, unresolved = [], 0, []
+    for digits in tags:
+        row = canonical_seq(digits, truth_ids)
+        if row is None:
+            unresolved.append(digits)
+            continue
+        ids.append(row)
+        strict = SEQ_STRICT.match(f"SEQ{digits}")
+        if strict is None or int(strict.group(1)) != row:
+            repaired += 1
+    return SeqReading(tuple(ids), len(tags), repaired, tuple(unresolved))
+
+
+def unverified_row_shortfall(
+    rows_truth, rows_extracted, dups, unresolved_ids=0
+) -> str | None:
+    """Why this run's row shortfall must not be read as row loss, or `None`.
+
+    The guard #1500 asks for, and the reason it is worth having even once
+    :func:`canonical_seq` is in place: a shortfall is only evidence of a missing row
+    if row identity was readable, and two shapes say it was not.
+
+    `dups` **at or above** the shortfall is the first, and it is the signature the
+    issue was found by. Truncation drops a contiguous tail, so the rows that do come
+    back are distinct and `dups` is 0; identifier collapse is the opposite — a tag
+    arrives for every row and two of them read as one id, so each unit of shortfall
+    is paid for by a unit of `dups`. That combination cannot be truncation whatever
+    else it is, and it is what `small_narrow` recorded on every run of four
+    consecutive releases (62/100 with `dups: 38`) while returning all 100 rows.
+
+    An `unresolved_ids` count is the second: a tag naming no truth row is an
+    identifier this scorer declined to attribute, so the row behind it is unmeasured
+    rather than absent.
+
+    ⚠️ **Both shapes are bounded by the shortfall they can account for, and the
+    second has to be for the same reason as the first.** One unresolved tag accounts
+    for at most one unmeasured row — it contributes nothing to `rows_extracted`, so
+    it can explain one unit of shortfall and no more. An unbounded test would let a
+    single hallucinated tag excuse a 40-row shortfall, annotating a genuine
+    completeness regression as not-row-loss, which is the opposite of what this
+    function is for. So the two counts are summed and compared against the shortfall
+    once; the label then says which of them carries it. A shortfall larger than
+    `dups + unresolved_ids` is unexplained, and this returns `None` for it.
+
+    Returned as a short reason rather than a bool so a `summary.csv` column says
+    which. Recorded on the row rather than raised: a grid that stops scoring loses
+    every other metric in the run as well.
+    """
+    if not rows_truth or rows_extracted is None:
+        return None
+    shortfall = rows_truth - rows_extracted
+    if shortfall <= 0:
+        return None
+    dups = dups or 0
+    unresolved_ids = unresolved_ids or 0
+    if shortfall > dups + unresolved_ids:
+        return None
+    return "dups_at_or_above_shortfall" if shortfall <= dups else "unresolved_row_ids"
 
 
 def walk_confidence(explainability_info):
