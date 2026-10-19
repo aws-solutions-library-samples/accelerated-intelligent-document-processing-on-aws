@@ -308,6 +308,18 @@ blind spot before it was closed.
   neither is. A mean taken across the two families is a mean over no observations,
   which prints as `nan`; that is a property of the column read and not of the runs
   ([#1364](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1364)).
+
+  The same split now applies *within* the exact-key family, per document rather than
+  per scorer. `cell_accuracy` and `cells_compared` are absent on a synthetic row whose
+  document has no list attribute, with `cell_truth_unavailable` naming
+  `scalar_accuracy` and `typed_accuracy` as the instruments that do apply
+  ([#1497](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1497)),
+  and `typed_accuracy` / `typed_fields` are absent on one whose truth declares no
+  typed scalars, with `typed_truth_unavailable`
+  ([#1490](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1490)).
+  So the first rule above keeps its exact meaning: a **null** `cell_accuracy` is a run
+  that returned none of a list it was supposed to return, and `cells_compared` is `0`
+  beside it rather than blank.
 - **Scoring is retroactive.** It re-reads S3 and DynamoDB, so adding truth or a metric
   lets an already-completed run be re-scored with no new spend. Prefer that to a re-run.
 
