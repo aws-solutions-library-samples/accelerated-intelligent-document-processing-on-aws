@@ -58,6 +58,22 @@ with no overrides, i.e. on the committed `default_cell`.
 |------|------|
 | `v<RELEASE>/corefast/` | The release-vs-release A/B grid backing `docs/benchmarking/releases/v<RELEASE>.md`. **One per release**, never overwritten. |
 | `baseline.json` | The PREV release's `corefast` grid, which `aggregate.py --compare` defaults to. See below: it is **not** a byte-identical copy of the committed `v<PREV>/corefast/summary.json`, and must not be assumed to be one. |
+| `v0.6.8/enforcement-kvform/` | The **only** retained evidence that `typed_accuracy` is ever measured. See below. |
+
+### One kept slice is not a release grid — `v0.6.8/enforcement-kvform/`
+
+It is a one-off slice by shape and the rule above would permit pruning it, so it is
+named explicitly instead. `benchmarks/tests/test_published_metric_liveness.py` asserts
+that every metric `docs/benchmarking/index.md` publishes as read is non-null somewhere in
+this tree, and `typed_accuracy` is the one metric that **no release grid can carry**:
+it is defined only for a document whose truth declares `fields_typed`, which today is
+the `kv_form` generator alone, and `corefast` is `[tiny_form, small_narrow,
+longdesc_100]` — all `bank_statement`. Its only non-null evidence is 24 rows across four
+`kv_form` slices in `v0.6.7` and `v0.6.8`.
+
+So a policy-compliant prune of those four would turn that check red with the harness
+working perfectly. Keeping one of them is the cheaper half of the fix; the other half is
+to run a typed-truth document into a release grid, after which this row can go.
 
 ### `baseline.json` is a separate artifact, not a copy
 
