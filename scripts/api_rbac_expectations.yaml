@@ -232,6 +232,16 @@ operations:
       answer listDocuments gives — so the cross-document read is closed for
       scoped callers and bounded by the group floor for everyone else (UI.T06,
       #1033).
+      ⚠️ The matrix cannot assert that third control and must not be made to try.
+      Every principal it drives is unscoped, so `assert_document_in_scope` is a
+      no-op for all of them and the substituted nonexistent key never reaches it;
+      `object_scoped_roles:` declares a ROLE a per-object control refuses, and this
+      axis is allowedConfigVersions rather than a group, so declaring it here
+      would score a cell that was correctly NOT refused as a failure. The live
+      assertion is `run_document_bytes_scope_arm` in scripts/test_api_rbac.py,
+      driven as the seeded ScopedAuthor against a real document, and it requires
+      the refusal to carry `authzControl: "resource"` — which is why the three
+      per-object refusals in `document_scope` raise `ResourceAccessDenied` (#1478).
       The `args` bucket is REPLACED by apply_dynamic_args() with this
       deployment's own input bucket, because the matrix measures the GROUP floor
       and an out-of-allow-list bucket is refused to every caller by the
@@ -307,7 +317,7 @@ operations:
       uncapped list amplifies one API call into an arbitrary number of signings,
       tracking-table reads and response bytes. The number of distinct documents
       one call may look up is bounded separately and more tightly
-      (document_scope.MAX_DOCUMENT_LOOKUPS), since those are DynamoDB reads.
+      (document_scope.MAX_DOCUMENT_LOOKUP_BATCHES), since those are DynamoDB reads.
       Same runtime bucket substitution as getFileContents: apply_dynamic_args()
       replaces the placeholder bucket inside the `files` list.
   getStepFunctionExecution:

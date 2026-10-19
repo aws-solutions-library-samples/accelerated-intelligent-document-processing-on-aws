@@ -44,10 +44,9 @@ Three properties, each with its own test:
   scoped caller, because an unstamped document cannot be proven in scope. The
   one "absence means allow" branch is the unrestricted caller above, and that is
   an answer from the table rather than a failure to get one.
-* **A refusal discloses nothing.** Every denial raises the same
-  ``PermissionError`` text — the identical string ``key_scope`` uses — naming
-  neither the bucket, the key, the document, the profile, nor whether any of them
-  exist. The object is never read, so S3 is never asked a question whose answer
+* **A refusal discloses nothing.** Every denial raises the same refusal text — the
+  identical string ``key_scope`` uses — naming neither the bucket, the key, the
+  document, the profile, nor whether any of them exist. The object is never read, so S3 is never asked a question whose answer
   could be timed. This matters more for the batch field than for the single one:
   per-entry refusals would turn one call into an N-key authorization oracle, so
   the batch handler refuses the **whole** request instead (see ``index.py``).
@@ -62,6 +61,41 @@ Three properties, each with its own test:
   too broad": round-trip count is a function of which candidate documents exist, so
   a distinguishable status would be an existence oracle, and
   ``index._budget_refusal`` converts it into the ordinary opaque denial.
+
+Which control refused, and why the answer is not the whole module
+-----------------------------------------------------------------
+A refusal here is a 403 with ``errorType: "Unauthorized"``, which is the shape the
+field-level group floor uses too, so the dispatcher labels every denial with
+``errors[0].authzControl`` to say *which control* answered. A per-object control
+declares itself by raising an exception named ``ResourceAccessDenied``, recognised
+by class **name** because the object does not cross the ``lambda:Invoke`` boundary;
+anything else authorization-shaped is labelled ``resolver``, meaning "a resolver
+refused and did not say". ``resolver`` is read strictly downstream — a per-object
+control that does not declare itself costs a visible failure in the live RBAC
+matrix rather than a silent pass — so the declaration is not cosmetic.
+
+The split is **per branch**, and the line is whether the refusal is a decision
+about the object the caller named:
+
+* ``ResourceAccessDenied`` -> ``resource``: the three refusals in
+  :func:`assert_document_in_scope` (the key names no object, no tracked document
+  owns it, the owner's profile is outside the caller's scope) and the lookup-budget
+  overrun that ``index._budget_refusal`` converts.
+* bare ``PermissionError`` -> ``resolver``: a scope that could not be *evaluated*
+  (:func:`resolve_caller_scope`), a tracking-table read that stayed throttled, and
+  an unwired tracking table. None of those is about the object; the first two are
+  about the principal and the deployment, and the third is a template fault — the
+  same reading ``s3_targets`` gives its empty-allow-list branch.
+
+⚠️ **The uniformity inside the first group is the load-bearing part.** Labelling
+only the profile mismatch would separate "this document exists and is outside your
+scope" from "no such document", which is an existence oracle at the API — exactly
+what the single refusal string above exists to prevent. The budget overrun is in
+that group for the same reason: round-trip count is a function of which candidates
+exist, so it must be indistinguishable from an ordinary denial in the label as well
+as in the status. The ``resolver`` branches leak nothing by contrast, because none
+of them varies with the key: they answer the same way for every object a given
+caller names.
 
 Which document owns an Output-bucket key
 ---------------------------------------
@@ -112,6 +146,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 import config_scope
 import key_scope
+from s3_targets import ResourceAccessDenied
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +155,10 @@ logger = logging.getLogger(__name__)
 # to tell a per-document refusal from a per-profile one from a per-test-set one, and
 # a second string is how that distinction leaks back in. ``test_document_scope.py``
 # asserts the two literals are equal.
+#
+# The ``Unauthorized`` prefix is load-bearing and not decoration: it is one of the
+# two things that map a resolver's exception to a 403 rather than a 500, the other
+# being the class name. Keep it on every refusal, whichever class carries it.
 REFUSAL = "Unauthorized: you are not permitted to read that object."
 
 # Groups that are never configuration-profile scoped. Mirrors ``key_scope`` and the
@@ -188,9 +227,16 @@ class DocumentLookupBudgetExceeded(Exception):
     needs no timing analysis because the two answers are different status classes.
 
     ``index._budget_refusal`` therefore converts this into the same opaque
-    ``PermissionError`` every other document-scope denial raises. The type still
-    exists so the conversion happens in one place and so the log line can say what
-    actually happened; the caller learns nothing it could not learn from a refusal.
+    ``ResourceAccessDenied`` the per-object branches of
+    :func:`assert_document_in_scope` raise, carrying the same message. The type
+    still exists so the conversion happens in one place and so the log line can say
+    what actually happened; the caller learns nothing it could not learn from a
+    refusal.
+
+    ⚠️ The **class** matters as much as the status, for the same reason. It reaches
+    the client as ``authzControl``, so converting this to the unattributed
+    ``PermissionError`` while the ordinary scope denial declared itself would put
+    the distinction the status class no longer carries back into the label.
     """
 
 
@@ -375,6 +421,12 @@ class DocumentResolver:
                 # document", which denies — so the alternative to raising here is a
                 # throttle presenting as an authorization failure, with nothing to
                 # say which it was.
+                #
+                # Deliberately the UNATTRIBUTED class, unlike the three refusals in
+                # `assert_document_in_scope`: this is a fact about the table, not a
+                # decision about the object, so `authzControl: "resolver"` is the
+                # true answer and is the row an operator should be looking at. It
+                # discloses nothing either, because it does not depend on the key.
                 logger.error(
                     "Refusing a document-bucket read: the tracking table left %d "
                     "candidate(s) unprocessed after %d attempts, so the owning "
@@ -492,7 +544,13 @@ def assert_document_in_scope(
     A no-op when ``bucket`` is not a document bucket, and a no-op when
     ``allowed_versions`` is ``None`` (an unrestricted caller — see the module
     docstring for why that is an answer rather than a gap). Otherwise raises
-    ``PermissionError`` with a message that discloses nothing about the object.
+    ``ResourceAccessDenied`` with a message that discloses nothing about the object.
+
+    Every refusal in this function raises that one class, and uniformly: it is the
+    function that decides about the object the caller named, and a per-branch label
+    here would be the existence oracle the shared message avoids. The fail-closed
+    refusals *outside* it — an unevaluable scope, a throttled table — keep the
+    unattributed ``PermissionError``; see the module docstring.
 
     ``resolver`` may be ``None`` only when no lookup can be needed (not a document
     bucket, or an unrestricted caller); passing ``None`` where a lookup *is* needed
@@ -517,7 +575,7 @@ def assert_document_in_scope(
             "Refusing a document-bucket read: the key names no object, so no "
             "document can be identified for it."
         )
-        raise PermissionError(REFUSAL)
+        raise ResourceAccessDenied(REFUSAL)
 
     owner = resolver.owning_document(candidates)
     if owner is None:
@@ -528,7 +586,7 @@ def assert_document_in_scope(
             "Refusing a document-bucket read: no tracked document owns this key, "
             "so its configuration profile cannot be determined."
         )
-        raise PermissionError(REFUSAL)
+        raise ResourceAccessDenied(REFUSAL)
 
     _object_key, config_version = owner
     if not config_scope.scope_allows(allowed_versions, config_version):
@@ -539,7 +597,7 @@ def assert_document_in_scope(
             "Refusing a document-bucket read: the owning document's configuration "
             "profile is outside the caller's allowedConfigVersions."
         )
-        raise PermissionError(REFUSAL)
+        raise ResourceAccessDenied(REFUSAL)
 
 
 def resolve_bucket_names(env: Optional[Mapping[str, str]] = None) -> tuple:

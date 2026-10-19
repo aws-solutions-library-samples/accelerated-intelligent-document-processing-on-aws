@@ -154,9 +154,9 @@ describe('exportDocuments signing', () => {
   });
 
   it('batches per document, not across the selection', async () => {
-    // ⚠️ The resolver refuses a batch spanning more than
-    // `document_scope.MAX_DOCUMENT_LOOKUPS` (64) distinct documents with a 400, so
-    // one call for a whole bulk selection would fail on a full page of results.
+    // ⚠️ The resolver bounds the tracking-table round trips one call may spend
+    // (`document_scope.MAX_DOCUMENT_LOOKUP_BATCHES`) and refuses past it, so one
+    // call for a whole bulk selection would fail on a full page of results.
     const result = await exportDocuments([docWithAssets('a.pdf'), docWithAssets('b.pdf'), docWithAssets('c.pdf')], SETTINGS, {
       scope: 'predictions',
       credentials: CREDENTIALS,
@@ -412,8 +412,9 @@ describe('exportDocuments re-signs expiring asset URLs', () => {
   });
 
   it('re-signs each document separately, never across the selection', async () => {
-    // Same bound as the pre-sign pass: the resolver refuses a batch spanning more
-    // than `document_scope.MAX_DOCUMENT_LOOKUPS` (64) distinct documents.
+    // Same bound as the pre-sign pass: the resolver refuses a batch that spends
+    // more than `document_scope.MAX_DOCUMENT_LOOKUP_BATCHES` tracking-table round
+    // trips.
     mockClientSign.mockImplementation(signingServer({ advanceAfterFirstCall: 250_000 }));
 
     const result = await exportDocuments([docWithSections('a.pdf', 2), docWithSections('b.pdf', 2)], SETTINGS, {

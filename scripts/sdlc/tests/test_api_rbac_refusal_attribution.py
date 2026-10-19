@@ -716,22 +716,40 @@ def test_the_three_operations_still_send_the_argument_that_reaches_the_floor(op_
 # the issue named, plus the shared S3 helper the fourth and fifth reach.
 #
 # ⚠️ This list is the set of sites CONVERTED, not the set of per-object controls in
-# the tree, and it grants the rest nothing. `key_scope.py`'s six refusals, the
-# config-version scope refusals in `reprocess_document_resolver`, `upload_resolver`
-# and `list_documents_*`, and the in-band
-# `{success:false,error:{type:"Unauthorized"}}` 200 the configuration and sync
-# resolvers return all remain UNATTRIBUTED, which downstream means the STRICT
+# the tree, and it grants the rest nothing. The config-version scope refusals in
+# `reprocess_document_resolver`, `upload_resolver` and `list_documents_*`, and the
+# in-band `{success:false,error:{type:"Unauthorized"}}` 200 the configuration and
+# sync resolvers return, all remain UNATTRIBUTED, which downstream means the STRICT
 # verdict — a hard failure, never a lenient one. So this list bounds what is
 # claimed, and a site left off it is treated more harshly rather than waved through.
-# The reason it is bounded: the live matrix drives none of those to a refusal today
-# (its roles are unscoped, and its `getFileContents` bucket is the input bucket,
-# which no scope axis partitions), so converting them would be unexercised churn on
-# the authorization path. Convert one when the matrix can reach it.
+#
+# The bound is "the live harness can reach it", not "it is per-object": converting a
+# site no run provokes is churn on the authorization path, and leaving one the
+# harness *does* provoke undeclared turns a correct refusal into a hard failure the
+# first time a cell reaches it. The document-bytes arm in
+# `test_api_rbac.run_document_bytes_scope_arm` drives the scoped caller at a real
+# document, which is what brought the `get_file_contents_resolver` sites below
+# inside the bound (#1478); its own existence is asserted further down, so this
+# list and the run that exercises it cannot drift apart.
+#
+# ⚠️ Three refusal sites in that resolver are deliberately NOT here, and the line is
+# the same one `_UNATTRIBUTED_REFUSAL_SITES` draws: `document_scope`'s throttled
+# tracking-table read and `resolve_caller_scope` are facts about the deployment and
+# the principal, and `key_scope._assert_test_set_allowed` folds a RESOLVER GROUP
+# CHECK into the same exception as its per-object one (`assert_can_access_test_set`
+# refuses a Viewer or Reviewer outright, and `getFileContents` is ANY_GROUP, so that
+# branch is reachable) — labelling it `resource` would be the one misattribution
+# direction that loses a group refusal, which is strictly worse than not declaring
+# it. It also absorbs a UsersTable read failure, since `get_allowed_test_sets`
+# swallows one into an empty scope.
 _DECLARED_RESOURCE_REFUSALS = (
     ("idp_common/s3_targets.py", "assert_bucket_allowed"),
     ("idp_common/s3_targets.py", "assert_key_writable"),
     ("test_set_resolver/index.py", "_enforce_selection_scope"),
     ("get_agent_chat_messages_resolver/index.py", "handler"),
+    ("get_file_contents_resolver/document_scope.py", "assert_document_in_scope"),
+    ("get_file_contents_resolver/index.py", "_budget_refusal"),
+    ("get_file_contents_resolver/key_scope.py", "_assert_config_profile_allowed"),
 )
 
 
@@ -779,6 +797,83 @@ def test_a_converted_per_object_control_still_declares_itself(relative, function
     assert "ResourceAccessDenied" in raised, (
         f"{relative}:{function} no longer declares its per-object refusal; raised "
         f"{sorted(raised)}"
+    )
+
+
+#: The three read fields whose per-document control the matrix cannot reach.
+_DOCUMENT_BYTES_FIELDS = (
+    "getFileContents",
+    "getFilePresignedUrl",
+    "getFilePresignedUrls",
+)
+
+
+def test_the_document_bytes_arm_exists_and_the_scope_suite_runs_it():
+    """What brought the ``get_file_contents_resolver`` sites inside the bound above.
+
+    The registry's rule is "convert a site the live harness can reach", so the
+    conversion and the arm that reaches it have to stand or fall together. Asserted
+    on the harness **source**: the arm is defined, ``run_scope_suite`` calls it, and
+    the suite itself is invoked — a function defined and never called would satisfy
+    an attribute check while driving nothing.
+    """
+    source = _HARNESS.read_text()
+
+    assert hasattr(h, "run_document_bytes_scope_arm"), (
+        "the per-document arm is gone, so nothing live reaches the refusals listed "
+        "in _DECLARED_RESOURCE_REFUSALS for get_file_contents_resolver"
+    )
+    assert "run_document_bytes_scope_arm(ctx, tokens, results)" in source, (
+        "run_document_bytes_scope_arm is defined but never called — the arm has to "
+        "run, not merely exist"
+    )
+    assert re.search(r"\brun_scope_suite\(", source), (
+        "run_scope_suite is no longer invoked, so the arm it carries never runs"
+    )
+
+
+def test_the_document_bytes_arm_demands_the_resource_label():
+    """The arm's verdict has to turn on the label, not merely on the 403.
+
+    Both controls answer ``403``/``Unauthorized`` here, so an arm asserting only
+    "was it refused" passes on a deployment whose group floor refused the scoped
+    Author for a reason unrelated to the document — which is the confusion #1308 is
+    about, reproduced in the one cell added to detect it.
+    """
+    source = _HARNESS.read_text()
+    arm = source.split("def run_document_bytes_scope_arm", 1)[1].split("\ndef ", 1)[0]
+
+    assert "refusal_is_resource_level" in arm, (
+        "the arm no longer consults the label, so it cannot tell the per-document "
+        "control from the resolver's own group check"
+    )
+    assert "CONTROL_UNLABELLED" in arm, (
+        "an unlabelled refusal must be reported as inconclusive rather than passed: "
+        "without the label the cell establishes neither control"
+    )
+
+
+@pytest.mark.parametrize("field", _DOCUMENT_BYTES_FIELDS)
+def test_the_document_bytes_fields_declare_no_object_scoped_roles(field):
+    """The axis is ``allowedConfigVersions``, so the matrix key cannot express it.
+
+    ``object_scoped_roles:`` names a ROLE the field's policy admits and a per-object
+    control refuses for the declared ``args``. Every principal the matrix drives is
+    unscoped, and ``document_scope.assert_document_in_scope`` is a documented no-op
+    for an unscoped caller, so the declared nonexistent-key argument never reaches
+    the control: the call returns a 400 ``File not found`` and
+    ``classify_object_scoped`` scores a cell that was not refused as a FAIL.
+
+    Declaring it here is therefore not the second half of the attribution fix — it
+    would red-line three fields on a correct deployment. The live assertion lives in
+    ``run_document_bytes_scope_arm`` instead, where a genuinely scoped caller exists.
+    """
+    entry = _expectations()[field]
+
+    assert not entry.get("object_scoped_roles"), (
+        f"{field} declares object_scoped_roles, but the matrix drives only unscoped "
+        "principals and the per-document control is a no-op for them — the cell "
+        "would fail as NOT REFUSED. Assert this in run_document_bytes_scope_arm."
     )
 
 

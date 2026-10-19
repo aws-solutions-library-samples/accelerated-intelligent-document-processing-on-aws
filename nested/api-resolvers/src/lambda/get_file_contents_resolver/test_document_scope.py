@@ -37,6 +37,7 @@ named in its docstring:
 from __future__ import annotations
 
 import importlib
+import pathlib
 
 import boto3
 import pytest
@@ -291,6 +292,157 @@ def test_every_refusal_carries_the_same_text_as_the_per_user_axes(resolver):
         assert str(raised.value) == document_scope.REFUSAL
         for leak in ("theirs", "claims", "lending", "never-existed", OUTPUT_BUCKET):
             assert leak not in str(raised.value)
+
+
+# --------------------------------------------------------------------------- #
+# which control refused: the label, and the uniformity that keeps it safe
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "why,locator",
+    [
+        (
+            "out of the caller's scope",
+            lambda: f"s3://{OUTPUT_BUCKET}/{_page_key(THEIRS)}",
+        ),
+        (
+            "the owning document is unstamped",
+            lambda: f"s3://{OUTPUT_BUCKET}/{_page_key(UNSTAMPED)}",
+        ),
+        (
+            "no tracked document owns the key",
+            lambda: f"s3://{OUTPUT_BUCKET}/no-such-doc.pdf/pages/1/image.jpg",
+        ),
+        ("the source object, not an artifact", lambda: f"s3://{INPUT_BUCKET}/{THEIRS}"),
+    ],
+)
+def test_a_per_document_refusal_declares_itself_as_a_per_object_control(
+    resolver, why, locator
+):
+    """The refusal has to say *which* control answered, and it says it by class.
+
+    A 403 ``errorType: "Unauthorized"`` is the response shape the field-level group
+    floor uses too, so the dispatcher distinguishes them with
+    ``errors[0].authzControl``, set from the resolver's exception class **name** (the
+    object does not cross the ``lambda:Invoke`` boundary). ``ResourceAccessDenied``
+    is the declaration; anything else authorization-shaped is labelled ``resolver``,
+    documented as "a resolver refused and did not say which control", whose
+    population is every resolver's own *group* check.
+
+    Leaving it undeclared is not a silent cost. The live RBAC harness reads an
+    unattributed refusal strictly (``refusal_is_resource_level`` answers False for
+    everything but an explicit ``resource``), so the per-document cell in
+    ``test_api_rbac.run_document_bytes_scope_arm`` goes to a hard failure on a
+    deployment whose authorization is correct — the shape that published
+    ``RBAC dynamic — FAIL`` for a sound release once already (#1308, #1478).
+
+    **Mutation that fails it:** change any of the three ``raise`` statements in
+    ``document_scope.assert_document_in_scope`` back to ``PermissionError``.
+    """
+    index, *_ = resolver
+    with pytest.raises(PermissionError) as raised:
+        index.handler(
+            _event("getFilePresignedUrl", locator(), email=SCOPED_EMAIL), None
+        )
+    assert type(raised.value).__name__ == "ResourceAccessDenied", (
+        f"the refusal for {why!r} is a decision about the object the caller named, "
+        f"but arrives as {type(raised.value).__name__}, which the dispatcher labels "
+        "'resolver' — read downstream as the strict verdict"
+    )
+
+
+@pytest.mark.unit
+def test_the_label_does_not_distinguish_one_per_document_refusal_from_another():
+    """Uniformity across the per-object branches, which is the load-bearing part.
+
+    Converting only the scope mismatch would separate "this document exists and is
+    outside your scope" from "no such document" in ``authzControl`` — an existence
+    oracle at the API, over documents entirely outside the caller's scope, and
+    exactly what the single shared refusal string exists to prevent. The status, the
+    message and the class are therefore all three identical across every branch of
+    ``assert_document_in_scope``, and the test is written over the module's **source**
+    so a branch added later is covered without being listed here.
+
+    The ``resolver`` branches leak nothing by contrast and are asserted the other
+    way below: none of them varies with the key, so they answer the same for every
+    object a given caller names.
+    """
+    import ast
+
+    import document_scope
+
+    source = pathlib.Path(document_scope.__file__).read_text()
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "assert_document_in_scope"
+        ):
+            raised = {
+                getattr(
+                    sub.exc.func if isinstance(sub.exc, ast.Call) else sub.exc,
+                    "id",
+                    None,
+                )
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Raise) and sub.exc is not None
+            }
+            break
+    else:  # pragma: no cover - the function is the subject of this file
+        raise AssertionError("document_scope has no assert_document_in_scope")
+
+    # RuntimeError is the defensive `resolver is None` branch: a caller-side
+    # programming error that must surface as a 500, not an authorization answer.
+    assert raised == {"ResourceAccessDenied", "RuntimeError"}, (
+        "every refusal in assert_document_in_scope must raise the same class, or "
+        f"the label tells a caller which branch answered; raised {sorted(raised)}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "why,prepare",
+    [
+        (
+            "an unresolvable scope lookup is a fact about the deployment",
+            lambda index, mp: (
+                mp.setattr(index, "_user_scope_cache", {}),
+                mp.setenv("USERS_TABLE_NAME", "no-such-users-table"),
+            ),
+        ),
+        (
+            "an unwired tracking table is a template fault",
+            lambda index, mp: mp.setattr(index, "TRACKING_TABLE_NAME", ""),
+        ),
+    ],
+)
+def test_a_fail_closed_refusal_stays_unattributed(resolver, monkeypatch, why, prepare):
+    """The other side of the line, asserted so the conversion cannot creep.
+
+    Neither of these is a decision about the object the caller named — one is about
+    the principal's scope being unreadable, the other about a bucket of wiring the
+    template did not set — so ``resolver`` is the true label and the strict reading
+    it gets is what keeps a deployment fault in the row an operator looks at first.
+    Relabelling one cannot create a false pass, but it would file a real fault under
+    "a per-object control working as intended".
+
+    Both are indistinguishable from the per-object refusals in status and message,
+    which is why the label can differ safely: they do not vary with the key.
+    """
+    index, *_ = resolver
+    prepare(index, monkeypatch)
+    with pytest.raises(PermissionError) as raised:
+        index.handler(
+            _event(
+                "getFilePresignedUrl",
+                f"s3://{OUTPUT_BUCKET}/{_page_key(MINE)}",
+                email=SCOPED_EMAIL,
+            ),
+            None,
+        )
+    assert type(raised.value).__name__ == "PermissionError", (
+        f"{why}, so it must stay unattributed; it now arrives as "
+        f"{type(raised.value).__name__}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -818,6 +970,12 @@ def test_the_budget_refusal_is_not_an_existence_oracle(resolver):
 
     Both arms are driven: the same padded request with a probe key that exists and one
     that does not must produce the same exception type and the same message.
+
+    ⚠️ The exception **class** is part of that, not just the status and the string.
+    The class name crosses the invoke boundary and the dispatcher turns it into
+    ``errors[0].authzControl``, so a budget overrun raising the unattributed
+    ``PermissionError`` while an ordinary scope denial declares itself would put the
+    bit this test exists to deny back into the response — in a different field.
     """
     import document_scope
 
@@ -848,7 +1006,7 @@ def test_the_budget_refusal_is_not_an_existence_oracle(resolver):
         f"the probed key is a tracked document: {outcomes}"
     )
     ((name, message),) = outcomes
-    assert name == "PermissionError"
+    assert name == "ResourceAccessDenied"
     assert message == document_scope.REFUSAL
 
 

@@ -1382,6 +1382,33 @@ def _input_bucket(ctx):
     return ctx["input_bucket"]
 
 
+def resolve_document_object_key(ctx, tokens):
+    """The ``ObjectKey`` of any processed document in this stack, or None.
+
+    Read as Admin, deliberately: the caller this key is used against is the SCOPED
+    user, whose own ``listDocuments`` is filtered by the very scope the check under
+    test enforces, so asking them would return nothing and the arm would skip for
+    the reason it exists to assert.
+
+    Any document will do, and that is a property of the seeded scope rather than
+    laziness: :data:`SCOPE_VERSION` is a synthetic profile name no processed
+    document carries, so **every** document in the deployment is outside the scoped
+    user's ``allowedConfigVersions``. A real profile name here would make the arm
+    depend on which documents happen to be in the stack.
+    """
+    st, body = call_body(ctx["api_base"], "listDocuments", {}, tokens["Admin"])
+    if st != 200:
+        return None
+    try:
+        documents = (json.loads(body) or {}).get("Documents") or []
+    except Exception:  # noqa: BLE001 - an unreadable list is "no key", not a crash
+        return None
+    for summary in documents:
+        if isinstance(summary, dict) and summary.get("ObjectKey"):
+            return str(summary["ObjectKey"])
+    return None
+
+
 def apply_dynamic_args(ops, ctx, tokens):
     """Replace placeholder args that a real object reference is needed for.
 
@@ -1714,6 +1741,154 @@ def run_scope_suite(ctx, tokens, results):
     print(
         f"  scoped Author getConfigVersions -> {st} "
         f"({'OK' if ok else 'unexpectedly denied'})"
+    )
+
+    run_document_bytes_scope_arm(ctx, tokens, results)
+
+
+#: The operation the document-bytes arm drives. The single-object presign rather
+#: than ``getFileContents``, because it is the capability-issuing one — a refusal
+#: that leaked here would hand out a URL carrying its own authorization for the
+#: lifetime of the signature — and both reach the same
+#: ``_parse_and_validate_one`` choke point, so one of them exercises the control.
+_DOCUMENT_BYTES_FIELD = "getFilePresignedUrl"
+
+
+def run_document_bytes_scope_arm(ctx, tokens, results):
+    """The per-DOCUMENT scope on object bytes, and the label it declares.
+
+    The group matrix cannot assert this. Every principal it drives is unscoped, and
+    ``document_scope.assert_document_in_scope`` is a documented no-op for an
+    unscoped caller, so the matrix's nonexistent-key argument never reaches the
+    control at all — which is also why ``object_scoped_roles:`` is the wrong vehicle
+    for these fields: that key declares a ROLE the per-object control refuses, and
+    the axis here is ``allowedConfigVersions``, not a group.
+
+    Two arms, and both have to hold:
+
+    * the **scoped** caller is refused a real document's bytes, and the refusal is
+      labelled ``resource`` — the per-object control, positively attributed. An
+      unattributed refusal is ``ERROR`` rather than ``PASS`` for the reason
+      :func:`refusal_is_resource_level` is fail-closed: without the label this cell
+      cannot tell the control it is testing from the resolver's own group check, so
+      it established neither;
+    * **Admin** is *not* refused the same URI. Without this arm the first one passes
+      on a deployment that refuses the object to everybody — a broken bucket
+      allow-list, an unwired tracking table — and reports the scope working.
+
+    No URL may appear in the refusal body either: the point of the control is that
+    the capability is never minted, and a 403 carrying one would satisfy every
+    status assertion above while handing over the object.
+    """
+    bucket = _input_bucket(ctx)
+    key = resolve_document_object_key(ctx, tokens) if bucket else None
+    if not bucket or not key:
+        why = (
+            "could not resolve the input bucket"
+            if not bucket
+            else "no processed document found in this stack"
+        )
+        print(f"  {_DOCUMENT_BYTES_FIELD}: SKIP ({why})")
+        _record(
+            results,
+            _DOCUMENT_BYTES_FIELD,
+            "scoped(document bytes)",
+            "SKIP",
+            False,
+            f"per-document scope not exercised: {why}",
+            outcome="SKIP",
+        )
+        return
+
+    uri = f"s3://{bucket}/{key}"
+
+    res = call(ctx["api_base"], _DOCUMENT_BYTES_FIELD, {"s3Uri": uri}, tokens["scoped"])
+    st, et, ib, rid = res
+    why = inconclusive(st, et)
+    control = res.authz_control
+    message = res.message or ""
+    leaked = "https://" in message
+    if why:
+        detail, passed, outcome = f"INCONCLUSIVE: {why}", False, "ERROR"
+    elif not _denied(st, et, ib):
+        detail, passed, outcome = (
+            f"NOT REFUSED ({st}/{et}/{ib}): the scoped caller was served another "
+            "configuration profile's document bytes",
+            False,
+            None,
+        )
+    elif leaked:
+        detail, passed, outcome = (
+            "REFUSED but the body carries a presigned URL, so the capability was "
+            "minted anyway",
+            False,
+            None,
+        )
+    elif control == CONTROL_UNLABELLED:
+        detail, passed, outcome = (
+            "REFUSED but unattributed: this deployment sets no authzControl, so "
+            "the per-object control cannot be told from the resolver's own group "
+            "check — redeploy to evaluate this cell",
+            False,
+            "ERROR",
+        )
+    elif not refusal_is_resource_level(control):
+        detail, passed, outcome = (
+            f"REFUSED with authzControl={control!r}, not {CONTROL_RESOURCE!r}: a "
+            "per-document refusal is a decision about the object the caller named "
+            "and must declare itself (raise ResourceAccessDenied in "
+            "document_scope), or an operator reads it as a group check",
+            False,
+            None,
+        )
+    else:
+        detail, passed, outcome = (
+            f"refused as {CONTROL_RESOURCE} with no URL in the body ({st}/{et})",
+            True,
+            None,
+        )
+    _record(
+        results,
+        _DOCUMENT_BYTES_FIELD,
+        "scoped(out-of-scope document)",
+        st,
+        passed,
+        detail,
+        et,
+        ib,
+        rid,
+        control=control,
+        message=message,
+        outcome=outcome,
+    )
+    print(
+        f"  scoped Author {_DOCUMENT_BYTES_FIELD} (out-of-scope document) -> "
+        f"{st}/{et or ib} control={control!r} ({'OK' if passed else 'PROBLEM'})"
+    )
+
+    res = call(ctx["api_base"], _DOCUMENT_BYTES_FIELD, {"s3Uri": uri}, tokens["Admin"])
+    st, et, ib, rid = res
+    why = inconclusive(st, et)
+    ok = (not why) and not _denied(st, et, ib)
+    _record(
+        results,
+        _DOCUMENT_BYTES_FIELD,
+        "admin(unrestricted)",
+        st,
+        ok,
+        f"INCONCLUSIVE: {why}"
+        if why
+        else f"expect the same URI served to an unrestricted caller; got {st}/{et}/{ib}",
+        et,
+        ib,
+        rid,
+        control=res.authz_control,
+        message=res.message,
+        outcome="ERROR" if why else None,
+    )
+    print(
+        f"  Admin {_DOCUMENT_BYTES_FIELD} (same document) -> {st} "
+        f"({'OK allowed' if ok else 'WRONGLY DENIED — the first arm proves nothing'})"
     )
 
 

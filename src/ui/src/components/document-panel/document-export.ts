@@ -540,8 +540,8 @@ export const exportDocuments = async (
    * both unbounded — so the check has to be at the point of use.
    *
    * **Per document**, for the same reason the pre-sign pass is per document: the
-   * resolver refuses a batch spanning more than `document_scope.MAX_DOCUMENT_LOOKUPS`
-   * (64) distinct documents.
+   * resolver bounds how many tracking-table round trips one call may spend
+   * (`document_scope.MAX_DOCUMENT_LOOKUP_BATCHES`) and refuses past it.
    *
    * **Once per document, not once per asset.** The staleness check is what keeps a
    * long run to one extra call per 240 s rather than one per asset, and `resigning`
@@ -634,10 +634,14 @@ export const exportDocuments = async (
   // "Download All" was ~115 authorised round trips where the retired client-signed
   // path made none.
   //
-  // ⚠️ Per DOCUMENT, not across the selection: the resolver refuses a batch
-  // spanning more than `document_scope.MAX_DOCUMENT_LOOKUPS` (64) distinct
-  // documents with a 400, which a bulk export of a full page of results would
-  // cross. Export pins no object versions, so every request here is a bare key.
+  // ⚠️ Per DOCUMENT, not across the selection: the resolver bounds the
+  // tracking-table round trips one call may spend
+  // (`document_scope.MAX_DOCUMENT_LOOKUP_BATCHES`, 64 batches of up to 100
+  // candidate keys) and refuses past it, which a bulk export of a full page of
+  // results would cross. The refusal is a 403 and not a 400 on purpose: how many
+  // round trips a request costs depends on which documents exist, so a
+  // distinguishable status would be an existence oracle. Export pins no object
+  // versions, so every request here is a bare key.
   //
   // Skipped entirely when `presignFn` is injected: that override IS the signing
   // seam, and pre-signing behind it would sign through a route the caller did not
