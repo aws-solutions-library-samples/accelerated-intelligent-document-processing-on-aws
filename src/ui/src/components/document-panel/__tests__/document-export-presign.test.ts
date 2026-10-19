@@ -154,9 +154,9 @@ describe('exportDocuments signing', () => {
   });
 
   it('batches per document, not across the selection', async () => {
-    // ⚠️ The resolver bounds the tracking-table round trips one call may spend
-    // (`document_scope.MAX_DOCUMENT_LOOKUP_BATCHES`) and refuses past it, so one
-    // call for a whole bulk selection would fail on a full page of results.
+    // ⚠️ The resolver refuses more than `index.MAX_BATCH_OBJECTS` objects in one
+    // call, so one call for a whole bulk selection would fail on a full page of
+    // results at a few tens of assets each.
     const result = await exportDocuments([docWithAssets('a.pdf'), docWithAssets('b.pdf'), docWithAssets('c.pdf')], SETTINGS, {
       scope: 'predictions',
       credentials: CREDENTIALS,

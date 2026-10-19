@@ -755,61 +755,54 @@ _DECLARED_RESOURCE_REFUSALS = (
 )
 
 
+def _raise_class_names(node) -> list:
+    """Every class name raised anywhere under one AST node, in source order.
+
+    One collector for the three aggregations below, so a fix to how a raise is read
+    cannot land in two of three. ``.attr`` as well as ``.id``, so a qualified
+    ``s3_targets.ResourceAccessDenied(...)`` is read as the class it names rather
+    than as nothing — the spelling the resolvers that import the module use.
+    """
+    names = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Raise) and sub.exc is not None:
+            exc = sub.exc
+            callee = exc.func if isinstance(exc, ast.Call) else exc
+            name = getattr(callee, "id", None) or getattr(callee, "attr", None)
+            if name:
+                names.append(name)
+    return names
+
+
+def _top_level(path: Path, name: str, kinds):
+    """The named top-level definition, or an AssertionError naming what was sought.
+
+    ``AsyncFunctionDef`` is in the function kinds deliberately: a reader converting
+    a resolver to ``async def`` should get the real verdict from these ratchets, not
+    "the function is missing".
+    """
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, kinds) and node.name == name:
+            return node
+    raise AssertionError(f"{path.name} has no top-level {name}")
+
+
+_FUNCTION_KINDS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
 def _raised_names_list(path: Path, function: str) -> list:
     """Like :func:`_raised_names` but keeping repeats, for the count-pinned sites."""
-    source = path.read_text()
-    for node in ast.parse(source).body:
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == function
-        ):
-            names = []
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Raise) and sub.exc is not None:
-                    exc = sub.exc
-                    callee = exc.func if isinstance(exc, ast.Call) else exc
-                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
-                    if name:
-                        names.append(name)
-            return names
-    raise AssertionError(f"{path.name} has no top-level function named {function}")
+    return _raise_class_names(_top_level(path, function, _FUNCTION_KINDS))
 
 
 def _raised_names_in_class(path: Path, klass: str) -> set:
     """The class names raised anywhere inside one top-level class."""
-    source = path.read_text()
-    for node in ast.parse(source).body:
-        if isinstance(node, ast.ClassDef) and node.name == klass:
-            names = set()
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Raise) and sub.exc is not None:
-                    exc = sub.exc
-                    callee = exc.func if isinstance(exc, ast.Call) else exc
-                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
-                    if name:
-                        names.add(name)
-            return names
-    raise AssertionError(f"{path.name} has no class named {klass}")
+    return set(_raise_class_names(_top_level(path, klass, ast.ClassDef)))
 
 
 def _raised_names(path: Path, function: str) -> set:
     """The class names raised inside one top-level function."""
-    source = path.read_text()
-    for node in ast.parse(source).body:
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == function
-        ):
-            names = set()
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Raise) and sub.exc is not None:
-                    exc = sub.exc
-                    callee = exc.func if isinstance(exc, ast.Call) else exc
-                    name = getattr(callee, "id", None) or getattr(callee, "attr", None)
-                    if name:
-                        names.add(name)
-            return names
-    raise AssertionError(f"{path.name} has no top-level function named {function}")
+    return set(_raised_names_list(path, function))
 
 
 def test_the_declared_resource_refusal_list_is_not_empty():
