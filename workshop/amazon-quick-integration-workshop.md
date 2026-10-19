@@ -8,6 +8,8 @@ SPDX-License-Identifier: MIT-0
 # IDP Accelerator + Amazon Quick Integration Workshop
 
 > **Workshop Guide** — Build an end-to-end intelligent document processing workflow using the [GenAI IDP Accelerator](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws) and Amazon Quick.
+>
+> This is the self-guided integration workshop, which you run in your own AWS account. For a hands-on introduction to the accelerator as a whole, see the instructor-led [GenAI IDP Workshop on AWS Workshop Studio](https://catalog.workshops.aws/workshops/c384d63d-3090-44c9-a639-e06dd6d9164f). [Hands-on Workshops](../docs/workshops.md) compares the two.
 
 ## Overview
 
