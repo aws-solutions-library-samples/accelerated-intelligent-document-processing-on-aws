@@ -211,6 +211,24 @@ class TestHandler:
         )
         mock_s3.put_object.assert_not_called()
 
+    def test_review_hold_for_a_missing_job_is_not_found(self, mock_s3, job_svc):
+        """A review hold on a job that no longer exists answers 404, not 200."""
+        from index import handler
+
+        job_svc.update_file_status.return_value = None
+        event = make_event("jobs/gone-uuid/b.pdf")
+        event["detail"]["output"] = json.dumps(
+            {"document": {"status": "HITL_IN_PROGRESS"}}
+        )
+
+        response = handler(event, None)
+
+        assert response == {"statusCode": 404, "body": "Job not found"}
+        job_svc.update_file_status.assert_called_once_with(
+            "gone-uuid", "b.pdf", Status.HITL_IN_PROGRESS
+        )
+        mock_s3.put_object.assert_not_called()
+
     def test_invalid_job_path(self, mock_s3, job_svc):
         """Test handler returns 400 for invalid job path format."""
         from index import handler

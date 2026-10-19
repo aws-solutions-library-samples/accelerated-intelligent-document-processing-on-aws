@@ -74,3 +74,58 @@ def test_vendored_statuses_normalise():
     assert module.normalize_hitl_status("in_review").queue_managed is True
     assert module.normalize_hitl_status("PendingReview").kind == "pending"
     assert module.normalize_hitl_status(None).kind == "none"
+
+
+def _load_vendored(resolver):
+    spec = importlib.util.spec_from_file_location(
+        f"vendored_review_statuses_{resolver.name}", resolver / "review_statuses.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses resolves string annotations through sys.modules.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("resolver", RESOLVERS, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    ("raw", "kind", "queue_managed", "in_review"),
+    [
+        (" in_review ", "in_review", True, True),
+        ("complete", "complete", True, False),
+        ("rejected", "rejected", True, False),
+        ("Review Pending", "pending", False, False),
+        ("ReviewInProgress", "in_progress", False, False),
+        ("Review Skipped", "skipped", False, False),
+        ("In_Review", "none", False, False),  # exact match only
+        ("", "none", False, False),
+    ],
+)
+def test_the_shipped_copy_reads_every_status_spelling(
+    resolver, raw, kind, queue_managed, in_review
+):
+    """The bundled copy decides which documents the list shows as in review."""
+    view = _load_vendored(resolver).normalize_hitl_status(raw)
+    assert (view.kind, view.queue_managed, view.in_review) == (
+        kind,
+        queue_managed,
+        in_review,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("resolver", RESOLVERS, ids=lambda p: p.name)
+def test_the_shipped_copy_maps_queue_item_states_to_review_statuses(resolver):
+    module = _load_vendored(resolver)
+    status = module.review_status_for_state
+    for state in ("HOLDING", "OPEN", "CLAIMED", "FINALIZING", "FINALIZE_FAILED"):
+        assert status(state) is module.ReviewStatus.IN_REVIEW
+    assert status(module.QueueItemState.COMPLETE) is module.ReviewStatus.COMPLETE
+    assert status("REJECTED") is module.ReviewStatus.REJECTED
+    assert status("WITHDRAWN") is None
+    with pytest.raises(ValueError):
+        status("NOT_A_STATE")
