@@ -1263,7 +1263,7 @@ const AnnotationWorkspace = (): React.JSX.Element => {
                     : ' Correcting a document that already has authored ground truth writes it directly, which an Admin or Author has to do — you can inspect the values below.'}
                 </Alert>
               )}
-              {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} presignVia="server" />}
+              {selected && docView === 'source' && <FileViewer objectKey={selected.inputKey} bucket={testSetBucket} />}
               {selected && docView === 'ground-truth' && (
                 <GroundTruthVisualEditor
                   key={selected.objectKey}

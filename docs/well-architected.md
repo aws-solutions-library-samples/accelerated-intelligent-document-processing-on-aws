@@ -258,16 +258,16 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-123 operations. 113 of them require Cognito group membership and 2
+124 operations. 114 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
-principals, rejecting every Cognito caller. 18 of those accept any assigned group
+principals, rejecting every Cognito caller. 19 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
 the full list of groups `template.yaml` creates, so what they refuse is a caller an
 administrator has not placed in any group. That set is every document read
 (`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentCount`,
 `listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
 `getDocumentVersion`, `compareDocumentVersions`, `getStepFunctionExecution`,
-`getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), the chat transcript read
+`getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls`, `queryKnowledgeBase`), the chat transcript read
 `getChatMessages`, the processing-breaker badge `getCircuitBreakerStatus` (whose
 `lastError` carries the pausing administrator's email address after a manual pause), and
 three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`). The
@@ -289,38 +289,39 @@ feature-platform reads (`listInstalledFeatures`, `listCatalogFeatures`,
 deployment has trained and what optional features it has installed or is entitled to,
 rather than anything derived from a document.
 
-Three caveats on what the group floor does and does not buy you, and the third is the one
-that bounds the other two. It is a check on *who may ask*, not on *which document they may
-read*: a Viewer may read any document a Viewer can see, so if your documents need to be
-private to their submitter or to a tenant, group membership is the wrong axis and no setting
-of these declarations fixes it. The other controls on the file reads are real but are not
-per-document either — `getFilePresignedUrl` and `getFileContents` resolve through
-`_validate_bucket()` in
-`nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py`, which allow-lists
-the stack's own buckets and so prevents reading arbitrary S3, not reading another user's
-document.
+Two caveats on what the group floor does and does not buy you. It is a check on *who may
+ask*, not on *which document they may read*: a Viewer may read any document a Viewer can
+see, so if your documents need to be private to their submitter or to a tenant, group
+membership is the wrong axis and no setting of these declarations fixes it. And the
+per-document control that does exist is the configuration-profile axis, not ownership —
+the object-read operations resolve the document that owns the requested key and match its
+`ConfigVersion` against the caller's `allowedConfigVersions`, which refuses a scoped
+caller a document outside their profiles and, because scoping is opt-in per user, refuses
+an unscoped caller nothing. Decide against your own data classification whether "any
+onboarded user may read any document in their profiles" is the posture you need.
 
-And **the declarations above govern the API, not the buckets.**
+**The declarations above now govern the bytes as well as the API.**
 `CognitoIdentityPoolSetRole` attaches a single `authenticated` role and declares no role
-mappings, so group membership plays no part in which role a signed-in user assumes,
-and that role — `CognitoAuthorizedRole` — grants `s3:GetObject` and
-`s3:GetObjectVersion` on the Input and Output buckets plus `kms:Decrypt` on the
-customer-managed key to every authenticated user, group or no group. The web UI uses that
-path deliberately: the file viewer defaults to signing in the browser, as do the page
-thumbnails, the page-image viewer and the document export. So a caller who is refused
-`getFileContents` can still read a **document** object. The grant is object read only —
-both actions authorize against a key, the role carries no `s3:ListBucket` to produce one,
-and no `ANY` operation hands over an object key either — so what is left is that the
-key-returning operations are `ANY_GROUP`, and any one of the five groups reaches them.
-Narrowing this is a change to the document-viewing data path — group-scoped identity
-pool role mappings, or a resolver-only read path — and it has not been made; the two
-candidate shapes and their obstacles are set out in
-[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md).
-The buckets the per-user scope axes partition — Configuration and Test Set — are
-deliberately **not** on that role, so `allowedConfigVersions` and `allowedTestSets` are not
-reachable around; those objects are served only by resolvers that check the key against the
-caller's scope. Decide whether the current posture is acceptable for your data
-classification, and see [RBAC](./rbac.md).
+mappings, so group membership plays no part in which role a signed-in user assumes —
+which is why that role, `CognitoAuthorizedRole`, is held identically by every signed-in
+user, group or no group. It grants **nothing** on the Input and Output buckets, **no**
+`s3:GetObject`, `s3:GetObjectVersion` or `s3:ListBucket` on any bucket at all, and **no**
+KMS action; its two inline policies are `lambda:InvokeFunction` on the chat-streaming
+Function URL and `ssm:GetParameter` on the UI's settings parameter, and
+`scripts/tests/test_browser_s3_grants.py` fails if an S3 statement returns to it. A
+caller refused `getFileContents` therefore cannot read the object another way: the web UI
+asks `getFileContents`, `getFilePresignedUrl` or `getFilePresignedUrls` for every document
+byte it displays, including the file viewer, the page thumbnails, the page-image viewer
+and the document export, and all three run the bucket allow-list in `_validate_bucket()`,
+the per-user key scope and the per-document profile check in
+`nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py` before any S3 call.
+The buckets the per-user scope axes partition — Configuration and Test Set — are likewise
+absent from that role, so `allowedConfigVersions` and `allowedTestSets` cannot be read
+around. Note that the grant did not disappear so much as move: the resolver's own role
+holds the broad read, which makes that one function the component whose compromise yields
+every document. See [RBAC](./rbac.md), and
+[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md)
+for the options that were weighed and which was taken.
 
 The API Gateway REST transport replaced AWS AppSync entirely — there are no
 `AWS::AppSync` resources in any template — see
@@ -380,9 +381,9 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 
 | Review item | Your comment | Owner | Date |
 |---|---|---|---|
-| Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed? A self-registered user is in no group, so the API refuses them the document-content operations — but `CognitoAuthorizedRole` still grants them `s3:GetObject` on the document buckets directly, for any object key they arrive with | | | |
+| Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed? A self-registered user is in no group, so the API refuses them every document-content operation — and `CognitoAuthorizedRole` reaches **no** bucket, so there is no direct read left for them either, whatever object key they arrive with | | | |
 | Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
-| Do you accept that the 6 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are a public version number, the two fine-tuning job reads and the three feature-platform reads — nothing derived from a document. Separately, and not fixed by any of these declarations: `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject` on the document buckets, so a direct S3 read reaches document bytes with no resolver in the path and no per-document check. The role cannot enumerate, so the key has to come from elsewhere — and the API operations that return keys require an assigned group. Does that meet your data classification? | | | |
+| Do you accept that the 6 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are a public version number, the two fine-tuning job reads and the three feature-platform reads — nothing derived from a document. Separately: every document read now goes through a resolver, so the question to answer is not who can reach S3 directly but **which documents an onboarded user may read**. A caller holding any group whose `allowedConfigVersions` is unset reads any document's bytes through `getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls`; one with a scope set is refused a document outside their profiles. Document ownership is not modelled, so that is the whole of the per-document boundary. Does it meet your data classification? | | | |
 | Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
 | Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |

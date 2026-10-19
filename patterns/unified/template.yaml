@@ -1902,7 +1902,7 @@ Resources:
                     title: Geometry mode
                     enum: ["ocr_only", "llm_grounded", "llm", "off"]
                     default: "ocr_only"
-                    description: "'ocr_only' (default): derive boxes purely by matching each extracted value to real OCR lines — cheapest and most accurate, no bbox tokens. 'llm_grounded': the model emits boxes and OCR grounding refines them. 'llm': use the model's boxes as-is (no grounding). 'off': produce no geometry."
+                    description: "A box locates an extracted VALUE on the page, so a field the model returned nothing for is never located under any mode. 'ocr_only' (default): the model is not asked for boxes — each extracted value is matched to real OCR lines. No added prompt tokens, and more accurate than LLM-estimated boxes. 'llm_grounded': the model emits boxes and OCR grounding corrects them; use this when values are not present verbatim in the OCR text (reformatted dates, figures read off a chart). 'llm': the model's boxes as-is — DISCOURAGED, retained for compatibility: same prompt and cost as 'llm_grounded' then skips the correction, so never the better of the two. 'off': no geometry; the viewers stop offering to show fields on the page."
                     order: 0
                   task_prompt_bbox:
                     type: string

@@ -850,6 +850,17 @@
         }
       ]
     },
+    "getFilePresignedUrls": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "files",
+          "non_null": true,
+          "type": "FilePresignRequest"
+        }
+      ]
+    },
     "getFinetuningJob": {
       "args": [
         {
@@ -2649,6 +2660,22 @@
         "is_list": true,
         "name": "pageIds",
         "non_null": true,
+        "type": "String"
+      }
+    ],
+    "FilePresignRequest": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "s3Uri",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "versionId",
+        "non_null": false,
         "type": "String"
       }
     ],

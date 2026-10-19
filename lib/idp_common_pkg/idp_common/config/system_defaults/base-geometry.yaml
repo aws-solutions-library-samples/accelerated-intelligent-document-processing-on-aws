@@ -6,9 +6,18 @@
 # =============================================================================
 # Geometry is advisory enrichment on per-field confidence. It lives under
 # `extraction.geometry` (v0.6 — replaces `assessment.geometry_mode`).
-#   ocr_only     (default) : derive boxes purely by matching values to OCR lines
-#   llm_grounded           : model emits boxes, OCR grounding refines them
-#   llm                    : model boxes as-is, no grounding
+#
+# A box locates an extracted VALUE on the page, so a field the model returned
+# nothing for is never located, whichever mode is set.
+#
+#   ocr_only     (default) : match each extracted value to real OCR lines. The
+#                            model is not asked for boxes, so no added tokens.
+#   llm_grounded           : model emits boxes, OCR grounding corrects them. For
+#                            values not present verbatim in the OCR text.
+#   llm                    : model boxes as-is. DISCOURAGED — same prompt and
+#                            cost as llm_grounded without the correction step,
+#                            so never the better of the two. Kept for
+#                            compatibility with existing configurations.
 #   off                    : no geometry produced
 # =============================================================================
 

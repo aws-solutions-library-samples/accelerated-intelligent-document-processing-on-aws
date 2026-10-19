@@ -133,6 +133,24 @@ def update_circuit_breaker_state(
     current persisted state matching it. Concurrent writers losing the race
     get ConditionalCheckFailedException swallowed and return False.
 
+    Most of the expression values below are supplied in one branch and referenced
+    by a clause appended in that same branch. Keep every pair together: DynamoDB
+    refuses the **whole** request when it carries an ``ExpressionAttributeValues``
+    key no expression mentions, so hoisting one of these assignments out of its
+    branch turns every call on the other path into one that has never succeeded.
+    That is issue #1358 in ``queue_processor.update_counter``, where the caller
+    swallowed the failure and leaked a concurrency slot per occurrence. Here the
+    ValidationException propagates and fails the invocation instead, so the cost
+    is a transition that never lands rather than a silent one — a breaker stuck
+    in its current state until somebody reads the Lambda's error metric.
+
+    ``scripts/tests/test_dynamodb_unused_expression_values.py`` reads that pairing
+    out of the source tree-wide, but it cannot read this function: the expression
+    and its values are assembled into local names and only then built into a
+    request, which no source reading can pair without following data flow (#1466).
+    ``test_update_expression_pairing.py`` beside this file covers it instead, by
+    issuing every request this signature can produce against an expression engine.
+
     Returns:
         True if the update was applied, False if the conditional check failed.
     """

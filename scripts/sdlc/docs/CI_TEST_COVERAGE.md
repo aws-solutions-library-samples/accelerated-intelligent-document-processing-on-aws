@@ -150,17 +150,19 @@ hostage to a few slow tests. Cutting it further means sharding it across several
 `make check-coverage-debt-cicd` can read a complete report — deliberately not done
 here, since the measured gain over the current shape is ~5 minutes.
 
-⚠️ **The coverage producer costs this job roughly another 16 minutes, and that is
-the price of the gate reading more than one tree.** `make coverage-all-cicd` runs
-before the ratchet in the same job, because the reports pass between the two steps
-through the workspace — splitting them would need artifacts, which is the same
-obstacle as sharding above. Eight trees are measured concurrently and the wall clock
-is **not** their sum: measured at nine trees, four at a time, 979s against roughly 33
-minutes sequential. What it cannot compress is `scripts`, which declares
-`Tree.serial` and takes ~16 minutes as a single process, so that tree alone sets the
-floor on every host and the concurrency's whole job is to hide the other seven behind
-it. `COVERAGE_CICD_JOBS` is the dial, bounded in the script by `cpus // 2`, so a
-4-CPU runner takes 2 at a time rather than obeying the 4 the Makefile asks for.
+⚠️ **The coverage producer costs this job a second block of time, and that is the
+price of the gate reading more than one tree.** `make coverage-all-cicd` runs before
+the ratchet in the same job, because the reports pass between the two steps through
+the workspace — splitting them would need artifacts, which is the same obstacle as
+sharding above. The trees are measured concurrently and the wall clock is **not**
+their sum: it is the slowest tree plus scheduling, so the figure to know is which
+tree that is, and it moves — re-measure rather than quoting one here. No tree
+declares `Tree.serial` any more; `scripts` did, on a belief about xdist and
+subprocesses that was measured down, and the Lambda handler fan-outs were tried with
+it and measured faster without. `COVERAGE_CICD_JOBS` is the dial, bounded in the
+script by `cpus // 2`, so a 4-CPU runner takes 2 at a time rather than obeying the 4
+the Makefile asks for. `--workers` is how to reproduce one tree's share by hand,
+since selecting a single tree otherwise hands it the whole machine.
 
 Read against the alternative rather than against the old number: the step this
 replaces compared **one** of nine trees and exited 0 over the other eight, so the
@@ -797,7 +799,13 @@ after ~600 leaked roles did exactly that. Hence:
   failing run tears down as it always did and logs which markers hold the slots.
 - The startup reaper takes a retained stack as soon as its marker expires,
   **overriding the usual age gate** — so a short TTL is honoured rather than
-  ignored for three hours.
+  ignored for three hours. Retention is separate from the long-lived stack the
+  [startup reapers](#startup-reapers-converge-leaks-from-interrupted-prior-runs)
+  leave standing: the stack reaper sets that stack and its pre-stack aside before
+  it consults a retention marker for either, so a marker never keeps or frees
+  them, which
+  `test_the_long_lived_stack_is_set_aside_before_its_retention_marker_is_read`
+  pins.
 - Protection is matched on the **run prefix**, so a retained `idp-MMDD-HHMMSS`
   also protects its `-iam` stack. Without that the reaper would delete the
   service role and permissions boundary out from under the stack being
@@ -1620,37 +1628,48 @@ Each run tears down its own stacks and buckets, but an interrupted teardown (e.g
 credentials expiring mid-cleanup) can leak them — and leaked test resources had
 previously exhausted the account's IAM-role quota and piled up thousands of
 buckets. To stay self-healing, every run first reaps **stale** leftovers from
-prior runs: test VPCs, IDP stacks (and their IAM helper stacks), and orphaned S3
-buckets. All reapers are **age-gated and skip anything a concurrent pipeline is
-still using**, so they never touch a live run.
+prior runs — test VPCs, IDP stacks (and their IAM helper stacks), orphaned S3
+buckets, BDA blueprints and projects, and leaked IAM roles and managed
+policies — and expires diagnostics bundles past their 30-day window. All but
+the BDA reaper are **age-gated**, so a concurrent pipeline's in-flight run is
+never touched; that one is gated on its run's surviving stacks instead.
 
 **One stack is left standing at any age: `idp-ux-nightly`**, the name reserved
 for a long-lived review stack that is updated in place rather than created per
-run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). Each reaper would
-otherwise take it in its own way. The stack reaper would delete it and its
-`-iam` pre-stack once they passed its age gate. The bucket reaper would empty
-and delete its buckets once they passed its own, even with the stack up,
-because its live-stack protection is keyed on a run's `idp-MMDD-HHMMSS` prefix
-and that name carries none. The BDA reaper asks after the stack that the first
-three hyphen-separated parts of a name spell, so it spares `idp-ux-nightly-*`
-resources only while the stack's status is in that reaper's active set, and
-never spares the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`,
-whose first three parts spell no stack. The IAM-role and IAM-policy reapers
-delete only run-prefixed names, so they already passed that stack's roles and
-policies over. The stack reaper therefore skips `idp-ux-nightly` and its
+run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). The stack and
+bucket reapers would otherwise each take it in its own way. The stack reaper
+would delete it and its `-iam` pre-stack once they passed its age gate. The
+bucket reaper would empty and delete its buckets once they passed its own, even
+with the stack up, because its live-stack protection is keyed on a run's
+`idp-MMDD-HHMMSS` prefix and that name carries none. Those two are the only
+reapers that consult the set. The stack reaper skips `idp-ux-nightly` and its
 pre-stack, `idp-ux-nightly-iam`, and no other stack: it asks only about
 top-level stacks, so the stack's nested stacks never reach that check, and any
 other top-level `idp-ux-nightly-*` stack is a stack of its own, reaped once it
-passes the age gate. The bucket, IAM-role, IAM-policy and BDA reapers skip
-everything named `idp-ux-nightly-*` or `idp-ux-nightly_*` — the buckets, roles,
-managed policies, BDA projects and blueprints of the stack and its pre-stack —
-by matching the name, or the name followed by `-` or by `_` (which no
-CloudFormation stack name can contain), so a lookalike such as
-`idp-ux-nightly2` gets no such protection from any of the five. Each reaper's
-log line counts what it left. Those with an age gate ask before it: those gates
-keep an item the listing did not date and name it as one whose age could not
-be established, so a resource of that stack is counted as left for it rather
-than reported on that line.
+passes the age gate. The bucket reaper skips every bucket named
+`idp-ux-nightly-*` by matching the name followed by `-`, which is how
+CloudFormation names every bucket of the stack, since none of its templates
+names one. So a lookalike such as `idp-ux-nightly2` gets no such protection
+from either reaper. Each of the two sets those names aside before its age gate
+and before the run-prefix protection it applies, so its log line counts them as
+not examined rather than as spared: its age gate would have kept some of them
+anyway. Those gates keep an item the listing did not date and name it, on a
+line of their own, as one whose age could not be established, so a resource of
+that stack is counted on the long-lived line rather than named on that one.
+
+The BDA, IAM-role and IAM-policy reapers do not consult the set at all. Each
+deletes only names that carry a run prefix whose run has no surviving stack,
+and `scripts/sdlc/tests/test_startup_sweep_outcomes.py` computes for every
+member that no name opening with it carries one, and measures on each of the
+three reapers that none of those names is reaped with no run live. Those names
+include the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`, its
+pre-stack's service role and, where the stack deploys a bastion host, that
+host's role, `idp-ux-nightlyBastionHost-Role`, whose name has no separator at
+all. The IAM-role and IAM-policy reapers pass over those names before their age
+gates, as they do every name without a run prefix. The BDA reaper reads the
+account's stacks only when a name it listed carries a run prefix, so a stack
+listing that fails reports only the run-prefixed names it left undecided, and
+nothing for a listing of that stack's names alone.
 
 Four routes can still take part of that stack:
 
@@ -1697,10 +1716,11 @@ pre-stack left in `DELETE_FAILED` — so one is removed by hand. A stack the sta
 reaper does take under an `idp-ux-nightly-*` name leaves behind every bucket its
 template marks `Retain` or `RetainExceptOnCreate`, empty or not, because that
 reaper deletes with a plain `DeleteStack`; those buckets are named
-`idp-ux-nightly-<x>-…`, so the bucket reaper spares them too, and they are
-removed by hand as well. And naming another stack here means changing the
-pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its entry
-in `scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails
+`idp-ux-nightly-<x>-…`, so the bucket reaper spares them too, and any role the
+template retains carries no run prefix, so the IAM-role reaper never takes it.
+Both are removed by hand as well. And naming another stack here means changing
+the pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its
+entry in `scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails
 that same module until it either consults the set or is named there with its
 reason for not doing so, so whether it can take that stack is decided when it
 is written.

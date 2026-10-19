@@ -158,7 +158,10 @@ STATUS: dict[str, tuple[int, str]] = {
     "UI.T03": (6, "Mitigated"),
     "UI.T04": (2, "Mitigated"),
     "UI.T05": (2, "Mitigated"),
-    "UI.T06": (6, "Open"),
+    # Risk stays 6. The per-document check narrows the threat for a SCOPED caller
+    # only, and an unset `allowedConfigVersions` is a user row's default state, so
+    # neither likelihood nor severity moved — see UI.T06's own Likelihood cell.
+    "UI.T06": (6, "Partially Mitigated"),
     "UI.T07": (3, "Mitigated"),
     # Reporting / analytics
     "RPT.T01": (2, "Mitigated"),

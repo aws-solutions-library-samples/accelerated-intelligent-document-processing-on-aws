@@ -23,6 +23,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [IDP CLI](./idp-cli.md) - Command line interface for batch processing and evaluation workflows
 - [IDP SDK](./idp-sdk.md) - Python SDK for programmatic access
 - [Demo Videos](./demo-videos.md) - Comprehensive collection of feature demonstration videos
+- [Hands-on Workshops](./workshops.md) - The GenAI IDP Workshop on AWS Workshop Studio and the self-guided Amazon Quick integration workshop
 - [Troubleshooting](./troubleshooting.md) - Troubleshooting and performance guides
 - [Error Analyzer](./error-analyzer.md) - AI-powered error diagnosis
 
@@ -77,7 +78,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
-- [Release Runbook](./release-runbook.md) - Publishing a release to the three public S3 regions: preconditions, ordered steps, failure and recovery paths, what is not automated, post-release verification
+- [Release Runbook](./release-runbook.md) - Publishing a release to the four public S3 regions: preconditions, ordered steps, failure and recovery paths, what is not automated, post-release verification
 
 ## Planning & Security
 

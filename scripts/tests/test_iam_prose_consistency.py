@@ -1,15 +1,23 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The documents that enumerate the browser's S3 grant must agree with the template.
+"""No document may claim the browser's Identity Pool role grants S3, because it does not.
 
-``test_browser_s3_grants.py`` pins the **policy**: which buckets
-``CognitoAuthorizedRole`` may name. This file pins the **prose** against it. A security
-deliverable asserting a grant the template does not contain is a defect of the same
-kind as the reverse — a reader of ``rbac-authentication.md`` or ``docs/rbac.md`` acts on
-the enumeration, and one that over-states the grant invites a reviewer to accept a
-boundary narrower than they were told, or to "restore" a grant that was removed
-deliberately.
+``test_browser_s3_grants.py`` pins the **policy**: ``CognitoAuthorizedRole`` carries no
+S3 statement at all, under any policy name, since the document read path moved behind a
+resolver (#1033). This file pins the **prose** against it. A security deliverable
+asserting a grant the template does not contain is the defect this gate exists for: a
+reader of ``rbac-authentication.md`` or ``docs/rbac.md`` acts on the enumeration, and one
+that over-states the grant invites a reviewer to accept a boundary narrower than they
+were told, or to "restore" a grant that was removed deliberately.
+
+**The two directions collapsed into one when the grant went to zero.** This gate used to
+assert both that no claim named an ungranted bucket and that a complete enumeration named
+every granted one. With no granted bucket there is no second direction: every positive
+claim is stale, and the gate is "find any positive claim". That makes the assertion
+stronger and the **recognizer** the only fragile part — so most of this file is now about
+the recognizer still working, since an empty claim set is what a reader that has stopped
+reading also reports.
 
 **Why a gate and not a careful edit.** Nothing else in this tree compares the two.
 ``check_prose_counts`` in ``build_threat_model.py`` reads threat totals, statuses, risk
@@ -37,29 +45,30 @@ What counts as a claim
 1. every word of ``<enum>`` names a bucket this stack declares — which excludes the
    collective nouns ("the *document* buckets") and the Macie and Cross-Region-Replication
    recommendations in ``well-architected.md``, which also say "on the … buckets";
-2. the **same sentence**, before the match, cites one of the S3 actions the role is
-   actually granted (derived — see ``browser_s3_policy.granted_s3_actions``). A bare
-   ``s3:`` token was too weak: the role's grant is read-only, so "``s3:PutObject`` writes
-   land on the Logging bucket" is not a statement about it, and reading it as one made
-   the gate fail on true prose;
+2. the **same sentence**, before the match, cites one of the S3 actions in
+   :func:`claim_actions`. A bare ``s3:`` token was too weak: the grant was read-only, so
+   "``s3:PutObject`` writes land on the Logging bucket" is not a statement about it, and
+   reading it as one made the gate fail on true prose;
 3. that sentence carries no **negation** before the match. "…and nothing on the
    Configuration bucket" is a true sentence *about* the grant which asserts the
    opposite of a claim, and a rule that read it as a claim accused the document of
-   saying the reverse of what it says;
+   saying the reverse of what it says. ⚠️ This is now the main thing an author has to
+   get right: a true sentence about the role granting nothing must put the negator
+   immediately before the enumeration ("**nothing** on the Input and Output buckets"),
+   not at the start of the clause ("does not grant ``s3:GetObject`` on the Input and
+   Output buckets"), because the negation span is deliberately short — see
+   :data:`_NEGATION_SPAN_CHARS` for why scanning the whole sentence was worse;
 4. the role is named within :data:`_CONTEXT_CHARS` before it, so an unrelated bucket
    sentence elsewhere in the file is not attributed to this role.
 
-The two directions are **not symmetric**
------------------------------------------
-* **Extra** — prose naming a bucket the policy does not grant — is asserted for every
-  claim. That is the direction the defect travels in.
-* **Missing** — a granted bucket the prose does not name — is asserted only for a claim
-  that reads as **exhaustive** (an enumeration of two or more buckets). A deliberately
-  narrow sentence is not a defect: ``reporting-analytics.md`` says the role grants
-  ``s3:GetObjectVersion`` on the Output bucket, which is true and is *about* that one
-  action. Asserting set equality on every claim made that sentence a failure, and the
-  only documents that could be registered were the four the rule happened to fit —
-  the set of documents compatible with the check rather than the set stating the grant.
+Why the action vocabulary is not simply the derived one
+-------------------------------------------------------
+Condition 2 reads :func:`claim_actions`, which is the derived set **plus** the three
+object-read actions the role used to hold. With the derived set empty, a vocabulary of
+only the derived actions would match no sentence in any document — so the recognizer
+would go completely inert, every stale enumeration would pass, and the gate would report
+a clean tree while describing none of it. The historical actions are what keep the
+sentence this gate exists to catch recognisable now that the grant it described is gone.
 """
 
 from __future__ import annotations
@@ -94,47 +103,72 @@ BUCKET_PROSE_NAMES = {
     "logging": "LoggingBucket",
 }
 
-# Documents that state this role's S3 grant in words. Each must carry at least one
-# claim, so a document that stops describing the grant fails rather than silently
-# dropping out of coverage. Membership is NOT the gate's scope — the scope is every
-# tracked `.md` (see the module docstring); this list records which documents are
-# *required* to keep saying it.
-DOCUMENTS_STATING_THE_GRANT = (
-    "docs/rbac.md",
-    "docs/well-architected.md",
-    "docs/govcloud-architecture.md",
-    "docs/aws-services-and-roles.md",
-    "security/threat-modeling/feature-threats/rbac-authentication.md",
-    "security/threat-modeling/feature-threats/web-ui.md",
-    "security/threat-modeling/feature-threats/reporting-analytics.md",
-    # Enumerates the grant to argue about narrowing it, so its statement of the
-    # current grant is the premise of the whole document rather than an aside.
-    "docs/planning/identity-pool-group-scoping-plan.md",
+# The S3 actions a sentence may cite and still be read as a claim ABOUT THIS ROLE.
+#
+# The derived set (`browser_s3_policy.granted_s3_actions`) is **empty**: the role grants
+# no S3 (#1033). An empty vocabulary makes condition 2 unsatisfiable, so the recognizer
+# would match nothing in any document — the gate would pass on a tree full of stale
+# enumerations while reading none of it. The three object-read actions the role DID hold
+# are therefore retained, because the sentence this gate exists to catch is exactly the
+# sentence that cites one of them.
+#
+# Read-only on purpose. `s3:PutObject` is not here and must not be: this role never held
+# a write action, so "`s3:PutObject` writes land on the Logging bucket" is a true
+# sentence about something else, and admitting it made the gate fail on correct prose.
+HISTORICAL_OBJECT_READ_ACTIONS = frozenset(
+    {"s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"}
 )
 
-# Read, and compared, but not required to carry a *current* claim. One reason per member,
-# because "historical" is true of each for a different reason and the distinction decides
-# what to do when one of them fails.
-DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY = (
-    # Its only enumeration of the grant is inside the historical ledger excluded below,
-    # so the reader finds no claim here at all — hence (0, 0) in EXPECTED_CLAIM_COUNTS.
+
+def claim_actions() -> set:
+    """The action vocabulary condition 2 reads: derived, plus the historical three.
+
+    A union rather than a replacement, so a write action added to the role tomorrow
+    becomes part of the vocabulary without anyone remembering to extend a literal —
+    which is the property the derived set was introduced for.
+    """
+    return granted_s3_actions() | set(HISTORICAL_OBJECT_READ_ACTIONS)
+
+
+# Documents allowed to carry a positive grant claim, with one member's worth of reason
+# each. Every claim outside this set is a failure, and so is every claim inside it that
+# the registered historical-section exclusion does not cover — being on this list is
+# permission to have a *historical* claim, not permission to have a claim.
+#
+# There is deliberately no "documents required to state the grant" list any more. There
+# is no grant to state: the thing those eight documents must now say is that the role
+# reaches no bucket, and a sentence saying that is a non-claim by construction (condition
+# 3), so requiring one would be requiring the recognizer to find something it is built
+# not to find. What replaces it is `test_no_tracked_document_states_the_grant`, which
+# reads the whole tree.
+DOCUMENTS_ALLOWED_A_HISTORICAL_CLAIM = (
+    # An audit artefact for a versioned security deliverable: CLAUDE.md names its
+    # `## Version History` table as one of two deliberate ledgers in this repository.
+    # Its rows describe the control as it stood at each revision, so a row enumerating a
+    # grant that has since been removed is the row doing its job.
     "security/threat-modeling/README.md",
-    # A release note describing the grant as it shipped. It is compared, and agrees with
-    # the template today. It is NOT required to keep stating the grant, because a
-    # changelog entry is append-only history rather than a maintained statement of
-    # current fact — the wording belongs to the release it documents. ⚠️ If the grant is
-    # later narrowed, this entry stays as written (CLAUDE.md: product-behaviour history
-    # in CHANGELOG.md is legitimate and is not rewritten), and the correct fix is an
-    # EXCLUDED_HISTORICAL_LEDGER_SECTIONS entry bounding that one release's section, not
-    # an edit to the entry.
+    # Append-only release history. A merged entry describes the release it documents and
+    # is not rewritten when the behaviour changes later (CLAUDE.md: product-behaviour
+    # history in CHANGELOG.md is legitimate). The grant was narrowed after those entries
+    # shipped, so the correct fix was an EXCLUDED_HISTORICAL_LEDGER_SECTIONS entry per
+    # affected release section rather than an edit to the entries — which is what the
+    # previous version of this comment said to do, and is what was done.
     "CHANGELOG.md",
 )
 
 # Sections whose prose describes the past and is not a statement of current fact.
-# `<path>: <markdown heading>` — bounded to ONE section: the region removed runs from
-# the heading to the next same-level heading, not to end of file.
+# `<path>: <markdown heading>` — bounded to ONE section each: the region removed runs
+# from the heading to the next same-level heading, not to end of file.
+#
+# One entry per release section that carries a claim, rather than one entry for
+# `CHANGELOG.md` as a whole, so a claim in a *new* entry still fails. That is the
+# difference between excluding the history and switching the gate off for the file.
 EXCLUDED_HISTORICAL_LEDGER_SECTIONS = {
-    "security/threat-modeling/README.md": "## Version History",
+    "security/threat-modeling/README.md": ("## Version History",),
+    # The 0.6.10 release notes record the eighteen operations tightened to ANY_GROUP and
+    # state, correctly for that release, that the Identity Pool role still granted the
+    # document buckets directly. #1033 is what changed that, two releases later.
+    "CHANGELOG.md": ("## [0.6.10]",),
 }
 
 # `on the <enum> bucket(s)`, with EVERY run of whitespace as `\s+` — including the one
@@ -205,21 +239,20 @@ def _tracked_markdown() -> list:
     return [p for p in out.split("\0") if p]
 
 
-def excluded_region(rel: str, text: str):
-    """``(start, end)`` of the historical section to skip, or ``None``.
+def excluded_region(rel: str, text: str, heading: str):
+    """``(start, end)`` of one registered historical section, or ``None``.
 
     The end is the next same-level (``## ``) heading, so the exclusion covers **one
     section** rather than truncating the file. Truncating is what the first version did,
     and it made every claim after the heading invisible — harmless only for as long as
     the excluded section happens to be last, which is not a property anyone maintains.
+    It matters more now that ``CHANGELOG.md`` has an entry: that file's excluded section
+    has 200-odd sections after it, every one of which must still be read.
 
     The heading is located with a line-anchored search, not ``str.find``: the latter is
     a substring search, so the heading text quoted inside an earlier paragraph would
     move the exclusion hundreds of lines earlier with nothing to say so.
     """
-    heading = EXCLUDED_HISTORICAL_LEDGER_SECTIONS.get(rel)
-    if heading is None:
-        return None
     start_match = re.search(rf"^{re.escape(heading)}\s*$", text, re.M)
     if start_match is None:
         return None
@@ -228,17 +261,31 @@ def excluded_region(rel: str, text: str):
     return start_match.start(), end
 
 
-def _strip_historical(rel: str, text: str) -> str:
-    """``text`` with the registered historical section blanked out.
+def excluded_regions(rel: str, text: str) -> list:
+    """Every registered historical section in one document.
 
-    Replaced with newlines rather than deleted so that every line number this module
+    A tuple of headings per path rather than one, so a second release section can be
+    excluded without excluding the file. A heading that is no longer present yields
+    nothing here and is caught by
+    :func:`test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file`.
+    """
+    regions = []
+    for heading in EXCLUDED_HISTORICAL_LEDGER_SECTIONS.get(rel, ()):
+        region = excluded_region(rel, text, heading)
+        if region is not None:
+            regions.append(region)
+    return regions
+
+
+def _strip_historical(rel: str, text: str) -> str:
+    """``text`` with every registered historical section blanked out.
+
+    Replaced with spaces rather than deleted so that every line number this module
     reports still matches the file a reader will open.
     """
-    region = excluded_region(rel, text)
-    if region is None:
-        return text
-    start, end = region
-    return text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
+    for start, end in sorted(excluded_regions(rel, text), reverse=True):
+        text = text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
+    return text
 
 
 def _enum_to_buckets(enum: str):
@@ -286,7 +333,7 @@ class Claim:
 
 def claims(rel: str, *, include_historical: bool = False) -> list:
     """Every readable grant claim in one document."""
-    actions = granted_s3_actions()
+    actions = claim_actions()
     full = (REPO_ROOT / rel).read_text()
     text = full if include_historical else _strip_historical(rel, full)
     found = []
@@ -318,23 +365,43 @@ def claims(rel: str, *, include_historical: bool = False) -> list:
     return found
 
 
-ALL_REGISTERED = DOCUMENTS_STATING_THE_GRANT + DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY
+ALL_REGISTERED = DOCUMENTS_ALLOWED_A_HISTORICAL_CLAIM
 
 
+# --------------------------------------------------------------------------- #
 # --------------------------------------------------------------------------- #
 # the universe
 # --------------------------------------------------------------------------- #
-def test_the_policy_names_at_least_one_bucket_and_one_action():
-    """Otherwise every comparison below is against an empty set."""
-    assert browser_readable_buckets(), (
-        f"{ROLE} names no bucket, so this gate would assert that the documents "
-        "enumerate nothing. Either the browser no longer reads S3 directly — in which "
-        "case these documents need rewriting, not this gate relaxing — or the policy "
-        "parser has stopped finding its subject."
+def test_the_role_grants_no_s3_so_every_claim_is_stale():
+    """The premise the whole file rests on, read from the template.
+
+    If this fails the grant came back, ``test_browser_s3_grants.py`` is the gate that
+    says so, and the documents below are no longer wrong — so fix that one first
+    rather than relaxing anything here.
+    """
+    assert not browser_readable_buckets(), (
+        f"{ROLE} names buckets again ({sorted(browser_readable_buckets())}), so a "
+        "sentence enumerating them is no longer a stale claim and this file is "
+        "asserting the wrong thing. See test_browser_s3_grants.py and #1033."
     )
-    assert granted_s3_actions(), (
-        f"{ROLE} grants no s3: action, so no sentence can satisfy the granted-action "
-        "condition and this gate would read no claims at all."
+    assert not granted_s3_actions(), (
+        f"{ROLE} grants S3 actions again ({sorted(granted_s3_actions())}). Same."
+    )
+
+
+def test_the_action_vocabulary_is_not_empty():
+    """Otherwise condition 2 is unsatisfiable and the recognizer reads nothing.
+
+    This is the assertion that replaces "the policy grants at least one action". The
+    derived set is empty by design now; what must not be empty is the vocabulary the
+    recognizer compares against, because an inert recognizer and a clean tree are
+    indistinguishable from the outside.
+    """
+    assert claim_actions(), "claim_actions() is empty, so no sentence can be a claim"
+    assert HISTORICAL_OBJECT_READ_ACTIONS <= claim_actions()
+    assert "s3:PutObject" not in claim_actions(), (
+        "a write action in the vocabulary makes 's3:PutObject writes land on the "
+        "Logging bucket' read as a claim about this role, which it is not"
     )
 
 
@@ -353,126 +420,62 @@ def test_the_markdown_universe_is_discovered():
         )
 
 
-def test_no_document_states_the_grant_outside_the_registered_set():
-    """Universe closure: every claim-bearing document is classified.
+# --------------------------------------------------------------------------- #
+# the comparison -- now one direction, over the whole tree
+# --------------------------------------------------------------------------- #
+def test_no_tracked_document_states_the_grant():
+    """The gate. Every tracked ``.md``, outside the registered historical sections.
 
-    This is what makes the registered lists trustworthy at all. Without it the gate
-    covers whatever someone remembered to list, and what it missed was ``docs/rbac.md``
-    — the user-facing statement of the boundary, and the file this change edited.
+    This replaces both of the old per-document comparisons. With the role granting
+    nothing there is no "names a bucket the policy does not grant" versus "omits one it
+    does" — every positive claim is stale, so the question is simply whether any
+    document still makes one.
+
+    Scope is every tracked ``.md`` rather than a registered subset, which is the
+    property that made the previous version trustworthy: an authored list silently
+    omitted ``docs/rbac.md``, the user-facing statement of the boundary and the one
+    document the change at the time actually edited.
     """
-    unregistered = {}
+    offenders = {}
     for rel in _tracked_markdown():
-        if rel in ALL_REGISTERED:
-            continue
         found = claims(rel)
         if found:
-            unregistered[rel] = [(c.line, c.enum) for c in found]
+            offenders[rel] = [(c.line, c.enum) for c in found]
 
-    assert not unregistered, (
-        "these tracked documents state " + ROLE + "'s S3 grant but are in neither "
-        "DOCUMENTS_STATING_THE_GRANT nor DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY, so "
-        f"nothing compared them against the template: {unregistered}. Add each to the "
-        "first list (it will then be compared, and required to keep stating the "
-        "grant), or to the second if its only enumeration is historical."
-    )
-
-
-# --------------------------------------------------------------------------- #
-# the comparison
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("rel", DOCUMENTS_STATING_THE_GRANT)
-def test_every_registered_document_states_the_grant(rel):
-    """Non-vacuity, per document.
-
-    Without this the gate passes for a document whose claim it can no longer find —
-    indistinguishable, from the outside, from a document that agrees.
-    """
-    assert claims(rel), (
-        f"{rel} is registered as stating {ROLE}'s S3 grant, but no claim was found in "
-        "it. A claim needs an enumeration of declared bucket names, one of the role's "
-        f"granted actions ({sorted(granted_s3_actions())}) in the same sentence, no "
-        "negation in that sentence, and the role named within "
-        f"{_CONTEXT_CHARS} characters. Either the wording changed so this gate can no "
-        "longer read it, or the document stopped describing the grant — in which case "
-        "remove it from DOCUMENTS_STATING_THE_GRANT deliberately."
-    )
-
-
-@pytest.mark.parametrize("rel", ALL_REGISTERED)
-def test_no_claim_names_a_bucket_the_policy_does_not_grant(rel):
-    """The direction the defect travels in, asserted for every claim.
-
-    A document naming a bucket the template does not grant is asserting a boundary the
-    deployment does not implement. This is the blocker this gate exists for: the stale
-    three-bucket enumeration a conflicting merge reintroduces.
-    """
-    granted = browser_readable_buckets()
-    for claim in claims(rel):
-        extra = sorted(claim.buckets - granted)
-        assert not extra, (
-            f"{rel}:{claim.line} says {ROLE} grants S3 on the {claim.enum!r} "
-            f"buckets, naming {extra}, which template.yaml does NOT grant it "
-            f"(it grants {sorted(granted)}).\n"
-            "This document is read as a statement of current fact. Fix the prose to "
-            "match the template, or the template to match the prose — they cannot "
-            "disagree. If you are resolving a merge conflict, the template side is "
-            "usually the one that auto-merged and the prose side is the stale one.\n"
-            "If the sentence is *denying* that the role has that bucket, phrase the "
-            "denial before the enumeration ('nothing on the X bucket') so it reads as "
-            "the denial it is."
-        )
-
-
-@pytest.mark.parametrize("rel", ALL_REGISTERED)
-def test_an_exhaustive_enumeration_names_every_granted_bucket(rel):
-    """The other direction, for claims that read as a complete list only.
-
-    Applied to multi-bucket enumerations, not to every claim. A deliberately narrow
-    sentence — ``reporting-analytics.md`` on ``s3:GetObjectVersion`` and the Output
-    bucket — is true and says nothing about the other buckets; asserting set equality
-    on it reported correct prose as a disagreement.
-    """
-    granted = browser_readable_buckets()
-    for claim in claims(rel):
-        if not claim.exhaustive:
-            continue
-        missing = sorted(granted - claim.buckets)
-        assert not missing, (
-            f"{rel}:{claim.line} enumerates the {claim.enum!r} buckets, which reads as "
-            f"the complete list, but template.yaml also grants {missing}. Either name "
-            "them, or narrow the sentence to the single bucket it is about."
-        )
-
-
-def test_the_exhaustive_direction_is_not_vacuous():
-    """At least one live claim must be exhaustive, or the check above tests nothing."""
-    exhaustive = [c for rel in ALL_REGISTERED for c in claims(rel) if c.exhaustive]
-    assert exhaustive, (
-        "no claim in the corpus reads as an exhaustive enumeration, so "
-        "test_an_exhaustive_enumeration_names_every_granted_bucket asserts nothing. "
-        "Either the prose stopped enumerating the grant, or `exhaustive` no longer "
-        "recognises the form it is written in."
+    assert not offenders, (
+        f"these documents state that {ROLE} grants S3 on named buckets, and it grants "
+        f"S3 on nothing: {offenders}.\n"
+        "Each is read as a statement of current fact. The browser's own credentials "
+        "reach no bucket since the document read path moved behind "
+        "getFileContents / getFilePresignedUrl / getFilePresignedUrls (#1033), so the "
+        "sentence has to be rewritten rather than the gate relaxed.\n"
+        "⚠️ If you are writing the TRUE sentence and it is being read as a claim, put "
+        "the negator immediately before the enumeration — 'nothing on the Input and "
+        "Output buckets' — rather than at the start of the clause. The negation span "
+        "is deliberately short; see _NEGATION_SPAN_CHARS.\n"
+        "If the document is an append-only ledger whose entry describes a past "
+        "release, bound that ONE section in "
+        "EXCLUDED_HISTORICAL_LEDGER_SECTIONS instead of editing the entry, and add the "
+        "file to DOCUMENTS_ALLOWED_A_HISTORICAL_CLAIM with one member's worth of "
+        "reason."
     )
 
 
 # --------------------------------------------------------------------------- #
 # what the reader picks up
 # --------------------------------------------------------------------------- #
-# How many claims each registered document carries, and how many of those read as
-# exhaustive. Pinned because the recognizer is a heuristic over prose: a count that
-# GREW means it started reading sentences that are not statements of this grant, and one
-# that SHRANK means a claim went out of its reach — which is how this gate goes quiet
-# while still passing.
-EXPECTED_CLAIM_COUNTS = {
-    "docs/rbac.md": (1, 1),
-    "docs/well-architected.md": (1, 1),
-    "docs/govcloud-architecture.md": (1, 1),
-    "docs/aws-services-and-roles.md": (1, 1),
-    "security/threat-modeling/feature-threats/rbac-authentication.md": (1, 1),
-    "security/threat-modeling/feature-threats/web-ui.md": (1, 1),
-    "security/threat-modeling/feature-threats/reporting-analytics.md": (1, 0),
-    "docs/planning/identity-pool-group-scoping-plan.md": (1, 1),
-    "security/threat-modeling/README.md": (0, 0),
+# How many claims each registered document carries with its historical sections
+# INCLUDED, and how many of those read as exhaustive. Pinned because the recognizer is
+# a heuristic over prose: a count that GREW means it started reading sentences that are
+# not statements of this grant, and one that SHRANK means a claim went out of its reach
+# — which is how this gate goes quiet while still passing.
+#
+# These are the only documents with a claim to count, because every other document in
+# the tree is required to have none (see test_no_tracked_document_states_the_grant), and
+# that assertion is the one that would otherwise be silently satisfied by a broken
+# reader. So this inventory is doing more work than it used to, not less.
+EXPECTED_CLAIM_COUNTS_WITH_HISTORY = {
+    "security/threat-modeling/README.md": (1, 0),
     "CHANGELOG.md": (1, 1),
 }
 
@@ -480,34 +483,78 @@ EXPECTED_CLAIM_COUNTS = {
 def test_the_claim_inventory_is_exactly_the_expected_set():
     """What the reader picks up, pinned in both directions and per claim kind."""
     actual = {
-        rel: (len(claims(rel)), sum(1 for c in claims(rel) if c.exhaustive))
+        rel: (
+            len(claims(rel, include_historical=True)),
+            sum(1 for c in claims(rel, include_historical=True) if c.exhaustive),
+        )
         for rel in ALL_REGISTERED
     }
-    assert actual == EXPECTED_CLAIM_COUNTS, (
+    assert actual == EXPECTED_CLAIM_COUNTS_WITH_HISTORY, (
         "the set of grant claims this gate reads has changed.\n"
-        f"  expected (total, exhaustive): {EXPECTED_CLAIM_COUNTS}\n"
+        f"  expected (total, exhaustive): {EXPECTED_CLAIM_COUNTS_WITH_HISTORY}\n"
         f"  actual:                       {actual}\n"
-        "A total of 0 means a grant sentence is no longer read. A drop in the "
-        "exhaustive count means a complete enumeration now reads as a narrow one, "
-        "which silently stops the missing-bucket direction applying to it."
+        "A total of 0 means the historical claim this exclusion exists for is no "
+        "longer read, which makes the exclusion dead config — see "
+        "test_the_historical_ledger_exclusion_is_still_load_bearing."
     )
+
+
+def test_every_registered_document_is_fully_covered_by_its_exclusions():
+    """A registered document must carry NO claim once its exclusions are applied.
+
+    Being on :data:`DOCUMENTS_ALLOWED_A_HISTORICAL_CLAIM` is permission to have a
+    *historical* claim, not permission to have a claim. A document whose exclusion does
+    not cover its claim would otherwise be reported by
+    :func:`test_no_tracked_document_states_the_grant` — this says the same thing with a
+    message that names the exclusion, because that is the thing to fix.
+    """
+    for rel in ALL_REGISTERED:
+        found = claims(rel)
+        assert not found, (
+            f"{rel} is registered as carrying only historical claims, but "
+            f"{[(c.line, c.enum) for c in found]} fall OUTSIDE its registered "
+            f"sections ({EXCLUDED_HISTORICAL_LEDGER_SECTIONS.get(rel, ())}). Either "
+            "bound the section that holds them, or rewrite them as the statements of "
+            "current fact the rest of the tree has to make."
+        )
 
 
 # --------------------------------------------------------------------------- #
 # the historical-ledger exclusion
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("rel", sorted(EXCLUDED_HISTORICAL_LEDGER_SECTIONS))
-def test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file(rel):
+def _registered_sections() -> list:
+    """``(path, heading)`` for every registered historical section.
+
+    A function rather than a module constant so the three suites below parametrise
+    over the registry itself, which is where the decision is recorded. The three
+    assertions are deliberately separate rather than one test with three parts: they
+    fail for different reasons and the remedies differ (re-point the heading, fix the
+    region's end, delete the dead entry).
+    """
+    return [
+        (rel, heading)
+        for rel, headings in sorted(EXCLUDED_HISTORICAL_LEDGER_SECTIONS.items())
+        for heading in headings
+    ]
+
+
+_SECTION_IDS = [f"{r}:{h}" for r, h in _registered_sections()]
+
+
+@pytest.mark.parametrize("rel,heading", _registered_sections(), ids=_SECTION_IDS)
+def test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file(rel, heading):
     """F3: the exclusion's END is asserted, not assumed.
 
     The registry entry and the docstring both claim the exclusion is bounded to one
     section so that a claim anywhere else in the document is still read. That is a
-    property of where the region ends, and it held only accidentally while the excluded
-    section happened to be the last one in the file.
+    property of where the region ends, and for the threat-model README it held only
+    accidentally while the excluded section happened to be the last one in the file.
+    ``CHANGELOG.md`` is the case where it cannot hold accidentally: its excluded
+    release section has every older release after it and the whole ``[Unreleased]``
+    section before it, and both must still be read.
     """
-    heading = EXCLUDED_HISTORICAL_LEDGER_SECTIONS[rel]
     text = (REPO_ROOT / rel).read_text()
-    region = excluded_region(rel, text)
+    region = excluded_region(rel, text, heading)
     assert region is not None, (
         f"{rel} no longer contains a line equal to {heading!r}. Remove the exclusion, "
         "or point it at the section that replaced it."
@@ -518,22 +565,22 @@ def test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file(rel):
     # The region ends at the next same-level heading, or at end of file when the
     # excluded section is last. Either way, everything OUTSIDE it is still read —
     # which is the property the registry entry claims.
-    tail = text[end:]
-    assert end == len(text) or tail.startswith("## "), (
-        f"the excluded region for {rel} ends at offset {end} on "
-        f"{tail[:40]!r}, which is neither end-of-file nor a '## ' heading"
+    following = text[end:]
+    assert end == len(text) or following.startswith("## "), (
+        f"the excluded region for {rel}:{heading} ends at offset {end} on "
+        f"{following[:40]!r}, which is neither end-of-file nor a '## ' heading"
     )
 
     # The end must be COMPUTED from a heading scan, not defaulted to end-of-file. That
-    # distinction is invisible while the excluded section is last — which it is — so it
-    # is asserted against text that has a section after it. The region's end must move
-    # to the new heading and stop there.
+    # distinction is invisible while the excluded section is last, so it is asserted
+    # against text that has a section after it. The region's end must move to the new
+    # heading and stop there.
     #
-    # Deliberately not a size assertion: the excluded section is legitimately 52% of
-    # this file, because each revision row is a paragraph. "Large" is not the defect;
-    # "unbounded" is.
+    # Deliberately not a size assertion: the threat model's excluded section is
+    # legitimately 52% of its file, because each revision row is a paragraph. "Large"
+    # is not the defect; "unbounded" is.
     appended = text + "\n## A Later Section\n\nBody.\n"
-    later = excluded_region(rel, appended)
+    later = excluded_region(rel, appended, heading)
     assert later is not None
     later_start, later_end = later
     assert later_start == start, "the region's start must not depend on what follows it"
@@ -542,26 +589,25 @@ def test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file(rel):
         "it truncates rather than bounding, and every claim below the heading is "
         "invisible to this gate"
     )
-    assert appended[later_end:].startswith("## A Later Section"), (
-        f"the region ends at {appended[later_end : later_end + 40]!r} rather than at "
-        "the heading that follows it"
-    )
 
 
-def test_a_claim_after_the_excluded_section_would_still_be_read():
+@pytest.mark.parametrize("rel,heading", _registered_sections(), ids=_SECTION_IDS)
+def test_a_claim_after_the_excluded_section_would_still_be_read(rel, heading):
     """The bounded-region property, exercised rather than inferred.
 
     Appending a section after the excluded one and confirming the reader sees it is the
-    only way to distinguish "removes one section" from "truncates at the heading" — the
-    two are indistinguishable while the excluded section is last, which it is.
+    only way to distinguish "removes one section" from "truncates at the heading".
+    Driven per exclusion, not once for the first one: the two entries differ in exactly
+    the way that matters — one excludes the last section of its file and the other
+    excludes a section in the middle — so a single-entry probe would exercise whichever
+    one happened to sort first.
     """
-    rel = next(iter(EXCLUDED_HISTORICAL_LEDGER_SECTIONS))
     original = (REPO_ROOT / rel).read_text()
-    actions = sorted(granted_s3_actions())
+    action = sorted(claim_actions())[0]
     appended = (
         original
         + "\n## Appended By A Test\n\n"
-        + f"`{ROLE}` grants `{actions[0]}` on the Input, Output and Configuration "
+        + f"`{ROLE}` grants `{action}` on the Input, Output and Configuration "
         + "buckets.\n"
     )
     stripped = _strip_historical(rel, appended)
@@ -576,31 +622,50 @@ def test_a_claim_after_the_excluded_section_would_still_be_read():
     )
 
 
-def test_the_historical_ledger_exclusion_is_still_load_bearing(
-    rel=next(iter(EXCLUDED_HISTORICAL_LEDGER_SECTIONS)),
-):
+@pytest.mark.parametrize("rel,heading", _registered_sections(), ids=_SECTION_IDS)
+def test_the_historical_ledger_exclusion_is_still_load_bearing(rel, heading):
     """A dead exclusion pre-exempts whatever next occupies the path.
 
-    The excluded section must still contain a claim the gate would otherwise flag. When
-    it stops doing so — because the ledger row was reworded, or the grant changed to
-    match what the row describes — this fails and the exclusion should be removed
-    rather than kept on trust.
+    Each exclusion must still shield a claim the gate would otherwise flag. When one
+    stops doing so — because the ledger row was reworded, or the release section was
+    trimmed — this fails and that exclusion should be removed rather than kept on
+    trust. Parametrised per entry: the previous version read
+    ``next(iter(...))`` as a default argument, so with two entries it would have
+    checked one of them and reported on neither.
     """
-    granted = browser_readable_buckets()
+    text = (REPO_ROOT / rel).read_text()
+    region = excluded_region(rel, text, heading)
+    assert region is not None
+    start, end = region
+    inside = text[start:end]
+
+    # The claim must be inside THIS region, which is what makes the entry load-bearing
+    # rather than some other entry on the same file carrying it. Located by comparing
+    # the claim's character offset against the region, not by re-running the reader on
+    # a slice: a slice loses the preceding context the role-attribution window needs.
     with_history = claims(rel, include_historical=True)
-    without_history = claims(rel)
-    keys = {(c.line, c.enum) for c in without_history}
-    shielded = [c for c in with_history if (c.line, c.enum) not in keys]
+    shielded = [
+        c
+        for c in with_history
+        if start
+        <= sum(len(line) for line in text.splitlines(keepends=True)[: c.line - 1])
+        < end
+    ]
     assert shielded, (
-        f"the historical-section exclusion for {rel} shields nothing — no claim inside "
-        "it is one this gate would otherwise read — so it is dead config that "
-        "pre-exempts whatever is written there next. Delete it."
+        f"the exclusion {rel}:{heading} shields no claim this gate would otherwise "
+        f"read (the file's claims are at lines {[c.line for c in with_history]}, the "
+        f"region covers offsets {start}-{end}), so it is dead config that pre-exempts "
+        "whatever is written there next. Delete it."
     )
+    # And the shielded claim really is stale, i.e. the exclusion is still *needed*.
+    # With the role granting nothing, any claim qualifies — asserted anyway so that if
+    # the grant ever comes back this check does not quietly become vacuous.
+    granted = browser_readable_buckets()
     assert any(c.buckets - granted for c in shielded), (
-        f"every claim the exclusion shields in {rel} now names only buckets "
-        f"template.yaml grants ({sorted(granted)}), so the exclusion is no longer "
-        "needed. Delete it and let the section be compared like the rest of the file."
+        f"every claim {rel}:{heading} shields now names only buckets template.yaml "
+        f"grants ({sorted(granted)}), so the exclusion is no longer needed"
     )
+    assert heading in inside
 
 
 # --------------------------------------------------------------------------- #
@@ -638,14 +703,15 @@ def _read_probe(body: str) -> list:
 
 
 def test_the_reader_does_not_fire_on_true_sentences_near_the_grant():
-    """The four shapes that are true prose and must not read as claims.
+    """The shapes that are true prose and must not read as claims.
 
     Each of these appeared, or could appear, in a document that legitimately describes
     this role. A gate that fails on them gets weakened, which is the outcome this whole
-    file is trying to avoid — so they are pinned as non-claims.
+    file is trying to avoid — so they are pinned as non-claims. The last two are the
+    ones this change made load-bearing: they are the shape every one of the eight
+    rewritten documents now uses.
     """
-    actions = sorted(granted_s3_actions())
-    read_action = actions[0]
+    read_action = sorted(claim_actions())[0]
 
     # 1. A negated clause inside the grant sentence. TRUE, and the opposite of a claim.
     negated = _read_probe(
@@ -683,22 +749,54 @@ def test_the_reader_does_not_fire_on_true_sentences_near_the_grant():
         "a sentence about an action this role is not granted was read as a claim "
         f"about its grant: {write}"
     )
-    assert "s3:PutObject" not in granted_s3_actions()
+
+    # 5. THE TRUE SENTENCE, in the three spellings the rewritten documents use. Every
+    # one of these says the role reaches no bucket, and every one of them cites an
+    # action and names buckets — so if the negation rule did not hold, the gate would
+    # fail on the correct prose in all eight documents at once and the obvious remedy
+    # would be to weaken it.
+    for body in (
+        f"`{ROLE}` grants `{read_action}` on **nothing** — not on the Input and "
+        "Output buckets, and not on any other.\n",
+        f"`{ROLE}` holds `{read_action}` on no bucket at all: nothing on the Input "
+        "and Output buckets, which it named until the read path moved behind a "
+        "resolver.\n",
+        f"`{ROLE}` carries no S3 statement, so `{read_action}` is granted neither "
+        "on the Input and Output buckets nor anywhere else.\n",
+    ):
+        assert not _read_probe(body), (
+            "a TRUE sentence stating the role grants nothing was read as a claim, so "
+            f"the gate fails on the correct prose: {body!r}"
+        )
 
 
 def test_the_reader_does_fire_on_the_stale_enumeration():
-    """The counterfactual: the exact wording a bad merge reintroduces IS a claim."""
-    actions = sorted(granted_s3_actions())
-    stale = _read_probe(
-        f"The `{ROLE}` authenticated role grants `{actions[0]}` on the Input, Output "
-        "and Configuration buckets.\n"
-    )
-    assert len(stale) == 1, stale
-    assert stale[0].buckets - browser_readable_buckets() == {"ConfigurationBucket"}, (
-        "the stale three-bucket enumeration no longer reads as naming an ungranted "
-        "bucket, so this gate would not catch it"
-    )
-    assert stale[0].exhaustive
+    """The counterfactual: the exact wording a bad merge reintroduces IS a claim.
+
+    Both spellings, because both are now stale: the three-bucket one that was already
+    wrong, and the two-bucket one that was correct until #1033. The second is the one
+    this change creates, and it is the one a conflicting merge will reintroduce from
+    eight different files.
+    """
+    action = sorted(claim_actions())[0]
+    for enum, expected in (
+        (
+            "Input, Output and Configuration",
+            {"InputBucket", "OutputBucket", "ConfigurationBucket"},
+        ),
+        ("Input and Output", {"InputBucket", "OutputBucket"}),
+    ):
+        stale = _read_probe(
+            f"The `{ROLE}` authenticated role grants `{action}` on the {enum} "
+            "buckets.\n"
+        )
+        assert len(stale) == 1, (enum, stale)
+        assert stale[0].buckets == expected
+        assert stale[0].buckets - browser_readable_buckets() == expected, (
+            f"the {enum!r} enumeration no longer reads as naming an ungranted bucket, "
+            "so this gate would not catch it"
+        )
+        assert stale[0].exhaustive
 
 
 # --------------------------------------------------------------------------- #
@@ -708,9 +806,16 @@ def test_no_tracked_document_carries_the_stale_enumeration_as_a_literal():
     """A pattern-independent sweep over EVERY tracked markdown file.
 
     The reader above can be defeated by a rewording it does not match; this cannot. It
-    covers the whole universe rather than the registered subset — the earlier version
+    covers the whole universe rather than the registered subset — an earlier version
     iterated the registered list, so the document the gate was missing was also the
     document this sweep was missing.
+
+    ⚠️ Only the three-bucket literal is swept, and the two-bucket one is deliberately
+    NOT. "Input and Output" is ordinary English about these two buckets — they hold the
+    documents, so most of the corpus mentions them together — and a literal sweep for it
+    would report scores of true sentences. What distinguishes a claim from a mention is
+    the action and the role in the same sentence, which is the reader's job, and this
+    sweep exists only for the one phrase that has no innocent reading.
     """
     granted = browser_readable_buckets()
     if "ConfigurationBucket" in granted:
@@ -728,20 +833,23 @@ def test_no_tracked_document_carries_the_stale_enumeration_as_a_literal():
 
     assert not offenders, (
         f"these documents name the Configuration bucket in {ROLE}'s grant outside "
-        f"their historical sections, but the role grants {sorted(granted)}: "
+        f"their historical sections, but the role grants {sorted(granted) or 'nothing'}: "
         f"{offenders}. This is the exact stale wording a merge reintroduces."
     )
 
 
-def test_the_two_document_lists_are_disjoint_and_the_exclusions_belong_to_them():
+def test_the_exclusions_belong_to_registered_documents():
     """Universe closure, structurally."""
-    overlap = set(DOCUMENTS_STATING_THE_GRANT) & set(
-        DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY
-    )
-    assert not overlap, overlap
     for rel in EXCLUDED_HISTORICAL_LEDGER_SECTIONS:
         assert rel in ALL_REGISTERED, (
-            f"{rel} has a historical-section exclusion but is not a registered "
-            "document, so nothing reads the rest of it"
+            f"{rel} has a historical-section exclusion but is not in "
+            "DOCUMENTS_ALLOWED_A_HISTORICAL_CLAIM, so nothing records why it is "
+            "allowed a claim at all"
+        )
+    for rel in ALL_REGISTERED:
+        assert EXCLUDED_HISTORICAL_LEDGER_SECTIONS.get(rel), (
+            f"{rel} is allowed a historical claim but registers no section, so the "
+            "claim is not bounded to anything — it would be reported by "
+            "test_every_registered_document_is_fully_covered_by_its_exclusions"
         )
     assert Path(REPO_ROOT / "template.yaml").is_file()

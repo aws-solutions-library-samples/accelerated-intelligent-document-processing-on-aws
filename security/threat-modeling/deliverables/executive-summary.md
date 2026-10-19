@@ -31,7 +31,7 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 | **Lambda Functions** | 115+ |
 | **DynamoDB Tables** | 12 |
 | **S3 Buckets** | 13 |
-| **UI API operations** | 123 (single `POST /op/{field}` route) |
+| **UI API operations** | 124 (single `POST /op/{field}` route) |
 | **Processing Modes** | 2 (Pipeline, BDA) |
 | **RBAC Roles** | 5 (Admin, Author, Reviewer, Annotator, Viewer) + separate M2M OAuth realm for the Jobs API |
 | **UI hosting modes** | 2 (CloudFront, API Gateway S3 proxy) |
@@ -66,18 +66,20 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 | Status | Count | Percentage |
 |--------|-------|------------|
 | **Mitigated** | 63 | 63% |
-| **Partially Mitigated** | 28 | 28% |
-| **Open** (real gap, needs work) | **4** | **4%** |
+| **Partially Mitigated** | 29 | 29% |
+| **Open** (real gap, needs work) | **3** | **3%** |
 | **Accepted** | 4 | 4% |
 
-The four **Open** items are CHAT.T03 and CHAT.T06 (the chat streaming Function URL
+The three **Open** items are CHAT.T03 and CHAT.T06 (the chat streaming Function URL
 enforces neither RBAC group nor session ownership, and on the deployed transport the
-turn is still attributed to a client-supplied caller identity), UI.T06 (object reads
-are not scoped per document, so any authenticated user holding a group can read any
-document's bytes by key — and the document buckets are readable directly by every
-authenticated user irrespective of group), and JOB.T02 (the Jobs API sits outside the
-automated authorization harness). UI.T07 (no CSP in API-Gateway/GovCloud hosting
-mode) was closed in v0.6.x. All four are code/config changes; see
+turn is still attributed to a client-supplied caller identity) and JOB.T02 (the Jobs
+API sits outside the automated authorization harness). UI.T07 (no CSP in
+API-Gateway/GovCloud hosting mode) was closed in v0.6.x, and UI.T06 is now
+**Partially Mitigated**: the browser's Identity Pool role grants no S3, so every
+document read is an API call behind a group floor, a fail-closed bucket allow-list
+and a per-document configuration-profile check — what remains is that the product
+records no document owner, so a caller whose profile scope is unset reads any
+document through the resolver. All three Open items are code/config changes; see
 [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
 
 **What changed since the 0.6.9 review.** Five issues this summary previously
@@ -123,7 +125,7 @@ The system's high configurability (prompts, schemas, model selection, agent tool
 
 RBAC is enforced **entirely inside the resolver Lambdas** — the API Gateway Cognito authorizer only authenticates the JWT and performs no group evaluation. Any resolver missing its server-side check exposes a privileged operation to every authenticated user (AUTH.T03, AUTH.T08). The system is single-tenant per deployment.
 
-**Mitigations**: Per-operation resolver authorization for all 123 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
+**Mitigations**: Per-operation resolver authorization for all 124 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
 
 The harness is doing work the platform is not: the dispatcher itself does not
 default-deny — it resolves any field it can map, and the one dispatcher-level
@@ -152,12 +154,14 @@ in issue #928** (AUTH.T16).
 4. **Make hook failure containment uniform (HOOK.T07)** — `onError: fail` is
    terminal at the preprocessing hook point only; a deployment relying on a hook
    as a gate elsewhere does not have that guarantee (**issue #919**, pending)
-5. **Scope object reads to the document's owner (UI.T06)** — the two per-user
-   scope axes are enforced on the key, but documents have no owner to scope
-   against, so any authenticated user holding a group can read any document by
-   key — and on the document buckets they can do it with the Identity Pool
-   credentials the browser already holds, with no API call in the path
-   (**issue #1033**, pending)
+5. **Give documents an owner to scope reads against (UI.T06)** — every document
+   read is now an API call under a group floor, a fail-closed bucket allow-list and
+   three caller-derived scope checks, one of them the owning document's
+   configuration profile; the browser's Identity Pool role grants no S3, so there is
+   no path around them. What is missing is an ownership or tenancy attribute: the
+   profile axis narrows a *scoped* caller only, and scoping is opt-in per user, so a
+   caller whose scope is unset still reads any document by key
+   (**issue #1033**, partial)
 6. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
    installed extension UI code runs unsandboxed in the host origin with the user's session
 7. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration

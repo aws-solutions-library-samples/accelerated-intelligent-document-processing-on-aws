@@ -97,7 +97,7 @@
 | SELL.T08 | Unavailability of the Activation Service Locks Out Paying Customers | **6** | Seller Entitlement Service | Partially Mitigated |
 | UI.T01 | Cross-Site Scripting (XSS) | **6** | Web UI | Partially Mitigated |
 | UI.T03 | UI API Abuse (REST dispatcher) | **6** | Web UI | Mitigated |
-| UI.T06 | Object Reads Are Not Scoped Per Document | **6** | Web UI | **Open** (fix pending, #1033) |
+| UI.T06 | Object Reads Carry No Document Ownership Axis | **6** | Web UI | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
 
 ### Medium Risk (Score 3–5)
 
@@ -218,13 +218,18 @@ than the threat total.
 | Status | Count | Description |
 |--------|-------|-------------|
 | **Mitigated** | 63 | Controls implemented and verified |
-| **Partially Mitigated** | 28 | Some controls in place, additional measures recommended |
-| **Open** | 4 | **Real gap with no effective control today — see the open-items list below** |
+| **Partially Mitigated** | 29 | Some controls in place, additional measures recommended |
+| **Open** | 3 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
-#### Open items (no effective control today)
+#### Open items
 
-A fix in flight is **not** a control. Where a change is open against a gap the
+These six entries are not six open gaps. **Three are the model's `Open` threats** —
+no effective control today (CHAT.T03, CHAT.T06, JOB.T02). **Two are `Partially
+Mitigated` with a named residual** (SDK.T05, boundary attached and `iam:*`
+unchanged; UI.T06, no document-ownership axis). **One is `Mitigated`** (HOOK.T07),
+kept here as the record of what its fix covered rather than as an outstanding item.
+A fix still in flight is **not** a control: where a change is open against a gap the
 issue is named, but the status stays *Open* until that change merges.
 
 | Threat ID | Threat | Component | Fix in flight |
@@ -234,7 +239,7 @@ issue is named, but the status stays *Open* until that change merges.
 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | Lambda Hooks | #919 |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | Jobs API | — |
 | SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | SDK/CLI | #927 |
-| UI.T06 | Object Reads Are Not Scoped Per Document | Web UI | — |
+| UI.T06 | Object reads carry no document **ownership** axis (the profile axis is enforced) | Web UI | #1033 — partial, now Partially Mitigated |
 
 ## 4. Top Priority Threats
 
@@ -253,7 +258,7 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 9 | SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | 8 | Mitigated |
 | 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
 | 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Mitigated** (#919 closed) |
-| 12 | UI.T06 | Object Reads Are Not Scoped Per Document | 6 | **Open** (fix pending, #1033) |
+| 12 | UI.T06 | Object Reads Carry No Document Ownership Axis | 6 | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
 | 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
 | 14 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
 | 15 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
@@ -279,15 +284,19 @@ effort-to-value:
    merges. The prerequisite neither issue currently covers is a **verified
    subject**: the browser presenting its Cognito ID token alongside the signed
    request.
-2. **Per-document read key scoping (UI.T06)** — give documents an ownership or
+2. **Document ownership for read scoping (UI.T06)** — give documents an ownership or
    tenancy attribute and derive the permitted key from it, instead of trusting the
-   supplied `s3Uri`, then narrow the Identity Pool role to match (#1033). The two
-   **per-user** axes are already derived from the caller rather than trusted: a
-   `config_revisions/<profile>/` key is matched against `allowedConfigVersions` and a
-   Test Set bucket key against `allowedTestSets`, and the bucket allow-list fails
-   closed. What is left is the document buckets, where there is no per-user axis to
-   derive a key from — which is why this needs a data-model change and not a check.
-   It also bounds RPT.T08 and PII.T05.
+   supplied `s3Uri`. Three of the four controls this needs are in place (#1033): the
+   Identity Pool role is narrowed to no S3 at all, so every document read is an API
+   call; the bucket allow-list fails closed; and all three axes the product records
+   are derived from the caller rather than trusted — a `config_revisions/<profile>/`
+   key against `allowedConfigVersions`, a Test Set bucket key against
+   `allowedTestSets`, and, on the document buckets, the owning document's
+   `ConfigVersion` against `allowedConfigVersions`. What is left is that the profile
+   axis is the only per-**document** axis there is, and it narrows a *scoped* caller
+   only: with scoping opt-in per user, a caller whose scope is unset still reads any
+   document. Supplying an ownership axis is a data-model change and not a check,
+   which is why this stays on the list. It also bounds RPT.T08 and PII.T05.
 3. **Jobs API scope-negative test (JOB.T02)** — add a `jobs.read`-only-token
    write attempt and an unauthenticated request to the Jobs API stack test, so
    the gate asymmetry with the UI API closes.
