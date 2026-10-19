@@ -3,6 +3,14 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **`munkres` is pinned to 1.1.4, the last release by its original maintainer.** Stickler declares it only as `munkres>=1.1.4`, so every build installed the newest release. 2.0.0 and 3.0.0, published in October 2026, are a rewrite with a native extension by a different uploader, and 3.0.0 broke list-item scoring in the unit suite. **Action:** none; Evaluation Lambdas built from this release bundle 1.1.4.
+
+- **`aiohttp` is updated to 3.14.5** in `lib/idp_common_pkg/uv.lock`, resolving two HIGH advisories against 3.14.3: unbounded memory and CPU use (GHSA-2g87-pp6c-29x5) and a missing initial request/header timeout in the aiohttp server (GHSA-5wr8-gcqf-gqf3).
+
 ## [0.6.12]
 
 ### Added
