@@ -1918,7 +1918,10 @@ const ConfigBuilder = ({
     return (
       <FormField
         label={labelContent}
-        description={<FieldDescription>{fieldDescription}</FieldDescription>}
+        // `undefined`, not an always-present element: FieldDescription renders
+        // null for blank text, but Cloudscape reads a truthy `description` as
+        // present and reserves its spacing. See the same guard below.
+        description={fieldDescription?.trim() ? <FieldDescription>{fieldDescription}</FieldDescription> : undefined}
         constraintText={finalConstraints}
         stretch
         className={fieldClasses.join(' ')}
@@ -2007,7 +2010,10 @@ const ConfigBuilder = ({
         <Container
           key={key}
           header={
-            <Header variant="h3" description={<FieldDescription>{sectionDescription}</FieldDescription>}>
+            <Header
+              variant="h3"
+              description={sectionDescription?.trim() ? <FieldDescription>{sectionDescription}</FieldDescription> : undefined}
+            >
               {sectionTitle}
             </Header>
           }

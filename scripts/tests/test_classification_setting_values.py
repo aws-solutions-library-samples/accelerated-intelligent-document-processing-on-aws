@@ -67,19 +67,16 @@ _SETTING = re.compile(
     re.VERBOSE,
 )
 
-# Keys spelled the same in an unrelated namespace. `discovery` is not exhaustive
-# and does not need to be: a false positive here is a one-line addition, while
-# the finding it would otherwise mask is a notebook that cannot run.
-_FOREIGN_KEY_CONTEXT = (
-    "merge_strategy",
-    "splitting_strategy",
-    "retry_strategy",
-    "chunking_strategy",
-    "caching_strategy",
-    "deployment_strategy",
-)
-
 _VALID = {"granularity": VALID_GRANULARITY, "strategy": VALID_STRATEGY}
+
+# ⚠️ **No skip list, deliberately.** A `(merge|splitting|retry)_strategy` key in
+# some other namespace looks like it would need excusing, and it does not: `\b`
+# cannot match between `_` and `strategy`, because `_` is a word character. One
+# was written here anyway and would have shielded nothing while being an
+# unregistered exemption surface — which `CLAUDE.md` treats as a defect in its
+# own right, since a reason nobody can test is a reason nobody can audit. If a
+# real collision ever appears, bound the fix to the line rather than the word, and
+# register it in `scripts/tests/gate_exemptions.json`.
 
 
 def _tracked_text_files() -> list[Path]:
@@ -106,8 +103,6 @@ def _findings() -> list[tuple[str, int, str, str]]:
         if "granularity" not in text and "strategy" not in text:
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if any(foreign in line for foreign in _FOREIGN_KEY_CONTEXT):
-                continue
             for key, quoted, bare in _SETTING.findall(line):
                 value = quoted or bare
                 if value == "":
@@ -163,9 +158,10 @@ def test_the_scan_would_catch_the_defect_it_was_written_for():
 
 @pytest.mark.unit
 def test_every_notebook_is_still_valid_json():
-    """The sweep that produced the defect above was a `sed` over .ipynb files,
-    which is a text edit on a JSON document. A truncated notebook is unopenable
-    and no other gate reads these files."""
+    """A notebook is a JSON document, and the sweeps that touch these settings are
+    text edits (`sed`, a scripted replace). A truncated or unbalanced notebook is
+    unopenable, and no other gate in this repository reads these files, so a
+    broken one would be found by a user rather than by CI."""
     broken = []
     for path in _tracked_text_files():
         if path.suffix != ".ipynb":

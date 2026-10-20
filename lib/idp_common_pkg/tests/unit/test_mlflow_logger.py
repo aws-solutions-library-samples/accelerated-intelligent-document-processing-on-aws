@@ -261,11 +261,12 @@ class TestExtractConfigParams:
     def test_classification_settings(self):
         """The settings that make one experiment distinguishable from another.
 
-        This asserted `classification.method` from `classificationMethod` — and
-        kept passing after that key was removed in config format 0.8, because it
-        handed the legacy key straight to `_extract_config_params` and so tested
-        a code path production could no longer reach. The parameter had silently
-        disappeared from every run with nothing replacing it.
+        ⚠️ **The config handed in here has to be one production can produce.** A
+        test that passes `classificationMethod` and asserts a
+        `classification.method` parameter keeps passing after the key is removed,
+        because it exercises a shape no deployment stores — and the parameter it
+        checks for can be absent from every real run with nothing noticing. These
+        three are what a stored config carries.
         """
         config = {
             "classification": {

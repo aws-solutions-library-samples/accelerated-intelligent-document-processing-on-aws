@@ -205,12 +205,12 @@ class TestHolisticPromptRelocation:
         assert out["classification"]["task_prompt"] == PACKET_PROMPT
 
     def test_the_hand_written_prompt_overwrites_a_shipped_packet_default(self):
-        """⚠️ The bug a passing-looking guard nearly shipped. The migration runs
-        on the MERGED config, and the shipped defaults ALWAYS supply
-        `classification.packet.task_prompt` — so a guard that skipped relocation
-        "because one is already set" fires every single time and discards the
-        operator's own prompt, which is exactly what the relocation exists to
-        prevent."""
+        """⚠️ The relocation must NOT be guarded on "a packet prompt is already
+        set". The migration runs on the MERGED config and the shipped defaults
+        always supply `classification.packet.task_prompt`, so such a guard fires
+        every single time and discards the operator's own prompt — which is
+        exactly what the relocation exists to prevent. The guard that decides is
+        the prompt's shape, not its presence."""
         out = migrate_v07_to_v08(
             {
                 "classification": {

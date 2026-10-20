@@ -28,7 +28,7 @@
 
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../../../hooks/use-synthetic-data-generator', () => ({ default: () => ({ available: false }) }));
@@ -115,5 +115,30 @@ describe('authored groups render when their key is absent', () => {
       {},
     );
     expect(screen.queryByText('Inner field')).not.toBeInTheDocument();
+  });
+});
+
+describe('editing a field inside an absent authored group', () => {
+  /**
+   * ⚠️ Rendering the group is only half the fix. If `updateValue` could not
+   * create the missing parent object, the control would render and the edit
+   * would go nowhere — a worse failure than the invisible group, because it
+   * looks like it worked. This asserts the parent is created.
+   */
+  it('creates the parent object on the first edit', () => {
+    const changes: Record<string, unknown>[] = [];
+    render(
+      <MemoryRouter>
+        <ConfigBuilder schema={groupSchema('modality')} formValues={{ classification: {} }} onChange={(v) => changes.push(v)} />
+      </MemoryRouter>,
+    );
+    const inputs = screen.getAllByRole('textbox');
+    // The deepest control is the group's own field; the outer ones belong to the
+    // enclosing section's chrome.
+    fireEvent.change(inputs[inputs.length - 1], { target: { value: 'true' } });
+
+    expect(changes.length).toBeGreaterThan(0);
+    const last = changes[changes.length - 1] as { classification?: { modality?: { inner?: string } } };
+    expect(last.classification?.modality?.inner).toBe('true');
   });
 });
