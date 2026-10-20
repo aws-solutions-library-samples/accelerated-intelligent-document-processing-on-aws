@@ -15,7 +15,9 @@ managed policy and users as CI does. It has two modes.
     ``--post``. The MR is collected on the host, its ``src/ui`` is built in a
     container that holds no credentials, and the test runs in a second container.
     ``section.md``, ``report.md``, ``summary.json`` and the mp4 land in
-    ``scratch/ux-docker/mr-<iid>/ux-tests/``, which is gitignored.
+    ``scratch/ux-docker/mr-<iid>/ux-tests/``, which is gitignored; against a
+    ``--stack`` other than the review stack there is no mp4 unless
+    ``--dev-video-any-stack`` is passed through (``ai_ux_test.py``'s property 6).
 ``browser``
     Only the confined headless Chrome, the egress proxy and the recorder, with
     DevTools published on the host's own loopback (``127.0.0.1:9222``), for an

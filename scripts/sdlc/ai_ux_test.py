@@ -115,6 +115,19 @@ Properties it is built around
    the prompt revision, and a head that already has one is ``UNCHANGED``. When a
    newer head is posted, older notes' video lines are marked superseded; the
    uploads themselves are kept.
+6. **Only the review stack's screens become a video.** The frames are not redacted,
+   which is acceptable for :data:`REVIEW_STACK` alone, because it holds only shipped
+   example data. So a video is rendered, attached and uploaded only when three
+   statements of which stack the run used all name it: ``--stack``, the settings
+   parameter ``UX_TEST_UI_ENV`` names, and the stack the signed-in page reports
+   (:func:`review_stack_problem`). That is decided as soon as the page is signed
+   in, before anything is recorded (``_Run._video_withheld``), and applied before
+   anything is rendered (``_Run._video``). Against any other stack nothing is
+   rendered, so no mp4 reaches the note or the job's artifacts, and the section
+   says the video was withheld. :data:`DEV_VIDEO_FLAG` renders one all the same,
+   for a developer's local dry run only: it forces ``--dry-run``, :func:`main`
+   refuses it wherever ``CI`` or ``GITLAB_CI`` is set, and neither CI job carries
+   it.
 
 What it does NOT protect, stated rather than implied
 ----------------------------------------------------
@@ -135,11 +148,18 @@ What it does NOT protect, stated rather than implied
 * **The video's frames are uploaded unredacted.** The narration, the captions and
   every text artifact are redacted, but the frames are pictures of the screen, and
   whatever the MR's UI drew on the review stack, which holds only shipped example
-  data, is in them as it was shown. The long-lived persona carries a display name
+  data, is in them as it was shown; property 6 is what keeps a video to that
+  stack. The long-lived persona carries a display name
   (``scripts/ux_test_session.py --long-lived``), so the top bar shows that rather
   than its sign-in address once the page has loaded it; until then, on every full
   page load, and on a page that lists users, the frames show the address, which
   is a fixed, non-secret name. The password never reaches a frame.
+* **The review stack is known by its name, not by its account.** Nothing in
+  ``UX_TEST_UI_ENV`` names an account, and ``UX_TEST_AWS_ACCOUNT_ID`` pins the
+  job's credentials rather than the stack's endpoints, so a stack called
+  ``idp-ux-nightly`` in another account, with its own UI environment, satisfies
+  property 6. And the stack the page reports is the MR's own UI's to render, so
+  that answer can withhold a video but never stands in for the other two.
 * **The version and build in the note's heading and backend caveat are the MR's to
   choose.** The MR's own UI renders them, so they are shown only in the expected
   shapes and labelled as the UI reports them.
@@ -179,6 +199,9 @@ Usage
     # locally, in Docker, as a dry run (section.md and the mp4 land in scratch/)
     make ai-ux-test-local MR=812
 
+    # against a stack of your own, whose video is rendered only with the opt-in
+    make ai-ux-test-local MR=812 STACK=<stack> EXTRA_ARGS=--dev-video-any-stack
+
     # what run_in_docker.py runs on the host: collect the MR from git only
     python3 scripts/sdlc/ai_ux_test.py --mr 812 --collect-only --inputs /tmp/inputs.json
 
@@ -190,7 +213,8 @@ Environment
 ``UX_TEST_UI_ENV``
     Base64 of the review stack's ``WebUITestEnvFile`` output, plus an optional
     ``UX_TEST_BUCKETS=`` line of the stack's exact bucket names. The egress rules
-    are derived from it.
+    are derived from it, and its settings parameter is one of the three
+    statements of the stack's identity (property 6).
 ``UX_TEST_PERSONAS``
     Base64 of ``{"<group>": {"username": ..., "password": ...}}``.
 ``UX_TEST_AWS_ACCOUNT_ID``
@@ -208,6 +232,9 @@ Environment
 ``CI_COMMIT_SHA``, ``CI_MERGE_REQUEST_SOURCE_BRANCH_SHA``
     The head this pipeline, and so its UI build, is of. A newer head means another
     pipeline owns the test, and this one stands down.
+``CI``, ``GITLAB_CI``
+    Set by GitLab CI in every job. Where either is set, :data:`DEV_VIDEO_FLAG` is
+    refused.
 """
 
 from __future__ import annotations
@@ -280,9 +307,15 @@ HARNESS_PATHS = (
 SKILL_FILES = (".claude/skills/ux-test-ci.md", ".claude/skills/ux-test.md")
 #: The flow catalogue the selector reads, from the harness for the same reason.
 FLOWS_FILE = "scripts/ux_flows.yaml"
-#: The long-lived review stack. A test pins it equal to
+#: The long-lived review stack, and the one stack whose screens this job turns into
+#: a video, because it holds only shipped example data and the frames are not
+#: redacted (property 6). ``--stack`` defaults to it. A test pins it equal to
 #: ``codebuild_deployment.UX_NIGHTLY_STACK_NAME``, the stack the nightly updates.
-DEFAULT_STACK = "idp-ux-nightly"
+REVIEW_STACK = "idp-ux-nightly"
+#: A developer's opt-in to a video of another stack, in a local dry run. It forces
+#: ``--dry-run``, :func:`main` refuses it under CI, and a test pins that neither CI
+#: job carries it.
+DEV_VIDEO_FLAG = "--dev-video-any-stack"
 DEFAULT_PERSONA = "Admin"
 
 _DEFAULT_REGION = "us-east-1"
@@ -308,6 +341,10 @@ _RECORDER_CURRENT = "current.json"
 _RECORDER_STOP_SAY = "That ends the UX test."
 _NO_VISIBLE_CHANGE = "_No user-visible change found, so no video is attached._"
 _NO_MARKS = "_The session marked no chapters, so no video is attached._"
+_VIDEO_WITHHELD = (
+    "_The video was withheld, because {reason}: recording another stack's screens "
+    "needs a privacy decision of its own._"
+)
 #: ``summary.recording.narration`` when narration was asked for and no Polly-only
 #: session could be minted, so render ran with no credential at all.
 _NARRATION_UNSCOPED = "unavailable (no Polly session)"
@@ -711,6 +748,44 @@ def _settings_problem(args: argparse.Namespace, environ: Mapping[str, str]) -> s
     return ""
 
 
+def review_stack_problem(
+    stack: str, ui_env: Mapping[str, str], shown: str | None
+) -> str:
+    """Why the run's stack is not established as :data:`REVIEW_STACK`, or ``""``.
+
+    Three statements of which stack the run used, and each must name the review
+    stack, because no one of them settles it alone:
+
+    * ``stack``, the ``--stack`` the note is headed with, which is a default and
+      not a constraint.
+    * ``ui_env``, the decoded ``UX_TEST_UI_ENV`` the egress rules come from. Its
+      settings parameter must be the review stack's own, which ``template.yaml``
+      names ``<stack name>-Settings``, so a lookalike such as
+      ``idp-ux-nightly-2`` does not match. Its bucket names are held to
+      ``stack`` already (``ux_test_proxy.stack_rules``), but by a prefix, which
+      that lookalike's buckets pass; its pool ids and API and stream URLs carry no
+      stack name at all.
+    * ``shown``, the stack the signed-in page reports. The UI reads it from the
+      parameter its build names, with the persona's own Cognito credentials,
+      whose role may read no other stack's parameter, so an environment that
+      pairs the review stack's parameter with another stack's pools leaves the
+      page with no stack to show.
+
+    The page is the MR's own code, so its answer can withhold a video but never
+    stands in for the other two. A reason names the review stack, never a value
+    from the environment or the page.
+    """
+    if stack != REVIEW_STACK:
+        return f"`--stack` is not the review stack `{REVIEW_STACK}`"
+    if ui_env.get("VITE_SETTINGS_PARAMETER") != f"{REVIEW_STACK}-Settings":
+        return (
+            f"`UX_TEST_UI_ENV` does not name the settings parameter of `{REVIEW_STACK}`"
+        )
+    if shown != REVIEW_STACK:
+        return f"the signed-in page did not report `{REVIEW_STACK}` as its stack"
+    return ""
+
+
 def precheck(args: argparse.Namespace, runtime: Runtime) -> Decision:
     """Whether this head is worth a browser, decided from git and the API alone.
 
@@ -819,6 +894,7 @@ def _new_summary(args: argparse.Namespace) -> dict[str, Any]:
             "build": None,
             "facts_source": "ui",
             "account_check": "not_run",
+            "review_stack": None,
         },
         "flows": [],
         "model": {
@@ -840,6 +916,8 @@ def _new_summary(args: argparse.Namespace) -> dict[str, Any]:
             "narration": None,
             "video_bytes": None,
             "video_attached": False,
+            "video_withheld": None,
+            "dev_video_any_stack": args.dev_video_any_stack,
         },
         "egress": {},
         "socket_audit": {
@@ -1267,6 +1345,7 @@ class _Run:
         self.summary["stack"]["region"] = stack_region
         run_dir = self._make_run_dir()
         target, facts = self._open_browser(tc, ui_env, persona, run_dir)
+        withheld = self._video_withheld(ui_env, facts)
         session_dir, recorder_env = self._start_recording(target, flow_ids, run_dir)
         stack_facts = section.StackFacts(
             name=args.stack,
@@ -1300,7 +1379,14 @@ class _Run:
         self._write("report.md", scrubbed)
         report = section.parse_report(scrubbed)
         video = self._video(
-            report, marks, session_dir, stack_facts, flow_ids, sts, identity
+            report,
+            marks,
+            session_dir,
+            stack_facts,
+            flow_ids,
+            sts,
+            identity,
+            withheld=withheld,
         )
         note_caveats = self._note_caveats(caveats)
         return self._deliver(report, stack_facts, video, note_caveats, audit)
@@ -1453,17 +1539,49 @@ class _Run:
         self._say(f"chrome: confined, and signed in as {args.persona}")
         return target, facts
 
+    def _video_withheld(
+        self, ui_env: Mapping[str, str], facts: signin.PageFacts
+    ) -> str:
+        """Why this run's video is withheld, or ``""`` when it may be rendered.
+
+        Decided once the page is signed in, before anything is recorded, from
+        :func:`review_stack_problem`, and kept in ``summary.json``:
+        ``stack.review_stack`` says whether every source named
+        :data:`REVIEW_STACK`, and ``recording.video_withheld`` says why a video was
+        withheld. With :data:`DEV_VIDEO_FLAG`, which forces a dry run, another
+        stack's video is rendered into the artifact directory all the same, and a
+        ``WARNING:`` line says whose screens it shows.
+        """
+        args = self.args
+        problem = review_stack_problem(args.stack, ui_env, facts.stack_name)
+        self.summary["stack"]["review_stack"] = not problem
+        if not problem:
+            return ""
+        if args.dev_video_any_stack:
+            self._say(
+                f"WARNING: {DEV_VIDEO_FLAG}: {problem}, so the video shows another "
+                f"stack's screens, unredacted; it stays in {self.artifacts}, and "
+                "nothing is posted"
+            )
+            return ""
+        self.summary["recording"]["video_withheld"] = problem
+        self._say(f"video: withheld, because {problem}")
+        return problem
+
     def _start_recording(
         self, target: Mapping[str, Any], flow_ids: list[str], run_dir: Path
     ) -> tuple[Path, dict[str, str]]:
         """The recorder on the signed-in page.
 
-        Returns the session directory and the recorder's environment.
+        Returns the session directory and the recorder's environment. The opening
+        line says the review stack only when :meth:`_video_withheld` found it, so
+        a video :data:`DEV_VIDEO_FLAG` keeps of another stack does not say so.
         """
         args, rt = self.args, self.runtime
         rec_out = run_dir / "recordings"
         self.rec_out = rec_out
         recorder_env = recording.recorder_env(_private(run_dir / "recorder-home"))
+        where = "the review" if self.summary["stack"]["review_stack"] else "another"
         started = rt.start_recorder(
             harness_root=paths.HARNESS_ROOT,
             out_dir=rec_out,
@@ -1472,7 +1590,7 @@ class _Run:
             flows=flow_ids,
             target_id=target["id"],
             say=(
-                f"UX test of merge request {args.mr} on the review stack, as "
+                f"UX test of merge request {args.mr} on {where} stack, as "
                 f"{args.persona}."
             ),
             env=recorder_env,
@@ -1743,8 +1861,16 @@ class _Run:
         flow_ids: list[str],
         sts: Any,
         identity: account.Identity,
+        *,
+        withheld: str,
     ) -> _Video:
         """Render the mp4 when the change was seen and marked, and copy it out.
+
+        Never when ``withheld`` says why not (:meth:`_video_withheld`): a run whose
+        stack is not established as the review stack renders nothing, prepares
+        nothing for render and mints render no session, so no mp4 of it exists to
+        copy into the artifacts or upload, and the note says the video was
+        withheld.
 
         Everything render turns into speech, captions or a card is redacted first:
         ``review.md``, whose Findings become the end card, and the recording's own
@@ -1763,6 +1889,8 @@ class _Run:
         link, a pipe, another uid's file or an oversized one there fails the run.
         """
         args, rt = self.args, self.runtime
+        if withheld:
+            return _Video(None, False, _VIDEO_WITHHELD.format(reason=withheld))
         if not report.visible_change_found:
             return _Video(None, False, _NO_VISIBLE_CHANGE)
         if marks < 1:
@@ -2015,6 +2143,8 @@ class _Run:
         detail = f"UX test of {head[:8]} {where}"
         if note["upload_error"] is not None:
             detail += ", without its video, which is in the job artifacts"
+        elif self.summary["recording"]["video_withheld"] is not None:
+            detail += ", without its video, which was withheld"
         return self._finish("posted", detail)
 
     def _upload(
@@ -2290,8 +2420,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--stack",
-        default=DEFAULT_STACK,
-        help=f"the review stack (default: {DEFAULT_STACK})",
+        default=REVIEW_STACK,
+        help=f"the stack to test against (default: {REVIEW_STACK}, the review "
+        "stack, the only one whose video is rendered)",
     )
     parser.add_argument(
         "--persona",
@@ -2361,7 +2492,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="write section.md and the mp4 to the artifact dir instead of posting",
+        help="write section.md, and the review stack's mp4, to the artifact dir "
+        "instead of posting",
     )
     parser.add_argument(
         "--fail-on-skip",
@@ -2372,6 +2504,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dev-unconfined",
         action="store_true",
         help="development only: no managed policy or uid switch; forces --dry-run",
+    )
+    parser.add_argument(
+        DEV_VIDEO_FLAG,
+        action="store_true",
+        help="development only: render the video even when the stack is not "
+        f"{REVIEW_STACK}, whose frames are then another stack's screens, "
+        "unredacted; forces --dry-run, and is refused under CI",
     )
     parser.add_argument(
         "--toolchain-prefix",
@@ -2397,7 +2536,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--session-minutes must be at least 1")
     if args.build_dir is None:
         args.build_dir = Path(args.repo_dir) / "src" / "ui" / "build"
-    if args.dev_unconfined:
+    if args.dev_unconfined or args.dev_video_any_stack:
         args.dry_run = True
     return args
 
@@ -2405,6 +2544,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 #: The umask every file and directory this job makes is created under, whatever
 #: the caller's: a GitLab Docker executor runs a job at umask 0000 by default.
 _UMASK = 0o022
+
+
+def _ci_variable(environ: Mapping[str, str]) -> str:
+    """Whichever of ``CI`` and ``GITLAB_CI`` is set, or ``""`` outside CI."""
+    names = [name for name in ("CI", "GITLAB_CI") if environ.get(name, "").strip()]
+    return names[0] if names else ""
 
 
 def main(argv: list[str] | None = None, runtime: Runtime | None = None) -> int:
@@ -2415,12 +2560,25 @@ def main(argv: list[str] | None = None, runtime: Runtime | None = None) -> int:
     proxy's uids: the recorder's control socket and its session among them, which
     root reads and renders from later. Both are put back on the way out, so a
     caller that imports this module keeps its own.
+
+    :data:`DEV_VIDEO_FLAG` is refused before anything runs wherever GitLab CI's
+    own ``CI`` or ``GITLAB_CI`` is set, read from the runtime's environment: a
+    pipeline's artifacts can be downloaded, so the video of another stack is a
+    local dry run's alone.
     """
     previous_umask = os.umask(_UMASK)
     restore = processes.install_sigterm_handler()
     try:
         args = parse_args(argv)
         chosen = runtime if runtime is not None else default_runtime()
+        ci = _ci_variable(chosen.environ)
+        if args.dev_video_any_stack and ci:
+            print(
+                f"FAILED: {DEV_VIDEO_FLAG} is a developer's opt-in for a local dry "
+                f"run, and {ci} is set, so this is CI",
+                flush=True,
+            )
+            return 1
         if args.collect_only:
             return _collect_main(args, chosen)
         if args.precheck:

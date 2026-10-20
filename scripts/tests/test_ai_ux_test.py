@@ -21,6 +21,12 @@ What is pinned, by the claim each test names:
   take costs the section its video and nothing else;
 * every failure (a timeout, a missing report, a cancel) still runs the cleanup and
   writes ``summary.json``;
+* a video is rendered, attached and uploaded only when ``--stack``, the UI
+  environment's settings parameter and the stack the signed-in page reports all
+  name the review stack: another stack, or a UI environment pointing at one under
+  ``--stack idp-ux-nightly``, gets its findings posted with no video and a line
+  saying it was withheld, and the developer opt-in that renders one anyway forces
+  a dry run and is refused under CI;
 * nothing secret survives into any artifact, note body or printed line, including
   values the model's report carries in a spelling ``sanitize`` would change;
 * the harness list is closed over its imports, ``ai_mr_review`` has one importer,
@@ -2558,6 +2564,266 @@ def test_collect_only_writes_the_inputs_with_api_metadata(
     assert (collected.head_sha, collected.base_sha) == (HEAD, BASE)
     assert collected.title_from_git is False
     assert collected.web_url.endswith(f"/merge_requests/{IID}")
+
+
+# --- the review stack bound -------------------------------------------------------
+
+OTHER_STACK = "idp-dev-4821"
+#: A stack whose name is the review stack's and a dash, so its bucket names pass the
+#: egress rules' prefix check under ``--stack idp-ux-nightly``.
+LOOKALIKE_STACK = "idp-ux-nightly-2"
+STACK_REASON = "`--stack` is not the review stack `idp-ux-nightly`"
+ENV_REASON = "`UX_TEST_UI_ENV` does not name the settings parameter of `idp-ux-nightly`"
+PAGE_REASON = "the signed-in page did not report `idp-ux-nightly` as its stack"
+BUCKET_KEYS = ("VITE_TEST_SET_BUCKET_NAME", "VITE_INPUT_BUCKET_NAME", "UX_TEST_BUCKETS")
+#: Another stack's Cognito pools and API, to pair with the review stack's parameter.
+OTHER_POOLS = {
+    "VITE_USER_POOL_ID": "us-east-1_ZyXwVuTsR",
+    "VITE_USER_POOL_CLIENT_ID": "9z8y7x6w5v4u3t2s1r0q9p8o7n",
+    "VITE_IDENTITY_POOL_ID": "us-east-1:99999999-8888-7777-6666-fedcbafedcba",
+    "VITE_API_BASE_URL": "https://zyxwv98765.execute-api.us-east-1.amazonaws.com/api",
+}
+
+
+def _ui_env(
+    stack: str = "idp-ux-nightly",
+    *,
+    without: tuple[str, ...] = (),
+    values: dict[str, str] | None = None,
+) -> str:
+    """:data:`UI_ENV_TEXT` as ``stack``'s, less ``without``, with ``values`` set."""
+    chosen = values or {}
+    kept = []
+    for line in UI_ENV_TEXT.replace("idp-ux-nightly", stack).splitlines():
+        key = line.partition("=")[0]
+        if key in without:
+            continue
+        kept.append(f"{key}={chosen[key]}" if key in chosen else line)
+    return "\n".join(kept)
+
+
+def _against(harness: Harness, ui_env: str, shown: str | None) -> None:
+    """Run with ``ui_env`` as UX_TEST_UI_ENV and ``shown`` as the page's stack."""
+    harness.environ["UX_TEST_UI_ENV"] = _b64(ui_env)
+    harness.facts = dataclasses.replace(harness.facts, stack_name=shown)
+
+
+def _withheld_line(reason: str) -> str:
+    return (
+        f"_The video was withheld, because {reason}: recording another stack's "
+        "screens needs a privacy decision of its own._"
+    )
+
+
+def _assert_withheld(harness: Harness, text: str, reason: str) -> None:
+    """Nothing was rendered, uploaded or kept, and ``text`` says why, findings intact.
+
+    Render is never prepared, so its Polly session is never minted either: the one
+    assume is claude's.
+    """
+    assert "render_video" not in harness.calls
+    assert not [p for _, p, _ in harness.forge.writes() if p.endswith("/uploads")]
+    assert not list(harness.artifacts.glob("*.mp4"))
+    lines = text.splitlines()
+    assert _withheld_line(reason) in lines
+    assert not [line for line in lines if line.startswith(("![", "**Chapters:**"))]
+    assert "Rotate button has no tooltip" in text
+    summary = harness.summary()
+    assert summary["stack"]["review_stack"] is False
+    recording = summary["recording"]
+    assert (recording["video_withheld"], recording["video_attached"]) == (
+        reason,
+        False,
+    )
+    assert recording["video_bytes"] is None
+    assert summary["credential_scope"]["render"] is None
+    assert len(harness.sts.assumed) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("stack", "settings", "shown", "reason"),
+    [
+        ("idp-ux-nightly", "idp-ux-nightly-Settings", "idp-ux-nightly", ""),
+        (OTHER_STACK, "idp-ux-nightly-Settings", "idp-ux-nightly", STACK_REASON),
+        (LOOKALIKE_STACK, "idp-ux-nightly-Settings", "idp-ux-nightly", STACK_REASON),
+        ("idp-ux-nightly", f"{LOOKALIKE_STACK}-Settings", "idp-ux-nightly", ENV_REASON),
+        ("idp-ux-nightly", "idp-ux-nightly-settings", "idp-ux-nightly", ENV_REASON),
+        ("idp-ux-nightly", None, "idp-ux-nightly", ENV_REASON),
+        ("idp-ux-nightly", "idp-ux-nightly-Settings", None, PAGE_REASON),
+        ("idp-ux-nightly", "idp-ux-nightly-Settings", LOOKALIKE_STACK, PAGE_REASON),
+    ],
+)
+def test_every_statement_of_the_stack_must_name_the_review_stack(
+    stack: str, settings: str | None, shown: str | None, reason: str
+) -> None:
+    """Exact names, each source checked whatever the others say, and a reason
+    that names only the review stack, never the value it refused."""
+    ui_env = {} if settings is None else {"VITE_SETTINGS_PARAMETER": settings}
+    assert ai_ux_test.review_stack_problem(stack, ui_env, shown) == reason
+    assert OTHER_STACK not in reason and LOOKALIKE_STACK not in reason
+
+
+@pytest.mark.unit
+def test_the_review_stack_gets_its_video_rendered_attached_and_uploaded(
+    harness: Harness,
+) -> None:
+    """Every source names it, as in the CI job, which runs with GitLab CI's own
+    variables set and ``--stack`` at its default."""
+    assert ai_ux_test.parse_args(["--mr", str(IID)]).stack == ai_ux_test.REVIEW_STACK
+    harness.environ.update(CI="true", GITLAB_CI="true")
+    target = harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    assert harness.main() == 0
+    assert "render_video" in harness.calls
+    assert harness.recorder_kwargs["say"] == (
+        f"UX test of merge request {IID} on the review stack, as Admin."
+    )
+    uploads = [p for _, p, _ in harness.forge.writes() if p.endswith("/uploads")]
+    assert uploads == ["/projects/group%2Fproj/uploads"]
+    body = harness.forge.store[target]["body"]
+    video = f"![UX test](/uploads/{UPLOAD_HASH}/ux-test-mr{IID}-{HEAD[:8]}.mp4)"
+    assert video in body.splitlines()
+    assert "withheld" not in body
+    summary = harness.summary()
+    assert summary["status"] == "posted"
+    assert summary["stack"]["review_stack"] is True
+    recording = summary["recording"]
+    assert (recording["video_withheld"], recording["video_attached"]) == (None, True)
+    assert recording["dev_video_any_stack"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dry_run", [False, True], ids=["post", "dry-run"])
+def test_another_stack_gets_its_findings_without_a_video_saying_it_was_withheld(
+    harness: Harness, capsys: pytest.CaptureFixture[str], dry_run: bool
+) -> None:
+    """Its own UI environment, and a page reporting it: nothing disagrees, but it
+    is not the review stack, so in neither mode is anything rendered, kept or
+    uploaded, and the section says the video was withheld and why."""
+    _against(harness, _ui_env(OTHER_STACK), OTHER_STACK)
+    target = harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    extra = ("--stack", OTHER_STACK, *(("--dry-run",) if dry_run else ()))
+    assert harness.main(*extra) == 0
+    if dry_run:
+        assert harness.forge.writes() == []
+        text = harness.artifact("section.md")
+    else:
+        text = harness.forge.store[target]["body"]
+    _assert_withheld(harness, text, STACK_REASON)
+    assert harness.summary()["status"] == ("dry_run" if dry_run else "posted")
+    assert f"video: withheld, because {STACK_REASON}" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("ui_env", "shown", "reason"),
+    [
+        pytest.param(
+            _ui_env(OTHER_STACK, without=BUCKET_KEYS),
+            OTHER_STACK,
+            ENV_REASON,
+            id="another-stacks-environment-less-its-buckets",
+        ),
+        pytest.param(
+            _ui_env(LOOKALIKE_STACK),
+            LOOKALIKE_STACK,
+            ENV_REASON,
+            id="a-lookalike-stacks-environment",
+        ),
+        pytest.param(
+            _ui_env(without=("VITE_SETTINGS_PARAMETER",)),
+            None,
+            ENV_REASON,
+            id="no-settings-parameter",
+        ),
+        pytest.param(
+            _ui_env(values=OTHER_POOLS),
+            None,
+            PAGE_REASON,
+            id="the-review-stacks-parameter-beside-another-stacks-pools",
+        ),
+        pytest.param(
+            _ui_env(), OTHER_STACK, PAGE_REASON, id="a-page-reporting-another-stack"
+        ),
+    ],
+)
+def test_a_ui_environment_pointing_at_another_stack_never_satisfies_the_bound(
+    harness: Harness, ui_env: str, shown: str | None, reason: str
+) -> None:
+    """``--stack`` names the review stack in every case, as it does in CI, and each
+    environment passes the egress rules, so the run goes ahead and only the video
+    is lost. The lookalike's buckets carry ``idp-ux-nightly-``, which is all the
+    egress rules ask of a bucket; and another stack's pools cannot read the review
+    stack's parameter, so the page reports no stack at all."""
+    _against(harness, ui_env, shown)
+    target = harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    assert harness.main() == 0
+    _assert_withheld(harness, harness.forge.store[target]["body"], reason)
+    summary = harness.summary()
+    assert summary["status"] == "posted"
+    assert summary["detail"].endswith(", without its video, which was withheld")
+
+
+@pytest.mark.unit
+def test_another_stacks_whole_ui_environment_is_refused_before_any_browser(
+    harness: Harness,
+) -> None:
+    """Its buckets do not carry ``--stack``'s name, so the egress rules refuse the
+    environment in the precheck and no session runs at all."""
+    _against(harness, _ui_env(OTHER_STACK), OTHER_STACK)
+    assert harness.main() == 0
+    summary = harness.summary()
+    assert summary["status"] == "skipped"
+    assert "is not an exact bucket name of the stack" in summary["detail"]
+    started = {"launch_proxy", "launch_chrome", "run_agent", "render_video"}
+    assert not started & set(harness.calls)
+
+
+@pytest.mark.unit
+def test_the_developer_opt_in_keeps_another_stacks_video_in_a_local_dry_run(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rendered into the artifact directory and never posted, because the opt-in
+    forces the dry run, with a line saying whose screens the video shows."""
+    flag = ai_ux_test.DEV_VIDEO_FLAG
+    assert ai_ux_test.parse_args(["--mr", str(IID), flag]).dry_run is True
+    _against(harness, _ui_env(OTHER_STACK), OTHER_STACK)
+    harness.forge.add_note(_review_body(HEAD))
+    assert harness.main("--stack", OTHER_STACK, flag) == 0
+    assert "render_video" in harness.calls
+    assert harness.recorder_kwargs["say"] == (
+        f"UX test of merge request {IID} on another stack, as Admin."
+    )
+    assert (harness.artifacts / f"ux-test-mr{IID}-{HEAD[:8]}.mp4").is_file()
+    assert harness.forge.writes() == []
+    summary = harness.summary()
+    assert summary["status"] == "dry_run"
+    assert summary["stack"]["review_stack"] is False
+    recording = summary["recording"]
+    assert (recording["video_withheld"], recording["video_attached"]) == (None, True)
+    assert recording["dev_video_any_stack"] is True
+    warning = f"WARNING: {flag}: {STACK_REASON}, so the video shows another stack's"
+    assert warning in capsys.readouterr().out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("spelled", [ai_ux_test.DEV_VIDEO_FLAG, "--dev-v"])
+@pytest.mark.parametrize("name", ["CI", "GITLAB_CI"])
+def test_the_developer_opt_in_is_refused_under_ci_before_anything_runs(
+    harness: Harness, capsys: pytest.CaptureFixture[str], name: str, spelled: str
+) -> None:
+    """A pipeline's artifacts can be downloaded, so the opt-in fails the job there
+    before a single collaborator is called or an artifact written, in any spelling
+    the parser accepts for it."""
+    harness.environ[name] = "true"
+    flag = ai_ux_test.DEV_VIDEO_FLAG
+    assert harness.main(spelled) == 1
+    assert harness.calls == []
+    assert not harness.artifacts.exists()
+    assert capsys.readouterr().out == (
+        f"FAILED: {flag} is a developer's opt-in for a local dry run, and {name} "
+        "is set, so this is CI\n"
+    )
 
 
 # --- static checks ----------------------------------------------------------------

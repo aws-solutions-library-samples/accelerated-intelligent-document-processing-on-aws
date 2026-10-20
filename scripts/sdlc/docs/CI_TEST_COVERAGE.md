@@ -478,18 +478,20 @@ treats that file as diagnostics only.
    Chrome for Testing headless as uid `uxbrowser`, with the hardened flags and the
    managed policy, and starts the socket audit of Chrome's uid at the same moment;
 6. verifies that the policy is in force and that the browser's traffic reaches the
-   proxy, then signs the persona in over DevTools, reads the stack's version and
-   build from the signed-in sidebar for the note's backend caveat, and checks that
-   the signed-in page's viewport is 1600×1000, all before recording starts;
+   proxy, then signs the persona in over DevTools, reads the stack's name, version
+   and build from the signed-in sidebar for the video's stack check and the note's
+   backend caveat, and checks that the signed-in page's viewport is 1600×1000, all
+   before recording starts;
 7. starts `scripts/ux_recorder.py`, then runs `claude -p` with the prompt on stdin, in
    its own process group, holding only `chrome-devtools-mcp`'s navigation, input,
    snapshot and screenshot tools and the four tools of the recorder's stdio adapter
    `scripts/ux_recorder_mcp.py` (mark, note, pause and resume);
 8. stops the recorder, terminates Chrome and only then takes the socket audit's last
-   pass, stops the proxy, and renders the narrated mp4 in a child process of its own
-   (Amazon Polly, voice Ruth, with a private render log);
-9. appends the UX section, with the uploaded video, to the `ai_mr_review` note for
-   that head SHA (PUT), then replies once in its thread.
+   pass, stops the proxy, and, for the review stack alone, renders the narrated mp4
+   in a child process of its own (Amazon Polly, voice Ruth, with a private render
+   log);
+9. appends the UX section, with the uploaded video when there is one, to the
+   `ai_mr_review` note for that head SHA (PUT), then replies once in its thread.
 
 **The security design, as the code enforces it.**
 
@@ -621,6 +623,32 @@ treats that file as diagnostics only.
   it. The frames are uploaded as recorded: they show the review stack's shipped
   example data, and in the top bar the long-lived persona's display name once the
   page has loaded it, with its sign-in address before that on a full page load.
+- A video is made of the review stack and of no other, because its frames are not
+  redacted, and that is enforced in `scripts/sdlc/ai_ux_test.py`, not left to the
+  default `--stack`. `review_stack_problem` requires three statements of which stack
+  the run used to name `idp-ux-nightly`: `--stack`; the settings parameter
+  `UX_TEST_UI_ENV` names, which must be exactly `idp-ux-nightly-Settings`, as
+  `template.yaml` names it, so a lookalike stack whose buckets pass the egress
+  rules' name-prefix check still fails; and the stack name the signed-in sidebar
+  shows, which the UI reads from that parameter with the persona's own Cognito
+  credentials, whose role can read no other stack's, so a `UX_TEST_UI_ENV` that
+  pairs the review stack's parameter with another stack's pools leaves the page with
+  no stack name to show. It is decided once the persona is signed in, before the
+  recorder starts, and `_Run._video` applies it before anything is rendered. Against
+  any other stack the findings are posted with a line saying the video was withheld,
+  no mp4 is rendered, so none is uploaded or kept in the job's artifacts, and
+  `summary.json` records `stack.review_stack` and `recording.video_withheld`. A
+  `UX_TEST_UI_ENV` holding another stack's whole output rarely gets that far: unless
+  that stack's name starts with `idp-ux-nightly-`, its buckets fail the egress rules
+  in the precheck, and no session runs at all. The page is the MR's own code, so its
+  answer can only withhold a video; and the stack is known by its name rather than
+  its account, since nothing in `UX_TEST_UI_ENV` names one, so a stack called
+  `idp-ux-nightly` in another account would satisfy all three. The one way to a
+  video of another stack is `--dev-video-any-stack`, a developer's opt-in for a
+  local dry run: it forces `--dry-run`, the harness refuses it wherever `CI` or
+  `GITLAB_CI` is set, and `scripts/tests/test_ux_test_ci_jobs.py` fails if either CI
+  configuration passes it, in its own spelling or any abbreviation the parser
+  accepts.
 - The prompt goes on stdin, never into argv, and every process runs in its own
   process group, killed on a timeout and on a job cancel. Of what `claude`, render
   and the recorder's subcommands print, the harness keeps each stream only up to a
@@ -662,7 +690,7 @@ exit 0.
 
 | Variable | What it holds |
 |---|---|
-| `UX_TEST_UI_ENV` | base64 of the review stack's `WebUITestEnvFile` output, plus an optional `UX_TEST_BUCKETS=` line of its exact bucket names; the egress rules come from it |
+| `UX_TEST_UI_ENV` | base64 of the review stack's `WebUITestEnvFile` output, plus an optional `UX_TEST_BUCKETS=` line of its exact bucket names; the egress rules come from it, and unless its `VITE_SETTINGS_PARAMETER` is `idp-ux-nightly-Settings` no video is rendered |
 | `UX_TEST_PERSONAS` | base64 of `{"<group>": {"username": …, "password": …}}`, from `scripts/ux_test_session.py setup idp-ux-nightly --group Admin --long-lived` |
 | `UX_TEST_AWS_ACCOUNT_ID` | the account the job's credentials must reach; only ever printed as its last four digits |
 | `GITLAB_REVIEW_TOKEN` | shared with `ai_mr_review`: a project access token with the least role that can create a note |
@@ -720,7 +748,9 @@ narration and `summary.json` records `narration: unavailable (AccessDenied)`.
 
 **Local runs.** `make ai-ux-test-local MR=<iid>` runs the same test in Docker as a dry
 run, and `make ai-ux-browser` starts only the confined browser, with DevTools on
-`127.0.0.1:9222`; see
+`127.0.0.1:9222`. Against a stack of your own (`STACK=<name>`) the dry run writes
+the section and no video, unless you add `EXTRA_ARGS=--dev-video-any-stack`, whose
+video shows that stack's screens unredacted under the gitignored `scratch/`; see
 [docs/testing.md](../../../docs/testing.md#the-ux-review-and-recording-it).
 
 Notes:

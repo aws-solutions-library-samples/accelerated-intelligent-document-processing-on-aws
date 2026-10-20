@@ -4,7 +4,7 @@
 
 Each property here is one a later edit to ``.gitlab-ci.yml`` could drop without any
 job going red, because both jobs are ``allow_failure: true``: a broken job is a quiet
-one. Three of them are security properties rather than tidiness.
+one. Four of them are security properties rather than tidiness.
 
 * **The harness comes from the target branch, and the job refuses otherwise.** An MR
   pipeline checks out the MR, so a harness run from the checkout would make the tool
@@ -14,6 +14,9 @@ one. Three of them are security properties rather than tidiness.
   nothing by a checkout-relative path.
 * **No MR code runs in the browser job.** The MR's ``npm ci`` and ``vite build`` run
   in ``ux_test_build``; ``ai_ux_test`` receives static files.
+* **No CI configuration passes the developer's video opt-in.** It renders another
+  stack's unredacted screens into the artifact directory, and a pipeline's
+  artifacts can be downloaded.
 * **It is advisory.** Neither job is a shared gate, and neither Makefile target looks
   like one to ``test_ci_gate_parity.py``.
 
@@ -41,6 +44,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GITLAB_CI = REPO_ROOT / ".gitlab-ci.yml"
 ORCHESTRATOR = REPO_ROOT / "scripts" / "sdlc" / "ai_ux_test.py"
 NIGHTLY = REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py"
+RUN_IN_DOCKER = REPO_ROOT / "scripts" / "ux_runner" / "run_in_docker.py"
+GITHUB_WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 DEP_MANIFEST = REPO_ROOT / "scripts" / "generate-dep-manifest.sh"
 UX_LOCKFILE = "scripts/ux_runner/package-lock.json"
 BUILD_JOB = "ux_test_build"
@@ -77,9 +82,9 @@ def _commands(job: dict[str, Any]) -> list[str]:
 def _module_constant(path: Path, name: str) -> Any:
     """The literal value of a module-level assignment, read without importing.
 
-    Neither module is imported: ``codebuild_deployment`` is the CodeBuild harness,
-    and ``ai_ux_test`` pulls in ``ai_mr_review``, which another suite re-executes
-    under its own module name.
+    No module is imported: ``codebuild_deployment`` is the CodeBuild harness, and
+    ``ai_ux_test`` pulls in ``ai_mr_review``, which another suite re-executes under
+    its own module name.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in tree.body:
@@ -740,9 +745,77 @@ def test_the_gitignore_keeps_the_jobs_output_and_the_run_options_out_of_the_tree
 
 
 @pytest.mark.unit
-def test_the_default_stack_is_the_one_the_nightly_build_updates() -> None:
-    """Read from both sources as AST constants, so neither module is imported."""
-    default_stack = _module_constant(ORCHESTRATOR, "DEFAULT_STACK")
+def test_the_review_stack_is_the_one_the_nightly_build_updates() -> None:
+    """The one stack whose video the orchestrator renders, read as AST constants.
+
+    The Docker runner's review mode is the CI-equivalent local run, so it tests the
+    same stack by default.
+    """
+    review_stack = _module_constant(ORCHESTRATOR, "REVIEW_STACK")
     nightly_stack = _module_constant(NIGHTLY, "UX_NIGHTLY_STACK_NAME")
-    assert isinstance(default_stack, str)
-    assert default_stack == nightly_stack
+    docker_default = _module_constant(RUN_IN_DOCKER, "DEFAULT_STACK")
+    assert isinstance(review_stack, str)
+    assert review_stack == nightly_stack == docker_default
+
+
+def _declared_long_options(path: Path) -> set[str]:
+    """Every literal long option the module's parsers declare, read without importing."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        arg.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        for arg in node.args
+        if isinstance(arg, ast.Constant)
+        and isinstance(arg.value, str)
+        and arg.value.startswith("--")
+    }
+
+
+def _spellings(flag: str, others: set[str]) -> set[str]:
+    """Every option word argparse reads as ``flag``: the flag and each prefix of it
+    that no other declared option shares, since argparse accepts an unambiguous
+    abbreviation."""
+    rivals = others - {flag}
+    return {
+        flag[:end]
+        for end in range(len("--") + 1, len(flag) + 1)
+        if not any(other.startswith(flag[:end]) for other in rivals)
+    }
+
+
+#: An option word as a shell line spells one, up to an ``=`` or a space.
+_OPTION_WORD_RE = re.compile(r"--[A-Za-z0-9][A-Za-z0-9-]*")
+
+
+@pytest.mark.unit
+def test_no_ci_configuration_passes_the_developer_video_opt_in(
+    ci_text, build_job, ux_job
+) -> None:
+    """The opt-in renders another stack's unredacted screens, and a pipeline's
+    artifacts can be downloaded, so it belongs to a local dry run alone.
+
+    The flag is read from the orchestrator, so a renamed one is still the one
+    looked for, and so is every abbreviation of it the orchestrator's parser would
+    accept, such as ``--dev-v``. Neither job's commands may carry one, nor
+    anything else in either CI configuration; the orchestrator also refuses the
+    parsed flag, however spelled, where ``CI`` is set.
+    """
+    flag = _module_constant(ORCHESTRATOR, "DEV_VIDEO_FLAG")
+    assert isinstance(flag, str) and flag.startswith("--dev-"), flag
+    spellings = _spellings(flag, _declared_long_options(ORCHESTRATOR))
+    assert flag in spellings, sorted(spellings)
+    texts = {
+        name: "\n".join(str(entry) for entry in _flattened(job))
+        for name, job in ((BUILD_JOB, build_job), (TEST_JOB, ux_job))
+    }
+    texts[".gitlab-ci.yml"] = ci_text
+    workflows = sorted(GITHUB_WORKFLOWS.glob("*.y*ml"))
+    assert workflows, f"no workflows under {GITHUB_WORKFLOWS}"
+    for workflow in workflows:
+        texts[workflow.name] = workflow.read_text(encoding="utf-8")
+    for name, text in texts.items():
+        carried = sorted(set(_OPTION_WORD_RE.findall(text)) & spellings)
+        assert not carried, f"{name} passes {flag} as {carried}"
