@@ -531,7 +531,13 @@ after ~600 leaked roles did exactly that. Hence:
   failing run tears down as it always did and logs which markers hold the slots.
 - The startup reaper takes a retained stack as soon as its marker expires,
   **overriding the usual age gate** — so a short TTL is honoured rather than
-  ignored for three hours.
+  ignored for three hours. Retention is separate from the long-lived stack the
+  [startup reapers](#startup-reapers-converge-leaks-from-interrupted-prior-runs)
+  leave standing: the stack reaper sets that stack and its pre-stack aside before
+  it consults a retention marker for either, so a marker never keeps or frees
+  them, which
+  `test_the_long_lived_stack_is_set_aside_before_its_retention_marker_is_read`
+  pins.
 - Protection is matched on the **run prefix**, so a retained `idp-MMDD-HHMMSS`
   also protects its `-iam` stack. Without that the reaper would delete the
   service role and permissions boundary out from under the stack being
@@ -1354,9 +1360,102 @@ Each run tears down its own stacks and buckets, but an interrupted teardown (e.g
 credentials expiring mid-cleanup) can leak them — and leaked test resources had
 previously exhausted the account's IAM-role quota and piled up thousands of
 buckets. To stay self-healing, every run first reaps **stale** leftovers from
-prior runs: test VPCs, IDP stacks (and their IAM helper stacks), and orphaned S3
-buckets. All reapers are **age-gated and skip anything a concurrent pipeline is
-still using**, so they never touch a live run.
+prior runs — test VPCs, IDP stacks (and their IAM helper stacks), orphaned S3
+buckets, BDA blueprints and projects, and leaked IAM roles and managed
+policies — and expires diagnostics bundles past their 30-day window. All but
+the BDA reaper are **age-gated**, so a concurrent pipeline's in-flight run is
+never touched; that one is gated on its run's surviving stacks instead.
+
+**One stack is left standing at any age: `idp-ux-nightly`**, the name reserved
+for a long-lived review stack that is updated in place rather than created per
+run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). The stack and
+bucket reapers would otherwise each take it in its own way. The stack reaper
+would delete it and its `-iam` pre-stack once they passed its age gate. The
+bucket reaper would empty and delete its buckets once they passed its own, even
+with the stack up, because its live-stack protection is keyed on a run's
+`idp-MMDD-HHMMSS` prefix and that name carries none. Those two are the only
+reapers that consult the set. The stack reaper skips `idp-ux-nightly` and its
+pre-stack, `idp-ux-nightly-iam`, and no other stack: it asks only about
+top-level stacks, so the stack's nested stacks never reach that check, and any
+other top-level `idp-ux-nightly-*` stack is a stack of its own, reaped once it
+passes the age gate. The bucket reaper skips every bucket named
+`idp-ux-nightly-*` by matching the name followed by `-`, which is how
+CloudFormation names every bucket of the stack, since none of its templates
+names one. So a lookalike such as `idp-ux-nightly2` gets no such protection
+from either reaper. Each of the two sets those names aside before its age gate
+and before the run-prefix protection it applies, so its log line counts them as
+not examined rather than as spared: its age gate would have kept some of them
+anyway. Those gates keep an item the listing did not date and name it, on a
+line of their own, as one whose age could not be established, so a resource of
+that stack is counted on the long-lived line rather than named on that one.
+
+The BDA, IAM-role and IAM-policy reapers do not consult the set at all. Each
+deletes only names that carry a run prefix whose run has no surviving stack,
+and `scripts/sdlc/tests/test_startup_sweep_outcomes.py` computes for every
+member that no name opening with it carries one, and measures on each of the
+three reapers that none of those names is reaped with no run live. Those names
+include the stack's BDA-as-OCR project, `idp-ux-nightly_OCR_StdOutput`, its
+pre-stack's service role and, where the stack deploys a bastion host, that
+host's role, `idp-ux-nightlyBastionHost-Role`, whose name has no separator at
+all. The IAM-role and IAM-policy reapers pass over those names before their age
+gates, as they do every name without a run prefix. The BDA reaper reads the
+account's stacks only when a name it listed carries a run prefix, so a stack
+listing that fails reports only the run-prefixed names it left undecided, and
+nothing for a listing of that stack's names alone.
+
+Four routes can still take part of that stack:
+
+- The stack reaper spares two names, not a prefix, so a stack deployed beside
+  that stack under its default name is reaped once it passes that reaper's age
+  gate: a feature extension, `idp-ux-nightly-feature-<id>` — the name
+  `idp-feature-cli deploy` and a console install from the web UI both propose —
+  and the endpoints stack `scripts/deploy-vpc-endpoints.py` deploys for a
+  private network, `idp-ux-nightly-VPCEndpoints`. Give either a stack name that
+  does not start `idp-` (`--stack-name` for the first, `--endpoints-stack-name`
+  for the second). For a feature extension that has a cost:
+  `getFeatureLaunchUrl` may call `DescribeStacks` only on
+  `idp-ux-nightly-feature-*`, so the web UI's link for updating a renamed one
+  falls back to the create form, which fails for a stack that already exists;
+  `idp-feature-cli deploy --stack-name` still updates it.
+- The apigw test-VPC reaper does not consult the set, so an
+  `idp-ux-nightly*-apigw-vpc` stack is still reaped once it passes that
+  reaper's age gate. Nothing creates one for that stack.
+- Each run's own teardown (`idp-cli delete --force-delete-all`) deletes every
+  disabled `Web app cloudfront distribution` it finds, whichever stack owns it,
+  so that stack's distribution survives only while it stays enabled. The same
+  teardown tries to delete `idp-ux-nightly-security-headers-policy` whenever
+  that stack reads as failed (`UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`, or a
+  creation that failed or rolled back), which CloudFront refuses only while a
+  distribution still uses the policy.
+- The set protects names, not dependencies. A run's `-iam` service role and
+  permissions boundary go at that run's teardown, which deletes every `idp-`
+  role that names the boundary before the boundary itself, so a stack deployed
+  under a run's boundary loses its own roles when that run ends. The region's
+  API Gateway logging role is an account setting naming the
+  `ApiGatewayCloudWatchRole` of the last stack to create one at `INFO` or
+  `DEBUG`. A run's teardown and the IAM-role reaper both delete a run's copy,
+  so if the setting names one, a stack running at `INFO` or `DEBUG` stops
+  getting API Gateway logs once that copy is gone. CI deploys at `WARN`, which
+  creates neither. The `idp-cli-config-*` bucket that
+  `idp-cli deploy --custom-config <local file>` uploads to goes once it is older
+  than the bucket reaper's age gate. So deploy the stack through its own
+  `idp-ux-nightly-iam` pre-stack and boundary, or the shared boundary, and keep
+  any custom configuration outside an `idp-*` bucket.
+
+Three consequences follow. Nothing reaps a leftover of that stack's own that the
+reapers spare by name — a bucket an update orphaned, or the stack or its
+pre-stack left in `DELETE_FAILED` — so one is removed by hand. A stack the stack
+reaper does take under an `idp-ux-nightly-*` name leaves behind every bucket its
+template marks `Retain` or `RetainExceptOnCreate`, empty or not, because that
+reaper deletes with a plain `DeleteStack`; those buckets are named
+`idp-ux-nightly-<x>-…`, so the bucket reaper spares them too, and any role the
+template retains carries no run prefix, so the IAM-role reaper never takes it.
+Both are removed by hand as well. And naming another stack here means changing
+the pinned set in `scripts/sdlc/tests/test_startup_sweep_outcomes.py` and its
+entry in `scripts/tests/gate_exemptions.json`. A reaper added to Step 0 later fails
+that same module until it either consults the set or is named there with its
+reason for not doing so, so whether it can take that stack is decided when it
+is written.
 
 ## Success Criteria
 
