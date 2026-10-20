@@ -68,6 +68,7 @@ from typing import Any, Mapping, Optional, Tuple
 import boto3
 import config_scope
 import testset_scope
+from s3_targets import ResourceAccessDenied
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +364,18 @@ def _assert_config_profile_allowed(
             "Refusing a configuration-revision read: the requested profile is "
             "outside the caller's allowedConfigVersions."
         )
-        raise PermissionError(_REFUSAL)
+        # The one refusal in this module that is a decision about the object the
+        # caller named, so it declares itself: `ResourceAccessDenied` reaches the
+        # client as `authzControl: "resource"`. The branches around it stay the
+        # unattributed `PermissionError` on purpose — an unevaluable scope and a
+        # missing identity are facts about the deployment and the principal, and
+        # `_assert_test_set_allowed` additionally folds this resolver's own GROUP
+        # check into one exception (`assert_can_access_test_set` refuses a Viewer or
+        # Reviewer outright), which `resource` would misattribute.
+        #
+        # No existence oracle here: the profile name comes out of the key and is
+        # matched against a set, with no lookup asking whether it exists.
+        raise ResourceAccessDenied(_REFUSAL)
 
 
 def _assert_test_set_allowed(
@@ -407,8 +419,11 @@ def assert_key_in_scope(
     """Refuse the read unless the caller's scope covers this key.
 
     A no-op for every key no scope axis partitions, which is the majority of them.
-    Raises ``PermissionError`` (HTTP 403 ``Unauthorized``) otherwise, with a message
-    that discloses nothing about the object.
+    Raises a ``PermissionError`` (HTTP 403 ``Unauthorized``) otherwise, with a
+    message that discloses nothing about the object. The configuration-profile
+    mismatch raises the ``ResourceAccessDenied`` subclass, which additionally
+    declares itself as a per-object control; see that branch for why its neighbours
+    do not.
     """
     subject = scope_subject(
         bucket,

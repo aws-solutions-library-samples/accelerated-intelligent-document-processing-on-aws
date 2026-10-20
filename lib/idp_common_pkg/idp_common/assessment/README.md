@@ -538,17 +538,30 @@ corpus mean that scored those as 1.0 would be reporting the share of list-free
 documents. The gate declines to fire there for the same reason — there is nothing to
 score, which is an extraction finding rather than a coverage one.
 
-⚠️ **"Undefined coverage" is not always "extraction returned no list", and the
-difference is a hole.** On almost every committed run an undefined denominator does
-coincide with `rows_extracted == 0`. Four do not: `coresynth__extraction-model-sonnet55`
-on `med_narrow.pdf` extracted **2 rows of 400** while the coverage walk recorded no
-denominator at all, so the rung could say nothing about the 398 that were lost
-([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)).
-Where the walk sees no denominator it is reporting that it could not measure, not that
-there was nothing to measure, and those two are indistinguishable downstream.
+⚠️ **An undefined denominator means there was no list to walk, and that is not the
+same as nothing having gone wrong.** The walk counts the rows of list-valued
+attributes, so it reports no denominator precisely when the attribute holds no
+list — which happens both on a document that legitimately has no rows and on one
+where the model returned something else entirely in a field the schema declares as
+an array. The coverage rung cannot tell those apart and is right to stay quiet in
+both: the finding belongs to extraction, and
+`extraction_list_field_not_a_list` is what reports it
+([#1505](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1505)).
+
+The worked case is worth knowing because the figure beside it misleads. Four
+`coresynth__extraction-model-sonnet55` runs on `med_narrow.pdf` carry an undefined
+denominator while `rows_extracted` reads **2 of 400** — which looks like rows the
+walk could not see, and is not: `Transactions` came back as a prose refusal naming
+`SEQ00000` and `SEQ00399`, and the benchmark scorer's identifier scan counted those
+two quoted ids as rows. Zero rows were extracted, so `expected_rows == 0` is the
+correct answer and the row count is the wrong one. ⚠️ **Do not read a non-zero
+`rows_extracted` beside an undefined denominator as a coverage gap** — check what
+the field actually holds first.
 `benchmarks/tests/test_coverage_threshold_evidence.py::test_an_undefined_coverage_run_extracted_nothing`
 carves those four out by grid **and** count, so a fifth instance or the same shape on
-another model fails there.
+another model fails there, and
+`test_row_identity_collapse.py::test_a_prose_refusal_inflates_the_row_count`
+executes the scan to show where the 2 comes from.
 
 The benchmark harness records it per document
 (`benchmarks/harness/analyze.py::score_confidence_coverage` → `conf_rows_expected`,
