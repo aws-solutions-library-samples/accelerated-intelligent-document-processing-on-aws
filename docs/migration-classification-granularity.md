@@ -1,3 +1,7 @@
+---
+title: "Classification Method → Granularity + Modality (config format 0.8)"
+---
+
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
