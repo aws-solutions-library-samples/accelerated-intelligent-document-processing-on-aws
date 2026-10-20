@@ -1073,6 +1073,11 @@ Resources:
                 type: object
                 sectionLabel: Modality
                 collapsible: false
+                # Both flags default to empty, and the form deletes an object
+                # once its last field is cleared — so this group's key is often
+                # absent from a stored configuration, and without this it is
+                # invisible with both settings unreachable.
+                renderWhenAbsent: true
                 description: "What each call sees. Applies to both granularities. Leave a flag empty to infer it from the Task prompt's placeholders. Both off is refused when you save."
                 order: 0.1
                 properties:
@@ -1514,7 +1519,7 @@ Resources:
                 type: string
                 title: System prompt
                 format: textarea
-                description: "System prompt for page-level calls. At packet granularity the Packet system prompt is used instead."
+                description: "System prompt for page-level calls. At packet granularity the Packet system prompt is used instead, and two-stage Stage B falls back to this one if its own is cleared."
                 order: 15
               task_prompt:
                 type: string

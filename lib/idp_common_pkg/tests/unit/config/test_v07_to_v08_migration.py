@@ -39,7 +39,14 @@ from idp_common.config.migrations.v07_to_v08 import (
 )
 from idp_common.config.models import CONFIG_FORMAT_VERSION, IDPConfig
 
-PACKET_PROMPT = "Return segments.\n{CLASS_NAMES_AND_DESCRIPTIONS}\n{DOCUMENT_TEXT}\n"
+# A realistic hand-written packet prompt. It MUST name the keys the parser reads
+# — `segments` with `ordinal_start_page` — or every segment it returns is
+# skipped, which is why requiring the page ordinal alongside the word "segments"
+# cannot misclassify a prompt that actually worked under holistic.
+PACKET_PROMPT = (
+    "Return segments with ordinal_start_page and ordinal_end_page.\n"
+    "{CLASS_NAMES_AND_DESCRIPTIONS}\n{DOCUMENT_TEXT}\n"
+)
 PAGE_PROMPT = "Classify this page.\n{DOCUMENT_TEXT}\n{DOCUMENT_IMAGE}\n"
 
 
@@ -208,13 +215,16 @@ class TestHolisticPromptRelocation:
             {
                 "classification": {
                     "classificationMethod": "textbasedHolisticClassification",
-                    "task_prompt": "my own: return segments",
-                    "packet": {"task_prompt": "the shipped default, segments"},
+                    "task_prompt": "my own: return segments with ordinal_start_page",
+                    "packet": {
+                        "task_prompt": "the shipped default, segments ordinal_start_page"
+                    },
                 }
             }
         )
         assert (
-            out["classification"]["packet"]["task_prompt"] == "my own: return segments"
+            out["classification"]["packet"]["task_prompt"]
+            == "my own: return segments with ordinal_start_page"
         )
 
     def test_a_flat_page_prompt_is_not_relocated(self):
@@ -231,14 +241,16 @@ class TestHolisticPromptRelocation:
                 "classification": {
                     "classificationMethod": "textbasedHolisticClassification",
                     "task_prompt": page_shaped,
-                    "packet": {"task_prompt": "the shipped packet one, segments"},
+                    "packet": {
+                        "task_prompt": "the shipped packet one, segments ordinal_start_page"
+                    },
                 }
             }
         )
         assert out["classification"]["granularity"] == "packet"
         assert (
             out["classification"]["packet"]["task_prompt"]
-            == "the shipped packet one, segments"
+            == "the shipped packet one, segments ordinal_start_page"
         )
         assert out["classification"]["task_prompt"] == page_shaped
 

@@ -1660,12 +1660,17 @@ class ClassificationPacketConfig(BaseModel):
     granularity is not orthogonal to the prompt**, even though modality is. A
     page-level call is asked for one class plus a ``start``/``continue`` verdict;
     a packet-level call is asked for a list of segments. Different output
-    schemas, so different prompts and different parsers. Sharing one key is what
-    made the old ``classificationMethod`` dropdown unusable: selecting holistic
-    sent the page prompt — which asks for ``{"class", "document_boundary"}`` —
-    to the packet parser, which reads ``segments``, and the document failed with
-    "No segments found in the classification result". No shipped preset set that
-    value, so the enum was effectively unreachable from the UI.
+    schemas, so different prompts and different parsers.
+
+    Sharing one key is what made the ``classificationMethod`` dropdown that
+    preceded these settings unusable: selecting holistic sent the page prompt —
+    which asks for ``{"class", "document_boundary"}`` — to the packet parser,
+    which reads ``segments``, and the document failed with "No segments found in
+    the classification result". No shipped preset set that value, so the enum
+    was effectively unreachable from the UI. It was removed in config format
+    0.8; a stored config carrying it is migrated by
+    ``migrations.v07_to_v08``, which relocates such a hand-written flat prompt
+    into this block.
     """
 
     window_pages: int = Field(
@@ -1704,9 +1709,9 @@ class ClassificationPacketConfig(BaseModel):
             "Task prompt for packet-level calls. Asks for a `segments` array "
             "rather than one class plus a boundary verdict, so it is a separate "
             "key from classification.task_prompt. Empty falls back to "
-            "classification.task_prompt, which is what a configuration "
-            "predating this setting and using "
-            "classificationMethod: textbasedHolisticClassification relies on."
+            "classification.task_prompt, which is also where the migration from "
+            "config format 0.7 copies a pre-0.8 packet configuration's "
+            "hand-written prompt from."
         ),
     )
 

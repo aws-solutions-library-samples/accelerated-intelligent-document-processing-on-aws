@@ -43,9 +43,15 @@ classification:
 | Stored | Becomes |
 |---|---|
 | `classificationMethod: multimodalPageLevelClassification` | `granularity: page` |
-| `classificationMethod: textbasedHolisticClassification` | `granularity: packet`, **and the flat prompts move to `classification.packet`** (see below) |
+| `classificationMethod: textbasedHolisticClassification` | `granularity: packet`, **and the flat prompts are copied to `classification.packet`** (see below) |
 | An unrecognised value | `granularity: page`, with a warning — the same thing the service did with it |
 | `granularity` already set | Left alone. An explicit setting always wins over the migrated one |
+
+⚠️ **A released deployment carries `classificationMethod` and no `granularity`
+at all.** `granularity` was added one commit before this change, so only a
+configuration written by an unreleased `develop` build can carry the
+`granularity: ""` placeholder the "already set" row excludes. If you are
+upgrading from a release, the first row or the second applies to you.
 
 The value is matched case- and whitespace-insensitively, since a hand-written
 config is where this key most often came from.
@@ -67,7 +73,7 @@ receiving images again, and their cost would rise. If you used that workaround,
 it keeps working untouched — and you can now say the same thing explicitly with
 `modality.images: false` if you prefer the setting to the prompt edit.
 
-### ⚠️ A holistic config's prompts move
+### ⚠️ A holistic config's prompts are copied into `classification.packet`
 
 This is the one part of the conversion that is not a rename, and it exists
 because of a quirk of how the old setting worked.
@@ -84,15 +90,28 @@ packet prompt and quietly ignore yours — on the one path where the output shap
 is what the parser depends on. The conversion therefore **copies** your flat
 `system_prompt` and `task_prompt` into `classification.packet`:
 
+**Stored (pre-0.8):**
+
 ```yaml
-# Stored (pre-0.8)                      # After conversion
-classification:                         classification:
-  classificationMethod:                   granularity: packet
-    textbasedHolisticClassification       packet:
-  task_prompt: |                            task_prompt: |
-    ... return segments ...                   ... return segments ...   # yours
-                                          task_prompt: |
-                                            ... return segments ...     # still here
+classification:
+  classificationMethod: textbasedHolisticClassification
+  system_prompt: You split packets.
+  task_prompt: |
+    ... return segments with ordinal_start_page ...
+```
+
+**After conversion:**
+
+```yaml
+classification:
+  granularity: packet
+  packet:
+    system_prompt: You split packets.          # copied
+    task_prompt: |                             # copied
+      ... return segments with ordinal_start_page ...
+  system_prompt: You split packets.            # still here
+  task_prompt: |                               # still here
+    ... return segments with ordinal_start_page ...
 ```
 
 Two details:

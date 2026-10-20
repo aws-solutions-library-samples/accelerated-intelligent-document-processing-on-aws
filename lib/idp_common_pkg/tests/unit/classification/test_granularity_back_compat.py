@@ -126,7 +126,8 @@ class TestAliasTable:
         # granularity reads it from — so the modality INFERENCE reads it there
         # too, and this config stays text-only exactly as it was.
         config["task_prompt"] = (
-            "Return segments.\n{CLASS_NAMES_AND_DESCRIPTIONS}\n{DOCUMENT_TEXT}\n"
+            "Return segments with ordinal_start_page.\n"
+            "{CLASS_NAMES_AND_DESCRIPTIONS}\n{DOCUMENT_TEXT}\n"
         )
         service = _service(config)
         assert service.granularity == ClassificationService.GRANULARITY_PACKET
@@ -219,7 +220,7 @@ class TestIdenticalPrompts:
         """⚠️ The row most easily broken. Preferring the new shipped packet
         default here would silently replace the operator's own prompt."""
         hand_written = (
-            "MY OWN HOLISTIC PROMPT: return segments "
+            "MY OWN HOLISTIC PROMPT: return segments with ordinal_start_page "
             "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}"
         )
         config = _shipped_classification()

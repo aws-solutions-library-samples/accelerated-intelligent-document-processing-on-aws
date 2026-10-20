@@ -3112,18 +3112,21 @@ class ClassificationService:
     def classify_document(self, document: Document) -> Document:
         """
         Classify a document's pages and update the Document object with sections.
-        Uses the configured backend (Bedrock or SageMaker) and classification method.
+        Uses the configured backend (Bedrock or SageMaker).
 
-        The classification method is determined by the 'classificationMethod' setting:
-        - multimodalPageLevelClassification (default): Uses page-by-page classification
-          with sequence segmentation similar to BIO (Begin-Inside-Outside) tagging.
-          Each page receives both a document type and a boundary indicator:
-          * "start": Marks the beginning of a new document segment
-          * "continue": Indicates continuation of the current segment
-          This enables accurate segmentation of multi-document packets where multiple
-          documents of the same or different types may be combined in a single file.
-        - textbasedHolisticClassification: Processes the entire document as a packet
-          to identify document segments across pages using a holistic approach.
+        Dispatch reads ``strategy`` first, then ``granularity``:
+        - ``strategy: two_stage`` — boundaries first with no class vocabulary in
+          the prompt, then one labeling call per segment. Honours ``granularity``
+          inside Stage A, so the two settings compose rather than nest.
+        - ``granularity: page`` (the default) — one call per page, with sequence
+          segmentation similar to BIO (Begin-Inside-Outside) tagging. Each page
+          receives a document type and a boundary indicator, ``"start"`` for the
+          first page of a document instance or ``"continue"`` for a later one,
+          which is what segments a packet holding several documents of the same
+          type.
+        - ``granularity: packet`` — one call per packet (or per window), which
+          returns the segments directly rather than having them pieced together
+          from per-page verdicts.
 
         Single-class configurations short-circuit the class decision (no backend
         call) but still honor ``sectionSplitting``: ``disabled`` yields one

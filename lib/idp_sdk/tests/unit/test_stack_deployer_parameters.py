@@ -864,7 +864,12 @@ def test_an_explicit_pattern_overrides_auto_detection(
 
     monkeypatch.setattr(merge_utils, "merge_config_with_defaults", fake_merge)
     cfg = tmp_path / "c.yaml"
-    cfg.write_text(yaml.dump({"classification": {"classificationMethod": "bda"}}))
+    # A BDA-flavoured config, expressed the way detection reads it. This said
+    # `{"classification": {"classificationMethod": "bda"}}`, which after config
+    # format 0.8 is a value nothing produces and nothing reads — the assertion
+    # (that an explicit `pattern=` short-circuits detection) stayed valid while
+    # the fixture stopped expressing anything.
+    cfg.write_text(yaml.dump({"use_bda": True}))
 
     with mock_aws():
         upload_local_config(str(cfg), "us-east-1", pattern="pattern-2")

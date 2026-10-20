@@ -45,7 +45,7 @@ worked was a **hand-written, packet-shaped** flat ``task_prompt``. Setting
 ``classification.packet.task_prompt``, which for such a config is the shipped
 default — silently replacing the operator's own prompt with ours, on a path where
 the output shape is what the parser depends on. So for a holistic config the flat
-prompts are **moved into** ``classification.packet``, where the packet path reads
+prompts are **copied into** ``classification.packet``, where the packet path reads
 them. A page-level config's prompts are left exactly where they are.
 """
 
@@ -149,9 +149,15 @@ def migrate_v07_to_v08(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 #: What a packet-shaped task prompt must ask for. The parser reads a ``segments``
-#: array of ``{ordinal_start_page, ordinal_end_page, type}``, so a prompt that
-#: does not mention ``segments`` is not a packet prompt whatever else it says.
-_PACKET_PROMPT_MARKER = "segments"
+#: array of ``{ordinal_start_page, ordinal_end_page, type}``, so a prompt asking
+#: for none of those keys is not a packet prompt whatever else it says.
+#:
+#: Anchored to the parser's **output contract** rather than to the bare word
+#: "segments": a page-level prompt whose prose happens to use that word — "pages
+#: are grouped into segments downstream", say — would otherwise be read as a
+#: hand-written packet prompt and copied over the shipped one. Requiring a page
+#: ordinal alongside it is what makes the test about the response shape.
+_PACKET_PROMPT_MARKERS = ("segments", "ordinal_start_page")
 
 
 def _is_packet_shaped(prompt: Any) -> bool:
@@ -174,10 +180,13 @@ def _is_packet_shaped(prompt: Any) -> bool:
       which actually works.
 
     Asking what the prompt requests separates those cleanly: a prompt asking for
-    ``segments`` is the operator's hand-written packet prompt and must be kept; a
-    prompt that does not is the page default and must not be.
+    a ``segments`` array of page ordinals is the operator's hand-written packet
+    prompt and must be kept; a prompt that does not is the page default and must
+    not be.
     """
-    return isinstance(prompt, str) and _PACKET_PROMPT_MARKER in prompt
+    if not isinstance(prompt, str):
+        return False
+    return all(marker in prompt for marker in _PACKET_PROMPT_MARKERS)
 
 
 def _relocate_packet_prompts(classification: Dict[str, Any]) -> None:

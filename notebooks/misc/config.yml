@@ -167,7 +167,7 @@ classification:
     various domains. Your task is to determine the document type based on its
     content and structure, using the provided document type definitions. Your
     output must be valid JSON according to the requested format.
-  classificationMethod: textbasedHolisticClassification
+  granularity: packet
 notes: Default settings
 classes:
   - name: letter

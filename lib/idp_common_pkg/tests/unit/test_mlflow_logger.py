@@ -258,14 +258,49 @@ class TestExtractConfigParams:
         params, _, _ = mlflow_logger._extract_config_params(config)
         assert params["use_bda"] == "False"
 
-    def test_classification_method(self):
+    def test_classification_settings(self):
+        """The settings that make one experiment distinguishable from another.
+
+        This asserted `classification.method` from `classificationMethod` — and
+        kept passing after that key was removed in config format 0.8, because it
+        handed the legacy key straight to `_extract_config_params` and so tested
+        a code path production could no longer reach. The parameter had silently
+        disappeared from every run with nothing replacing it.
+        """
+        config = {
+            "classification": {
+                "granularity": "packet",
+                "strategy": "two_stage",
+                "modality": {"text": True, "images": False},
+            }
+        }
+        params, _, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.granularity"] == "packet"
+        assert params["classification.strategy"] == "two_stage"
+        assert params["classification.modality.text"] == "True"
+        assert params["classification.modality.images"] == "False"
+
+    def test_an_inferred_modality_is_logged_as_inferred(self):
+        """An empty flag means "infer from the prompt's placeholders", which is a
+        real setting rather than an absent one — so a run using the inference
+        must not look identical to one where the key was never written."""
+        config = {"classification": {"modality": {"text": "", "images": ""}}}
+        params, _, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.modality.text"] == "infer"
+        assert params["classification.modality.images"] == "infer"
+
+    def test_the_removed_key_logs_nothing(self):
+        """A config still carrying `classificationMethod` reaches this function
+        only if it bypassed the migration; it must not resurrect the old
+        parameter name, which would make two differently-configured runs look
+        the same."""
         config = {
             "classification": {
                 "classificationMethod": "multimodalPageLevelClassification"
             }
         }
         params, _, _ = mlflow_logger._extract_config_params(config)
-        assert params["classification.method"] == "multimodalPageLevelClassification"
+        assert "classification.method" not in params
 
     def test_assessment_confidence_params(self):
         # v0.6: HITL threshold is top-level; confidence knobs live under

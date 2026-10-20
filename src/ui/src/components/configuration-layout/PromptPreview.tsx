@@ -1137,14 +1137,21 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
       let system: string;
       let task: string;
       let model: string;
+      // ⚠️ `||`, not `??`, throughout. The service falls back on TRUTHINESS
+      // (`if value:` in `_stage_prompt`), and clearing a textarea in this form
+      // yields `''` rather than undefined — so `??` would show an empty preview
+      // for a cleared stage prompt while the service sends the single-pass one,
+      // which is exactly the case its warning exists to tell the operator
+      // about. A preview that disagrees with the runtime on the setting the
+      // operator just changed is worse than no preview.
       if (selectedStep === 'classification_labeling') {
-        system = String(labeling.system_prompt ?? cls.system_prompt ?? '');
-        task = String(labeling.task_prompt ?? cls.task_prompt ?? '');
+        system = String(labeling.system_prompt || cls.system_prompt || '');
+        task = String(labeling.task_prompt || cls.task_prompt || '');
         model = String(labeling.model || sharedModel);
       } else if (selectedStep === 'classification_segmentation') {
         const source = isPacket ? segPacket : segmentation;
-        system = String(source.system_prompt ?? cls.system_prompt ?? '');
-        task = String(source.task_prompt ?? cls.task_prompt ?? '');
+        system = String(source.system_prompt || cls.system_prompt || '');
+        task = String(source.task_prompt || cls.task_prompt || '');
         model = String(segmentation.model || sharedModel);
       } else if (isPacket) {
         system = String(packet.system_prompt || cls.system_prompt || '');

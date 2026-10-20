@@ -159,6 +159,11 @@ interface SchemaProperty {
     not?: unknown;
     notValues?: unknown[];
   }>;
+  // Render this object group even when its own key is absent from the stored
+  // configuration. See the note in renderField: without it a group whose key has
+  // never been written — or was deleted when its last field was cleared — is
+  // invisible, and every field inside it is unreachable with nothing saying why.
+  renderWhenAbsent?: boolean | string;
   sectionLabel?: string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
   // sibling field matches (e.g. expand "Agentic Extraction" when enabled=true).

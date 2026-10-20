@@ -6,9 +6,7 @@ import os
 from typing import Dict, Any, Optional, Union, overload, Literal
 from botocore.exceptions import ClientError
 import logging
-from copy import deepcopy
 from .configuration_manager import ConfigurationManager
-from .merge_utils import deep_update
 from .models import (
     IDPConfig,
     ConfigurationRecord,
@@ -116,27 +114,30 @@ class ConfigurationReader:
         return idp_config
 
 
-    def simple_merge(
-        self, default: Dict[str, Any], custom: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Deep merge with custom values overriding defaults.
+    # `simple_merge(default, custom)` was here: a `deep_update` of a deepcopied
+    # default with no migration of `custom`. It had no callers, and it is deleted
+    # rather than kept because config format 0.8 turned it from unused into a
+    # trap.
+    #
+    # ⚠️ The hazard is specific. The 0.8 migration's "an explicit granularity
+    # wins" rule is `if not classification.get("granularity")`, and the shipped
+    # default moved from `granularity: ""` to `granularity: page`. So on any path
+    # that merges a legacy delta onto the new defaults BEFORE migrating, that
+    # `page` default would shadow `classificationMethod:
+    # textbasedHolisticClassification` and silently downgrade an operator's
+    # packet behaviour to page — where the old `""` default could not, because it
+    # was falsy.
+    #
+    # Every live path migrates first, deliberately:
+    # `merge_utils.merge_config_with_defaults` migrates the delta at the top (its
+    # docstring says "IMPORTANT — migrate BEFORE merge" about exactly this),
+    # `ConfigurationManager.get_raw_configuration` and
+    # `get_merged_configuration` both migrate before their `deep_update`, and
+    # `update_configuration`'s handler goes through `merge_config_with_defaults`.
+    # Leaving a merge-first helper lying around is how a future caller reopens
+    # it; use `merge_config_with_defaults`, which takes `migrate=`.
 
-        Custom configuration should only contain fields that differ from default,
-        not a complete configuration tree. Nested dicts are merged recursively.
 
-        Args:
-            default: The default configuration dictionary
-            custom: The custom overrides dictionary
-
-        Returns:
-            Merged configuration dictionary (default updated with custom)
-        """
-        from copy import deepcopy
-
-        merged = deepcopy(default)
-        return deep_update(merged, custom)
-    
     @overload
     def get_merged_configuration(
         self, *, as_model: Literal[True], version: Optional[str] = None, revision: Optional[int] = None

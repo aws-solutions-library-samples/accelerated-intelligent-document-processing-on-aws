@@ -4,8 +4,8 @@
 # ============================================================================
 # Classification (minimal — single doc type for testing)
 # ============================================================================
-classificationMethod: textbasedHolisticClassification
 classification:
+  granularity: packet
   model: us.anthropic.claude-sonnet-4-6
   temperature: "0"
   top_p: "0"
