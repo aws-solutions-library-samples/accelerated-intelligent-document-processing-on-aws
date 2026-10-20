@@ -116,7 +116,7 @@ class TestManagedDynamoDBSerialization:
                 "system_prompt": "",
                 "task_prompt": "",
                 "maxPagesForClassification": "ALL",
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
                 "sectionSplitting": "llm_determined",
                 "contextPagesCount": "0",
             },

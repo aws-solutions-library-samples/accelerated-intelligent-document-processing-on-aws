@@ -565,14 +565,78 @@ def _first_failure_reason(existing, candidate):
     return existing or candidate
 
 
+#: Stacks the Step 0 stack and bucket sweeps leave standing, the only two sweeps
+#: that read this set. The stack sweep spares each one and its `-iam` pre-stack
+#: (`_is_exempt_stack_or_pre_stack`); the bucket sweep spares every bucket named
+#: for it (`_named_for_exempt_stack`). Without the set, the stack sweep would take
+#: that stack and its pre-stack, and the bucket sweep its buckets, once each
+#: passed that sweep's age gate. The stack sweep lists such a stack in either
+#: status an update in place completes or rolls back to (`UPDATE_COMPLETE`,
+#: `UPDATE_ROLLBACK_COMPLETE`), though not while an update is in progress or
+#: after one stops in `UPDATE_ROLLBACK_FAILED`, and past its gate keeps one it
+#: lists only for a retention marker, which a run writes for its own stack alone.
+#: Past its gate, the bucket sweep keeps a bucket only while a stack of its run
+#: survives, read through a run prefix that `idp-ux-nightly` does not carry.
+#: That name is reserved for a review stack that outlives every run, updated in
+#: place rather than created per run. Each sweep asks the set ahead of its age
+#: gate and of the run-prefix protection it applies, so a name it spares is
+#: counted as not examined, never reported as an item whose age could not be
+#: established (#1445). The BDA, IAM-role and IAM-policy sweeps do not read the
+#: set: each reaps only names carrying a run prefix, and
+#: test_startup_sweep_outcomes.py computes that no name opening with a member's
+#: name carries one.
+#: Registered in scripts/tests/gate_exemptions.json.
+SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly"})
+
+
+def _named_for_exempt_stack(name: str) -> bool:
+    """Whether `name` is named for a SWEEP_EXEMPT_STACK_NAMES stack: `<stack>-…`.
+
+    The bucket sweep's match; the stack sweep's is
+    `_is_exempt_stack_or_pre_stack`, and no other sweep reads the set. Every
+    bucket the stack has is declared in `template.yaml`, the one template it
+    deploys that declares any, and none is named there, so CloudFormation names
+    each `<stack>-<LogicalId>-<suffix>`, lowercased; the `-iam` pre-stack
+    declares no bucket. CloudFormation shortens such a name where it would run
+    past S3's 63 characters, so it opens with the stack's name and a hyphen
+    wherever it fits whole, and none is that name alone. The match is known to
+    reach them only while the member has no capital letter and is short enough
+    for every one of those names to fit, both of which
+    test_startup_sweep_outcomes.py computes for every member over every bucket
+    `template.yaml` declares. It stops at the hyphen because a bucket name
+    cannot hold `_` and no bucket of that stack is named without a separator, so
+    a wider match could only spare another stack's buckets: `idp-ux-nightly2`
+    does not match.
+    """
+    return any(name.startswith(f"{stack}-") for stack in SWEEP_EXEMPT_STACK_NAMES)
+
+
+def _is_exempt_stack_or_pre_stack(name: str) -> bool:
+    """Whether `name` is a SWEEP_EXEMPT_STACK_NAMES stack or its `-iam` pre-stack.
+
+    The stack sweep's match, two names where the bucket sweep's
+    `_named_for_exempt_stack` takes every `<stack>-…`, and kept to those two on
+    purpose. That sweep reaches it only for top-level stacks, having passed over
+    every nested stack first, so the long-lived stack's nested stacks never
+    depend on it. Any other top-level stack named `<stack>-…` is a stack of its
+    own, which, were it spared, would hold its IAM roles until somebody removed
+    it by hand, so it is reaped like the rest once it passes the age gate: a
+    throwaway somebody named after the long-lived stack, and equally a feature
+    extension installed into it under the default stack name
+    `<stack>-feature-<id>`.
+    """
+    return any(name in (stack, f"{stack}-iam") for stack in SWEEP_EXEMPT_STACK_NAMES)
+
+
 def cleanup_stale_bda_blueprints():
     """Delete idp- BDA projects, blueprint versions and blueprints whose run is over.
 
     THREE enumerations, and any one failing leaves nothing that can be deleted
     safely, so each produces a finding: `list_blueprints` and
-    `list_data_automation_projects` in one block, then the account's surviving
-    stacks through `_live_idp_run_prefixes`. Returns the Step 0 sweep outcome
-    described at STARTUP_SWEEPS: an empty list only if every listing answered and
+    `list_data_automation_projects` in one block, then, when a name those two
+    returned carries a run prefix, the account's surviving stacks through
+    `_live_idp_run_prefixes`. Returns the Step 0 sweep outcome described at
+    STARTUP_SWEEPS: an empty list only if every listing it made answered and
     every idp- blueprint and project in them was considered. Never raises.
 
     A name is reaped only when it carries a run prefix (`_IDP_RUN_PREFIX_RE`, the
@@ -597,9 +661,14 @@ def cleanup_stale_bda_blueprints():
     completing: `_live_idp_run_prefixes` raises rather than returning the stacks
     it had read, since a partial set would read every run on a missing page as
     over. Then nothing is deleted and the sweep reports itself incomplete ONCE,
-    however many names it listed. One paginated call per sweep, rather than a
-    question per name, also keeps the sweep's own requests from causing the
-    throttling it would then have to report.
+    however many names it listed, counting the ones that carry a run prefix,
+    which are the names the enumeration was to decide. At most one paginated
+    call per sweep, rather than a question per name, also keeps the sweep's own
+    requests from causing the throttling it would then have to report. None is
+    made for a listing in which no name carries a run prefix: nothing in it can
+    be deleted, so it is considered whole without the stacks, and a stack
+    enumeration that would have failed cannot report the sweep incomplete over
+    names it never deletes.
 
     The BDA listings are read BEFORE the stacks, and with no age gate that order
     is what keeps a starting run safe. A BDA resource is created by a stack that
@@ -607,6 +676,16 @@ def cleanup_stale_bda_blueprints():
     owner of everything the listing returned, while that owner is up. Read the
     other way round, a run whose stack and first resources both appeared
     between the two reads would be listed and not protected.
+
+    The run-prefix rule alone keeps a SWEEP_EXEMPT_STACK_NAMES stack's
+    blueprints and projects, so this sweep does not read that set, any more than
+    the IAM-role and IAM-policy sweeps do. A member's name carries no run
+    prefix, and neither does any name that opens with it, which
+    `test_startup_sweep_outcomes.py` computes for every member; the summary line
+    counts those names among the ones with no run prefix. Such a stack names its
+    BDA-as-OCR project after itself in every commercial-partition deploy, so
+    while one stands this sweep's listing is never empty, and when it lists
+    nothing else, the stacks are not read at all.
 
     One blueprint or project that would not delete stays best effort and is NOT a
     finding — the loops below name it and the next run takes it.
@@ -648,14 +727,15 @@ def cleanup_stale_bda_blueprints():
         print("✅ No stale BDA resources found")
         return []
 
+    prefixed = [n for n, _ in blueprints + projects if _IDP_RUN_PREFIX_RE.match(n)]
     try:
-        live_runs = _live_idp_run_prefixes()
+        live_runs = _live_idp_run_prefixes() if prefixed else set()
     except Exception as e:  # noqa: BLE001
         return _sweep_finding(
             "could not enumerate the account's surviving CloudFormation stacks "
             f"({_aws_error_code(e) or type(e).__name__}), so none of the "
-            f"{len(blueprints) + len(projects)} idp- blueprint(s) and project(s) "
-            "it listed could be established as left over from a run that is "
+            f"{len(prefixed)} idp- blueprint(s) and project(s) it listed with a "
+            "run prefix could be established as left over from a run that is "
             f"over, and none was deleted: {e}"
         )
 
@@ -664,9 +744,10 @@ def cleanup_stale_bda_blueprints():
         def _is_stale(name):
             """Stale only where the name's run prefix has no surviving stack.
 
-            The set is the one `_live_idp_run_prefixes` read in full, so a run
-            missing from it is one the enumeration established is over, rather
-            than one it failed to read. A name with no run prefix is never stale.
+            Where a listed name carries a run prefix, the set is the one
+            `_live_idp_run_prefixes` read in full, so a run missing from it is
+            one the enumeration established is over, rather than one it failed
+            to read. A name with no run prefix is never stale.
             """
             match = _IDP_RUN_PREFIX_RE.match(name)
             return match is not None and match.group(1) not in live_runs
@@ -704,11 +785,12 @@ def cleanup_stale_bda_blueprints():
                     time.sleep(0.5)
 
         matches = [_IDP_RUN_PREFIX_RE.match(name) for name, _ in blueprints + projects]
-        live = len({m.group(1) for m in matches if m and m.group(1) in live_runs})
+        kept = [m.group(1) for m in matches if m and m.group(1) in live_runs]
         unprefixed = matches.count(None)
         print(
-            f"✅ Cleaned up {deleted_projects} projects, {deleted_bps} blueprints "
-            f"(skipped {live} live run(s), {unprefixed} name(s) with no run prefix)"
+            f"✅ Cleaned up {deleted_projects} project(s), {deleted_bps} blueprint(s) "
+            f"(skipped {len(kept)} name(s) of {len(set(kept))} live run(s), "
+            f"{unprefixed} name(s) with no run prefix)"
         )
         return []
     except Exception as e:  # noqa: BLE001
@@ -1084,9 +1166,15 @@ def _delete_iam_role(iam_client, role_name):
     where it never was.
 
     Scoped by the caller, never by this function: it deletes whatever role it is
-    given. Both callers select from an `idp-` run prefix, which is also the bound
-    on the CodeBuild role's own `iam:*` grant (`role/idp-*`), so a selection bug
-    here cannot reach a role outside this harness's own runs.
+    given. `cleanup_stale_idp_roles` selects by an `idp-` run prefix and
+    `cleanup_iam_resources` by a run's permissions boundary, and the CodeBuild
+    role's own `iam:*` grant is bounded at `role/idp-*`, so a selection bug here
+    cannot reach a role whose name does not start `idp-`. That bound is wider
+    than this harness's runs: it also covers a SWEEP_EXEMPT_STACK_NAMES stack's
+    roles, which `cleanup_stale_idp_roles` passes over only because no name
+    opening with a member's carries a run prefix, and every `idp-` role created
+    under a run's boundary, which `cleanup_iam_resources` deletes with that run
+    whichever stack it belongs to.
     """
     try:
         for page in iam_client.get_paginator("list_attached_role_policies").paginate(
@@ -6590,7 +6678,12 @@ def cleanup_stale_idp_stacks():
     the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks).
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
-    by cleanup_stale_apigw_test_vpcs) and the persistent pipeline stack.
+    by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and each
+    SWEEP_EXEMPT_STACK_NAMES stack and its `-iam` pre-stack, whose names carry
+    no run prefix for anything below to protect, so the age gate alone would
+    take them. Only those two names (`_is_exempt_stack_or_pre_stack`): any
+    other top-level stack named for that stack is reaped like the rest. This
+    sweep and the bucket sweep are the only Step 0 sweeps that read that set.
 
     ONE enumeration of targets, `list_stacks`. Returns the Step 0 sweep outcome
     described at STARTUP_SWEEPS: an empty list only if the listing answered and
@@ -6621,7 +6714,13 @@ def cleanup_stale_idp_stacks():
     be established, which is not the same claim as being old enough to delete.
     Neither is a sweep finding: every stack the listing returned was considered,
     and ending a night's run red for a skipped item would make the row that
-    reports a genuinely inert sweep worth less.
+    reports a genuinely inert sweep worth less. A SWEEP_EXEMPT_STACK_NAMES stack
+    and its `-iam` pre-stack are skipped ahead of the markers and the age gate
+    both, so neither is ever in either counter: each is counted as not
+    examined, whatever its `CreationTime` or a retention marker in its name says.
+    That stack's nested stacks are passed over by the top-level filter first, as
+    every nested stack is, so the count is of top-level stacks like every other
+    count here.
     """
     print("🧹 Cleaning up stale idp- test stacks (IAM role leak guard)...")
 
@@ -6633,6 +6732,7 @@ def cleanup_stale_idp_stacks():
         now = datetime.now(tz=timezone.utc)
         stale, skipped_young = [], 0
         skipped_retained = 0
+        skipped_long_lived = 0
         age_unestablishable = []
         #: {run_prefix: why} for a run whose marker read did not answer. Its own
         #: counter rather than folded into `skipped_retained`, because "retained
@@ -6678,6 +6778,9 @@ def cleanup_stale_idp_stacks():
                 # deleted by their parent, and deleting a parent cascades.
                 if s.get("RootId") or s.get("ParentId"):
                     continue
+                if _is_exempt_stack_or_pre_stack(name):
+                    skipped_long_lived += 1
+                    continue
                 match = _IDP_RUN_PREFIX_RE.match(name)
                 run_prefix = match.group(1) if match else name
                 if run_prefix in protected:
@@ -6720,6 +6823,10 @@ def cleanup_stale_idp_stacks():
             print(f"  ({skipped_retained} retained idp- stack(s) skipped)")
         if skipped_young:
             print(f"  ({skipped_young} young idp- stack(s) skipped — may be in-flight)")
+        if skipped_long_lived:
+            print(
+                f"  ({skipped_long_lived} named for a long-lived stack, not examined)"
+            )
         for run_prefix, why in sorted(markers_unreadable.items()):
             print(
                 f"  ⚠️ {run_prefix}: retention marker could not be read ({why}) "
@@ -6785,7 +6892,9 @@ IDP_BUCKET_STALE_AGE_SECONDS = 6 * 3600  # 6h
 
 # idp- run-prefix: "idp-MMDD-HHMMSS". A bucket name is
 # "idp-MMDD-HHMMSS[-suffix]-<role>bucket-<rand>"; we group by this prefix so a
-# bucket is protected iff its RUN still has any CloudFormation stack.
+# bucket is protected iff its RUN still has any CloudFormation stack. A name
+# with no such prefix gets none of that protection, which is why a long-lived
+# stack is named in SWEEP_EXEMPT_STACK_NAMES instead.
 _IDP_RUN_PREFIX_RE = re.compile(r"^(idp-\d{4}-\d{6})")
 
 
@@ -6849,7 +6958,13 @@ def cleanup_stale_idp_buckets():
     `idp-cli delete` leaves the bucket behind even after the stack is gone.
     Thousands accumulated this way. This converges them back regardless.
 
-    Safety: a bucket is deleted only if BOTH
+    Safety: a bucket named for a SWEEP_EXEMPT_STACK_NAMES stack is never
+    emptied or deleted. That stack's name carries no run prefix, so the
+    live-stack protection below cannot reach its buckets even while it is up,
+    and unlike the IAM-role, IAM-policy and BDA sweeps this one reaps an old
+    `idp-` bucket whether or not its name carries a run prefix. That is why it
+    and the stack sweep are the only Step 0 sweeps that read the set.
+    Any other bucket is deleted only if BOTH
       * its run-prefix (idp-MMDD-HHMMSS) has NO surviving CloudFormation stack
         (so no in-flight/partly-deployed run owns it), AND
       * its age is KNOWN and exceeds IDP_BUCKET_STALE_AGE_SECONDS (a backstop
@@ -6861,7 +6976,9 @@ def cleanup_stale_idp_buckets():
     this path empties the bucket before deleting it. It is reported in its own
     counter rather than folded into the too-young one, because "younger than the
     gate" and "age unknown" are different facts and only the second needs
-    looking at.
+    looking at. A bucket of a SWEEP_EXEMPT_STACK_NAMES stack is set aside before
+    either is asked, so it is counted as not examined, whatever its
+    `CreationDate` says, and is never in that counter.
 
     Returns a list of finding strings; an EMPTY list means the sweep demonstrably
     ran — it enumerated the account and considered every `idp-` bucket in it.
@@ -6908,10 +7025,14 @@ def cleanup_stale_idp_buckets():
 
     try:
         stale, skipped_protected, skipped_young = [], 0, 0
+        skipped_long_lived = 0
         age_unestablishable = []
         for b in listed:
             name = b.get("Name", "")
             if not name.startswith("idp-"):
+                continue
+            if _named_for_exempt_stack(name):
+                skipped_long_lived += 1
                 continue
             m = _IDP_RUN_PREFIX_RE.match(name)
             if m and m.group(1) in protected:
@@ -6933,6 +7054,10 @@ def cleanup_stale_idp_buckets():
             print(
                 f"  ({skipped_protected} protected by a live stack, "
                 f"{skipped_young} younger than the age gate — skipped)"
+            )
+        if skipped_long_lived:
+            print(
+                f"  ({skipped_long_lived} named for a long-lived stack, not examined)"
             )
         _report_age_unestablishable(
             age_unestablishable,
@@ -6998,6 +7123,13 @@ def cleanup_stale_idp_policies():
     `<stack>-iam-PassRolePolicy` belongs to the pre-stack and survives a
     pre-stack delete that did not complete. Either one outliving its run is
     permanent: no stack owns it, so cleanup_stale_idp_stacks cannot see it.
+
+    A SWEEP_EXEMPT_STACK_NAMES stack's policies are kept by the first condition
+    below alone, so this sweep does not read that set: `idp-ux-nightly`'s
+    boundary and its pre-stack's PassRole policy carry no run prefix, and
+    neither does any name that opens with a member's, which
+    `test_startup_sweep_outcomes.py` computes for every member and measures on
+    this sweep with no run live.
 
     Safety — a policy is deleted only if ALL of:
       * its name carries a run prefix (idp-MMDD-HHMMSS), which is also what
@@ -7153,6 +7285,16 @@ def cleanup_stale_idp_roles():
         `Reaped 0/578`: it was selecting them correctly and IAM was refusing
         every delete. Reaping roles here is what lets that sweep work at all,
         so the two run in this order.
+
+    A SWEEP_EXEMPT_STACK_NAMES stack's roles are kept by the first condition
+    below alone, so this sweep does not read that set. That stack's roles, its
+    `-iam` pre-stack's service role (`idp-ux-nightly-iam-CFServiceRole`) and,
+    where it deploys a bastion host, that host's role, named
+    `idp-ux-nightlyBastionHost-Role` with no separator, carry no run prefix,
+    and neither does any name that opens with a member's, which
+    `test_startup_sweep_outcomes.py` computes for every member and measures on
+    this sweep with no run live. That premise is what keeps them on a path whose
+    `role/idp-*` grant reaches every one of them.
 
     Safety — a role is deleted only if ALL of:
       * its name carries a run prefix (idp-MMDD-HHMMSS), which is also the bound

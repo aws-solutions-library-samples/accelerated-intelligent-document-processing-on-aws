@@ -2491,15 +2491,24 @@ def upload_local_config(
 
             # Auto-detect pattern if not provided
             if not pattern:
-                # Try to detect from config content
-                classification_method = user_config.get("classification", {}).get(
-                    "classificationMethod", ""
+                # BDA mode is `use_bda`, which is the flag the pipeline itself
+                # branches on. This used to sniff
+                # `classification.classificationMethod == "bda"` — a THIRD value
+                # that key never legitimately held (its enum was
+                # multimodalPageLevel/textbasedHolistic) and that nothing in the
+                # product wrote. It was removed in config format 0.8 and is
+                # migrated away on read, so a sniff for it now matches nothing.
+                # ⚠️ Read through `flag_is_true`, not plain truthiness: a
+                # YAML, DynamoDB or UI round-trip can deliver this flag as the
+                # string "false", which is truthy, and the wrong answer here
+                # merges a pipeline configuration onto the BDA defaults.
+                from idp_common.config.flags import flag_is_true
+
+                pattern = (
+                    "pattern-1"
+                    if flag_is_true(user_config.get("use_bda"))
+                    else "pattern-2"
                 )
-                if classification_method == "bda":
-                    pattern = "pattern-1"
-                else:
-                    # Default to pattern-2 (most common)
-                    pattern = "pattern-2"
                 logger.info(f"Auto-detected pattern: {pattern}")
 
             logger.info(f"Merging user config with {pattern} system defaults...")
