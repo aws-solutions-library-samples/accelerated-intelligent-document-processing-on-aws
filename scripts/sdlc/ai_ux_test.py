@@ -154,12 +154,16 @@ What it does NOT protect, stated rather than implied
   than its sign-in address once the page has loaded it; until then, on every full
   page load, and on a page that lists users, the frames show the address, which
   is a fixed, non-secret name. The password never reaches a frame.
-* **The review stack is known by its name, not by its account.** Nothing in
-  ``UX_TEST_UI_ENV`` names an account, and ``UX_TEST_AWS_ACCOUNT_ID`` pins the
-  job's credentials rather than the stack's endpoints, so a stack called
-  ``idp-ux-nightly`` in another account, with its own UI environment, satisfies
-  property 6. And the stack the page reports is the MR's own UI's to render, so
-  that answer can withhold a video but never stands in for the other two.
+* **The review stack is known by its name, not by its account or its region.**
+  Nothing in ``UX_TEST_UI_ENV`` names an account, and ``UX_TEST_AWS_ACCOUNT_ID``
+  pins the job's credentials rather than the stack's endpoints. The environment
+  does name a region, but nothing records which region the review stack is in
+  (the nightly deploys it to its own pipeline's), and its settings parameter has
+  the same name in every region. So a stack called ``idp-ux-nightly`` in another
+  account, or in another region of the same one, with its own UI environment,
+  satisfies property 6. And the stack the page reports is the MR's own UI's to
+  render, so that answer can withhold a video but never stands in for the other
+  two.
 * **The version and build in the note's heading and backend caveat are the MR's to
   choose.** The MR's own UI renders them, so they are shown only in the expected
   shapes and labelled as the UI reports them.
@@ -316,6 +320,10 @@ REVIEW_STACK = "idp-ux-nightly"
 #: ``--dry-run``, :func:`main` refuses it under CI, and a test pins that neither CI
 #: job carries it.
 DEV_VIDEO_FLAG = "--dev-video-any-stack"
+#: Set by GitLab CI in every job; wherever either is set, :func:`main` refuses
+#: :data:`DEV_VIDEO_FLAG`. A test pins ``run_in_docker.py`` to forwarding exactly
+#: these into its review container, so its runs are refused on a CI host too.
+CI_VARIABLES = ("CI", "GITLAB_CI")
 DEFAULT_PERSONA = "Admin"
 
 _DEFAULT_REGION = "us-east-1"
@@ -772,8 +780,11 @@ def review_stack_problem(
       page with no stack to show.
 
     The page is the MR's own code, so its answer can withhold a video but never
-    stands in for the other two. A reason names the review stack, never a value
-    from the environment or the page.
+    stands in for the other two. The review stack's own page can fail to report
+    it too, when an MR changes the sidebar's stack item or the settings arrive
+    after ``signin.page_facts`` stops waiting, so that reason says the stack
+    could not be confirmed rather than that it is another. A reason names the
+    review stack, never a value from the environment or the page.
     """
     if stack != REVIEW_STACK:
         return f"`--stack` is not the review stack `{REVIEW_STACK}`"
@@ -782,7 +793,10 @@ def review_stack_problem(
             f"`UX_TEST_UI_ENV` does not name the settings parameter of `{REVIEW_STACK}`"
         )
     if shown != REVIEW_STACK:
-        return f"the signed-in page did not report `{REVIEW_STACK}` as its stack"
+        return (
+            f"the signed-in page did not report `{REVIEW_STACK}` as its stack, so "
+            "the run's stack could not be confirmed as the review stack"
+        )
     return ""
 
 
@@ -1548,9 +1562,10 @@ class _Run:
         :func:`review_stack_problem`, and kept in ``summary.json``:
         ``stack.review_stack`` says whether every source named
         :data:`REVIEW_STACK`, and ``recording.video_withheld`` says why a video was
-        withheld. With :data:`DEV_VIDEO_FLAG`, which forces a dry run, another
-        stack's video is rendered into the artifact directory all the same, and a
-        ``WARNING:`` line says whose screens it shows.
+        withheld. With :data:`DEV_VIDEO_FLAG`, which forces a dry run, the video is
+        rendered into the artifact directory all the same, and a ``WARNING:`` line
+        says why its stack is not established as the review stack and that its
+        frames are unredacted.
         """
         args = self.args
         problem = review_stack_problem(args.stack, ui_env, facts.stack_name)
@@ -1559,9 +1574,9 @@ class _Run:
             return ""
         if args.dev_video_any_stack:
             self._say(
-                f"WARNING: {DEV_VIDEO_FLAG}: {problem}, so the video shows another "
-                f"stack's screens, unredacted; it stays in {self.artifacts}, and "
-                "nothing is posted"
+                f"WARNING: {DEV_VIDEO_FLAG}: {problem}; the video is rendered all the "
+                f"same, its frames unredacted, into {self.artifacts}, and nothing is "
+                "posted"
             )
             return ""
         self.summary["recording"]["video_withheld"] = problem
@@ -2547,8 +2562,8 @@ _UMASK = 0o022
 
 
 def _ci_variable(environ: Mapping[str, str]) -> str:
-    """Whichever of ``CI`` and ``GITLAB_CI`` is set, or ``""`` outside CI."""
-    names = [name for name in ("CI", "GITLAB_CI") if environ.get(name, "").strip()]
+    """Whichever of :data:`CI_VARIABLES` is set, or ``""`` outside CI."""
+    names = [name for name in CI_VARIABLES if environ.get(name, "").strip()]
     return names[0] if names else ""
 
 

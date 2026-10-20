@@ -637,18 +637,25 @@ treats that file as diagnostics only.
   recorder starts, and `_Run._video` applies it before anything is rendered. Against
   any other stack the findings are posted with a line saying the video was withheld,
   no mp4 is rendered, so none is uploaded or kept in the job's artifacts, and
-  `summary.json` records `stack.review_stack` and `recording.video_withheld`. A
-  `UX_TEST_UI_ENV` holding another stack's whole output rarely gets that far: unless
-  that stack's name starts with `idp-ux-nightly-`, its buckets fail the egress rules
-  in the precheck, and no session runs at all. The page is the MR's own code, so its
+  `summary.json` records `stack.review_stack` and `recording.video_withheld`. The
+  review stack's own page fails the third check when it does not show the stack's
+  name, as when an MR changes the sidebar's stack item or the settings arrive after
+  the page is read; that run loses its video too, and its line says the stack could
+  not be confirmed as the review stack. A `UX_TEST_UI_ENV` holding another stack's
+  whole output rarely gets that far: unless that stack's name starts with
+  `idp-ux-nightly-`, its buckets fail the egress rules in the precheck, and no
+  session runs at all. The page is the MR's own code, so its
   answer can only withhold a video; and the stack is known by its name rather than
-  its account, since nothing in `UX_TEST_UI_ENV` names one, so a stack called
-  `idp-ux-nightly` in another account would satisfy all three. The one way to a
-  video of another stack is `--dev-video-any-stack`, a developer's opt-in for a
-  local dry run: it forces `--dry-run`, the harness refuses it wherever `CI` or
-  `GITLAB_CI` is set, and `scripts/tests/test_ux_test_ci_jobs.py` fails if either CI
-  configuration passes it, in its own spelling or any abbreviation the parser
-  accepts.
+  its account or its region: nothing in `UX_TEST_UI_ENV` names an account, and
+  nothing records which region the review stack is in, so a stack called
+  `idp-ux-nightly` in another account, or in another region of the same one, would
+  satisfy all three. The one way to a video of another stack is
+  `--dev-video-any-stack`, a developer's opt-in for a local dry run: it forces
+  `--dry-run`, the harness refuses it wherever `CI` or `GITLAB_CI` is set (and
+  `scripts/ux_runner/run_in_docker.py` forwards both into its review container, so
+  that holds for `make ai-ux-test-local` on a CI host too), and
+  `scripts/tests/test_ux_test_ci_jobs.py` fails if either CI configuration passes
+  it, in its own spelling or any abbreviation the parser accepts.
 - The prompt goes on stdin, never into argv, and every process runs in its own
   process group, killed on a timeout and on a job cancel. Of what `claude`, render
   and the recorder's subcommands print, the harness keeps each stream only up to a

@@ -16,7 +16,9 @@ one. Four of them are security properties rather than tidiness.
   in ``ux_test_build``; ``ai_ux_test`` receives static files.
 * **No CI configuration passes the developer's video opt-in.** It renders another
   stack's unredacted screens into the artifact directory, and a pipeline's
-  artifacts can be downloaded.
+  artifacts can be downloaded. Where it arrives some other way, the orchestrator
+  refuses it under CI, and the Docker runner carries CI's own variables into its
+  container so that the refusal holds there as well.
 * **It is advisory.** Neither job is a shared gate, and neither Makefile target looks
   like one to ``test_ci_gate_parity.py``.
 
@@ -819,3 +821,15 @@ def test_no_ci_configuration_passes_the_developer_video_opt_in(
     for name, text in texts.items():
         carried = sorted(set(_OPTION_WORD_RE.findall(text)) & spellings)
         assert not carried, f"{name} passes {flag} as {carried}"
+
+
+@pytest.mark.unit
+def test_the_docker_runner_forwards_what_the_opt_in_is_refused_under() -> None:
+    """The check above reads files, and ``make ai-ux-test-local`` takes
+    ``EXTRA_ARGS`` from the environment, so what holds on that route is the
+    orchestrator's own refusal. It runs inside the Docker runner's review
+    container, which sees a host variable only when it is forwarded by name, so the
+    runner forwards exactly the variables the refusal reads."""
+    refused_under = _module_constant(ORCHESTRATOR, "CI_VARIABLES")
+    forwarded = _module_constant(RUN_IN_DOCKER, "CI_ENV_NAMES")
+    assert refused_under == forwarded == ("CI", "GITLAB_CI")

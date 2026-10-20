@@ -371,7 +371,7 @@ def test_the_review_container_receives_every_secret_by_name_only(
     review = _only(host, "run review container")
     assert review.env is not None
     names = _env_names(review.argv)
-    assert names == list(rid.CONTAINER_ENV_NAMES)
+    assert names == list(rid.CONTAINER_ENV_NAMES + rid.CI_ENV_NAMES)
     assert not [part for part in review.argv if re.match(r"^[A-Z][A-Z0-9_]*=", part)]
     assert review.env["AWS_SECRET_ACCESS_KEY"] == "fake-key-material-91b0"
     assert review.env["PYTHONUNBUFFERED"] == "1"
@@ -538,6 +538,46 @@ def test_review_is_a_dry_run_unless_post_and_only_post_passes_the_gitlab_names(
     assert "--dry-run" not in posted.argv
     assert not set(rid.POST_ENV_NAMES) & set(_env_names(dry.argv))
     assert set(rid.POST_ENV_NAMES) <= set(_env_names(posted.argv))
+
+
+@pytest.mark.unit
+def test_a_ci_host_is_ci_inside_the_review_container_too(
+    host: FakeHost, tmp_path: Path
+) -> None:
+    """``ai_ux_test.py`` refuses its developer video opt-in wherever ``CI`` or
+    ``GITLAB_CI`` is set, and reads them inside the review container, where an
+    ``EXTRA_ARGS`` from a CI/CD variable would deliver the opt-in without any CI
+    file naming it. Both go by name, like every other variable, so the docker CLI
+    sets each only where the host does, and the build container gets neither."""
+    environ = _environ(CI="true", GITLAB_CI="true")
+    _review(host, tmp_path / "out", "--dev-video-any-stack", environ=environ)
+    review = _only(host, "run review container")
+    assert review.env is not None
+    forwarded = [name for name in _env_names(review.argv) if name in rid.CI_ENV_NAMES]
+    assert forwarded == list(rid.CI_ENV_NAMES) == ["CI", "GITLAB_CI"]
+    assert {name: review.env[name] for name in forwarded} == {
+        "CI": "true",
+        "GITLAB_CI": "true",
+    }
+    command = review.argv[review.argv.index("python3") :]
+    assert command[-1] == "--dev-video-any-stack"
+    assert "-e" not in _only(host, "run build container").argv
+
+
+@pytest.mark.unit
+def test_review_with_post_does_not_promise_a_post_an_option_can_cancel(
+    host: FakeHost, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--dev-video-any-stack``, like ``--dev-unconfined``, makes the run a dry run
+    whatever this script was told, and it can arrive under any abbreviation
+    ``ai_ux_test.py``'s parser accepts, so the line says so rather than that it
+    posts."""
+    _review(host, tmp_path / "out", "--post", "--dev-v")
+    printed = capsys.readouterr().out.splitlines()
+    assert (
+        "-> running the UX test; it posts to MR 812 unless an option passed through "
+        "to it makes the run a dry run"
+    ) in printed
 
 
 @pytest.mark.unit

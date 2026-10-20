@@ -18,6 +18,9 @@ managed policy and users as CI does. It has two modes.
     ``scratch/ux-docker/mr-<iid>/ux-tests/``, which is gitignored; against a
     ``--stack`` other than the review stack there is no mp4 unless
     ``--dev-video-any-stack`` is passed through (``ai_ux_test.py``'s property 6).
+    That opt-in makes the run a dry run even with ``--post``, and the host's
+    ``CI`` and ``GITLAB_CI`` reach the second container, so on a CI host it is
+    refused there as it is in the CI job.
 ``browser``
     Only the confined headless Chrome, the egress proxy and the recorder, with
     DevTools published on the host's own loopback (``127.0.0.1:9222``), for an
@@ -118,6 +121,9 @@ AWS credentials
     of the account's buckets that start with ``<stack>-`` are read on the host.
 ``GITLAB_REVIEW_TOKEN``, ``CI_API_V4_URL``, ``CI_PROJECT_ID``
     ``--post`` only.
+``CI``, ``GITLAB_CI``
+    Forwarded to the review container wherever the host sets them, so that
+    ``ai_ux_test.py`` refuses ``--dev-video-any-stack`` on a CI host.
 """
 
 from __future__ import annotations
@@ -187,6 +193,10 @@ CONTAINER_ENV_NAMES = (
 )
 #: Added to the review container with ``--post`` only, by name.
 POST_ENV_NAMES = ("GITLAB_REVIEW_TOKEN", "CI_API_V4_URL", "CI_PROJECT_ID")
+#: Added to the review container by name, so a host that is CI is CI inside it too
+#: and ``ai_ux_test.py`` refuses ``--dev-video-any-stack`` there as it does in the CI
+#: job. ``docker run -e NAME`` sets a variable only when the host has it set.
+CI_ENV_NAMES = ("CI", "GITLAB_CI")
 #: Added to the browser container, by name, so browser.py can print the host-side
 #: DevTools URL and the ``docker exec`` prefix for the recorder.
 BROWSER_ENV_NAMES = ("UX_BROWSER_HOST_PORT", "UX_BROWSER_CONTAINER")
@@ -681,10 +691,12 @@ def review(
     if not (build_dir / "index.html").is_file():
         raise DockerRunError(f"the UI build wrote no {build_dir / 'index.html'}")
 
-    names = CONTAINER_ENV_NAMES + (POST_ENV_NAMES if args.post else ())
+    names = CONTAINER_ENV_NAMES + CI_ENV_NAMES + (POST_ENV_NAMES if args.post else ())
     if args.post:
         print(
-            f"-> running the UX test; the result is posted to MR {args.mr}", flush=True
+            f"-> running the UX test; it posts to MR {args.mr} unless an option "
+            "passed through to it makes the run a dry run",
+            flush=True,
         )
     else:
         print("-> running the UX test as a dry run; nothing is posted", flush=True)

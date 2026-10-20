@@ -25,8 +25,10 @@ What is pinned, by the claim each test names:
   environment's settings parameter and the stack the signed-in page reports all
   name the review stack: another stack, or a UI environment pointing at one under
   ``--stack idp-ux-nightly``, gets its findings posted with no video and a line
-  saying it was withheld, and the developer opt-in that renders one anyway forces
-  a dry run and is refused under CI;
+  saying it was withheld, whether appended, posted on its own or kept as a dry
+  run, and a page that does not report the review stack is withheld as
+  unconfirmed; the developer opt-in that renders one anyway forces a dry run and
+  is refused under CI;
 * nothing secret survives into any artifact, note body or printed line, including
   values the model's report carries in a spelling ``sanitize`` would change;
 * the harness list is closed over its imports, ``ai_mr_review`` has one importer,
@@ -2574,7 +2576,10 @@ OTHER_STACK = "idp-dev-4821"
 LOOKALIKE_STACK = "idp-ux-nightly-2"
 STACK_REASON = "`--stack` is not the review stack `idp-ux-nightly`"
 ENV_REASON = "`UX_TEST_UI_ENV` does not name the settings parameter of `idp-ux-nightly`"
-PAGE_REASON = "the signed-in page did not report `idp-ux-nightly` as its stack"
+PAGE_REASON = (
+    "the signed-in page did not report `idp-ux-nightly` as its stack, so the run's "
+    "stack could not be confirmed as the review stack"
+)
 BUCKET_KEYS = ("VITE_TEST_SET_BUCKET_NAME", "VITE_INPUT_BUCKET_NAME", "UX_TEST_BUCKETS")
 #: Another stack's Cognito pools and API, to pair with the review stack's parameter.
 OTHER_POOLS = {
@@ -2692,25 +2697,72 @@ def test_the_review_stack_gets_its_video_rendered_attached_and_uploaded(
     assert recording["dev_video_any_stack"] is False
 
 
+#: Each way a section is delivered: the options that choose it, whether the code
+#: review's note is there to append to, and the writes it makes under the MR, where
+#: ``{note}`` is the section's own note and ``{old}`` an older section's.
+_DELIVERIES = {
+    "appended": (
+        (),
+        True,
+        [
+            ("PUT", "notes/{note}"),
+            ("POST", "discussions/review-thread/notes"),
+            ("PUT", "notes/{old}"),
+        ],
+    ),
+    "standalone": (
+        ("--review-poll-minutes", "0"),
+        False,
+        [("POST", "notes"), ("PUT", "notes/{old}")],
+    ),
+    "dry_run": (("--dry-run",), True, []),
+}
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize("dry_run", [False, True], ids=["post", "dry-run"])
+@pytest.mark.parametrize("delivery", sorted(_DELIVERIES))
 def test_another_stack_gets_its_findings_without_a_video_saying_it_was_withheld(
-    harness: Harness, capsys: pytest.CaptureFixture[str], dry_run: bool
+    harness: Harness, capsys: pytest.CaptureFixture[str], delivery: str
 ) -> None:
     """Its own UI environment, and a page reporting it: nothing disagrees, but it
-    is not the review stack, so in neither mode is anything rendered, kept or
-    uploaded, and the section says the video was withheld and why."""
+    is not the review stack, so however the section is delivered nothing is
+    rendered, kept or uploaded, and the section says the video was withheld and
+    why. Appended to the code review, the one reply in its thread names no video;
+    posted on its own, after no code review appeared, the note carries the same
+    line; and every marker records no upload. The writes are exactly the note,
+    the reply where there is one, and an older section's superseded video line."""
+    options, with_review, writes = _DELIVERIES[delivery]
     _against(harness, _ui_env(OTHER_STACK), OTHER_STACK)
-    target = harness.forge.add_note(_review_body(HEAD), thread="review-thread")
-    extra = ("--stack", OTHER_STACK, *(("--dry-run",) if dry_run else ()))
-    assert harness.main(*extra) == 0
-    if dry_run:
-        assert harness.forge.writes() == []
+    forge = harness.forge
+    old = forge.add_note(_old_section_body(OLDER))
+    if with_review:
+        forge.add_note(_review_body(HEAD), thread="review-thread")
+    assert harness.main("--stack", OTHER_STACK, *options) == 0
+    summary = harness.summary()
+    note_id = summary["note"]["note_id"]
+    mr = f"/projects/group%2Fproj/merge_requests/{IID}"
+    assert [(method, path) for method, path, _ in forge.writes()] == [
+        (method, f"{mr}/" + path.format(note=note_id, old=old))
+        for method, path in writes
+    ]
+    if delivery == "dry_run":
         text = harness.artifact("section.md")
     else:
-        text = harness.forge.store[target]["body"]
+        text = forge.store[note_id]["body"]
+        assert summary["note"]["action"] == delivery
+        assert summary["note"]["upload_id"] is None
+        assert summary["detail"].endswith(", without its video, which was withheld")
+    if delivery == "standalone":
+        assert text.startswith(section.STANDALONE_PREFIX + "\n\n---\n")
+    if delivery == "appended":
+        reply = forge.writes()[1][2]["body"]
+        assert reply.startswith(f"🖱️ UX test of `{HEAD[:8]}` added to the review")
+        assert "video" not in reply.lower()
+    marker = section.UX_MARKER_RE.search(text)
+    assert marker is not None
+    assert (marker["sha"], marker["upload"]) == (HEAD, "none")
     _assert_withheld(harness, text, STACK_REASON)
-    assert harness.summary()["status"] == ("dry_run" if dry_run else "posted")
+    assert summary["status"] == ("dry_run" if delivery == "dry_run" else "posted")
     assert f"video: withheld, because {STACK_REASON}" in capsys.readouterr().out
 
 
@@ -2765,6 +2817,26 @@ def test_a_ui_environment_pointing_at_another_stack_never_satisfies_the_bound(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "shown", [None, "Stack: idp-ux-nightly"], ids=["no-name", "relabelled"]
+)
+def test_the_review_stacks_own_page_without_its_name_is_withheld_as_unconfirmed(
+    harness: Harness, shown: str | None
+) -> None:
+    """``--stack`` and the whole UI environment are the review stack's, but its
+    settings arriving after the page is read, or an MR relabelling the sidebar's
+    stack item, leaves the page without that name. That still costs the video, and
+    the line says the stack could not be confirmed, not that it is another."""
+    _against(harness, _ui_env(), shown)
+    target = harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    assert harness.main() == 0
+    text = harness.forge.store[target]["body"]
+    _assert_withheld(harness, text, PAGE_REASON)
+    (line,) = [line for line in text.splitlines() if "withheld" in line]
+    assert "could not be confirmed as the review stack" in line
+
+
+@pytest.mark.unit
 def test_another_stacks_whole_ui_environment_is_refused_before_any_browser(
     harness: Harness,
 ) -> None:
@@ -2784,7 +2856,8 @@ def test_the_developer_opt_in_keeps_another_stacks_video_in_a_local_dry_run(
     harness: Harness, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Rendered into the artifact directory and never posted, because the opt-in
-    forces the dry run, with a line saying whose screens the video shows."""
+    forces the dry run, with a line saying why the stack is not the review stack
+    and that the frames are unredacted."""
     flag = ai_ux_test.DEV_VIDEO_FLAG
     assert ai_ux_test.parse_args(["--mr", str(IID), flag]).dry_run is True
     _against(harness, _ui_env(OTHER_STACK), OTHER_STACK)
@@ -2802,8 +2875,11 @@ def test_the_developer_opt_in_keeps_another_stacks_video_in_a_local_dry_run(
     recording = summary["recording"]
     assert (recording["video_withheld"], recording["video_attached"]) == (None, True)
     assert recording["dev_video_any_stack"] is True
-    warning = f"WARNING: {flag}: {STACK_REASON}, so the video shows another stack's"
-    assert warning in capsys.readouterr().out
+    warning = (
+        f"WARNING: {flag}: {STACK_REASON}; the video is rendered all the same, its "
+        f"frames unredacted, into {harness.artifacts}, and nothing is posted"
+    )
+    assert warning in capsys.readouterr().out.splitlines()
 
 
 @pytest.mark.unit
