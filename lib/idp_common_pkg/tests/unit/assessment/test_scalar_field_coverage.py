@@ -53,6 +53,7 @@ from idp_common.assessment.batching import (
     _missing_scalar_fields,
     assess_results_batched,
     audit_explainability,
+    build_assessment_issues,
     confidence_coverage,
     merge_split_stats,
     reconcile_assessment_to_data,
@@ -599,6 +600,101 @@ def test_an_absent_value_is_never_reported_as_unscored():
     issue = next(i for i in issues if i.code == "assessment_fields_unscored")
     for field in ("SubmitterId", "ProcessedBy", "ProcessingDate", "ApprovalStatus"):
         assert field not in issue.details["unscored_fields"]
+
+
+# --------------------------------------------------------------------------- #
+# The issue ladder must not invent a cause for a scalar recovery
+# --------------------------------------------------------------------------- #
+
+
+def _stats(**over):
+    from idp_common.assessment.batching import _new_split_stats
+
+    s = _new_split_stats()
+    s.update(over)
+    return s
+
+
+def test_a_clean_field_recovery_is_not_reported_as_a_truncation():
+    """The live shape from `packet_0024` section 1 of a 464-section run: nine
+    fields recovered, nothing truncated.
+
+    ``build_assessment_issues``' terminal branch asserts "the confidence model
+    truncated its output", and it used to be reached unconditionally — safe only
+    while every way of being notable implied truncation or row trouble. Adding the
+    scalar counters to ``split_stats_are_notable`` broke that premise, so this
+    section matched no row-shaped rung and fell through to a warning that was false
+    on its own ``details`` (``truncated_calls: 0``), rendering a healthy section as
+    Degraded and naming a remedy for a problem it did not have.
+    """
+    issues = build_assessment_issues(
+        _stats(scalar_retry_calls=1, fields_recovered_by_retry=9),
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    codes = [i.code for i in issues]
+    assert "assessment_truncated" not in codes
+    assert codes == ["assessment_recovered_with_retries"]
+    issue = issues[0]
+    assert issue.severity == "info"
+    assert "9 omitted field(s)" in issue.message
+    # The batch-shrinking advice is about ROW recovery; an omitted field was well
+    # within the output budget, so that remedy must not be offered here.
+    assert "ocr_only" not in issue.message
+
+
+def test_a_genuine_truncation_alongside_a_field_recovery_still_reports_recovery():
+    """The other live shape, `packet_0013` section 1: the first call DID truncate
+    and the rung then recovered 3 fields. Recovery outranks the truncation report,
+    the same way it does for rows — the outcome is healed, and ``truncated_calls``
+    travels in ``details`` for whoever is tuning the model."""
+    issues = build_assessment_issues(
+        _stats(truncated_calls=1, scalar_retry_calls=1, fields_recovered_by_retry=3),
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    assert [i.code for i in issues] == ["assessment_recovered_with_retries"]
+    assert issues[0].severity == "info"
+    assert issues[0].details["truncated_calls"] == 1
+
+
+def test_rows_and_fields_are_reported_in_their_own_units():
+    """A row is one item of a list attribute; a field is a whole non-list attribute
+    the response omitted. Summing them would give a number true of neither."""
+    issues = build_assessment_issues(
+        _stats(
+            truncated_calls=1,
+            rows_recovered_by_retry=4,
+            scalar_retry_calls=1,
+            fields_recovered_by_retry=2,
+        ),
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    msg = issues[0].message
+    assert "4 row(s)" in msg and "2 omitted field(s)" in msg
+    assert "6" not in msg, "row and field counts must not be added together"
+
+
+def test_a_truncation_that_recovered_nothing_still_reports_it():
+    """The guard must not silence the case the terminal branch exists for."""
+    issues = build_assessment_issues(
+        _stats(truncated_calls=1), section_id="1", confidence_model=NOVA_LITE
+    )
+    assert [i.code for i in issues] == ["assessment_truncated"]
+    assert issues[0].severity == "warning"
+
+
+def test_an_unrecovered_field_leaves_the_ladder_silent_for_the_audit_to_report():
+    """``unrecoverable_fields`` is the audit's business — it emits
+    ``assessment_fields_unscored`` naming the fields. The ladder must not add a
+    second, causeless issue for the same shortfall."""
+    issues = build_assessment_issues(
+        _stats(scalar_retry_calls=2, unrecoverable_fields=3),
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    assert [i.code for i in issues] == []
 
 
 # --------------------------------------------------------------------------- #

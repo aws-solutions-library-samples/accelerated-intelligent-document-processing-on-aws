@@ -1403,6 +1403,9 @@ def build_assessment_issues(
     recovered_by_retry = int(stats.get("rows_recovered_by_retry", 0) or 0)
     recovered_by_escalation = int(stats.get("rows_recovered_by_escalation", 0) or 0)
     total_recovered = recovered_by_retry + recovered_by_escalation
+    # #1474 scalar rung, counted separately from the row totals above because the
+    # units differ — see the recovery rung below.
+    fields_recovered = int(stats.get("fields_recovered_by_retry", 0) or 0)
     schema_mismatch_fields = list(stats.get("schema_mismatch_fields") or [])
 
     # Compose a technical root-cause string shared by all severities.
@@ -1578,24 +1581,59 @@ def build_assessment_issues(
             )
         ]
 
-    if total_recovered > 0:
-        # Genuinely self-healed — rows that were unscored are now scored.
+    if total_recovered > 0 or fields_recovered > 0:
+        # Genuinely self-healed — what was unscored is now scored. Rows and fields
+        # are counted in DIFFERENT units and are not summed: a row is one item of a
+        # list attribute, a field is a whole non-list attribute the response omitted
+        # (#1474). Adding them would produce a number that is true of neither.
+        healed: list[str] = []
+        if total_recovered > 0:
+            healed.append(
+                f"{total_recovered} row(s) after batch shrinking"
+                + (" and model escalation" if recovered_by_escalation else "")
+            )
+        if fields_recovered > 0:
+            healed.append(f"{fields_recovered} omitted field(s) after re-asking")
+        # The batch-shrinking remedy is advice about ROW recovery — a smaller
+        # per-row output budget is what shrinking responds to. It does not apply to
+        # an omitted field, where the response was well within budget and the model
+        # simply did not carry the key, so it is only appended when rows were the
+        # thing recovered.
+        advice = (
+            " (token-inefficient — consider geometry.mode ocr_only or a "
+            "larger-output confidence model)."
+            if total_recovered > 0
+            else ". The extracted values and their confidence are complete."
+        )
         return [
             ProcessingIssue(
                 stage="assessment",
                 severity="info",
                 code="assessment_recovered_with_retries",
-                message=(
-                    f"{total_recovered} row(s) were recovered after batch shrinking"
-                    + (" and model escalation" if recovered_by_escalation else "")
-                    + " (token-inefficient — consider geometry.mode ocr_only or a "
-                    "larger-output confidence model)."
-                ),
+                message="Confidence recovered: " + "; ".join(healed) + advice,
                 root_cause=root_cause,
                 section_id=section_id,
                 details=dict(stats),
             )
         ]
+
+    # ⚠️ This is the ladder's TERMINAL branch, and it asserts a specific cause, so
+    # it must require the evidence for it. It used to be reached unconditionally,
+    # which was safe only while every way of being "notable" implied truncation or
+    # row trouble. Adding the #1474 scalar counters to ``split_stats_are_notable``
+    # broke that premise: a section whose ONLY notable activity was a successful
+    # field recovery passed the gate, matched no row-shaped rung above (its
+    # ``unrecoverable_rows`` is 0 and ``total_recovered`` counts rows only), and
+    # landed here — reporting "the confidence model truncated its output" with
+    # ``truncated_calls: 0`` in its own details, which rendered a healthy section as
+    # Degraded and pointed the operator at a remedy for a problem it did not have.
+    # Measured on a 464-section run: `packet_0024` section 1, 9 fields recovered,
+    # nothing truncated.
+    #
+    # So: no truncation, nothing unscored, nothing recovered — there is nothing to
+    # report, and saying so is the honest answer rather than inventing a cause.
+    if not stats.get("truncated_calls"):
+        return []
 
     # A call truncated but NOTHING was recovered and nothing is left unscored.
     # Do NOT claim recovery. This is a degraded (warning) outcome — the confidence
