@@ -340,7 +340,7 @@
         "scripts/ux_runner/recording.py": 100.0,
         "scripts/ux_runner/redact.py": 100.0,
         "scripts/ux_runner/run_in_docker.py": 89.92,
-        "scripts/ux_runner/section.py": 99.09,
+        "scripts/ux_runner/section.py": 99.11,
         "scripts/ux_runner/signin.py": 100.0,
         "scripts/ux_runner/tool_profiles.py": 100.0,
         "scripts/ux_runner/ui_change.py": 98.26,
