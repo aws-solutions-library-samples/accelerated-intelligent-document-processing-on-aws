@@ -190,14 +190,20 @@ session over letting one session run through several compactions.
 **The liveness invariant keeps the loop running; it does not keep the session
 alive.** A tracked child re-invokes you when it finishes, which covers every wait the
 loop creates itself. It does not cover the session being interrupted, the process
-being restarted, or an agent dying without a notification — and the obvious remedy,
-a timer that pings the session, is worse than the problem it solves here: the only
-two unsolicited prompts this session ever received killed every background agent it
-had. So an external keep-alive is not a substitute for the invariant, and if one is
-ever added it has to be established first — on a throwaway session holding a
-throwaway agent — that an injected prompt leaves background agents alive. Until then
-the heartbeat child covers the session going idle and nothing covers the process
-dying. Recovery from that is a human noticing, and what makes it cheap is the state
+being restarted, or an agent dying without a notification.
+
+An external keep-alive is now a usable remedy for the first of those, which it was not
+when this paragraph was first written. The objection then was that a timer pings the
+session and the only two unsolicited prompts this session had ever received killed every
+background agent it had. **Both halves of that have since been measured and neither
+holds on CLI 2.1.296.1183**: a firing `ScheduleWakeup` left a live subagent running
+across two trials, and a message typed mid-turn displaced the running command to the
+background without touching the subagent. So a booked wakeup is the preferred child, and
+the heartbeat `sleep` is the fallback — see the `ScheduleWakeup` subsection in section 0
+of the main skill for the method and for what the measurement does not cover.
+
+What still has no cover is the **process** dying, since every mechanism here lives inside
+the session. Recovery from that is a human noticing, and what makes it cheap is the state
 file plus the journals.
 
 **It does not bound review quality.** A nested reviewer that reads the diff and

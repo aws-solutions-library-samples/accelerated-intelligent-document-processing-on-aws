@@ -83,16 +83,41 @@ live child.** If you cannot name one, you are about to stop the run rather than
 pause it. The heartbeat child in section 0 is the standing answer — it is running
 from the first action of the run precisely so that the answer is never "none".
 
-⚠️ **A prompt typed into this session kills every background agent.** Twice in one
-run the harness recorded `agents_killed` — *"6 background agents were stopped by the
-user"*, then *"5"* — at the instant a typed prompt arrived, and each killed agent's
-own transcript ends at `[Request interrupted by user]`. `SendMessage` then refuses
-them permanently, so roughly eleven agent-hours, every measurement and every report
-were lost while their pushed commits survived. Say this once at the start of a run:
-mid-run instructions are safe as answers to an `AskUserQuestion` (measured — five
-agents survived one) or from a second session via `SendMessage`, and a typed prompt
-costs the batch. After **any** unexpected prompt, assume every agent is gone and run
-the sweep in section 0 before acting on anything you remember.
+**A typed prompt no longer kills background agents, measured on 2026-10-20.** This
+rule used to be the strongest warning in the file, so the change is worth stating
+precisely rather than just deleting the old text.
+
+What was recorded: twice in one run the harness logged `agents_killed` — *"6 background
+agents were stopped by the user"*, then *"5"* — at the instant a typed prompt arrived,
+each killed agent's transcript ending at `[Request interrupted by user]`, with
+`SendMessage` then refusing them permanently. Roughly eleven agent-hours, every
+measurement and every report were lost while the pushed commits survived.
+
+What is true now, on CLI 2.1.296.1183: a message typed **mid-turn, while the session was
+actively running a command**, displaced that command to the background and left the
+subagent alone. The harness said so explicitly — *"moved to the background so that a
+message that arrived while it was running can reach you; it was not interrupted"* — the
+displaced command then ran to completion, `ListAgents` straight afterwards showed the
+probe agent still `running`, and that agent went on to finish its **full 587-second run
+and report normally**, nine minutes after the message landed. Completion is the evidence
+to want here: a snapshot could in principle catch an agent in the moment before it is
+reaped, and a finished run cannot. The busy case is also the one worth testing, because
+during a run the session is working rather than idle.
+
+So mid-run instructions may go **straight into this session**. `AskUserQuestion` answers
+(five agents survived one) and a peer session's `SendMessage` remain fine, and a peer is
+still worth having for the independent-reader value in the bounds file — but it is no
+longer a precaution against losing the batch.
+
+⚠️ **Two things this does not cover.** **Esc is untested and still treated as
+destructive** — do not use it on a running session; the note it came from says it kills
+subagents, and confirming that would cost agent-hours to learn what is already believed.
+And this is one message, one agent, one build: it is also unresolved whether the September
+kills were fixed or were always Esc rather than typing, so **re-measure after a CLI
+upgrade** (arm a throwaway probe, type a word while the session is busy, call
+`ListAgents`). If an unexpected prompt ever does coincide with agents vanishing, fall back
+to the old assumption and run the sweep in section 0 before acting on anything you
+remember.
 
 **Write your state to disk every cycle, and treat your own context as
 unreliable.** This loop outlives a single context window: a long run will compact,
@@ -182,17 +207,19 @@ load-bearing rather than incidental. The false-alarm direction is the one worth
 guarding, because nobody re-checks a number that says stop.
 
 Two properties make this the right shape rather than an external timer. It arrives as
-a **tool result**, not as a prompt, and a prompt arriving unbidden kills every
-background agent (see the ground rules); tool results demonstrably do not — ten-minute
-background waits returned here with five agents alive. And it always exits, so it
-cannot itself become the thing that looks tracked while doing nothing.
+a **tool result**, and tool results demonstrably leave agents alive — ten-minute
+background waits returned here with five agents running. And it always exits, so it
+cannot itself become the thing that looks tracked while doing nothing. (This used to
+rest on a second argument, that a prompt arriving unbidden kills every background
+agent. That is no longer the measured behaviour — see the ground rules — so the tool
+result is preferred for the first reason alone.)
 
 ⚠️ **It does not survive the session dying**, only the session going idle: the child
 and the session go together. Protection against the process itself dying has to come
 from outside, and nothing in this tree provides it; recovery is a human noticing, and
 what makes that cheap is the state file plus the journals.
 
-### `ScheduleWakeup` is the better child, and one thing about it is still unmeasured
+### `ScheduleWakeup` is the better child, and it is safe with agents in flight
 
 Prefer `ScheduleWakeup` over the backgrounded `sleep` wherever the wait is time-based
 rather than event-based. It is a first-class mechanism rather than a process: it cannot
@@ -210,14 +237,21 @@ stalling can adopt self-pacing **in place**, and the obvious alternative — sto
 compact, restart under `/loop` — is the wrong move, because it risks uncommitted
 worktrees, discards pending output and kills live subagents.
 
-What is **not** settled is whether a *firing* wakeup leaves background agents alive. The
-concern is specific and well-founded: a prompt arriving unbidden killed every background
-agent twice in one run, and a wakeup delivers a prompt. Nobody has measured whether that
-delivery behaves like a typed prompt or like a tool result. Until it is measured — a
-throwaway session holding one throwaway agent, a 60-second wakeup, `ListAgents`
-afterwards — **use `ScheduleWakeup` only when no agent is in flight**, and keep the
-backgrounded child for waits that overlap live agents. Do not read the settled half as
-settling this one; they are different claims about different events.
+The second fact is that **a firing wakeup does not kill background agents**, and this
+was the open question in earlier versions of this section. It is now measured: on
+2026-10-20, on CLI 2.1.296.1183, a 120-second wakeup was booked while one
+`general-purpose` subagent was deliberately left alive mid-`sleep`, the turn was ended,
+and the wakeup fired and re-invoked the session. `ListAgents` immediately afterwards
+still showed that agent as `running`. So a wakeup's delivery behaves like a **tool
+result**, not like a typed prompt, and `ScheduleWakeup` is safe to use with fixer agents
+in flight.
+
+⚠️ **Hold that at its measured strength: one agent, one wakeup, one build.** It is not a
+claim about the two events that *did* kill agents — an interrupt, and a prompt typed
+into a working session — which remain the hazard in the ground rules and are a separate
+question about a separate trigger. Re-measure after a CLI upgrade; the whole reason this
+sat open is that the kill was observed on an earlier build, and the method is three
+steps, so repeating it is cheaper than trusting this paragraph.
 
 Interval: well past the 300-second prompt-cache window, so 1200s or more for an idle
 check. Under 300s keeps the cache warm and is for polling something external that
