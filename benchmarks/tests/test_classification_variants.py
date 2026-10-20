@@ -48,6 +48,7 @@ import pytest
 from harness_import import harness_module
 
 bench = harness_module("run_classification_bench")
+lib = harness_module("lib")
 
 pytestmark = pytest.mark.unit
 
@@ -153,9 +154,12 @@ def test_stage_a_carries_no_class_vocabulary(docsplit_base, a_model):
     assert "{FEW_SHOT_EXAMPLES}" not in stage_a
 
 
-def test_no_variant_is_requested_without_a_model(docsplit_base, a_model):
+def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
+    docsplit_base, a_model
+):
     """An omitted variant keeps the pre-axis behaviour: the test set's own
-    stored classification settings, with no granularity forced."""
+    stored classification settings, with nothing forced. Asserted on `modality`
+    specifically, which is what the name used to overstate."""
     cfg = _config(docsplit_base, a_model, None)
     assert "modality" not in cfg["classification"] or cfg["classification"][
         "modality"
@@ -222,7 +226,10 @@ def test_the_guard_refuses_a_config_that_lost_its_setting(
     )
 
 
-def test_an_unknown_variant_raises_rather_than_passing():
+def test_an_unknown_variant_is_not_in_the_table():
+    """Narrow on purpose: this is the dict lookup, not the driver's own
+    validation. `main()`'s `sys.exit` is the user-facing behaviour and is
+    covered by `test_main_refuses_an_unknown_variant_by_name` below."""
     with pytest.raises(KeyError):
         bench.VARIANTS["no-such-variant"]
 
@@ -361,3 +368,168 @@ def test_an_older_report_without_the_halves_reports_none():
     assert scored["boundary_accuracy"] is None
     assert scored["label_accuracy"] is None
     assert scored["class_accuracy"] == 0.9
+
+
+@pytest.mark.unit
+class TestScoreRunPassesTheBucketNotAnAccumulator:
+    """⚠️ Every `lib` stub in this suite must RESPECT its arguments.
+
+    `score_run` binds `bucket` to the S3 output bucket once and reads it on every
+    iteration of its per-document loop. A per-context accumulation loop nested
+    inside that one rebound the same name to a token dict, so from the **second**
+    document onward `lib.read_json` received a dict as `Bucket=`. The run still
+    completed: the read failed, the harness printed `⚠ N read(s) FAILED …
+    excluded, not zeroed` — which reads as a transient S3 problem — and reported
+    `n_docs: 1`, pooling every accuracy and cost figure over one document.
+
+    The reason no existing test caught it is worth stating, because it is the
+    cheap mistake: the one test that drives `score_run` stubs `read_json` as
+    `lambda *a, **k: ...`, which cannot fail on a corrupted argument, and its own
+    `n_docs == 2` assertion passed throughout. The stubs here assert on the
+    argument instead, which is what makes this a test of the defect rather than
+    of the happy path.
+    """
+
+    def _metering(self, model):
+        # Two contexts, so the accumulation loop that caused this runs at least
+        # once per document. One context alone would not exercise it.
+        return {
+            f"Segmentation/{model}": {"inputTokens": 100, "outputTokens": 10},
+            f"Labeling/{model}": {"inputTokens": 50, "outputTokens": 5},
+            # `calls` comes only from this key shape, which is what makes the
+            # N-calls-to-1 claim a measurement; a fixture without it reports 0
+            # and the per-document figure below would assert nothing.
+            "Segmentation/lambda/requests": {"requests": 1},
+            "Labeling/lambda/requests": {"requests": 1},
+        }
+
+    def _run(self, monkeypatch, bucket_name="out-bucket", n_docs=3):
+        seen_buckets = []
+
+        def read_json(bucket, key):
+            seen_buckets.append(bucket)
+            assert isinstance(bucket, str), (
+                f"read_json got a non-string Bucket: {type(bucket).__name__} "
+                f"{bucket!r} — a name from the enclosing scope was rebound"
+            )
+            return lib.Reading.present({})
+
+        def read_metering(_table, _run_id, _doc):
+            return lib.Reading.present(self._metering("us.amazon.nova-2-lite-v1:0"))
+
+        monkeypatch.setattr(
+            lib,
+            "list_doc_prefixes",
+            lambda *a, **k: [f"r/doc{i}/" for i in range(n_docs)],
+        )
+        monkeypatch.setattr(lib, "read_json", read_json)
+        monkeypatch.setattr(lib, "read_metering", read_metering)
+        monkeypatch.setattr(lib, "doc_row", lambda *a, **k: {"PageCount": 2})
+        out = bench.score_run(
+            {"output_bucket": bucket_name, "tracking_table": "t"}, "r"
+        )
+        return out, seen_buckets
+
+    def test_every_read_gets_the_bucket_name(self, monkeypatch):
+        out, seen = self._run(monkeypatch)
+        assert seen, "no read happened, so this asserts nothing"
+        assert set(seen) == {"out-bucket"}, seen
+        # One read per document per key read: the point is that none was skipped.
+        assert len(seen) >= 3
+
+    def test_all_documents_are_scored_not_just_the_first(self, monkeypatch):
+        """`n_docs: 1` on a 3-document run was the visible symptom."""
+        out, _ = self._run(monkeypatch, n_docs=3)
+        assert out["n_docs"] == 3
+
+    def test_the_per_context_totals_accumulate_across_documents(self, monkeypatch):
+        """The figures the variants axis exists to report. With the shadowing in
+        place these held one document's tokens, which is indistinguishable from a
+        corpus three times cheaper than it is."""
+        out, _ = self._run(monkeypatch, n_docs=3)
+        by_context = out["classification_by_context"]
+        assert set(by_context) == {"Segmentation", "Labeling"}
+        assert by_context["Segmentation"]["inputTokens"] == 300
+        assert by_context["Labeling"]["inputTokens"] == 150
+        assert out["classification_tokens"]["inputTokens"] == 450
+
+    def test_calls_per_document_is_per_document_not_per_corpus(self, monkeypatch):
+        out, _ = self._run(monkeypatch, n_docs=3)
+        for context in ("Segmentation", "Labeling"):
+            assert (
+                out["classification_by_context"][context]["calls_per_document"] == 1.0
+            )
+
+
+# --------------------------------------------------------------------------
+# `main()`'s own validation of --variants
+# --------------------------------------------------------------------------
+
+
+def _main_with(monkeypatch, argv):
+    """Drive `main()` far enough to reach its --variants validation and no
+    further: every call after it needs AWS."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "argv", ["run_classification_bench.py", *argv])
+    return bench.main
+
+
+def test_main_refuses_an_unknown_variant_by_name(monkeypatch, capsys):
+    """⚠️ The user-facing half. A typo'd variant must stop the run rather than
+    being dropped silently, because a cell that does not run is a cell whose
+    absence from the summary looks like a configuration that was not worth
+    reporting."""
+    main = _main_with(
+        monkeypatch,
+        ["--stack", "s", "--models", "nova2lite", "--variants", "page-both,no-such"],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    message = str(excinfo.value)
+    assert "no-such" in message
+    assert "unknown variant" in message
+    # And it names what IS valid, so the remedy does not need the source.
+    assert "page-both" in message
+
+
+def test_main_refuses_an_unknown_model_by_name(monkeypatch):
+    main = _main_with(
+        monkeypatch, ["--stack", "s", "--models", "nova2lite,no-such-model"]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert "no-such-model" in str(excinfo.value)
+
+
+def test_main_warns_when_no_baseline_cell_is_requested(monkeypatch, capsys):
+    """A warning rather than an error: comparing two packet variants against
+    each other is a legitimate question. But without `page-both` the run cannot
+    say whether either beats what is shipped."""
+    main = _main_with(
+        monkeypatch,
+        ["--stack", "s", "--models", "nova2lite", "--variants", "packet-text"],
+    )
+    # It proceeds past the warning and fails later, when it reaches AWS — as
+    # SystemExit locally or as the offline suite's outbound-request guard in CI,
+    # so the type is not the assertion. The printed warning is.
+    with pytest.raises(BaseException):
+        main()
+    assert "no baseline" in capsys.readouterr().out
+
+
+def test_main_does_not_warn_when_the_baseline_is_requested(monkeypatch, capsys):
+    main = _main_with(
+        monkeypatch,
+        [
+            "--stack",
+            "s",
+            "--models",
+            "nova2lite",
+            "--variants",
+            "page-both,packet-text",
+        ],
+    )
+    with pytest.raises(BaseException):
+        main()
+    assert "no baseline" not in capsys.readouterr().out

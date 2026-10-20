@@ -368,7 +368,10 @@ def classification_cost(metering):
 
 def drain(res, runs, n, poll_interval, timeout_min):
     """Wait until every doc in each run has completed or failed."""
-    print(f"  draining {[r['model'] for r in runs]}...")
+    # `cell` not `model`: with --variants, two cells of the same model print
+    # identically and the in-flight list stops identifying which run finished.
+    # Same fallback `--score-only` uses.
+    print(f"  draining {[r.get('cell') or r['model'] for r in runs]}...")
     deadline = time.time() + timeout_min * 60
     while time.time() < deadline:
         pending = []
@@ -376,7 +379,8 @@ def drain(res, runs, n, poll_interval, timeout_min):
             st = lib.poll_run(res["tracking_table"], r["run_id"])
             if st["obj_done"] + st["failed"] < n:
                 pending.append(
-                    f"{r['model']}:{st['obj_done']}done+{st['failed']}fail/{n}"
+                    f"{r.get('cell') or r['model']}:"
+                    f"{st['obj_done']}done+{st['failed']}fail/{n}"
                 )
         if not pending:
             print("  all runs settled")
@@ -452,7 +456,14 @@ def score_run(res, run_id):
             cost, tokens, why, by_context = classification_cost(metering_read.value)
             for k in cls_tokens:
                 cls_tokens[k] += tokens[k]
-            for context, bucket in by_context.items():
+            # ⚠️ NOT `bucket`: that name is bound at the top of this function to
+            # the S3 OUTPUT BUCKET and is still read by `lib.read_json` on every
+            # later iteration of the enclosing `for prefix in ...` loop. Rebinding
+            # it here passed a dict to botocore's `Bucket=` from the second
+            # document onward, so a run completed, printed read failures that
+            # looked environmental, and reported `n_docs: 1` — pooling every
+            # accuracy and cost figure over one document instead of the corpus.
+            for context, ctx_tokens in by_context.items():
                 acc = cls_by_context.setdefault(
                     context,
                     {
@@ -470,11 +481,11 @@ def score_run(res, run_id):
                     "cacheReadInputTokens",
                     "calls",
                 ):
-                    acc[k] += bucket.get(k, 0)
-                if bucket.get("cost") is None:
+                    acc[k] += ctx_tokens.get(k, 0)
+                if ctx_tokens.get("cost") is None:
                     acc["cost_unpriced_docs"] += 1
                 else:
-                    acc["cost"] += bucket["cost"]
+                    acc["cost"] += ctx_tokens["cost"]
             if cost is None:
                 # Same arithmetic as adding zero, so the run's cost is withheld
                 # rather than reported short (#1146).
@@ -594,17 +605,21 @@ def score_run(res, run_id):
         # calls went — Segmentation or Labeling — rather than only their sum.
         # `calls` is what makes packet granularity's N-calls-to-1 claim a
         # measurement rather than an assertion.
+        # The loop variable is `totals`, not `bucket`: a comprehension scopes its
+        # own name so this one cannot leak, but `bucket` is the S3 output bucket
+        # in this function and copying this block somewhere it would leak is the
+        # whole shape of the defect fixed above.
         "classification_by_context": {
             context: {
-                **bucket,
-                "cost": round(bucket["cost"], 6)
-                if not bucket["cost_unpriced_docs"]
+                **totals,
+                "cost": round(totals["cost"], 6)
+                if not totals["cost_unpriced_docs"]
                 else None,
-                "calls_per_document": round(bucket["calls"] / len(docs), 2)
+                "calls_per_document": round(totals["calls"] / len(docs), 2)
                 if docs
                 else None,
             }
-            for context, bucket in sorted(cls_by_context.items())
+            for context, totals in sorted(cls_by_context.items())
         }
         or None,
         "per_doc": per_doc,
