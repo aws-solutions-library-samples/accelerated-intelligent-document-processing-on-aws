@@ -1038,7 +1038,15 @@ Resources:
             collapsible: true
             defaultExpanded: false
             sectionLabel: Classification
-            description: "Assigns a class to each page/section. LLM-powered classification is skipped when only a single class is defined in the Document Schema (all pages are assigned to that class), or when a document name or page content matches a class's RegEx rule."
+            # The old description said LLM classification "is skipped when only a
+            # single class is defined... or when a document name matches a RegEx
+            # rule", which stopped being true in 0.6.7 (#686, #705): under the
+            # default llm_determined splitting a multi-page document still gets a
+            # call per page, because knowing WHAT a packet contains says nothing
+            # about WHERE each record starts. The mental model line is the panel
+            # header because granularity and modality are the two things everything
+            # else here depends on.
+            description: "Splits the file into documents and assigns a class to each. **Granularity** decides how many calls are made: page = one call per page, packet = one call per document (or per window). **Modality** decides what each call sees: text, images, or both. The two are independent. Inference is skipped entirely only when no boundary decision is needed — a single-page file, or Section splitting set to 'disabled' or 'page' — combined with a predetermined class (one class defined, or a document-name RegEx match). A multi-page file under the default 'llm_determined' splitting is always classified, even with one class defined, because that is where the boundaries come from."
             dependsOn: { field: "use_bda", value: false }
             required:
               - model
@@ -1048,11 +1056,40 @@ Resources:
               - system_prompt
               - task_prompt
             properties:
+              granularity:
+                type: string
+                title: Granularity
+                description: "**What it does.** How many calls classification makes. 'page': one call per page; each returns that page's class and whether it starts a new document, and the boundaries are pieced together from those verdicts. 'packet': one call per document (or per window); the model sees the whole packet and returns the segments directly. — **Applies to:** both strategies; in two-stage it controls Stage A. — **Cost.** page = N calls, each repeating the whole prefix (instructions, class list, descriptions, few-shot examples) and paying ~150-350 output tokens. packet = 1 call (or one per window), prefix and output paid once. Image tokens are the SAME either way, so packet + images off is the large cost lever; packet + images on is mainly an ACCURACY change, being the only way the model ever sees the whole packet when deciding boundaries. — **Interacts with:** Modality, the Packet settings (window size and prompts), and Context pages (page only). Leave empty to inherit the deprecated Classification method below."
+                enum: ["", "page", "packet"]
+                default: ""
+                order: 0
+              modality:
+                type: object
+                sectionLabel: Modality
+                collapsible: false
+                description: "**What each call sees** — text, images, or both — independent of Granularity above: the same two flags apply to a per-page call and a per-packet call. Leaving a flag empty infers it from the Task prompt's placeholders, which is exactly what happened before this setting existed, so an existing configuration is unaffected and the old trick of deleting {DOCUMENT_IMAGE} to get text-only classification still works. Setting a flag rewrites the prompt to match. Turning both off is refused when you save."
+                order: 0.5
+                properties:
+                  text:
+                    type: string
+                    title: Send page text
+                    description: "**What it does.** Sends each page's OCR text. — **Applies to:** both granularities. — **Cost.** Text tokens per page; much cheaper than the image for a typical page. — **Overridden by:** an OCR backend of 'none', which produces no text to send. Empty = infer from whether the Task prompt contains {DOCUMENT_TEXT}."
+                    enum: ["", "true", "false"]
+                    default: ""
+                    order: 0
+                  images:
+                    type: string
+                    title: Send page images
+                    description: "**What it does.** Sends each page's image. — **Applies to:** both granularities. — **Cost.** Usually the LARGEST input cost per page, roughly 1.1K-4.8K tokens depending on the model and the image size, so turning this off is the main lever on image-dominated classification cost. — **Interacts with:** the Image settings below (shown only when this is on) and, at packet granularity, the window size: above 20 images in one request Bedrock downscales every image to 2,000px. Empty = infer from whether the Task prompt contains {DOCUMENT_IMAGE}."
+                    enum: ["", "true", "false"]
+                    default: ""
+                    order: 1
               image:
                 type: object
                 sectionLabel: Image Processing Settings
-                description: Configure image resolution and processing options for image attachments in classification
-                order: 0
+                description: "**What it does.** Downscales the page image before sending it for classification. — **Applies to:** any call that sends images, at either granularity. — **Cost.** Fewer pixels means proportionally fewer image tokens, and the image is usually the largest input cost per page. — **Overridden by:** the OCR image size, which is the upper bound: this can only make the image smaller than OCR produced, never larger."
+                order: 0.6
+                showWhen: [{ field: "modality.images", notValues: ["false"] }]
                 properties:
                   target_width:
                     type: number
@@ -1066,6 +1103,43 @@ Resources:
                     minimum: 100
                     maximum: 3500
                     order: 1
+              packet:
+                type: object
+                sectionLabel: Packet settings
+                collapsible: true
+                defaultExpanded: false
+                description: "Used only at packet granularity: how large a window each call covers, and the packet-level prompts. The prompts are SEPARATE from the page-level ones below because the two ask for different output shapes — a page call returns one class plus a start/continue verdict, a packet call returns a list of segments."
+                order: 0.7
+                showWhen: [{ field: "granularity", value: "packet" }]
+                properties:
+                  window_pages:
+                    type: integer
+                    title: Window size (pages)
+                    description: "**What it does.** The maximum number of pages one packet call covers. A larger packet is split into overlapping windows whose results are merged. 0 means never window — one call for the whole packet, which is what the old holistic method did and which fails outright above the model's context window. — **Applies to:** packet granularity. — **Cost.** More windows means more calls: a 60-page packet at 20 pages per window costs 3 calls instead of 1. — **Interacts with:** Modality > Send page images. The default of 20 is where Bedrock starts downscaling: above 20 images in one request every image is shrunk to 2,000px, so a wider window with images on silently halves its own page resolution."
+                    minimum: 0
+                    maximum: 200
+                    default: 20
+                    order: 0
+                  overlap_pages:
+                    type: integer
+                    title: Window overlap (pages)
+                    description: "**What it does.** How many pages are repeated between adjacent windows, so a document boundary falling at a window edge is still seen together with the pages before it. The overlapping pages' own verdicts come from the EARLIER window, which is the one that had their preceding context. — **Applies to:** packet granularity, when the packet is larger than one window. — **Cost.** Adds this many pages to every window after the first. — **Interacts with:** Window size, which it must be smaller than (an overlap as large as the window means each window covers no new pages, so a long packet would cost one call per page)."
+                    minimum: 0
+                    maximum: 50
+                    default: 2
+                    order: 1
+                  system_prompt:
+                    type: string
+                    title: Packet system prompt
+                    format: textarea
+                    description: "System prompt for packet-level calls. Empty falls back to the page-level System prompt below."
+                    order: 2
+                  task_prompt:
+                    type: string
+                    title: Packet task prompt
+                    format: textarea
+                    description: "**What it does.** The task prompt for packet-level calls. It must ask for a `segments` array of {ordinal_start_page, ordinal_end_page, type}, which is a different output shape from the page-level prompt's single class plus boundary verdict — that is why this is a separate field. Page numbers are ORDINALS within the call: the first page the call is shown is page 1, which is not the document's page 1 once windowing is on. — **Placeholders:** {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT} (every page's text, each labelled with its ordinal), {DOCUMENT_IMAGE} (every page's image, each labelled with its ordinal — only sent when Modality > Send page images is on), and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}. Use <<CACHEPOINT>> to separate the static prefix for prompt caching."
+                    order: 3
               model:
                 type: string
                 title: Model
@@ -1215,47 +1289,168 @@ Resources:
                     dependsOn: { field: "model", reasoningCapable: true }
               classificationMethod:
                 type: string
-                title: Classification method
-                description: "Classification methodology to use"
+                title: Classification method (deprecated)
+                description: "⚠️ **Deprecated — read only while Granularity above is empty.** This setting tied two independent choices together (how many calls are made, and what each call sees), so there was no way to classify a whole packet from its images, or a single page from text alone, without editing the prompt. Granularity + Modality replace it: 'multimodalPageLevelClassification' is granularity page with text and images, and 'textbasedHolisticClassification' is granularity packet with text only. Set Granularity and this field stops being read."
                 enum:
                   [
                     "multimodalPageLevelClassification",
                     "textbasedHolisticClassification",
                   ]
                 order: 3.5
+                # "granularity has not been set" covers both an empty string and
+                # the key being absent entirely, which is the state of every
+                # configuration written before granularity existed. Expressed as
+                # the negative rather than `values: ["", null]` for two reasons:
+                # CloudFormation refuses a literal `null` anywhere in a template,
+                # and an absent value does not EQUAL "" either, so the positive
+                # form would have hidden this field in exactly the case it exists
+                # for.
+                showWhen: [{ field: "granularity", notValues: ["page", "packet"] }]
+              strategy:
+                type: string
+                title: Strategy
+                description: "**What it does.** 'single_pass' (default): one call returns both the boundaries and the classes, which is what classification has always done. 'two_stage': Stage A finds the boundaries with NO class vocabulary in the prompt, then Stage B labels each segment with one call. — **Applies to:** always. — **Cost.** Two-stage drops the class list, the descriptions and the few-shot examples from every boundary call, and labels once per document instead of once per page: a 40-page statement is labeled once, not forty times. It adds one call per segment, so it is a clear win on long documents with few sections and roughly a wash on single-page files. — **Interacts with:** Granularity, which controls Stage A. Two-stage is metered as separate 'Segmentation' and 'Labeling' lines in the cost table, so you can see which half the money went to — and it separates a wrong boundary from a wrong label, which one section-level outcome cannot."
+                enum: ["single_pass", "two_stage"]
+                default: "single_pass"
+                order: 3.6
+              segmentation:
+                type: object
+                sectionLabel: Stage A — Segmentation (two-stage)
+                collapsible: true
+                defaultExpanded: true
+                description: "Stage A of two-stage classification: where each document starts and ends. It reuses Granularity, Modality, the Image settings, Context pages and the Packet window — the same call shape as single-pass, asked a smaller question. **Not the same thing as Section splitting below**, which decides how the resulting segments become sections and applies to both strategies."
+                order: 3.7
+                showWhen: [{ field: "strategy", value: "two_stage" }]
+                properties:
+                  model:
+                    type: string
+                    title: Stage A model
+                    description: "**What it does.** The model Stage A uses. Empty uses the Classification model above. — **Applies to:** two-stage. — **Cost.** The model choice outweighs every other setting here. Naming one per stage is most of the point of two-stage: boundary detection may want a capable multimodal model looking at a whole packet, while labeling a clean segment is often a much easier problem a cheaper model answers just as well."
+                    default: ""
+                    order: 0
+                  boundary_hints:
+                    type: string
+                    title: Boundary hints
+                    description: "**What it does.** Whether Stage A is told the class NAMES as a hint for where a new document starts. 'none' (default) sends no vocabulary at all. 'class_names' sends the names only — not the descriptions and not the examples. — **Applies to:** two-stage Stage A. — **Cost.** 'none' is the prefix saving two-stage exists for; 'class_names' gives back a small part of it, which can be worth it when boundaries are marked by a form number or title the class names mention."
+                    enum: ["none", "class_names"]
+                    default: "none"
+                    order: 1
+                  system_prompt:
+                    type: string
+                    title: Stage A system prompt (page)
+                    format: textarea
+                    description: "System prompt for Stage A at page granularity."
+                    order: 2
+                    showWhen: [{ field: "granularity", notValues: ["packet"] }]
+                  task_prompt:
+                    type: string
+                    title: Stage A task prompt (page)
+                    format: textarea
+                    description: "**What it does.** Asks only whether this page starts a new document, with no class list and no class in the answer. It must return {\"document_boundary\": \"start\" | \"continue\"}. — **Placeholders:** {BOUNDARY_HINTS} (renders empty under 'none'), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Deliberately NOT {CLASS_NAMES_AND_DESCRIPTIONS} or {FEW_SHOT_EXAMPLES} — referencing those reintroduces the prefix this stage exists to avoid, and they render empty here."
+                    order: 3
+                    showWhen: [{ field: "granularity", notValues: ["packet"] }]
+                  packet:
+                    type: object
+                    sectionLabel: Stage A packet prompts
+                    collapsible: false
+                    description: "Stage A prompts for packet granularity: ask for page RANGES only, with no type per range."
+                    order: 4
+                    showWhen: [{ field: "granularity", value: "packet" }]
+                    properties:
+                      system_prompt:
+                        type: string
+                        title: Stage A system prompt (packet)
+                        format: textarea
+                        description: "System prompt for Stage A at packet granularity."
+                        order: 0
+                      task_prompt:
+                        type: string
+                        title: Stage A task prompt (packet)
+                        format: textarea
+                        description: "**What it does.** Asks for a `segments` array of {ordinal_start_page, ordinal_end_page} — ranges only, no type. — **Placeholders:** {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers are ordinals within the call, so the first page shown is page 1."
+                        order: 1
+              labeling:
+                type: object
+                sectionLabel: Stage B — Labeling (two-stage)
+                collapsible: true
+                defaultExpanded: true
+                description: "Stage B of two-stage classification: what class each segment is. **One call per segment, not per page** — the other half of the two-stage saving. Skipped entirely for a segment whose class is already known from a document-name RegEx match."
+                order: 3.8
+                showWhen: [{ field: "strategy", value: "two_stage" }]
+                properties:
+                  method:
+                    type: string
+                    title: Labeling method
+                    description: "**What it does.** How each segment gets its class. 'llm' makes one LLM call per segment with the class vocabulary and the few-shot examples. — **Applies to:** two-stage. — **Note.** 'llm' is the only value today. Embeddings-based labeling and external classifier endpoints (SageMaker, Bedrock custom, or a Lambda adapter) are planned; both need measurement on real documents before their defaults can be set honestly. See GitHub issue #1329."
+                    enum: ["llm"]
+                    default: "llm"
+                    order: 0
+                  model:
+                    type: string
+                    title: Stage B model
+                    description: "**What it does.** The model Stage B uses. Empty uses the Classification model above. — **Cost.** This is the call that carries the class vocabulary and the examples, and it runs once per segment, so a cheaper model here scales with document count rather than page count."
+                    default: ""
+                    order: 1
+                  pages:
+                    type: string
+                    title: Pages per segment
+                    description: "**What it does.** Which pages of a segment represent it for labeling. 'first' sends only the opening page, 'first_k' the first few, 'all' every page. — **Applies to:** two-stage Stage B. — **Cost.** 'all' makes labeling a long segment cost what page-level classification cost to classify it, which gives back the saving. 'first_k' is the default because a document's identity is almost always on its opening pages."
+                    enum: ["first", "first_k", "all"]
+                    default: "first_k"
+                    order: 2
+                  k:
+                    type: integer
+                    title: Pages to send (k)
+                    description: "How many opening pages 'first_k' sends. A segment shorter than this sends what it has."
+                    minimum: 1
+                    maximum: 20
+                    default: 2
+                    order: 3
+                    dependsOn: { field: "pages", value: "first_k" }
+                  system_prompt:
+                    type: string
+                    title: Stage B system prompt
+                    format: textarea
+                    description: "System prompt for Stage B."
+                    order: 4
+                  task_prompt:
+                    type: string
+                    title: Stage B task prompt
+                    format: textarea
+                    description: "**What it does.** Given one segment's pages, returns its class. It must return {\"class\": \"...\"}; it is NOT asked for a boundary, because Stage A already decided that. — **Placeholders:** {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT} (the selected pages' text, each labelled), {DOCUMENT_IMAGE} (the selected pages' images). — **Interacts with:** Enforce valid classes below, which re-prompts this call when the class is outside your vocabulary, and Class confidence, which is scored per segment here rather than per page."
+                    order: 5
               maxPagesForClassification:
                 type: string
                 title: Pages to classify
-                description: "Number of pages to use for classification [When set to a number, forces the entire document to be assigned a single class]"
+                description: "**What it does.** Classifies only the first N pages and assigns their majority class to the WHOLE file as one section. 'ALL' (default) classifies every page. — **Applies to:** always. — **Cost.** N calls instead of one per page, at page granularity. — **⚠️ Overrides Section splitting.** When this is a number the file becomes a single section regardless of what Section splitting says, so a multi-document packet is collapsed into one. It is the right setting for a known single-document file and the wrong one for a packet."
                 enum: ["ALL", "1", "2", "3", "5", "10"]
                 order: 4
               sectionSplitting:
                 type: string
                 title: Section splitting
-                description: "Section splitting strategy: 'disabled' (entire doc as one section), 'page' (one section per page - prevents joining same-type documents), 'llm_determined' (use LLM boundary detection - default)"
+                description: "**What it does.** How the segments classification found become sections. 'llm_determined' (default): one section per segment the model identified. 'page': one section per page, which prevents two adjacent documents of the same class being joined. 'disabled': the whole file as one section, with its class chosen by majority vote across the pages. — **Applies to:** always, including two-stage (it reads Stage A's segments). — **Cost.** None directly: this runs after the calls are made. ⚠️ **'disabled' does NOT skip classification** — every page is still classified so there is something to vote with; use 'Pages to classify' for that. — **Overridden by:** 'Pages to classify' when that is a number."
                 enum: ["disabled", "page", "llm_determined"]
                 default: "llm_determined"
                 order: 5
               contextPagesCount:
                 type: integer
                 title: Context pages
-                description: "Number of surrounding pages to include as context for multi-modal page-level classification. Value of 0 means no additional context (default). Value of 1 includes 1 page before and after. Value of 2 includes 2 pages before and after. Only applies to multimodalPageLevelClassification method."
+                description: "**What it does.** Also sends k pages before and after the page being classified, as context, so a page that is ambiguous on its own can be judged against its neighbours. 0 (default) sends only the page itself. — **Applies to:** page granularity only (a packet call already sees the whole packet). — **Cost.** ⚠️ Each call carries up to 2k+1 pages: **×3 at k=1 and ×5 at k=2**, in both text and image tokens. This is the most expensive setting in this panel per unit of change. — **Interacts with:** Modality — the context pages are sent in whichever modalities are on, so turning images off cuts the cost of this setting proportionally."
                 minimum: 0
                 maximum: 5
                 default: 0
                 order: 6
-                dependsOn: { field: "classificationMethod", value: "multimodalPageLevelClassification" }
+                showWhen: [{ field: "granularity", notValues: ["packet"] }]
               enforceValidClasses:
                 type: boolean
                 title: Enforce valid classes
-                description: "When enabled, the predicted class is validated against the defined class vocabulary. If the model returns a class that is not in the list, it is re-prompted with the valid choices and retried (see Max Validation Retries). If retries are exhausted, the page is assigned the Invalid Class Fallback and flagged with a validation error. When disabled, an out-of-vocabulary prediction is used as-is (legacy behavior). Only applies to multimodalPageLevelClassification."
+                description: "**What it does.** Validates the predicted class against your class vocabulary. If the model returns a class that is not in the list it is re-prompted with the valid choices and retried; if retries run out the result is the Invalid class fallback, flagged with a validation error. When off, an out-of-vocabulary prediction is used as-is. — **Applies to:** page granularity, packet granularity (per segment) and two-stage Stage B (per segment). — **Cost.** Nothing unless the model goes out of vocabulary; each retry resends the full request."
                 default: true
                 order: 7
-                dependsOn: { field: "classificationMethod", value: "multimodalPageLevelClassification" }
               maxValidationRetries:
                 type: integer
                 title: Max validation retries
-                description: "Maximum number of times to re-prompt the model when it returns a class outside the defined vocabulary. Only used when Enforce Valid Classes is enabled. 0 disables retries (a single invalid prediction goes straight to the fallback)."
+                description: "**What it does.** How many times to re-prompt when the model returns a class outside your vocabulary. 0 sends a single invalid prediction straight to the fallback. — **Applies to:** whenever Enforce valid classes is on. — **Cost.** Each retry resends the full request, including the images."
                 minimum: 0
                 maximum: 5
                 default: 2
@@ -1264,20 +1459,20 @@ Resources:
               invalidClassFallback:
                 type: string
                 title: Invalid class fallback
-                description: "Class label assigned to a page when all validation retries are exhausted. Should be one of your defined classes, or the built-in 'unclassified'. Only used when Enforce Valid Classes is enabled."
+                description: "**What it does.** The class assigned when all validation retries are exhausted. Should be one of your defined classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction. — **Applies to:** whenever Enforce valid classes is on."
                 default: "unclassified"
                 order: 9
                 dependsOn: { field: "enforceValidClasses", value: true }
               confidence:
                 type: object
                 sectionLabel: Class confidence
-                description: "How much confidence the classifier reports in the CLASS it chose (not in the extracted fields — that is Extraction > Confidence). Costs output tokens on every page, because page-level classification is one inference per page."
+                description: "**What it does.** How much confidence the classifier reports in the CLASS it chose. Not the extracted fields — that is Extraction > Confidence. — **Applies to:** always. The UNIT follows granularity: one score per page at page granularity, one score per segment at packet granularity and in two-stage Stage B. — **Cost.** Output tokens on every call, so at page granularity that is every page; 'topk' adds roughly 17% to the classification step's output."
                 order: 10
                 properties:
                   mode:
                     type: string
                     title: Class confidence mode
-                    description: "'topk' (default) asks the model for its ranked candidate classes with probabilities ('80% W-2, 15% 1099') — better calibrated than a single self-reported number, and it shows you what else the page could have been. 'verbalized' asks for one 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. Measured on a 13-class corpus, topk added ~0.5% to total document cost with no consistent accuracy change; how USEFUL the score is depends strongly on the classification model — see the Classification Confidence benchmark page."
+                    description: "**What it does.** 'topk' (default) asks for ranked candidate classes with probabilities ('80% W-2, 15% 1099') — better calibrated than a single self-reported number, and it shows you what else the page could have been. 'verbalized' asks for one 0-1 number: cheapest and the most overconfident, because a model asked 'how sure are you?' answers ~0.95 nearly everywhere. 'off' asks for nothing. — **Cost.** Measured on a 13-class corpus, topk added ~0.5% to total document cost with no consistent accuracy change. — **Note.** How USEFUL the score is depends strongly on the model: measure the calibration on your own documents before routing work on it. See the Classification Confidence benchmark page."
                     enum: ["topk", "verbalized", "off"]
                     default: "topk"
                     order: 0
@@ -1304,17 +1499,33 @@ Resources:
                     description: "The instruction spliced into the classification Task prompt in 'verbalized' mode, on the same rules as the Top-K block."
                     order: 3
                     dependsOn: { field: "mode", value: "verbalized" }
+                  task_prompt_topk_packet:
+                    type: string
+                    title: Top-K instruction block (packet)
+                    format: textarea
+                    description: "The 'topk' block used at PACKET granularity. A separate template because the unit differs: a page call scores one page's class, a packet call scores each segment it returns, so the instruction has to name the key it goes in and say per-segment. Empty falls back to the page block above, which is what a configuration predating packet granularity gets."
+                    order: 4
+                    dependsOn: { field: "mode", value: "topk" }
+                    showWhen: [{ field: "granularity", value: "packet" }]
+                  task_prompt_verbalized_packet:
+                    type: string
+                    title: Verbalized instruction block (packet)
+                    format: textarea
+                    description: "The 'verbalized' block used at PACKET granularity, on the same per-segment rules as the packet Top-K block."
+                    order: 5
+                    dependsOn: { field: "mode", value: "verbalized" }
+                    showWhen: [{ field: "granularity", value: "packet" }]
               system_prompt:
                 type: string
                 title: System prompt
                 format: textarea
-                description: System prompt
+                description: "System prompt for page-level calls. At packet granularity the Packet system prompt is used instead; this one remains in use by two-stage Stage B if that stage's own prompt is cleared."
                 order: 15
               task_prompt:
                 type: string
                 title: Task prompt
                 format: textarea
-                description: Task prompt - include placeholders {CLASS_NAMES_AND_DESCRIPTIONS} (replaced with the class names and descriptions for all specified classes), {FEW_SHOT_EXAMPLES} (replaced by the x-aws-idp-class-prompt text and image data from each class's x-aws-idp-examples; renders empty when no class defines examples, so it is safe to leave in), {DOCUMENT_TEXT} (replaced by the OCR output), and for multi-modal classification {DOCUMENT_IMAGE} (replaced by the page image attachment). Optionally include {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} (replaced with class names, descriptions, AND schema attribute field names — useful for disambiguating classes with similar names but different extraction schemas; opt-in and cost-neutral when not referenced). Optionally use <<CACHEPOINT>> to separate static and dynamic elements of prompt for Bedrock prompt caching.
+                description: "**What it does.** The task prompt for page-level calls. It asks for one page's class plus whether that page starts a new document, and must return {\"class\": ..., \"document_boundary\": \"start\"|\"continue\"}. At packet granularity the Packet task prompt is used instead, because a packet call returns a `segments` array — a different output shape read by a different parser. — **Placeholders:** {CLASS_NAMES_AND_DESCRIPTIONS} (class names and descriptions), {FEW_SHOT_EXAMPLES} (each class's x-aws-idp-examples; renders empty when none are defined, so it is safe to leave in), {DOCUMENT_TEXT} (the OCR output), {DOCUMENT_IMAGE} (the page image attachment), and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} (adds schema attribute field names — useful for telling apart classes with similar names but different extraction schemas; opt-in and cost-neutral when not referenced). Use <<CACHEPOINT>> to separate the static prefix for Bedrock prompt caching. — **Interacts with:** Modality. Removing {DOCUMENT_IMAGE} makes classification text-only and removing {DOCUMENT_TEXT} makes it image-only; the Modality flags above are the explicit way to say the same thing, and setting one rewrites this prompt to match. With Context pages on, the surrounding pages are inserted at {DOCUMENT_TEXT} and {DOCUMENT_IMAGE} alongside the current page."
                 order: 16
               postHook:
                 type: array
