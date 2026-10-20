@@ -1364,6 +1364,21 @@
       "ratchetGap": "A pattern that matches nothing makes the scan silently vacuous for that rule.",
       "memberKind": "detection pattern"
     },
+    "scripts/sdlc/tests/test_api_rbac_refusal_attribution.py::_DECLARED_RESOURCE_REFUSALS": {
+      "kind": "enforced-universe",
+      "memberKind": "a refusal SITE: (source file relative to the resolver root or to lib/idp_common_pkg, top-level function name) naming one place a resolver raises",
+      "turnsOff": "nothing in a gate, and it cannot: the list names the per-object refusal sites asserted to raise ResourceAccessDenied, and a site left OFF it is treated MORE harshly rather than waved through. An undeclared refusal reaches the client as authzControl 'resolver', and refusal_is_resource_level() is fail-closed, so the live RBAC harness applies the strict verdict to it. The risk this entry records is therefore omission in the other direction -- a per-object control the harness can provoke and that does not declare itself turns a correct refusal into a hard failure (#1308).",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/sdlc/tests/test_api_rbac_refusal_attribution.py",
+      "issues": [
+        1308,
+        1478
+      ],
+      "reason": "Discovered through the prose route, on the comment bounding the list -- it argues in words that certain refusals stay unattributed, which reads to the matcher as an exemption rationale and is close to the opposite: unattributed is the strict side here. The judgement that cannot be computed is the membership criterion itself, 'is this refusal a decision about the OBJECT the caller named, as opposed to a fact about the deployment or about the principal', which is a question about what a branch means and not about any path, file or template property; no predicate in gate_premises.py has that subject, and the members are function names rather than paths a predicate could be aimed at. The ratchet is per member and live: test_a_converted_per_object_control_still_declares_itself parses each named function and fails if it stops raising the class, and _raised_names raises outright if the function has been renamed or removed, so an entry whose site has gone away fails rather than going quiet -- which matters because the consequence of a dead entry here is a per-object control silently reverting to the strict label. The refusal sites in get_file_contents_resolver that are deliberately absent are each bounded to one member in the comment, and each is ratcheted on the other side rather than only argued for: document_scope's throttled tracking-table read and _DocumentScope's unwired table name in _UNATTRIBUTED_REFUSAL_CLASSES, resolve_caller_scope and key_scope._claims and key_scope._assert_test_set_allowed in _UNATTRIBUTED_REFUSAL_SITES, and the two functions that legitimately raise both classes in _MIXED_REFUSAL_SITES with the per-class count pinned -- which is the only form that holds a mixed site, since a presence assertion is satisfied by converting the other branch and an absence assertion is false by construction. What this entry does NOT claim is closure over every per-object control in the tree: there is no derivation of that universe, the comment says so, and the bound is 'the live harness can provoke it' -- which is why the arm that provokes these members is itself asserted to exist and to turn on the label, by test_the_document_bytes_suite_exists_and_is_invoked_from_main -- which reads main()'s own body, so a call left in a dead helper does not satisfy it -- and test_the_document_bytes_suite_demands_the_resource_label. Registered rather than reworded: rewording the comment to slip past discovery is the failure this registry exists to prevent."
+    },
     "scripts/sdlc/tests/test_api_rbac_verdicts.py::ALLOWED": {
       "kind": "fixture",
       "memberKind": "literal string",
