@@ -942,9 +942,12 @@ MANAGED_STACK_NAME_PREFIX = "idp"
 SHARED_BOUNDARY_POLICY_NAME = "idp-cicd-shared-PermissionsBoundary"
 
 #: The long-lived review stack the MR UX test (scripts/sdlc/ai_ux_test.py) runs
-#: against, updated in place by the SCHEDULED build only. The Step 0 sweeps leave
-#: it standing because it is a member of SWEEP_EXEMPT_STACK_NAMES; a test pins that
-#: membership, so renaming one without the other fails.
+#: against, updated in place by the SCHEDULED build only. Its membership of
+#: SWEEP_EXEMPT_STACK_NAMES is what keeps the Step 0 stack sweep off it and its
+#: -iam pre-stack, and the bucket sweep off its buckets; the BDA, IAM-role and
+#: IAM-policy sweeps cannot reap its names, because they reap only names carrying
+#: a run prefix and none of its names does. A test pins that membership, so
+#: renaming one without the other fails.
 UX_NIGHTLY_STACK_NAME = "idp-ux-nightly"
 #: Written at the zip root by scripts/sdlc/integration_test_deployment.py: the one
 #: fact CodeBuild cannot otherwise see, namely which GitLab pipeline source started
@@ -8828,13 +8831,13 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
 def _is_stack_gone(exc: Exception) -> bool:
     """Whether a DescribeStacks failure says the stack does not exist.
 
-    The code and the message together, for the reason _STACK_GONE_MESSAGE gives:
-    ValidationError is CloudFormation's catch-all 400, so a malformed request
-    carries the same code, and only the message says the stack is absent. Every
-    other failure, a throttle or a denial included, is not an answer about it.
+    CloudFormation answers a missing stack with the code ValidationError and a
+    message saying the stack "does not exist", and both are required here.
+    ValidationError is its catch-all 400, so a malformed request carries the same
+    code, and only the message says the stack is absent. Every other failure, a
+    throttle or a denial included, is not an answer about it.
     """
-    code = _aws_error_code(exc)
-    return code == _STACK_GONE_ERROR_CODE and _STACK_GONE_MESSAGE in str(exc)
+    return _aws_error_code(exc) == "ValidationError" and "does not exist" in str(exc)
 
 
 def _described_parameter(stack: dict, key: str) -> str:

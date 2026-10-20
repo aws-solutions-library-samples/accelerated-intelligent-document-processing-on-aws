@@ -319,15 +319,17 @@ def _https_host(value: str, key: str, shape: re.Pattern[str] | None) -> str:
 def _bucket_hosts(name: str, key: str, stack: str, region: str) -> tuple[str, ...]:
     """The virtual-hosted S3 endpoints of one exact bucket of ``stack``.
 
-    The regional host is the form ``generate-s3-presigned-url.ts`` builds. In the
-    commercial partition the global ``<bucket>.s3.amazonaws.com`` host is listed
-    as well, because the backend's own presigners use it: botocore presigns that
-    host for a client in ``us-east-1``, as ``getFilePresignedUrl`` is, whose URLs
-    the document viewer and the test studio fetch, and in every commercial region
-    with ``addressing_style`` ``auto``. Within one partition a bucket name is
-    unique, so both hosts reach the same bucket. Outside it the global host is not
-    listed, because it is the commercial partition's, where the same name can
-    belong to anybody.
+    The browser signs no S3 URL of its own, so both hosts are ones the backend
+    presigns. ``getFilePresignedUrl`` and ``getFilePresignedUrls``, whose URLs the
+    document viewer and the test studio fetch, sign with a client in the stack's
+    region and ``addressing_style`` ``virtual``: outside ``us-east-1`` that is the
+    regional host, and in ``us-east-1`` botocore presigns the global
+    ``<bucket>.s3.amazonaws.com`` host instead, as it does in every commercial
+    region for a presigner with ``addressing_style`` ``auto``. So in the commercial
+    partition the global host is listed as well. Within one partition a bucket
+    name is unique, so both hosts reach the same bucket. Outside it the global
+    host is not listed, because it is the commercial partition's, where the same
+    name can belong to anybody.
 
     The name must be a bucket name without dots that starts with the stack's own
     name and a dash. What keeps a stranger's bucket off the list is exactness: the

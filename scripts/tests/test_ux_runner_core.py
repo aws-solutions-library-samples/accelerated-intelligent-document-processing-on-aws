@@ -226,7 +226,7 @@ def test_email_addresses_are_replaced_and_package_versions_are_not() -> None:
     assert scrub("chrome-devtools-mcp@1.10.1") == "chrome-devtools-mcp@1.10.1"
 
 
-#: A presigned GetObject URL as the UI builds one, its values percent-encoded.
+#: A presigned GetObject URL, its values percent-encoded.
 PRESIGNED_PATH = (
     "https://idp-ux-nightly-inputbucket-def456.s3.us-east-1.amazonaws.com"
     "/input/lending_package.pdf"
