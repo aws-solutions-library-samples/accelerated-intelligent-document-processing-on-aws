@@ -8,6 +8,12 @@ corpus/configs/
 **/__pycache__/
 # raw per-run runmaps; scored summaries are kept (see un-ignores below)
 results/run-*/
+# ad-hoc classification-bench runs: `run_classification_bench.py` writes
+# results/clsconf-<stamp>/, which matched neither the ignore above nor the
+# keep patterns below, so an ordinary measurement run turned up as 6 untracked
+# files in `git status` and was committed once by accident. A run worth keeping
+# is promoted to results/<release>/<suite>/ like every other suite's.
+results/clsconf-*/
 
 # KEEP (committed, tracked) — scored results live at results/<release>/<suite>/
 # (one release dir per release; see results/RETENTION.md)
