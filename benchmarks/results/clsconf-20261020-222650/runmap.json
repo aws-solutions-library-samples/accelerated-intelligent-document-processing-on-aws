@@ -1,0 +1,60 @@
+{
+  "stack": "IDP1",
+  "testset": "docsplit",
+  "n": 8,
+  "mode": "topk",
+  "top_k": 3,
+  "variants": [
+    "page-both",
+    "packet-text",
+    "twostage-packet"
+  ],
+  "resources": {
+    "testset_bucket": "idp1-testsetbucket-cdhv5hlfl023",
+    "output_bucket": "idp1-outputbucket-guhevsx91pq5",
+    "tracking_table": "IDP1-TrackingTable-16DBDNGC5TTO5",
+    "config_table": "IDP1-ConfigurationTable-14SHWGJQME0TU"
+  },
+  "runs": [
+    {
+      "cell": "nova2lite-page-both",
+      "model": "nova2lite",
+      "model_id": "us.amazon.nova-2-lite-v1:0",
+      "variant": "page-both",
+      "variant_spec": {
+        "granularity": "page",
+        "text": true,
+        "images": true
+      },
+      "version": "bench-clsconf-nova2lite-page-both-topk",
+      "run_id": "DocSplit-Poly-Seq-20261020-222704"
+    },
+    {
+      "cell": "nova2lite-packet-text",
+      "model": "nova2lite",
+      "model_id": "us.amazon.nova-2-lite-v1:0",
+      "variant": "packet-text",
+      "variant_spec": {
+        "granularity": "packet",
+        "text": true,
+        "images": false
+      },
+      "version": "bench-clsconf-nova2lite-packet-text-topk",
+      "run_id": "DocSplit-Poly-Seq-20261020-222930"
+    },
+    {
+      "cell": "nova2lite-twostage-packet",
+      "model": "nova2lite",
+      "model_id": "us.amazon.nova-2-lite-v1:0",
+      "variant": "twostage-packet",
+      "variant_spec": {
+        "granularity": "packet",
+        "text": true,
+        "images": true,
+        "strategy": "two_stage"
+      },
+      "version": "bench-clsconf-nova2lite-twostage-packet-topk",
+      "run_id": "DocSplit-Poly-Seq-20261020-223154"
+    }
+  ]
+}

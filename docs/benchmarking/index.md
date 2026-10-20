@@ -348,10 +348,18 @@ Three things about reading the result:
 - **Cost per document *and* per page.** Per-page flatters packet granularity on
   long packets and per-document flatters page granularity on short ones;
   whichever you quote alone will argue for the setting it favours.
-- **`classification_by_context`** carries the per-stage call count and cost, so
-  a two-stage cell shows whether the money went to `Segmentation` or `Labeling`,
-  and packet granularity's N-calls-to-1 claim is read off `calls_per_document`
-  rather than assumed.
+- **`classification_by_context`** carries the per-stage tokens, cost and Lambda
+  invocation count, so a two-stage cell shows whether the money went to
+  `Segmentation` or `Labeling`.
+  ⚠️ **`lambda_invocations_per_document` is not a Bedrock call count**, and the
+  difference matters because the obvious reading is the wrong one: a 6-page
+  document at `page` granularity makes six Bedrock calls inside **one** Lambda
+  invocation, so the figure reads `1.0` for `page` and `packet` alike. The
+  runtime meters no per-request count under the Bedrock key, so packet
+  granularity's N-calls-to-one saving cannot be read off any count here. What
+  separates the two is **`classification_output_tokens_per_page`**, because page
+  granularity emits a verdict per page — measured at 216.7 against 45.7 for
+  `packet-text` on the same 8-document `docsplit` corpus.
 
 ⚠️ **The matrix is multiplicative and cells drain one at a time** — deliberately,
 since a page cell and a packet cell issue very different call volumes for the

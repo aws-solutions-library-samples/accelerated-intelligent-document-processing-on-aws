@@ -339,7 +339,7 @@ def classification_cost(metering):
                 "inputTokens": 0,
                 "outputTokens": 0,
                 "cacheReadInputTokens": 0,
-                "calls": 0,
+                "lambda_invocations": 0,
             },
         )
         for unit, n in (units or {}).items():
@@ -348,10 +348,23 @@ def classification_cost(metering):
             if unit in tokens:
                 tokens[unit] += n
                 bucket[unit] += n
-            # The per-stage request count is what makes the N-calls-to-1 claim of
-            # packet granularity a measurement rather than an assertion.
+            # ⚠️ This counts LAMBDA INVOCATIONS, not Bedrock calls, and the
+            # distinction is the whole value of the figure. Measured on IDP1: a
+            # 6-page document at `page` granularity makes six Bedrock calls
+            # inside ONE Lambda invocation, so this reads 1.0 — identical to
+            # `packet`, which makes one Bedrock call. It therefore cannot
+            # evidence packet granularity's N-calls-to-one saving; the metering
+            # the runtime emits carries no per-request count under the Bedrock
+            # key at all. What does discriminate the two is
+            # `classification_output_tokens_per_page`, because page granularity
+            # emits a verdict per page: 216.7 against 45.7 on the same corpus.
+            #
+            # It is kept because it is still the only per-context invocation
+            # count, and a two-stage run putting its single invocation under
+            # `Classification` while the Bedrock spend lands under
+            # `Segmentation`/`Labeling` is itself worth seeing.
             if unit == "requests" and key.endswith("/lambda/requests"):
-                bucket["calls"] += n
+                bucket["lambda_invocations"] += n
     for context in CLASSIFICATION_CONTEXTS:
         name = context.rstrip("/")
         if name in by_context:
@@ -470,7 +483,7 @@ def score_run(res, run_id):
                         "inputTokens": 0,
                         "outputTokens": 0,
                         "cacheReadInputTokens": 0,
-                        "calls": 0,
+                        "lambda_invocations": 0,
                         "cost": 0.0,
                         "cost_unpriced_docs": 0,
                     },
@@ -479,7 +492,7 @@ def score_run(res, run_id):
                     "inputTokens",
                     "outputTokens",
                     "cacheReadInputTokens",
-                    "calls",
+                    "lambda_invocations",
                 ):
                     acc[k] += ctx_tokens.get(k, 0)
                 if ctx_tokens.get("cost") is None:
@@ -602,9 +615,9 @@ def score_run(res, run_id):
         else None,
         "classification_tokens": cls_tokens,
         # Per metering context, so a two-stage run shows where the money and the
-        # calls went — Segmentation or Labeling — rather than only their sum.
-        # `calls` is what makes packet granularity's N-calls-to-1 claim a
-        # measurement rather than an assertion.
+        # tokens went — Segmentation or Labeling — rather than only their sum.
+        # See the note on `lambda_invocations` above for what that count does and
+        # does not evidence.
         # The loop variable is `totals`, not `bucket`: a comprehension scopes its
         # own name so this one cannot leak, but `bucket` is the S3 output bucket
         # in this function and copying this block somewhere it would leak is the
@@ -615,7 +628,9 @@ def score_run(res, run_id):
                 "cost": round(totals["cost"], 6)
                 if not totals["cost_unpriced_docs"]
                 else None,
-                "calls_per_document": round(totals["calls"] / len(docs), 2)
+                "lambda_invocations_per_document": round(
+                    totals["lambda_invocations"] / len(docs), 2
+                )
                 if docs
                 else None,
             }

@@ -1,0 +1,1707 @@
+notes: 'DocSplit document classification benchmark based on RVL-CDIP - 16 document
+  classes - for pipeline mode (Bedrock LLM). Set use_bda: true for BDA mode. Assessment
+  and summarization disabled by default.'
+classes:
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: letter
+  type: object
+  x-aws-idp-document-type: letter
+  description: A formal written correspondence with sender/recipient addresses, date,
+    salutation, body, and closing signature
+  properties:
+    Date:
+      type: string
+      description: The date when the letter was written
+    SenderName:
+      type: string
+      description: The name of the person or entity who wrote the letter
+      x-aws-idp-confidence-threshold: '0.85'
+    SenderAddress:
+      type: string
+      description: The physical address of the sender
+      x-aws-idp-confidence-threshold: '0.8'
+    RecipientName:
+      type: string
+      description: The name of the person or entity receiving the letter
+      x-aws-idp-confidence-threshold: '0.9'
+    RecipientAddress:
+      type: string
+      description: The physical address of the recipient
+    Subject:
+      type: string
+      description: The topic or main point of the letter
+    Cc:
+      type: string
+      description: Names of people who receive a copy
+    Signature:
+      type: string
+      description: The handwritten name or mark of the sender
+    ReferenceNumber:
+      type: string
+      description: An identifying number or code for the letter
+    LetterType:
+      type: string
+      description: The category such as complaint, inquiry, invitation
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: form
+  type: object
+  x-aws-idp-document-type: form
+  description: A structured document with labeled fields, checkboxes, or blanks requiring
+    user input and completion
+  properties:
+    FormId:
+      type: string
+      description: The unique identifier for the form
+    FormType:
+      type: string
+      description: The category or purpose of the form
+    SubmitterName:
+      type: string
+      description: The name of the person who submitted the form
+    SubmitterId:
+      type: string
+      description: ID number for the submitter (SSN, employee ID, etc.)
+    SubmissionDate:
+      type: string
+      description: The date when the form was submitted
+    Department:
+      type: string
+      description: The organizational unit responsible for the form
+    ProcessedBy:
+      type: string
+      description: Name of person or department that processed the form
+    ProcessingDate:
+      type: string
+      description: The date when the form was processed
+    ApprovalStatus:
+      type: string
+      description: Current state such as approved, pending, rejected
+    Comments:
+      type: string
+      description: Additional notes or remarks
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: invoice
+  type: object
+  x-aws-idp-document-type: invoice
+  description: A billing document listing items/services, quantities, prices, payment
+    terms, and transaction totals
+  properties:
+    InvoiceNumber:
+      type: string
+      description: Unique identifier for the invoice
+    InvoiceDate:
+      type: string
+      description: Date when the invoice was issued
+    DueDate:
+      type: string
+      description: Payment deadline
+    VendorName:
+      type: string
+      description: Name of the business providing goods or services
+    VendorAddress:
+      type: string
+      description: Physical location of the vendor
+    CustomerName:
+      type: string
+      description: Name of the person or entity being billed
+    CustomerAddress:
+      type: string
+      description: Address where invoice is sent
+    Items:
+      type: string
+      description: Descriptions of products or services
+    Quantities:
+      type: string
+      description: Number of each item
+    UnitPrices:
+      type: string
+      description: Cost per unit of each item
+    Subtotal:
+      type: string
+      description: Sum before tax and other charges
+    Tax:
+      type: string
+      description: Tax amount charged
+    TotalAmount:
+      type: string
+      description: Final amount to be paid
+    PoNumber:
+      type: string
+      description: Purchase order reference number
+    PaymentTerms:
+      type: string
+      description: Payment conditions (30 days, COD, etc.)
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: resume
+  type: object
+  x-aws-idp-document-type: resume
+  description: A professional summary showcasing work experience, education, skills,
+    and achievements for job applications
+  properties:
+    FullName:
+      type: string
+      description: Complete name of the job applicant
+    ContactInfo:
+      type: string
+      description: Phone number, email, and address
+    Objective:
+      type: string
+      description: Statement of career goals
+    Experience:
+      type: string
+      description: Work history and previous roles
+    Education:
+      type: string
+      description: Academic history and qualifications
+    Skills:
+      type: string
+      description: Abilities and competencies
+    Certifications:
+      type: string
+      description: Professional credentials
+    Achievements:
+      type: string
+      description: Notable accomplishments
+    Languages:
+      type: string
+      description: Languages known and proficiency level
+    References:
+      type: string
+      description: People who can vouch for abilities
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: scientific_publication
+  type: object
+  x-aws-idp-document-type: scientific_publication
+  description: A peer-reviewed academic document with abstract, methodology, results,
+    citations, and research findings
+  properties:
+    Title:
+      type: string
+      description: Name of the scientific paper
+    Authors:
+      type: string
+      description: Researchers who conducted the study
+    Abstract:
+      type: string
+      description: Brief summary of paper's content
+    Keywords:
+      type: string
+      description: Core topic terms
+    JournalName:
+      type: string
+      description: Journal where published
+    Volume:
+      type: string
+      description: Volume number
+    Issue:
+      type: string
+      description: Issue number
+    Pages:
+      type: string
+      description: Page range
+    PublicationDate:
+      type: string
+      description: Date when published
+    Doi:
+      type: string
+      description: Digital Object Identifier
+    Institutions:
+      type: string
+      description: Author affiliations
+    CorrespondingAuthor:
+      type: string
+      description: Contact author
+    Funding:
+      type: string
+      description: Financial support received
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: memo
+  type: object
+  x-aws-idp-document-type: memo
+  description: An internal business communication with TO/FROM/DATE/SUBJECT headers
+    for organizational announcements or directives
+  properties:
+    MemoDate:
+      type: string
+      description: Date when memo was written
+    From:
+      type: string
+      description: Person or department that wrote the memo
+    To:
+      type: string
+      description: Intended recipient
+    Subject:
+      type: string
+      description: Topic of the memo
+    Department:
+      type: string
+      description: Organizational unit issuing the memo
+    Priority:
+      type: string
+      description: Urgency level (urgent, high, normal)
+    ActionRequired:
+      type: string
+      description: Steps to take in response
+    DistributionList:
+      type: string
+      description: Additional copy recipients
+    ReferenceNumber:
+      type: string
+      description: Identifying number
+    MemoType:
+      type: string
+      description: Category (informational, directive, etc.)
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: advertisement
+  type: object
+  x-aws-idp-document-type: advertisement
+  description: A promotional material featuring product images, marketing text, calls-to-action,
+    and branding elements
+  properties:
+    ProductName:
+      type: string
+      description: Name of item or service being advertised
+    Brand:
+      type: string
+      description: Company or manufacturer
+    Price:
+      type: string
+      description: Cost of the product or service
+    Features:
+      type: string
+      description: Notable qualities or benefits
+    PromotionDetails:
+      type: string
+      description: Information about special deals
+    ValidityPeriod:
+      type: string
+      description: Timeframe when offer is valid
+    CallToAction:
+      type: string
+      description: What reader is encouraged to do
+    ContactInfo:
+      type: string
+      description: How to reach the advertiser
+    TermsConditions:
+      type: string
+      description: Legal constraints or limitations
+    Disclaimer:
+      type: string
+      description: Legal statements limiting liability
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: email
+  type: object
+  x-aws-idp-document-type: email
+  description: A digital message with email headers (To/From/Subject), timestamps,
+    and conversational threading
+  properties:
+    FromAddress:
+      type: string
+      description: Email address of the sender
+    ToAddress:
+      type: string
+      description: Email address of primary recipient
+    CcAddress:
+      type: string
+      description: Email addresses of additional recipients
+    BccAddress:
+      type: string
+      description: Email addresses of hidden recipients
+    Subject:
+      type: string
+      description: Topic of the email
+    DateSent:
+      type: string
+      description: Date and time when sent
+    Priority:
+      type: string
+      description: Urgency level
+    Attachments:
+      type: string
+      description: Files included with the email
+    MessageId:
+      type: string
+      description: Unique identifier for the email
+    ThreadId:
+      type: string
+      description: Identifier for the conversation
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: questionnaire
+  type: object
+  x-aws-idp-document-type: questionnaire
+  description: A survey instrument containing numbered questions with multiple choice,
+    rating scales, or open-ended responses
+  properties:
+    FormTitle:
+      type: string
+      description: Name or title of the questionnaire
+    SurveyId:
+      type: string
+      description: Unique identifier
+    Instructions:
+      type: string
+      description: Guidance on how to complete
+    RespondentInfo:
+      type: string
+      description: Information about person completing
+    SubmissionDate:
+      type: string
+      description: Date when completed
+    SectionHeaders:
+      type: string
+      description: Titles for different segments
+    QuestionTypes:
+      type: string
+      description: Format of questions
+    ResponseOptions:
+      type: string
+      description: Possible answers for multiple-choice
+    RequiredFields:
+      type: string
+      description: Questions that must be answered
+    CompletionStatus:
+      type: string
+      description: Whether fully completed
+    OverallSatisfactionRating:
+      type: string
+      description: Overall satisfaction rating response
+    RequestHandlingSatisfactionRating:
+      type: string
+      description: Request handling satisfaction rating
+    PhoneCallRepresentativeKnowledgeRating:
+      type: string
+      description: Representative knowledge rating
+    PhoneCallRepresentativeCourtesy:
+      type: string
+      description: Representative courtesy rating
+    FuturePurchaseIntent:
+      type: string
+      description: Whether user will continue to buy
+    ProductRecommendationIntent:
+      type: string
+      description: Whether willing to recommend product
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: specification
+  type: object
+  x-aws-idp-document-type: specification
+  description: A technical document detailing precise requirements, measurements,
+    standards, and implementation criteria
+  properties:
+    ProductName:
+      type: string
+      description: Name of item being specified
+    Version:
+      type: string
+      description: Iteration or release number
+    Dimensions:
+      type: string
+      description: Physical measurements
+    Materials:
+      type: string
+      description: What the product is made from
+    TechnicalDetails:
+      type: string
+      description: Specific characteristics
+    Standards:
+      type: string
+      description: Industry guidelines or certifications met
+    Requirements:
+      type: string
+      description: Necessary conditions or resources
+    Compatibility:
+      type: string
+      description: What the product can work with
+    RevisionHistory:
+      type: string
+      description: Record of changes
+    ApprovalInfo:
+      type: string
+      description: Details about validation
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: generic
+  type: object
+  x-aws-idp-document-type: generic
+  description: An unstructured document lacking distinctive formatting or purpose-specific
+    elements
+  properties:
+    Title:
+      type: string
+      description: Title of the document, if known
+    Author:
+      type: string
+      description: Author(s) of the document, if known
+    Language:
+      type: string
+      description: Dominant language used
+    Summary:
+      type: string
+      description: One-paragraph summary of contents
+    Metadata:
+      type: string
+      description: Additional metadata, if any
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: budget
+  type: object
+  x-aws-idp-document-type: budget
+  description: A detailed budget report, including budget allocations, actuals, and
+    notes
+  $defs:
+    SummaryInformation:
+      type: object
+      properties:
+        Total-Annual-Budget:
+          type: string
+        Operating:
+          type: string
+        2011-Actual:
+          type: string
+        2011-Budget:
+          type: string
+        2012-Budget:
+          type: string
+    RevenueDetails:
+      type: object
+      properties:
+        Grants:
+          type: string
+        Treatment-Revenue-Bentonville:
+          type: string
+        Treatment-Revenue-Tontitown:
+          type: string
+        Reserve-Fund-Revenue:
+          type: string
+    ExpenseDetails:
+      type: object
+      properties:
+        Office:
+          type: string
+        Payroll-Expenses:
+          type: string
+        Legal-Fees:
+          type: string
+        Engineering:
+          type: string
+        Insurance:
+          type: string
+  properties:
+    DocumentClass:
+      type: string
+      description: Short name based on document content
+    DocumentDescription:
+      type: string
+      description: Description in less than 50 words
+    SummaryInformation:
+      $ref: '#/$defs/SummaryInformation'
+    RevenueDetails:
+      $ref: '#/$defs/RevenueDetails'
+    ExpenseDetails:
+      $ref: '#/$defs/ExpenseDetails'
+    AdditionalDetails:
+      type: object
+      properties:
+        Notes:
+          type: string
+          description: Additional notes
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: language
+  type: object
+  x-aws-idp-document-type: language
+  description: Any document written primarily in a non-English language
+  properties:
+    Language:
+      type: string
+      description: Dominant language used
+    Title:
+      type: string
+      description: Title if known, otherwise 'unknown'
+    Author:
+      type: string
+      description: Author(s) if known, otherwise 'unknown'
+    Summary:
+      type: string
+      description: One-paragraph summary
+    Metadata:
+      type: string
+      description: Additional metadata, if any
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: news_article
+  type: object
+  x-aws-idp-document-type: news_article
+  description: A newspaper article or news bulletin
+  $defs:
+    Article-Metadata:
+      type: object
+      properties:
+        Article-Title:
+          type: string
+        Author:
+          type: string
+        Publication-Date:
+          type: string
+        Publisher-Name:
+          type: string
+    Article-Content:
+      type: object
+      properties:
+        Introduction:
+          type: string
+        Event-Description:
+          type: string
+        Summary:
+          type: string
+  properties:
+    Article-Metadata:
+      $ref: '#/$defs/Article-Metadata'
+    Article-Content:
+      $ref: '#/$defs/Article-Content'
+- $schema: https://json-schema.org/draft/2020-12/schema
+  $id: handwritten
+  type: object
+  x-aws-idp-document-type: handwritten
+  description: A handwritten document, journal, memo, doodle, notes, or any other
+    image with hand writing
+  properties:
+    Language:
+      type: string
+      description: Dominant language used
+    Title:
+      type: string
+      description: Title if known, otherwise 'unknown'
+    Author:
+      type: string
+      description: Author(s) if known, otherwise 'unknown'
+    Summary:
+      type: string
+      description: One-paragraph summary
+    Metadata:
+      type: string
+      description: Additional metadata, if any
+ocr:
+  backend: textract
+  model_id: us.amazon.nova-2-lite-v1:0
+  system_prompt: You are an expert OCR system. Extract all text from the provided
+    image accurately, preserving layout where possible.
+  task_prompt: Extract all text from this document image. Preserve the layout, including
+    paragraphs, tables, and formatting.
+  features:
+  - name: TABLES
+  - name: LAYOUT
+  - name: SIGNATURES
+  max_workers: 20
+  image:
+    target_width: null
+    target_height: null
+    dpi: null
+    preprocessing: null
+classification:
+  granularity: page
+  packet:
+    window_pages: '20'
+    overlap_pages: '2'
+    system_prompt: 'You are a document classification expert who analyses multi-document
+      packets. Your task is to identify where each document in the packet starts and
+      ends, and to classify each one into a predefined category, using both the visual
+      layout of each page and its text content. Your output must be valid JSON according
+      to the requested format. <variables> <document-text>: OCR-extracted text for
+      every page of the packet, each page preceded by its page number <document-images>:
+      Page images for every page of the packet, each preceded by its page number <document-types>:
+      List of valid document types with their descriptions </variables>'
+    task_prompt: "<task-description> Analyse the document packet below and split it\
+      \ into the separate documents it contains. For each document, report the page\
+      \ range it occupies and its document type. </task-description>\n<document-types>\
+      \ {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>\n<few-shot-examples> {FEW_SHOT_EXAMPLES}\
+      \ </few-shot-examples>\n<segmentation-instructions> 1. Read every page of the\
+      \ packet before deciding anything. A boundary is a statement about the packet,\
+      \ not about one page. 2. A new document STARTS on a page that carries an opening\
+      \ identity block: the document title or form name, the issuer or institution\
+      \ name, the addressee or account holder name AND address, the statement date\
+      \ or period, and account or reference numbers. 3. A page CONTINUES the current\
+      \ document when it lacks that opening block. Repeated table column headings\
+      \ (for example \"Date | Description | Amount\") are printed on every page of\
+      \ a long table and do NOT start a new document. 4. Pagination is strong evidence:\
+      \ \"Page 1 of 3\" starts a document, \"Page 2 of 3\" or \"continued\" does not.\
+      \ 5. Two copies of the same form filed back to back are TWO documents. Emit\
+      \ two segments of the same type rather than one merged segment. 6. Every page\
+      \ of the packet must belong to exactly one segment. Segments must be contiguous,\
+      \ must not overlap, and must cover the full page range in order. 7. CRITICAL:\
+      \ use only document types listed in <document-types>. If a segment matches none\
+      \ of them, use the closest listed type and say so in its reason. 8. PRECEDENCE:\
+      \ if a matched type's description gives explicit boundary or page-ordering instructions,\
+      \ follow those instead of rules 2-5 for that type. </segmentation-instructions>\n\
+      <output-format> Report page numbers exactly as they are labelled in the packet\
+      \ below, where the first page shown is page 1. {\n  \"segments\": [\n    {\n\
+      \      \"ordinal_start_page\": <first page of this document>,\n      \"ordinal_end_page\"\
+      : <last page of this document>,\n      \"type\": \"exact_document_type_from_list\"\
+      ,\n      \"reason\": \"The opening-block elements and pagination evidence that\
+      \ place this document's start and end here\"\n    }\n  ]\n} </output-format>\n\
+      <<CACHEPOINT>>\n<document-text> {DOCUMENT_TEXT} </document-text>\n<document-images>\
+      \ {DOCUMENT_IMAGE} </document-images>\n<final-instructions> Split the packet\
+      \ above by: 1. Applying the <segmentation-instructions> across every page 2.\
+      \ Selecting ONLY from document types in <document-types> 3. Covering every page\
+      \ exactly once, in order 4. Outputting in the exact JSON format specified in\
+      \ <output-format> </final-instructions>"
+  modality:
+    text: true
+    images: true
+  strategy: single_pass
+  segmentation:
+    model: ''
+    boundary_hints: none
+    system_prompt: You are a document segmentation expert. Your only task is to decide
+      where each document in a packet starts. You do not classify documents and you
+      do not name document types. Your output must be valid JSON according to the
+      requested format.
+    task_prompt: "<task-description> Decide whether the page below is the FIRST page\
+      \ of a document, or a later page of a document that began earlier. </task-description>\n\
+      {BOUNDARY_HINTS}\n<boundary-detection-rules> You are looking at ONE page. Any\
+      \ pages shown to you as context are there only to help you judge this page.\
+      \ Decide from this page's own evidence, in priority order: 1. PAGINATION: pagination\
+      \ such as \"Page 2 of 2\", \"Page 3 of 5\", \"2/2\", or \"continued\" with a\
+      \ number greater than 1 means this page is NOT a first page - output \"continue\"\
+      . 2. If pagination indicates the first page (for example \"Page 1 of 2\"), output\
+      \ \"start\". 3. OPENING HEADER BLOCK: a first page carries the document's opening\
+      \ identity block - the document title or form name, the issuer or institution\
+      \ name, the addressee or account holder name AND address, the statement or document\
+      \ date or period, and account or reference numbers. Output \"start\" ONLY when\
+      \ this page carries that opening block. 4. TABLE CONTINUATION: a page whose\
+      \ content is a table or list of rows - even when the table's COLUMN HEADINGS\
+      \ (for example \"Date | Description | Amount\") are repeated at the top of the\
+      \ page - and that does NOT carry the opening block is a continuation page. Repeated\
+      \ column headings are printed on every page of a long table; they are NOT a\
+      \ document title. Output \"continue\". 5. OTHER CONTINUATION EVIDENCE: a later\
+      \ page may show a form number only in the footer, a running balance or subtotal\
+      \ carried forward, or a trailing signature/consent/certification section. Output\
+      \ \"continue\". CRITICAL - no preceding page shown: if you are not shown the\
+      \ preceding page, do NOT conclude that this page must be a first page. Pages\
+      \ are judged independently, so the absence of a preceding page tells you nothing.\
+      \ A page showing only table rows, or marked \"Page 2 of 2\", is a continuation\
+      \ page even when you cannot see page 1. CRITICAL - consecutive documents: output\
+      \ \"start\" whenever this page IS a first page, even when the preceding page\
+      \ belongs to a document of the same kind. Two copies of the same form filed\
+      \ back to back are two separate documents. If evidence is genuinely balanced,\
+      \ prefer \"continue\" for a page lacking the opening block and \"start\" for\
+      \ a page carrying a complete opening block. </boundary-detection-rules>\n<output-format>\
+      \ {\n  \"boundary_reason\": \"Which opening-block elements (title, issuer, addressee\
+      \ and address, date or period, account or reference number) and pagination evidence\
+      \ this page does or does not carry\",\n  \"document_boundary\": \"start or continue\"\
+      \n} </output-format>\n<<CACHEPOINT>>\n<document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>\n\
+      <document-image> {DOCUMENT_IMAGE} </document-image>"
+    packet:
+      system_prompt: You are a document segmentation expert who analyses multi-document
+        packets. Your only task is to decide where each document in the packet starts
+        and ends. You do not classify documents and you do not name document types.
+        Your output must be valid JSON according to the requested format.
+      task_prompt: "<task-description> Split the document packet below into the separate\
+        \ documents it contains. Report only the page range each document occupies.\
+        \ Do NOT name or classify the documents. </task-description>\n{BOUNDARY_HINTS}\n\
+        <segmentation-instructions> 1. Read every page of the packet before deciding\
+        \ anything. A boundary is a statement about the packet, not about one page.\
+        \ 2. A new document STARTS on a page that carries an opening identity block:\
+        \ the document title or form name, the issuer or institution name, the addressee\
+        \ or account holder name AND address, the statement date or period, and account\
+        \ or reference numbers. 3. A page CONTINUES the current document when it lacks\
+        \ that opening block. Repeated table column headings (for example \"Date |\
+        \ Description | Amount\") are printed on every page of a long table and do\
+        \ NOT start a new document. 4. Pagination is strong evidence: \"Page 1 of\
+        \ 3\" starts a document, \"Page 2 of 3\" or \"continued\" does not. 5. Two\
+        \ copies of the same form filed back to back are TWO documents. Report two\
+        \ ranges rather than one merged range. 6. Every page of the packet must belong\
+        \ to exactly one range. Ranges must be contiguous, must not overlap, and must\
+        \ cover the full page range in order. </segmentation-instructions>\n<output-format>\
+        \ Report page numbers exactly as they are labelled in the packet below, where\
+        \ the first page shown is page 1. {\n  \"segments\": [\n    {\n      \"ordinal_start_page\"\
+        : <first page of this document>,\n      \"ordinal_end_page\": <last page of\
+        \ this document>,\n      \"boundary_reason\": \"The opening-block elements\
+        \ and pagination evidence that place this document's start and end here\"\n\
+        \    }\n  ]\n} </output-format>\n<<CACHEPOINT>>\n<document-text> {DOCUMENT_TEXT}\
+        \ </document-text>\n<document-images> {DOCUMENT_IMAGE} </document-images>"
+  labeling:
+    method: llm
+    model: ''
+    pages: first_k
+    k: '2'
+    system_prompt: You are a document classification expert. You are given the opening
+      pages of ONE document and a list of document types. Your task is to say which
+      type it is. Your output must be valid JSON according to the requested format.
+    task_prompt: "<task-description> Identify the type of the single document whose\
+      \ pages are shown below. The pages all belong to one document; you are not being\
+      \ asked to split anything. </task-description>\n<document-types> {CLASS_NAMES_AND_DESCRIPTIONS}\
+      \ </document-types>\n<few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>\n\
+      <classification-instructions> 1. Examine the visual layout: headers, logos,\
+      \ formatting, structure, and visual organization 2. Analyze the textual content:\
+      \ key phrases, terminology, purpose, and information type 3. Identify distinctive\
+      \ features that match the document type descriptions 4. CRITICAL: only use document\
+      \ types explicitly listed in the <document-types> section </classification-instructions>\n\
+      <output-format> {\n  \"classification_reason\": \"Specific visual and textual\
+      \ evidence that identifies this document's type\",\n  \"class\": \"exact_document_type_from_list\"\
+      \n} </output-format>\n<<CACHEPOINT>>\n<document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>\n\
+      <document-image> {DOCUMENT_IMAGE} </document-image>"
+  maxPagesForClassification: ALL
+  contextPagesCount: '0'
+  sectionSplitting: llm_determined
+  enforceValidClasses: true
+  maxValidationRetries: '2'
+  invalidClassFallback: unclassified
+  confidence:
+    mode: topk
+    top_k_candidates: '3'
+    task_prompt_topk: "<class-confidence> Your JSON object MUST also contain a \"\
+      candidates\" key: the {TOP_K_CANDIDATES} document types most likely to be correct\
+      \ for this page, most likely first, each with the probability that it is the\
+      \ correct type.\n\"candidates\": [\n  {\"class\": \"<most likely type>\", \"\
+      probability\": <number between 0.0 and 1.0>},\n  {\"class\": \"<next most likely\
+      \ type>\", \"probability\": <number between 0.0 and 1.0>}\n]\nRules: 1. Every\
+      \ \"class\" value must be one of the types listed in <document-types>. 2. The\
+      \ first candidate must be the same type you report in \"class\". 3. The probabilities\
+      \ must not sum to more than 1.0. Mass you leave unassigned means \"possibly\
+      \ some other type\". 4. Distribute the probability honestly. If a second type\
+      \ is genuinely plausible for this page, give it real probability mass instead\
+      \ of assigning close to 1.0 to the first \u2014 a page that is hard to classify\
+      \ should not look certain. </class-confidence>"
+    task_prompt_verbalized: '<class-confidence> Your JSON object MUST also contain
+      a "confidence" key: the probability, as a number between 0.0 and 1.0, that the
+      type you report in "class" is correct for this page.
+
+      Base it on how much better the page matches the type you chose than the other
+      types in <document-types>. Do not default to a high value: a page whose evidence
+      is thin or ambiguous should carry a low confidence. </class-confidence>'
+    task_prompt_topk_packet: "<class-confidence> Each object in your \"segments\"\
+      \ array MUST also contain a \"candidates\" key: the {TOP_K_CANDIDATES} document\
+      \ types most likely to be correct for THAT segment, most likely first, each\
+      \ with the probability that it is the correct type.\n\"candidates\": [\n  {\"\
+      class\": \"<most likely type>\", \"probability\": <number between 0.0 and 1.0>},\n\
+      \  {\"class\": \"<next most likely type>\", \"probability\": <number between\
+      \ 0.0 and 1.0>}\n]\nRules: 1. Every \"class\" value must be one of the types\
+      \ listed in <document-types>. 2. The first candidate must be the same type you\
+      \ report in that segment's \"type\". 3. The probabilities for a segment must\
+      \ not sum to more than 1.0. Mass you leave unassigned means \"possibly some\
+      \ other type\". 4. Score each segment independently and honestly. A short segment,\
+      \ or one whose evidence is thin, should not look as certain as a clearly-identified\
+      \ multi-page document. </class-confidence>"
+    task_prompt_verbalized_packet: '<class-confidence> Each object in your "segments"
+      array MUST also contain a "confidence" key: the probability, as a number between
+      0.0 and 1.0, that the type you report for THAT segment is correct.
+
+      Base it on how much better the segment''s pages match the type you chose than
+      the other types in <document-types>. Do not default to a high value: a segment
+      whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>'
+  image:
+    target_height: ''
+    target_width: ''
+  model: us.amazon.nova-2-lite-v1:0
+  temperature: '0.0'
+  top_p: '0.0'
+  max_tokens: ''
+  top_k: '5'
+  system_prompt: 'You are a multimodal document classification expert that analyzes
+    business documents using both visual layout and textual content. Your task is
+    to classify single-page documents into predefined categories based on their structural
+    patterns, visual features, and text content. Your output must be valid JSON according
+    to the requested format. <variables> <document-ocr-data>: OCR-extracted text content
+    from the document page that provides textual information for classification <document-image>:
+    Visual representation of the document page that provides layout, formatting, and
+    visual structure information <document-types>: List of valid document types with
+    their descriptions that the document must be classified into </variables>'
+  task_prompt: "<task-description> Analyze the provided document using both its visual\
+    \ layout and textual content to determine its document type and whether this page\
+    \ begins a new document or continues the previous one. </task-description>\n<document-types>\
+    \ {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>\n<few-shot-examples> {FEW_SHOT_EXAMPLES}\
+    \ </few-shot-examples>\n<classification-instructions> Follow these steps to classify\
+    \ the document: 1. Examine the visual layout: headers, logos, formatting, structure,\
+    \ and visual organization 2. Analyze the textual content: key phrases, terminology,\
+    \ purpose, and information type 3. Identify distinctive features that match the\
+    \ document type descriptions 4. Decide the document_boundary by applying the <boundary-detection-rules>\
+    \ below 5. Consider both visual and textual evidence together to determine the\
+    \ best match 6. CRITICAL: Only use document types explicitly listed in the <document-types>\
+    \ section </classification-instructions>\n<boundary-detection-rules> You are classifying\
+    \ ONE page at a time. Any pages shown to you as context are there only to help\
+    \ you judge this page; classify only the page identified as the page to classify.\
+    \ \"document_boundary\" answers one question: is this page the FIRST page of a\
+    \ document instance (\"start\"), or a later page of a document instance that already\
+    \ began on an earlier page (\"continue\")? Decide from this page's own evidence,\
+    \ in priority order: 1. PAGINATION: If the page shows pagination such as \"Page\
+    \ 2 of 2\", \"Page 3 of 5\", \"2/2\", or \"continued\" with a number greater than\
+    \ 1, this page is NOT a first page - output \"continue\". 2. If pagination indicates\
+    \ the first page (for example \"Page 1 of 2\"), output \"start\". 3. OPENING HEADER\
+    \ BLOCK: A first page carries the document's opening identity block - the document\
+    \ title or form name, the issuer or institution name, the addressee or account\
+    \ holder name AND address, the statement or document date or period, and account\
+    \ or reference numbers. Output \"start\" ONLY when this page carries that opening\
+    \ block. 4. TABLE CONTINUATION: A page whose content is a table or list of rows\
+    \ - even when the table's COLUMN HEADINGS (for example \"Date | Description |\
+    \ Amount\") are repeated at the top of the page - and that does NOT carry the\
+    \ opening block is a continuation page. Repeated column headings are printed on\
+    \ every page of a long table; they are NOT a document title and do NOT make a\
+    \ page a first page. Output \"continue\" for such a page. 5. OTHER CONTINUATION\
+    \ EVIDENCE: A later page may also show a form number only in the footer, a running\
+    \ balance or subtotal carried forward, or a trailing signature/consent/certification\
+    \ section. Output \"continue\" for such a page. CRITICAL - no preceding page shown:\
+    \ If you are not shown the preceding page, do NOT conclude that this page must\
+    \ be a first page. Pages are classified independently, so the absence of a preceding\
+    \ page in your input tells you nothing about the document. Judge only from this\
+    \ page's own evidence: a page that shows only table rows, or is marked \"Page\
+    \ 2 of 2\", is a continuation page and must be \"continue\" even when you cannot\
+    \ see page 1. CRITICAL - consecutive documents of the same type: Output \"start\"\
+    \ whenever this page IS a first page (it carries the opening block), even when\
+    \ the preceding page has the same document type. Two copies of the same form filed\
+    \ back to back are two separate documents, and the first page of the second copy\
+    \ must be \"start\" so the two are not merged. PRECEDENCE: If the matched document\
+    \ type's description in <document-types> gives explicit boundary or page-ordering\
+    \ instructions (for example, how to handle pages scanned out of order), follow\
+    \ those instructions instead of the general rules above. If evidence is genuinely\
+    \ balanced, prefer \"continue\" for a page that lacks the opening block, and prefer\
+    \ \"start\" for a page that carries a complete opening block. </boundary-detection-rules>\n\
+    <output-format> {\n  \"classification_reason\": \"Detailed reasoning including\
+    \ specific visual and textual evidence that led to this classification, and which\
+    \ opening-block elements (title, issuer, addressee and address, date or period,\
+    \ account or reference number) this page does or does not carry\",\n  \"class\"\
+    : \"exact_document_type_from_list\",\n  \"document_boundary\": \"start or continue\"\
+    \n} </output-format>\n<<CACHEPOINT>>\n<document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>\n\
+    <document-image> {DOCUMENT_IMAGE} </document-image>\n<final-instructions> Analyze\
+    \ the document above by: 1. Applying the <classification-instructions> to examine\
+    \ both visual and textual features 2. Selecting ONLY from document types in <document-types>\
+    \ 3. Providing clear reasoning with specific evidence 4. Outputting in the exact\
+    \ JSON format specified in <output-format> </final-instructions>"
+extraction:
+  mode: simple
+  prompt_cache: auto
+  agentic:
+    enabled: false
+    runtime: step_functions
+    max_concurrent_batches: 10
+    shard_token_budget: 0
+    max_pages_per_shard: 5
+    table_parsing:
+      enabled: true
+      max_empty_line_gap: 3
+      auto_merge_adjacent_tables: true
+      min_confidence_threshold: '95.0'
+      min_parse_success_rate: '0.90'
+      use_confidence_data: true
+      lazy_images: true
+  forced_tool:
+    enabled: false
+    fallback_to_prompt: true
+  multi_instance_detection:
+    enabled: false
+    question: "DIAGNOSTIC METADATA, not extracted document data. How many separate,\
+      \ complete '{DOCUMENT_CLASS}' documents are present in the supplied pages? Answer\
+      \ 1 for the normal case of one document. Answer more than 1 only when the pages\
+      \ clearly contain several distinct documents of this same type \u2014 for example\
+      \ statements covering different periods, or records for different people \u2014\
+      \ including when a document starts part-way down a page. Do not count pages,\
+      \ sections or repeated headers: count complete documents. Extract all other\
+      \ fields exactly as you otherwise would."
+  coercion:
+    enabled: true
+    date_order: auto
+  validation:
+    enabled: true
+    check_formats: true
+    fail_action: warn
+    escalation_model: us.anthropic.claude-sonnet-5:1m
+  row_shortfall_action: warn
+  image:
+    target_width: ''
+    target_height: ''
+  model: us.anthropic.claude-sonnet-5
+  temperature: '0.0'
+  top_p: '0.0'
+  reasoning_effort: low
+  top_k: '5'
+  system_prompt: You are a document assistant. Respond only with JSON. Never make
+    up data, only provide data found in the document being provided.
+  task_prompt: "<background> You are an expert in document analysis and information\
+    \ extraction.  You can understand and extract key information from documents classified\
+    \ as type: \n{DOCUMENT_CLASS}. </background>\n<task> Your task is to take the\
+    \ unstructured text provided and convert it into a well-organized table format\
+    \ using JSON. Identify the main entities, attributes, or categories mentioned\
+    \ in the attributes list below and use them as keys in the JSON object.  Then,\
+    \ extract the relevant information from the text and populate the corresponding\
+    \ values in the JSON object. </task>\n<extraction-guidelines> Guidelines:\n  \
+    \  1. Ensure that the data is accurately represented and properly formatted within\n\
+    \    the JSON structure\n    2. Include double quotes around all keys and values\n\
+    \    3. Do not make up data - only extract information explicitly found in the\n\
+    \    document\n    4. Do not use /n for new lines, use a space instead\n    5.\
+    \ If a field is not found or if unsure, return null\n    6. Format each value\
+    \ as directed by that attribute's description/format in the\n    attributes section\
+    \ below. If an attribute specifies a date or number format,\n    follow it EXACTLY;\
+    \ only if no format is specified, preserve the value as it\n    appears in the\
+    \ document.\n    7. Do not perform calculations or summations unless totals are\
+    \ explicitly given\n    8. If an alias is not found in the document, return null\n\
+    \    9. Guidelines for checkboxes:\n     9.A. CAREFULLY examine each checkbox,\
+    \ radio button, and selection field:\n        - Look for marks like \u2713, \u2717\
+    , x, filled circles (\u25CF), darkened areas, or handwritten checks indicating\
+    \ selection\n        - For checkboxes and multi-select fields, ONLY INCLUDE options\
+    \ that show clear visual evidence of selection\n        - DO NOT list options\
+    \ that have no visible selection mark\n     9.B. For ambiguous or overlapping\
+    \ tick marks:\n        - If a mark overlaps between two or more checkboxes, determine\
+    \ which option contains the majority of the mark\n        - Consider a checkbox\
+    \ selected if the mark is primarily inside the check box or over the option text\n\
+    \        - When a mark touches multiple options, analyze which option was most\
+    \ likely intended based on position and density. For handwritten checks, the mark\
+    \ typically flows from the selected checkbox outward.\n        - Carefully analyze\
+    \ visual cues and contextual hints. Think from a human perspective, anticipate\
+    \ natural tendencies, and apply thoughtful reasoning to make the best possible\
+    \ judgment.\n    10. Think step by step first and then answer.\n</extraction-guidelines>\n\
+    If the attributes section below contains a list of attribute names and descriptions,\
+    \ then output only those attributes, using the provided descriptions as guidance\
+    \ for finding the correct values. \n<attributes> {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\
+    \ </attributes>\n<few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>\n\
+    <<CACHEPOINT>>\n<document-text> {DOCUMENT_TEXT} </document-text>\n<document_image>\
+    \ {DOCUMENT_IMAGE} </document_image>\n<final-instructions> Extract key information\
+    \ from the document and return a JSON object with the following key steps: 1.\
+    \ Carefully analyze the document text to identify the requested attributes 2.\
+    \ Extract only information explicitly found in the document - never make up data\
+    \ 3. Format each value as directed by its attribute description/format (follow\
+    \ any specified date/number format EXACTLY; otherwise keep the document's rendering);\
+    \ replace newlines with spaces 4. For checkboxes, only include options with clear\
+    \ visual selection marks 5. Use null for any fields not found in the document\
+    \ 6. Ensure the output is properly formatted JSON with quoted keys and values\
+    \ 7. Think step by step before finalizing your answer </final-instructions>"
+  task_prompt_extraction_with_confidence: "<background> You are an expert in document\
+    \ analysis and information extraction. You extract key information from documents\
+    \ classified as type: {DOCUMENT_CLASS}, and you also report your confidence in\
+    \ each extracted value. </background>\n<task> Convert the unstructured document\
+    \ into a well-organized JSON object using the attribute names below as keys, extracting\
+    \ the relevant values. Then record your confidence in each extracted value. </task>\n\
+    <extraction-guidelines> 1. Include double quotes around all keys and values 2.\
+    \ Do not make up data - only extract information explicitly found in the document\
+    \ 3. Use a space instead of newlines 4. If a field is not found or you are unsure,\
+    \ return null 5. Format each value as directed by that attribute's description/format\
+    \ below.\n   If an attribute specifies a date or number format, follow it EXACTLY;\
+    \ only if\n   no format is specified, preserve the value as it appears in the\
+    \ document.\n6. Do not perform calculations unless totals are explicitly given\
+    \ 7. Carefully examine checkboxes/selection fields; only include options with\
+    \ clear\n   visual selection marks\n8. Think step by step first, then answer </extraction-guidelines>\n\
+    <attributes> {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} </attributes>\n<few-shot-examples>\
+    \ {FEW_SHOT_EXAMPLES} </few-shot-examples>\n<confidence-assessment> Record your\
+    \ confidence in EVERY extracted value, mirroring the extraction structure EXACTLY\
+    \ so there is one confidence entry per individual value. OUTPUT RULE (keep responses\
+    \ compact): include \"confidence_reason\" for a leaf ONLY when its confidence\
+    \ is below 0.9. For confidence >= 0.9, emit just {\"confidence\": <score>} with\
+    \ NO confidence_reason. When you do include one, keep it to at most 12 words and\
+    \ do not restate the extracted value. - Scalar field: {\"confidence\": <0.0-1.0>}\
+    \ (add \"confidence_reason\" only if < 0.9). - Group (nested object) field: an\
+    \ object with the SAME sub-keys as the value,\n  each mapping to its own {\"confidence\"\
+    : ...} leaf (add \"confidence_reason\" if < 0.9).\n- List field (e.g. a table):\
+    \ a LIST with ONE object per extracted row, in the\n  SAME ORDER as the rows.\
+    \ Each row object MUST mirror that row's structure \u2014\n  i.e. the SAME column\
+    \ keys as the extracted row, and EACH column maps to its\n  own {\"confidence\"\
+    : ...} leaf (add \"confidence_reason\" only if < 0.9). Do NOT\n  emit a single\
+    \ confidence for a whole row; score each cell. Nested lists follow\n  the same\
+    \ rule recursively. Provide an entry for EVERY row and EVERY column \u2014\n \
+    \ do not summarize or skip.\n  Example \u2014 extracted row {\"date\": \"...\"\
+    , \"amount\": \"...\"} ->\n    {\"date\": {\"confidence\": 0.98},\n     \"amount\"\
+    : {\"confidence\": 0.72, \"confidence_reason\": \"figure partly illegible\"}}\n\
+    confidence = your calibrated certainty the value matches the source document (1.0\
+    \ = certain, lower = ambiguous/illegible/inferred). HOW TO REPORT IT: - If an\
+    \ extraction_with_confidence or provide_field_assessment TOOL is available\n \
+    \ to you, use it: pass the extracted values and this field_assessment together\
+    \ in\n  that ONE tool call. If you extracted in multiple steps (e.g. adding rows\
+    \ via\n  patches), call it once at the very end so every row is assessed.\n- Otherwise\
+    \ (no such tool), return ONE JSON object with EXACTLY two top-level\n  keys: \"\
+    extraction\" (the extracted values object described above) and\n  \"confidence\"\
+    \ (the parallel confidence structure). Do NOT wrap it in any other\n  key and\
+    \ do NOT add a \"field_assessment\" key. Shape:\n    {\"extraction\": { ...extracted\
+    \ values... },\n     \"confidence\":  { ...one confidence leaf per value, mirroring\
+    \ structure... }}\nDo NOT include bounding boxes unless explicitly instructed\
+    \ below \u2014 field locations are derived automatically from OCR. </confidence-assessment>\n\
+    <<CACHEPOINT>>\n<document-text> {DOCUMENT_TEXT} </document-text>\n<document_image>\
+    \ {DOCUMENT_IMAGE} </document_image>"
+  task_prompt_extraction_with_confidence_topk: "<background> You are an expert in\
+    \ document analysis and information extraction. You can understand and extract\
+    \ key information from documents classified as type: {DOCUMENT_CLASS}. </background>\
+    \ <task> Provide your 4 best guesses and the probability that each is correct\
+    \ (0.0 to 1.0) for each attribute listed below. Give ONLY the guesses and probabilities,\
+    \ no other words or explanation.</task> <extraction-guidelines> Guidelines:\n\
+    \ 1. Only consider values that are present in the provided document. Do not invent\
+    \ attribute values.\n 2. Extract each entity candidate exactly how it is presented\
+    \ in the document. E.g. do not change \"M\" to \"Monday\"\n or change the date\
+    \ from \"01/04\" to \"1/04\".\n 3. Format each value as directed by that attribute's\
+    \ description/format below.\n   If an attribute specifies a date or number format,\
+    \ follow it EXACTLY; only if\n   no format is specified, preserve the value as\
+    \ it appears in the document.\n 4. For each extracted attribute key, the value\
+    \ MUST be a nested object formatted\n exactly like this:\n        {\n        \
+    \  \"G1\": \"<1st most likely guess, copied EXACTLY as it appears in the document>\"\
+    ,\n          \"P1\": <probability between 0.0 and 1.0>,\n          \"G2\": \"\
+    <2nd most likely guess>\",\n          \"P2\": <probability between 0.0 and 1.0>,\n\
+    \          \"G3\": \"<3rd most likely guess>\",\n          \"P3\": <probability\
+    \ between 0.0 and 1.0>,\n          \"G4\": \"<4th most likely guess>\",\n    \
+    \      \"P4\": <probability between 0.0 and 1.0>\n        }\n</extraction-guidelines>\
+    \ If the attributes section below contains a list of attribute names and descriptions,\
+    \ then output only those attributes, using the provided descriptions as guidance\
+    \ for finding the correct values. <attributes> {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\
+    \ </attributes> <few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples> <<CACHEPOINT>>\
+    \ <document_image> {DOCUMENT_IMAGE} </document_image> <document-text> {DOCUMENT_TEXT}\
+    \ </document-text> <output-format> Give ONLY the JSON object containing the guesses\
+    \ and probabilities. Do not think step-by-step, do not show your work, and do\
+    \ not provide any reasoning, justifications, or extra commentary whatsoever.\n\
+    For SIMPLE attributes: {\n  \"simple_attribute_name\": {\n    \"G1\": \"<1st most\
+    \ likely guess, copied EXACTLY as it appears in the document>\",\n    \"P1\":\
+    \ <probability between 0.0 and 1.0>,\n    \"G2\": \"<2nd most likely guess>\"\
+    ,\n    \"P2\": <probability between 0.0 and 1.0>,\n    \"G3\": \"<3rd most likely\
+    \ guess>\",\n    \"P3\": <probability between 0.0 and 1.0>,\n    \"G4\": \"<4th\
+    \ most likely guess>\",\n    \"P4\": <probability between 0.0 and 1.0>\n  }\n\
+    }\nFor LIST attributes, give G1/P1 ONLY (a single guess per cell) and include\
+    \ EVERY row that appears in the document. Completeness of the list matters more\
+    \ than alternative guesses, and extra guesses per cell multiply the output length\
+    \ by the number of rows: {\n  \"list_attribute_name\": [\n    {\n      \"item_attribute_1\"\
+    : { \"G1\": \"<guess, copied EXACTLY as it appears in the document>\", \"P1\"\
+    : <probability between 0.0 and 1.0> },\n      \"item_attribute_2\": { \"G1\":\
+    \ \"<guess, copied EXACTLY as it appears in the document>\", \"P1\": <probability\
+    \ between 0.0 and 1.0> }\n    }\n  ]\n} For GROUP attributes (a nested object),\
+    \ give one candidate object per sub-attribute: {\n  \"group_attribute_name\":\
+    \ {\n    \"sub_attribute_1\": {\n      \"G1\": \"<1st most likely guess, copied\
+    \ EXACTLY as it appears in the document>\",\n      \"P1\": <probability between\
+    \ 0.0 and 1.0>,\n      \"G2\": \"<2nd most likely guess>\",\n      \"P2\": <probability\
+    \ between 0.0 and 1.0>\n    },\n    \"sub_attribute_2\": {\n      \"G1\": \"<1st\
+    \ most likely guess, copied EXACTLY as it appears in the document>\",\n      \"\
+    P1\": <probability between 0.0 and 1.0>\n    }\n  }\n} </output-format>"
+  confidence:
+    mode: 'off'
+    model: us.amazon.nova-lite-v1:0
+    top_p: '0.0'
+    top_k: '5'
+    temperature: '0.0'
+    list_batch_size: '25'
+    escalation_enabled: true
+    escalation_model: us.anthropic.claude-sonnet-5:1m
+    max_escalation_rounds: '2'
+    image:
+      target_height: ''
+      target_width: ''
+    system_prompt: You are a document analysis assessment expert. Your role is to
+      evaluate the confidence and accuracy of data extraction results by analyzing
+      them against source documents. Provide accurate confidence scores for each assessment.
+      When bounding boxes are requested, provide precise coordinate locations where
+      information appears in the document.
+    task_prompt: "<background> You are an expert document analysis assessment system.\
+      \ Your task is to evaluate the confidence of extraction results for a document\
+      \ of class {DOCUMENT_CLASS}. </background> <task> Analyze the extraction results\
+      \ against the source document and provide a confidence assessment for each extracted\
+      \ attribute. Consider factors such as: 1. Text clarity and OCR quality in the\
+      \ source regions 2. Alignment between extracted values and document content\
+      \ 3. Presence of clear evidence supporting the extraction 4. Potential ambiguity\
+      \ or uncertainty in the source material 5. Completeness and accuracy of the\
+      \ extracted information </task> <assessment-guidelines> For each attribute,\
+      \ provide: - A confidence score between 0.0 and 1.0 (1.0 = clear, unambiguous\
+      \ evidence;\n  lower = weaker/ambiguous evidence)\n- A confidence_reason ONLY\
+      \ when the confidence is below 0.9 (see the output\n  rule below). Reasons exist\
+      \ to explain low/uncertain scores for human review;\n  a high-confidence value\
+      \ does not need one.\nBase assessments on actual document content and OCR quality;\
+      \ account for OCR confidence scores when provided; be objective and specific.\
+      \ </assessment-guidelines> <final-instructions> Return a JSON object mirroring\
+      \ the extracted data structure: HIGH confidence (>= 0.9):  {\"attr\": {\"confidence\"\
+      : 0.97}} LOWER confidence (< 0.9):  {\"attr\": {\"confidence\": 0.72, \"confidence_reason\"\
+      : \"...\"}} GROUP:   {\"grp\": {\"sub1\": {\"confidence\": 0.95}}} LIST:   \
+      \ {\"items\": [ {\"c1\": {\"confidence\": 0.72, \"confidence_reason\": \"...\"\
+      }}, ... ]} OUTPUT RULE (keep responses compact \u2014 omit reasons for confident\
+      \ values): - Emit \"confidence_reason\" for a leaf ONLY when its confidence\
+      \ is below 0.9.\n  For confidence >= 0.9, emit just {\"confidence\": <score>}\
+      \ with NO\n  confidence_reason key.\n- When you do include a confidence_reason,\
+      \ keep it to at most 12 words and do\n  not restate the extracted value.\nIMPORTANT:\
+      \ - For LIST attributes, assess EACH row separately (one object per row, in\
+      \ order),\n  and within each row give EACH column its own confidence leaf ({\"\
+      confidence\"},\n  plus \"confidence_reason\" only when below 0.9) \u2014 mirror\
+      \ the row's column keys;\n  do NOT emit a single confidence per row. Nested\
+      \ lists follow the same rule\n  recursively.\n- Include a confidence assessment\
+      \ for ALL attributes present in the extraction results - Match the exact structure\
+      \ of the extracted data </final-instructions> <<CACHEPOINT>> <document-image>\
+      \ {DOCUMENT_IMAGE} </document-image> <ocr-text-confidence-results> {OCR_TEXT_CONFIDENCE}\
+      \ </ocr-text-confidence-results> <<CACHEPOINT>> <attributes-definitions> {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\
+      \ </attributes-definitions> <extraction-results> {EXTRACTION_RESULTS} </extraction-results>"
+  geometry:
+    mode: ocr_only
+    task_prompt_bbox: '<spatial-localization-guidelines> Additionally, for each field
+      provide bounding box coordinates alongside its confidence: - bbox: [x1, y1,
+      x2, y2] in a normalized 0-1000 scale - page: page number where the field appears
+      (starting from 1) Use x1,y1 = top-left and x2,y2 = bottom-right (ensure x2 >
+      x1, y2 > y1). Make boxes tight around the actual text; if a field spans multiple
+      lines, encompass all relevant text. Include bbox/page in the JSON alongside
+      each field''s confidence. </spatial-localization-guidelines>'
+hitl:
+  enabled: false
+  confidence_threshold: '0.8'
+summarization:
+  enabled: false
+  model: us.anthropic.claude-sonnet-5:1m
+  top_p: '0.0'
+  max_tokens: ''
+  top_k: '5'
+  temperature: '0.0'
+  system_prompt: 'You are a document summarization expert who can analyze and summarize
+    documents from various domains including medical, financial, legal, and general
+    business documents. Your task is to create a summary that captures the key information,
+    main points, and important details from the document. Your output must be in valid
+    JSON format. \nSummarization Style: Balanced\\nCreate a balanced summary that
+    provides a moderate level of detail. Include the main points and key supporting
+    information, while maintaining the document''s overall structure. Aim for a comprehensive
+    yet concise summary.\n Your output MUST be in valid JSON format with markdown
+    content. You MUST strictly adhere to the output format specified in the instructions.'
+  task_prompt: "<document-text> {DOCUMENT_TEXT} </document-text>\n<extracted-attributes>\
+    \ {EXTRACTION_RESULTS} </extracted-attributes>\nAnalyze the provided document\
+    \ (<document-text>) along with the extracted attributes (<extracted-attributes>)\
+    \ to create a comprehensive and accurate summary.\nCRITICAL INSTRUCTION: You MUST\
+    \ return your response as valid JSON with the EXACT structure shown at the end\
+    \ of these instructions. Do not include any explanations, notes, or text outside\
+    \ of the JSON structure.\nCreate a summary that captures the essential information\
+    \ from the document. Your summary should:\n1. **Integrate Extracted Attributes**:\
+    \ Begin with a \"Key Information\" section that highlights the most important\
+    \ extracted attributes in a structured format (use tables or lists as appropriate)\n\
+    2. **Validate and Reference**: Cross-reference the document text with extracted\
+    \ values to ensure accuracy. When mentioning specific values, prefer the extracted\
+    \ attributes when they are available\n3. **Maintain Document Structure**: Preserve\
+    \ the original document's organizational structure where appropriate, using the\
+    \ extracted attributes to enhance each section\n4. **Highlight Critical Data**:\
+    \ Emphasize important extracted values such as:\n   - Names, addresses, and identification\
+    \ numbers\n   - Dates and time periods\n   - Monetary amounts and financial figures\n\
+    \   - Status indicators and classifications\n   - Any calculated or derived values\n\
+    \n5. **Use Markdown Formatting**: Apply markdown for better readability:\n   -\
+    \ Use headers (##, ###) for sections\n   - Create tables for structured data from\
+    \ extracted attributes\n   - Use **bold** for important values and *italics* for\
+    \ emphasis\n   - Create lists (bullet or numbered) for multiple items\n\n6. **Provide\
+    \ Context**: For each extracted value mentioned, provide brief context from the\
+    \ document text to explain its significance\n7. **Citation System**: Cite all\
+    \ facts using inline citations in the format [Cite-X, Page-Y] where X is a sequential\
+    \ citation number and Y is the page number. Format citations as markdown links:\
+    \ [[Cite-1, Page-3]](#cite-1-page-3)\n8. **Data Completeness**: If extracted attributes\
+    \ are missing or empty, note this in the summary and rely more heavily on the\
+    \ document text\n9. **References Section**: At the end, include a \"References\"\
+    \ section listing all citations with their exact text from the source document\n\
+    Structure your summary as follows: - **Key Information** (from extracted attributes)\
+    \ - **Document Overview** - **Detailed Sections** (based on document structure)\
+    \ - **Summary and Conclusions** - **References**\nOutput Format:\nYou MUST return\
+    \ ONLY valid JSON with the following structure and nothing else:\n```json {\n\
+    \  \"summary\": \"A comprehensive summary in markdown format that integrates extracted\
+    \ attributes with document text, includes inline citations linked to a references\
+    \ section at the bottom\"\n} ```\nDo not include any text, explanations, or notes\
+    \ outside of this JSON structure. The JSON must be properly formatted and parseable."
+chat:
+  enabled: false
+  model: us.anthropic.claude-opus-4-8:1m
+  temperature: '0.0'
+  top_p: '0.1'
+  top_k: '5'
+  max_tokens: ''
+  system_prompt: You are an assistant that answers questions about the attached document
+    text. If you don't know the answer, say so. Do not invent information. Use the
+    prior chat history provided as context. Respond in plain text, not JSON.
+evaluation:
+  enabled: true
+  llm_method:
+    top_p: '0.0'
+    max_tokens: ''
+    top_k: '5'
+    system_prompt: You are an evaluator that helps determine if the predicted and
+      expected values match for document attribute extraction. You will consider the
+      context and meaning rather than just exact string matching.
+    task_prompt: "I need to evaluate attribute extraction for a document of class:\
+      \ {DOCUMENT_CLASS}. For the attribute named \"{ATTRIBUTE_NAME}\" described as\
+      \ \"{ATTRIBUTE_DESCRIPTION}\": - Expected value: {EXPECTED_VALUE} - Actual value:\
+      \ {ACTUAL_VALUE} Do these values match in meaning, taking into account formatting\
+      \ differences, word order, abbreviations, and semantic equivalence? Provide\
+      \ your assessment as a JSON with three fields: - \"match\": boolean (true if\
+      \ they match, false if not) - \"score\": number between 0 and 1 representing\
+      \ the confidence/similarity score - \"reason\": brief explanation of your decision\
+      \ Respond ONLY with the JSON and nothing else. Here's the exact format: {\n\
+      \  \"match\": true or false,\n  \"score\": 0.0 to 1.0,\n  \"reason\": \"Your\
+      \ explanation here\"\n}"
+    temperature: '0.0'
+    model: us.amazon.nova-2-lite-v1:0
+rule_validation:
+  enabled: false
+  semaphore: 5
+  max_chunk_size: 8000
+  token_size: 4
+  overlap_percentage: 10
+  response_prefix: <response>
+  recommendation_options: 'Pass: The requirement criteria are fully met.
+
+    Fail: The requirement is partially met or requires additional information.
+
+    Information Not Found: No relevant data exists in the document content.'
+  extraction_results: null
+  fact_extraction:
+    model: us.anthropic.claude-sonnet-4-6
+    system_prompt: 'You are a Document Fact Extraction Specialist responsible for
+      identifying and extracting factual evidence that is relevant to rule validation.
+
+
+      ## Your Role
+
+      Your sole task is to extract facts and evidence that can be used to validate
+      compliance with a specific rule. You do NOT make compliance decisions - you
+      only gather and cite relevant factual evidence.
+
+
+      ## Variables
+
+      - <rule>: The compliance rule or requirement that facts should be extracted
+      for
+
+      - <document-text>: The source document content to extract facts from
+
+      - <extracted-attributes>: Pre-extracted attributes that may contain relevant
+      facts
+
+
+      ## Guidelines
+
+      1. Extract facts that are directly relevant to validating the specified rule
+
+      2. Facts can be extracted from BOTH <document-text> AND <extracted-attributes>
+
+      3. Each fact must include page number(s) indicating where the fact was found
+
+      4. Remain objective - extract facts that both support and contradict the rule
+
+      5. Do not interpret or make judgments about compliance
+
+      6. Never fabricate or assume facts not present in the provided sources'
+    task_prompt: "Extract relevant facts and evidence that can be used to validate\
+      \ the rule provided.\n\n<extracted-attributes>\n{EXTRACTION_RESULTS}\n</extracted-attributes>\n\
+      \n<instructions>\nFollow these steps to extract relevant facts:\n\nSTEP 1 -\
+      \ ANALYZE THE RULE\nReview the rule provided in <rule></rule> tags to understand:\n\
+      - What specific criteria or conditions need to be validated\n- What type of\
+      \ evidence would be relevant (dates, amounts, names, conditions, etc.)\n- What\
+      \ key terms or concepts to search for\n\nSTEP 2 - SEARCH FOR EVIDENCE\nReview\
+      \ BOTH sources for relevant facts:\n\nFrom <document-text></document-text>:\n\
+      - Statements, data, or information that relate to the rule criteria\n- Specific\
+      \ values, dates, identifiers, or conditions mentioned\n- Any context that clarifies\
+      \ or qualifies the relevant information\n\nFrom <extracted-attributes></extracted-attributes>:\n\
+      - Pre-extracted values that are relevant to the rule\n- Structured data that\
+      \ can support rule validation\n- Any attributes with associated page references\n\
+      \nSTEP 3 - EXTRACT FACTS WITH CITATIONS\nFor each relevant piece of evidence\
+      \ found:\n- Extract the factual information verbatim or accurately paraphrased\n\
+      - Record the page number(s) from which the fact was extracted\n- Note the relevance\
+      \ to the specific rule being validated\n\nSTEP 4 - COMPILE STRUCTURED OUTPUT\n\
+      Format all extracted facts as a structured JSON response.\n\nJSON RESPONSE FORMAT:\n\
+      {{\n  \"extracted_facts\": [\n    {{\n      \"fact\": \"The specific factual\
+      \ information extracted\",\n      \"citation\": \"Page number(s) from which\
+      \ this fact is extracted\",\n      \"relevance\": \"Brief explanation of how\
+      \ this fact relates to the rule\"\n    }}\n  ],\n  \"extraction_summary\": \"\
+      Brief summary of what evidence was found and any gaps identified\"\n}}\n\nIMPORTANT\
+      \ RULES:\n- Include ALL relevant facts from both sources, even if they contradict\
+      \ each other\n- Each fact must have a valid citation with page number(s)\n-\
+      \ Do not include compliance decisions or recommendations\n- If no relevant facts\
+      \ are found, return empty array and note this in the summary\n- Ensure output\
+      \ is valid JSON\n</instructions>\n\n<<CACHEPOINT>>\n\n<document-text>\n{DOCUMENT_TEXT}\n\
+      </document-text>\n\n<rule>\n{rule}\n</rule>\n\nCRITICAL: Respond ONLY with the\
+      \ JSON format inside <response></response> XML tags.\nDo not include any explanatory\
+      \ text, commentary, or additional text before or after the <response> tags.\n\
+      Your entire response must contain only the <response> tags with the JSON inside."
+    temperature: 0
+    top_p: 0
+    top_k: 20
+    max_tokens: ''
+  rule_validation_orchestrator:
+    model: us.anthropic.claude-sonnet-4-6
+    system_prompt: 'You are a Compliance Validation Specialist responsible for analyzing
+      extracted evidence and making final compliance determinations.
+
+
+      ## Your Role
+
+      Your task is to review facts and evidence extracted from documents, analyze
+      their relevance and completeness, and make a definitive compliance recommendation
+      for a given rule.
+
+
+      ## Variables
+
+      - <rule>: The compliance rule or requirement being validated
+
+      - <extracted_evidence>: Facts and citations extracted from the document by the
+      fact extraction step
+
+      - <recommendation_options>: Available compliance decision options to choose
+      from
+
+      - <policy_class>: The category or classification of the policy being validated
+
+
+      ## Guidelines
+
+      1. Base decisions strictly on the extracted evidence provided
+
+      2. Consider all facts, including contradictory evidence
+
+      3. Select the most appropriate recommendation from the provided options
+
+      4. Provide clear reasoning with specific citations from the extracted evidence
+
+      5. If evidence is insufficient, clearly state what is missing
+
+      6. Keep reasoning concise, factual, and in a single paragraph
+
+      7. Never introduce assumptions or facts not present in the extracted evidence'
+    task_prompt: "Analyze the extracted evidence and determine compliance with the\
+      \ specified rule.\n\n<instructions>\nFollow these steps to make a compliance\
+      \ determination:\n\nSTEP 1 - REVIEW EXTRACTED EVIDENCE\nExamine all facts provided\
+      \ in <extracted_evidence></extracted_evidence> tags:\n- Identify key facts relevant\
+      \ to the rule criteria\n- Note the citations and source pages for each fact\n\
+      - Identify any contradictory or conflicting evidence\n\nSTEP 2 - ASSESS EVIDENCE\
+      \ COMPLETENESS\nDetermine if the extracted evidence is sufficient to validate\
+      \ the rule:\n- Does the evidence directly address the rule requirements?\n-\
+      \ Are there gaps in the evidence that prevent a conclusive determination?\n\
+      - Is the evidence consistent or are there conflicts to resolve?\n\nSTEP 3 -\
+      \ EVALUATE AGAINST RULE CRITERIA\nCompare the extracted evidence against the\
+      \ rule in <rule></rule> tags:\n- Determine if evidence supports compliance with\
+      \ the rule\n- Determine if evidence indicates non-compliance\n- Determine if\
+      \ evidence is insufficient for a conclusion\n\nSTEP 4 - SELECT RECOMMENDATION\n\
+      Based on your evaluation, select ONE option from <recommendation_options></recommendation_options>:\n\
+      - Review all available options provided in the recommendation_options\n- Select\
+      \ the option that best matches your evidence-based conclusion\n- Consider whether\
+      \ evidence supports compliance, indicates non-compliance, or is insufficient\n\
+      - Match your determination to the most appropriate option from those provided\n\
+      \nSTEP 5 - FORMULATE REASONING\nConstruct a concise reasoning statement that:\n\
+      - Summarizes the key evidence supporting the decision\n- Includes specific page\
+      \ citations from the extracted evidence\n- Explains why this evidence leads\
+      \ to the chosen recommendation\n- Notes any evidence gaps if applicable\n\n\
+      JSON RESPONSE FORMAT:\n{{\n  \"recommendation\": \"Select one keyword option\
+      \ from <recommendation_options>. Return ONLY the keyword (e.g., first word or\
+      \ phrase before any separator)\",\n  \"reasoning\": \"Concise summary of extracted\
+      \ evidence supporting the decision with specific page citations in a single\
+      \ paragraph without line breaks\",\n  \"supporting_pages\": [\"consolidated\
+      \ list of page numbers containing relevant evidence\"]\n}}\n\nSUPPORTING PAGES\
+      \ RULES:\n1. Include ONLY page numbers from the extracted evidence that support\
+      \ the decision\n2. If no evidence exists, supporting_pages should be an empty\
+      \ list []\n3. For non-compliance recommendations, include pages reviewed that\
+      \ contain evidence of non-compliance\n4. Consolidate all unique page numbers\
+      \ from the extracted evidence\n\nRESPONSE RULES:\n1. Provide exactly ONE compliance\
+      \ determination\n2. Use only basic punctuation (. , : ;) in reasoning\n3. Avoid\
+      \ special characters or line breaks in reasoning\n4. All JSON fields must be\
+      \ included\n5. For non-compliance or partial findings, explicitly state what\
+      \ evidence was missing or insufficient\n</instructions>\n\n<<CACHEPOINT>>\n\n\
+      <extracted_evidence>\n{extracted_evidence}\n</extracted_evidence>\n\n<recommendation_options>\n\
+      {recommendation_options}\n</recommendation_options>\n\n<policy_class>{policy_class}</policy_class>\n\
+      \n<rule>{rule}</rule>\n\nCRITICAL: Respond ONLY with the JSON format inside\
+      \ <response></response> XML tags.\nDo not include any explanatory text, commentary,\
+      \ or additional text before or after the <response> tags.\nYour entire response\
+      \ must contain only the <response> tags with the JSON inside."
+    temperature: 0
+    top_p: 0
+    top_k: 20
+    max_tokens: ''
+agents:
+  chat_companion:
+    model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  error_analyzer:
+    model_id: us.anthropic.claude-sonnet-4-6
+    lookback_hours: 24
+    system_prompt: "You are an intelligent error analysis agent for the GenAI IDP\
+      \ (Intelligent Document Processing) system with access to specialized diagnostic\
+      \ tools.\n\nSYSTEM ARCHITECTURE:\nThe GenAI IDP system processes documents through\
+      \ an AWS Step Functions state machine with the following pipeline stages:\n\
+      - OCR Stage: Extracts text/layout from documents using Amazon Textract or Amazon\
+      \ Bedrock Data Automation (BDA)\n- Classification Stage: Identifies the document\
+      \ class using a Bedrock LLM\n- Extraction Stage: Extracts structured fields\
+      \ using a Bedrock LLM based on class-specific configuration\n- Assessment Stage:\
+      \ Evaluates extraction quality using a Bedrock LLM\n- Summarization Stage (optional):\
+      \ Generates a document summary\n- Evaluation Stage (optional): Scores extraction\
+      \ accuracy against ground truth\n\nBDA Alternative Branch:\n- InvokeBDA \u2192\
+      \ BDA Completion (EventBridge-triggered) \u2192 BDA ProcessResults\n- BDA jobs\
+      \ are asynchronous; failures may appear in EventBridge delivery or the BDA service\
+      \ itself\n\nKey AWS services involved:\n- AWS Step Functions: Orchestrates the\
+      \ pipeline workflow\n- AWS Lambda: Executes each stage as an independent function\n\
+      - Amazon DynamoDB: Tracks document status and metadata per stage\n- Amazon CloudWatch:\
+      \ Captures logs from each Lambda function\n- AWS X-Ray: Provides distributed\
+      \ tracing across Lambda and Bedrock calls\n- Amazon Bedrock: Provides LLM inference\
+      \ for classification, extraction, assessment, and summarization\n- Amazon Textract:\
+      \ Performs OCR for non-BDA documents\n- Amazon S3: Stores input documents, OCR\
+      \ results, and extracted output\n\nINVESTIGATION WORKFLOW:\n1. Identify the\
+      \ document status in DynamoDB to understand which pipeline stage failed\n2.\
+      \ Retrieve Step Functions execution details to get the execution timeline and\
+      \ error event\n3. Collect CloudWatch logs from the failing Lambda stage for\
+      \ detailed error messages\n4. Use X-Ray traces to identify performance bottlenecks\
+      \ or cascading failures across services\n5. Synthesize all evidence to determine\
+      \ root cause \u2014 never stop at the first error message\n\nTOOL USAGE:\n-\
+      \ Document-specific analysis (user provides a filename or document ID):\n  \u2192\
+      \ Use cloudwatch_document_logs and dynamodb_status as primary tools\n- System-wide\
+      \ or batch analysis (no specific document):\n  \u2192 Use cloudwatch_logs and\
+      \ dynamodb_query to identify patterns\n- Workflow failures and execution timeline:\n\
+      \  \u2192 Use stepfunction_details for the execution event history\n- Lambda\
+      \ configuration and environment context:\n  \u2192 Use lambda_lookup to check\
+      \ timeout settings, memory, and environment variables\n- Which Bedrock model\
+      \ a pipeline stage uses (e.g. after a model error):\n  \u2192 Use fetch_pipeline_configuration\
+      \ with the document's config version to read the per-stage model IDs\n- Distributed\
+      \ service interaction issues:\n  \u2192 Use xray_trace or xray_performance_analysis\n\
+      \nAlways use at least 2 different tool sources before concluding a root cause.\
+      \ If a tool call returns no useful data, try an alternative \u2014 never guess\
+      \ without evidence.\n\nCRITICAL \u2014 DRILL INTO THE FAILING STAGE'S OWN LOGS:\n\
+      The Step Functions error and the DynamoDB status_reason usually show a\nGENERIC\
+      \ WRAPPER message (e.g. \"Summarization failed for document X.pdf\",\n\"Extraction\
+      \ failed\"), because each stage Lambda catches the underlying\nexception and\
+      \ re-raises a stage-level summary. That wrapper is a SYMPTOM,\nnot the root\
+      \ cause. You MUST fetch the CloudWatch logs of the specific\nLambda function\
+      \ for the failing stage and read the FIRST underlying\nexception/traceback it\
+      \ logged (e.g. a Bedrock ResourceNotFoundException,\nThrottlingException, ValidationException,\
+      \ or a Python traceback). Search\nthat stage's log group by the failing Lambda's\
+      \ request ID (from the\nStep Functions error cause or the X-Ray trace) with\
+      \ an \"ERROR\" filter, and\nquote the earliest real error \u2014 not the last\
+      \ wrapper line. If the wrapper\nmessage names a stage, the log group you need\
+      \ is that stage's function\n(e.g. SummarizationFunction, ExtractionFunction,\
+      \ AssessmentFunction).\n\nDO NOT CONFLATE UNRELATED NON-FATAL ISSUES WITH THE\
+      \ FAILURE:\nA document's DynamoDB record may carry `ProcessingIssue` entries\
+      \ with\nseverity \"warning\" or non-terminal notes (e.g. an `assessment_incomplete`\n\
+      row that self-healed or was recorded but did not stop the pipeline). These\n\
+      are NOT necessarily the cause of a FAILED workflow. Before attributing the\n\
+      failure to a ProcessingIssue, confirm it occurred in the SAME stage that\nStep\
+      \ Functions reports as the failure point AND that its severity is\n\"error\"\
+      . If the failing stage differs from the stage that logged the\nProcessingIssue,\
+      \ treat the ProcessingIssue as context, not root cause, and\nkeep drilling into\
+      \ the failing stage's logs.\n\nINVESTIGATION STRATEGY:\nUse this approach for\
+      \ all investigations, whether a single document or a large batch:\n\n1. TRIAGE:\
+      \ Check DynamoDB for document status and which stage failed. For batches, get\
+      \ a count of failed documents and their error status distribution.\n\n2. SAMPLE:\
+      \ For multiple failures, select 2-3 representative failed documents. Avoid over-sampling\
+      \ \u2014 additional documents yield diminishing returns.\n\n3. TRACE THE CAUSAL\
+      \ CHAIN for each sampled document:\n   DynamoDB status \u2192 Step Functions\
+      \ execution timeline \u2192 CloudWatch error logs \u2192 X-Ray traces\n\n4.\
+      \ APPLY THE \"5 WHYS\" \u2014 Never stop at the first error. Keep asking \"\
+      what caused THIS?\":\n   Finding: \"Extraction Lambda timed out\" \u2192 Why?\n\
+      \   \"Lambda waited 14 minutes on Bedrock InvokeModel\" \u2192 Why was it slow?\n\
+      \   \"Bedrock returned ThrottlingException, triggering exponential backoff\"\
+      \ \u2192 Why throttled?\n   \"Batch of 200 docs with extraction concurrency=10\
+      \ exceeded Bedrock RPM quota\"\n   ROOT CAUSE: \"Extraction concurrency too\
+      \ high for the configured Bedrock account quota\"\n\n5. DISTINGUISH SYSTEMIC\
+      \ vs ISOLATED FAILURES:\n   - Same error type across many documents \u2192 systemic\
+      \ issue (quota, permissions, configuration, service limit)\n   - Different errors\
+      \ across documents \u2192 per-document issues (bad input, edge cases, unsupported\
+      \ format)\n\n6. VALIDATE: Does the identified root cause explain ALL observed\
+      \ failures?\n\nROOT CAUSE vs SYMPTOM GUIDE:\n- SYMPTOM: \"Document processing\
+      \ failed\"\n- SYMPTOM: \"Extraction Lambda returned error\"\n- CLOSER:  \"ThrottlingException\
+      \ from Bedrock InvokeModel\"\n- ROOT CAUSE: \"Bedrock RPM quota exceeded \u2014\
+      \ batch concurrency generated too many concurrent API calls\"\n\n- SYMPTOM:\
+      \ \"Classification failed\"\n- CLOSER:  \"Textract API timeout\"\n- ROOT CAUSE:\
+      \ \"150-page PDF exceeded Textract async processing limit for the configured\
+      \ region\"\n\nCOMMON ERROR PATTERNS:\nUse these patterns to guide your investigation\
+      \ and accelerate diagnosis:\n\n1. THROTTLING \u2014 ThrottlingException, TooManyRequestsException,\
+      \ \"Rate exceeded\", \"Too many requests\"\n   Likely cause: Batch size \xD7\
+      \ concurrency > Bedrock RPM/TPM quota, or Textract TPS limit exceeded\n   Check:\
+      \ Concurrent Lambda executions, batch size, Bedrock model quotas\n\n2. TIMEOUT\
+      \ \u2014 \"Task timed out\", \"Lambda timeout\", \"socket timeout\", \"Connection\
+      \ reset\"\n   Likely cause: Large document (many pages), undersized Lambda timeout\
+      \ or memory, slow Bedrock inference\n   Check: Document page count, Lambda timeout\
+      \ configuration, model response latency in X-Ray\n\n3. CONFIGURATION ERROR \u2014\
+      \ KeyError, missing field, \"not found in config\", validation error, AttributeError\n\
+      \   Likely cause: Class definition or attribute names in config don't match\
+      \ expected schema; config changes deployed incorrectly\n   Check: DynamoDB config\
+      \ table, class definitions, attribute names for the affected document class\n\
+      \n4. PERMISSIONS \u2014 AccessDeniedException, \"not authorized\", \"is not\
+      \ authorized to perform\", ExpiredToken\n   Likely cause: Missing IAM policy,\
+      \ cross-account access issue, Bedrock model access not granted, KMS policy gap\n\
+      \   Check: Lambda execution role policies, Bedrock model access in the console,\
+      \ S3 bucket policies\n\n5. INPUT QUALITY \u2014 empty extraction results, very\
+      \ low confidence, \"unable to parse\", Textract errors on specific pages\n \
+      \  Likely cause: Poor scan quality, handwritten content, unsupported file format,\
+      \ corrupted PDF\n   Check: OCR output in S3, original document quality, Textract\
+      \ response for page-level errors\n\n6. BDA-SPECIFIC \u2014 \"BDA Job Failed\"\
+      , blueprint mismatch, async job timeout, missing EventBridge event\n   Likely\
+      \ cause: Blueprint schema mismatch with document type, BDA service limit, EventBridge\
+      \ delivery failure\n   Check: BDA project configuration, blueprint compatibility,\
+      \ EventBridge rule and DLQ\n\n7. BEDROCK MODEL ERRORS \u2014 ModelErrorException,\
+      \ \"model returned an error\", context length exceeded\n   Likely cause: Document\
+      \ content too large for model context window, model unavailable in region, prompt\
+      \ issue\n   Check: Document page count, OCR text length, model availability,\
+      \ extraction prompt configuration\n\n8. RETIRED / UNAVAILABLE MODEL \u2014 ResourceNotFoundException,\
+      \ \"This model version has reached the end of its life\", \"model identifier\
+      \ is invalid\", \"could not be found\"\n   Likely cause: The model ID configured\
+      \ for a stage (OCR/classification/extraction/assessment/summarization) has been\
+      \ retired (end-of-life) by Bedrock, or is not enabled/available in this account/region\n\
+      \   Check: The Bedrock error does NOT name the model. To identify it, call fetch_pipeline_configuration\
+      \ with the document's config version (the ConfigVersion field from fetch_document_record)\
+      \ and read the model configured for the FAILING stage (match the stage to the\
+      \ failing Lambda \u2014 e.g. the \"summarization\" stage for SummarizationFunction).\
+      \ Name that exact model ID as the root cause and recommend switching that stage\
+      \ to a currently-supported model in the UI Configuration panel \u2014 do NOT\
+      \ just tell the user to \"confirm the configured model\".\n\nOUTPUT FORMAT:\n\
+      Always format your response with exactly these three sections in this order:\n\
+      \n## Root Cause\n**Confidence:** [HIGH | MEDIUM | LOW]\nIdentify the specific\
+      \ underlying technical reason why the error occurred. Focus on the primary cause,\
+      \ not symptoms.\n\n## Recommendations\nProvide specific, actionable steps to\
+      \ resolve the issue. Limit to top three recommendations only.\n\n<details>\n\
+      <summary><strong>Evidence</strong></summary>\n\nFormat evidence with source\
+      \ information. Include relevant data from tool responses:\n\n**For CloudWatch\
+      \ logs:**\n**Log Group:** [full log_group name]\n**Log Stream:** [full log_stream\
+      \ name]\n```\n[ERROR] timestamp message\n```\n\n**For other sources (DynamoDB,\
+      \ Step Functions, X-Ray):**\n**Source:** [service name and resource]\n```\n\
+      Relevant data from tool response\n```\n\n</details>\n\nFORMATTING RULES:\n-\
+      \ Use the exact three-section structure above\n- Add Confidence (HIGH/MEDIUM/LOW)\
+      \ as the first line of the Root Cause section\n- Make the Evidence section collapsible\
+      \ using HTML details tags\n- Include relevant data from all tool responses used\n\
+      - For CloudWatch: Show complete log group and log stream names without truncation\n\
+      - Present evidence data in code blocks with appropriate source labels\n\nRECOMMENDATION\
+      \ GUIDELINES:\nFor code-related issues or system bugs:\n- Do not suggest code\
+      \ modifications \u2014 users cannot change Lambda code\n- Describe the error\
+      \ in detail with timestamps and context so it can be reported\n\nFor configuration-related\
+      \ issues:\n- Direct users to the UI configuration panel\n- Specify the exact\
+      \ configuration section and parameter name\n\nFor operational issues (throttling,\
+      \ timeouts, quotas):\n- Provide immediate remediation steps (e.g., reduce concurrency,\
+      \ reprocess failed documents)\n- Include preventive measures to avoid recurrence\n\
+      \nCOMMON MISTAKES TO AVOID:\n- Do NOT report \"Lambda function returned error\"\
+      \ as a root cause \u2014 that is a symptom\n- Do NOT recommend \"check CloudWatch\
+      \ logs\" as a recommendation \u2014 you are already doing that\n- Do NOT suggest\
+      \ code changes \u2014 users cannot modify Lambda functions\n- Do NOT speculate\
+      \ about root cause without corroborating tool evidence\n- Do NOT investigate\
+      \ more than 3 sample documents in a batch \u2014 focus on pattern recognition\n\
+      - Do NOT include search quality reflections, meta-analysis, or sections not\
+      \ listed in the output format above"
+discovery:
+  output_format:
+    sample_json: "{\n    \"document_class\" : \"Form-1040\",\n    \"document_description\"\
+      \ : \"Brief summary of the document\",\n    \"groups\" : [\n        {\n    \
+      \        \"name\" : \"PersonalInformation\",\n            \"description\" :\
+      \ \"Personal information of Tax payer\",\n            \"attributeType\" : \"\
+      group\",\n            \"groupAttributes\" : [\n                {\n         \
+      \           \"name\": \"FirstName\",\n                    \"dataType\" : \"\
+      string\",\n                    \"description\" : \"First Name of Taxpayer\"\n\
+      \                },\n                {\n                    \"name\": \"Age\"\
+      ,\n                    \"dataType\" : \"number\",\n                    \"description\"\
+      \ : \"Age of Taxpayer\"\n                }\n            ]\n        },\n    \
+      \    {\n            \"name\" : \"Dependents\",\n            \"description\"\
+      \ : \"Dependents of taxpayer\",\n            \"attributeType\" : \"list\",\n\
+      \            \"listItemTemplate\": {\n                \"itemAttributes\" : [\n\
+      \                    {\n                        \"name\": \"FirstName\",\n \
+      \                       \"dataType\" : \"string\",\n                       \
+      \ \"description\" : \"Dependent first name\"\n                    },\n     \
+      \               {\n                        \"name\": \"Age\",\n            \
+      \            \"dataType\" : \"number\",\n                        \"description\"\
+      \ : \"Dependent Age\"\n                    }\n                ]\n          \
+      \  }\n        }\n    ]\n}"
+  with_ground_truth:
+    model_id: us.amazon.nova-pro-v1:0
+    system_prompt: You are an expert in processing forms. Extracting data from images
+      and documents. Use provided ground truth data as reference to optimize field
+      extraction and ensure consistency with expected document structure and field
+      definitions.
+    max_tokens: ''
+    top_p: '0.1'
+    temperature: '0.0'
+    user_prompt: 'This image contains unstructured data. Analyze the data line by
+      line using the provided ground truth as reference. <GROUND_TRUTH_REFERENCE>
+      {ground_truth_json} </GROUND_TRUTH_REFERENCE> Ground truth reference JSON has
+      the fields we are interested in extracting from the document/image. Use the
+      ground truth to optimize field extraction. Match field names, data types, and
+      groupings from the reference. Image may contain multiple pages, process all
+      pages. Extract all field names including those without values. Do not change
+      the group name and field name from ground truth in the extracted data json.
+      Add field_description field for every field which will contain instruction to
+      LLM to extract the field data from the image/document. Add data_type field for
+      every field. Make sure to fill out the top-level "$id" and "x-aws-idp-document-type"
+      with the extracted document class, and the top-level "description" with a brief
+      description of the document class. Nesting Groups: Do not nest the groups i.e.
+      groups within groups. All groups should be directly associated under main "properties".
+      If the group repeats and follows table format, update the attributeType as "list".
+      Do not extract the values. Format the extracted data using the below JSON format:
+      Format the extracted groups and fields using the below JSON format:'
+  auto_split:
+    model_id: us.anthropic.claude-opus-4-6-v1:1m
+    system_prompt: You are an expert document analyst. Your task is to identify distinct
+      document sections within a multi-page document package. Return only valid JSON.
+    max_tokens: ''
+    top_p: '0.1'
+    temperature: '0.0'
+    user_prompt: 'Analyze this multi-page document package. Identify the page boundaries
+      where different document types or sections begin and end. For each distinct
+      document section, provide: - "start": the first page number (1-based) - "end":
+      the last page number (1-based) - "type": a short label for the document type
+      (e.g., "W2 Form", "Letter", "Invoice") Return ONLY a JSON array, no other text:
+      [{"start": 1, "end": 2, "type": "Letter"}, {"start": 3, "end": 3, "type": "Invoice"}]'
+  multi_document:
+    embedding_model_id: us.cohere.embed-v4:0
+    analysis_model_id: us.anthropic.claude-sonnet-4-6
+    temperature: '0.0'
+    max_tokens: ''
+    max_documents: 500
+    min_cluster_size: 2
+    num_sample_documents: 3
+    max_sample_size: 5
+    max_concurrent_embeddings: 5
+    max_concurrent_clusters: 3
+    system_prompt: ''
+  without_ground_truth:
+    model_id: us.amazon.nova-pro-v1:0
+    system_prompt: You are an expert in processing forms. Extracting data from images
+      and documents. Analyze forms line by line to identify field names, data types,
+      and organizational structure. Focus on creating comprehensive blueprints for
+      document processing without extracting actual values.
+    max_tokens: ''
+    top_p: '0.1'
+    temperature: '0.0'
+    user_prompt: 'This image contains forms data. Analyze the form line by line. Image
+      may contain multiple pages, process all the pages. Form may contain multiple
+      name value pair in one line. Extract all the names in the form including the
+      name value pair which doesn''t have value. Organize them into groups, extract
+      field_name, data_type and field description. Field names should be less than
+      30 characters, use camelCase or snake_case, name should not start with number
+      and name should not have special characters. Field descriptions should include
+      location hints (box number, line number, section). Field_name should be unique
+      within the group. Make sure to fill out the top-level "$id" and "x-aws-idp-document-type"
+      with the extracted document class, and the top-level "description" with a brief
+      description of the document class. Group the fields based on the section they
+      are grouped in the form. Group should have attributeType as "group". Nesting
+      Groups: Do not nest the groups i.e. groups within groups. All groups should
+      be directly associated under main "properties". If the group repeats and follows
+      table format, update the attributeType as "list". Do not extract the values.
+      Return the extracted data in JSON format. Format the extracted data using the
+      below JSON format: Format the extracted groups and fields using the below JSON
+      format:'
+  rules:
+    model: global.anthropic.claude-sonnet-4-6
+    temperature: '0.0'
+    top_p: '0.0'
+    top_k: '5'
+    max_tokens: ''
+    agentic:
+      enabled: false
+      review_agent: false
+    system_prompt: You are an expert in analyzing policy documents and extracting
+      business rules, regulations, and compliance requirements. Extract rules as structured,
+      actionable validation statements.
+    task_prompt: "<background> You are an expert in regulatory document analysis.\
+      \ Your task is to extract ALL business rules, regulations, compliance requirements,\
+      \ and validation criteria from the attached policy document as a single flat\
+      \ list of rules. </background>\n<task> Analyze the policy document thoroughly,\
+      \ page by page. For each rule found:\n1. Give the rule a short, descriptive\
+      \ snake_case name (e.g., \"bundled_services_not_separate\",\n   \"modifier_59_distinct_sites\"\
+      , \"prior_auth_required\")\n\n2. Write a clear, actionable description \u2014\
+      \ phrased as a yes/no validation question\n   or checkable statement\n\n3. Include\
+      \ specific codes, numbers, thresholds, or conditions mentioned\n4. Note any\
+      \ exceptions or special cases within the description\n5. Reference the page\
+      \ number or section where the rule was found </task>\n<extraction-guidelines>\
+      \ Guidelines: - Extract rules VERBATIM from the document where possible - Each\
+      \ rule should be a self-contained, evaluable statement - Rules should be specific\
+      \ enough to validate a transaction against - Do NOT classify or categorize the\
+      \ rules \u2014 output one flat list - Use descriptive snake_case names as rule\
+      \ identifiers (NOT generic \"rule_1\", \"rule_2\") - Each rule description should\
+      \ be phrased as a validation question or checkable statement - Do NOT interpret\
+      \ or infer rules not explicitly stated in the document - Process ALL pages of\
+      \ the document - If a rule has exceptions, include them in the description </extraction-guidelines>\n\
+      <output-format> Return ONLY a valid JSON array containing exactly ONE object.\
+      \ All rules go into a single \"rule_properties\" dict with descriptive snake_case\
+      \ keys:\n[\n    {\n        \"x-aws-idp-rule-type\": \"policy_rules\",\n    \
+      \    \"description\": \"All rules extracted from the policy document\",\n  \
+      \      \"rule_properties\": {\n            \"bundled_services_not_separate\"\
+      : {\n                \"description\": \"Are bundled services (exploration, lysis\
+      \ of adhesions, closure, anesthesia) NOT reported separately from the primary\
+      \ surgical procedure?\",\n                \"page\": \"V-5\"\n            },\n\
+      \            \"modifier_59_distinct_sites\": {\n                \"description\"\
+      : \"Is modifier 59 used only when procedures are performed at distinctly different\
+      \ anatomic sites or during separate patient encounters?\",\n               \
+      \ \"page\": \"V-8\"\n            },\n            \"prior_auth_required\": {\n\
+      \                \"description\": \"Has prior authorization been obtained before\
+      \ performing procedures that require pre-approval per the policy?\",\n     \
+      \           \"page\": \"III-4\"\n            },\n            \"medical_necessity_documented\"\
+      : {\n                \"description\": \"Is medical necessity documentation included\
+      \ to support the procedure performed?\",\n                \"page\": \"IV-1\"\
+      \n            }\n        }\n    }\n] </output-format>\n<final-instructions>\
+      \ Extract rules from the attached policy document by: 1. Reading every page\
+      \ systematically to identify all stated rules 2. Giving each rule a short, descriptive\
+      \ snake_case name 3. Phrasing each rule as a yes/no validation question 4. Including\
+      \ page references for traceability 5. Placing ALL rules into a single \"rule_properties\"\
+      \ object under one wrapper 6. Do NOT include any text outside the JSON array\
+      \ - return ONLY valid JSON </final-instructions>"
+use_bda: false
+config_format_version: '0.8'

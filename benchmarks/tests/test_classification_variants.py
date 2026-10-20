@@ -283,15 +283,54 @@ def test_the_two_halves_are_reported_separately():
     assert by_context["Labeling"]["inputTokens"] == 90
 
 
-def test_the_per_stage_call_count_is_captured():
-    """Packet granularity's N-calls-to-1 claim is a measurement, not an
-    assertion, and this is the counter that makes it one."""
+def test_the_per_context_lambda_invocation_count_is_captured():
+    """The per-context invocation count, which is the only one the runtime's
+    metering carries. See the next test for what it cannot tell you."""
     metering = {
         "Classification/bedrock/m": {"inputTokens": 10},
         "Classification/lambda/requests": {"requests": 6},
     }
     _cost, _tokens, _why, by_context = bench.classification_cost(metering)
-    assert by_context["Classification"]["calls"] == 6
+    assert by_context["Classification"]["lambda_invocations"] == 6
+
+
+def test_the_invocation_count_does_not_measure_bedrock_calls():
+    """⚠️ Measured on IDP1, and the reason the field is not called `calls`.
+
+    A 6-page document at `page` granularity makes six Bedrock calls inside ONE
+    Lambda invocation, so this counter reads 1 — identical to `packet`, which
+    makes one Bedrock call. The runtime emits no per-request count under the
+    Bedrock key, so **packet granularity's N-calls-to-one saving cannot be
+    evidenced from metering at all**; what discriminates the two is
+    `classification_output_tokens_per_page`, because page granularity emits a
+    verdict per page (216.7 against 45.7 on the same 8-document corpus).
+
+    This test exists so a future reader does not reinstate the claim: it pins
+    that the two granularities are INDISTINGUISHABLE here, which is the opposite
+    of what the name `calls` invited.
+    """
+    page_like = {
+        # Six Bedrock calls, one Lambda invocation.
+        "Classification/bedrock/m": {"inputTokens": 600, "outputTokens": 120},
+        "Classification/lambda/requests": {"requests": 1},
+    }
+    packet_like = {
+        # One Bedrock call, one Lambda invocation.
+        "Classification/bedrock/m": {"inputTokens": 500, "outputTokens": 20},
+        "Classification/lambda/requests": {"requests": 1},
+    }
+    _c, _t, _w, page_ctx = bench.classification_cost(page_like)
+    _c, _t, _w, packet_ctx = bench.classification_cost(packet_like)
+    assert (
+        page_ctx["Classification"]["lambda_invocations"]
+        == packet_ctx["Classification"]["lambda_invocations"]
+        == 1
+    )
+    # The output tokens are what differ, and by a lot.
+    assert (
+        page_ctx["Classification"]["outputTokens"]
+        == 6 * (packet_ctx["Classification"]["outputTokens"])
+    )
 
 
 def test_a_single_pass_run_still_reports_under_classification():
@@ -453,11 +492,14 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
         assert by_context["Labeling"]["inputTokens"] == 150
         assert out["classification_tokens"]["inputTokens"] == 450
 
-    def test_calls_per_document_is_per_document_not_per_corpus(self, monkeypatch):
+    def test_invocations_per_document_is_per_document_not_per_corpus(self, monkeypatch):
         out, _ = self._run(monkeypatch, n_docs=3)
         for context in ("Segmentation", "Labeling"):
             assert (
-                out["classification_by_context"][context]["calls_per_document"] == 1.0
+                out["classification_by_context"][context][
+                    "lambda_invocations_per_document"
+                ]
+                == 1.0
             )
 
 
