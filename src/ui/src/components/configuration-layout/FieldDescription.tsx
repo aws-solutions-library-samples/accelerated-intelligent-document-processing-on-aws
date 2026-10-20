@@ -82,6 +82,30 @@ export function stripInlineMarkdown(text: string): string {
     .replace(/`([^`]+)`/g, '$1'); // code spans
 }
 
+/**
+ * ⚠️ **Angle-bracket tokens have to be escaped before the markdown renderer
+ * sees them, or they are deleted.** `SafeMarkdown` runs `rehype-raw` ahead of
+ * `rehype-sanitize`, so `<class-confidence>` is parsed as an unknown HTML
+ * element and then removed — tag and all. These descriptions are full of such
+ * tokens, because the prompts they describe are full of them, and the result is
+ * that the word the sentence exists to explain is the one that disappears:
+ * "Keep the <class-confidence> wrapper" rendered as "Keep the  wrapper", and
+ * `<<CACHEPOINT>>` rendered as `<>`. Measured, not inferred — the cases are in
+ * `FieldDescription.test.tsx`.
+ *
+ * A schema description is prose, never HTML, so escaping is lossless here as
+ * well as safer. `&lt;`/`&gt;` entities are passed through by markdown and
+ * render as the characters; **inside a code span they would not be**, so code
+ * spans are split out and left exactly as written. That is the only reason this
+ * is not a bare `String.replace`.
+ */
+export function escapeAngleBrackets(text: string): string {
+  return text
+    .split(/(`+[^`]*`+)/g)
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(/</g, '&lt;').replace(/>/g, '&gt;')))
+    .join('');
+}
+
 export interface FieldDescriptionProps {
   children?: string;
 }
@@ -94,7 +118,7 @@ const FieldDescription: React.FC<FieldDescriptionProps> = ({ children }) => {
   if (!children || !children.trim()) return null;
   return (
     <span className="config-field-description">
-      <SafeMarkdown components={INLINE_COMPONENTS}>{children}</SafeMarkdown>
+      <SafeMarkdown components={INLINE_COMPONENTS}>{escapeAngleBrackets(children)}</SafeMarkdown>
     </span>
   );
 };

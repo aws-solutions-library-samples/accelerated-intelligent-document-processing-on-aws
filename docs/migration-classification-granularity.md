@@ -11,9 +11,11 @@ SPDX-License-Identifier: MIT-0
 `classification.modality` replace it, and a stored configuration carrying the old
 key is converted automatically on every read.
 
-**You do not need to edit anything.** This page is here so you can see what the
-conversion does, and so the two cases where it is not a pure rename are written
-down rather than discovered.
+**You do not need to edit anything to keep processing documents.** This page is
+here so you can see what the conversion does, and so the three cases where it is
+not a pure rename are written down rather than discovered. One of those — a
+holistic configuration becoming windowed — is a behaviour change you may want to
+turn off; the other two are deliberate choices that change nothing.
 
 ## What changed
 
@@ -74,10 +76,26 @@ receiving images again, and their cost would rise. If you used that workaround,
 it keeps working untouched — and you can now say the same thing explicitly with
 `modality.images: false` if you prefer the setting to the prompt edit.
 
+### ⚠️ A migrated holistic config is windowed at 20 pages
+
+`granularity: packet` brings `packet.window_pages: 20` with it, and
+`textbasedHolisticClassification` had no windowing at all: a packet either fitted
+in one call or failed. So a 30-page packet that previously went to the model in
+one request now goes as two overlapping windows whose segments are merged, and
+the boundaries it returns can differ.
+
+That is the trade the default makes deliberately — above 20 image blocks in one
+request Bedrock downscales every image to 2,000px, and a packet larger than the
+context window used to fail outright rather than being split. But it *is* a
+change, and a text-only configuration (which every holistic one was) gets the
+split without the image-resolution reason for it. **To keep the old call shape
+exactly, set `classification.packet.window_pages: 0`**, which means never window;
+a packet too large for the model then fails, as it did before.
+
 ### ⚠️ A holistic config's prompts are copied into `classification.packet`
 
-This is the one part of the conversion that is not a rename, and it exists
-because of a quirk of how the old setting worked.
+This part of the conversion is not a rename either, and it exists because of a
+quirk of how the old setting worked.
 
 `task_prompt` was a **single key shared by both methods**, and no packet-shaped
 default prompt has ever shipped in this product — not in the system defaults and
@@ -146,9 +164,18 @@ At every configuration choke point, the same places the earlier migrations run:
 It short-circuits once a config is stamped `config_format_version: "0.8"` — but
 the *trigger* is the presence of the legacy key, not the stamp. That matters
 because the merge path can produce a config stamped with the current version
-(inherited from the defaults) that still carries a legacy-shaped delta from a
-sparse custom override; keying on the stamp alone would skip such a hybrid and
-drop your setting.
+(inherited from the defaults) while still carrying the legacy key; keying on the
+stamp alone would skip it.
+
+⚠️ **For a sparse custom override, what preserves your setting is that the delta
+is migrated *before* it is merged**, not the trigger. Once a legacy delta has
+been deep-merged onto the defaults, the defaults' own `granularity: page` has
+arrived as a value, and the conversion's "an explicit setting wins" rule keeps
+it — so a holistic delta merged first and migrated second runs at page
+granularity. `merge_config_with_defaults` migrates at the top for exactly this
+reason, every live path goes through it, and the merge-first helper that did not
+(`ConfigurationReader.simple_merge`) was removed rather than left for a future
+caller to reach for.
 
 The stamp is never rewritten **backwards**. If an older release reads a
 configuration a newer one wrote, it leaves the newer stamp alone, so a later

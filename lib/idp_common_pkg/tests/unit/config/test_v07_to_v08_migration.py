@@ -312,7 +312,13 @@ class TestHolisticPromptRelocation:
 
     def test_the_relocated_prompt_is_what_the_service_resolves(self):
         """End to end: a legacy holistic config must still run ITS OWN prompt.
-        This is the assertion the whole relocation exists for."""
+        This is the assertion the whole relocation exists for.
+
+        ⚠️ **Merged with the defaults, which is what makes it an assertion.** On
+        an unmerged config `ClassificationPacketConfig.task_prompt` is `""` and
+        `_stage_prompt` falls back to the flat prompt, so this passes with the
+        relocation deleted. A real deployment is always merged, and there the
+        shipped packet prompt is present and wins."""
         from idp_common.classification.service import ClassificationService
 
         legacy = {
@@ -333,7 +339,10 @@ class TestHolisticPromptRelocation:
                 "confidence": {"mode": "off"},
             },
         }
-        service = ClassificationService(region="us-west-2", config=legacy)
+        service = ClassificationService(
+            region="us-west-2",
+            config=merge_config_with_defaults(legacy, validate=False),
+        )
         assert service.granularity == "packet"
         resolved = service._get_classification_config()
         assert resolved["task_prompt"] == PACKET_PROMPT

@@ -3252,10 +3252,9 @@ class ClassificationService:
                 )
                 return document
 
-        # Dispatch on strategy first, then on the resolved granularity (see
-        # __init__: `granularity` when set, otherwise derived from the
-        # deprecated classificationMethod). Two-stage honours granularity
-        # inside Stage A, so the two settings compose rather than nest.
+        # Dispatch on strategy first, then on granularity. Two-stage honours
+        # granularity inside Stage A, so the two settings compose rather than
+        # nest.
         if self.strategy == self.STRATEGY_TWO_STAGE:
             return self.two_stage_classify_document(document, forced_class=forced_class)
 

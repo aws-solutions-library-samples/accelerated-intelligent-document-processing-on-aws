@@ -22,7 +22,7 @@ import React from 'react';
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
-import FieldDescription, { stripInlineMarkdown } from '../FieldDescription';
+import FieldDescription, { escapeAngleBrackets, stripInlineMarkdown } from '../FieldDescription';
 
 describe('FieldDescription', () => {
   it('renders bold as an element, not as asterisks', () => {
@@ -102,5 +102,62 @@ describe('stripInlineMarkdown', () => {
 
   it('does not eat an asterisk that is not emphasis', () => {
     expect(stripInlineMarkdown('2 * 3 pages')).toBe('2 * 3 pages');
+  });
+});
+
+describe('angle-bracket tokens survive the renderer', () => {
+  /**
+   * ⚠️ These are regression cases, not hypotheticals. `SafeMarkdown` runs
+   * `rehype-raw` before `rehype-sanitize`, so before `escapeAngleBrackets` the
+   * renderer parsed `<class-confidence>` as an unknown HTML element and the
+   * sanitiser removed it — deleting exactly the token the sentence is about.
+   * Measured on the real component: "Keep the <class-confidence> wrapper"
+   * rendered as "Keep the  wrapper" and `<<CACHEPOINT>>` rendered as `<>`.
+   *
+   * Seven descriptions in `patterns/unified/template.yaml` mention
+   * `<<CACHEPOINT>>` and these tokens are the vocabulary of every prompt
+   * setting, so this is help text across every config panel rather than one
+   * field.
+   */
+  const TOKENS = [
+    'Use <<CACHEPOINT>> to mark the static prefix',
+    'Keep the <class-confidence> wrapper',
+    'Spliced before <document-ocr-data> if present',
+    'Both <page-text> and </page-text> are kept',
+  ];
+
+  for (const text of TOKENS) {
+    it(`renders ${JSON.stringify(text)} unchanged`, () => {
+      const { container } = render(<FieldDescription>{text}</FieldDescription>);
+      expect(container.textContent).toBe(text);
+    });
+  }
+
+  it('leaves a code span exactly as written', () => {
+    // Entities are literal inside a code span, so escaping there would show
+    // `&lt;` to the user. That is why the escaper splits code spans out.
+    const { container } = render(<FieldDescription>{'Write `<<CACHEPOINT>>` here'}</FieldDescription>);
+    expect(container.textContent).toBe('Write <<CACHEPOINT>> here');
+  });
+
+  it('still renders the markdown around a token', () => {
+    const { container } = render(<FieldDescription>{'**Cost.** `<<CACHEPOINT>>` caches the prefix'}</FieldDescription>);
+    expect(container.textContent).toBe('Cost. <<CACHEPOINT>> caches the prefix');
+    expect(container.querySelector('strong')).not.toBeNull();
+  });
+
+  it('escapes outside code spans only', () => {
+    expect(escapeAngleBrackets('a <b> `<c>` <d>')).toBe('a &lt;b&gt; `<c>` &lt;d&gt;');
+  });
+
+  it('leaves text with no angle brackets untouched', () => {
+    expect(escapeAngleBrackets('plain prose')).toBe('plain prose');
+  });
+
+  it('keeps the tokens in the string-only path too', () => {
+    // `headerDescription` takes a string, so these descriptions reach the user
+    // through `stripInlineMarkdown` as well — which must not lose them either.
+    expect(stripInlineMarkdown('Use `<<CACHEPOINT>>` to mark the prefix')).toBe('Use <<CACHEPOINT>> to mark the prefix');
+    expect(stripInlineMarkdown('Keep the <class-confidence> wrapper')).toBe('Keep the <class-confidence> wrapper');
   });
 });
