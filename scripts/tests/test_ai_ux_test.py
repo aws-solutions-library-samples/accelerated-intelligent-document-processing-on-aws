@@ -1294,7 +1294,7 @@ def test_chromes_own_refusals_and_the_self_test_stay_out_of_the_notes_caveats(
     while refusals.jsonl and the summary still account for every one."""
     harness.refusals += [
         _refusal("accounts.google.com:443"),
-        _refusal("http://clients2.google.com/time/1/current", "plain_http_not_allowed"),
+        _refusal("http://redirector.gvt1.com/edgedl/chrome/", "plain_http_not_allowed"),
     ]
     assert harness.main("--dry-run") == 0
     caveats = next(
@@ -1314,28 +1314,23 @@ def test_chromes_own_refusals_and_the_self_test_stay_out_of_the_notes_caveats(
     ]
 
 
-#: The refusal log of the first full dry run in the image, in its order: every
-#: record is Chrome's own or the self-test's, and none is the page's.
-_DRY_RUN_REFUSALS = (
+#: The refusal log of a run in the image under the committed flags and policy, in
+#: its order: the self-tests, then the UI's login page for a minute with text typed
+#: into a field. Every record is Chrome's own or the self-test's.
+_COMMITTED_POLICY_REFUSALS = (
     ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
-    ("CONNECT", "www.google.com:443", "host_not_allowed"),
-    ("CONNECT", "www.google.com:443", "host_not_allowed"),
+    ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
     ("CONNECT", "update.googleapis.com:443", "host_not_allowed"),
     ("GET", "http://ux-proxy-selftest.invalid/", "plain_http_not_allowed"),
-    ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
     ("GET", "http://ux-proxy-selftest.invalid/favicon.ico", "plain_http_not_allowed"),
-    ("CONNECT", "redirector.gvt1.com:443", "host_not_allowed"),
-    ("CONNECT", "passwordsleakcheck-pa.googleapis.com:443", "host_not_allowed"),
     ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
+    ("CONNECT", "redirector.gvt1.com:443", "host_not_allowed"),
     ("CONNECT", "android.clients.google.com:443", "host_not_allowed"),
+    ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
     ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
     ("CONNECT", "android.clients.google.com:443", "host_not_allowed"),
     ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
     ("CONNECT", "update.googleapis.com:443", "host_not_allowed"),
-    ("CONNECT", "android.clients.google.com:443", "host_not_allowed"),
-    ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
-    ("CONNECT", "android.clients.google.com:443", "host_not_allowed"),
-    ("CONNECT", "accounts.google.com:443", "host_not_allowed"),
 )
 
 
@@ -1343,13 +1338,13 @@ _DRY_RUN_REFUSALS = (
 def test_a_run_whose_page_was_refused_nothing_carries_no_refusal_caveat(
     harness: Harness,
 ) -> None:
-    """Replays the refusal log of the first full dry run in the image. Its calls
-    to www.google.com and to the password leak check were Chrome's own, like the
-    rest of it, and no screen needed any of them, so the note carries no refusal
-    caveat for that log while the artifact still lists every record."""
+    """Replays a refusal log measured in the image under the committed policy. All
+    of it is Chrome's own background traffic or the self-test, and no screen needed
+    any of it, so the note carries no refusal caveat for that log while the
+    artifact still lists every record."""
     harness.refusals = [
-        {"t": "2026-10-20T12:43:00Z", "method": method, "target": target, "reason": why}
-        for method, target, why in _DRY_RUN_REFUSALS
+        {"t": "2026-10-20T00:00:00Z", "method": method, "target": target, "reason": why}
+        for method, target, why in _COMMITTED_POLICY_REFUSALS
     ]
     assert harness.main("--dry-run") == 0
     caveats = next(
@@ -1360,12 +1355,47 @@ def test_a_run_whose_page_was_refused_nothing_carries_no_refusal_caveat(
     assert "egress proxy refused" not in caveats
     assert "look broken" not in caveats
     egress_summary = harness.summary()["egress"]
-    assert egress_summary["by_origin"] == {"page": 0, "browser": 17, "selftest": 2}
+    assert egress_summary["by_origin"] == {"page": 0, "browser": 11, "selftest": 2}
     listed = [
         json.loads(line) for line in harness.artifact("refusals.jsonl").splitlines()
     ]
-    assert len(listed) == len(_DRY_RUN_REFUSALS)
+    assert len(listed) == len(_COMMITTED_POLICY_REFUSALS)
     assert {record["origin"] for record in listed} == {"browser", "selftest"}
+
+
+@pytest.mark.unit
+def test_a_pages_own_request_to_a_host_chrome_no_longer_calls_is_a_caveat(
+    harness: Harness,
+) -> None:
+    """Chrome no longer calls www.google.com by itself, so a refusal of it is the
+    page's, a reCAPTCHA or an embedded map for instance, and the note says a
+    screen can look broken. A Google sign-in button from accounts.google.com still
+    reads as Chrome's, because Chrome calls that host too; refusals.jsonl is where
+    that one shows."""
+    harness.refusals += [
+        _refusal("accounts.google.com:443"),
+        _refusal("www.google.com:443"),
+        _refusal("www.google.com:443"),
+    ]
+    assert harness.main("--dry-run") == 0
+    caveats = next(
+        line
+        for line in harness.artifact("section.md").splitlines()
+        if line.startswith("**Caveats:**")
+    ).replace(section.ZERO_WIDTH_SPACE, "")
+    assert (
+        "the egress proxy refused 2 of the page's requests (`host_not_allowed` ×2)"
+        in caveats
+    )
+    assert "www.google.com" not in caveats
+    egress_summary = harness.summary()["egress"]
+    assert egress_summary["by_origin"] == {"page": 2, "browser": 1, "selftest": 1}
+    origins = {
+        record["target"]: record["origin"]
+        for record in map(json.loads, harness.artifact("refusals.jsonl").splitlines())
+    }
+    assert origins["www.google.com:443"] == "page"
+    assert origins["accounts.google.com:443"] == "browser"
 
 
 @pytest.mark.unit

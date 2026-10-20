@@ -762,10 +762,11 @@ def test_the_policy_and_flags_turn_off_what_chrome_calls_by_itself(
     ``DefaultSearchProviderEnabled`` stops the start-up query to
     ``www.google.com/async/folae``, ``PasswordLeakDetectionEnabled`` the leak check
     a submitted password sets off, and ``NetworkTimeServiceQuerying`` the
-    network-time query to clients2.google.com. The account list, the GCM check-in,
+    network-time query to clients2.google.com, so none of those hosts is in
+    :data:`chrome.BROWSER_BACKGROUND_HOSTS`. The account list, the GCM check-in,
     one component update check and the spell-check dictionary keep coming with
-    sign-in, component updates and spell check all off, which is why
-    :data:`chrome.BROWSER_BACKGROUND_HOSTS` names their hosts."""
+    sign-in, component updates and spell check all off, which is why it names
+    their hosts."""
     policy = chrome.load_policy()
     assert policy["DefaultSearchProviderEnabled"] is False
     assert policy["PasswordLeakDetectionEnabled"] is False
@@ -1147,14 +1148,18 @@ def test_a_viewport_with_no_isolated_world_is_an_error_not_a_guess() -> None:
         ({"method": "CONNECT", "target": "update.googleapis.com:443"}, "browser"),
         ({"method": "CONNECT", "target": "redirector.gvt1.com:443"}, "browser"),
         ({"method": "CONNECT", "target": "android.clients.google.com:443"}, "browser"),
-        ({"method": "CONNECT", "target": "www.google.com:443"}, "browser"),
+        (
+            {"method": "GET", "target": "http://redirector.gvt1.com/edgedl/chrome/"},
+            "browser",
+        ),
+        ({"method": "CONNECT", "target": "www.google.com:443"}, "page"),
         (
             {"method": "CONNECT", "target": "passwordsleakcheck-pa.googleapis.com:443"},
-            "browser",
+            "page",
         ),
         (
             {"method": "GET", "target": "http://clients2.google.com/time/1/current"},
-            "browser",
+            "page",
         ),
         ({"method": "CONNECT", "target": "Accounts.Google.COM.:443"}, "browser"),
         (
@@ -1184,20 +1189,44 @@ def test_each_refusal_is_labelled_as_the_selftests_chromes_or_the_pages(
     assert chrome.refusal_origin(record) == origin
 
 
+#: Hosts Chrome for Testing called by itself in the image before the flags or the
+#: policy stopped it: the network-time query, the start-up query and the password
+#: leak check. Measured with the committed policy, none of them came.
+_STOPPED_BACKGROUND_HOSTS = (
+    "clients2.google.com",
+    "www.google.com",
+    "passwordsleakcheck-pa.googleapis.com",
+)
+
+
 @pytest.mark.unit
 def test_the_hosts_chrome_calls_by_itself_are_the_ones_the_live_image_refused() -> None:
+    """Measured in the image under the committed flags and policy, on the login
+    page with text typed and on a submitted password form: these four, and no
+    other host of Chrome's own, were refused."""
     assert chrome.BROWSER_BACKGROUND_HOSTS == frozenset(
         {
             "accounts.google.com",
             "android.clients.google.com",
-            "clients2.google.com",
-            "passwordsleakcheck-pa.googleapis.com",
             "redirector.gvt1.com",
             "update.googleapis.com",
-            "www.google.com",
         }
     )
     assert chrome.SELFTEST_HOST not in chrome.BROWSER_BACKGROUND_HOSTS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("host", _STOPPED_BACKGROUND_HOSTS)
+def test_a_host_chrome_no_longer_calls_is_not_passed_off_as_chromes(host: str) -> None:
+    """Listing a host Chrome no longer calls would only ever hide the page's own
+    requests to it, a reCAPTCHA or a map from www.google.com for instance."""
+    assert host not in chrome.BROWSER_BACKGROUND_HOSTS, (
+        f"{host} is no longer called by Chrome under the committed flags and policy, "
+        "so listing it would hide only the page's own requests to it"
+    )
+    assert chrome.refusal_origin({"method": "CONNECT", "target": f"{host}:443"}) == (
+        "page"
+    )
 
 
 @pytest.mark.unit

@@ -63,15 +63,18 @@ coming whatever the flags and the policy say: the Google account list
 check-in (``android.clients.google.com/checkin``), a component update check
 (``update.googleapis.com``) at start-up and once more a minute later, and the
 spell-check dictionary, from ``redirector.gvt1.com``, when text is first typed
-into a field. The flags stop the network-time query (``clients2.google.com``), and
-the policy stops two more: ``DefaultSearchProviderEnabled`` the start-up query to
-``www.google.com/async/folae``, and ``PasswordLeakDetectionEnabled`` the leak
+into a field. The proxy refuses them, as it refuses anything unlisted, and they
+are Chrome's, not the page's: :func:`refusal_origin` labels each record of the
+refusal log ``selftest``, ``browser`` or ``page``, so the note counts only what
+the UI under test asked for, while ``refusals.jsonl`` keeps every record with its
+label. Three more were measured and are stopped: the flags stop the network-time
+query (``clients2.google.com``), and the policy the start-up query to
+``www.google.com/async/folae`` (``DefaultSearchProviderEnabled``) and the leak
 check (``passwordsleakcheck-pa.googleapis.com``) that submitting a password, the
-sign-in's included, sets off. The proxy refuses whatever still comes, as it
-refuses anything unlisted. Those refusals are Chrome's, not the page's:
-:func:`refusal_origin` labels each record of the refusal log ``selftest``,
-``browser`` or ``page``, so the note counts only what the UI under test asked for,
-while ``refusals.jsonl`` keeps every record with its label.
+sign-in's included, sets off (``PasswordLeakDetectionEnabled``). Their hosts are
+not among :data:`BROWSER_BACKGROUND_HOSTS`, since Chrome no longer calls them, so
+a refusal of one is the page's and the note counts it: a reCAPTCHA or a map
+embedded from ``www.google.com``, for instance.
 
 The viewport
 ------------
@@ -174,22 +177,19 @@ SELFTEST_HOST = "ux-proxy-selftest.invalid"
 #: 155.0.8059.84, linux-arm64). :func:`verify_viewport` says when it stops fitting.
 HEADLESS_FRAME_HEIGHT = 143
 
-#: Hosts Chrome for Testing was measured calling on its own in the image, each
-#: refused by the proxy. The account list, the GCM check-in, the component update
-#: check and the spell-check dictionary's download redirector still come under the
-#: flags and the policy; the network-time query, the ``www.google.com`` start-up
-#: query and the password leak check no longer do, and stay listed so that one
-#: that comes back still reads as Chrome's. :func:`refusal_origin` labels a
-#: refusal of any of them as the browser's own.
+#: The hosts Chrome for Testing was measured calling on its own in the image under
+#: these flags and the managed policy, each refused by the proxy: the account list,
+#: the GCM check-in, the component update check and the spell-check dictionary's
+#: download redirector. :func:`refusal_origin` labels a refusal of any of them as
+#: the browser's own, so each one also hides the page's own requests to that host
+#: from the note. A host Chrome no longer calls therefore has no place here: it
+#: would hide the page's requests and nothing else.
 BROWSER_BACKGROUND_HOSTS: frozenset[str] = frozenset(
     {
         "accounts.google.com",
         "android.clients.google.com",
-        "clients2.google.com",
-        "passwordsleakcheck-pa.googleapis.com",
         "redirector.gvt1.com",
         "update.googleapis.com",
-        "www.google.com",
     }
 )
 
@@ -691,10 +691,11 @@ def refusal_origin(record: Mapping[str, Any]) -> str:
     exactly, after lowercasing and dropping a trailing dot, for a CONNECT target
     (``host:port``) and an absolute plain-HTTP URL alike, so a page cannot pass its
     own request off as Chrome's with a host that merely ends like one of those. A
-    page that asks for one of those hosts itself, Google sign-in or Google Search
-    for instance, is labelled ``browser`` all the same, because the proxy sees only
-    the host of a tunnel, never who asked for it. So whatever reports only ``page``
-    refusals has to leave ``refusals.jsonl`` holding every record.
+    page that asks for one of those hosts itself, Google sign-in from
+    ``accounts.google.com`` for instance, is labelled ``browser`` all the same,
+    because the proxy sees only the host of a tunnel, never who asked for it. That
+    is why the list holds only hosts Chrome still calls, and why whatever reports
+    only ``page`` refusals has to leave ``refusals.jsonl`` holding every record.
     """
     target = record.get("target")
     host = _target_host(target) if isinstance(target, str) else None

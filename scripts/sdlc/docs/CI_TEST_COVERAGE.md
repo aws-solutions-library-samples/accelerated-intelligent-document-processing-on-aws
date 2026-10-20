@@ -546,9 +546,12 @@ treats that file as diagnostics only.
   opened without following a link or waiting on a pipe, and bounded in size. The note's caveats count only what
   the page itself caused to be refused, and say nothing of the rest. The proxy sees
   only a tunnel's host, so Chrome's own background requests are told apart by host,
-  against the hosts Chrome for Testing was measured calling by itself
-  (`chrome.BROWSER_BACKGROUND_HOSTS`); they and the proxy self-test are counted apart
-  in `summary.json` (`egress.by_origin`), and `refusals.jsonl` gives every record its
+  against the four hosts Chrome for Testing was measured still calling by itself
+  under the flags and the policy (`chrome.BROWSER_BACKGROUND_HOSTS`). A page's own
+  request to one of those four is counted as Chrome's too, which is why the list
+  holds no host Chrome has stopped calling; a request to any other host is the
+  page's. Chrome's requests and the proxy self-test are counted apart in
+  `summary.json` (`egress.by_origin`), and `refusals.jsonl` gives every record its
   `origin`.
 - The managed policy (`scripts/ux_runner/chrome_policy.json`) and the Chrome flags
   fix that proxy, block `file://`, `chrome://` and `devtools://`, and turn off
