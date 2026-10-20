@@ -92,8 +92,8 @@ Notes:
 - **Config-version scope denials are IN-BAND:** the configuration & sync
   resolvers return `{success:false, error:{type:"Unauthorized"}}` with **HTTP
   200** (NOT a 403). The harness treats an in-band `Unauthorized` as a denial.
-- **6 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Annotator(3) >
-  Viewer(4) > QueueReviewer(5), defined in `template.yaml`. That template is where the group
+- **5 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Annotator(3) >
+  Viewer(4), defined in `template.yaml`. That template is where the group
   vocabulary lives — `generate_api_rbac_manifest.py` reads it to resolve
   `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
   ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in

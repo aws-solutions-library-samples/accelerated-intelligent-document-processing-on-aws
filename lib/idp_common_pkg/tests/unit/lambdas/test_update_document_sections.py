@@ -791,13 +791,13 @@ class TestAnnotatorObjectScope:
 
 
 @pytest.mark.unit
-class TestQueueReviewerRefused:
-    """A QueueReviewer-only caller works review queues, not these operations (FR-25)."""
+class TestUnknownGroupRefused:
+    """A caller in none of the operation's groups is refused before any write."""
 
-    def test_update_document_sections_refuses_queue_reviewer(self, resolver):
+    def test_update_document_sections_refuses_an_unknown_group(self, resolver):
         document = _document(resolver, [_section(resolver, "1", [1], "Invoice")])
         event = _event(
-            sections=[{"sectionId": "1", "pageIds": ["1"]}], groups=("QueueReviewer",)
+            sections=[{"sectionId": "1", "pageIds": ["1"]}], groups=("SomeOtherGroup",)
         )
 
         with pytest.raises(PermissionError, match="updateDocumentSections"):

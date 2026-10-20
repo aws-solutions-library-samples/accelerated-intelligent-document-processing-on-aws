@@ -1088,7 +1088,7 @@ endif
 # Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
 # End-to-end review-queue check against a DEPLOYED stack: routes a sample document
 # under a temporary profile, claims it, saves a draft and completes it through
-# the REST API with a real QueueReviewer ID token, then waits for the finalize
+# the REST API with a real Annotator ID token, then waits for the finalize
 # run and the final review status object. Creates and removes a temporary
 # profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
 # and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.

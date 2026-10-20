@@ -5,8 +5,7 @@
 
 It used to map every non-Admin persona to Reviewer, so an Author, Annotator or
 Viewer created or changed in User Management could become a Reviewer. An unknown
-persona now gets no group at all, and that includes the retired QueueReviewer
-persona, which has no Cognito group behind it.
+persona now gets no group at all.
 """
 
 import logging
@@ -73,7 +72,7 @@ class TestPersonaGroups:
         user_sync.handle_user_created({"dynamodb": {"NewImage": _image(persona)}})
         cognito.assert_no_pending_responses()
 
-    @pytest.mark.parametrize("persona", ["Ghost", "QueueReviewer"])
+    @pytest.mark.parametrize("persona", ["Ghost", "Unknown"])
     def test_unknown_persona_gets_no_group(self, cognito, caplog, persona):
         _expect_create(cognito)
         with caplog.at_level(logging.WARNING):

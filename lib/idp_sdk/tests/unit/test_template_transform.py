@@ -275,7 +275,6 @@ def test_real_template_headless_ui_surface_fully_removed():
         "Agent table": "AgentTable",
         "Feature platform stack": "FeaturePlatformStack",
         "Inbox table": "NotificationsTable",
-        "QueueReviewer group": "QueueReviewerGroup",
         "Review queue table": "HITLTable",
     }
     still_present = {
@@ -287,9 +286,6 @@ def test_real_template_headless_ui_surface_fully_removed():
     )
 
     assert "HITLTableName" not in result.get("Outputs", {})
-
-    # The QueueReviewer IdP mapping parameter goes with the user pool.
-    assert "ExternalIdPQueueReviewerGroupName" not in result.get("Parameters", {})
 
     # The Inbox table's output goes with the table.
     assert "NotificationsTableName" not in result.get("Outputs", {}), (

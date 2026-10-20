@@ -267,10 +267,6 @@ the queue's name, then the document, and the queue links back to its page.
    [extraction-and-confidence.md](./extraction-and-confidence.md)), but not routing.
    Without confidence scoring, only BDA's blueprint confidence can queue a document.
 
-⚠️ Configuration Profiles no longer carry review-queue settings. A saved profile
-that still has a `hitl.review_queues` block loads as before, and the block is
-ignored and dropped when the configuration is read.
-
 Turning the Default queue off stops new documents from being queued; items already
 in review stay there and can be finished. Headless deployments have no review queue
 resources and always use the legacy HITL flow.

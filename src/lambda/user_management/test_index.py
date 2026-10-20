@@ -256,16 +256,21 @@ class TestPersonaPrecedence:
         assert index._determine_persona_from_groups(groups) == "Annotator"
 
 
-class TestQueueReviewerRetired:
-    """QueueReviewer was retired with the review-queue redesign (Annotators work
-    production and Test Studio queues): no Cognito group backs it, so it must not
-    be a persona User Management can grant or infer."""
+class TestUnknownPersona:
+    """Only the five Cognito groups are personas: anything else can be neither
+    granted nor inferred by User Management."""
 
-    def test_queue_reviewer_is_not_a_valid_persona(self):
+    def test_the_personas_are_exactly_the_five_groups(self):
         index = _load_index()
-        assert "QueueReviewer" not in index.VALID_PERSONAS
+        assert set(index.VALID_PERSONAS) == {
+            "Admin",
+            "Author",
+            "Reviewer",
+            "Annotator",
+            "Viewer",
+        }
 
-    def test_creating_a_queue_reviewer_is_refused_before_any_write(self, users_table):
+    def test_creating_an_unknown_persona_is_refused_before_any_write(self, users_table):
         index = _load_index()
         with (
             patch.object(index, "sync_user_to_cognito") as sync,
@@ -280,19 +285,17 @@ class TestQueueReviewerRetired:
                 },
             ),
         ):
-            with pytest.raises(ValueError, match="Invalid persona: QueueReviewer"):
-                index.create_user(
-                    {"email": "qr@example.com", "persona": "QueueReviewer"}
-                )
+            with pytest.raises(ValueError, match="Invalid persona: Ghost"):
+                index.create_user({"email": "ghost@example.com", "persona": "Ghost"})
         sync.assert_not_called()
         assert users_table.scan()["Items"] == []
 
-    def test_a_stray_queue_reviewer_group_confers_no_persona(self):
+    def test_a_stray_unknown_group_confers_no_persona(self):
         index = _load_index()
         pick = index._determine_persona_from_cognito_groups
-        assert pick(["Annotator", "QueueReviewer"]) == "Annotator"
-        assert pick(["QueueReviewer", "Reviewer"]) == "Reviewer"
-        objects = [{"GroupName": "Annotator"}, {"GroupName": "QueueReviewer"}]
+        assert pick(["Annotator", "Ghost"]) == "Annotator"
+        assert pick(["Ghost", "Reviewer"]) == "Reviewer"
+        objects = [{"GroupName": "Annotator"}, {"GroupName": "Ghost"}]
         assert index._determine_persona_from_groups(objects) == "Annotator"
 
 

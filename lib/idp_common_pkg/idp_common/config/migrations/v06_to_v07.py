@@ -3,8 +3,7 @@
 
 """Config migration v0.6 -> v0.7: relocate the validation block.
 
-``extraction.agentic.validation`` becomes ``extraction.validation``, and the
-retired per-profile ``hitl.review_queues`` block is dropped.
+``extraction.agentic.validation`` becomes ``extraction.validation``.
 
 Why it moves: the block configures full JSON-Schema validation of an extraction
 result and the optional model escalation that follows a failure. That was
@@ -18,12 +17,7 @@ kept as a live alias. Two readable homes for one setting is a bug factory: a
 config carrying both would have a silent precedence rule, and every future reader
 would have to know about it.
 
-``hitl.review_queues`` is dropped because production review queues are
-configured in HITL › Queue Management: routing follows the Default queue's
-Enabled switch and confidence threshold, so a profile's block has no effect and
-a saved configuration that still carries it must keep loading.
-
-Deliberately narrow: this migration touches nothing but those two blocks. It does
+Deliberately narrow: this migration touches nothing but that one block. It does
 not reshape, rename, or default anything else, so it is safe to apply on every
 read of both full configs and sparse override deltas.
 """
@@ -39,16 +33,8 @@ logger = logging.getLogger(__name__)
 TARGET_VERSION = "0.7"
 
 
-def _has_retired_review_queues(config: Dict[str, Any]) -> bool:
-    """True if the config still carries the retired ``hitl.review_queues`` block."""
-    hitl = config.get("hitl")
-    return isinstance(hitl, dict) and "review_queues" in hitl
-
-
 def _has_legacy_markers(config: Dict[str, Any]) -> bool:
-    """True if the config still carries a legacy location.
-
-    That is ``extraction.agentic.validation`` or ``hitl.review_queues``.
+    """True if the config still carries ``extraction.agentic.validation``.
 
     This is the load-bearing trigger, not the version stamp. The deep-merge path
     can produce a dict stamped with the CURRENT version (inherited from the full
@@ -57,8 +43,6 @@ def _has_legacy_markers(config: Dict[str, Any]) -> bool:
     drop the user's setting — the same P0 class of bug that
     ``test_merge_migration_order.py`` was written to pin for v0.5 -> v0.6.
     """
-    if _has_retired_review_queues(config):
-        return True
     extraction = config.get("extraction")
     if not isinstance(extraction, dict):
         return False
@@ -116,13 +100,6 @@ def migrate_v06_to_v07(config: Dict[str, Any]) -> Dict[str, Any]:
             if not agentic:
                 extraction.pop("agentic", None)
             result["extraction"] = extraction
-
-    if _has_retired_review_queues(result):
-        result["hitl"].pop("review_queues", None)
-        logger.info(
-            "Dropped hitl.review_queues: review queues are configured in "
-            "HITL › Queue Management"
-        )
 
     # Never DOWNGRADE the stamp. Reaching here with a newer stamp means an older
     # release is reading a configuration written by a newer one (a rollback), and

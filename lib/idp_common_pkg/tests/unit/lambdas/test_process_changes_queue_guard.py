@@ -45,7 +45,7 @@ def _event(groups):
 
 
 @pytest.mark.unit
-class TestQueueReviewerRefused:
-    def test_queue_reviewer_only_is_refused(self, resolver):
+class TestUnknownGroupRefused:
+    def test_a_caller_in_no_review_group_is_refused(self, resolver):
         with pytest.raises(PermissionError, match="processChanges"):
-            resolver.handler(_event(["QueueReviewer"]), None)
+            resolver.handler(_event(["SomeOtherGroup"]), None)

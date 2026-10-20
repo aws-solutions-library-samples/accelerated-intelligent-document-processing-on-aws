@@ -6,7 +6,7 @@
 Each case runs the real handler in ``patterns/unified/src/processresults_function``
 and compares its response and every ``update_document`` write with a golden
 captured from the handler **before** the review-queues change. With
-``hitl.review_queues.enabled`` false (the default) the handler must produce
+the Default review queue disabled (the default) the handler must produce
 exactly what it did, and must never touch the review store.
 
 Frozen or dropped values: none. The handler's only clock read is inside
