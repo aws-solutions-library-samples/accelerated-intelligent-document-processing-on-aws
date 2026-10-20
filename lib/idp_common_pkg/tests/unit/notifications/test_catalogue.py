@@ -102,3 +102,48 @@ class TestRegisterTypeGuard:
                         offenders.append(f"{path}:{node.lineno}")
         assert scanned > 100, "the guard scanned too few files to mean anything"
         assert offenders == [], offenders
+
+
+def _posted_type_ids() -> dict[str, list[str]]:
+    """Every ``type_id="..."`` literal passed in production code, with its sites."""
+    posted: dict[str, list[str]] = {}
+    for root in _SCANNED_ROOTS:
+        for path in root.rglob("*.py"):
+            if "tests" in path.parts or path == _CATALOGUE:
+                continue
+            if "node_modules" in path.parts or ".aws-sam" in path.parts:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if (
+                        kw.arg == "type_id"
+                        and isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, str)
+                    ):
+                        posted.setdefault(kw.value.value, []).append(
+                            f"{path.relative_to(_REPO_ROOT)}:{node.lineno}"
+                        )
+    return posted
+
+
+@pytest.mark.unit
+class TestCatalogueMatchesProducers:
+    """Inbox settings list the catalogue, so it must name exactly what code posts."""
+
+    def test_every_catalogued_type_has_a_producer(self):
+        posted = _posted_type_ids()
+        unposted = sorted(t.id for t in PLATFORM_TYPES if t.id not in posted)
+        assert unposted == [], f"catalogued but never posted: {unposted}"
+
+    def test_every_posted_type_is_catalogued(self):
+        catalogued = {t.id for t in PLATFORM_TYPES}
+        posted = _posted_type_ids()
+        assert posted, "the scan found no producers at all"
+        unknown = {k: v for k, v in posted.items() if k not in catalogued}
+        assert unknown == {}, f"posted but not catalogued: {unknown}"

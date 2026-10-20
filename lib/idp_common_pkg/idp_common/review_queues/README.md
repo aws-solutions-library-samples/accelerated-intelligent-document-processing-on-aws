@@ -211,13 +211,15 @@ always wins.
 
 ## Notifications
 
-Inbox messages (see [notifications](../notifications/README.md)) use the types
-`review.queue_items_waiting` (debounced per queue, 10 minutes),
-`review.item_reassigned` (assigned to you), `review.claim_released` (unassigned),
-`review.task_reminder` (still to complete). `review.item_escalated` stays in the
-catalogue for messages already sent; nothing posts it. Only
-Annotators have an Inbox, so arrivals in a queue are announced to nobody
-(`QueueDirectory.members` returns no recipients); Admins see waiting work in
+Inbox messages (see [notifications](../notifications/README.md)) that reach an
+Annotator are `review.item_reassigned` (an Admin assigned an item or Test Studio
+document to you), `review.claim_released` (an item you hold was unassigned,
+reassigned or moved, or an Admin completed, rejected or removed it) and
+`review.task_reminder` (still open after the queue's time limit, once per
+assignment). The producers `review.queue_items_waiting` (debounced per queue, 10
+minutes), `review.claim_expiring` and `review.claim_expired` exist but send nothing in
+this release: arrivals in a queue are announced to nobody (`QueueDirectory.members`
+returns no recipients) and assignments do not expire. Admins see waiting work in
 Queue Management, whose counts (pending, assigned, in progress, annotators) come from
 `getReviewQueuesOverview` for production queues and from the test sets' metadata
 (`store_assigned_count`) for Test Studio queues. Links point at

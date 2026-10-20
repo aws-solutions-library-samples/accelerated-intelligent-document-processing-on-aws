@@ -715,9 +715,20 @@ the cap is reached, the oldest read messages are removed first. Administrators s
 both in the configuration — see
 [Inbox message retention](configuration.md#inbox-message-retention).
 
-This release sends no message types, so the Inbox and its settings stay empty
-until a feature such as HITL review queues posts messages. Developers posting
-messages should read the
+**What arrives in the Inbox.** HITL review queues post three kinds of message to the
+Annotator concerned, for production items and Test Studio documents alike:
+
+| Type (Inbox settings) | Sent when |
+|---|---|
+| **Review item assigned to you** | An Admin assigns an item or document to you. |
+| **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
+| **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+
+Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
+**Review claim expired**. This release does not send them: arrivals in a queue are
+announced to nobody (Admins see waiting work in Queue Management), and assignments do
+not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+posting messages should read the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
 ## Feedback & Issue Reporting

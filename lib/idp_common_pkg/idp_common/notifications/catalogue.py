@@ -25,14 +25,8 @@ PLATFORM_TYPES: tuple[NotificationType, ...] = (
     NotificationType(
         id="review.item_reassigned",
         display_name="Review item assigned to you",
-        description="An Admin assigned a review queue item to you.",
+        description="An Admin assigned a review queue item or Test Studio document to you.",
         default_severity="info",
-    ),
-    NotificationType(
-        id="review.item_escalated",
-        display_name="Review item escalated",
-        description="A reviewer escalated a review queue item to a queue you work.",
-        default_severity="warning",
     ),
     NotificationType(
         id="review.claim_released",
@@ -58,12 +52,6 @@ PLATFORM_TYPES: tuple[NotificationType, ...] = (
         id="review.task_reminder",
         display_name="Task reminder",
         description="A document assigned to you is still open after its time limit.",
-        default_severity="info",
-    ),
-    NotificationType(
-        id="review.queue_assigned",
-        display_name="Assigned to a review queue",
-        description="An Admin assigned you to a review queue or test set, with how many documents need review.",
         default_severity="info",
     ),
 )
