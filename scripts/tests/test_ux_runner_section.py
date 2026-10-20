@@ -1056,7 +1056,7 @@ def test_the_refusal_caveat_counts_only_what_the_page_was_refused() -> None:
 
     caveat = section.refusal_caveat(records, background=background)
     assert caveat == (
-        "the egress proxy refused 5 of the browser's requests (`host_not_allowed` "
+        "the egress proxy refused 5 of the page's requests (`host_not_allowed` "
         "×3, `other` ×1, `plain_http_not_allowed` ×1), so a screen that needed one "
         "can look broken; `refusals.jsonl` in the job's artifacts lists them"
     )

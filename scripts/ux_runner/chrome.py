@@ -20,11 +20,11 @@ How it is confined
   where Chrome reads it and checked here before launch (:func:`policy_installed`).
   It repeats the proxy settings, which a policy holds against anything a page or
   a flag could change, and adds what flags cannot say: ``file://``, ``chrome://``
-  and ``devtools://`` blocked, and downloads, extensions, password saving,
-  DNS-over-HTTPS, browser sign-in, component updates and the spell-check
-  dictionary download off. ``chrome://`` matters because chrome-devtools-mcp's own
-  navigation allows ``chrome://inspect``, whose network-target discovery opens
-  sockets that do not use the proxy.
+  and ``devtools://`` blocked, and downloads, extensions, password saving and
+  leak checks, DNS-over-HTTPS, browser sign-in, component updates, spell check
+  and the default search provider off. ``chrome://`` matters because
+  chrome-devtools-mcp's own navigation allows ``chrome://inspect``, whose
+  network-target discovery opens sockets that do not use the proxy.
 * **A uid of its own.** Chrome runs as ``uxbrowser``, the proxy as ``uxproxy``.
   ``--no-sandbox`` is required, because the default Docker executor offers neither
   a setuid sandbox nor user namespaces, so the uid, the proxy, the policy and the
@@ -55,13 +55,22 @@ not honour stops the run instead of leaving a browser that merely looks confined
 
 What Chrome asks for by itself
 ------------------------------
-Whatever page is loaded, Chrome for Testing calls a few Google hosts on its own
-(account sign-in, component updates and their download redirector, the GCM
-check-in, the network-time query). The policy and flags switch off what they can
-of that, and the proxy refuses whatever is left, as it refuses anything unlisted. Those
-refusals are Chrome's, not the page's: :func:`refusal_origin` labels each record
-of the refusal log ``selftest``, ``browser`` or ``page``, so the note can report
-only what the UI under test asked for, while ``refusals.jsonl`` keeps every record.
+Whatever page is loaded, Chrome for Testing 155 makes requests of its own.
+Measured in the image with no sign-in, and named from Chrome's NetLog, four keep
+coming whatever the flags and the policy say: the Google account list
+(``accounts.google.com/ListAccounts``, retried with a growing backoff), the GCM
+check-in (``android.clients.google.com/checkin``), a component update check
+(``update.googleapis.com``) at start-up and once more a minute later, and the
+spell-check dictionary, from ``redirector.gvt1.com``, when text is first typed
+into a field. The flags stop the network-time query (``clients2.google.com``), and
+the policy stops two more: ``DefaultSearchProviderEnabled`` the start-up query to
+``www.google.com/async/folae``, and ``PasswordLeakDetectionEnabled`` the leak
+check (``passwordsleakcheck-pa.googleapis.com``) that submitting a password, the
+sign-in's included, sets off. The proxy refuses whatever still comes, as it
+refuses anything unlisted. Those refusals are Chrome's, not the page's:
+:func:`refusal_origin` labels each record of the refusal log ``selftest``,
+``browser`` or ``page``, so the note counts only what the UI under test asked for,
+while ``refusals.jsonl`` keeps every record with its label.
 
 The viewport
 ------------
@@ -160,18 +169,22 @@ SELFTEST_HOST = "ux-proxy-selftest.invalid"
 #: 155.0.8059.84, linux-arm64). :func:`verify_viewport` says when it stops fitting.
 HEADLESS_FRAME_HEIGHT = 143
 
-#: Hosts Chrome for Testing called on its own in a live run of the image, each
-#: refused by the proxy: account sign-in, the GCM check-in, the network-time query,
-#: and component updates with the redirector their downloads (the spell-check
-#: dictionary's among them) come from. :func:`refusal_origin` labels a refusal of
-#: any of them as the browser's own.
+#: Hosts Chrome for Testing was measured calling on its own in the image, each
+#: refused by the proxy. The account list, the GCM check-in, the component update
+#: check and the spell-check dictionary's download redirector still come under the
+#: flags and the policy; the network-time query, the ``www.google.com`` start-up
+#: query and the password leak check no longer do, and stay listed so that one
+#: that comes back still reads as Chrome's. :func:`refusal_origin` labels a
+#: refusal of any of them as the browser's own.
 BROWSER_BACKGROUND_HOSTS: frozenset[str] = frozenset(
     {
         "accounts.google.com",
         "android.clients.google.com",
         "clients2.google.com",
+        "passwordsleakcheck-pa.googleapis.com",
         "redirector.gvt1.com",
         "update.googleapis.com",
+        "www.google.com",
     }
 )
 
@@ -665,9 +678,10 @@ def refusal_origin(record: Mapping[str, Any]) -> str:
     exactly, after lowercasing and dropping a trailing dot, for a CONNECT target
     (``host:port``) and an absolute plain-HTTP URL alike, so a page cannot pass its
     own request off as Chrome's with a host that merely ends like one of those. A
-    page that asks for one of those hosts itself, Google sign-in for instance, is
-    labelled ``browser`` all the same, so whatever reports only ``page`` refusals
-    has to leave ``refusals.jsonl`` holding every record.
+    page that asks for one of those hosts itself, Google sign-in or Google Search
+    for instance, is labelled ``browser`` all the same, because the proxy sees only
+    the host of a tunnel, never who asked for it. So whatever reports only ``page``
+    refusals has to leave ``refusals.jsonl`` holding every record.
     """
     target = record.get("target")
     host = _target_host(target) if isinstance(target, str) else None

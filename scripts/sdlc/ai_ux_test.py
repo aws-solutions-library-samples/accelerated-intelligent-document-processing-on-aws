@@ -2167,7 +2167,8 @@ class _Run:
         Read after the proxy has exited, because it writes its stats on SIGTERM.
         The summary also counts the refusals by whose request each was
         (``chrome.refusal_origin``), so the page's own stand apart from Chrome's
-        background traffic and the self-test; ``refusals.jsonl`` keeps every one.
+        background traffic and the self-test; ``refusals.jsonl`` keeps every one,
+        each with that ``origin`` beside the proxy's own fields.
         Both files are the proxy's, read back as such, and each is judged alone:
         one that is refused is left out and a line says why, because the cleanup
         this runs in reports only an exception's type, and the other is copied all
@@ -2191,7 +2192,11 @@ class _Run:
         else:
             copied["by_origin"] = _refusal_origins(records)
             lines = [
-                json.dumps(self.scrub.tree(r), ensure_ascii=False) for r in records
+                json.dumps(
+                    self.scrub.tree({**r, "origin": chrome.refusal_origin(r)}),
+                    ensure_ascii=False,
+                )
+                for r in records
             ]
             self._write("refusals.jsonl", "".join(line + "\n" for line in lines))
         self.summary["egress"] = copied

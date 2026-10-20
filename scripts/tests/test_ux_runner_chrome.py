@@ -282,11 +282,13 @@ def test_the_managed_policy_is_exactly_the_documented_one() -> None:
         "MetricsReportingEnabled": False,
         "SafeBrowsingProtectionLevel": 0,
         "SearchSuggestEnabled": False,
+        "DefaultSearchProviderEnabled": False,
         "SyncDisabled": True,
         "BrowserSignin": 0,
         "ComponentUpdatesEnabled": False,
         "SpellcheckEnabled": False,
         "PasswordManagerEnabled": False,
+        "PasswordLeakDetectionEnabled": False,
         "AutofillAddressEnabled": False,
         "AutofillCreditCardEnabled": False,
         "TranslateEnabled": False,
@@ -756,11 +758,17 @@ def test_the_policy_blocks_every_scheme_the_browser_could_be_driven_out_by() -> 
 def test_the_policy_and_flags_turn_off_what_chrome_calls_by_itself(
     tmp_path: Path,
 ) -> None:
-    """Each was refused by the proxy in a live run of the image: sign-in hits
-    accounts.google.com, component updates update.googleapis.com and the
-    redirector, the spell-check dictionary the redirector too, and the network
-    time query clients2.google.com."""
+    """Measured in the image, before and after, with the proxy refusing them:
+    ``DefaultSearchProviderEnabled`` stops the start-up query to
+    ``www.google.com/async/folae``, ``PasswordLeakDetectionEnabled`` the leak check
+    a submitted password sets off, and ``NetworkTimeServiceQuerying`` the
+    network-time query to clients2.google.com. The account list, the GCM check-in,
+    one component update check and the spell-check dictionary keep coming with
+    sign-in, component updates and spell check all off, which is why
+    :data:`chrome.BROWSER_BACKGROUND_HOSTS` names their hosts."""
     policy = chrome.load_policy()
+    assert policy["DefaultSearchProviderEnabled"] is False
+    assert policy["PasswordLeakDetectionEnabled"] is False
     assert policy["BrowserSignin"] == 0
     assert policy["ComponentUpdatesEnabled"] is False
     assert policy["SpellcheckEnabled"] is False
@@ -1139,6 +1147,11 @@ def test_a_viewport_with_no_isolated_world_is_an_error_not_a_guess() -> None:
         ({"method": "CONNECT", "target": "update.googleapis.com:443"}, "browser"),
         ({"method": "CONNECT", "target": "redirector.gvt1.com:443"}, "browser"),
         ({"method": "CONNECT", "target": "android.clients.google.com:443"}, "browser"),
+        ({"method": "CONNECT", "target": "www.google.com:443"}, "browser"),
+        (
+            {"method": "CONNECT", "target": "passwordsleakcheck-pa.googleapis.com:443"},
+            "browser",
+        ),
         (
             {"method": "GET", "target": "http://clients2.google.com/time/1/current"},
             "browser",
@@ -1153,6 +1166,8 @@ def test_a_viewport_with_no_isolated_world_is_an_error_not_a_guess() -> None:
             "page",
         ),
         ({"method": "CONNECT", "target": "fonts.googleapis.com:443"}, "page"),
+        ({"method": "CONNECT", "target": "google.com:443"}, "page"),
+        ({"method": "CONNECT", "target": "maps.google.com:443"}, "page"),
         (
             {"method": "GET", "target": "http://169.254.169.254/latest/meta-data/"},
             "page",
@@ -1176,8 +1191,10 @@ def test_the_hosts_chrome_calls_by_itself_are_the_ones_the_live_image_refused() 
             "accounts.google.com",
             "android.clients.google.com",
             "clients2.google.com",
+            "passwordsleakcheck-pa.googleapis.com",
             "redirector.gvt1.com",
             "update.googleapis.com",
+            "www.google.com",
         }
     )
     assert chrome.SELFTEST_HOST not in chrome.BROWSER_BACKGROUND_HOSTS

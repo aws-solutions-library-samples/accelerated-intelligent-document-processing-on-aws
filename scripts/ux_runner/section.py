@@ -502,14 +502,15 @@ def caveats_for(change: ui_change.UiChange, stack: StackFacts) -> list[str]:
 def refusal_caveat(
     refusals: Iterable[object], *, background: Callable[[str], bool] | None = None
 ) -> str | None:
-    """The caveat for what the egress proxy refused the browser, or None.
+    """The caveat for what the egress proxy refused the page, or None.
 
     ``refusals`` are the proxy's refusal records, as ``egress.read_refusals``
     returns them. ``background`` is given each record's target and says whether
     it is one the MR has no part in: the browser's own background traffic, and
     the harness's own proxy self-test, both refused by design. Those are left
-    out, so the caveat appears only when something the page needed was refused,
-    which is what a reader weighs a broken-looking screen against.
+    out and not mentioned at all, so the caveat appears only when something the
+    page asked for was refused, which is what a reader weighs a broken-looking
+    screen against, and the count it gives is the page's alone.
 
     Only a count per reason reaches the note, never a target. The page chooses
     what it asks for, so a target is text the MR's author wrote, and a host name
@@ -535,7 +536,7 @@ def refusal_caveat(
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     shown = ", ".join(f"`{reason}` ×{count}" for reason, count in ranked)
     return (
-        f"the egress proxy refused {sum(counts.values())} of the browser's "
+        f"the egress proxy refused {sum(counts.values())} of the page's "
         f"requests ({shown}), so a screen that needed one can look broken; "
         "`refusals.jsonl` in the job's artifacts lists them"
     )
