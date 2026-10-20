@@ -115,8 +115,15 @@ function appendBboxBlock(core: string, bboxBlock: string): string {
 
 // ─── Classification prompt resolution ────────────────────────────────────────
 //
-// Mirrors `ClassificationService._stage_prompt`, `_apply_modality_to_prompt` and
-// `_compose_class_confidence_prompt`. The preview has to do all three, because
+// ⚠️ This is a TypeScript reimplementation of Python prompt assembly, so it can
+// drift from what is actually sent. Each helper below names the function it
+// mirrors; both live in `lib/idp_common_pkg/idp_common/classification/` —
+// `service.py` (`_stage_prompt`, `_apply_modality_to_prompt`, `_strip_placeholder`)
+// and `class_confidence.py` (`append_class_confidence_block`, `_SPLICE_MARKERS`,
+// `resolve_top_k`). **Change one, change the other**, and prefer adding a case to
+// the tests beside this file over reasoning about whether they still agree.
+//
+// The preview has to do all three, because
 // the prompt a classification call actually sends is a function of FOUR settings
 // (granularity, strategy, modality, confidence.mode) and showing the raw
 // `classification.task_prompt` means showing a prompt that will not be sent —

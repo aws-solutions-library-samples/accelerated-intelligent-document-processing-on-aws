@@ -2021,7 +2021,8 @@ class ClassificationConfig(BaseModel):
     )
     contextPagesCount: int = Field(
         default=0,
-        description="Number of pages before/after target page to include as context for multimodalPageLevelClassification. "
+        description="Number of pages before/after target page to include as context. "
+        "Applies to granularity 'page' only. "
         "0=no context (default), 1=include 1 page on each side, 2=include 2 pages on each side.",
     )
     enforceValidClasses: bool = Field(
@@ -2029,7 +2030,7 @@ class ClassificationConfig(BaseModel):
         description="When True, validate the predicted class against the configured "
         "class vocabulary and retry (re-prompting the model) on out-of-vocabulary "
         "predictions. When False, an out-of-vocabulary prediction is logged and used "
-        "as-is (legacy behavior). Applies to multimodalPageLevelClassification.",
+        "as-is (legacy behavior). Applies to granularity 'page'.",
     )
     maxValidationRetries: int = Field(
         default=2,

@@ -1075,9 +1075,9 @@ Resources:
                 collapsible: false
                 # Both flags default to empty, and the form deletes an object
                 # once its last field is cleared — so this group's key is often
-                # absent from a stored configuration, and without this it is
-                # invisible with both settings unreachable.
-                renderWhenAbsent: true
+                # absent from a stored configuration. `sectionLabel` is what
+                # makes the group render anyway; see the renderField note in
+                # ConfigBuilder.tsx. Nothing extra is needed here.
                 description: "What each call sees. Applies to both granularities. Leave a flag empty to infer it from the Task prompt's placeholders. Both off is refused when you save."
                 order: 0.1
                 properties:

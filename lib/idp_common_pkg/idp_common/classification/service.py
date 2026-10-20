@@ -296,12 +296,11 @@ class ClassificationService:
             packet_cfg = self.config.classification.packet
             logger.info(
                 "Using PACKET classification granularity (text=%s, images=%s, "
-                "window_pages=%s, overlap_pages=%s)%s",
+                "window_pages=%s, overlap_pages=%s)",
                 send_text,
                 send_images,
                 packet_cfg.window_pages or "unwindowed",
                 packet_cfg.overlap_pages,
-                "",
             )
         else:
             logger.info(
