@@ -7955,9 +7955,8 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
-        # and Rich would read that as a style tag and drop it -- leaving the user told
-        # to `pip install idp_common`, which is already installed. The constant is
+        # `escape`, because INSTALL_HINT is shared text and Rich reads any `[...]` in
+        # it (a pip extra, say) as a style tag and silently drops it. The constant is
         # shared with consumers that do not render through Rich (the bootstrap
         # module, the capability field), so the escape belongs at this call site
         # rather than in the constant.

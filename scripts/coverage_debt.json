@@ -81,6 +81,7 @@
         "idp_common/agents/quick_start/tools/bootstrap_tools.py": 59.18,
         "idp_common/agents/sample_calculator/__init__.py": 100.0,
         "idp_common/agents/sample_calculator/agent.py": 100.0,
+        "idp_common/agents/sample_calculator/calculator_tool.py": 100.0,
         "idp_common/agents/utils/__init__.py": 100.0,
         "idp_common/agents/utils/conversation_manager.py": 23.64,
         "idp_common/agents/utils/memory_provider.py": 97.3,

@@ -46,8 +46,7 @@ StatusCallback = Callable[[float, str], None]
 # CLI, the agent, and the GraphQL capability field all give the same message.
 INSTALL_HINT = (
     "The synthetic document generator is not installed. Install it with "
-    "`pip install seed-data` (or `idp_common[synthesis-generator]`), or in a "
-    "deployed stack set the "
+    "`pip install seed-data`, or in a deployed stack set the "
     "`EnableConfigBootstrap` parameter to true (requires an AgentCore Runtime "
     "in a supported region). Schema authoring and config creation still work "
     "without it; you can also upload your own example documents to build a "
