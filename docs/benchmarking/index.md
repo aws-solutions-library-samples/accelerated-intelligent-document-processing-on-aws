@@ -320,6 +320,45 @@ The separation is the number to read first on a model this cheap: high
 ones is worse for a user than lower accuracy with an honest confidence, because the
 escalation path acts on the number.
 
+#### Comparing classification *configurations*, not just models
+
+The same driver crosses the models with named combinations of
+`classification.granularity`, `classification.modality` and
+`classification.strategy` via `--variants` (see `VARIANTS` in the script for the
+list). ⚠️ **No shipped guidance rests on this yet** — it has not been run, and
+[#1513](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1513)
+tracks doing so; the recommendations in
+[Classification](../classification.md#choosing-granularity-modality-and-strategy)
+are reasoned from token arithmetic rather than measured.
+
+```bash
+# Is packet granularity cheaper, and does it cost accuracy?
+AWS_PROFILE=default python3 benchmarks/harness/run_classification_bench.py \
+    --stack <STACK> --testset docsplit --n 20 --models nova2lite \
+    --variants page-both,packet-both,packet-text --estimate
+```
+
+Three things about reading the result:
+
+- **`boundary_accuracy` and `label_accuracy`, not overall section accuracy.**
+  `split_accuracy_without_order` requires a section to match on both its page
+  range *and* its class, so it cannot show a granularity winning on boundaries
+  while losing on labels — and those two call for different fixes. The
+  decomposition is exact: `split = boundary × label`.
+- **Cost per document *and* per page.** Per-page flatters packet granularity on
+  long packets and per-document flatters page granularity on short ones;
+  whichever you quote alone will argue for the setting it favours.
+- **`classification_by_context`** carries the per-stage call count and cost, so
+  a two-stage cell shows whether the money went to `Segmentation` or `Labeling`,
+  and packet granularity's N-calls-to-1 claim is read off `calls_per_document`
+  rather than assumed.
+
+⚠️ **The matrix is multiplicative and cells drain one at a time** — deliberately,
+since a page cell and a packet cell issue very different call volumes for the
+same documents, and run concurrently the page cell's per-page burst throttles
+the packet cell it is being compared against. `--estimate` prints the document
+count before you commit the wall-clock.
+
 The premium cells below live in their own `model_premium_cells` registry, **not** in
 `core_cells`, because `core_cells` feeds `core` / `coresynth` / `corefast` / `full`:
 putting seven model-pinned cells there inflated the standard grid by 37% and — on any

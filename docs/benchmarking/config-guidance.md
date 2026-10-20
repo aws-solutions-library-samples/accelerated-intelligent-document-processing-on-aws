@@ -258,6 +258,33 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
 **Axes not varied.** OCR DPI is held at 300 (the shipped default since #740); geometry at
 `ocr_only`; multi-instance settings are measured separately in §7.
 
+⚠️ **Classification granularity, modality and strategy are not measured in this
+edition.** `classification.granularity` (`page` | `packet`),
+`classification.modality.text` / `.images` and `classification.strategy`
+(`single_pass` | `two_stage`) shipped after this edition's runs, and no cell here
+varies them — every classification cell above is `granularity: page` with text
+and images, single-pass, which is the shipped default. So this page recommends a
+classification **model** and says nothing about which granularity, modality or
+strategy to pick.
+
+The guidance that does exist for them, in
+[Classification](../classification.md#the-three-settings-that-decide-everything-else),
+is **reasoned rather than measured**: the token arithmetic is sound — a
+page-level call repeats the instructions, class list, descriptions and few-shot
+examples once per page while a packet call pays them once, and image tokens are
+identical either way — but nothing has measured the accuracy side on a corpus.
+Read "packet + images off is the large cost lever" as a cost claim derived from
+mechanism, and read nothing into it about accuracy.
+
+`benchmarks/harness/run_classification_bench.py --variants` is the axis for
+closing this, and
+[#1513](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1513)
+tracks running it. The figure to watch when it does is **`boundary_accuracy`
+against `label_accuracy`**, not overall section accuracy: a model shown the whole
+packet should place boundaries better, and `split_accuracy_without_order`
+requires a section to match on both its page range *and* its class, so it cannot
+show a granularity winning on one half while losing on the other.
+
 ---
 
 ## 2. Configuration matrix (19 cells × 7 synthetic list docs, exact GT)

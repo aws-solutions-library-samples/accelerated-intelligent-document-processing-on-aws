@@ -1325,6 +1325,24 @@ def score_classification(ev):
         "class_calibration_separation": None,
         "class_mean_confidence": None,
         "n_class_scored_pages": 0,
+        # Section accuracy split into its two halves (GitHub #1329).
+        # `split_accuracy_without_order` requires a predicted section to match on
+        # BOTH its page set and its class, so a wrong boundary and a wrong label
+        # are the same number there — and those two call for different fixes (a
+        # different segmentation prompt, or a different labelling model). The
+        # decomposition is exact: split = boundary x label.
+        #
+        # This is the pair that makes a granularity comparison worth running: a
+        # model shown the whole packet should place boundaries better, and
+        # `class_accuracy` alone cannot show that because it is per PAGE and a
+        # page can carry the right class inside the wrong section.
+        "boundary_accuracy": None,
+        # ⚠️ Null means NOT SCORED, not zero: no section's boundaries matched, so
+        # no label was ever judged. Averaging it as 0 across a run would report
+        # "every label was wrong" for documents where the labels were never
+        # reached.
+        "label_accuracy": None,
+        "split_accuracy_without_order": None,
     }
     if not ev:
         return out
@@ -1332,6 +1350,10 @@ def score_classification(ev):
     acc = ds.get("page_level_accuracy")
     if isinstance(acc, (int, float)):
         out["class_accuracy"] = round(acc, 4)
+    for key in ("boundary_accuracy", "label_accuracy", "split_accuracy_without_order"):
+        value = ds.get(key)
+        if isinstance(value, (int, float)):
+            out[key] = round(value, 4)
     right, wrong = [], []
     for row in ds.get("page_details") or []:
         c = row.get("predicted_confidence")

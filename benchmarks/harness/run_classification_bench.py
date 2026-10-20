@@ -9,8 +9,10 @@ set (e.g. `docsplit` — 500 RVL-CDIP packets over 13 classes) once per
 classification model, and reports:
 
   class_accuracy                  pages classified correctly / pages scored
+  boundary_accuracy               sections whose PAGE RANGE matched, class ignored
+  label_accuracy                  of those, the fraction whose CLASS also matched
   class_calibration_separation    mean(conf | right) - mean(conf | wrong)
-  cost per page + classification output tokens per page
+  cost per page AND per document, input/output tokens, calls per document
 
 The separation is the number that decides whether a reported confidence is worth
 acting on (GitHub #673). It is computed over the POOLED per-page rows across all
@@ -18,11 +20,31 @@ documents, not as a mean of per-document separations: most single documents have
 too few misclassified pages for a per-doc figure to mean anything, and averaging
 undefined values silently drops the hard documents.
 
+`boundary_accuracy` / `label_accuracy` decompose section accuracy, which
+`split_accuracy_without_order` conflates by requiring a predicted section to
+match on both its page range and its class (GitHub #1329). The split is what
+makes a granularity comparison answerable: a model shown the whole packet should
+place boundaries better, and `class_accuracy` cannot show that because it is per
+PAGE and a page can carry the right class inside the wrong section.
+
+It also compares CLASSIFICATION CONFIGURATIONS, not just models — `--variants`
+crosses the models with named combinations of `granularity`, `modality` and
+`strategy` (GitHub #1328, #1329, and #1513 for why this axis exists at all).
+
 Usage:
   AWS_PROFILE=default python3 run_classification_bench.py --stack IDPBench066 \
       --testset docsplit --n 20 --models nova2lite,haiku45 --mode topk
-  ... --estimate      # print the plan and exit
+
+  # Compare granularity and modality on one model, against the shipped default:
+  ... --models nova2lite --variants page-both,packet-both,packet-text
+  # Is two-stage cheaper on this corpus?
+  ... --models nova2lite --variants page-both,twostage-packet
+
+  ... --estimate      # print the plan (and the document count) and exit
   ... --score-only benchmarks/results/clsconf-<stamp>/runmap.json
+
+⚠️ The matrix is MULTIPLICATIVE and cells drain one at a time, so the document
+count is models x variants x n. Use --estimate before committing wall-clock.
 """
 
 # ruff: noqa: E402  (local sibling imports require the sys.path bootstrap first)
@@ -77,13 +99,53 @@ TESTSETS = {
 }
 
 
-def build_config(base_path, model_id, mode, top_k):
+#: Classification configurations to compare, orthogonal to :data:`MODELS`.
+#:
+#: `granularity` decides how many calls are made, `modality` what each call sees,
+#: and `strategy` whether boundaries and classes come from one call or two
+#: (GitHub #1328, #1329). The three are independent, so this is a named subset of
+#: their cross-product rather than an enum — the combinations worth the wall-clock
+#: of a sequential drain, not all twelve.
+#:
+#: `page-both` is the shipped default and is the baseline every other cell is
+#: read against. Keep it in any comparison; a cell with no baseline beside it
+#: measures a number rather than a difference.
+VARIANTS = {
+    "page-both": {"granularity": "page", "text": True, "images": True},
+    "page-text": {"granularity": "page", "text": True, "images": False},
+    "packet-both": {"granularity": "packet", "text": True, "images": True},
+    "packet-text": {"granularity": "packet", "text": True, "images": False},
+    "packet-images": {"granularity": "packet", "text": False, "images": True},
+    "twostage-packet": {
+        "granularity": "packet",
+        "text": True,
+        "images": True,
+        "strategy": "two_stage",
+    },
+    "twostage-page": {
+        "granularity": "page",
+        "text": True,
+        "images": True,
+        "strategy": "two_stage",
+    },
+}
+
+
+def build_config(base_path, model_id, mode, top_k, variant=None):
     """Merge the test set's class config with system defaults + our overrides.
 
     Merging with the system defaults keeps the stored config self-contained (the
     same reason make_configs.py does it) and, critically, is what populates
     `classification.confidence.task_prompt_topk` — the block that gets spliced
     into the prompt. A config that set only `mode: topk` would ask for nothing.
+    The same reasoning applies to a `granularity: packet` variant, which needs
+    `classification.packet.task_prompt` from the defaults: packet granularity has
+    its own prompt because it asks for a different output shape, and a config
+    carrying only the flag would send the page prompt to the segments parser.
+
+    Args:
+        variant: A key of :data:`VARIANTS`, or None for the stored config's own
+            settings (which is what this driver did before the axis existed).
     """
     from idp_common.config.merge_utils import merge_config_with_defaults
 
@@ -96,10 +158,106 @@ def build_config(base_path, model_id, mode, top_k):
         "mode": mode,
         "top_k_candidates": str(top_k),
     }
+    if variant:
+        spec = VARIANTS[variant]
+        classification["granularity"] = spec["granularity"]
+        # Set EXPLICITLY rather than left empty. An unset modality flag is
+        # inferred from the prompt's placeholders, which is the right default for
+        # a user and the wrong one for a measurement: the cell would then be
+        # describing whatever the prompt happens to say rather than the
+        # combination its name claims.
+        classification["modality"] = {
+            "text": bool(spec["text"]),
+            "images": bool(spec["images"]),
+        }
+        classification["strategy"] = spec.get("strategy", "single_pass")
     # Summarization is an unscored late step here; turning it off keeps the cost
     # figures attributable to OCR + classification + extraction.
     cfg.setdefault("summarization", {})["enabled"] = False
     return merge_config_with_defaults(copy.deepcopy(cfg), validate=True)
+
+
+def assert_variant_merged(cfg, variant, mode):
+    """Refuse a config whose variant did not survive the merge.
+
+    The same reasoning as the confidence-block check: a cell whose `granularity`
+    silently fell back to the default would launch, drain, score and look
+    perfectly normal while measuring the baseline under another cell's name —
+    and it would be indistinguishable from a real result saying the two
+    granularities perform identically, which is precisely the question being
+    asked. Checked here rather than trusted.
+
+    Returns the list of problems; empty means the config really is what the
+    cell's name claims.
+    """
+    problems = []
+    cls = cfg.get("classification") or {}
+    spec = VARIANTS[variant]
+
+    if cls.get("granularity") != spec["granularity"]:
+        problems.append(
+            f"granularity is {cls.get('granularity')!r}, expected "
+            f"{spec['granularity']!r}"
+        )
+    modality = cls.get("modality") or {}
+    for flag in ("text", "images"):
+        if bool(modality.get(flag)) is not bool(spec[flag]):
+            problems.append(
+                f"modality.{flag} is {modality.get(flag)!r}, expected {spec[flag]!r}"
+            )
+    expected_strategy = spec.get("strategy", "single_pass")
+    if cls.get("strategy") != expected_strategy:
+        problems.append(
+            f"strategy is {cls.get('strategy')!r}, expected {expected_strategy!r}"
+        )
+
+    # The prompt a cell actually sends. Packet granularity reads
+    # classification.packet.task_prompt and must ask for a `segments` array; the
+    # page prompt asks for one class plus a boundary verdict and is read by a
+    # different parser, so a packet cell running the page prompt fails every
+    # document rather than measuring anything.
+    if spec["granularity"] == "packet":
+        packet_prompt = (cls.get("packet") or {}).get("task_prompt") or ""
+        # Checked against the keys the PARSER requires rather than the word
+        # "segments": a prompt merely mentioning segments in prose would satisfy
+        # a substring test while asking for an output shape
+        # `_parse_model_segments` cannot read, and every document would fail.
+        missing = [
+            key
+            for key in ("segments", "ordinal_start_page", "ordinal_end_page")
+            if key not in packet_prompt
+        ]
+        if missing:
+            problems.append(
+                "classification.packet.task_prompt does not ask for the output "
+                f"shape the segments parser reads (missing {missing}) after merge"
+            )
+    if spec.get("strategy") == "two_stage":
+        segmentation = cls.get("segmentation") or {}
+        stage_a = (
+            (segmentation.get("packet") or {}).get("task_prompt")
+            if spec["granularity"] == "packet"
+            else segmentation.get("task_prompt")
+        ) or ""
+        if not stage_a:
+            problems.append(
+                f"the {spec['granularity']} Stage A task_prompt is empty after "
+                "merge, so two-stage would fall back to the single-pass prompt "
+                "and carry the class vocabulary this strategy exists to drop"
+            )
+        if not (cls.get("labeling") or {}).get("task_prompt"):
+            problems.append("classification.labeling.task_prompt is empty after merge")
+
+    if mode != "off":
+        block = (cls.get("confidence") or {}).get(
+            f"task_prompt_{'topk' if mode == 'topk' else 'verbalized'}", ""
+        )
+        if "<class-confidence>" not in block:
+            problems.append(
+                f"confidence.task_prompt_{mode} block is empty after merge — the "
+                "run would ask for no confidence at all"
+            )
+    return problems
 
 
 def launch(stack, testset_id, version, context, n_files):
@@ -138,25 +296,74 @@ def launch(stack, testset_id, version, context, n_files):
     return result.get("testRunId")
 
 
+#: Metering context prefixes that belong to the classification step.
+#:
+#: ⚠️ **Three, not one.** `single_pass` bills under `Classification/`; `two_stage`
+#: bills its halves under `Segmentation/` and `Labeling/` and emits NO
+#: `Classification/` entry at all (GitHub #1329). Filtering on `Classification/`
+#: alone — which this function did — matched nothing for a two-stage run and
+#: returned a cost of `0.0`, so the configuration with an extra call per segment
+#: appeared to be the free one. That is the most misleading possible answer in a
+#: cost comparison, and it is the same silent-zero this module refuses elsewhere
+#: (#1079, #1146): adding nothing is the same arithmetic as adding zero.
+CLASSIFICATION_CONTEXTS = ("Classification/", "Segmentation/", "Labeling/")
+
+
 def classification_cost(metering):
-    """``(cost, tokens, unpriced_reason)`` for the Classification step only.
+    """``(cost, tokens, unpriced_reason, by_context)`` for the classification step.
 
     ``cost`` is null when something in the step's metering cannot be priced: the
     pooled `classification_cost_per_page` is a sum, so an entry that contributes
     nothing lowers it exactly as a zero would, and the model whose price is missing
     is the classification model this suite exists to compare (GitHub #1146). The
     token counts are a separate measurement and stay — they were read, not priced.
+
+    ``by_context`` reports each of :data:`CLASSIFICATION_CONTEXTS` separately as
+    well as summed. For a two-stage run that split is most of the point — "which
+    half is the money in, finding the boundaries or labelling the segments?" is
+    the question the strategy is chosen on, and a single total cannot answer it.
     """
-    cls = {k: v for k, v in (metering or {}).items() if k.startswith("Classification/")}
+    cls = {
+        k: v
+        for k, v in (metering or {}).items()
+        if k.startswith(CLASSIFICATION_CONTEXTS)
+    }
     priced = lib.price_metering(cls)
     tokens = {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0}
-    for units in cls.values():
+    by_context = {}
+    for key, units in cls.items():
+        context = key.split("/", 1)[0]
+        bucket = by_context.setdefault(
+            context,
+            {
+                "inputTokens": 0,
+                "outputTokens": 0,
+                "cacheReadInputTokens": 0,
+                "calls": 0,
+            },
+        )
         for unit, n in (units or {}).items():
-            if unit in tokens and isinstance(n, (int, float)):
+            if not isinstance(n, (int, float)):
+                continue
+            if unit in tokens:
                 tokens[unit] += n
+                bucket[unit] += n
+            # The per-stage request count is what makes the N-calls-to-1 claim of
+            # packet granularity a measurement rather than an assertion.
+            if unit == "requests" and key.endswith("/lambda/requests"):
+                bucket["calls"] += n
+    for context in CLASSIFICATION_CONTEXTS:
+        name = context.rstrip("/")
+        if name in by_context:
+            per_context = lib.price_metering(
+                {k: v for k, v in cls.items() if k.startswith(context)}
+            )
+            by_context[name]["cost"] = (
+                round(per_context.total, 6) if per_context.complete else None
+            )
     if not priced.complete:
-        return None, tokens, priced.why
-    return priced.total, tokens, None
+        return None, tokens, priced.why, by_context
+    return priced.total, tokens, None, by_context
 
 
 def drain(res, runs, n, poll_interval, timeout_min):
@@ -188,7 +395,15 @@ def score_run(res, run_id):
     docs, per_doc = [], []
     cls_cost = 0.0
     cls_tokens = {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0}
+    cls_by_context = {}
     page_count = 0
+    # Pooled across documents rather than averaged per document, for the same
+    # reason the confidence separation is: most single documents have too few
+    # sections for a per-doc figure to mean anything, and averaging a
+    # `label_accuracy` of None as 0 would report "every label wrong" for a
+    # document whose labels were never reached.
+    boundary_matched = boundary_total = 0
+    label_matched = label_total = 0
 
     unread = []
     unpriced = []
@@ -207,6 +422,24 @@ def score_run(res, run_id):
         one = score_classification(ev)
         per_doc.append({"doc": doc_name, **one})
         ds = (ev or {}).get("doc_split_metrics") or {}
+        # Pool the COUNTS, not the per-document ratios: a 1-section document and
+        # a 12-section one would otherwise weigh the same.
+        for counter, key in (
+            ("boundary", "boundary_matched_sections"),
+            ("label", "label_matched_sections"),
+        ):
+            matched = ds.get(key)
+            if isinstance(matched, int):
+                if counter == "boundary":
+                    boundary_matched += matched
+                else:
+                    label_matched += matched
+        if isinstance(ds.get("total_splits"), int):
+            boundary_total += ds["total_splits"]
+        # The label denominator is the sections whose BOUNDARIES matched — the
+        # only ones where a label was judged at all.
+        if isinstance(ds.get("boundary_matched_sections"), int):
+            label_total += ds["boundary_matched_sections"]
         for row in ds.get("page_details") or []:
             pages_total += 1
             if row.get("correct"):
@@ -216,9 +449,32 @@ def score_run(res, run_id):
                 (pooled_right if row.get("correct") else pooled_wrong).append(c)
         metering_read = lib.read_metering(tracking, run_id, doc_name)
         if metering_read.is_present:
-            cost, tokens, why = classification_cost(metering_read.value)
+            cost, tokens, why, by_context = classification_cost(metering_read.value)
             for k in cls_tokens:
                 cls_tokens[k] += tokens[k]
+            for context, bucket in by_context.items():
+                acc = cls_by_context.setdefault(
+                    context,
+                    {
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "cacheReadInputTokens": 0,
+                        "calls": 0,
+                        "cost": 0.0,
+                        "cost_unpriced_docs": 0,
+                    },
+                )
+                for k in (
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheReadInputTokens",
+                    "calls",
+                ):
+                    acc[k] += bucket.get(k, 0)
+                if bucket.get("cost") is None:
+                    acc["cost_unpriced_docs"] += 1
+                else:
+                    acc["cost"] += bucket["cost"]
             if cost is None:
                 # Same arithmetic as adding zero, so the run's cost is withheld
                 # rather than reported short (#1146).
@@ -272,6 +528,22 @@ def score_run(res, run_id):
         "class_accuracy": round(pages_correct / pages_total, 4)
         if pages_total
         else None,
+        # Section accuracy split into boundary and label halves (#1329), pooled
+        # over sections across the run. `split_accuracy_without_order` requires
+        # both to match, so it cannot say whether a granularity wins on
+        # boundaries and loses on labels — which is the question a
+        # page-vs-packet comparison is actually asking.
+        "sections_evaluated": boundary_total or None,
+        "boundary_accuracy": round(boundary_matched / boundary_total, 4)
+        if boundary_total
+        else None,
+        # ⚠️ Null means no section's boundaries matched, so no label was judged.
+        # Distinct from 0.0, which would mean every judged label was wrong.
+        "label_accuracy": round(label_matched / label_total, 4)
+        if label_total
+        else None,
+        "sections_boundary_matched": boundary_matched,
+        "sections_label_matched": label_matched,
         "class_calibration_separation": sep,
         "mean_conf_correct": round(statistics.fmean(pooled_right), 4)
         if pooled_right
@@ -297,12 +569,44 @@ def score_run(res, run_id):
         "classification_cost_per_page": round(cls_cost / page_count, 6)
         if page_count and priceable
         else None,
+        # Reported alongside per-page because the two flatter opposite
+        # granularities: per-page favours packet on long packets, per-document
+        # favours page on short ones, and quoting one alone invites the wrong
+        # conclusion about which setting to use.
+        "classification_cost_per_document": round(cls_cost / len(docs), 6)
+        if docs and priceable
+        else None,
         "classification_output_tokens_per_page": round(
             cls_tokens["outputTokens"] / page_count, 1
         )
         if page_count
         else None,
+        # The prefix saving is an INPUT effect and the per-page reasoning saving
+        # is an OUTPUT effect; a single total hides which one a given corpus
+        # realises, and they move in opposite directions between granularities.
+        "classification_input_tokens_per_page": round(
+            cls_tokens["inputTokens"] / page_count, 1
+        )
+        if page_count
+        else None,
         "classification_tokens": cls_tokens,
+        # Per metering context, so a two-stage run shows where the money and the
+        # calls went — Segmentation or Labeling — rather than only their sum.
+        # `calls` is what makes packet granularity's N-calls-to-1 claim a
+        # measurement rather than an assertion.
+        "classification_by_context": {
+            context: {
+                **bucket,
+                "cost": round(bucket["cost"], 6)
+                if not bucket["cost_unpriced_docs"]
+                else None,
+                "calls_per_document": round(bucket["calls"] / len(docs), 2)
+                if docs
+                else None,
+            }
+            for context, bucket in sorted(cls_by_context.items())
+        }
+        or None,
         "per_doc": per_doc,
     }
 
@@ -317,6 +621,20 @@ def main():
         default="nova2lite,haiku45",
         help=f"comma-separated, from: {','.join(sorted(MODELS))}",
     )
+    ap.add_argument(
+        "--variants",
+        default="",
+        help=(
+            "comma-separated classification configurations to compare, from: "
+            f"{','.join(VARIANTS)}. Empty (the default) runs one cell per model "
+            "using the test set's own stored classification settings, which is "
+            "what this driver did before the axis existed. ⚠️ The matrix is "
+            "MULTIPLICATIVE and cells drain sequentially, so --variants with 7 "
+            "entries and 2 models is 14 cells one after another — use "
+            "--estimate first. Include page-both as the baseline; a cell with "
+            "no baseline beside it measures a number rather than a difference."
+        ),
+    )
     ap.add_argument("--mode", default="topk", choices=["off", "topk", "verbalized"])
     ap.add_argument("--top-k", type=int, default=3)
     ap.add_argument("--estimate", action="store_true")
@@ -329,7 +647,9 @@ def main():
         runmap = json.load(open(a.score_only))
         res = runmap["resources"]
         out = {
-            r["model"]: score_run(res, r["run_id"])
+            # Keyed by the cell, falling back to the model for a runmap written
+            # before the variant axis existed.
+            r.get("cell") or r["model"]: score_run(res, r["run_id"])
             for r in runmap["runs"]
             if r["run_id"]
         }
@@ -344,6 +664,22 @@ def main():
     if unknown:
         sys.exit(f"unknown model(s) {unknown}; known: {sorted(MODELS)}")
 
+    variants = [v.strip() for v in a.variants.split(",") if v.strip()]
+    unknown_variants = [v for v in variants if v not in VARIANTS]
+    if unknown_variants:
+        sys.exit(f"unknown variant(s) {unknown_variants}; known: {list(VARIANTS)}")
+    if variants and "page-both" not in variants:
+        # A warning, not an error: comparing two packet variants against each
+        # other is a legitimate question. But a run with no baseline cannot say
+        # whether either beats what is shipped, which is usually the question.
+        print(
+            "  ⚠ page-both (the shipped default) is not in --variants, so these "
+            "cells have no baseline to be read against."
+        )
+    # One cell per (model, variant). An empty --variants keeps the pre-axis
+    # shape: one cell per model on the test set's own stored settings.
+    cells = [{"model": m, "variant": v} for m in models for v in (variants or [None])]
+
     res = resolve_stack(a.stack)
     print("stack resources:", json.dumps(res, indent=2))
     for k, v in res.items():
@@ -351,9 +687,12 @@ def main():
             sys.exit(f"could not resolve {k} for stack {a.stack}")
 
     print(
-        f"plan: testset={a.testset} n={a.n} docs x {len(models)} model(s) "
-        f"{models}, classification.confidence.mode={a.mode}"
+        f"plan: testset={a.testset} n={a.n} docs x {len(cells)} cell(s) "
+        f"({len(models)} model(s) {models} x "
+        f"{len(variants) or 1} variant(s) {variants or ['(stored config)']}), "
+        f"classification.confidence.mode={a.mode}"
     )
+    print(f"       {len(cells) * a.n} documents total, drained one cell at a time")
     if a.estimate:
         print("Run without --estimate to execute.")
         return
@@ -363,30 +702,54 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     runs = []
 
-    for name in models:
-        version = f"bench-clsconf-{name}-{a.mode}"
-        cfg = build_config(TESTSETS[a.testset], MODELS[name], a.mode, a.top_k)
+    for cell in cells:
+        name, variant = cell["model"], cell["variant"]
+        cell_id = f"{name}-{variant}" if variant else name
+        version = f"bench-clsconf-{cell_id}-{a.mode}"
+        cfg = build_config(
+            TESTSETS[a.testset], MODELS[name], a.mode, a.top_k, variant=variant
+        )
         path = os.path.join(outdir, f"{version}.yaml")
         yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)
-        # Prove the composed prompt really asks for what the cell claims: a config
-        # whose confidence block failed to merge would run, score, and look
-        # perfectly normal while measuring nothing.
-        block = (cfg.get("classification", {}).get("confidence") or {}).get(
-            f"task_prompt_{'topk' if a.mode == 'topk' else 'verbalized'}", ""
-        )
-        if a.mode != "off" and "<class-confidence>" not in block:
+        # Prove the composed config really is what the cell claims. A cell whose
+        # granularity or confidence block failed to merge would launch, drain and
+        # score while measuring the DEFAULT under another cell's name — and that
+        # is indistinguishable from a real result saying the two settings perform
+        # identically, which is the question being asked.
+        if variant:
+            problems = assert_variant_merged(cfg, variant, a.mode)
+        else:
+            block = (cfg.get("classification", {}).get("confidence") or {}).get(
+                f"task_prompt_{'topk' if a.mode == 'topk' else 'verbalized'}", ""
+            )
+            problems = (
+                []
+                if a.mode == "off" or "<class-confidence>" in block
+                else ["confidence prompt block is empty after merge"]
+            )
+        if problems:
             sys.exit(
-                f"{version}: confidence prompt block is empty after merge — the "
-                "run would measure nothing. Check base-classification.yaml."
+                f"{version}: the merged config is not what this cell claims, so "
+                f"the run would measure something else:\n  - "
+                + "\n  - ".join(problems)
+                + "\nCheck base-classification.yaml."
             )
         ok = upload_config(a.stack, version, path, res=res)
         print(f"  config {version}: {'ok' if ok else 'FAIL'} ({path})")
         if not ok:
             sys.exit(f"config upload failed for {version}")
-        rid = launch(a.stack, a.testset, version, f"clsconf-{name}-{a.mode}", a.n)
-        print(f"  launched {name} -> run {rid}")
+        rid = launch(a.stack, a.testset, version, f"clsconf-{cell_id}-{a.mode}", a.n)
+        print(f"  launched {cell_id} -> run {rid}")
         runs.append(
-            {"model": name, "model_id": MODELS[name], "version": version, "run_id": rid}
+            {
+                "cell": cell_id,
+                "model": name,
+                "model_id": MODELS[name],
+                "variant": variant,
+                "variant_spec": VARIANTS[variant] if variant else None,
+                "version": version,
+                "run_id": rid,
+            }
         )
         json.dump(
             {
@@ -395,22 +758,27 @@ def main():
                 "n": a.n,
                 "mode": a.mode,
                 "top_k": a.top_k,
+                "variants": variants or None,
                 "resources": res,
                 "runs": runs,
             },
             open(os.path.join(outdir, "runmap.json"), "w"),
             indent=2,
         )
-        # Drain THIS model before launching the next. Running the models
-        # concurrently would have them competing for the same Bedrock quota, so
-        # one model's throttling-and-backoff would show up as the other's
-        # latency — and a retried call is also a cost the comparison would
-        # misattribute. Sequential costs wall-clock and buys a fair comparison.
+        # Drain THIS cell before launching the next. Running cells concurrently
+        # would have them competing for the same Bedrock quota, so one cell's
+        # throttling-and-backoff would show up as another's latency — and a
+        # retried call is also a cost the comparison would misattribute. This
+        # applies at least as strongly across variants as across models: a
+        # packet cell and a page cell issue very different call volumes for the
+        # same documents, so run them concurrently and the page cell's
+        # per-page-call burst throttles the packet cell it is being compared
+        # against. Sequential costs wall-clock and buys a fair comparison.
         drain(res, [runs[-1]], a.n, a.poll_interval, a.timeout_min)
 
     # Evaluation lands after the document completes; give it a moment.
     time.sleep(30)
-    out = {r["model"]: score_run(res, r["run_id"]) for r in runs}
+    out = {r["cell"]: score_run(res, r["run_id"]) for r in runs}
     print(json.dumps(out, indent=2, default=str))
     json.dump(
         out, open(os.path.join(outdir, "summary.json"), "w"), indent=2, default=str
