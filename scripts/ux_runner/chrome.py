@@ -94,6 +94,13 @@ Bounds worth knowing
   for the page to finish. :func:`verify_policy` waits. A navigation the model asks
   for at such a moment would crash the browser in the same way, which ends the
   session like any other Chrome failure; the blocked page is never shown.
+* Chrome starts two crashpad handlers, each in a session of its own and so
+  outside the process group a termination kills. Their command line carries no
+  upload URL, so a crash is written only under the run's own Chrome home. They
+  exit as soon as Chrome does: in each of twelve runs measured in the image they
+  were gone before :func:`kill_strays` looked. One still running at that moment
+  would be killed and named like any other stray, which fails the run rather
+  than letting it post.
 * ``/proc/net`` holds the addresses in host byte order, read here as little-endian,
   which is what x86-64 and arm64 are.
 * The proxy confines Chrome as configured, not a Chrome that has been subverted.
@@ -246,6 +253,12 @@ def chrome_flags(
     screen. ``headless=False`` drops ``--headless=new`` and nothing else; that is
     for development only, since a headed Chrome needs a display the CI image does
     not have.
+
+    ``--disable-crashpad-for-testing`` is absent because under it Chrome for
+    Testing 155 crash-loops its network service in the image ("Crashing due to FD
+    ownership violation"), so every navigation fails ``net::ERR_ABORTED`` and no
+    request reaches the proxy. Crash reporting stays off through
+    ``--disable-breakpad`` and the policy's ``MetricsReportingEnabled: false``.
     """
     width, height = window
     outer = height + HEADLESS_FRAME_HEIGHT
@@ -267,7 +280,6 @@ def chrome_flags(
         "--disable-sync",
         "--disable-extensions",
         "--disable-breakpad",
-        "--disable-crashpad-for-testing",
         "--disable-client-side-phishing-detection",
         "--disable-features=OptimizationHints,MediaRouter,DialMediaRouteProvider,"
         "Translate,AutofillServerCommunication,CertificateTransparencyComponentUpdater,"

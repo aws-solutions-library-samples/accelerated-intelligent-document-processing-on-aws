@@ -210,7 +210,6 @@ def test_the_chrome_flags_are_the_exact_hardened_list_in_order(tmp_path: Path) -
         "--disable-sync",
         "--disable-extensions",
         "--disable-breakpad",
-        "--disable-crashpad-for-testing",
         "--disable-client-side-phishing-detection",
         "--disable-features=OptimizationHints,MediaRouter,DialMediaRouteProvider,"
         "Translate,AutofillServerCommunication,CertificateTransparencyComponentUpdater,"
@@ -1391,13 +1390,22 @@ def test_kill_strays_does_nothing_without_a_uid_or_a_proc_directory(
 
 
 @pytest.mark.unit
-def test_the_flags_keep_crashpad_from_starting_a_process_outside_chromes_group(
+def test_the_flags_leave_crashpad_running_because_disabling_it_breaks_the_network(
     tmp_path: Path,
 ) -> None:
-    """Crashpad's Linux handler double-forks and calls ``setsid``, so it would sit
-    outside the group the harness kills; ``--disable-breakpad`` does not stop it."""
-    flags = chrome.chrome_flags(profile_dir=tmp_path)
-    assert "--disable-crashpad-for-testing" in flags
+    """Measured in the image: with ``--disable-crashpad-for-testing`` Chrome for
+    Testing 155 crash-loops its network service, without it Chrome navigates and
+    its traffic reaches the proxy. Crash reporting stays off by other means."""
+    for headless in (True, False):
+        flags = chrome.chrome_flags(profile_dir=tmp_path, headless=headless)
+        assert "--disable-crashpad-for-testing" not in flags, (
+            "--disable-crashpad-for-testing makes Chrome for Testing 155's network "
+            "service crash-loop ('Crashing due to FD ownership violation'), so every "
+            "navigation fails net::ERR_ABORTED, nothing reaches the egress proxy and "
+            "verify_proxy_path fails the run"
+        )
+        assert "--disable-breakpad" in flags
+    assert chrome.load_policy()["MetricsReportingEnabled"] is False
 
 
 @pytest.mark.unit
