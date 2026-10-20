@@ -65,7 +65,7 @@ def _make_config(classes: list[dict], task_prompt: str | None = None) -> dict:
                 Respond with JSON: {"class": "..."}
                 """
             ),
-            "classificationMethod": "multimodalPageLevelClassification",
+            "granularity": "page",
         },
     }
 
@@ -543,17 +543,17 @@ class TestPlaceholderSubstitutionEndToEnd:
         # template doesn't reference {CLASS_NAMES_AND_DESCRIPTIONS})
         assert "UNUSED" not in rendered_text
 
-    def test_holistic_path_uses_table_variant(self, appraisal_inspection_config):
-        """The holistic classify_document path should render the
+    def test_packet_path_uses_table_variant(self, appraisal_inspection_config):
+        """The packet classify_document path should render the
         markdown-TABLE variant of the placeholder (matches the
         surrounding {CLASS_NAMES_AND_DESCRIPTIONS} table format)."""
-        # Switch to holistic mode and use a custom task_prompt that
-        # references the placeholder.
+        # Packet granularity, with a custom packet task_prompt that references
+        # the placeholder. The prompt goes under `packet` because that is where
+        # packet granularity reads it from — a packet call asks for a `segments`
+        # array, which is a different output shape from the page prompt's.
         config = json.loads(json.dumps(appraisal_inspection_config))
-        config["classification"]["classificationMethod"] = (
-            "textbasedHolisticClassification"
-        )
-        config["classification"]["task_prompt"] = (
+        config["classification"]["granularity"] = "packet"
+        config["classification"].setdefault("packet", {})["task_prompt"] = (
             "Classes:\n{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\n\n"
             "Text:\n{DOCUMENT_TEXT}\n"
             'Respond with JSON: {"segments": [...]}'

@@ -228,7 +228,7 @@ class TestResolveClassAndConfidence:
         assert candidates == []
 
 
-def _config(mode="off", method="multimodalPageLevelClassification", **confidence):
+def _config(mode="off", granularity="page", **confidence):
     """Config whose task prompt carries the cache-point/document markers."""
     cfg = {
         "classes": [
@@ -248,7 +248,7 @@ def _config(mode="off", method="multimodalPageLevelClassification", **confidence
             "task_prompt": (
                 "{CLASS_NAMES_AND_DESCRIPTIONS}\n<<CACHEPOINT>>\n{DOCUMENT_TEXT}"
             ),
-            "classificationMethod": method,
+            "granularity": granularity,
             "confidence": {
                 "mode": mode,
                 "top_k_candidates": "3",
@@ -337,13 +337,29 @@ class TestPromptComposition:
         assert "one number" in composed
         assert "top 3" not in composed
 
-    def test_holistic_is_left_alone_and_warns(self, caplog):
-        """The holistic prompt returns segments, so a per-page block is wrong."""
-        service = _service(_config("topk", method="textbasedHolisticClassification"))
-        with caplog.at_level("WARNING"):
-            composed = service._get_classification_config()["task_prompt"]
-        assert "<class-confidence>" not in composed
-        assert "is not composed for a" in caplog.text
+    def test_packet_granularity_gets_the_per_segment_block(self):
+        """A packet call returns segments, so the block it gets must describe a
+        per-segment score rather than a per-page one — and it does get one.
+
+        It used to get nothing at all, with a warning, because a packet config's
+        prompt was hand-written (no packet-shaped default existed) and so there
+        was no output shape to describe. `migrations.v07_to_v08` relocates that
+        hand-written prompt into `classification.packet`, which removes the
+        distinction: every packet config now has a packet prompt, so the
+        per-segment block is always the right one to splice.
+        """
+        cfg = _config("topk", granularity="packet")
+        cfg["classification"]["packet"] = {
+            "task_prompt": (
+                "{CLASS_NAMES_AND_DESCRIPTIONS}\n<<CACHEPOINT>>\n{DOCUMENT_TEXT}"
+            ),
+            "system_prompt": "split packets",
+        }
+        cfg["classification"]["confidence"]["task_prompt_topk_packet"] = (
+            "<class-confidence>per segment, top {TOP_K_CANDIDATES}</class-confidence>"
+        )
+        composed = _service(cfg)._get_classification_config()["task_prompt"]
+        assert "per segment, top 3" in composed
 
     def test_empty_block_warns_instead_of_silently_asking_for_nothing(self, caplog):
         service = _service(_config("topk", task_prompt_topk=""))

@@ -24,6 +24,7 @@ import type { BoxProps } from '@cloudscape-design/components';
 import { useNavigate } from 'react-router-dom';
 import SchemaBuilder from '../json-schema-builder/SchemaBuilder';
 import PromptPreview from './PromptPreview';
+import FieldDescription, { stripInlineMarkdown } from './FieldDescription';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import { TEST_STUDIO_PATH } from '../../routes/constants';
 
@@ -158,6 +159,13 @@ interface SchemaProperty {
     not?: unknown;
     notValues?: unknown[];
   }>;
+  // An authored group: renders a titled (optionally collapsible) section, and
+  // renders even when its own key is absent from the stored configuration. See
+  // the note in renderField — that second half is a property of every authored
+  // group, not an opt-in, because a group whose key has never been written (or
+  // was deleted when its last field was cleared) would otherwise be invisible
+  // with every field inside it unreachable and nothing saying why. Modality,
+  // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
   // sibling field matches (e.g. expand "Agentic Extraction" when enabled=true).
@@ -232,7 +240,32 @@ const customStyles = `
     overflow-y: auto !important;
     resize: vertical;
   }
-  
+
+  /* Schema descriptions are markdown (see FieldDescription). Every block
+     element is rendered as a span there, so these rules only have to stop the
+     spans stacking and keep code spans legible at help-text size. */
+  .config-field-description-block {
+    display: block;
+  }
+  .config-field-description-block + .config-field-description-block {
+    margin-top: 4px;
+  }
+  .config-field-description code,
+  .config-field-description-code {
+    font-family: Monaco, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.06);
+  }
+  /* A description's list keeps its structure but not its default indent, which
+     is sized for body copy rather than for a help slot. */
+  .config-field-description ul,
+  .config-field-description ol {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+
   /* Make form fields more compact */
   .awsui-form-field {
     margin-bottom: 4px !important;
@@ -879,11 +912,29 @@ const ConfigBuilder = ({
     const value = getValueAtPath(formValues, currentPath);
 
     // For objects with properties, ensure the object exists in formValues.
-    // Exception: a `ghostGroup` object is a purely visual grouping whose own
-    // key never exists in the data (its children render at the parent path),
-    // so its value is always undefined — it must still render.
+    // Two exceptions, for different reasons:
+    //
+    // - A `ghostGroup` object is a purely visual grouping whose own key never
+    //   exists in the data (its children render at the parent path), so its
+    //   value is always undefined — it must still render.
+    // - ⚠️ An object with a `sectionLabel` is an AUTHORED group, and its own key
+    //   being absent is an ordinary state: nothing writes a nested object until
+    //   one of its fields is edited, and `updateValue` deletes an object again
+    //   once its last field is cleared. Hiding the group then makes every field
+    //   inside it unreachable — the user cannot set a value because the control
+    //   is not rendered, and nothing says why. `classification.modality` is
+    //   permanently in that state: both its flags default to empty. Children
+    //   read their own schema defaults when the parent is absent, so rendering
+    //   is safe.
+    //
+    //   ⚠️ Gated on `sectionLabel` itself rather than on an opt-in flag, so a
+    //   group added later cannot forget it. That is wider than the one field
+    //   that exposed the problem, deliberately: the reasoning above holds
+    //   identically for every authored group, so a per-group flag would just be
+    //   the same bug waiting on whichever group got written without one.
     const isGhostGroupObject = property.ghostGroup === true || property.ghostGroup === 'true';
-    if (property.type === 'object' && property.properties && value === undefined && !isGhostGroupObject) {
+    const isAuthoredGroup = Boolean(property.sectionLabel);
+    if (property.type === 'object' && property.properties && value === undefined && !isGhostGroupObject && !isAuthoredGroup) {
       return null;
     }
 
@@ -1077,7 +1128,7 @@ const ConfigBuilder = ({
           </ExtBox>
           {groupDescription && (
             <ExtBox fontSize="body-s" color="text-body-secondary" style={{ marginBottom: '6px' }}>
-              {groupDescription}
+              <FieldDescription>{groupDescription}</FieldDescription>
             </ExtBox>
           )}
           <SpaceBetween size="s">
@@ -1161,7 +1212,7 @@ const ConfigBuilder = ({
         <ExtBox padding={{ left: `${nestLevel * 50 + 200}px`, top: '0' }} className="list-content-indented">
           {nestedDescription && (
             <ExtBox fontSize="body-s" color="text-body-secondary" style={{ marginBottom: '6px' }}>
-              {nestedDescription}
+              <FieldDescription>{nestedDescription}</FieldDescription>
             </ExtBox>
           )}
           <SpaceBetween size="s">
@@ -1867,7 +1918,10 @@ const ConfigBuilder = ({
     return (
       <FormField
         label={labelContent}
-        description={fieldDescription}
+        // `undefined`, not an always-present element: FieldDescription renders
+        // null for blank text, but Cloudscape reads a truthy `description` as
+        // present and reserves its spacing. See the same guard below.
+        description={fieldDescription?.trim() ? <FieldDescription>{fieldDescription}</FieldDescription> : undefined}
         constraintText={finalConstraints}
         stretch
         className={fieldClasses.join(' ')}
@@ -1941,7 +1995,7 @@ const ConfigBuilder = ({
             key={key}
             variant="container"
             headerText={sectionTitle}
-            headerDescription={sectionDescription}
+            headerDescription={sectionDescription ? stripInlineMarkdown(sectionDescription) : undefined}
             expanded={isExpanded}
             onChange={({ detail }) => {
               setExpandedSections((prev) => ({ ...prev, [key]: detail.expanded }));
@@ -1956,7 +2010,10 @@ const ConfigBuilder = ({
         <Container
           key={key}
           header={
-            <Header variant="h3" description={sectionDescription}>
+            <Header
+              variant="h3"
+              description={sectionDescription?.trim() ? <FieldDescription>{sectionDescription}</FieldDescription> : undefined}
+            >
               {sectionTitle}
             </Header>
           }

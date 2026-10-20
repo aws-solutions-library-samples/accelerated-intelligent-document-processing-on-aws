@@ -15,7 +15,7 @@ class TestMaxPagesForClassification:
         return {
             "classification": {
                 "maxPagesForClassification": "ALL",  # "ALL" means all pages
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
                 "model": "us.amazon.nova-pro-v1:0",
                 "system_prompt": "Test system prompt",
                 "task_prompt": "Test task prompt",
@@ -170,7 +170,7 @@ class TestMaxPagesForClassification:
         mock_config = {
             "classification": {
                 "maxPagesForClassification": "2",
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
                 "model": "us.amazon.nova-pro-v1:0",
                 "system_prompt": "Test system prompt",
                 "task_prompt": "Test task prompt",
@@ -184,7 +184,7 @@ class TestMaxPagesForClassification:
         """Test default value when maxPagesForClassification not in config"""
         mock_config = {
             "classification": {
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
                 "model": "us.amazon.nova-pro-v1:0",
                 "system_prompt": "Test system prompt",
                 "task_prompt": "Test task prompt",
