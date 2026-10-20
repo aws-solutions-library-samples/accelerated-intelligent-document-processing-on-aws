@@ -7485,8 +7485,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         """
         from idp_common.assessment.batching import (
             _missing_row_indices,
+            _missing_scalar_fields,
             _new_split_stats,
             _retry_missing_rows,
+            _retry_missing_scalars,
             compute_token_aware_batch_size,
             enrich_assessment_with_thresholds,
         )
@@ -7498,13 +7500,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             for f, v in extracted_fields.items()
             if isinstance(v, list) and _missing_row_indices(merged_assessment.get(f), v)
         }
-        if not targets:
+        # ...and which POPULATED non-list fields have no confidence (#1474). The
+        # early return below used to be reached whenever ``targets`` was empty,
+        # and its own comment named the consequence — "scalar-only classes always
+        # land here" — so on this path too the ladder that exists to rescue
+        # unscored data was never offered a scalar omission. Integrated mode is
+        # the likelier place to meet one, since a single-shot call crams values
+        # and confidence together and drops whatever does not fit.
+        missing_scalars = _missing_scalar_fields(merged_assessment, extracted_fields)
+        if not targets and not missing_scalars:
             # Nothing to retry — but the caller REPLACES its alert surface with
             # what this returns (#813), so an empty list here would leave every
             # fully-scored integrated section with no confidence alerts at all
-            # (the common case; scalar-only classes always land here). Rebuild
-            # the surface from the merged assessment exactly as the retry path
-            # does below, so the replace is always a globally-indexed surface.
+            # (the common case). Rebuild the surface from the merged assessment
+            # exactly as the retry path does below, so the replace is always a
+            # globally-indexed surface.
             merged_assessment, regenerated_alerts = enrich_assessment_with_thresholds(
                 merged_assessment,
                 self._class_schema,
@@ -7595,6 +7605,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             split_stats["unrecoverable_rows"] += len(
                 _missing_row_indices(merged_assessment.get(field), rows)
             )
+
+        # #1474 scalar rung, OUTSIDE the per-list-field loop above — that loop is
+        # what a scalar-only class has no iteration of. Same model, bounded, and
+        # free when there is nothing missing.
+        merged_assessment, _scalar_alerts, _scalar_metering, _scalar_dur = (
+            _retry_missing_scalars(
+                _one_call,
+                extraction_results=extracted_fields,
+                merged_assessment=merged_assessment,
+                merged_alerts=new_alerts,
+                merged_metering={},
+                max_retries=2,
+                split_stats=split_stats,
+                deadline_epoch=self._assessment_deadline_epoch,
+            )
+        )
+        split_stats["unrecoverable_fields"] = len(
+            _missing_scalar_fields(merged_assessment, extracted_fields)
+        )
 
         # #894: name the class alongside the oversized-row field(s) so the emitted
         # issue points at the class whose list item does not fit the model's output

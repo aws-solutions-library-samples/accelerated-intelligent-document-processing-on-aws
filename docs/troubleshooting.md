@@ -267,6 +267,33 @@ issue's `details`: `expected_rows`, `scored_rows`, `unscored_rows`,
 exact integer division, so a `details` value of `0.05` is not by itself proof the
 warning threshold was met.
 
+**A field shows a value with no confidence and no bounding box.** The confidence
+model can return well-formed JSON that simply omits some of the fields it was asked
+about — a small model answering about a ten-field form may come back carrying only
+the first three keys. This is not a truncation, so none of the batch-splitting
+machinery above applies and nothing in the response looks wrong. Because one
+per-field object carries confidence, threshold and geometry together, all three go
+missing at once: the value is extracted and correct, but it has no score, so no
+threshold can be breached, no confidence alert is raised, it never reaches HITL
+review, and the viewer cannot draw a box for it.
+
+The pipeline now re-asks for exactly those fields with a second, narrower call, and
+whatever that does not recover is reported as `assessment_fields_unscored` — a
+**warning** naming the fields, or an **error** when no populated field in the
+section carries a score at all. `details` gives `unscored_fields`,
+`populated_fields` and `scored_fields`, and the recovery itself is visible in the
+section's `assessment_batch_split_stats` as `scalar_retry_calls`,
+`fields_recovered_by_retry` and `unrecoverable_fields`.
+
+Two things worth knowing. Fields whose extracted value is empty are **not**
+counted — they need no confidence, so a sparsely-populated form does not report a
+shortfall for them. And this issue is deliberately *not* suppressed by a
+`assessment_incomplete` on the same section: that one is about unscored list
+**rows**, these are different values, so seeing both is two findings rather than one
+counted twice. If `unrecoverable_fields` is persistently non-zero, the durable fix
+is a stronger confidence model — `assessment.model` — since the cause is a model
+answering short rather than a budget it ran out of.
+
 ### Web UI Access Issues
 
 | Issue                                | Resolution                                                                                                            |
