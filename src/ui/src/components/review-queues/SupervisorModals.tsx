@@ -1,11 +1,11 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// Confirmation modals for the Admin actions on production review items: unassign and
-// move. Assigning uses AssignModal.
+// Confirmation modals for the Admin actions on production review items: unassign,
+// move and remove from queue. Assigning uses AssignModal.
 import React, { useEffect, useState } from 'react';
 import type { SelectProps } from '@cloudscape-design/components';
-import { Box, Button, FormField, Modal, Select, SpaceBetween } from '@cloudscape-design/components';
+import { Box, Button, FormField, Modal, Select, SpaceBetween, Textarea } from '@cloudscape-design/components';
 
 import type { ReviewItem } from '../../graphql/generated/operation-types';
 import { documentName } from './review-api';
@@ -97,7 +97,7 @@ export const MoveItemModal = ({ items, loading, onDismiss, onConfirm, queues }: 
       footer={<Footer onDismiss={onDismiss} onConfirm={submit} label="Move" loading={loading} />}
     >
       <SpaceBetween size="m">
-        <Box>{`Move ${what(items)} to another queue, for example Escalation. An assignment is removed; drafts are kept.`}</Box>
+        <Box>{`Move ${what(items)} to another queue. An assignment is removed; drafts are kept.`}</Box>
         <FormField label="Target queue" errorText={submitted && !choice ? 'Choose a queue.' : undefined}>
           <Select
             selectedOption={choice}
@@ -107,6 +107,35 @@ export const MoveItemModal = ({ items, loading, onDismiss, onConfirm, queues }: 
             empty="No other queues. Create one in Queue Management."
             placeholder="Choose a queue"
           />
+        </FormField>
+      </SpaceBetween>
+    </Modal>
+  );
+};
+
+interface RemoveItemModalProps extends BaseProps {
+  onConfirm: (note: string) => void;
+}
+
+export const RemoveItemModal = ({ items, loading, onDismiss, onConfirm }: RemoveItemModalProps): React.JSX.Element => {
+  const [note, setNote] = useState('');
+  const visible = items.length > 0;
+  useEffect(() => {
+    if (visible) setNote('');
+  }, [visible]);
+  return (
+    <Modal
+      visible={visible}
+      onDismiss={onDismiss}
+      header="Remove from queue"
+      footer={<Footer onDismiss={onDismiss} onConfirm={() => onConfirm(note.trim())} label="Remove" loading={loading} />}
+    >
+      <SpaceBetween size="m">
+        <Box>
+          {`Remove ${what(items)} from review. The document completes with its machine results and leaves review. Draft corrections are not applied, and an assigned Annotator is told.`}
+        </Box>
+        <FormField label="Note" description="Optional. Kept in the item's history." stretch>
+          <Textarea value={note} rows={2} onChange={({ detail }) => setNote(detail.value)} />
         </FormField>
       </SpaceBetween>
     </Modal>

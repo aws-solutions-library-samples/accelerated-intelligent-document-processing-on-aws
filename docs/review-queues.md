@@ -111,7 +111,8 @@ in review.
 
 **HITL › Queue Management** is visible to Admins only. It has two tables,
 **Production Queues** and **Test Studio Queues**, with the same columns: **Queue**,
-**Items**, **Assigned**, **Priority** (test sets have none) and an actions menu.
+**Items**, **Assigned**, **Priority** and an actions menu. Production queues also show
+**Status** and **Threshold**.
 
 **Who the Annotators are.** Work can be assigned only to members of the Cognito
 **Annotator** group, the same group that authorizes the Annotator's API calls. A user
@@ -128,7 +129,8 @@ their User Management record is created when they're first given a test set.
 Each row's actions menu offers **View** and **Settings**; a production queue also
 offers **Delete**. Each queue's page has a **Settings** button too.
 
-**Production queues** are created, edited and deleted here. Each queue has:
+**Production queues** are created with **Create queue** (the **Create Queue**
+dialog), edited in **Settings**, and deleted here. Each queue has:
 
 | Setting | Meaning | Default |
 |---|---|---|
@@ -148,7 +150,8 @@ only queue that can't be deleted. Today all routing goes to Default, so the Enab
 switch and threshold of any other queue are stored but not used for routing; items
 reach other queues when an Admin moves them there.
 
-Deleting a queue that still holds items moves them to the Default queue first:
+Deleting a queue that still holds items moves them to the Default queue first, and
+the confirmation says how many will move:
 open and assigned items become unassigned there (an assignee is told), and items
 still waiting for their first run to finish are activated in Default. Deleting is
 refused while one of the queue's items is being finalized; try again a minute later.
@@ -164,7 +167,9 @@ Both tables, **Production Queues** and **Test Studio Queues**, show for each que
 | Assigned | Assigned to an Annotator who hasn't saved any work on it yet |
 | In progress | Assigned, and the Annotator has saved work (a draft, or some reviewed sections) |
 | Annotators | How many Annotators are listed in the queue's Eligible Annotators (the names on hover). A change in Settings shows as soon as the dialog closes |
-| Priority | The queue's priority (test sets have none) |
+| Priority | The queue's priority |
+| Status | Production queues only: **Enabled**, or **Disabled** when no documents are added to it |
+| Threshold | Production queues only: the queue's confidence threshold, shown to two decimals (`0.80`) |
 
 The same counts appear at the top of each queue's page.
 
@@ -175,8 +180,9 @@ To work a queue, open its page, select items, and choose one of:
   reassigns it.
 - **Unassign** returns the item to the queue. Its draft is kept, and the former
   assignee is told.
-- **Move** sends the item to another queue.
-- **Remove from queue** takes the item out of review: the document ends `COMPLETED`
+- **Move…** sends the item to another queue.
+- **Remove from queue…** (for items waiting or assigned) asks for confirmation and
+  an optional note, then takes the item out of review: the document ends `COMPLETED`
   with its machine output, no draft is applied, and the review status object is
   deleted. An assignee is told. The note is optional and is kept in the item's
   history.
@@ -199,8 +205,9 @@ assigned, including authored ground truth: the Annotator checks or corrects its
 labels and completes it. A document with no labels yet needs draft labels first.
 Assigning a document also gives the Annotator access to that test set.
 
-A Test Studio queue's **Settings** are the production settings less the id, name and
-reject reasons: description, priority, time limit (the reminder) and Eligible
+A Test Studio queue's **Settings** are the production settings less the id, name,
+reject reasons, Enabled switch and confidence threshold (its documents come from the
+set, not from the pipeline): description, priority, time limit (the reminder) and Eligible
 Annotators. They are kept with the test set.
 
 A Test Studio queue loads quickly because each document's summary (label source,

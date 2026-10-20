@@ -20,7 +20,7 @@ import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import WorkItemsTable from './WorkItemsTable';
-import useSupervisorActions, { isAssignable, isSupervisorAction, isUnassignable } from './use-supervisor-actions';
+import useSupervisorActions, { isAssignable, isRemovable, isSupervisorAction, isUnassignable } from './use-supervisor-actions';
 import useWorkItemActions from './use-work-item-actions';
 import { QueueItemState } from '../common/review-status';
 import { claimItem, claimNextItem, documentName, fetchMyReviewQueues, fetchQueueItems, fetchQueuesOverview } from './review-api';
@@ -198,6 +198,7 @@ const ReviewQueuePage = (): React.JSX.Element => {
   const selectedItems = selected.flatMap((s) => (s.reviewItem ? [s.reviewItem] : []));
   const assignable = selectedItems.filter(isAssignable);
   const unassignable = selectedItems.filter(isUnassignable);
+  const removable = selectedItems.filter(isRemovable);
   const claimable = selectedItems.filter(isClaimable);
   const counted = (label: string, n: number) => (n > 0 ? `${label} (${n})` : label);
 
@@ -353,6 +354,11 @@ const ReviewQueuePage = (): React.JSX.Element => {
                 <span title={selectedItems.length === 0 ? 'Select items to move' : undefined}>
                   <Button disabled={selectedItems.length === 0} onClick={() => supervisor.open('move', selectedItems)}>
                     {counted('Move…', selectedItems.length)}
+                  </Button>
+                </span>
+                <span title={removable.length === 0 ? 'Select items waiting for review or assigned' : undefined}>
+                  <Button disabled={removable.length === 0} onClick={() => supervisor.open('remove', removable)}>
+                    {counted('Remove from queue…', removable.length)}
                   </Button>
                 </span>
               </SpaceBetween>

@@ -3,7 +3,8 @@
 //
 // HITL › Queue Management (Admin): the system-wide production review queues, which
 // Admins create, edit and delete here, and the Test Studio queues, one per test set.
-// Open a queue to assign its items to Annotators, unassign them or move them.
+// Open a queue to assign its items to Annotators, unassign, move or remove them.
+// Deleting a queue moves its items to the Default queue.
 import React, { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -60,6 +61,26 @@ interface TestSetRow {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** Whether a queue takes new documents; a queue with no stored switch reads as on. */
+export const QueueStatusCell = ({ enabled }: { enabled: boolean | null | undefined }): React.JSX.Element =>
+  enabled === false ? (
+    <StatusIndicator type="stopped">Disabled</StatusIndicator>
+  ) : (
+    <StatusIndicator type="success">Enabled</StatusIndicator>
+  );
+
+/** A confidence threshold the way review reasons show one ("0.80"), or "—". */
+export const formatThreshold = (threshold: number | null | undefined): string => (threshold == null ? '—' : threshold.toFixed(2));
+
+/** Why a queue can't be deleted, or undefined when it can. A queue that holds items can: they move to Default. */
+export const deleteDisabledReason = (definition: ReviewQueueDefinition | null): string | undefined =>
+  !definition ? 'This queue is not defined' : definition.isDefaultQueue ? "The default queue can't be deleted" : undefined;
+
+/** The delete confirmation text, naming where a non-empty queue's items go. */
+export const deleteConfirmText = (queue: { id: string; name: string }, depth: number): string =>
+  `Delete the queue ${queue.name} (${queue.id})? This can't be undone.` +
+  (depth > 0 ? ` ${depth === 1 ? '1 item' : `${depth} items`} will move to the Default queue.` : '');
+
 /**
  * How many Annotators are listed on a queue (its Eligible Annotators, from its
  * Settings), with their names on hover. Only they work the queue; none listed means
@@ -84,7 +105,7 @@ const QueuesPage = (): React.JSX.Element => {
   const [annotators, setAnnotators] = useState<string[] | null>(null);
   const [annotatorsLoading, setAnnotatorsLoading] = useState(false);
   const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition | null } | null>(null);
-  const [deleting, setDeleting] = useState<ReviewQueueDefinition | null>(null);
+  const [deleting, setDeleting] = useState<{ queue: ReviewQueueDefinition; depth: number } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
@@ -188,7 +209,7 @@ const QueuesPage = (): React.JSX.Element => {
     filtering: {
       empty: (
         <Box textAlign="center" color="inherit" padding="s">
-          No queues yet. Create one to start routing documents to Annotators.
+          No queues yet. Create one to start reviewing documents.
         </Box>
       ),
       noMatch: <TableNoMatchState onClearFilter={() => production.actions.setFiltering('')} />,
@@ -219,14 +240,18 @@ const QueuesPage = (): React.JSX.Element => {
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      await deleteReviewQueue(deleting.id);
-      setSuccessMessage(`Deleted the queue ${deleting.name}.`);
+      await deleteReviewQueue(deleting.queue.id);
+      setSuccessMessage(
+        deleting.depth > 0
+          ? `Deleted the queue ${deleting.queue.name}; its items moved to the Default queue.`
+          : `Deleted the queue ${deleting.queue.name}.`,
+      );
       setDeleting(null);
       await loadProduction();
     } catch (err) {
       setDeleteError(
-        reviewErrorCode(err) === 'QUEUE_NOT_EMPTY'
-          ? 'This queue still holds items. Move them to another queue or finish them first.'
+        reviewErrorCode(err) === 'QUEUE_FINALIZING'
+          ? 'An item in this queue is being completed. Try again in a minute.'
           : describeApiError(err, 'delete the queue'),
       );
     } finally {
@@ -236,14 +261,7 @@ const QueuesPage = (): React.JSX.Element => {
 
   const productionMenu = (row: ProductionRow): ButtonDropdownProps.Item[] => {
     const d = row.definition;
-    const depth = row.health?.summary.depth ?? 0;
-    const deleteReason = !d
-      ? 'This queue is not defined'
-      : d.isDefaultQueue
-        ? "The default queue can't be deleted"
-        : depth > 0
-          ? 'Move or finish its items first'
-          : undefined;
+    const deleteReason = deleteDisabledReason(d);
     return [
       { id: 'view', text: 'View' },
       { id: 'edit', text: 'Settings', disabled: !d, disabledReason: d ? undefined : 'This queue is not defined' },
@@ -256,7 +274,7 @@ const QueuesPage = (): React.JSX.Element => {
     else if (action === 'edit' && row.definition) openEditor(row.definition);
     else if (action === 'delete' && row.definition) {
       setDeleteError(null);
-      setDeleting(row.definition);
+      setDeleting({ queue: row.definition, depth: row.health?.summary.depth ?? 0 });
     }
   };
 
@@ -303,6 +321,12 @@ const QueuesPage = (): React.JSX.Element => {
       ),
     },
     {
+      id: 'status',
+      header: 'Status',
+      cell: (row) => (row.definition ? <QueueStatusCell enabled={row.definition.enabled} /> : '—'),
+      sortingComparator: (a, b) => Number(a.definition?.enabled !== false) - Number(b.definition?.enabled !== false),
+    },
+    {
       id: 'items',
       header: 'Items',
       cell: (row) => countCell(row.health?.summary.depth),
@@ -337,6 +361,12 @@ const QueuesPage = (): React.JSX.Element => {
       header: 'Priority',
       cell: (row) => row.definition?.priority ?? '—',
       sortingComparator: (a, b) => (a.definition?.priority ?? 0) - (b.definition?.priority ?? 0),
+    },
+    {
+      id: 'threshold',
+      header: 'Threshold',
+      cell: (row) => formatThreshold(row.definition?.confidenceThreshold),
+      sortingComparator: (a, b) => (a.definition?.confidenceThreshold ?? -1) - (b.definition?.confidenceThreshold ?? -1),
     },
     {
       id: 'actions',
@@ -474,7 +504,7 @@ const QueuesPage = (): React.JSX.Element => {
           header={
             <Header
               counter={productionInitial ? undefined : `(${productionRows.length})`}
-              description="System-wide queues for processed documents with low-confidence fields. The configuration routes documents to them by id."
+              description="System-wide queues for processed documents with low-confidence fields. While the Default queue is enabled, documents with a field below its threshold arrive there."
               actions={
                 <Button variant="primary" onClick={() => openEditor(null)}>
                   Create queue
@@ -573,7 +603,7 @@ const QueuesPage = (): React.JSX.Element => {
       >
         <SpaceBetween size="m">
           {deleteError && <Alert type="error">{deleteError}</Alert>}
-          <Box>{deleting ? `Delete the queue ${deleting.name} (${deleting.id})? This can't be undone.` : null}</Box>
+          <Box>{deleting ? deleteConfirmText(deleting.queue, deleting.depth) : null}</Box>
         </SpaceBetween>
       </Modal>
       <QueueDefinitionModal

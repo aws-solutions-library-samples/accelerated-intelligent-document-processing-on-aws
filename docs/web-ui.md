@@ -647,14 +647,15 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
   Queues** (one per test set), each listing Queue, Items, Pending, Assigned, In progress, Annotators and Priority with an
-  actions menu. Admins create, edit and delete
+  actions menu; Production queues also show **Status** (Enabled or Disabled) and
+  **Threshold**. Admins create, edit and delete
   Production queues here, setting each one's name, priority, time limit, eligible
   Annotators (who works the queue), reject reasons, **Enabled** switch and
   **Confidence threshold**. Low-confidence production documents go to the Default
   queue when it is enabled, judged against its threshold. Deleting a queue moves its
   items to Default; Default itself can't be deleted. On each queue's page, Admins
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
-  to another queue, or **Remove** them from the queue (the document completes with
+  to another queue, or **Remove from queue** (the document completes with
   its machine output).
 - **My Work › Queues** lists the queues you're listed on. On a queue's page you can
   open any item read-only and **Claim** one nobody holds, which assigns it to you.

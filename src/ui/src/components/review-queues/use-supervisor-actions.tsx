@@ -1,8 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The Admin actions on production review items — Assign, Unassign, Move — for one
-// item (row menu) or several (the selection), plus the modals they open.
+// The Admin actions on production review items — Assign, Unassign, Move, Remove from
+// queue — for one item (row menu) or several (the selection), plus the modals they open.
 import React, { useCallback, useState } from 'react';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
 
@@ -11,12 +11,12 @@ import useAppContext from '../../contexts/app';
 import { QueueItemState } from '../common/review-status';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import AssignModal from './AssignModal';
-import { MoveItemModal, UnassignModal } from './SupervisorModals';
-import { documentName, forceReleaseItem, moveItem, reassignItem } from './review-api';
+import { MoveItemModal, RemoveItemModal, UnassignModal } from './SupervisorModals';
+import { documentName, forceReleaseItem, moveItem, reassignItem, removeItem } from './review-api';
 import { eligibleAnnotators, listAnnotatorEmails } from './reviewer-assignment';
 
-export type SupervisorAction = 'assign' | 'unassign' | 'move';
-const SUPERVISOR_ACTIONS = new Set<string>(['assign', 'unassign', 'move']);
+export type SupervisorAction = 'assign' | 'unassign' | 'move' | 'remove';
+const SUPERVISOR_ACTIONS = new Set<string>(['assign', 'unassign', 'move', 'remove']);
 
 export const isSupervisorAction = (id: string): id is SupervisorAction => SUPERVISOR_ACTIONS.has(id);
 
@@ -25,6 +25,16 @@ export const isAssignable = (item: ReviewItem): boolean => item.state === QueueI
 
 /** Whether an item is assigned and can be taken back. */
 export const isUnassignable = (item: ReviewItem): boolean => item.state === QueueItemState.CLAIMED;
+
+/** Whether an item can be taken out of review (it is waiting, or assigned). */
+export const isRemovable = isAssignable;
+
+const ELIGIBLE: Record<SupervisorAction, (item: ReviewItem) => boolean> = {
+  assign: isAssignable,
+  unassign: isUnassignable,
+  move: () => true,
+  remove: isRemovable,
+};
 
 interface Options {
   /** Every system-wide queue definition: the targets Move offers and each queue's eligible Annotators. */
@@ -52,7 +62,7 @@ const useSupervisorActions = ({ queues, onChanged }: Options) => {
 
   const open = useCallback(
     (action: SupervisorAction, items: readonly ReviewItem[]) => {
-      const eligible = items.filter(action === 'assign' ? isAssignable : action === 'unassign' ? isUnassignable : () => true);
+      const eligible = items.filter(ELIGIBLE[action]);
       if (eligible.length === 0) return;
       setTarget({ action, items: eligible });
       if (action === 'assign' && annotators == null) void loadAnnotators();
@@ -66,6 +76,7 @@ const useSupervisorActions = ({ queues, onChanged }: Options) => {
       if (!item) return [];
       const assignable = isAssignable(item);
       const unassignable = isUnassignable(item);
+      const removable = isRemovable(item);
       const others = queues.filter((q) => q.id !== item.queue);
       return [
         {
@@ -88,6 +99,12 @@ const useSupervisorActions = ({ queues, onChanged }: Options) => {
               text: 'Move to another queue…',
               disabled: others.length === 0,
               disabledReason: others.length === 0 ? 'There is no other queue' : undefined,
+            },
+            {
+              id: 'remove',
+              text: 'Remove from queue…',
+              disabled: !removable,
+              disabledReason: removable ? undefined : 'This item is not waiting for review',
             },
           ],
         },
@@ -158,6 +175,18 @@ const useSupervisorActions = ({ queues, onChanged }: Options) => {
             (item) => moveItem(item, queueId),
             (n) => `Moved ${noun(n)} to ${queues.find((q) => q.id === queueId)?.name ?? queueId}.`,
             'move',
+          )
+        }
+      />
+      <RemoveItemModal
+        items={target?.action === 'remove' ? items : []}
+        loading={busy}
+        onDismiss={() => setTarget(null)}
+        onConfirm={(note) =>
+          void runAll(
+            (item) => removeItem(item, note),
+            (n) => `Removed ${noun(n)} from review.`,
+            'remove',
           )
         }
       />

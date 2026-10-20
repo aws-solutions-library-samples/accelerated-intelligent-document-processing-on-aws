@@ -17,6 +17,7 @@ import {
   reassignReviewItem as reassignReviewItemMutation,
   rejectReviewItem as rejectReviewItemMutation,
   releaseReviewItem as releaseReviewItemMutation,
+  removeReviewItem as removeReviewItemMutation,
   saveReviewDraft as saveReviewDraftMutation,
 } from '../../graphql/generated';
 import type {
@@ -123,6 +124,12 @@ export const reassignItem = async (item: ItemRef, assigneeEmail: string): Promis
 export const moveItem = async (item: ItemRef, targetQueue: string): Promise<ReviewItem> => {
   const r = await client.graphql({ query: moveReviewItemMutation, variables: { ...ref(item), targetQueue } });
   return required(r.data?.moveReviewItem, 'moveReviewItem');
+};
+
+/** Take an item out of review (Admin): the document completes with its machine results. */
+export const removeItem = async (item: ItemRef, note?: string): Promise<ReviewItem> => {
+  const r = await client.graphql({ query: removeReviewItemMutation, variables: { ...ref(item), note: note || undefined } });
+  return required(r.data?.removeReviewItem, 'removeReviewItem');
 };
 
 /** "Low confidence: Employer name 0.62 < 0.80" — one reason's chip text. */

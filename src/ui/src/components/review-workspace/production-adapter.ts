@@ -5,8 +5,8 @@
 // page images and section results, autosaves edits as drafts, and completes or
 // rejects the item. Drafts are applied by the finalize run on Complete.
 //
-// Only the Annotator verbs are called here. Claiming, renewing, releasing and
-// escalating are Admin operations on the queue pages: an assignment does not expire.
+// Only the Annotator verbs are called here. Assigning, unassigning, moving and
+// removing are Admin operations on the queue pages: an assignment does not expire.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
