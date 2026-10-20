@@ -11,6 +11,7 @@ from idp_common.classification.forced_class import apply_forced_document_class
 from idp_common.classification.models import (
     ClassificationResult,
     DocumentClassification,
+    Segment,
 )
 from idp_common.classification.service import ClassificationService
 
@@ -18,5 +19,6 @@ __all__ = [
     "ClassificationService",
     "DocumentClassification",
     "ClassificationResult",
+    "Segment",
     "apply_forced_document_class",
 ]

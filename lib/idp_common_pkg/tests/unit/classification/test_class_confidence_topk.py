@@ -343,7 +343,7 @@ class TestPromptComposition:
         with caplog.at_level("WARNING"):
             composed = service._get_classification_config()["task_prompt"]
         assert "<class-confidence>" not in composed
-        assert "only composed for" in caplog.text
+        assert "is not composed for a" in caplog.text
 
     def test_empty_block_warns_instead_of_silently_asking_for_nothing(self, caplog):
         service = _service(_config("topk", task_prompt_topk=""))

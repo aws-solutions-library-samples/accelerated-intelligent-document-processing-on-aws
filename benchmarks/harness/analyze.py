@@ -1238,6 +1238,18 @@ def score_synthetic(bucket, doc_prefix, truth):
         "sections_expected": expected_sections,
         "sections_correct": sections_correct,
         "rows_truth": n_truth,
+        # ⚠️ Distinct truth identifiers found ANYWHERE in the section's JSON, which
+        # is deliberate (a tag is read wherever the OCR backend put it) and is not
+        # the same thing as a row. A model declining inside the field — a declared
+        # array coming back as "the statement contains 400 transactions (SEQ00000 to
+        # SEQ00399), too many to list" — contributes every id its sentence names, so
+        # four committed runs read 2 against a correct `conf_rows_expected` of 0.
+        # Left as it is on purpose: the raw sections the committed grids were scored
+        # from are not in the repository, so a narrowed scan cannot be re-measured
+        # over them. `test_row_identity_collapse.py::
+        # test_a_prose_refusal_inflates_the_row_count` executes the case, and
+        # `ExtractionService.LIST_FIELD_NOT_A_LIST_CODE` is the pipeline-side signal
+        # for the shape (#1505).
         "rows_extracted": len(extracted),
         "completeness_recall": round(recall, 4) if recall is not None else None,
         "truncation_prefix": prefix if n_truth else None,

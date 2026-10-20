@@ -136,6 +136,19 @@ class DocSplitMetrics:
     v_measure: Optional[float] = None
     rand_index: Optional[float] = None
     avg_ordering_score: Optional[float] = None
+    # Section accuracy split into its two halves (GitHub issue #1329).
+    # ``split_accuracy_without_order`` requires a predicted section to match on
+    # BOTH its page set and its class, so a wrong boundary and a wrong label are
+    # reported as the same failure and tuning effort goes to the wrong place.
+    # The decomposition is exact:
+    #     split_accuracy_without_order = boundary_accuracy x label_accuracy
+    # ``label_accuracy`` is None rather than 0.0 when no section's boundaries
+    # matched: no label was scored, and reporting zero would present "we never
+    # got far enough to judge the labels" as "every label was wrong".
+    boundary_accuracy: Optional[float] = None
+    label_accuracy: Optional[float] = None
+    boundary_matched_sections: int = 0
+    label_matched_sections: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
@@ -143,11 +156,15 @@ class DocSplitMetrics:
             "page_level_accuracy": self.page_level_accuracy,
             "split_accuracy_without_order": self.split_accuracy_without_order,
             "split_accuracy_with_order": self.split_accuracy_with_order,
+            "boundary_accuracy": self.boundary_accuracy,
+            "label_accuracy": self.label_accuracy,
             "total_pages": self.total_pages,
             "total_splits": self.total_splits,
             "correctly_classified_pages": self.correctly_classified_pages,
             "correctly_split_without_order": self.correctly_split_without_order,
             "correctly_split_with_order": self.correctly_split_with_order,
+            "boundary_matched_sections": self.boundary_matched_sections,
+            "label_matched_sections": self.label_matched_sections,
             "page_details": self.page_details,
             "section_details_without_order": self.section_details_without_order,
             "section_details_with_order": self.section_details_with_order,
@@ -574,6 +591,8 @@ class DocumentEvaluationResult:
                 "page_level_accuracy",
                 "split_accuracy_without_order",
                 "split_accuracy_with_order",
+                "boundary_accuracy",
+                "label_accuracy",
             ]:
                 if value >= 0.9:
                     return "🟢 Excellent"
@@ -605,6 +624,22 @@ class DocumentEvaluationResult:
             doc_split_table += f"| page_level_accuracy | {self.doc_split_metrics.page_level_accuracy:.4f} | {get_rating_for_metric('page_level_accuracy', self.doc_split_metrics.page_level_accuracy)} |\n"
             doc_split_table += f"| split_accuracy_without_order | {self.doc_split_metrics.split_accuracy_without_order:.4f} | {get_rating_for_metric('split_accuracy_without_order', self.doc_split_metrics.split_accuracy_without_order)} |\n"
             doc_split_table += f"| split_accuracy_with_order | {self.doc_split_metrics.split_accuracy_with_order:.4f} | {get_rating_for_metric('split_accuracy_with_order', self.doc_split_metrics.split_accuracy_with_order)} |\n"
+            # The two halves of split_accuracy_without_order, which conflates
+            # them (#1329): it requires a predicted section to match on BOTH
+            # page set and class, so a wrong boundary and a wrong label read
+            # identically and tuning effort goes to the wrong place.
+            # split_accuracy_without_order == boundary_accuracy x label_accuracy.
+            if self.doc_split_metrics.boundary_accuracy is not None:
+                doc_split_table += f"| boundary_accuracy | {self.doc_split_metrics.boundary_accuracy:.4f} | {get_rating_for_metric('boundary_accuracy', self.doc_split_metrics.boundary_accuracy)} |\n"
+            if self.doc_split_metrics.label_accuracy is not None:
+                doc_split_table += f"| label_accuracy | {self.doc_split_metrics.label_accuracy:.4f} | {get_rating_for_metric('label_accuracy', self.doc_split_metrics.label_accuracy)} |\n"
+            elif self.doc_split_metrics.boundary_accuracy is not None:
+                # Distinct from 0.0: no section's boundaries matched, so no
+                # label was ever scored.
+                doc_split_table += (
+                    "| label_accuracy | not scored (no section's boundaries "
+                    "matched) | |\n"
+                )
             sections.append(doc_split_table)
             sections.append("")
 
