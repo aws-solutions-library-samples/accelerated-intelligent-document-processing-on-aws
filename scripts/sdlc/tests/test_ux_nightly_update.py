@@ -512,15 +512,39 @@ def test_an_absent_stack_is_skipped_as_not_deployed_and_never_deployed_to(
 
 
 @pytest.mark.unit
-def test_a_stack_that_cannot_be_read_is_a_failure_and_not_an_absence(cbd, monkeypatch):
+@pytest.mark.parametrize("stack_name", ["idp-ux-nightly", "idp-ux-nightly-iam"])
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("Throttling", "Rate exceeded"),
+        (
+            "ValidationError",
+            "1 validation error detected: Value at 'stackName' failed to satisfy "
+            "constraint: Member must have length less than or equal to 128",
+        ),
+        ("AccessDenied", "Stack with id {stack} does not exist"),
+    ],
+    ids=["a-throttle", "a-malformed-request", "a-denial-saying-does-not-exist"],
+)
+def test_a_stack_that_cannot_be_read_is_a_failure_and_not_an_absence(
+    cbd, monkeypatch, stack_name, code, message
+):
+    """Only CloudFormation's absence answer, code and message together, is a skip.
+
+    ValidationError is also what a malformed request gets, so the code alone does
+    not say a stack is gone, and a message saying it does not exist under any
+    other code is not that answer either. When reading the stack or its -iam
+    pre-stack fails any other way, the update stops there as a precheck failure.
+    """
     installed = _install(cbd, monkeypatch)
-    installed.cf.describe_errors["idp-ux-nightly"] = _client_error(
-        "Throttling", "Rate exceeded", "DescribeStacks"
+    installed.cf.describe_errors[stack_name] = _client_error(
+        code, message.format(stack=stack_name), "DescribeStacks"
     )
 
     outcome = cbd.update_ux_nightly_stack(TEMPLATE_URL)
 
     assert (outcome["state"], outcome["phase"]) == ("failed", "precheck")
+    assert installed.cf.made("update_stack") == []
     assert installed.deploy.commands == []
 
 
