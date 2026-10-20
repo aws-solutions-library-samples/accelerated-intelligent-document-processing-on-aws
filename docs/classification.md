@@ -34,30 +34,19 @@ modality:
 | **Per page** (N calls) | prompt editing only | `multimodalPageLevelClassification` | prompt editing only |
 | **Whole packet** (1 call) | `textbasedHolisticClassification` | not available | not available |
 
-Three of the six combinations had no setting at all, and the two that did could
+Four of the six combinations had no setting at all, and the two that did could
 only be reached by editing the task prompt to add or remove a placeholder. Two
 independent settings cover all six; an enum of combinations would have to grow
 by a factor for every modality added.
 
-`classificationMethod` is still read when `granularity` is empty, so an existing
-configuration keeps its exact behaviour with no edit:
-
-| Existing value | Equivalent |
-|---|---|
-| `classificationMethod: multimodalPageLevelClassification` | `granularity: page`, text and images |
-| `classificationMethod: textbasedHolisticClassification` | `granularity: packet`, text only, no windowing |
-| task prompt without `{DOCUMENT_IMAGE}` | `modality.images: false` |
-| task prompt without `{DOCUMENT_TEXT}` | `modality.text: false` |
-
-⚠️ **One thing a legacy holistic configuration must keep.** `task_prompt` is a
-single key shared by both old methods, and there has never been a packet-shaped
-default prompt in this repository — not in the system defaults and not in any
-preset. The only way holistic ever worked was a hand-written packet-shaped
-`task_prompt`. So a configuration with `classificationMethod:
-textbasedHolisticClassification` and no `granularity` keeps using its own flat
-`task_prompt`; the shipped packet prompt applies only once you set
-`granularity: packet`, which is also when the configuration panel shows you the
-`packet.task_prompt` field to edit instead.
+The key was **removed** in config format 0.8 rather than deprecated in place, and
+a stored configuration carrying it is converted automatically on every read.
+Nothing needs editing. [Classification Method →
+Granularity](migration-classification-granularity.md) covers the conversion,
+including the two cases where it is not a pure rename — modality is deliberately
+left unset so a prompt-editing workaround keeps working, and a holistic config's
+hand-written prompt is copied into `classification.packet`, where packet
+granularity reads it.
 
 ### What each setting costs
 
@@ -171,7 +160,7 @@ The multimodal page-level classification supports including surrounding pages as
 
 ```yaml
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   contextPagesCount: 1  # Include 1 page before and 1 page after as context
   # contextPagesCount: 0  # Default: no additional context (current behavior)
   # contextPagesCount: 2  # Include 2 pages before and 2 pages after
@@ -484,7 +473,7 @@ classifications:
 
 ```yaml
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   enforceValidClasses: true       # Validate + retry on invalid class (default: true)
   maxValidationRetries: 2         # Re-prompt up to N times (default: 2)
   invalidClassFallback: unclassified  # Class used when retries are exhausted (default: unclassified)
@@ -535,7 +524,7 @@ Example configuration:
 
 ```yaml
 classification:
-  classificationMethod: textbasedHolisticClassification
+  granularity: packet
   model: us.amazon.nova-pro-v1:0
   task_prompt: >-
     <task-description>
@@ -565,8 +554,8 @@ classification:
 
 ##### Packet granularity: images, few-shot examples and windowing
 
-Setting `granularity: packet` (rather than relying on the deprecated
-`classificationMethod`) gives this path three things it did not have:
+Packet granularity gives this path three things the old
+`textbasedHolisticClassification` did not have:
 
 **Page images.** The packet call sent one text block and nothing else, so no
 setting produced packet-level classification that could read page layout — and
@@ -651,7 +640,7 @@ The `sectionSplitting` configuration controls how classified pages are grouped i
 ```yaml
 classification:
   sectionSplitting: disabled
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 ```
 
 **Result:**
@@ -707,7 +696,7 @@ This voting behavior addresses [Issue #167](https://github.com/aws-solutions-lib
 ```yaml
 classification:
   sectionSplitting: page
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 ```
 
 **Result:**
@@ -733,7 +722,7 @@ This strategy directly addresses [Issue #146](https://github.com/aws-solutions-l
 ```yaml
 classification:
   sectionSplitting: llm_determined  # This is the default
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 ```
 
 **Result:**
@@ -755,7 +744,7 @@ The `sectionSplitting` setting is placed in the classification configuration sec
 ```yaml
 classification:
   model: us.amazon.nova-pro-v1:0
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   sectionSplitting: page  # Options: disabled, page, llm_determined
   maxPagesForClassification: "ALL"
   temperature: "0.0"
@@ -1907,7 +1896,7 @@ For multi-class configurations using page-level classification, you can use page
 
 ```yaml
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 
 classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"

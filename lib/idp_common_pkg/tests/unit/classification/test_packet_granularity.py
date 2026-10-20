@@ -145,30 +145,29 @@ def _bedrock_reply(segments: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 @pytest.mark.unit
 class TestGranularityResolution:
-    def test_an_empty_granularity_derives_page_from_the_default_method(self):
+    """`granularity` is now the only setting: `classificationMethod` was removed
+    in config format 0.8 and is converted to it on every config read by
+    `migrations.v07_to_v08`. The conversion — including the prompt relocation a
+    holistic config needs — is covered in
+    `tests/unit/config/test_v07_to_v08_migration.py`; what is left here is that
+    the service reads the resolved value."""
+
+    def test_the_default_is_page(self):
         service = _service(granularity="")
         assert service.granularity == ClassificationService.GRANULARITY_PAGE
-        assert service.granularity_is_explicit is False
 
-    def test_an_empty_granularity_derives_packet_from_the_legacy_method(self):
+    @pytest.mark.parametrize("value", ["page", "packet"])
+    def test_the_configured_value_is_what_the_service_uses(self, value):
+        assert _service(granularity=value).granularity == value
+
+    def test_a_legacy_config_is_migrated_before_the_service_sees_it(self):
+        """End to end through the real config path, so the service and the
+        migration cannot disagree about what a stored config means."""
         service = _service(
             granularity="",
             classificationMethod="textbasedHolisticClassification",
         )
         assert service.granularity == ClassificationService.GRANULARITY_PACKET
-        assert service.granularity_is_explicit is False
-
-    def test_an_explicit_granularity_wins_over_the_legacy_method(self):
-        service = _service(
-            granularity="page",
-            classificationMethod="textbasedHolisticClassification",
-        )
-        assert service.granularity == ClassificationService.GRANULARITY_PAGE
-        # And the deprecated field is brought into line, so the other services
-        # that still read it agree with what actually ran.
-        assert service.classification_method == (
-            ClassificationService.MULTIMODAL_PAGE_LEVEL
-        )
 
     def test_an_unknown_granularity_is_refused_rather_than_defaulted(self):
         """The two values produce different prompts, different parsers and an
@@ -177,23 +176,14 @@ class TestGranularityResolution:
         with pytest.raises(Exception, match="granularity must be"):
             _service(granularity="holistic")
 
-    def test_an_invalid_legacy_method_still_falls_back_with_a_warning(self):
-        service = _service(granularity="", classificationMethod="nonsense")
-        assert service.granularity == ClassificationService.GRANULARITY_PAGE
-
-    def test_assigning_the_method_after_construction_still_switches_granularity(self):
-        """The shipped notebooks and the test suite both do this. A plain
-        attribute would have left every such assignment silently inert once
-        dispatch moved to granularity."""
-        service = _service(granularity="")
-        assert service.granularity == ClassificationService.GRANULARITY_PAGE
-        service.classification_method = ClassificationService.TEXTBASED_HOLISTIC
-        assert service.granularity == ClassificationService.GRANULARITY_PACKET
-
-    def test_an_explicit_granularity_is_not_overridden_by_a_late_assignment(self):
+    def test_the_deprecated_field_is_gone_from_the_model(self):
+        """Not hidden, removed. A dropdown saying "deprecated, ignored when
+        granularity is set" is a worse UI than no dropdown, and two readable
+        homes for one setting needs a precedence rule every future reader has to
+        know about."""
         service = _service(granularity="page")
-        service.classification_method = ClassificationService.TEXTBASED_HOLISTIC
-        assert service.granularity == ClassificationService.GRANULARITY_PAGE
+        assert not hasattr(service.config.classification, "classificationMethod")
+        assert not hasattr(service, "classification_method")
 
 
 @pytest.mark.unit
@@ -211,19 +201,34 @@ class TestPromptResolution:
         assert config["system_prompt"] == "You classify pages."
 
     def test_a_legacy_holistic_config_keeps_its_own_hand_written_prompt(self):
-        """⚠️ The back-compat case that matters most. The only way holistic ever
-        worked was a hand-written packet-shaped flat task_prompt, so preferring
-        the new packet default here would silently replace the operator's own
-        prompt with ours."""
-        service = _service(
-            granularity="",
-            classificationMethod="textbasedHolisticClassification",
-            task_prompt="my own holistic prompt {DOCUMENT_TEXT}",
+        """⚠️ The back-compat case that matters most, and it is now the
+        migration that delivers it: the only way holistic ever worked was a
+        hand-written packet-shaped flat task_prompt, so `granularity: packet`
+        alone would have the service read the shipped `packet.task_prompt`
+        instead — ours, not theirs. `migrations.v07_to_v08` relocates the flat
+        prompt into `packet` for exactly this reason.
+
+        The config here carries NO `packet` block, which is the real legacy
+        shape; a config that already had one is the "existing packet prompt
+        wins" case covered in the migration suite.
+        """
+        service = ClassificationService(
+            region="us-west-2",
+            config={
+                "classes": _classes("invoice", "receipt"),
+                "classification": {
+                    "model": "us.amazon.nova-2-lite-v1:0",
+                    "classificationMethod": "textbasedHolisticClassification",
+                    "system_prompt": "You split packets, by hand.",
+                    "task_prompt": "my own holistic prompt {DOCUMENT_TEXT}",
+                    "confidence": {"mode": "off"},
+                },
+            },
         )
         assert service.granularity == ClassificationService.GRANULARITY_PACKET
         config = service._get_classification_config()
         assert config["task_prompt"] == "my own holistic prompt {DOCUMENT_TEXT}"
-        assert config["system_prompt"] == "You classify pages."
+        assert config["system_prompt"] == "You split packets, by hand."
 
     def test_an_empty_packet_prompt_falls_back_and_warns(self, caplog):
         import logging
@@ -265,19 +270,34 @@ class TestPacketConfidenceBlocks:
         )
         assert "PAGE BLOCK" in service._get_classification_config()["task_prompt"]
 
-    def test_a_legacy_holistic_config_gets_no_composed_block(self, caplog):
-        import logging
-
-        service = _service(
-            granularity="",
-            classificationMethod="textbasedHolisticClassification",
-            task_prompt="my own prompt {DOCUMENT_TEXT}",
-            confidence={"mode": "topk", "task_prompt_topk": "PAGE BLOCK"},
+    def test_a_migrated_legacy_config_gets_the_per_segment_block(self):
+        """A legacy holistic config used to get NO composed block, with a
+        warning, because its prompt was hand-written and there was no output
+        shape to describe. The migration relocates that prompt into
+        `classification.packet`, so there is no longer a packet config without a
+        packet prompt — and the per-segment block is always the right one."""
+        service = ClassificationService(
+            region="us-west-2",
+            config={
+                "classes": _classes("invoice", "receipt"),
+                "classification": {
+                    "model": "us.amazon.nova-2-lite-v1:0",
+                    "classificationMethod": "textbasedHolisticClassification",
+                    "system_prompt": "You split packets, by hand.",
+                    "task_prompt": "my own prompt {DOCUMENT_TEXT}",
+                    "confidence": {
+                        "mode": "topk",
+                        "task_prompt_topk": "PAGE BLOCK",
+                        "task_prompt_topk_packet": "PACKET BLOCK per segment",
+                    },
+                },
+            },
         )
-        with caplog.at_level(logging.WARNING):
-            prompt = service._get_classification_config()["task_prompt"]
+        prompt = service._get_classification_config()["task_prompt"]
+        assert "PACKET BLOCK per segment" in prompt
         assert "PAGE BLOCK" not in prompt
-        assert "is not composed for a" in caplog.text
+        # And it is still the operator's own prompt that was composed into.
+        assert "my own prompt" in prompt
 
 
 # --------------------------------------------------------------------------

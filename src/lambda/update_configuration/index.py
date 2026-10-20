@@ -441,16 +441,16 @@ def detect_pattern_from_config(config: Dict[str, Any]) -> str:
     Returns:
         Pattern name (pattern-1 or pattern-2)
     """
-    # Check classification method
-    classification_method = config.get("classification", {}).get(
-        "classificationMethod", ""
-    )
-
-    if classification_method == "bda":
+    # BDA mode is `use_bda`, which is the flag the pipeline itself branches on.
+    # This used to sniff `classification.classificationMethod == "bda"` — a THIRD
+    # value that key never legitimately held (its enum was
+    # multimodalPageLevel/textbasedHolistic) and that nothing in the product
+    # wrote. It was removed in config format 0.8 and is migrated away on read,
+    # so a sniff for it now matches nothing.
+    if config.get("use_bda"):
         return "pattern-1"
-    else:
-        # Default to pattern-2 (most common - Textract + Bedrock LLM)
-        return "pattern-2"
+    # Default to pattern-2 (most common - Textract + Bedrock LLM)
+    return "pattern-2"
 
 
 def merge_custom_with_defaults(

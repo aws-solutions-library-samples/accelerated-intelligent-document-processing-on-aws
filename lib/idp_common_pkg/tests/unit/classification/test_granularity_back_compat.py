@@ -103,10 +103,10 @@ class TestAliasTable:
         service = _service(_shipped_classification())
         assert service.granularity == ClassificationService.GRANULARITY_PAGE
         assert service.strategy == ClassificationService.STRATEGY_ONE_STAGE
-        assert service.granularity_is_explicit is False
 
     def test_multimodal_page_level_maps_to_page_with_text_and_images(self):
         config = _shipped_classification()
+        config.pop("granularity", None)
         config["classificationMethod"] = "multimodalPageLevelClassification"
         service = _service(config)
         assert service.granularity == ClassificationService.GRANULARITY_PAGE
@@ -114,15 +114,25 @@ class TestAliasTable:
 
     def test_textbased_holistic_maps_to_packet_with_text_only(self):
         config = _shipped_classification()
+        # A pre-0.8 config carried no `granularity` at all — that key did not
+        # exist. Removing it is what makes this a legacy config rather than a
+        # current one with a stale key bolted on, where "explicit granularity
+        # wins" correctly keeps `page`.
+        config.pop("granularity", None)
         config["classificationMethod"] = "textbasedHolisticClassification"
         # A real legacy holistic deployment: a hand-written packet-shaped prompt
-        # in the flat key, because that was the only way it worked.
+        # in the flat key, because that was the only way it worked. The
+        # migration relocates it into `packet`, which is where packet
+        # granularity reads it from — so the modality INFERENCE reads it there
+        # too, and this config stays text-only exactly as it was.
         config["task_prompt"] = (
             "Return segments.\n{CLASS_NAMES_AND_DESCRIPTIONS}\n{DOCUMENT_TEXT}\n"
         )
         service = _service(config)
         assert service.granularity == ClassificationService.GRANULARITY_PACKET
         assert service._resolve_modality() == (True, False)
+        # And it is the operator's prompt, not the shipped packet default.
+        assert service._raw_task_prompt() == config["task_prompt"]
 
     def test_a_prompt_without_the_image_placeholder_means_images_off(self):
         config = _shipped_classification()
@@ -209,9 +219,11 @@ class TestIdenticalPrompts:
         """⚠️ The row most easily broken. Preferring the new shipped packet
         default here would silently replace the operator's own prompt."""
         hand_written = (
-            "MY OWN HOLISTIC PROMPT {CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}"
+            "MY OWN HOLISTIC PROMPT: return segments "
+            "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}"
         )
         config = _shipped_classification()
+        config.pop("granularity", None)
         config["classificationMethod"] = "textbasedHolisticClassification"
         config["task_prompt"] = hand_written
         config["confidence"] = {"mode": "off"}

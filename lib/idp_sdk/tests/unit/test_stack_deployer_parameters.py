@@ -796,24 +796,31 @@ def test_an_empty_config_file_uploads_an_empty_mapping(
 
 
 @pytest.mark.parametrize(
-    ("classification_method", "expected_pattern"),
+    ("config_body", "expected_pattern"),
     [
-        ("bda", "pattern-1"),
-        ("multimodalPageLevelClassification", "pattern-2"),
-        ("", "pattern-2"),
+        ({"use_bda": True}, "pattern-1"),
+        ({"use_bda": False}, "pattern-2"),
+        ({"classification": {"granularity": "page"}}, "pattern-2"),
+        ({}, "pattern-2"),
     ],
 )
-def test_the_pattern_is_auto_detected_from_the_classification_method(
+def test_the_pattern_is_auto_detected_from_use_bda(
     aws_credentials: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    classification_method: str,
+    config_body: dict,
     expected_pattern: str,
     ssl_only_hardening_calls: list,
 ):
     """Merging against the wrong pattern's defaults deploys a configuration the
     operator never wrote — a BDA config merged with pattern-2 defaults gains an
     OCR/Textract section that does not apply, and vice versa.
+
+    Detection reads `use_bda`, the flag the pipeline itself branches on. It
+    sniffed `classification.classificationMethod == "bda"` until config format
+    0.8 — a THIRD value that key never legitimately held (its enum was
+    multimodalPageLevel/textbasedHolistic), which nothing in the product wrote,
+    and which is migrated away on read now.
 
     The merge itself belongs to `idp_common`; what is under test here is which
     pattern this module asks for, and that the *merged* result is what gets
@@ -831,9 +838,7 @@ def test_the_pattern_is_auto_detected_from_the_classification_method(
     monkeypatch.setattr(merge_utils, "merge_config_with_defaults", fake_merge)
 
     cfg = tmp_path / "c.yaml"
-    cfg.write_text(
-        yaml.dump({"classification": {"classificationMethod": classification_method}})
-    )
+    cfg.write_text(yaml.dump(config_body))
 
     with mock_aws():
         uri = upload_local_config(str(cfg), "us-east-1")

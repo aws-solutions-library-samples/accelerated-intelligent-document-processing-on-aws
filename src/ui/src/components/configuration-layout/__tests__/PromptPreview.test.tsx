@@ -28,12 +28,15 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import PromptPreview, {
+  appendClassConfidenceBlock,
+  applyModalityToPrompt,
   EXTRACTION_TOOL_NAME,
   expectedSchemaBlockFor,
   extractionModeOf,
   formatToolSpecForPreview,
   getAttributeNamesForClass,
   invalidToolPropertyNames,
+  resolveTopK,
   schemaDivergenceFor,
   simpleIntegratedDowngraded,
   toolInputSchemaFor,
@@ -594,5 +597,122 @@ describe('PromptPreview token accounting', () => {
     // ...but the RAW template tab must show only what the user typed, since that
     // is the text they edit. A block appended by the runtime is not part of it.
     expect(await promptBody(/^Raw System Template$/)).toBe('You are a document extraction expert.');
+  });
+});
+
+// ─── Classification prompt resolution ────────────────────────────────────────
+//
+// The prompt a classification call actually sends is a function of FOUR settings
+// — granularity, strategy, modality and confidence.mode — so a preview showing
+// the raw `classification.task_prompt` shows a prompt that will not be sent.
+// That is worse than showing nothing, because it looks authoritative.
+//
+// These mirror the Python in `ClassificationService`, and the point of testing
+// them separately is that the two implementations can drift: a change to
+// `_apply_modality_to_prompt` with no change here leaves the preview confidently
+// wrong, which is exactly how the old `classificationMethod` dropdown came to
+// offer a method that failed every document.
+
+describe('applyModalityToPrompt', () => {
+  const PROMPT = '<document-ocr-data>\n{DOCUMENT_TEXT}\n</document-ocr-data>\n' + '<document-image>\n{DOCUMENT_IMAGE}\n</document-image>\n';
+
+  it('leaves the prompt alone when both flags are unset', () => {
+    // ⚠️ The common case by far. An unset flag is INFERRED from the
+    // placeholders, so the prompt already agrees with it and rewriting would
+    // misrepresent what runs.
+    expect(applyModalityToPrompt(PROMPT, {})).toBe(PROMPT);
+    expect(applyModalityToPrompt(PROMPT, { text: '', images: '' })).toBe(PROMPT);
+  });
+
+  it('leaves the prompt alone when an explicit flag agrees with it', () => {
+    expect(applyModalityToPrompt(PROMPT, { text: 'true', images: 'true' })).toBe(PROMPT);
+  });
+
+  it('removes the image placeholder and its wrapper when images are off', () => {
+    const out = applyModalityToPrompt(PROMPT, { images: 'false' });
+    expect(out).not.toContain('{DOCUMENT_IMAGE}');
+    // An empty element announcing a switched-off modality is misleading, so the
+    // wrapper goes too.
+    expect(out).not.toContain('<document-image>');
+    expect(out).toContain('{DOCUMENT_TEXT}');
+  });
+
+  it('removes the text placeholder and its wrapper when text is off', () => {
+    const out = applyModalityToPrompt(PROMPT, { text: 'false' });
+    expect(out).not.toContain('{DOCUMENT_TEXT}');
+    expect(out).not.toContain('<document-ocr-data>');
+    expect(out).toContain('{DOCUMENT_IMAGE}');
+  });
+
+  it('appends a placeholder when a flag is on and the prompt has none', () => {
+    const out = applyModalityToPrompt('{DOCUMENT_TEXT}', { images: 'true' });
+    expect(out).toContain('{DOCUMENT_IMAGE}');
+    expect(out.indexOf('{DOCUMENT_TEXT}')).toBeLessThan(out.indexOf('{DOCUMENT_IMAGE}'));
+  });
+
+  it('deletes an unwrapped placeholder', () => {
+    expect(applyModalityToPrompt('before {DOCUMENT_IMAGE} after', { images: 'false' })).toBe('before  after');
+  });
+
+  it('accepts a real boolean as well as the string form', () => {
+    // The form holds booleans while a stored config deserializes as strings.
+    expect(applyModalityToPrompt(PROMPT, { images: false })).not.toContain('{DOCUMENT_IMAGE}');
+    expect(applyModalityToPrompt(PROMPT, { images: true })).toBe(PROMPT);
+  });
+});
+
+describe('appendClassConfidenceBlock', () => {
+  const BLOCK = '<class-confidence>top {TOP_K_CANDIDATES}</class-confidence>';
+
+  it('splices before the cache point so the block stays cacheable', () => {
+    const core = 'instructions\n<<CACHEPOINT>>\n{DOCUMENT_TEXT}';
+    const out = appendClassConfidenceBlock(core, BLOCK, 3);
+    expect(out.indexOf('top 3')).toBeLessThan(out.indexOf('<<CACHEPOINT>>'));
+  });
+
+  it('falls back to the document marker when there is no cache point', () => {
+    const out = appendClassConfidenceBlock('a\n{DOCUMENT_TEXT}', BLOCK, 3);
+    expect(out.indexOf('top 3')).toBeLessThan(out.indexOf('{DOCUMENT_TEXT}'));
+  });
+
+  it('appends when the prompt has no marker at all', () => {
+    expect(appendClassConfidenceBlock('just text', BLOCK, 2)).toContain('top 2');
+  });
+
+  it('is idempotent, so a prompt that spells the block out itself is left alone', () => {
+    const core = 'mine <class-confidence>my own wording</class-confidence>';
+    expect(appendClassConfidenceBlock(core, BLOCK, 3)).toBe(core);
+  });
+
+  it('does nothing with an empty block', () => {
+    expect(appendClassConfidenceBlock('core', '', 3)).toBe('core');
+  });
+
+  it('leaves the placeholder alone for the verbalized block, which has no count', () => {
+    const out = appendClassConfidenceBlock('core', '<class-confidence>one number</class-confidence>', null);
+    expect(out).toContain('one number');
+  });
+});
+
+describe('resolveTopK', () => {
+  it('never asks for more candidates than there are classes', () => {
+    // Asking for 5 from a 3-class vocabulary invites the model to invent
+    // classes to fill the list.
+    expect(resolveTopK(5, 3)).toBe(3);
+  });
+
+  it('never asks for fewer than two', () => {
+    // One candidate is a verbalized confidence with extra syntax; the
+    // calibration benefit comes from having to rank alternatives.
+    expect(resolveTopK(1, 10)).toBe(2);
+    expect(resolveTopK(5, 1)).toBe(2);
+  });
+
+  it('passes a sensible request through', () => {
+    expect(resolveTopK(3, 13)).toBe(3);
+  });
+
+  it('falls back to the configured count when there are no classes', () => {
+    expect(resolveTopK(4, 0)).toBe(4);
   });
 });

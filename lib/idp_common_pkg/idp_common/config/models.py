@@ -53,7 +53,7 @@ from typing_extensions import Self
 # `extraction.agentic.validation` up to `extraction.validation`, because simple
 # extraction now runs the same validate-and-retry path and the knob is no longer
 # agentic-only.
-CONFIG_FORMAT_VERSION = "0.7"
+CONFIG_FORMAT_VERSION = "0.8"
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -1964,30 +1964,18 @@ class ClassificationConfig(BaseModel):
         default="ALL",
         description="Max pages to use for classification. 'ALL' = all pages, or a number to limit to N pages",
     )
-    classificationMethod: str = Field(
-        default="multimodalPageLevelClassification",
-        description=(
-            "DEPRECATED, read only when `granularity` is empty. Superseded by "
-            "`granularity` plus `modality`, which are independent: this key tied "
-            "how many calls are made to what each call sees, so there was no way "
-            "to classify a whole packet from its images, or a single page from "
-            "text alone, without editing the prompt. "
-            "multimodalPageLevelClassification maps to granularity: page, and "
-            "textbasedHolisticClassification to granularity: packet."
-        ),
-    )
+    # `classificationMethod` was removed in config format 0.8. It is migrated to
+    # `granularity` on every read by `migrations.v07_to_v08`, which also
+    # relocates a holistic config's hand-written flat prompts into
+    # `classification.packet` — so nothing here needs to read it, and a stored
+    # config still carrying it is converted before this model sees it.
     granularity: str = Field(
-        default="",
+        default="page",
         description=(
-            "How many calls classification makes. 'page': one call per page, "
-            "each returning that page's class and whether it starts a new "
-            "document. 'packet': one call per packet (or per window), returning "
-            "the segments directly — the prefix, the instructions, the class "
-            "list and the few-shot examples are paid for once instead of per "
-            "page. Image tokens are the same either way, so packet granularity "
-            "with images off is the large cost lever. Empty (the default) is "
-            "derived from the deprecated `classificationMethod`, so an existing "
-            "configuration keeps its behaviour with no edit."
+            "How many calls classification makes. 'page': one call per page. "
+            "'packet': one call per packet, or per window, which pays the "
+            "instructions, class list and few-shot examples once instead of per "
+            "page. Image tokens are the same either way."
         ),
     )
     packet: ClassificationPacketConfig = Field(
@@ -2129,22 +2117,29 @@ class ClassificationConfig(BaseModel):
     @field_validator("granularity", mode="before")
     @classmethod
     def validate_granularity(cls, v: Any) -> str:
-        """Normalize granularity; empty means "derive from classificationMethod".
+        """Normalize granularity; empty means the ``page`` default.
 
         An unrecognised value raises rather than falling back, because the two
         values produce different prompts, different parsers and a roughly
         N-fold difference in call count — silently picking one would be a cost
         and accuracy decision the operator did not make. (``sectionSplitting``
         below does fall back, which predates this and is a smaller difference.)
+
+        Empty is accepted and resolves to ``page`` so that a stored config
+        carrying the pre-0.8 placeholder — the old default wrote
+        ``granularity: ""`` meaning "derive from classificationMethod" — loads
+        without an error. The migration normally fills it in; this covers a
+        config that carried the empty placeholder and no method at all.
         """
         if v is None:
-            return ""
+            return "page"
         v_str = str(v).strip().lower()
-        if v_str in ("", "page", "packet"):
+        if v_str == "":
+            return "page"
+        if v_str in ("page", "packet"):
             return v_str
         raise ValueError(
-            f"classification.granularity must be 'page', 'packet', or empty "
-            f"(derive from classificationMethod), got {v!r}"
+            f"classification.granularity must be 'page' or 'packet', got {v!r}"
         )
 
     @field_validator("sectionSplitting", mode="before")
