@@ -57,21 +57,19 @@ the last two are what make "live" mean live:
   rewrites it before and after every dispatch, merge and check-in, so a file
   nobody has touched for hours describes a run that is over.
 
-⚠️ **The ownership and freshness tests are not belt-and-braces, they are the fix
-for a measured defect in the first version of this hook, which had neither.**
-``scratch/`` is gitignored but it is not cleaned up, so a state file outlives the
-run that wrote it -- and the one in this checkout, from a run that started two
-days earlier and ended without emptying ``inFlight``, made the hook refuse the
-*first* unrelated turn it saw. A guard that blocks every turn in a repository
-until someone deletes a file is worse than no guard, because the remedy people
-reach for is removing the hook.
+⚠️ **The ownership and freshness tests carry the scoping, and without them this
+guard is a repository-wide tripwire.** ``scratch/`` is gitignored but it is not
+cleaned up, so a state file outlives the run that wrote it: a run abandoned
+without emptying ``inFlight`` leaves a file that claims live work forever, and a
+guard that blocks every turn in a repository until someone deletes a file is
+worse than no guard, because the remedy people reach for is removing the hook.
+Measured here on a two-day-old file from another session.
 
 Both tests are needed and neither subsumes the other. ``sessionId`` is the
-precise one, but it is absent from every state file written before this hook
-existed, and treating "no sessionId" as "not mine" would make the guard silently
-vacuous for exactly the runs most likely to need it. So a file with no
-``sessionId`` falls back to freshness alone, and a stale file is disregarded
-whoever wrote it.
+precise one, but it is absent from any state file a coordinator wrote without it,
+and treating "no sessionId" as "not mine" would make the guard silently vacuous
+for exactly the runs most likely to need it. So a file with no ``sessionId``
+falls back to freshness alone, and a stale file is disregarded whoever wrote it.
 
 **``stop_hook_active`` is honoured first**, before anything else is read. The
 harness sets it when a ``Stop`` hook has already blocked and the model is being
