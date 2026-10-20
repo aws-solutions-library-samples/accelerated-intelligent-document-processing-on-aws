@@ -35,6 +35,8 @@ SPDX-License-Identifier: MIT-0
 
 - **`munkres` is pinned to 1.1.4, the last release by its original maintainer.** Stickler declares it only as `munkres>=1.1.4`, so every build installed the newest release. 2.0.0 and 3.0.0, published in October 2026, are a rewrite with a native extension by a different uploader, and 3.0.0 broke list-item scoring in the unit suite. **Action:** none; Evaluation Lambdas built from this release bundle 1.1.4.
 
+- **`vite` is raised past the `launch-editor` advisories** — to 7.3.7 in `src/ui` and, via an `overrides` entry, to the 8.x fixed line in `docs-site`. Both findings (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv) are in `launch-editor`, which vite's **dev server** pulls in for "open in editor", and both are Windows-only; neither is reachable from a built artifact. They are fixed rather than triaged because the fixed releases are patch-level. **Action:** none; nothing shipped by this release contains either package.
+
 - **`certifi` is updated to 2026.10.19** in `lib/idp_common_pkg/uv.lock`, resolving a CRITICAL advisory against 2026.2.25 (GHSA-6q48-6c7w-9gw2): the bundled CA set included emSign roots whose intermediate CA keys were compromised. **Action:** none; Lambdas built from this release bundle the updated trust store.
 
 - **`follow-redirects` is raised to ≥1.16.1** in `src/ui` (locked at 1.16.1), resolving a HIGH advisory against 1.16.0 (GHSA-8r9p-f939-6h3c). It arrives transitively through `axios`, whose range admits the fixed release, so the pin is an `overrides` entry rather than a dependency change. **Action:** none; the web UI built from this release bundles 1.16.1.
