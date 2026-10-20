@@ -49,6 +49,9 @@ guard to invert, where the shape #1433 left behind was `if not failure_reason:`.
 """
 
 import ast
+import io
+import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -380,7 +383,8 @@ def _contents(cbd, sweep, with_target):
 #: ⚠️ `enumerations` is the part to get right. The bucket and policy sweeps each
 #: make TWO listings, and the protected-prefix listing runs FIRST — without it
 #: there is no safe selection to make — so a case that only fails the second
-#: covers half the surface. The BDA sweep makes THREE, and reads the same
+#: covers half the surface. The BDA sweep makes THREE where a name it lists
+#: carries a run prefix, as its `_contents` target does, and reads the same
 #: protected-prefix listing LAST, for the reason its docstring gives. Every
 #: registered sweep needs an entry here; one without is a failure, not a skip.
 #:
@@ -1328,9 +1332,9 @@ def test_stacks_the_stack_sweep_left_behind_protect_their_buckets(cbd, monkeypat
 # A BDA blueprint or project is reaped only when its name carries a run prefix
 # and no stack of that run survives. Whether one does is read from ONE
 # enumeration of the account's stacks, `_live_idp_run_prefixes` — the set the
-# bucket, role and policy reapers read — and the three answers stay apart: the
-# run is live, the run is over, or the enumeration did not complete. Only the
-# second deletes.
+# bucket, role and policy reapers read — made only when a listed name carries a
+# run prefix, and the three answers stay apart: the run is live, the run is
+# over, or the enumeration did not complete. Only the second deletes.
 #
 # ⚠️ Every case that keeps a name has a counterpart that reaps one. Protecting
 # everything is the careless fix, and it passes every keep-side case while
@@ -1885,6 +1889,1509 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch, name):
         f"expected only the dead run's blueprint to go, got {aws.deleted}"
     )
     assert findings == [], findings
+
+
+# ---------------------------------------------------------------------------
+# The long-lived stack the stack and bucket sweeps set aside
+#
+# `idp-ux-nightly` outlives every run, and the stack and bucket sweeps would each
+# take it its own way. The stack sweep reaps it and its `-iam` pre-stack once
+# they are older than its age gate. The bucket sweep empties and deletes its
+# buckets once they are older than its own, with the stack still up, because its
+# live-stack protection is read through a run's `idp-MMDD-HHMMSS` prefix and this
+# name carries none. Those two are the only sweeps that read the set. The BDA,
+# IAM-role and IAM-policy sweeps delete only run-prefixed names and do not read
+# it, so for them the long-lived stack rests on the pattern alone: that premise
+# is computed below for every member rather than assumed, and measured on each
+# of the three with no run live. The BDA sweep reads the account's stacks only
+# when a name it listed carries a run prefix, so a stack enumeration that fails
+# reports nothing over a listing of the long-lived stack's names alone.
+#
+# The stack sweep spares the stack and its `-iam` pre-stack by name and nothing
+# else. It asks only about top-level stacks, so the long-lived stack's nested
+# stacks never reach the question, and any other top-level `idp-ux-nightly-<x>`
+# is a stack of its own, reaped once it is old. The bucket sweep spares every
+# `idp-ux-nightly-<x>`, which is how CloudFormation names every bucket of it.
+# CloudFormation lowercases the stack's name to do that, and shortens a name that
+# would run past S3's 63 characters, so the match is known to hold only for a
+# member with no capital letter that is short enough for every bucket name to fit
+# whole, which is computed below for every member.
+#
+# Each sweep that reads the set asks it before its age gate. The gates fail
+# closed (#1445), so an item a listing did not date is kept and named as one
+# whose age could not be established; the long-lived stack's resources are
+# counted as not examined instead. The stack sweep also asks it before a run's
+# retention marker, and after passing over nested stacks, so it counts
+# top-level stacks only. The IAM-role and IAM-policy sweeps pass over every name
+# without a run prefix before their age gates, so neither reaches the
+# long-lived stack's.
+#
+# Which sweeps these cases drive is derived from STARTUP_SWEEPS: every member but
+# the ones `_sweeps_that_never_read_the_set` names, each with its reason. That
+# split, and the list the cases are parametrized over, are held against the
+# module's source by `test_every_startup_sweep_reads_the_set_or_says_why_it_does_not`,
+# so a sweep added to Step 0 later fails until somebody decides which side it is
+# on, and a list narrowed by hand fails there too. The sweeps whose reason is the
+# run-prefix rule are read off those reasons by `_run_prefix_only_sweeps`, and
+# held to the ones whose own source selects by that prefix.
+#
+# Every case that drives a sweep lists the long-lived stack's resources BESIDE
+# another stack's and asserts that other stack is still reaped, because a sweep
+# that stopped reaping altogether would pass a case holding the long-lived stack
+# alone. The exceptions are the cases in which nothing can be reaped, and they
+# are about what a sweep reports rather than what it deletes: the quiet path,
+# which holds the long-lived stack alone, and the BDA cases whose stack
+# enumeration is throttled, which delete nothing by design.
+# ---------------------------------------------------------------------------
+
+#: Spelled out rather than read off the module, so a change to the module's set
+#: fails the pin below instead of re-pointing every case in this section.
+LONG_LIVED_STACK = "idp-ux-nightly"
+
+#: An ordinary run listed beside it, whose leftovers every sweep should take.
+OLD_RUN_STACK = "idp-1013-131553"
+
+#: Joins a stack's name to its BDA-as-OCR project's, with an underscore rather
+#: than a hyphen. Pinned to the function that builds that name in
+#: `test_the_ocr_project_named_here_is_the_one_the_stack_creates`.
+OCR_PROJECT_SUFFIX = "_OCR_StdOutput"
+
+
+def _sweeps_that_never_read_the_set():
+    """{sweep: why} for each Step 0 sweep that never asks the long-lived stack set.
+
+    One line of reason per sweep, because whether a sweep can take the
+    long-lived stack depends on what that sweep deletes. Held against the
+    module's source in both directions by
+    `test_every_startup_sweep_reads_the_set_or_says_why_it_does_not`. The BDA,
+    IAM-role and IAM-policy sweeps' reasons rest on a premise computed rather
+    than read: by `test_no_name_of_a_long_lived_stack_can_carry_a_run_prefix`
+    for every member, and by
+    `test_no_run_prefix_only_sweep_reaps_a_long_lived_name_with_no_run_live`
+    against each of those sweeps.
+    """
+    return {
+        "cleanup_stale_apigw_test_vpcs": (
+            "takes only idp-*-apigw-vpc stacks, which a manual private-VPC test "
+            "leaves behind and nothing creates for the long-lived stack"
+        ),
+        "cleanup_stale_bda_blueprints": (
+            "reaps only names whose leading idp-MMDD-HHMMSS has no surviving "
+            "stack, and no name derived from a long-lived stack carries one"
+        ),
+        "cleanup_stale_idp_roles": (
+            "deletes only roles whose leading idp-MMDD-HHMMSS has no surviving "
+            "stack, and no role of a long-lived stack, its bastion host's "
+            "included, is named that way"
+        ),
+        "cleanup_stale_idp_policies": (
+            "deletes only managed policies whose leading idp-MMDD-HHMMSS has no "
+            "surviving stack, which neither a long-lived stack's boundary nor "
+            "its pre-stack's PassRole policy carries"
+        ),
+        "cleanup_stale_ci_diagnostics": (
+            "expires evidence bundles in the source bucket after their 30-day "
+            "window, which a build writes about a failed run and no stack owns"
+        ),
+    }
+
+
+def _long_lived_sweeps():
+    """Every STARTUP_SWEEPS member but those named as never reading the set.
+
+    Derived rather than listed, so a sweep added to the registry later is
+    driven by every case below, and fails them until the long-lived stack's
+    resources are written for it in `_resources_of`, unless it is named in
+    `_sweeps_that_never_read_the_set` instead. Held to exactly the sweeps that
+    read the set by `test_every_startup_sweep_reads_the_set_or_says_why_it_does_not`,
+    so a list written here by hand fails there, naming the sweep it dropped.
+    """
+    never = _sweeps_that_never_read_the_set()
+    return [sweep for sweep in _sweep_names() if sweep not in never]
+
+
+def _run_prefix_only_sweeps():
+    """Each sweep whose reason for leaving the set unread is the run-prefix rule.
+
+    Read off the reasons rather than listed: a sweep named in
+    `_sweeps_that_never_read_the_set` for reaping only names whose leading
+    `idp-MMDD-HHMMSS` has no surviving stack states a premise, and every such
+    sweep is driven by the cases that measure it, so a reason added later is
+    measured from the moment it is written, and fails until its listing is
+    written in `_listing_of`. Held to the sweeps whose own source selects by
+    `_IDP_RUN_PREFIX_RE` by
+    `test_every_run_prefix_reason_is_about_a_sweep_that_selects_by_it`.
+    """
+    never = _sweeps_that_never_read_the_set()
+    return [
+        sweep for sweep in _sweep_names() if "idp-MMDD-HHMMSS" in never.get(sweep, "")
+    ]
+
+
+#: The template every bucket of an IDP stack is declared in.
+IDP_TEMPLATE = HARNESS.parents[2] / "template.yaml"
+
+#: S3's limit on a bucket name. CloudFormation shortens a name it generates that
+#: would run past it, so only a name that fits whole is known to open with the
+#: whole of the stack's name.
+BUCKET_NAME_LIMIT = 63
+
+#: The random part that ends a bucket name CloudFormation generates, at its
+#: longest: 13 characters. The buckets benchmarks/results/v0.6.7/clsconf/runmap.json
+#: records for a deployed stack carry 12.
+GENERATED_SUFFIX = "1a2b3c4d5e6f7"
+
+#: A bucket declaration, quoted or not, wherever a template writes one.
+BUCKET_DECLARATION = r"Type: *['\"]?AWS::S3::Bucket\b"
+
+
+def _bucket_of(stack, logical_id="InputBucket"):
+    """What CloudFormation names a bucket of `stack` that its template leaves unnamed.
+
+    `<stack>-<LogicalId>-<suffix>`, lowercased, because a bucket name cannot
+    hold a capital letter. No template the IDP stack deploys names a bucket,
+    so every bucket of one is named this way wherever the name fits
+    BUCKET_NAME_LIMIT whole.
+    """
+    return f"{stack}-{logical_id}-{GENERATED_SUFFIX}".lower()
+
+
+def _bucket_declarations():
+    """{logical id: the lines under it} for every bucket `template.yaml` declares.
+
+    Read by pattern rather than parsed: each logical id with every line indented
+    under it, kept where one of those lines is `Type: AWS::S3::Bucket`. Held to
+    the template's own count of bucket declarations by
+    `test_every_bucket_of_the_stack_is_declared_unnamed_in_template_yaml`, so
+    one written in a shape the pattern misses fails there instead of going
+    unread.
+    """
+    resources = re.findall(
+        r"^  (\w+):\n((?:(?:    .*)?\n)*)",
+        IDP_TEMPLATE.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    return {
+        logical_id: lines
+        for logical_id, lines in resources
+        if re.search(r"^    Type: AWS::S3::Bucket$", lines, re.MULTILINE)
+    }
+
+
+def _nested_templates():
+    """The source template of every nested stack `template.yaml` deploys."""
+    return [
+        IDP_TEMPLATE.parent / directory / "template.yaml"
+        for directory in re.findall(
+            r"TemplateURL: \./(.+?)/\.aws-sam/packaged\.yaml$",
+            IDP_TEMPLATE.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+    ]
+
+
+def _resources_of(sweep, owner):
+    """What `sweep` deletes of a stack named `owner`, as `aws.deleted` records it.
+
+    Stacks, buckets and roles are deleted by name; managed policies, BDA
+    projects and blueprints by ARN, and `_listing_of` reads their names off the
+    ARN's last part. The bucket is named as CloudFormation names one
+    (`_bucket_of`). The roles are the `-iam` pre-stack's service role, the two
+    `DeletionPolicy: Retain` leaves behind in the knowledge-base stack, and the
+    bastion host's role, which `template.yaml` names after the stack with no
+    separator. The BDA projects are a versioned one, named `<stack>-<version>`,
+    and the BDA-as-OCR one, named `<stack>_OCR_StdOutput`.
+    """
+    if sweep == "cleanup_stale_idp_stacks":
+        return [owner, f"{owner}-iam"]
+    if sweep == "cleanup_stale_idp_buckets":
+        return [_bucket_of(owner)]
+    if sweep == "cleanup_stale_idp_roles":
+        return [
+            f"{owner}-iam-CFServiceRole",
+            f"{owner}-DOCUMENTK-StartIngestionJobFunction-abc",
+            f"{owner}-DOCUMENTKB--DataSourceSchedulerRole-xyz",
+            f"{owner}BastionHost-Role",
+        ]
+    if sweep == "cleanup_stale_idp_policies":
+        return [
+            f"arn:fake:policy/{owner}-PermissionsBoundary",
+            f"arn:fake:policy/{owner}-iam-PassRolePolicy",
+        ]
+    if sweep == "cleanup_stale_bda_blueprints":
+        return [
+            f"arn:fake:project/{owner}-default",
+            f"arn:fake:project/{owner}{OCR_PROJECT_SUFFIX}",
+            f"arn:fake:blueprint/{owner}-invoice",
+        ]
+    raise AssertionError(f"no resources written for {sweep}")
+
+
+def _listing(sweep, owners):
+    """Account contents holding what `sweep` reaps of each stack in `owners`."""
+    return _listing_of(
+        sweep, [item for owner in owners for item in _resources_of(sweep, owner)]
+    )
+
+
+def _as_listed(sweep, name):
+    """What `aws.deleted` would record for `name` listed in `sweep`'s listing.
+
+    A role by its name, a managed policy by its ARN, and a BDA name twice, as a
+    blueprint and as a project, since that sweep reaps the two in separate
+    loops.
+    """
+    if sweep == "cleanup_stale_idp_policies":
+        return [f"arn:fake:policy/{name}"]
+    if sweep == "cleanup_stale_bda_blueprints":
+        return [f"arn:fake:blueprint/{name}", f"arn:fake:project/{name}"]
+    return [name]
+
+
+def _listing_of(sweep, found):
+    """Account contents listing `found`, each as `aws.deleted` records it.
+
+    The long-lived stack is up, so it and its `-iam` pre-stack are in the
+    `list_stacks` the bucket, role and policy sweeps read their live-stack
+    protection from. The BDA sweep reads the same enumeration through
+    `_StackListing` instead, from the `stacks` each of its cases passes, as does
+    any case that passes `stacks`. Every other owner's stacks are gone, except
+    from the stack sweep's own listing, where leftover stacks are the targets.
+    All of it is older than every age gate.
+    """
+    old = datetime.now(tz=timezone.utc) - timedelta(seconds=STALE_AGE_SECONDS)
+    up = [{"StackName": n} for n in (LONG_LIVED_STACK, f"{LONG_LIVED_STACK}-iam")]
+
+    if sweep == "cleanup_stale_idp_stacks":
+        return {
+            "list_stacks": [
+                {
+                    "StackSummaries": [
+                        {"StackName": n, "CreationTime": old} for n in found
+                    ]
+                }
+            ]
+        }
+    if sweep == "cleanup_stale_idp_buckets":
+        return {
+            "list_stacks": [{"StackSummaries": up}],
+            "buckets": [{"Name": n, "CreationDate": old} for n in found],
+        }
+    if sweep == "cleanup_stale_idp_roles":
+        return {
+            "list_stacks": [{"StackSummaries": up}],
+            "list_roles": [
+                {"Roles": [{"RoleName": n, "CreateDate": old} for n in found]}
+            ],
+        }
+    if sweep == "cleanup_stale_idp_policies":
+        return {
+            "list_stacks": [{"StackSummaries": up}],
+            "list_policies": [
+                {
+                    "Policies": [
+                        {
+                            "PolicyName": arn.rsplit("/", 1)[-1],
+                            "Arn": arn,
+                            "CreateDate": old,
+                        }
+                        for arn in found
+                    ]
+                }
+            ],
+        }
+    return {
+        "list_blueprints": [
+            {
+                "blueprints": [
+                    {"blueprintName": arn.rsplit("/", 1)[-1], "blueprintArn": arn}
+                    for arn in found
+                    if ":blueprint/" in arn
+                ]
+            }
+        ],
+        "projects": [
+            {"projectName": arn.rsplit("/", 1)[-1], "projectArn": arn}
+            for arn in found
+            if ":project/" in arn
+        ],
+    }
+
+
+def _install_beside_long_lived(
+    cbd, monkeypatch, sweep, owners, contents=None, **kwargs
+):
+    """`_install` over `_listing`, keeping the S3 resource the bucket sweep uses.
+
+    `_install` records every delete in `aws.deleted`, the policy and role ones
+    made through module helpers included. The bucket sweep also empties a
+    bucket through `boto3.resource` before deleting it, and emptying is the half
+    that loses the data, so the resource is kept for the caller to read.
+    `contents` stands in for `_listing`'s, for a case that alters the listing.
+    """
+    aws = _install(
+        cbd,
+        monkeypatch,
+        sweep,
+        with_target=True,
+        contents=_listing(sweep, owners) if contents is None else contents,
+        **kwargs,
+    )
+    s3 = _FakeS3Resource()
+    monkeypatch.setattr(cbd.boto3, "resource", lambda *a, **k: s3)
+    return aws, s3
+
+
+def _undated_for(contents, field, value, owner):
+    """`contents` with `field` set to `value` on every listed item of `owner`'s.
+
+    `_reaged` with a filter, so one listing holds the long-lived stack's items,
+    which its age gate cannot date, beside an old run's, which it can. An item
+    is `owner`'s when one of its values starts with `owner`; these cases list
+    only that stack and an `idp-MMDD-HHMMSS` run, so neither reads as the other.
+    """
+    if isinstance(contents, dict):
+        owned = any(
+            isinstance(sub, str) and sub.startswith(owner) for sub in contents.values()
+        )
+        return {
+            key: (
+                value
+                if owned and key == field
+                else _undated_for(sub, field, value, owner)
+            )
+            for key, sub in contents.items()
+        }
+    if isinstance(contents, list):
+        return [_undated_for(sub, field, value, owner) for sub in contents]
+    return contents
+
+
+def _printed_long_lived_count(out):
+    """How many names the sweep said it set aside for a long-lived stack unexamined.
+
+    The one reading of that line for every case here, and it reads only a line
+    holding the count alone, so a count folded into another line reads as no
+    count at all. The count is of names the sweep asked nothing else about, so
+    it says they were not examined rather than that they were saved: the age
+    gate would have kept some of them anyway.
+    """
+    match = re.search(
+        r"^ *\((\d+) named for a long-lived stack, not examined\)$", out, re.MULTILINE
+    )
+    return int(match.group(1)) if match else None
+
+
+def _printed_bda_skips(out):
+    """What the BDA sweep's summary line says it skipped, or None if it said nothing.
+
+    `(names of live runs, live runs, names with no run prefix)`. The line counts
+    what it skipped in names, and the runs those names belong to as runs, so
+    each number carries its unit.
+    """
+    match = re.search(
+        r"\(skipped (\d+) name\(s\) of (\d+) live run\(s\), "
+        r"(\d+) name\(s\) with no run prefix\)",
+        out,
+    )
+    return tuple(int(group) for group in match.groups()) if match else None
+
+
+def _counted_as_undecided(finding):
+    """How many names the BDA sweep's failed stack enumeration left undecided."""
+    match = re.search(
+        r"none of the (\d+) idp- blueprint\(s\) and project\(s\)", finding
+    )
+    return int(match.group(1)) if match else None
+
+
+def test_the_long_lived_stack_set_is_pinned(cbd):
+    """Count-pinned: exactly the one stack it was registered with.
+
+    A name added here takes a stack and its `-iam` pre-stack out of the stack
+    sweep, which exists because leaked runs exhausted the account's role quota,
+    and every bucket named for it out of the bucket sweep. The BDA, IAM-role and
+    IAM-policy sweeps reap nothing of that stack's either, since none of its
+    names carries a run prefix, so whatever it leaks is left for somebody to
+    remove by hand. The expected count is therefore one, the member is the one
+    registered in scripts/tests/gate_exemptions.json, and adding a second is an
+    edit to this assertion and to that entry rather than a one-word change in
+    the harness.
+    """
+    assert cbd.SWEEP_EXEMPT_STACK_NAMES == frozenset({LONG_LIVED_STACK}), (
+        f"SWEEP_EXEMPT_STACK_NAMES is {sorted(cbd.SWEEP_EXEMPT_STACK_NAMES)}, not "
+        f"the pinned [{LONG_LIVED_STACK!r}]. Each member holds a stack's IAM roles "
+        f"for as long as it stands and nothing reaps what it leaks: change this "
+        f"pin and its entry in scripts/tests/gate_exemptions.json together, with "
+        f"the reason the new stack has to outlive every run"
+    )
+
+
+#: The registry and the entry in it that this module is the count-pinned evidence
+#: for.
+REGISTRY = Path(__file__).resolve().parents[2] / "tests" / "gate_exemptions.json"
+REGISTRY_KEY = "scripts/sdlc/codebuild_deployment.py::SWEEP_EXEMPT_STACK_NAMES"
+
+#: How the entry's `turnsOff` spells a count of sweeps.
+COUNT_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven")
+
+
+def test_the_registry_entry_states_the_sweeps_that_read_the_set():
+    """Count-pinned: the entry names, and counts, exactly the sweeps driven below.
+
+    `turnsOff` says how many Step 0 sweeps the set turns reaping off for and
+    names each one, and both are facts about the harness that go stale the
+    moment a sweep starts or stops reading the set. So the count it states and
+    the sweeps it names are held to `_long_lived_sweeps()`, which the closure
+    test below holds to the module's source.
+    """
+    entry = json.loads(REGISTRY.read_text(encoding="utf-8"))["exemptions"][REGISTRY_KEY]
+    turns_off = entry["turnsOff"]
+    stated = re.match(r"reaping by (\w+) of the integration harness's ", turns_off)
+    named = set(re.findall(r"\bcleanup_stale_\w+", turns_off))
+    driven = _long_lived_sweeps()
+
+    assert stated, f"{REGISTRY_KEY}'s turnsOff states no count: {turns_off}"
+    assert stated.group(1) == COUNT_WORDS[len(driven)], (
+        f"{REGISTRY_KEY} says the set turns reaping off for {stated.group(1)} "
+        f"sweeps, and {len(driven)} read it: {driven}"
+    )
+    assert named == set(driven), (
+        f"{REGISTRY_KEY}'s turnsOff names {sorted(named)}, and the sweeps that "
+        f"read the set are {sorted(driven)}"
+    )
+
+
+def test_every_startup_sweep_reads_the_set_or_says_why_it_does_not():
+    """Universe closure over STARTUP_SWEEPS, held against the module's source.
+
+    The cases in this section drive every registered sweep but the ones
+    `_sweeps_that_never_read_the_set` names, and that split is closed by
+    construction until each side is read off the harness: a sweep driven here
+    must reach a function that reads SWEEP_EXEMPT_STACK_NAMES, and a sweep named
+    as never reading it must not. So a sweep added to Step 0 later fails until
+    somebody decides — here if it does not consult the set, and in every case
+    below either way, for want of the long-lived stack's resources in
+    `_resources_of` — whether it consults the set and has those written for it,
+    or is named with the reason it has nothing of that stack's to take. A sweep
+    that stops consulting the set fails here the same way.
+
+    The list those cases are parametrized over, `_long_lived_sweeps()`, is held
+    to the same answer, because the split above is only as good as the list
+    that drives them: one written by hand that drops a sweep reading the set
+    leaves that sweep with no long-lived case at all, and every other check
+    here still passes.
+    """
+    functions = _top_level_functions(ast.parse(HARNESS.read_text(encoding="utf-8")))
+
+    def _reads_the_set(name, seen):
+        if name in seen or name not in functions:
+            return False
+        seen.add(name)
+        body = functions[name]
+        return any(
+            isinstance(node, ast.Name) and node.id == "SWEEP_EXEMPT_STACK_NAMES"
+            for node in ast.walk(body)
+        ) or any(
+            _reads_the_set(callee, seen)
+            for callee in sorted(_called_function_names(body))
+        )
+
+    registered = set(_sweep_names())
+    never = _sweeps_that_never_read_the_set()
+    reading = {sweep for sweep in registered if _reads_the_set(sweep, set())}
+
+    assert set(never) <= registered, (
+        f"_sweeps_that_never_read_the_set names {sorted(set(never) - registered)}, "
+        f"which STARTUP_SWEEPS does not list, so its reason is about nothing"
+    )
+    assert not reading & set(never), (
+        f"{sorted(reading & set(never))} reads SWEEP_EXEMPT_STACK_NAMES and is "
+        f"also named as never reading it, so no case here drives a sweep that "
+        f"does consult the set: drop it from _sweeps_that_never_read_the_set"
+    )
+    assert registered - reading - set(never) == set(), (
+        f"{sorted(registered - reading - set(never))} never reads "
+        f"SWEEP_EXEMPT_STACK_NAMES and is not named in "
+        f"_sweeps_that_never_read_the_set, so whether it can take the long-lived "
+        f"stack is decided by nobody. Consult the set and write that stack's "
+        f"resources for it into _resources_of, or name it there with the reason "
+        f"it has nothing of that stack's to take"
+    )
+    for sweep, why in never.items():
+        assert why.strip() and "\n" not in why, (sweep, why)
+    assert len(set(never.values())) == len(never), (
+        "two sweeps give the same reason for leaving the set unread, so one "
+        "sentence is standing in for two members"
+    )
+    driven = set(_long_lived_sweeps())
+    assert driven == reading, (
+        f"the long-lived cases below drive {sorted(driven)}, not the sweeps that "
+        f"read SWEEP_EXEMPT_STACK_NAMES, {sorted(reading)}; they differ in "
+        f"{sorted(driven ^ reading)}. One missing from the first consults the set "
+        f"with no case holding it to that, and one extra is driven against a set "
+        f"it never reads: _long_lived_sweeps derives its list from STARTUP_SWEEPS, "
+        f"and is not to be written by hand"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "named_for_it"),
+    [
+        (f"{LONG_LIVED_STACK}-iam", True),
+        (_bucket_of(LONG_LIVED_STACK), True),
+        (f"{LONG_LIVED_STACK}-patternstack-1a2b3c4d5e6f-workingbucket-abc", True),
+        (LONG_LIVED_STACK, False),
+        (f"{LONG_LIVED_STACK}{OCR_PROJECT_SUFFIX}", False),
+        (f"{LONG_LIVED_STACK}BastionHost-Role", False),
+        ("idp-ux-nightlyx", False),
+        ("idp-ux-nightly2", False),
+        ("idp-ux-nightly2-iam", False),
+        (f"idp-ux-nightly2{OCR_PROJECT_SUFFIX}", False),
+        ("idp-ux-nightl", False),
+        ("xidp-ux-nightly", False),
+        (OLD_RUN_STACK, False),
+    ],
+)
+def test_only_names_under_the_stack_match(cbd, name, named_for_it):
+    """The bucket sweep's match: `<stack>-…`.
+
+    The shape of every bucket name of the stack, and the match takes a name
+    under it however many parts follow the hyphen. No bucket is named the
+    stack's bare name, so that does not match. The match stops at the hyphen,
+    so two other names of the stack that a Step 0 sweep lists do not match
+    either: its BDA-as-OCR project, joined by an underscore, and its bastion
+    host's role, joined by nothing at all. The bucket sweep lists neither, and
+    the BDA and IAM-role sweeps keep them by their run-prefix rule without
+    reading the set. A bare prefix match would take `idp-ux-nightly2`'s
+    buckets, another stack's, out of that sweep along with the ones that are
+    meant to stay.
+    """
+    assert cbd._named_for_exempt_stack(name) is named_for_it
+
+
+def test_every_bucket_of_the_stack_is_declared_unnamed_in_template_yaml():
+    """Where the names the premise below is computed over come from.
+
+    Every bucket declaration in `template.yaml` is read, none of them carries a
+    `BucketName`, and no nested stack it deploys declares a bucket, so
+    CloudFormation names each bucket the stack has after the stack itself.
+    """
+    declared = re.findall(BUCKET_DECLARATION, IDP_TEMPLATE.read_text(encoding="utf-8"))
+    declarations = _bucket_declarations()
+    nested = _nested_templates()
+
+    assert declarations, "no bucket declaration was read off template.yaml"
+    assert len(declarations) == len(declared), (
+        f"template.yaml declares {len(declared)} buckets and "
+        f"{sorted(declarations)} were read: one is written in a shape "
+        f"_bucket_declarations does not read"
+    )
+    named = [
+        logical_id
+        for logical_id, lines in declarations.items()
+        if re.search(r"^      BucketName:", lines, re.MULTILINE)
+    ]
+    assert named == [], (
+        f"{named} name their bucket, so CloudFormation does not name it after the "
+        f"stack, and nothing here says whether the bucket sweep's match reaches it"
+    )
+    assert nested, "template.yaml names no nested stack's template"
+    declaring = [
+        str(path.relative_to(IDP_TEMPLATE.parent))
+        for path in nested
+        if re.search(BUCKET_DECLARATION, path.read_text(encoding="utf-8"))
+    ]
+    assert declaring == [], (
+        f"{declaring} declare a bucket, which CloudFormation names after a stack "
+        f"of its own, itself named <stack>-<LogicalId>-<suffix>, shortening the "
+        f"name where it would run past S3's limit, so nothing here says whether "
+        f"the bucket sweep's match reaches it"
+    )
+
+
+def _members_the_bucket_match_misses(cbd):
+    """Each member with a bucket the bucket sweep's match is not shown to reach.
+
+    A name past BUCKET_NAME_LIMIT is one CloudFormation shortens, so it counts
+    as missed whatever the match makes of it.
+    """
+    return [
+        stack
+        for stack in sorted(cbd.SWEEP_EXEMPT_STACK_NAMES)
+        if not all(
+            len(name) <= BUCKET_NAME_LIMIT and cbd._named_for_exempt_stack(name)
+            for name in (_bucket_of(stack, lid) for lid in _bucket_declarations())
+        )
+    ]
+
+
+def test_the_bucket_match_reaches_every_members_buckets(cbd, monkeypatch):
+    """What the bucket sweep's exception rests on, computed for every member.
+
+    The names are the ones CloudFormation gives every bucket `template.yaml`
+    declares. It lowercases the stack's name in them, and the match compares
+    the member as written, so a member with a capital letter leaves them
+    unmatched. It shortens a name that would run past S3's limit, so a member
+    too long for every one of them to fit whole leaves the shortened ones
+    unmatched as far as anything here can show. Either way those names carry no
+    run prefix for the live-stack protection to read, so the bucket sweep would
+    empty and delete them once they passed its age gate, with the stack still
+    up. A lowercase member and a match that folds case answer the first
+    equally, since no bucket name holds a capital letter, and only a shorter
+    member answers the second, so the member that shows this check can fail is
+    a long one. The names are held to S3's rule too, so the model they are
+    computed from cannot drift to names no bucket can have.
+    """
+    names = [
+        _bucket_of(stack, logical_id)
+        for stack in sorted(cbd.SWEEP_EXEMPT_STACK_NAMES)
+        for logical_id in _bucket_declarations()
+    ]
+    missed = _members_the_bucket_match_misses(cbd)
+
+    assert missed == [], (
+        f"{missed}: the bucket sweep's match is not shown to reach every name "
+        f"CloudFormation gives that stack's buckets, so it could reap one with "
+        f"the stack up. Name the member in lowercase, short enough for "
+        f"<member>-<LogicalId>-{GENERATED_SUFFIX} to fit {BUCKET_NAME_LIMIT} "
+        f"characters for every bucket template.yaml declares"
+    )
+    not_bucket_names = [
+        name for name in names if not re.fullmatch(r"[a-z0-9][a-z0-9-]*[a-z0-9]", name)
+    ]
+    assert names and not_bucket_names == [], (
+        f"{not_bucket_names} hold a character no bucket name can, so _bucket_of no "
+        f"longer names a bucket as S3 requires and the check above is about names "
+        f"CloudFormation never gives"
+    )
+    too_long = f"{LONG_LIVED_STACK}-review-builds"
+    monkeypatch.setattr(cbd, "SWEEP_EXEMPT_STACK_NAMES", frozenset({too_long}))
+    assert _members_the_bucket_match_misses(cbd) == [too_long]
+
+
+@pytest.mark.parametrize(
+    ("name", "spared"),
+    [
+        (LONG_LIVED_STACK, True),
+        (f"{LONG_LIVED_STACK}-iam", True),
+        (f"{LONG_LIVED_STACK}-test", False),
+        (f"{LONG_LIVED_STACK}-test-iam", False),
+        (f"{LONG_LIVED_STACK}-iam-test", False),
+        (f"{LONG_LIVED_STACK}-feature-confbench-testset", False),
+        (f"{LONG_LIVED_STACK}-VPCEndpoints", False),
+        ("idp-ux-nightly2", False),
+        ("idp-ux-nightly2-iam", False),
+    ],
+)
+def test_the_stack_sweep_spares_the_stack_and_its_pre_stack_and_nothing_else(
+    cbd, name, spared
+):
+    """Two names, where the bucket sweep spares every bucket under the stack.
+
+    The stack sweep asks only about top-level stacks, so the long-lived stack's
+    nested stacks never reach this, and any other top-level stack named
+    `idp-ux-nightly-<x>` is a stack of its own: a throwaway named after the
+    long-lived one, a feature extension installed into it under the default
+    stack name `<host>-feature-<id>`, or the endpoints stack
+    `scripts/deploy-vpc-endpoints.py` deploys for it under the default
+    `<host>-VPCEndpoints`. Spared by a prefix match, each would stand until
+    somebody removed it by hand, and a throwaway would hold its IAM roles all
+    that time.
+    """
+    assert cbd._is_exempt_stack_or_pre_stack(name) is spared
+
+
+def test_the_ocr_project_named_here_is_the_one_the_stack_creates():
+    """The underscore-joined name above is the real one, not a guess at it.
+
+    `Custom::BDAOCRProject` names its project from the main stack's name with
+    the function `src/lambda/bda_ocr_project` inlines and is pinned against. Were
+    that name to change, the BDA cases in this section would go on listing a
+    name the stack no longer creates.
+    """
+    from idp_common.bda.bda_ocr import sanitize_ocr_project_name
+
+    assert sanitize_ocr_project_name(LONG_LIVED_STACK) == (
+        f"{LONG_LIVED_STACK}{OCR_PROJECT_SUFFIX}"
+    ), (
+        f"{LONG_LIVED_STACK}'s BDA-as-OCR project is now named "
+        f"{sanitize_ocr_project_name(LONG_LIVED_STACK)!r}: update OCR_PROJECT_SUFFIX"
+    )
+
+
+def test_the_bastion_role_named_here_is_the_one_the_template_names():
+    """The role joined to the stack's name by nothing is the real one, too.
+
+    `template.yaml` names the bastion host's role after the stack with no
+    separator. It names the host's instance profile and launch template that
+    way too, and no Step 0 sweep deletes either, so of the stack's names joined
+    to it by nothing, the role is the one a sweep lists. Were that name to
+    change, the role cases in this section would go on listing a name the stack
+    no longer creates.
+    """
+    template = (HARNESS.parents[2] / "template.yaml").read_text(encoding="utf-8")
+
+    assert "RoleName: !Sub '${AWS::StackName}BastionHost-Role'" in template, (
+        "template.yaml no longer names the bastion host's role "
+        "<stack>BastionHost-Role: update _resources_of"
+    )
+
+
+@pytest.mark.parametrize("sweep", _long_lived_sweeps())
+def test_the_long_lived_stack_stands_while_an_old_run_beside_it_is_reaped(
+    cbd, monkeypatch, capsys, sweep
+):
+    """Per sweep: nothing of the long-lived stack goes, the old run all goes.
+
+    Each of these sweeps would take the long-lived stack's resources without
+    the set, so the deletes are what pin its check, and the printed count says
+    the sweep set those resources aside rather than leaving them for some other
+    reason.
+    """
+    aws, s3 = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, [LONG_LIVED_STACK, OLD_RUN_STACK]
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        f"{sweep} deleted {aws.deleted}. Expected exactly the old run's "
+        f"{_resources_of(sweep, OLD_RUN_STACK)}: anything of {LONG_LIVED_STACK} "
+        f"is the long-lived stack lost, and anything short of the old run is a "
+        f"sweep that stopped reaping"
+    )
+    if sweep == "cleanup_stale_idp_buckets":
+        assert s3.emptied == _resources_of(sweep, OLD_RUN_STACK), (
+            f"the bucket sweep emptied {s3.emptied}; emptying loses the long-lived "
+            f"stack's data even where the delete after it then fails"
+        )
+    printed = _printed_long_lived_count(capsys.readouterr().out)
+    assert printed == len(_resources_of(sweep, LONG_LIVED_STACK)), (
+        f"{sweep} printed {printed} as the count it set aside, not examined, for "
+        f"a long-lived stack"
+    )
+
+
+@pytest.mark.parametrize("lookalike", ["idp-ux-nightlyx", "idp-ux-nightly2"])
+@pytest.mark.parametrize("sweep", _long_lived_sweeps())
+def test_a_lookalike_of_the_long_lived_stack_gets_no_such_protection(
+    cbd, monkeypatch, capsys, sweep, lookalike
+):
+    """A different stack, so it is reaped like any other leftover.
+
+    Nor is it counted as the long-lived stack's.
+    """
+    aws, _ = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, [LONG_LIVED_STACK, lookalike]
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    reaped = _resources_of(sweep, lookalike)
+    assert sorted(aws.deleted) == sorted(reaped), (
+        f"{sweep} deleted {aws.deleted} with {lookalike} beside {LONG_LIVED_STACK}; "
+        f"expected {reaped}"
+    )
+    assert _printed_long_lived_count(capsys.readouterr().out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), f"{sweep} counted {lookalike}'s resources as the long-lived stack's"
+
+
+@pytest.mark.parametrize("sweep", _long_lived_sweeps())
+def test_a_listing_of_only_the_long_lived_stack_is_still_the_quiet_path(
+    cbd, monkeypatch, capsys, sweep
+):
+    """Nothing to reap, so the pinned quiet line is printed whole and unchanged.
+
+    The count goes on a line of its own above it.
+    """
+    aws, s3 = _install_beside_long_lived(cbd, monkeypatch, sweep, [LONG_LIVED_STACK])
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert aws.deleted == [] and s3.emptied == []
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    quiet_line = _SWEEP_SPECS[sweep]["quiet_line"]
+    assert quiet_line in lines, out
+    assert cbd.SWEEP_NOT_COMPLETED not in out
+    above = "\n".join(lines[: lines.index(quiet_line)])
+    assert _printed_long_lived_count(above) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), out
+
+
+#: Runs listed beside the long-lived stack so a sweep has something for every
+#: other line it prints about what it kept: one inside every age gate, one kept
+#: for a live stack or a retention marker, one whose marker could not be read,
+#: and one the listing did not date.
+YOUNG_RUN = "idp-1014-090000"
+KEPT_RUN = "idp-1014-100000"
+UNREAD_MARKER_RUN = "idp-1014-110000"
+UNDATED_RUN = "idp-1014-120000"
+
+
+def _beside_every_other_count(cbd, monkeypatch, sweep):
+    """`sweep` over the long-lived stack, an old run, and a run for each other count.
+
+    Returns the fake account, the S3 resource the bucket sweep empties through,
+    and a fragment of each other line the listing makes `sweep` print about
+    what it kept, so a case can tell that every one of them printed.
+    """
+    now = datetime.now(tz=timezone.utc)
+    young = now - timedelta(seconds=YOUNG_AGE_SECONDS)
+    old = now - timedelta(seconds=STALE_AGE_SECONDS)
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    contents = _listing(sweep, owners)
+    if sweep == "cleanup_stale_idp_stacks":
+        contents["list_stacks"][0]["StackSummaries"] += [
+            {"StackName": YOUNG_RUN, "CreationTime": young},
+            {"StackName": KEPT_RUN, "CreationTime": old},
+            {"StackName": UNREAD_MARKER_RUN, "CreationTime": old},
+            {"StackName": UNDATED_RUN, "CreationTime": None},
+        ]
+        fragments = (
+            "retained idp- stack(s) skipped",
+            "young idp- stack(s) skipped",
+            "retention marker could not be read",
+            "age not establishable",
+        )
+    elif sweep == "cleanup_stale_idp_buckets":
+        contents["list_stacks"][0]["StackSummaries"].append({"StackName": KEPT_RUN})
+        contents["buckets"] += [
+            {"Name": _bucket_of(YOUNG_RUN), "CreationDate": young},
+            {"Name": _bucket_of(KEPT_RUN), "CreationDate": old},
+            {"Name": _bucket_of(UNDATED_RUN), "CreationDate": None},
+        ]
+        fragments = (
+            "1 protected by a live stack",
+            "1 younger than the age gate",
+            "age not establishable",
+        )
+    else:
+        raise AssertionError(f"no other counts written for {sweep}")
+    aws, s3 = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, owners, contents=contents
+    )
+    if sweep == "cleanup_stale_idp_stacks":
+        monkeypatch.setenv("SOURCE_BUCKET", "a-bucket")
+        markers = (
+            {KEPT_RUN: (now + timedelta(days=1)).isoformat()},
+            [],
+            {UNREAD_MARKER_RUN: "AccessDenied"},
+        )
+        monkeypatch.setattr(cbd, "_expired_retention_markers", lambda *_a: markers)
+    return aws, s3, fragments
+
+
+@pytest.mark.parametrize("sweep", _long_lived_sweeps())
+def test_the_long_lived_count_keeps_its_own_line_beside_every_other_count(
+    cbd, monkeypatch, capsys, sweep
+):
+    """The count keeps a line of its own while every other count line prints.
+
+    Those lines print only when an item they count is listed, and the cases
+    above list none, so a sweep that folded the long-lived count into one of
+    them whenever it printed would pass all of those. Here a run inside the age
+    gate, a run kept for a live stack or a retention marker, and a run the
+    listing did not date are listed beside the long-lived stack and the old run,
+    and for the stack sweep a run whose marker could not be read as well. Each
+    of those lines prints, the long-lived count is still read from a line that
+    holds it alone, and only the old run goes.
+    """
+    aws, s3, fragments = _beside_every_other_count(cbd, monkeypatch, sweep)
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        f"{sweep} deleted {aws.deleted}; expected exactly the old run's "
+        f"{_resources_of(sweep, OLD_RUN_STACK)}"
+    )
+    if sweep == "cleanup_stale_idp_buckets":
+        assert s3.emptied == _resources_of(sweep, OLD_RUN_STACK), s3.emptied
+    out = capsys.readouterr().out
+    assert [fragment for fragment in fragments if fragment not in out] == [], out
+    assert _printed_long_lived_count(out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), out
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        pytest.param({LONG_LIVED_STACK: "UPDATE_COMPLETE"}, id="up"),
+        pytest.param(
+            {LONG_LIVED_STACK: "UPDATE_ROLLBACK_FAILED"},
+            id="update-rollback-failed",
+        ),
+        pytest.param(
+            {LONG_LIVED_STACK: "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"},
+            id="update-cleanup-in-progress",
+        ),
+        pytest.param(
+            {LONG_LIVED_STACK: "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS"},
+            id="rollback-cleanup-in-progress",
+        ),
+        pytest.param({}, id="not-listed"),
+    ],
+)
+def test_the_bda_sweep_never_asks_after_the_long_lived_stack(
+    cbd, monkeypatch, capsys, statuses
+):
+    """Its status cannot make its BDA resources leftovers, so it is not read.
+
+    The stack is listed up, in both cleanup phases a stack updated in place
+    passes through, and stopped in a failed rollback; in the last case it is not
+    listed at all. The five take one path through the sweep: the stack's names
+    carry no run prefix, so none of them is a candidate whatever the
+    enumeration says of the stack, and its status reaches no decision. They are
+    kept as the states a run can find the stack in, so that a sweep which came
+    to read that status, or to need the stack listed, fails in whichever one it
+    misreads. The sweep does not read the long-lived set either: with the old
+    run's stack deleted, no run is live in any of these cases. Nothing is asked
+    about the stack by name, since every run's liveness is read from one
+    enumeration of the account. The old run in the same listing is listed as
+    deleted, read from that enumeration, and still reaped, and the stack's names
+    are counted among the ones with no run prefix. What a failed enumeration
+    reports is pinned by
+    `test_a_listing_of_only_long_lived_names_reads_no_stacks` and
+    `test_a_failed_stack_enumeration_counts_only_the_names_it_left_undecided`.
+    """
+    aws, _ = _install_beside_long_lived(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        [LONG_LIVED_STACK, OLD_RUN_STACK],
+        stacks={**statuses, OLD_RUN_STACK: "DELETE_COMPLETE"},
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert findings == [], findings
+    assert aws.described == [], f"the sweep asked CloudFormation about {aws.described}"
+    assert aws.calls.count("list_stacks") == 1, aws.calls
+    assert sorted(aws.deleted) == sorted(
+        _resources_of("cleanup_stale_bda_blueprints", OLD_RUN_STACK)
+    ), aws.deleted
+    assert _printed_bda_skips(capsys.readouterr().out) == (
+        0,
+        0,
+        len(_resources_of("cleanup_stale_bda_blueprints", LONG_LIVED_STACK)),
+    )
+
+
+def _names_of_a_long_lived_stack(stack):
+    """Every shape a name derived from `stack` takes in the run-prefix-only listings.
+
+    What the stack creates in BDA, named as the code names it
+    (`_bda_resources_named_for`): its class blueprints, a configuration
+    version's project and that project's bootstrap blueprint, and the
+    BDA-as-OCR project `<stack>_OCR_StdOutput`. Its IAM roles and managed
+    policies as `_resources_of` writes them, the bastion host's role, joined to
+    the stack's name with no separator, among them. Then the stack itself, its
+    `-iam` pre-stack, and the stack joined by nothing, `-` or `_` to two tails:
+    the rest of `DEAD_RUN` after as many characters as `<stack><sep>` already
+    has, and the whole of `DEAD_RUN`. A run prefix is a fixed sequence of
+    characters, each a literal or a digit, read from the start of the name, so
+    a name that opens with `<stack><sep>` can carry one only if the first tail
+    completes one; joined by nothing, that covers every name that opens with the
+    stack's.
+    """
+    blueprints, projects = _bda_resources_named_for(stack)
+    iam = [
+        listed.rsplit("/", 1)[-1]
+        for sweep in ("cleanup_stale_idp_roles", "cleanup_stale_idp_policies")
+        for listed in _resources_of(sweep, stack)
+    ]
+    joined = [
+        f"{stack}{sep}{tail}"
+        for sep in ("", "-", "_")
+        for tail in (DEAD_RUN[len(stack) + len(sep) :], DEAD_RUN)
+    ]
+    return [stack, f"{stack}-iam", *blueprints, *projects, *iam, *joined]
+
+
+def _long_lived_names(cbd):
+    """`_names_of_a_long_lived_stack` for every member of the module's set."""
+    return [
+        name
+        for stack in sorted(cbd.SWEEP_EXEMPT_STACK_NAMES)
+        for name in _names_of_a_long_lived_stack(stack)
+    ]
+
+
+def test_no_name_of_a_long_lived_stack_can_carry_a_run_prefix(cbd):
+    """What the run-prefix-only sweeps' reasons for leaving the set unread rest on.
+
+    The BDA, IAM-role and IAM-policy sweeps each reap a name once its leading
+    `idp-MMDD-HHMMSS` has no surviving stack, and none reads the long-lived
+    set, so a long-lived stack's blueprints, projects, roles and policies stand
+    only while no name that opens with the stack's carries a run prefix.
+    Computed for every member of the module's set rather than for the pinned
+    one, so a member named in a way that breaks it fails here instead of being
+    reaped there. `DEAD_RUN` has to be a whole run prefix for the completing
+    tail to mean anything, and the same names built from a run's own stack, or
+    from a stack name that opens like one, are caught, so this is not a check
+    nothing could fail.
+    """
+    pattern = cbd._IDP_RUN_PREFIX_RE
+    assert pattern.fullmatch(DEAD_RUN), DEAD_RUN
+
+    carrying = [name for name in _long_lived_names(cbd) if pattern.match(name)]
+
+    assert carrying == [], (
+        f"{carrying} carry a run prefix, so each of {_run_prefix_only_sweeps()} "
+        f"reaps them once no stack of that run survives, with the long-lived "
+        f"stack still up: read the set in those sweeps again, or rename the member"
+    )
+    for opens_like_a_run in (DEAD_RUN, "idp-0101"):
+        assert any(
+            pattern.match(name)
+            for name in _names_of_a_long_lived_stack(opens_like_a_run)
+        ), opens_like_a_run
+
+
+@pytest.mark.parametrize("sweep", _run_prefix_only_sweeps())
+def test_no_run_prefix_only_sweep_reaps_a_long_lived_name_with_no_run_live(
+    cbd, monkeypatch, capsys, sweep
+):
+    """The other half of that premise, measured on each sweep it is the reason for.
+
+    The account holds no stack at all, so the enumeration answers with nothing
+    and no run is live: the answer that reaps every name carrying a run prefix,
+    and the dead run's names listed beside them, older than every age gate, all
+    go. Every name `_names_of_a_long_lived_stack` builds for every member is
+    listed too, equally old, and none of them goes. The BDA sweep counts each
+    among the names with no run prefix, listed as a blueprint and as a
+    project, so none was dropped from the listing before that sweep saw it.
+    """
+    names = [
+        listed for name in _long_lived_names(cbd) for listed in _as_listed(sweep, name)
+    ]
+    dead = _resources_of(sweep, DEAD_RUN)
+    aws = _install(
+        cbd,
+        monkeypatch,
+        sweep,
+        with_target=True,
+        contents=_listing_of(sweep, [*names, *dead]),
+        stacks={},
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(dead), (
+        f"{sweep} deleted {aws.deleted}; expected exactly the dead run's {dead}"
+    )
+    assert aws.described == [], aws.described
+    if sweep == "cleanup_stale_bda_blueprints":
+        assert _printed_bda_skips(capsys.readouterr().out) == (0, 0, len(names))
+
+
+@pytest.mark.parametrize("value", UNDATEABLE)
+@pytest.mark.parametrize(
+    "sweep", [s for s in _run_prefix_only_sweeps() if _SWEEP_SPECS[s]["age_gate"]]
+)
+def test_a_long_lived_name_never_reaches_a_run_prefix_only_sweeps_age_gate(
+    cbd, monkeypatch, capsys, sweep, value
+):
+    """Passed over with every name that has no run prefix, before the age gate.
+
+    The age gate fails closed (#1445) and names an item it cannot date, so a
+    sweep that asked it before the run prefix would report the long-lived
+    stack's undated names on a `⚠️ … age not establishable` line on every run
+    whose listing left them undated, though it never deletes them. The dead
+    run's names beside them keep their dates and are still reaped.
+    """
+    names = [
+        listed for name in _long_lived_names(cbd) for listed in _as_listed(sweep, name)
+    ]
+    dead = _resources_of(sweep, DEAD_RUN)
+    field = _SWEEP_SPECS[sweep]["age_gate"]["field"]
+    contents = _undated_for(
+        _listing_of(sweep, [*names, *dead]), field, value, LONG_LIVED_STACK
+    )
+    aws = _install(
+        cbd, monkeypatch, sweep, with_target=True, contents=contents, stacks={}
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(dead), aws.deleted
+    out = capsys.readouterr().out
+    assert "age not establishable" not in out, (
+        f"{sweep} asked its age gate about a long-lived stack's names: {out}"
+    )
+
+
+def test_every_run_prefix_reason_is_about_a_sweep_that_selects_by_it():
+    """The sweeps measured against the run-prefix premise, held to the source.
+
+    `_run_prefix_only_sweeps` reads its list off the reasons, so every reason
+    that names the run prefix is measured by the no-live-run case above, and
+    that of each such sweep with an age gate by the age-gate case as well; the
+    BDA sweep has no age gate, so the first case alone measures it. What keeps
+    those reasons true is that each such sweep selects by `_IDP_RUN_PREFIX_RE`
+    itself: one that stopped would be measured against a rule it no longer
+    applies, and one that never read the set and selected by it without saying
+    so would have a reason nothing measures.
+    """
+    functions = _top_level_functions(ast.parse(HARNESS.read_text(encoding="utf-8")))
+    selecting = {
+        sweep
+        for sweep in _sweeps_that_never_read_the_set()
+        if any(
+            isinstance(node, ast.Name) and node.id == "_IDP_RUN_PREFIX_RE"
+            for node in ast.walk(functions[sweep])
+        )
+    }
+    measured = set(_run_prefix_only_sweeps())
+
+    assert measured, "no sweep is measured against the run-prefix premise"
+    assert measured == selecting, (
+        f"the sweeps whose reason is the run-prefix rule are {sorted(measured)} and "
+        f"the sweeps leaving the set unread that select by _IDP_RUN_PREFIX_RE are "
+        f"{sorted(selecting)}; they differ in {sorted(measured ^ selecting)}"
+    )
+
+
+def test_a_listing_of_only_long_lived_names_reads_no_stacks(cbd, monkeypatch, capsys):
+    """Nothing in it can be deleted, so a stack enumeration that fails reports nothing.
+
+    `idp-ux-nightly` names its BDA-as-OCR project after itself in every
+    commercial-partition deploy, so while it stands the BDA listing is never
+    empty, and a sweep that read the stacks for every listing would report
+    itself incomplete over that stack's names whenever the read failed. Every
+    name `_names_of_a_long_lived_stack` builds for every member is listed, as a
+    blueprint and as a project, with each member up and the stack enumeration
+    throttled. None carries a run prefix, so the sweep never reads the stacks:
+    there is no finding, nothing is deleted, and every name is counted among
+    the ones with no run prefix.
+    """
+    names = _long_lived_names(cbd)
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing(names, names),
+        stacks=dict.fromkeys(cbd.SWEEP_EXEMPT_STACK_NAMES, "UPDATE_COMPLETE"),
+        stack_listing_error=(0, _client_error("Throttling", "Rate exceeded")),
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert findings == [], findings
+    assert aws.deleted == [], aws.deleted
+    assert aws.calls == ["list_blueprints", "list_data_automation_projects"], aws.calls
+    assert _printed_bda_skips(capsys.readouterr().out) == (0, 0, 2 * len(names))
+
+
+@pytest.mark.parametrize(
+    "near_miss",
+    [
+        pytest.param("idp-0101-12345x", id="letter-for-the-last-digit"),
+        pytest.param("idp-0101-abcdef", id="letters-for-the-time"),
+        pytest.param("idp-0101-12345", id="one-digit-short"),
+        pytest.param("idp-010x-123456", id="letter-in-the-date"),
+        pytest.param("idp-0101_123456", id="underscore-for-the-hyphen"),
+    ],
+)
+def test_a_name_that_only_opens_like_a_run_prefix_reads_no_stacks(
+    cbd, monkeypatch, capsys, near_miss
+):
+    """Only a whole `idp-MMDD-HHMMSS` makes the sweep read the account's stacks.
+
+    Every long-lived stack's name opens `idp-u…`, so a listing of those alone
+    passes for a gate that reads the stacks whenever a name's fifth character
+    is a digit, or whenever one opens `idp-MMDD-`. Here a name that opens like
+    a run prefix and falls short of `_IDP_RUN_PREFIX_RE` is listed beside them,
+    as a blueprint and as a project, with the stack enumeration throttled. It
+    carries no run prefix, so nothing in the listing can be deleted: the stacks
+    are not read, there is no finding, and every name is counted among the
+    ones with no run prefix.
+    """
+    names = [*_long_lived_names(cbd), near_miss]
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing(names, names),
+        stacks=dict.fromkeys(cbd.SWEEP_EXEMPT_STACK_NAMES, "UPDATE_COMPLETE"),
+        stack_listing_error=(0, _client_error("Throttling", "Rate exceeded")),
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert cbd._IDP_RUN_PREFIX_RE.match(near_miss) is None, near_miss
+    assert findings == [], findings
+    assert aws.deleted == [], aws.deleted
+    assert aws.calls == ["list_blueprints", "list_data_automation_projects"], aws.calls
+    assert _printed_bda_skips(capsys.readouterr().out) == (0, 0, 2 * len(names))
+
+
+def test_a_failed_stack_enumeration_counts_only_the_names_it_left_undecided(
+    cbd, monkeypatch
+):
+    """Beside a dead run's names, the finding counts those and no long-lived name.
+
+    The dead run's names carry a run prefix, so the stacks are read for them,
+    and a throttled read leaves them undecided: nothing is deleted, and the
+    sweep reports itself incomplete once. The long-lived names listed beside
+    them were never candidates, so the number that finding gives is the dead
+    run's alone.
+    """
+    names = _long_lived_names(cbd)
+    dead_blueprints, dead_projects = _bda_resources_named_for(DEAD_RUN)
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing(names + dead_blueprints, names + dead_projects),
+        stacks=dict.fromkeys(cbd.SWEEP_EXEMPT_STACK_NAMES, "UPDATE_COMPLETE"),
+        stack_listing_error=(0, _client_error("Throttling", "Rate exceeded")),
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert aws.deleted == [], aws.deleted
+    assert len(findings) == 1, findings
+    assert findings[0].startswith(cbd.SWEEP_NOT_COMPLETED), findings
+    assert _counted_as_undecided(findings[0]) == len(dead_blueprints) + len(
+        dead_projects
+    ), findings
+
+
+def test_a_live_run_listed_beside_the_long_lived_stack_keeps_its_names(
+    cbd, monkeypatch, capsys
+):
+    """The listing every run starts with while that stack stands.
+
+    The long-lived stack's names sit beside a live run's and a dead run's, and
+    the stacks answer: the live run's names stand, the dead run's go, and none
+    of the long-lived stack's does. So a sweep that skipped the stacks for a
+    listing holding any name without a run prefix, and read every run as over,
+    fails here on the live run's names rather than only on what it reports.
+    The summary line counts the live run's names as names, and that run once,
+    as a run.
+    """
+    names = _long_lived_names(cbd)
+    live = RUN_STACKS["primary-run"]
+    live_blueprints, live_projects = _bda_resources_named_for(live)
+    dead_blueprints, dead_projects = _bda_resources_named_for(DEAD_RUN)
+    aws = _install(
+        cbd,
+        monkeypatch,
+        "cleanup_stale_bda_blueprints",
+        with_target=True,
+        contents=_bda_listing(
+            names + live_blueprints + dead_blueprints,
+            names + live_projects + dead_projects,
+        ),
+        stacks={
+            **dict.fromkeys(cbd.SWEEP_EXEMPT_STACK_NAMES, "UPDATE_COMPLETE"),
+            live: "CREATE_IN_PROGRESS",
+            DEAD_RUN: "DELETE_COMPLETE",
+        },
+    )
+
+    findings = cbd.cleanup_stale_bda_blueprints()
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == _arns(dead_blueprints, dead_projects), (
+        f"expected exactly the dead run's names to go, got {aws.deleted}"
+    )
+    assert _printed_bda_skips(capsys.readouterr().out) == (
+        len(live_blueprints) + len(live_projects),
+        1,
+        2 * len(names),
+    )
+
+
+@pytest.mark.parametrize("value", UNDATEABLE)
+@pytest.mark.parametrize(
+    "sweep", [s for s in _long_lived_sweeps() if _SWEEP_SPECS[s]["age_gate"]]
+)
+def test_the_long_lived_stack_is_set_aside_before_the_fail_closed_age_gate(
+    cbd, monkeypatch, capsys, sweep, value
+):
+    """Counted as not examined where the listing gives it no usable timestamp.
+
+    Every age gate here fails closed (#1445): an item it cannot date is kept and
+    named on a `⚠️ … age not establishable` line. Asking the set first is what
+    keeps the long-lived stack's resources off that line, which would otherwise
+    report resources the sweep never deletes on every run whose listing left
+    them undated. The old run beside them keeps its date and is still reaped,
+    so a sweep that kept everything undated, or everything, fails here as well.
+    """
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    field = _SWEEP_SPECS[sweep]["age_gate"]["field"]
+    aws, s3 = _install_beside_long_lived(
+        cbd,
+        monkeypatch,
+        sweep,
+        owners,
+        contents=_undated_for(_listing(sweep, owners), field, value, LONG_LIVED_STACK),
+    )
+
+    findings = _run(cbd, sweep)
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        f"{sweep} deleted {aws.deleted}; expected exactly the old run's "
+        f"{_resources_of(sweep, OLD_RUN_STACK)}"
+    )
+    if sweep == "cleanup_stale_idp_buckets":
+        assert s3.emptied == _resources_of(sweep, OLD_RUN_STACK), s3.emptied
+    out = capsys.readouterr().out
+    assert "age not establishable" not in out, (
+        f"{sweep} named the long-lived stack's undated resources as items whose "
+        f"age it could not establish, so it asked its age gate before the set: "
+        f"{out}"
+    )
+    assert _printed_long_lived_count(out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), out
+
+
+def test_the_stack_sweep_does_not_count_the_long_lived_stacks_nested_stacks(
+    cbd, monkeypatch, capsys
+):
+    """Passed over by the top-level filter, as every nested stack is.
+
+    A nested stack is named `<parent>-<LogicalId>-<suffix>`, and the stack
+    sweep's match is the long-lived stack and its `-iam` pre-stack only, so it
+    is that filter rather than the set that keeps these: one that reached the
+    match would be reaped with the old run. Nor are they counted, so the count
+    stays one of top-level stacks like every other on that line. The old run's
+    nested stacks are passed over the same way, and its top-level stacks are
+    still reaped.
+    """
+    sweep = "cleanup_stale_idp_stacks"
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    old = datetime.now(tz=timezone.utc) - timedelta(seconds=STALE_AGE_SECONDS)
+    contents = _listing(sweep, owners)
+    contents["list_stacks"][0]["StackSummaries"] += [
+        {
+            "StackName": f"{owner}-{logical_id}-1A2B3C4D5E6F",
+            "CreationTime": old,
+            "RootId": f"arn:fake:stack/{owner}/root",
+            "ParentId": f"arn:fake:stack/{owner}/root",
+        }
+        for owner in owners
+        for logical_id in ("PATTERNSTACK", "APIRESOLVERSTACK")
+    ]
+    aws, _ = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, owners, contents=contents
+    )
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert findings == [], findings
+    assert sorted(aws.deleted) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        aws.deleted
+    )
+    assert _printed_long_lived_count(capsys.readouterr().out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), "the long-lived stack's nested stacks were counted as set aside for it"
+
+
+def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
+    cbd, monkeypatch, capsys
+):
+    """`idp-ux-nightly-test` and its pre-stack go; the long-lived pair stands.
+
+    All of them are top-level and older than the age gate. The long-lived stack
+    and `idp-ux-nightly-iam` are counted as set aside for it, and the throwaway pair
+    is reaped with the old run, so a sweep that spared every `idp-ux-nightly-<x>`
+    fails here, and so does one that stopped sparing either of the two names it
+    keeps.
+    """
+    sweep = "cleanup_stale_idp_stacks"
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    throwaway = [f"{LONG_LIVED_STACK}-test", f"{LONG_LIVED_STACK}-test-iam"]
+    old = datetime.now(tz=timezone.utc) - timedelta(seconds=STALE_AGE_SECONDS)
+    contents = _listing(sweep, owners)
+    contents["list_stacks"][0]["StackSummaries"] += [
+        {"StackName": name, "CreationTime": old} for name in throwaway
+    ]
+    aws, _ = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, owners, contents=contents
+    )
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert findings == [], findings
+    reaped = [*_resources_of(sweep, OLD_RUN_STACK), *throwaway]
+    assert sorted(aws.deleted) == sorted(reaped), (
+        f"the stack sweep deleted {aws.deleted}; expected exactly {reaped}. "
+        f"{throwaway[0]} is a top-level stack of its own, and anything of "
+        f"{LONG_LIVED_STACK} or {LONG_LIVED_STACK}-iam is the long-lived stack lost"
+    )
+    assert _printed_long_lived_count(capsys.readouterr().out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), f"{throwaway} was counted as set aside for the long-lived stack"
+
+
+@pytest.mark.parametrize("marker", ["future", "expired", "unreadable"])
+def test_the_long_lived_stack_is_set_aside_before_its_retention_marker_is_read(
+    cbd, monkeypatch, capsys, marker
+):
+    """A marker in its name neither keeps it nor reaps it.
+
+    The stack sweep reads a run's retention marker before its age gate: one in
+    the future keeps the stack as retained, an expired one reaps it at any age,
+    and one whose read did not answer keeps it on a ⚠️ line of its own.
+    `retain_failed_stack` writes a marker only for a run's own stack, so none
+    names this one today; the case pins the order the docstring states, under
+    which the stack is counted as not examined whatever the marker says. An expired
+    marker is still dropped, as every expired marker is, so it holds no
+    retention slot. The old run beside it has no marker and is still reaped.
+    """
+    sweep = "cleanup_stale_idp_stacks"
+    owners = [LONG_LIVED_STACK, OLD_RUN_STACK]
+    key = f"{cbd.RETENTION_S3_PREFIX}/{LONG_LIVED_STACK}.json"
+    contents = _listing(sweep, owners)
+    contents["list_objects_v2"] = [{"Contents": [{"Key": key}]}]
+    aws, _ = _install_beside_long_lived(
+        cbd, monkeypatch, sweep, owners, contents=contents
+    )
+    monkeypatch.setenv("SOURCE_BUCKET", "a-bucket")
+    now = datetime.now(tz=timezone.utc)
+    keep_until = {"future": now + timedelta(days=1), "expired": now - timedelta(days=1)}
+
+    def _get_object(Bucket, Key):  # noqa: N803 - boto3 casing
+        if marker == "unreadable":
+            raise _client_error("AccessDenied", "not authorized", "GetObject")
+        body = json.dumps({"keep_until": keep_until[marker].isoformat()})
+        return {"Body": io.BytesIO(body.encode())}
+
+    monkeypatch.setattr(aws, "get_object", _get_object, raising=False)
+
+    findings = cbd.cleanup_stale_idp_stacks()
+
+    assert findings == [], findings
+    dropped = [d for d in aws.deleted if d.startswith(f"{cbd.RETENTION_S3_PREFIX}/")]
+    reaped = [d for d in aws.deleted if d not in dropped]
+    assert sorted(reaped) == sorted(_resources_of(sweep, OLD_RUN_STACK)), (
+        f"with a {marker} marker for {LONG_LIVED_STACK} the sweep deleted {aws.deleted}"
+    )
+    assert dropped == ([key] if marker == "expired" else []), dropped
+    out = capsys.readouterr().out
+    assert "retention marker could not be read" not in out, out
+    assert "retained idp- stack(s) skipped" not in out, out
+    assert _printed_long_lived_count(out) == len(
+        _resources_of(sweep, LONG_LIVED_STACK)
+    ), f"a {marker} marker took {LONG_LIVED_STACK} out of the long-lived count: {out}"
 
 
 # ---------------------------------------------------------------------------
