@@ -135,6 +135,30 @@ interface SchemaProperty {
     // family and therefore can't be gated by a single valuePrefix.
     reasoningCapable?: boolean;
   };
+  // Show this field only when EVERY listed condition holds. Composes with
+  // dependsOn and hideWhen (all three must pass to render).
+  //
+  // Why this exists alongside dependsOn: dependsOn takes exactly ONE field and
+  // one value set, which cannot express "images are on AND granularity is
+  // page" — the shape the classification panel needs, where granularity and
+  // modality are deliberately independent settings whose combinations decide
+  // what applies. Rather than growing dependsOn into something that means two
+  // things depending on its keys, this is the n-condition form, and `not` gives
+  // it the negation dependsOn also lacks.
+  //
+  // `field` resolves in the NEAREST ENCLOSING SCOPE that has it: from
+  // `classification.image.target_width`, the field `modality.images` is looked
+  // for at `classification.image.modality.images`, then
+  // `classification.modality.images`, then `modality.images`. That is what lets
+  // a condition reference a sibling object's field without spelling out the
+  // whole path, which dependsOn (sibling-then-root only) cannot do.
+  showWhen?: Array<{
+    field: string;
+    value?: unknown;
+    values?: unknown[];
+    not?: unknown;
+    notValues?: unknown[];
+  }>;
   sectionLabel?: string;
   // Only Admins may change this object: other users see its fields read-only.
   adminOnly?: boolean | string;
@@ -725,6 +749,53 @@ const ConfigBuilder = ({
     return result;
   };
 
+  // Normalize string "true"/"false" to booleans. Schema values deserialize from
+  // DynamoDB as strings while form state holds real booleans, so a boolean
+  // toggle would never strict-equal 'false' without this.
+  const normalizeBoolish = (v: unknown): unknown => {
+    if (typeof v === 'string' && (v === 'true' || v === 'false')) return v === 'true';
+    return v;
+  };
+
+  // Resolve a showWhen field in the nearest enclosing scope that defines it.
+  // See the showWhen comment on SchemaProperty for why the walk-up exists.
+  const resolveShowWhenValue = (fieldPath: string, field: string): unknown => {
+    const segments = fieldPath.split('.');
+    // Drop the field's own name first, then walk outwards one scope at a time,
+    // ending with the bare field name (the form root).
+    for (let depth = segments.length - 1; depth >= 0; depth -= 1) {
+      const scope = segments.slice(0, depth).join('.');
+      const candidate = scope ? `${scope}.${field}` : field;
+      const value = getValueAtPath(formValues, candidate);
+      if (value !== undefined) return value;
+    }
+    return undefined;
+  };
+
+  // True when every showWhen condition holds (or there are none). Absent values
+  // fail a positive condition and pass a negative one: a field that is not in
+  // the form cannot equal a required value, and does not equal an excluded one.
+  const showWhenPasses = (property: SchemaProperty, fieldPath: string): boolean => {
+    if (!property.showWhen || !Array.isArray(property.showWhen)) return true;
+
+    return property.showWhen.every((condition) => {
+      if (!condition || typeof condition.field !== 'string') return true;
+      const actual = normalizeBoolish(resolveShowWhenValue(fieldPath, condition.field));
+
+      if (condition.notValues !== undefined || condition.not !== undefined) {
+        const excluded = (Array.isArray(condition.notValues) ? condition.notValues : [condition.not]).map(normalizeBoolish);
+        if (excluded.includes(actual)) return false;
+      }
+
+      if (condition.values !== undefined || condition.value !== undefined) {
+        const allowed = (Array.isArray(condition.values) ? condition.values : [condition.value]).map(normalizeBoolish);
+        if (!allowed.includes(actual)) return false;
+      }
+
+      return true;
+    });
+  };
+
   const updateValue = (path: string, value: unknown): void => {
     // Don't create properties for empty/meaningless values, BUT preserve empty arrays
     // as they represent intentional user deletions of list items
@@ -828,16 +899,14 @@ const ConfigBuilder = ({
     // extraction.confidence.mode === "integrated").
     if (property.hideWhen) {
       const hideVal = getValueAtPath(formValues, property.hideWhen.field);
-      // Normalize string "true"/"false" to booleans on BOTH sides: schema values
-      // deserialize from DynamoDB as strings, while form state holds real booleans,
-      // so a boolean toggle (e.g. hitl.enabled) would never strict-equal 'false'.
-      const normalizeBool = (v: unknown): unknown => {
-        if (typeof v === 'string' && (v === 'true' || v === 'false')) return v === 'true';
-        return v;
-      };
-      if (normalizeBool(hideVal) === normalizeBool(property.hideWhen.value)) {
+      if (normalizeBoolish(hideVal) === normalizeBoolish(property.hideWhen.value)) {
         return null;
       }
+    }
+
+    // n-condition show gate; composes with dependsOn and hideWhen.
+    if (!showWhenPasses(property, currentPath)) {
+      return null;
     }
 
     // Check dependencies FIRST, before any rendering - applies to all field types
@@ -1303,6 +1372,7 @@ const ConfigBuilder = ({
 
                         // Function to check if a field should be visible (not hidden by dependencies)
                         const isFieldVisible = (propKey: string, propSchema: SchemaProperty) => {
+                          if (!showWhenPasses(propSchema, `${itemPath}.${propKey}`)) return false;
                           if (!propSchema.dependsOn) return true;
 
                           const dependencyField = propSchema.dependsOn.field;
@@ -1846,6 +1916,9 @@ const ConfigBuilder = ({
 
   // Render each top-level property
   const renderTopLevelProperty = ({ key, property }: { key: string; property: SchemaProperty }) => {
+    if (!showWhenPasses(property, key)) {
+      return null;
+    }
     // Check top-level dependsOn before rendering (hides entire sections when dependency not met)
     if (property.dependsOn) {
       const depField = property.dependsOn.field;

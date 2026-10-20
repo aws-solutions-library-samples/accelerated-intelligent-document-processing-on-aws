@@ -870,8 +870,8 @@ two controls that answer opposite questions produce it:
 | Question | Control | Label |
 |---|---|---|
 | "do this caller's **groups** admit this operation?" | the field-level floor in `authz.py` — including an undeclared field and an `IAM_ONLY` operation | `api-group-floor` |
-| "may this caller reach the **object** they named?" | a per-object control inside a resolver: the bucket allow-list, the write-once key rule, a chat session they do not own, a document selection that is unfinished or out of their configuration scope | `resource` |
-| neither is established | a resolver refusal that did not declare which control it was — every resolver's own group check is in this category today | `resolver` |
+| "may this caller reach the **object** they named?" | a per-object control inside a resolver: the bucket allow-list, the write-once key rule, a chat session they do not own, a document selection that is unfinished or out of their configuration scope, the configuration profile of the document an object read belongs to | `resource` |
+| neither is established | a resolver refusal that did not declare which control it was. A resolver's own group check is here, and so is every fail-closed refusal about the **deployment** or the **principal** — a scope that could not be evaluated, a tracking-table read that stayed throttled, a table name the template did not wire | `resolver` |
 | an invocation asserted its own `identity` | `normalize_event`, reachable only with `lambda:InvokeFunction` on the dispatcher | `unverified-identity` |
 
 The two were indistinguishable in the response, which made one shape carry two
@@ -881,6 +881,17 @@ first, and eight cells of one run reported three per-object controls working
 correctly as group-authorization failures — publishing `RBAC dynamic — FAIL ❌` for a
 release whose authorization was fine
 ([#1308](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1308)).
+
+⚠️ **`resolver` does not mean a group check answered**, and on the object-read path
+it usually has not. Reading it that way is the mistake the label exists to prevent,
+one layer in: a `resolver` label on `getFileContents`, `getFilePresignedUrl` or
+`getFilePresignedUrls` means the refusal was about this **deployment** or about the
+**caller's** scope being unreadable, not about the object and not about their groups
+— a throttled tracking table, an unwired table name, an `allowedConfigVersions`
+lookup that failed. Those are the cases to take to CloudWatch, and the strict
+reading `resolver` gets downstream is what keeps them in the first row an operator
+sees. A refusal about the object itself on those three operations says `resource`
+([#1478](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1478)).
 
 `authzControl` names the control, and it is **additive**: the status, the
 `errorType` and the message are unchanged, and a consumer that does not read the

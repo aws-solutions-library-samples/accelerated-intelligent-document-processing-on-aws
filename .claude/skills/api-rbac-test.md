@@ -240,7 +240,7 @@ layer:
 | The response means | Control | `authzControl` |
 |---|---|---|
 | "this caller's **groups** do not admit this operation" | the field-level floor in `authz.py` — also an undeclared field and an `IAM_ONLY` op | `api-group-floor` |
-| "this caller's groups were **fine** and the **object** they named was refused" | a per-object control in a resolver: the bucket allow-list, the write-once key rule, chat-session ownership, the test-set selection scope | `resource` |
+| "this caller's groups were **fine** and the **object** they named was refused" | a per-object control in a resolver: the bucket allow-list, the write-once key rule, chat-session ownership, the test-set selection scope, the per-document config-profile scope on object bytes | `resource` |
 | the resolver refused and did not say which control it was — every resolver's own group check is here | a resolver | `resolver` |
 | an invocation asserted its own `identity` | `normalize_event` | `unverified-identity` |
 
@@ -278,6 +278,34 @@ itself costs a visible failure rather than a silent pass. Declare one by raising
 `ResourceAccessDenied` (`idp_common.api_adapter`; a `PermissionError` subclass,
 recognised by class **name** across the invoke boundary, so a layerless resolver may
 declare its own). Keep the `Unauthorized` message prefix.
+
+⚠️ **Declare it per BRANCH, and uniformly across the ones that decide about the
+object.** A control whose refusal sites split between the two labels tells the
+caller which branch answered, and for an object-scoped control that is an existence
+oracle: `resource` on "exists but out of your scope" beside `resolver` on "no such
+object" is one bit per key, over objects entirely outside the caller's scope. So
+convert every branch that decides about the object the caller named, including any
+budget or cap whose refusal depends on which objects exist, and leave the branches
+that are facts about the **deployment** or the **principal** unattributed — an
+unevaluable scope, a throttled table, an unwired table name. `resolver` is the true
+answer for those and the strict reading is what keeps a deployment fault in the row
+an operator reads first. `document_scope` and `key_scope` in
+`get_file_contents_resolver` are the worked example of the split (#1478), and
+`key_scope._assert_test_set_allowed` is the counter-example: it folds the resolver's
+own **group** check into the same exception as its per-object one, so it stays
+unattributed — `resource` there would lose a group refusal, which is the one
+misattribution direction that matters.
+
+⚠️ **`object_scoped_roles:` is not the way to cover a control keyed on
+`allowedConfigVersions`.** That key names a role the matrix drives, and every matrix
+principal is unscoped, so a config-scope control is a no-op for all of them and the
+cell fails as NOT REFUSED. Those belong in the config-version scope suite, where a
+seeded scoped Author exists — `run_document_bytes_scope_suite` is the pattern: refuse
+the scoped caller a real document's bytes, require `resource` on the refusal, and
+assert an unrestricted Admin is **not refused** the same URI so the first arm cannot
+pass on a deployment that refuses the object to everybody. "Not refused" rather than
+"served" on purpose: a 400 `File not found` is the honest answer on a stack whose
+input bucket has been swept, and requiring a 200 would fail there.
 
 ⚠️ **An absent label is not the same as `resolver`.** `None` means the deployment
 did not say — a stack older than the field, the route's Cognito authorizer answering

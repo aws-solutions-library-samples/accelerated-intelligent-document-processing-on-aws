@@ -2325,6 +2325,65 @@ signals make both loud without changing what is extracted:
   attributed to it; and because the recorded corpus cannot bound the false-failure rate —
   it holds no legitimately-empty-list document that also carries a same-width table, so
   the case needs its own measurement. Tracked with the narrowing in GitHub issue #1046.
+- `extraction_list_field_not_a_list` (**error**, always) — a field the class schema declares
+  as an array came back as a string carrying content, a number, a bool or an object, so none
+  of its rows reaches confidence scoring, evaluation or any other consumer of the result.
+  The live shape is a model declining *inside the field* instead of failing: measured
+  on a 400-row statement, `Transactions` came back as `'The statement contains 400
+  transactions (SEQ00000 to SEQ00399). They are too many to list in full here without
+  risking errors, so this field is not populated.'`
+
+  ⚠️ **A blank value is not this code.** `""` or `"   "` says what `[]` says — there were
+  no rows — and a genuinely empty section is legitimate, which is the reason
+  `extraction_incomplete` is a `warning`; the `error` rationale below holds for a refusal
+  sentence and not for a blank. A blank therefore joins `extraction_incomplete` and only a
+  value carrying content reaches this code. The message is correspondingly bounded to what
+  is known — the rows are not *available*, rather than provably destroyed — because a value
+  holding content is not always unrecoverable: a JSON-serialized array is the #783 shape,
+  and `coercion.py`'s `json_parsed_from_string` repairs exactly that when coercion is
+  enabled on the simple path, so the rows may be sitting in the string.
+
+  **Scope** is `_declared_array_non_lists`, which matches `_object_list_targets` — top-level
+  declared arrays, `items` resolved through `$ref`, and one level into an array of
+  instances — rather than top-level `properties` alone. The nested shape ships:
+  `checkpoints[].items`, `glossarySections[].terms` and `employees[].shifts` in both
+  `ocr-benchmark` presets, reported as `outer[].inner`. Two levels down is not reached and
+  no shipped preset declares one.
+
+  ⚠️ **Every other signal here is structurally unable to see it, which is why detection
+  could not be left where it was.** `extraction_incomplete` tests absent / `None` / empty
+  and a string is none of the three; all three OCR-grounded codes above compare a row
+  *count* and there is no list to count, with full exact-width evidence present;
+  `confidence_coverage` reports no denominator, correctly. Full-schema validation *does*
+  report it, as `extraction_validation_failed` — but only when
+  `extraction.validation.enabled` is true, at `warning`, with a message that reads the same
+  for a total loss as for a reformatted date. `coercion.py` sees it too and refuses, which
+  is the right call — it performs exactly one cross-family repair,
+  `json_parsed_from_string`, described there as "the one cross-family repair that is
+  lossless and unambiguous", and a prose sentence is not it — but that refusal is gated on
+  `extraction.coercion.enabled` and emits no issue at all. On
+  the v0.6.12 grid the one affected run that recorded **no issue of any kind** was the one
+  with enforcement off. This check reads `_class_schema` against the final extracted
+  fields, so it needs neither toggle.
+
+  `error`, unconditionally: it is the one code in this family that is not an estimate — a
+  declared type and a returned value leave nothing to infer — which is the distinction that
+  keeps `extraction_row_count_unverified` and `extraction_sparse` at `info`. It does **not**
+  fail the section (`_generate_processing_report` fails only on `ROW_SHORTFALL_CODE` at
+  `error`, so the report reads `COMPLETED WITH ERRORS`) and
+  `extraction.row_shortfall_action` does not govern it, for the reason it governs neither
+  `extraction_output_truncated` nor `extraction_partial_row_shortfall`: widening that knob
+  would start failing runs that complete today on a deployment already opted into `fail`.
+
+  `details` carries `returned_types` per field and `returned_values` for the string cases,
+  truncated at `_NOT_A_LIST_PREVIEW_CHARS` (300) — the refusal sentence is the only record
+  of *why* the model declined and nothing else in the pipeline keeps it, but it is unbounded
+  model-authored text going into a DynamoDB item. In simple mode the message recommends
+  Advanced (agentic) extraction, which is the measured remedy rather than boilerplate: on
+  the v0.6.12 grid the advanced cells returned 400 of 400 rows on all three 400-row
+  documents, 18 runs of 18, while the traditional cells lost nearly the whole list on 13 of
+  39. `tests/unit/extraction/test_list_field_not_a_list.py` is the whole surface, driven
+  from the three refusal sentences the grid recorded verbatim.
 - `extraction_partial_row_shortfall` (warning, **always**) — the band the half ratio left
   silent, and the reason it was there to leave: ⚠️ **`_OCR_ROW_SHORTFALL_RATIO` goes quiet
   well before half the document is gone.** Sweeping every extracted count from 1 to 800

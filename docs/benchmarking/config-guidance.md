@@ -131,7 +131,11 @@ Headline results at v0.6.12:
 3. **🚨 Claude Sonnet 5.5 loses nearly the whole list on 400-row documents**
    ([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)).
    13 of its 133 grid runs return **2 or 10 rows of 400** — four at recall 0.005, nine at
-   0.025 — and every one of the 13 is a 400-row document: per-document recall **0.6366 on
+   0.025 — and every one of the 13 is a 400-row document; on the four at 0.005 the field
+   came back as a prose refusal rather than a short list, so **zero** rows were returned
+   and the 2 is the scorer counting the two row identifiers the refusal sentence quotes
+   ([#1505](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1505)).
+   Per-document recall is **0.6366 on
    `med_narrow` (9,660 cells)** and **0.7434 on `manylists_400` (11,300)**, against 1.0000
    on every document of 100 rows or fewer *and* on the 800-row one. Its grid cell accuracy
    of 1.0000 is computed on the rows it chose to return, over 73,570 cells against the
