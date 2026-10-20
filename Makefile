@@ -992,10 +992,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
-		scripts/tests/test_check_shared_branch.py -v
+		scripts/tests/test_check_shared_branch.py \
+		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
