@@ -47,7 +47,7 @@ def _num(value: Any) -> Optional[float]:
 def _class_schema(config: Any, doc_class: Optional[str]) -> Optional[Mapping[str, Any]]:
     if not doc_class or config is None:
         return None
-    from idp_common.assessment.threshold_resolver import find_class_schema
+    from idp_common.config.schema_utils import find_class_schema
 
     return find_class_schema(doc_class, getattr(config, "classes", None))
 

@@ -273,7 +273,7 @@ class AssessmentService:
         Returns:
             JSON Schema dict for the class, or empty dict if not found
         """
-        from idp_common.assessment.threshold_resolver import find_class_schema
+        from idp_common.config.schema_utils import find_class_schema
         from idp_common.schema.multi_instance import wrap_class_schema
 
         return (

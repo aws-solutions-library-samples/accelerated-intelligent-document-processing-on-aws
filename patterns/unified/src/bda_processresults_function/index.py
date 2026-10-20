@@ -491,7 +491,7 @@ def resolve_class_schema(doc_class, config):
     Returns:
         dict: The class schema, or None when not found.
 
-    Thin wrapper over ``idp_common.assessment.threshold_resolver.find_class_schema``
+    Thin wrapper over ``idp_common.config.schema_utils.find_class_schema``
     — the lookup itself (including the non-string ``x-aws-idp-document-type``
     guard) lives there and is unit-tested, so this path and the standalone
     assessment service cannot drift apart.
@@ -499,7 +499,7 @@ def resolve_class_schema(doc_class, config):
     # Imported lazily: this Lambda installs idp_common[core,docs_service,image],
     # not [assessment], so a module-level import would risk a cold-start failure
     # if the assessment package ever grows a hard third-party dependency.
-    from idp_common.assessment.threshold_resolver import find_class_schema
+    from idp_common.config.schema_utils import find_class_schema
 
     if config is None or not hasattr(config, "classes"):
         return None
