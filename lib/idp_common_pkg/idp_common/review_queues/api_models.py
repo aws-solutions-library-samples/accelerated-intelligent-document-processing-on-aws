@@ -143,6 +143,9 @@ class ReviewHistoryEntryView(_View):
 
 class ReviewItemDetail(_View):
     item: ReviewItemView
+    #: The item's queue as people see it: its name, or a readable form of its id
+    #: when the queue is no longer defined.
+    queue_name: Optional[str] = None
     sections: list[ReviewSectionDetail] = Field(default_factory=list)
     checklist: list[str] = Field(default_factory=list)
     reject_reasons: list[str] = Field(default_factory=list)

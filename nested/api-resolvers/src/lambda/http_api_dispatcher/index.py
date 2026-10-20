@@ -374,6 +374,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "getReviewQueuesOverview": "getMyReviewQueues",
     "forceReleaseReviewItem": "getMyReviewQueues",
     "reassignReviewItem": "getMyReviewQueues",
+    "takeOverReviewItem": "getMyReviewQueues",
     "moveReviewItem": "getMyReviewQueues",
     "listReviewQueues": "getMyReviewQueues",
     "listAnnotators": "getMyReviewQueues",

@@ -3,28 +3,25 @@
 //
 // The frame of the annotation screen, the same for production and Test Studio items:
 // the title row with the item's facts, the action bar (Claim for an Annotator viewing
-// an unassigned item; otherwise Complete, plus Reject for production, and Skip, which
-// gives the item back to its queue), notices, the task context and the editor. Every
-// disabled action says why on hover.
+// an unassigned item; otherwise Complete, and Skip, which gives the item back to its
+// queue), notices, the task context and the editor. Every disabled action says why on
+// hover.
 import React from 'react';
 import { Button, Header, SpaceBetween } from '@cloudscape-design/components';
 
 import ReviewWorkspaceLayout from './ReviewWorkspaceLayout';
 
-export type AnnotationAction = 'complete' | 'reject' | 'skip' | 'claim';
+export type AnnotationAction = 'complete' | 'skip' | 'claim';
 
 /** Hover text of Skip while it is available. */
-export const SKIP_HINT = 'Give this item back to its queue unassigned; another Annotator can claim it';
+export const SKIP_HINT = 'Give this item back to its queue, unassigned and not finished.';
 
 export interface AnnotationActionsProps {
   /** Why Complete is unavailable; undefined when it is available. */
   completeDisabledReason?: string;
   /** Hover text while Complete is available. */
   completeHint?: string;
-  /** Offer Reject (production items only). */
-  showReject: boolean;
-  rejectDisabledReason?: string;
-  /** Offer Skip: give the item back to its queue, unassigned and not completed. */
+  /** Offer Skip: give the item back to its queue, unassigned and not finished. */
   showSkip?: boolean;
   skipDisabledReason?: string;
   /**
@@ -39,8 +36,6 @@ export interface AnnotationActionsProps {
 const AnnotationActions = ({
   completeDisabledReason,
   completeHint,
-  showReject,
-  rejectDisabledReason,
   showSkip = false,
   skipDisabledReason,
   showClaim = false,
@@ -58,15 +53,9 @@ const AnnotationActions = ({
     );
   }
   const completeReason = working ?? completeDisabledReason;
-  const rejectReason = working ?? rejectDisabledReason;
   const skipReason = working ?? skipDisabledReason;
   return (
     <SpaceBetween direction="horizontal" size="xs">
-      {showReject && (
-        <Button disabled={!!rejectReason} disabledReason={rejectReason} loading={busy === 'reject'} onClick={() => onAction('reject')}>
-          Reject
-        </Button>
-      )}
       {showSkip && (
         <span title={skipReason ? undefined : SKIP_HINT}>
           <Button disabled={!!skipReason} disabledReason={skipReason} loading={busy === 'skip'} onClick={() => onAction('skip')}>

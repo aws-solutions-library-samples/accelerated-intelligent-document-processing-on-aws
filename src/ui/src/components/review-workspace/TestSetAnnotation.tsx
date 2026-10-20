@@ -295,7 +295,6 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       actions={{
         completeDisabledReason: completeReason,
         completeHint: 'Mark the labels reviewed: saved sections as corrected, the rest as correct',
-        showReject: false,
         showSkip: true,
         skipDisabledReason: skipReason,
         showClaim: canClaim,

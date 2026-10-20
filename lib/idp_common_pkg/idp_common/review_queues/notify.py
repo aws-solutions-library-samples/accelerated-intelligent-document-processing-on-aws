@@ -134,7 +134,10 @@ def claim_released(
         "reprocessed": "The document was reprocessed, so its review was withdrawn.",
         "reassign": "An Admin assigned the item to another reviewer.",
     }
-    if reason == "removed":
+    if reason == "take_over":
+        # The draft is keyed by item and cycle, so the Admin carries on from it.
+        body = "An Admin took over the item to finish it. Your draft stays with it."
+    elif reason == "removed":
         # The draft is not applied: the document completes as processed.
         body = (
             "An Admin removed the document from review; it completes with its "

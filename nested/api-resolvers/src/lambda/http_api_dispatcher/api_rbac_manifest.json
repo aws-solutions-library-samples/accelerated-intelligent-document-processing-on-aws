@@ -622,6 +622,9 @@
       "Admin",
       "Author"
     ],
+    "takeOverReviewItem": [
+      "Admin"
+    ],
     "unassignTestSetDocuments": [
       "Admin"
     ],

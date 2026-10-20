@@ -597,6 +597,7 @@ class ReviewQueueService:
         )
         return ReviewItemDetail(
             item=item_view(record, caller),
+            queue_name=definition.name if definition else display_name(record.queue),
             sections=sections,
             checklist=list(definition.checklist) if definition else [],
             reject_reasons=list(
@@ -1238,21 +1239,76 @@ class ReviewQueueService:
             raise ReviewValidationError(
                 "BAD_ARGUMENT", "the user already holds the claim"
             )
+        new, former_email = self._set_owner(
+            old, assignee, "reassigned", caller.email, {"to": email}
+        )
+        self.notify.item_reassigned(new, email)
+        if former_email:
+            self.notify.claim_released(new, former_email, "reassign")
+        return item_view(new, caller)
+
+    def take_over(
+        self, caller: CallerContext, object_key: str, cycle_id: str
+    ) -> ReviewItemView:
+        """An Admin takes an item assigned to someone else, to edit and finish it.
+
+        The draft is keyed by item and cycle, so it stays with the item. An open
+        item is claimed instead (``claim``); a finished or finalizing one can't
+        change hands.
+        """
+        old = self._supervised(caller, object_key, cycle_id)
+        if old.state == OPEN:
+            raise ReviewConflict(
+                "NOT_ASSIGNED", "the item isn't assigned; claim it instead"
+            )
+        if old.state != CLAIMED:
+            raise ReviewConflict("INVALID_STATE", f"the item is {old.state}")
+        if old.owner_key == caller.reviewer_key:
+            raise ReviewConflict("ALREADY_YOURS", "the item is already assigned to you")
+        new, former_email = self._set_owner(
+            old,
+            caller,
+            "taken_over",
+            caller.email,
+            {"former_owner": old.owner_email},
+        )
+        logger.info("event=review_taken_over")
+        if former_email:
+            self.notify.claim_released(new, former_email, "take_over")
+        return item_view(new, caller)
+
+    def _set_owner(
+        self,
+        old: ReviewItemRecord,
+        owner: CallerContext,
+        event: str,
+        actor: Optional[str],
+        details: Mapping[str, Any],
+        *,
+        retry_cap: bool = True,
+    ) -> tuple[ReviewItemRecord, Optional[str]]:
+        """Assign ``old`` (OPEN or CLAIMED) to ``owner``; returns the new record
+        and the former owner's email (``None`` when it was unassigned).
+
+        Moves both claim counters and writes one history event in the same
+        transaction. When the owner's counter is at the cap it is repaired once
+        and the write retried, as ``_claim`` does.
+        """
         _, now_ms, now_iso = self._now()
         rq = self._rq(old.profile)
         new = old.model_copy(deep=True)
         former_key, former_email = (
             (old.owner_key, old.owner_email) if old.state == CLAIMED else (None, None)
         )
-        self._claim_fields(new, assignee, rq.lease_minutes, now_ms, now_iso)
+        self._claim_fields(new, owner, rq.lease_minutes, now_ms, now_iso)
         # An assignment never expires; the sweep at the queue's time limit only
-        # sends the Annotator a reminder.
+        # sends the assignee a reminder.
         definition = rq.queue(old.queue)
         time_limit = definition.time_limit_minutes if definition else 60
         new.sweep_at_ms = now_ms + time_limit * 60_000
         extra = [
             self.store.counter_txn_item(
-                assignee.reviewer_key,
+                owner.reviewer_key,
                 1,
                 cap=rq.max_claims_per_reviewer,
                 now_iso=now_iso,
@@ -1260,11 +1316,7 @@ class ReviewQueueService:
         ]
         if former_key:
             extra.append(self.store.counter_txn_item(former_key, -1, now_iso=now_iso))
-        extra.extend(
-            self._history(
-                new, "reassigned", caller.email, {"to": email}, now_ms, now_iso
-            )
-        )
+        extra.extend(self._history(new, event, actor, details, now_ms, now_iso))
         try:
             self._write(
                 old,
@@ -1275,16 +1327,17 @@ class ReviewQueueService:
             )
         except DynamoDBTransactionCanceledError as exc:
             if exc.reason_code(1) == "ConditionalCheckFailed":
+                if retry_cap and self.repair_counter(owner.reviewer_key):
+                    return self._set_owner(
+                        old, owner, event, actor, details, retry_cap=False
+                    )
                 raise ReviewConflict(
                     "CAP_REACHED", "the reviewer is at their claim cap"
                 ) from None
             raise ReviewConflict(
                 "INVALID_STATE", "the item changed; reload it"
             ) from None
-        self.notify.item_reassigned(new, email)
-        if former_email:
-            self.notify.claim_released(new, former_email, "reassign")
-        return item_view(new, caller)
+        return new, former_email
 
     def move(
         self, caller: CallerContext, object_key: str, cycle_id: str, target_queue: str

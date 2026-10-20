@@ -86,6 +86,7 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "getReviewQueuesOverview": _ADMIN,
     "forceReleaseReviewItem": _ADMIN,
     "reassignReviewItem": _ADMIN,
+    "takeOverReviewItem": _ADMIN,
     "moveReviewItem": _ADMIN,
     "listReviewQueues": _ADMIN,
     "listAnnotators": _ADMIN,
@@ -240,6 +241,11 @@ def _reassign(c, args):
     return _dump(_SERVICE.reassign(c, a.object_key, a.cycle_id, a.assignee_email))
 
 
+def _take_over(c, args):
+    a = ItemCycleArgs.model_validate(args)
+    return _dump(_SERVICE.take_over(c, a.object_key, a.cycle_id))
+
+
 def _move(c, args):
     a = MoveArgs.model_validate(args)
     return _dump(_SERVICE.move(c, a.object_key, a.cycle_id, a.target_queue))
@@ -346,6 +352,7 @@ _FIELDS: dict[str, Callable[[CallerContext, dict], Any]] = {
     "getReviewQueuesOverview": _overview,
     "forceReleaseReviewItem": _force_release,
     "reassignReviewItem": _reassign,
+    "takeOverReviewItem": _take_over,
     "moveReviewItem": _move,
     "listReviewQueues": _list_queues,
     "listAnnotators": _list_annotators,

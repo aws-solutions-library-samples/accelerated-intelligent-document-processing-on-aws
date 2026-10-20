@@ -80,6 +80,7 @@ class TestGroupGate:
             "deleteReviewQueue",
             "reassignReviewItem",
             "removeReviewItem",
+            "takeOverReviewItem",
         ],
     )
     def test_annotator_is_refused_admin_operations_before_any_work(self, module, field):
@@ -302,6 +303,29 @@ class TestQueueDefinitions:
         assert result == {"objectKey": "a.pdf"}
         (_caller, key, cycle, note), _ = module._SERVICE.remove.call_args
         assert (key, cycle, note) == ("a.pdf", "0" * 21, "dup")
+
+    def test_take_over_routes_to_the_service_with_the_admin_caller(self, module):
+        module._SERVICE.take_over.return_value = _model({"objectKey": "a.pdf"})
+        result = module.handler(
+            _event("takeOverReviewItem", {"objectKey": "a.pdf", "cycleId": "0" * 21}),
+            None,
+        )
+        assert result == {"objectKey": "a.pdf"}
+        (caller, key, cycle), _ = module._SERVICE.take_over.call_args
+        assert (key, cycle) == ("a.pdf", "0" * 21)
+        assert caller.is_admin and caller.email == "admin@example.com"
+
+    def test_take_over_of_an_open_item_is_a_bad_request(self, module):
+        module._SERVICE.take_over.side_effect = ReviewConflict(
+            "NOT_ASSIGNED", "the item isn't assigned; claim it instead"
+        )
+        with pytest.raises(ValueError, match="NOT_ASSIGNED"):
+            module.handler(
+                _event(
+                    "takeOverReviewItem", {"objectKey": "a.pdf", "cycleId": "0" * 21}
+                ),
+                None,
+            )
 
     def test_delete_needs_an_id(self, module):
         with pytest.raises(ValueError, match="id is required"):

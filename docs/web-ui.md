@@ -646,12 +646,11 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
   **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
 - **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
-  Queues** (one per test set), each listing Queue, Items, Pending, Assigned, In progress, Annotators and Priority with an
-  actions menu; Production queues also show **Status** (Enabled or Disabled) and
-  **Threshold**. Admins create, edit and delete
+  Queues** (one per test set), each listing Queue, Items, Pending, Assigned and
+  Annotators with an actions menu. Admins create, edit and delete
   Production queues here, setting each one's name, priority, time limit, eligible
-  Annotators (who works the queue), reject reasons, **Enabled** switch and
-  **Confidence threshold**. Low-confidence production documents go to the Default
+  Annotators (who works the queue), **Enabled** switch and **Confidence threshold**
+  in its **Settings**. Low-confidence production documents go to the Default
   queue when it is enabled, judged against its threshold. Deleting a queue moves its
   items to Default; Default itself can't be deleted. On each queue's page, Admins
   select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
@@ -661,15 +660,18 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   open any item read-only and **Claim** one nobody holds, which assigns it to you.
 - **My Work › Tasks** lists everything assigned to you, both Production review items
   and Test Studio documents, with their document, source, queue and age. Selecting
-  one opens it. The **Tasks** badge counts them; completing, rejecting or skipping an
-  item removes it from the list and the count straight away (**Skip** gives the item
-  back to its queue, unassigned and not completed), and work assigned to you by an
-  Admin appears within about 30 seconds.
+  one opens it. The **Tasks** badge counts them; completing or skipping an item
+  removes it from the list and the count straight away (**Skip** gives the item back
+  to its queue, unassigned and not finished), and work assigned to you by an Admin
+  appears within about 30 seconds.
 - **The annotation screen** is the same for every item, whether you open it from
   Tasks, an Inbox message or Queue Management. Production documents are at
   `#/review-queues/items/<document>` and test-set documents at
-  `#/review-queues/test-sets/<id>/items/<document>`. A Production item is completed
-  or rejected; a Test Studio item is completed.
+  `#/review-queues/test-sets/<id>/items/<document>`, and the breadcrumbs name the
+  item's queue or test set, linking to its page. The actions are **Complete** and,
+  for the assignee, **Skip**. An Admin edits an unassigned Production item directly
+  (the first saved edit, or Complete, assigns it to them) and uses **Take over** on
+  one assigned to someone else.
 - The Document List shows queue-held documents as **In review**. The legacy Reviewer
   flow (**Start Review**) is unchanged.
 

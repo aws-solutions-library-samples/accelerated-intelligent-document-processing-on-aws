@@ -34,6 +34,7 @@ query GetReviewItem($objectKey: String!) {
       rejectReason
       version
     }
+    queueName
     sections {
       sectionId
       documentClass

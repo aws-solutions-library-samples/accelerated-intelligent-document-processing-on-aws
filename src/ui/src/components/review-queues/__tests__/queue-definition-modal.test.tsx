@@ -6,7 +6,9 @@
  * "Create Queue"; the fields paired in the two columns each carry a one-line
  * description so the inputs line up; a production queue's confidence threshold and
  * Enabled switch are prefilled, validated (0 to 1) and sent on save; and a Test Studio
- * queue, which has neither, saves without them.
+ * queue, which has neither, saves without them. The dialog has no reject-reasons
+ * editor: an existing queue's stored list is sent back unchanged and a new queue gets
+ * the backend's defaults.
  */
 
 import React from 'react';
@@ -184,5 +186,26 @@ describe('the queue dialog', () => {
     const sent = updateTestSetQueue.mock.calls[0][0] as Record<string, unknown>;
     expect(sent).not.toHaveProperty('confidenceThreshold');
     expect(sent).not.toHaveProperty('enabled');
+  });
+
+  it('has no reject-reasons editor, and an edit keeps the stored list', async () => {
+    const onSaved = open({ queue: queue({ rejectReasons: ['Illegible', 'Wrong document'] }) });
+    const labels = createWrapper(document.body)
+      .findAllFormFields()
+      .map((f) => f.findLabel()?.getElement().textContent);
+    expect(labels).not.toContain('Reject reasons');
+    expect(modal().findContent().getElement().textContent).not.toMatch(/reject reason/i);
+    clickSave();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ rejectReasons: ['Illegible', 'Wrong document'] }));
+  });
+
+  it('sends no reject reasons for a new queue, so it gets the defaults', async () => {
+    const onCreated = open();
+    setInput('Queue id', 'claims');
+    setInput('Name', 'Claims');
+    clickSave();
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect((createReviewQueue.mock.calls[0][0] as Record<string, unknown>).rejectReasons).toBeUndefined();
   });
 });

@@ -15,10 +15,10 @@ import {
   listReviewQueueItems as listReviewQueueItemsQuery,
   moveReviewItem as moveReviewItemMutation,
   reassignReviewItem as reassignReviewItemMutation,
-  rejectReviewItem as rejectReviewItemMutation,
   releaseReviewItem as releaseReviewItemMutation,
   removeReviewItem as removeReviewItemMutation,
   saveReviewDraft as saveReviewDraftMutation,
+  takeOverReviewItem as takeOverReviewItemMutation,
 } from '../../graphql/generated';
 import type {
   ClaimNextResult,
@@ -88,11 +88,6 @@ export const completeItem = async (item: ItemRef, checklist?: boolean[], note?: 
   return required(r.data?.completeReviewItem, 'completeReviewItem');
 };
 
-export const rejectItem = async (item: ItemRef, reason: string, note?: string): Promise<ReviewItem> => {
-  const r = await client.graphql({ query: rejectReviewItemMutation, variables: { ...ref(item), reason, note } });
-  return required(r.data?.rejectReviewItem, 'rejectReviewItem');
-};
-
 /** Claim an open item: it is assigned to the caller (no expiry) and shows in My Work › Tasks. */
 export const claimItem = async (item: ItemRef): Promise<ReviewItem> => {
   const r = await client.graphql({ query: claimReviewItemMutation, variables: ref(item) });
@@ -119,6 +114,12 @@ export const forceReleaseItem = async (item: ItemRef): Promise<ReviewItem> => {
 export const reassignItem = async (item: ItemRef, assigneeEmail: string): Promise<ReviewItem> => {
   const r = await client.graphql({ query: reassignReviewItemMutation, variables: { ...ref(item), assigneeEmail } });
   return required(r.data?.reassignReviewItem, 'reassignReviewItem');
+};
+
+/** Take over an item assigned to someone else (Admin): it is assigned to the caller, draft and all. */
+export const takeOverItem = async (item: ItemRef): Promise<ReviewItem> => {
+  const r = await client.graphql({ query: takeOverReviewItemMutation, variables: ref(item) });
+  return required(r.data?.takeOverReviewItem, 'takeOverReviewItem');
 };
 
 export const moveItem = async (item: ItemRef, targetQueue: string): Promise<ReviewItem> => {

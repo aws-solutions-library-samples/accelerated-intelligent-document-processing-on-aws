@@ -4,7 +4,7 @@
 // /review-queues: the annotation screens for one item (Admin and Annotator; Inbox
 // notification links point here), each queue's page (Admin, and the Annotators listed
 // on it, who reach it from My Work › Queues) and HITL › Queue Management (Admin only).
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
 
@@ -14,6 +14,7 @@ import QueuesPage from '../components/review-queues/QueuesPage';
 import ReviewQueuePage from '../components/review-queues/ReviewQueuePage';
 import { documentName } from '../components/review-queues/review-api';
 import AnnotationScreen from '../components/review-workspace/AnnotationScreen';
+import type { ItemQueue } from '../components/review-workspace/ProductionAnnotation';
 import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
 import useUserRole from '../hooks/use-user-role';
 import RequireRole from './RequireRole';
@@ -30,27 +31,33 @@ const useQueueCrumbs = (queueCrumb: BreadcrumbGroupProps.Item) => {
 };
 
 /**
- * An Annotator reaches the annotation screens from My Work › Tasks, an Admin from
- * Queue Management, so the breadcrumbs follow the caller's role.
+ * An item sits under its queue's page: Queue Management › <queue> › <document> for an
+ * Admin, My Work › Queues › <queue> › <document> for an Annotator. Until the queue is
+ * known (a production item's loads with it) an Annotator's item sits under Tasks.
  */
 const useItemCrumbs = (queueCrumb: BreadcrumbGroupProps.Item | null, objectKey: string) => {
   const { isAdmin } = useUserRole();
   const item = { text: documentName(decodeURIComponent(objectKey)), href: '#' };
   if (isAdmin) return { root: undefined, crumbs: queueCrumb ? [queueCrumb, item] : [item] };
+  if (queueCrumb) return { root: MY_WORK_ROOT, crumbs: [MY_QUEUES_CRUMB, queueCrumb, item] };
   return { root: MY_WORK_ROOT, crumbs: [{ text: 'Tasks', href: `#${MY_TASKS_PATH}` }, item] };
 };
 
-const ProductionItemPage = (): React.JSX.Element => {
+export const ProductionItemPage = (): React.JSX.Element => {
   const { objectKey = '' } = useParams();
-  const { root, crumbs } = useItemCrumbs(null, objectKey);
+  // Keyed on the item, so moving to another item never shows the previous one's queue.
+  const [loaded, setLoaded] = useState<{ objectKey: string; queue: ItemQueue } | null>(null);
+  const onItemQueue = useCallback((queue: ItemQueue) => setLoaded({ objectKey, queue }), [objectKey]);
+  const queue = loaded?.objectKey === objectKey ? loaded.queue : null;
+  const { root, crumbs } = useItemCrumbs(queue && { text: queue.name, href: `#${productionQueuePath(queue.id)}` }, objectKey);
   return (
     <ReviewQueuesLayout root={root} crumbs={crumbs}>
-      <AnnotationScreen key={objectKey} kind="production" />
+      <AnnotationScreen key={objectKey} kind="production" onItemQueue={onItemQueue} />
     </ReviewQueuesLayout>
   );
 };
 
-const TestSetItemPage = (): React.JSX.Element => {
+export const TestSetItemPage = (): React.JSX.Element => {
   const { testSetId = '', objectKey = '' } = useParams();
   const { root, crumbs } = useItemCrumbs({ text: `Test set: ${testSetId}`, href: `#${testSetQueuePath(testSetId)}` }, objectKey);
   return (

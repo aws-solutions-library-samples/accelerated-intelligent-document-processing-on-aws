@@ -180,6 +180,15 @@ class TestNotices:
         assert "machine results" in body and "draft is kept" not in body
         assert sent.call_args.kwargs["users"] == ["bob@example.com"]
 
+    def test_a_take_over_says_an_admin_carries_on_from_the_draft(self):
+        with patch(NOTIFY) as sent:
+            review_notify.claim_released(_item(), "bob@example.com", "take_over")
+        body = sent.call_args.kwargs["body"]
+        assert body == (
+            "An Admin took over the item to finish it. Your draft stays with it."
+        )
+        assert sent.call_args.kwargs["users"] == ["bob@example.com"]
+
     def test_an_unknown_release_reason_still_says_the_draft_is_kept(self):
         with patch(NOTIFY) as sent:
             review_notify.claim_released(_item(), "bob@example.com", "something-new")

@@ -1007,6 +1007,7 @@ export type Mutation = {
    */
   subscribeFeature?: Maybe<FeatureEntitlement>;
   syncBdaIdp?: Maybe<SyncBdaIdpResponse>;
+  takeOverReviewItem?: Maybe<ReviewItem>;
   unassignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   /** Called by a feature stack's RegisterFeature custom resource on stack delete. */
   unregisterFeature: Scalars['Boolean']['output'];
@@ -1519,6 +1520,12 @@ export type MutationSyncBdaIdpArgs = {
   saveArn?: InputMaybe<Scalars['Boolean']['input']>;
   syncMode?: InputMaybe<Scalars['String']['input']>;
   versionName?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type MutationTakeOverReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -2333,6 +2340,7 @@ export type ReviewItemDetail = {
   item: ReviewItem;
   machineOutputManifestUri?: Maybe<Scalars['String']['output']>;
   myClaimCount: Scalars['Int']['output'];
+  queueName?: Maybe<Scalars['String']['output']>;
   rejectReasons: Array<Scalars['String']['output']>;
   sections: Array<ReviewSectionDetail>;
 };
@@ -3540,6 +3548,14 @@ export type SyncBdaIdpMutationVariables = Exact<{
 
 export type SyncBdaIdpMutation = { syncBdaIdp?: { success: boolean, message?: string | null, processedClasses?: Array<string | null> | null, direction?: string | null, bdaProjectArn?: string | null, bdaSyncStatus?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
+export type TakeOverReviewItemMutationVariables = Exact<{
+  objectKey: Scalars['String']['input'];
+  cycleId: Scalars['String']['input'];
+}>;
+
+
+export type TakeOverReviewItemMutation = { takeOverReviewItem?: { objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> } | null };
+
 export type UnassignTestSetDocumentsMutationVariables = Exact<{
   testSetId: Scalars['String']['input'];
   objectKeys: Array<Scalars['String']['input']> | Scalars['String']['input'];
@@ -3881,7 +3897,7 @@ export type GetReviewItemQueryVariables = Exact<{
 }>;
 
 
-export type GetReviewItemQuery = { getReviewItem?: { checklist: Array<string>, rejectReasons: Array<string>, claimCap: number, myClaimCount: number, machineOutputManifestUri?: string | null, canClaim: boolean, claimBlockedReason?: string | null, item: { objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }, sections: Array<{ sectionId: string, documentClass?: string | null, resultUri?: string | null, draftUri?: string | null, draftRevision?: number | null, draftUpdatedBy?: string | null, draftUpdatedAt?: string | null, pageIds: Array<string>, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }>, history: Array<{ at: string, event: string, actor?: string | null, details?: string | null }> } | null };
+export type GetReviewItemQuery = { getReviewItem?: { queueName?: string | null, checklist: Array<string>, rejectReasons: Array<string>, claimCap: number, myClaimCount: number, machineOutputManifestUri?: string | null, canClaim: boolean, claimBlockedReason?: string | null, item: { objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }, sections: Array<{ sectionId: string, documentClass?: string | null, resultUri?: string | null, draftUri?: string | null, draftRevision?: number | null, draftUpdatedBy?: string | null, draftUpdatedAt?: string | null, pageIds: Array<string>, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }>, history: Array<{ at: string, event: string, actor?: string | null, details?: string | null }> } | null };
 
 export type GetReviewQueuesOverviewQueryVariables = Exact<{ [key: string]: never; }>;
 

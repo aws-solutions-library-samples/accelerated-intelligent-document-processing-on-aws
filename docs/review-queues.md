@@ -29,7 +29,8 @@ There are two kinds of queue:
   set's documents whose labels need a human check before they become ground truth.
 
 An **Admin** assigns queue items to **Annotators**. An Annotator corrects the
-item and completes it; a Production item can also be rejected. For a Production
+item and completes it, or skips it to give it back to its queue. An Admin can work
+a Production item too. For a Production
 document, the corrections are applied by a second (finalize) run, which produces
 the document's final outputs. For a Test Studio document, they become the set's
 reviewed labels.
@@ -57,12 +58,15 @@ a new stack, and while it is off documents keep the existing
 
    Its status becomes `HITL_IN_PROGRESS` ("In review"), and the machine output is
    kept as the run's manifest. Admins see it waiting in HITL › Queue Management.
-3. An Annotator listed on the queue claims it, or an Admin assigns it to one, and
-   the Annotator completes or rejects it.
+3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
+   works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
+   and the assignee completes it.
    - **Complete** applies the corrections, and the document ends `COMPLETED`.
-   - **Reject** ends it `REJECTED`, with the machine output unchanged.
+   - **Skip** gives it back to its queue, unassigned and not finished.
    - An Admin can instead **Remove** it from the queue: it ends `COMPLETED` with the
      machine output unchanged.
+   - The API's `rejectReviewItem` ends it `REJECTED` with the machine output
+     unchanged; the web UI doesn't offer it.
 4. Summarization, evaluation, rule validation and the post-processing hooks run in
    the finalize run, after review. They don't run at all for rejected documents.
 
@@ -89,18 +93,19 @@ Inbox; other users have neither.
   - **Production item**: the reasons it is in review are at the top; hover a reason
     chip to see the field, the score and the threshold. Your edits are saved as a
     draft as you type. The queue's checklist is advisory. **Complete** applies your
-    corrections. **Reject** asks for a reason from the queue's list (plus an optional
-    note) and keeps the machine output.
+    corrections.
   - **Test Studio item**: correct the labels and choose **Complete**. You can also
     choose **Complete** without changing anything, which confirms the labels as
     correct; it needs no **Start annotating** first. Saving and versioning work
     exactly as in Test Studio.
-  - **Skip**, on either kind of item, gives it back: it leaves your Tasks and goes
-    back to its queue unassigned, where another Annotator can claim it. It isn't
-    completed, and a Production item's draft is kept.
+  - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
+    Tasks and goes back to its queue unassigned, where another Annotator can claim
+    it. It isn't finished, and a Production item's draft is kept.
+  - The breadcrumbs read **My Work › Queues**, then the item's queue (linking to its
+    page), then the document.
 - When you complete an item, it leaves your Tasks and the queue's progress counts it
-  as completed. The server refuses a save, a complete, a skip or a reject from
-  anyone other than the item's assignee, except an Admin.
+  as completed. The server takes a draft save or a skip only from the item's
+  assignee, and a complete from the assignee or an Admin.
 - An assignment doesn't expire. If the queue's time limit passes while the item is
   still open, you get one **still to complete** reminder in the Inbox.
 
@@ -111,8 +116,9 @@ in review.
 
 **HITL › Queue Management** is visible to Admins only. It has two tables,
 **Production Queues** and **Test Studio Queues**, with the same columns: **Queue**,
-**Items**, **Assigned**, **Priority** and an actions menu. Production queues also show
-**Status** and **Threshold**.
+**Items**, **Pending**, **Assigned**, **Annotators** and an actions menu. A queue's
+other settings, such as its priority, Enabled switch and threshold, are in its
+**Settings**.
 
 **Who the Annotators are.** Work can be assigned only to members of the Cognito
 **Annotator** group, the same group that authorizes the Annotator's API calls. A user
@@ -139,7 +145,6 @@ dialog), edited in **Settings**, and deleted here. Each queue has:
 | Priority | Higher-priority queues are listed first (0–100) | `50` |
 | Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080) | `60` |
 | Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Empty means none (only Admins) | empty |
-| Reject reasons | The reasons offered when an item is rejected | five common reasons |
 | Enabled | When off, no documents are added to the queue | on for a new queue; off for the seeded Default queue |
 | Confidence threshold | Documents with a field below this (0–1) are queued | `0.8` |
 
@@ -164,14 +169,12 @@ Both tables, **Production Queues** and **Test Studio Queues**, show for each que
 |---|---|
 | Items | Everything in the queue (for a test set, its documents) |
 | Pending | Not yet assigned |
-| Assigned | Assigned to an Annotator who hasn't saved any work on it yet |
-| In progress | Assigned, and the Annotator has saved work (a draft, or some reviewed sections) |
+| Assigned | Assigned to an Annotator, whether or not they've started on it |
 | Annotators | How many Annotators are listed in the queue's Eligible Annotators (the names on hover). A change in Settings shows as soon as the dialog closes |
-| Priority | The queue's priority |
-| Status | Production queues only: **Enabled**, or **Disabled** when no documents are added to it |
-| Threshold | Production queues only: the queue's confidence threshold, shown to two decimals (`0.80`) |
 
-The same counts appear at the top of each queue's page.
+The top of each queue's page splits the assigned items into **Assigned** (not
+started yet) and **In progress** (the Annotator has saved work), beside **Pending**,
+**Annotators** and the oldest waiting item.
 
 To work a queue, open its page, select items, and choose one of:
 
@@ -206,7 +209,7 @@ labels and completes it. A document with no labels yet needs draft labels first.
 Assigning a document also gives the Annotator access to that test set.
 
 A Test Studio queue's **Settings** are the production settings less the id, name,
-reject reasons, Enabled switch and confidence threshold (its documents come from the
+Enabled switch and confidence threshold (its documents come from the
 set, not from the pipeline): description, priority, time limit (the reminder) and Eligible
 Annotators. They are kept with the test set.
 
@@ -229,6 +232,21 @@ While a build runs, the queue page says **Preparing this queue** and refreshes
 itself until it finishes. A large set takes a few minutes once. A single
 document's summary is updated when its labels are saved, when it is re-extracted,
 and when a draft-labeling run writes its draft.
+
+### Working an item as an Admin
+
+Open an item from its queue's page. Its breadcrumbs read **Queue Management**, then
+the queue's name, then the document, and the queue links back to its page.
+
+- **An unassigned item** says **Not assigned yet. Editing or completing assigns it to
+  you.** You can edit it straight away: your first saved edit, or **Complete**,
+  assigns the item to you first. If an Annotator claimed it a moment earlier, the
+  screen says who and turns view-only.
+- **An item assigned to someone else** is view-only, with **Take over**. Taking over
+  assigns the item to you, keeps its draft so you carry on from the Annotator's
+  edits, and tells the former assignee in their Inbox. Then you can edit and
+  complete it.
+- **An item assigned to you** has **Complete** and **Skip**, as for an Annotator.
 
 ## Turning review queues on
 

@@ -108,7 +108,8 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - Queue Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
     `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
     `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
-  - Assignment: `reassignReviewItem` (assign), `forceReleaseReviewItem` (unassign),
+  - Assignment: `reassignReviewItem` (assign), `takeOverReviewItem` (take an item
+    assigned to someone else), `forceReleaseReviewItem` (unassign),
     `assignTestSetDocuments`, `unassignTestSetDocuments`.
   - `moveReviewItem`, `removeReviewItem` and `renewReviewLease`.
 - **What scopes it.**
@@ -523,7 +524,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 124 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 125 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |

@@ -1422,6 +1422,13 @@ operations:
     args: { objectKey: "__x__", cycleId: "000000000000000000000", assigneeEmail: "nobody@example.com" }
     note: >-
       Assigns an item to an Annotator eligible for its queue; notifies the assignee. Admin only.
+  takeOverReviewItem:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *rq
+    args: { objectKey: "__x__", cycleId: "000000000000000000000" }
+    note: >-
+      Assigns an item held by another reviewer to the calling Admin so they can edit and complete it (draft kept; the former assignee is notified). Admin only.
   moveReviewItem:
     groups: [Admin]
     kind: mutation

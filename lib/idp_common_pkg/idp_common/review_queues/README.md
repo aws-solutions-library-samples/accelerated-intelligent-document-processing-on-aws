@@ -127,7 +127,12 @@ when the finalize run ends.
 - Work reaches an Annotator two ways. They **claim** an item from one of their
   queues (`claimReviewItem`, `claimNextReviewItem`), or an Admin assigns it with
   `reassignReviewItem` (and unassigns it with `forceReleaseReviewItem`). Either way
-  the holder must be in the `Annotator` group and on the queue's list. Internally,
+  the Annotator must be in the `Annotator` group and on the queue's list.
+- An Admin works an item by holding it too. They claim an `OPEN` item with
+  `claimReviewItem` (the web UI does this on an Admin's first draft save or Complete
+  of an unassigned item), and take an item another reviewer holds with
+  `takeOverReviewItem`. Both go through the same counters and history as an
+  assignment. Internally,
   both are a claim whose lease is `ASSIGNMENT_LEASE_MINUTES` (ten years), so it
   never expires, and the per-reviewer cap is lifted to `ASSIGNMENT_CAP`.
 - The queue's `time_limit_minutes` schedules one `review.task_reminder` to the
@@ -135,7 +140,8 @@ when the finalize run ends.
 - **Skip** is `releaseReviewItem` by the holder: the item goes back to the queue
   `OPEN`, unassigned, with its draft kept.
 - An Annotator listed on a queue may open its items read-only (`getReviewItem`);
-  saving, completing and rejecting need the claim. The holder keeps access to their
+  saving, completing and rejecting need the claim. `getReviewItem` also returns
+  `queueName`, the queue's display name, for the web UI's breadcrumbs. The holder keeps access to their
   item even after being taken off the list. `allowedConfigVersions` still filters
   items by profile.
 - Admins also have `renewReviewLease`, which the web UI doesn't use.
@@ -176,7 +182,7 @@ when the finalize run ends.
 `<docKey>/review/drafts/<cycle>/<section>/<revision>.json` (at most 2,000,000
 bytes) and records it as `DRAFT#<cycle>#<section>` with the changed field paths.
 `baseRevision` makes concurrent saves fail with `STALE_DRAFT`. Drafts survive
-unassignment, reassignment and move. The `review/` segment is
+unassignment, reassignment, take-over and move. The `review/` segment is
 not part of any run manifest and is deleted by Reprocess.
 
 ## Dispositions and durable finalize
@@ -184,8 +190,9 @@ not part of any run manifest and is deleted by Reprocess.
 | Operation | Who | Effect |
 |---|---|---|
 | `completeReviewItem` | the assignee | → `FINALIZING`, disposition `complete`; the queue checklist answers are recorded |
-| `rejectReviewItem` | the assignee | → `FINALIZING`, disposition `rejected`, a reason from the queue's `reject_reasons` and an optional note |
+| `rejectReviewItem` | the assignee | → `FINALIZING`, disposition `rejected`, a reason from the queue's `reject_reasons` and an optional note. The web UI doesn't offer it |
 | `reassignReviewItem`, `forceReleaseReviewItem` | Admin | assign to an eligible Annotator, or unassign (→ `OPEN`, draft kept) |
+| `takeOverReviewItem` | Admin | an item `CLAIMED` by someone else → `CLAIMED` by the calling Admin, draft kept; a `taken_over` history event, both claim counters moved, and the former holder told (`review.claim_released`). Refused with `NOT_ASSIGNED` for an `OPEN` item (claim it instead), `ALREADY_YOURS` for the Admin's own, and `INVALID_STATE` once the item has left review |
 | `moveReviewItem` | Admin | move to another queue (ends any assignment) |
 | `removeReviewItem` | Admin | an `OPEN` or `CLAIMED` item → `FINALIZING`, disposition `removed`, with an optional note in a `removed` history event; an assignee is released and told. No draft is applied: the document ends `COMPLETED` with its machine results, the item ends `COMPLETE`, the status object is **deleted** rather than written, and `document_reviews` records disposition `removed` |
 
@@ -214,7 +221,7 @@ always wins.
 Inbox messages (see [notifications](../notifications/README.md)) that reach an
 Annotator are `review.item_reassigned` (an Admin assigned an item or Test Studio
 document to you), `review.claim_released` (an item you hold was unassigned,
-reassigned or moved, or an Admin completed, rejected or removed it) and
+reassigned, taken over or moved, or an Admin completed, rejected or removed it) and
 `review.task_reminder` (still open after the queue's time limit, once per
 assignment). The producers `review.queue_items_waiting` (debounced per queue, 10
 minutes), `review.claim_expiring` and `review.claim_expired` exist but send nothing in

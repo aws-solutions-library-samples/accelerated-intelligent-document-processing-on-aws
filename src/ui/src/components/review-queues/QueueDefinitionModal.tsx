@@ -2,16 +2,15 @@
 // SPDX-License-Identifier: MIT-0
 //
 // HITL › Queue Management: create or edit one system-wide production queue — its
-// name, priority, reminder time limit, confidence threshold, enabled switch, eligible
-// Annotators and reject reasons — or edit a Test Studio queue's settings (the same,
-// less the id, name, threshold, switch and reject reasons, which a test set doesn't
-// have: its documents come from the set, not from the pipeline). A queue's stored
-// checklist is kept as it is; the dialog doesn't edit it.
+// name, priority, reminder time limit, confidence threshold, enabled switch and
+// eligible Annotators — or edit a Test Studio queue's settings (the same, less the
+// id, name, threshold and switch, which a test set doesn't have: its documents come
+// from the set, not from the pipeline). A queue's stored checklist and reject reasons
+// are kept as they are; the dialog doesn't edit them.
 import React, { useEffect, useState } from 'react';
 import type { MultiselectProps } from '@cloudscape-design/components';
 import {
   Alert,
-  AttributeEditor,
   Box,
   Button,
   ColumnLayout,
@@ -68,52 +67,6 @@ interface QueueDefinitionModalProps {
   onSaved: (queue?: ReviewQueueDefinition, testSetSettings?: TestSetQueueTarget) => void;
 }
 
-interface ListEntry {
-  value: string;
-}
-
-const toEntries = (values: readonly string[] | undefined): ListEntry[] => (values ?? []).map((value) => ({ value }));
-const fromEntries = (entries: readonly ListEntry[]): string[] => entries.map((e) => e.value.trim()).filter(Boolean);
-
-const ListEditor = ({
-  label,
-  description,
-  addLabel,
-  entries,
-  onChange,
-  placeholder,
-}: {
-  label: string;
-  description: string;
-  addLabel: string;
-  entries: ListEntry[];
-  onChange: (entries: ListEntry[]) => void;
-  placeholder: string;
-}): React.JSX.Element => (
-  <FormField label={label} description={description} stretch>
-    <AttributeEditor<ListEntry>
-      items={entries}
-      addButtonText={addLabel}
-      removeButtonText="Remove"
-      empty="None."
-      onAddButtonClick={() => onChange([...entries, { value: '' }])}
-      onRemoveButtonClick={({ detail }) => onChange(entries.filter((_, i) => i !== detail.itemIndex))}
-      definition={[
-        {
-          control: (entry, index) => (
-            <Input
-              value={entry.value}
-              placeholder={placeholder}
-              ariaLabel={`${label} ${index + 1}`}
-              onChange={({ detail }) => onChange(entries.map((e, i) => (i === index ? { value: detail.value } : e)))}
-            />
-          ),
-        },
-      ]}
-    />
-  </FormField>
-);
-
 const QueueDefinitionModal = ({
   visible,
   queue,
@@ -135,7 +88,6 @@ const QueueDefinitionModal = ({
   const [eligible, setEligible] = useState<readonly MultiselectProps.Option[]>([]);
   // Not edited here; saved back unchanged.
   const [checklist, setChecklist] = useState<string[]>([]);
-  const [rejectReasons, setRejectReasons] = useState<ListEntry[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,7 +103,6 @@ const QueueDefinitionModal = ({
     setEnabled(queue?.enabled ?? true);
     setEligible((testSet?.eligibleAnnotators ?? queue?.eligibleAnnotators ?? []).map((e) => ({ value: e, label: e })));
     setChecklist([...(testSet?.checklist ?? queue?.checklist ?? [])]);
-    setRejectReasons(toEntries(queue?.rejectReasons));
     setSubmitted(false);
     setError(null);
   }, [visible, queue, testSet]);
@@ -218,7 +169,8 @@ const QueueDefinitionModal = ({
       timeLimitMinutes: timeLimitNumber,
       eligibleAnnotators: eligible.map((o) => o.value as string),
       checklist,
-      rejectReasons: fromEntries(rejectReasons),
+      // Not edited here: an existing queue keeps its list; a new one gets the defaults.
+      rejectReasons: queue?.rejectReasons ?? undefined,
       confidenceThreshold: Number(threshold),
       enabled,
     };
@@ -341,16 +293,6 @@ const QueueDefinitionModal = ({
               empty="No Annotator users. Add one in User Management."
             />
           </FormField>
-          {!testSet && (
-            <ListEditor
-              label="Reject reasons"
-              description="The reasons an Annotator can choose when rejecting an item."
-              addLabel="Add reject reason"
-              entries={rejectReasons}
-              onChange={setRejectReasons}
-              placeholder="e.g. Illegible document"
-            />
-          )}
         </SpaceBetween>
       </Form>
     </Modal>

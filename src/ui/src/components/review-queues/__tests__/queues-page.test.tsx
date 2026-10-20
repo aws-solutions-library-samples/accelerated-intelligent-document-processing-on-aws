@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The Production Queues table in HITL › Queue Management. What has to hold: each
- * queue shows whether it takes documents (Status) and its confidence threshold
- * (Threshold, two decimals like the review reasons); every queue but Default can be
+ * The queue tables in HITL › Queue Management. What has to hold: both tables show
+ * exactly Queue, Items, Pending, Assigned, Annotators and the actions menu, in that
+ * order (Assigned counts every assigned item, started or not; the other settings
+ * stay in the queue's Settings dialog); every production queue but Default can be
  * deleted, even one that holds items, and the confirmation says those items move to
  * the Default queue; a refusal while an item is being completed is shown in the
  * dialog.
@@ -19,11 +20,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const listReviewQueues = vi.fn();
 const deleteReviewQueue = vi.fn();
 const fetchQueuesOverview = vi.fn();
+const listTestSetQueues = vi.fn();
 vi.mock('../reviewer-assignment', () => ({
   listReviewQueues: () => listReviewQueues(),
   deleteReviewQueue: (id: string) => deleteReviewQueue(id),
   listAnnotatorEmails: async () => [],
-  listTestSetQueues: async () => [],
+  listTestSetQueues: () => listTestSetQueues(),
   createReviewQueue: vi.fn(),
   updateReviewQueue: vi.fn(),
   updateTestSetQueue: vi.fn(),
@@ -36,7 +38,7 @@ vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: v
 const setSuccessMessage = vi.fn();
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setSuccessMessage, setErrorMessage: vi.fn() }) }));
 
-import QueuesPage, { deleteConfirmText, deleteDisabledReason, formatThreshold } from '../QueuesPage';
+import QueuesPage, { deleteConfirmText, deleteDisabledReason } from '../QueuesPage';
 
 const def = (id: string, over: Record<string, unknown> = {}) => ({
   id,
@@ -53,9 +55,9 @@ const def = (id: string, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const health = (name: string, depth: number) => ({
+const health = (name: string, depth: number, claimed = 0, inProgress = 0) => ({
   reviewers: [],
-  summary: { name, displayName: name, depth, unclaimed: depth, claimed: 0, inProgress: 0 },
+  summary: { name, displayName: name, depth, unclaimed: depth - claimed, claimed, inProgress },
 });
 
 const renderPage = async () => {
@@ -68,10 +70,8 @@ const renderPage = async () => {
 };
 
 const table = () => createWrapper(document.body).findTable()!;
-const headers = () =>
-  table()
-    .findColumnHeaders()
-    .map((h) => h.getElement().textContent);
+const testSetTable = () => createWrapper(document.body).findAllTables()[1]!;
+const headers = (t = table()) => t.findColumnHeaders().map((h) => h.getElement().textContent);
 const cell = (queue: string, header: string): string => {
   const col = headers().indexOf(header);
   const row = table()
@@ -110,19 +110,32 @@ beforeEach(() => {
       def('default', { enabled: false, confidenceThreshold: 0.9 }),
       def('claims', { confidenceThreshold: 0.65, priority: 5 }),
     ]);
-  fetchQueuesOverview.mockReset().mockResolvedValue({ queues: [health('default', 0), health('claims', 3)] });
+  fetchQueuesOverview.mockReset().mockResolvedValue({ queues: [health('default', 0), health('claims', 3, 2, 1)] });
+  listTestSetQueues.mockReset().mockResolvedValue([
+    {
+      id: 'ts-1',
+      name: 'Invoices',
+      fileCount: 6,
+      pendingDocs: 2,
+      assignedDocs: 1,
+      inProgressDocs: 2,
+      eligibleAnnotators: ['ann@example.com'],
+      priority: 3,
+      summaryStatus: 'READY',
+    },
+  ]);
   deleteReviewQueue.mockReset().mockResolvedValue(true);
   setSuccessMessage.mockReset();
 });
 
 describe('the Production Queues table', () => {
-  it('shows each queue’s Status and Threshold', async () => {
+  it('shows exactly Queue, Items, Pending, Assigned, Annotators and the actions menu', async () => {
     await renderPage();
-    expect(headers()).toEqual(expect.arrayContaining(['Status', 'Threshold']));
-    expect(cell('Default', 'Status')).toBe('Disabled');
-    expect(cell('Claims', 'Status')).toBe('Enabled');
-    expect(cell('Default', 'Threshold')).toBe('0.90');
-    expect(cell('Claims', 'Threshold')).toBe('0.65');
+    expect(headers()).toEqual(['Queue', 'Items', 'Pending', 'Assigned', 'Annotators', 'Actions']);
+    expect(cell('Claims', 'Items')).toBe('3');
+    expect(cell('Claims', 'Pending')).toBe('1');
+    // Every assigned item, whether or not its Annotator has started.
+    expect(cell('Claims', 'Assigned')).toBe('2');
   });
 
   it('lets a queue holding items be deleted, saying they move to Default', async () => {
@@ -156,13 +169,22 @@ describe('the Production Queues table', () => {
   });
 });
 
-describe('the table helpers', () => {
-  it('formats a threshold with two decimals, or a dash when none is stored', () => {
-    expect(formatThreshold(0.8)).toBe('0.80');
-    expect(formatThreshold(1)).toBe('1.00');
-    expect(formatThreshold(null)).toBe('—');
+describe('the Test Studio Queues table', () => {
+  it('shows the same columns as the production table, Assigned counting started documents too', async () => {
+    await renderPage();
+    await waitFor(() => expect(testSetTable().findRows().length).toBe(1));
+    expect(headers(testSetTable())).toEqual(['Queue', 'Items', 'Pending', 'Assigned', 'Annotators', 'Actions']);
+    const row = (header: string) =>
+      testSetTable()
+        .findBodyCell(1, headers(testSetTable()).indexOf(header) + 1)!
+        .getElement().textContent;
+    expect(row('Items')).toBe('6');
+    expect(row('Pending')).toBe('2');
+    expect(row('Assigned')).toBe('3');
   });
+});
 
+describe('the table helpers', () => {
   it('refuses deleting only Default and undefined queues', () => {
     expect(deleteDisabledReason(def('default'))).toBe("The default queue can't be deleted");
     expect(deleteDisabledReason(def('escalation'))).toBeUndefined();

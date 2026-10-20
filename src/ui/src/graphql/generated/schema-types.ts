@@ -1007,6 +1007,7 @@ export type Mutation = {
    */
   subscribeFeature?: Maybe<FeatureEntitlement>;
   syncBdaIdp?: Maybe<SyncBdaIdpResponse>;
+  takeOverReviewItem?: Maybe<ReviewItem>;
   unassignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   /** Called by a feature stack's RegisterFeature custom resource on stack delete. */
   unregisterFeature: Scalars['Boolean']['output'];
@@ -1519,6 +1520,12 @@ export type MutationSyncBdaIdpArgs = {
   saveArn?: InputMaybe<Scalars['Boolean']['input']>;
   syncMode?: InputMaybe<Scalars['String']['input']>;
   versionName?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type MutationTakeOverReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -2333,6 +2340,7 @@ export type ReviewItemDetail = {
   item: ReviewItem;
   machineOutputManifestUri?: Maybe<Scalars['String']['output']>;
   myClaimCount: Scalars['Int']['output'];
+  queueName?: Maybe<Scalars['String']['output']>;
   rejectReasons: Array<Scalars['String']['output']>;
   sections: Array<ReviewSectionDetail>;
 };

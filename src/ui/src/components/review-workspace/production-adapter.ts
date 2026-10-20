@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The production adapter of the annotation screen: loads a review queue item, its
-// page images and section results, autosaves edits as drafts, and completes or
-// rejects the item. Drafts are applied by the finalize run on Complete.
+// page images and section results, autosaves edits as drafts, and completes the
+// item. Drafts are applied by the finalize run on Complete.
 //
-// Only the Annotator verbs are called here. Assigning, unassigning, moving and
+// Only the assignee's verbs are called here. Assigning, unassigning, moving and
 // removing are Admin operations on the queue pages: an assignment does not expire.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -16,7 +16,7 @@ import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import useAppContext from '../../contexts/app';
 import usePolling from '../../hooks/use-polling';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { completeItem, fetchReviewItem, rejectItem, reviewErrorCode, saveDraft } from '../review-queues/review-api';
+import { completeItem, fetchReviewItem, reviewErrorCode, saveDraft } from '../review-queues/review-api';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 
 const client = generateClient();
@@ -39,7 +39,8 @@ export const fetchSectionResult = async (s3Uri: string): Promise<LoadedSection> 
 export interface ProductionAnnotation {
   detail: ReviewItemDetail | null;
   loadError: unknown;
-  reload: () => Promise<void>;
+  /** Re-read the item; resolves to the fresh detail, or null when the read failed. */
+  reload: () => Promise<ReviewItemDetail | null>;
   pages: ReviewPage[];
   pagesLoading: boolean;
   sections: ReviewSectionRef[];
@@ -48,7 +49,6 @@ export interface ProductionAnnotation {
   loadSection: (sectionId: string) => Promise<LoadedSection>;
   saveSection: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
   complete: (checklist?: boolean[]) => Promise<void>;
-  reject: (reason: string, note?: string) => Promise<void>;
 }
 
 export const useProductionAnnotation = (objectKey: string): ProductionAnnotation => {
@@ -61,8 +61,8 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
   // The latest draft revision per section, so a save names the revision it edits.
   const revisionsRef = useRef<Record<string, number>>({});
 
-  const reload = useCallback(async () => {
-    if (!objectKey) return;
+  const reload = useCallback(async (): Promise<ReviewItemDetail | null> => {
+    if (!objectKey) return null;
     try {
       const result = await fetchReviewItem(objectKey);
       setDetail(result);
@@ -71,9 +71,11 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
         const known = revisionsRef.current[s.sectionId] ?? 0;
         revisionsRef.current[s.sectionId] = Math.max(known, s.draftRevision ?? 0);
       }
+      return result;
     } catch (err) {
       logger.error('getReviewItem failed', err);
       setLoadError(err);
+      return null;
     }
   }, [objectKey]);
 
@@ -83,7 +85,11 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
     revisionsRef.current = {};
   }, [objectKey]);
 
-  usePolling(reload, { enabled: !!objectKey, intervalMs: REVIEW_ITEM_POLL_INTERVAL_MS, immediate: true });
+  const poll = useCallback(async () => {
+    await reload();
+  }, [reload]);
+
+  usePolling(poll, { enabled: !!objectKey, intervalMs: REVIEW_ITEM_POLL_INTERVAL_MS, immediate: true });
 
   useEffect(() => {
     let cancelled = false;
@@ -163,13 +169,5 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
     [item],
   );
 
-  const reject = useCallback(
-    async (reason: string, note?: string): Promise<void> => {
-      if (!item) return;
-      await rejectItem(item, reason, note);
-    },
-    [item],
-  );
-
-  return { detail, loadError, reload, pages, pagesLoading, sections, reloadToken, loadSection, saveSection, complete, reject };
+  return { detail, loadError, reload, pages, pagesLoading, sections, reloadToken, loadSection, saveSection, complete };
 };

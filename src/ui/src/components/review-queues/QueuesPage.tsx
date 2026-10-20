@@ -61,17 +61,6 @@ interface TestSetRow {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** Whether a queue takes new documents; a queue with no stored switch reads as on. */
-export const QueueStatusCell = ({ enabled }: { enabled: boolean | null | undefined }): React.JSX.Element =>
-  enabled === false ? (
-    <StatusIndicator type="stopped">Disabled</StatusIndicator>
-  ) : (
-    <StatusIndicator type="success">Enabled</StatusIndicator>
-  );
-
-/** A confidence threshold the way review reasons show one ("0.80"), or "—". */
-export const formatThreshold = (threshold: number | null | undefined): string => (threshold == null ? '—' : threshold.toFixed(2));
-
 /** Why a queue can't be deleted, or undefined when it can. A queue that holds items can: they move to Default. */
 export const deleteDisabledReason = (definition: ReviewQueueDefinition | null): string | undefined =>
   !definition ? 'This queue is not defined' : definition.isDefaultQueue ? "The default queue can't be deleted" : undefined;
@@ -297,9 +286,6 @@ const QueuesPage = (): React.JSX.Element => {
   // -------------------------------------------------------------- render
   const countCell = (n: number | undefined) => (n == null ? '—' : n);
   const eligibleCount = (eligible: readonly string[] | null | undefined): number => eligible?.length ?? 0;
-  /** Assigned items no Annotator has started (no draft saved yet). */
-  const notStarted = (row: ProductionRow): number | undefined =>
-    row.health ? Math.max(0, row.health.summary.claimed - (row.health.summary.inProgress ?? 0)) : undefined;
 
   const productionColumns: TableProps.ColumnDefinition<ProductionRow>[] = [
     {
@@ -321,12 +307,6 @@ const QueuesPage = (): React.JSX.Element => {
       ),
     },
     {
-      id: 'status',
-      header: 'Status',
-      cell: (row) => (row.definition ? <QueueStatusCell enabled={row.definition.enabled} /> : '—'),
-      sortingComparator: (a, b) => Number(a.definition?.enabled !== false) - Number(b.definition?.enabled !== false),
-    },
-    {
       id: 'items',
       header: 'Items',
       cell: (row) => countCell(row.health?.summary.depth),
@@ -341,32 +321,14 @@ const QueuesPage = (): React.JSX.Element => {
     {
       id: 'assigned',
       header: 'Assigned',
-      cell: (row) => countCell(notStarted(row)),
-      sortingComparator: (a, b) => (notStarted(a) ?? -1) - (notStarted(b) ?? -1),
-    },
-    {
-      id: 'inProgress',
-      header: 'In progress',
-      cell: (row) => countCell(row.health?.summary.inProgress ?? undefined),
-      sortingComparator: (a, b) => (a.health?.summary.inProgress ?? -1) - (b.health?.summary.inProgress ?? -1),
+      cell: (row) => countCell(row.health?.summary.claimed),
+      sortingComparator: (a, b) => (a.health?.summary.claimed ?? -1) - (b.health?.summary.claimed ?? -1),
     },
     {
       id: 'annotators',
       header: 'Annotators',
       cell: (row) => <AnnotatorsCell eligible={row.definition?.eligibleAnnotators} />,
       sortingComparator: (a, b) => eligibleCount(a.definition?.eligibleAnnotators) - eligibleCount(b.definition?.eligibleAnnotators),
-    },
-    {
-      id: 'priority',
-      header: 'Priority',
-      cell: (row) => row.definition?.priority ?? '—',
-      sortingComparator: (a, b) => (a.definition?.priority ?? 0) - (b.definition?.priority ?? 0),
-    },
-    {
-      id: 'threshold',
-      header: 'Threshold',
-      cell: (row) => formatThreshold(row.definition?.confidenceThreshold),
-      sortingComparator: (a, b) => (a.definition?.confidenceThreshold ?? -1) - (b.definition?.confidenceThreshold ?? -1),
     },
     {
       id: 'actions',
@@ -395,6 +357,10 @@ const QueuesPage = (): React.JSX.Element => {
       '—'
     );
 
+  /** Every assigned document, started or not, so Pending + Assigned covers the open work. */
+  const testSetAssigned = (row: TestSetRow): number | null =>
+    row.ref.assignedDocs == null && row.ref.inProgressDocs == null ? null : (row.ref.assignedDocs ?? 0) + (row.ref.inProgressDocs ?? 0);
+
   const testSetColumns: TableProps.ColumnDefinition<TestSetRow>[] = [
     {
       id: 'name',
@@ -422,26 +388,14 @@ const QueuesPage = (): React.JSX.Element => {
     {
       id: 'assigned',
       header: 'Assigned',
-      cell: (row) => testSetCount(row, row.ref.assignedDocs),
-      sortingComparator: (a, b) => (a.ref.assignedDocs ?? -1) - (b.ref.assignedDocs ?? -1),
-    },
-    {
-      id: 'inProgress',
-      header: 'In progress',
-      cell: (row) => testSetCount(row, row.ref.inProgressDocs),
-      sortingComparator: (a, b) => (a.ref.inProgressDocs ?? -1) - (b.ref.inProgressDocs ?? -1),
+      cell: (row) => testSetCount(row, testSetAssigned(row)),
+      sortingComparator: (a, b) => (testSetAssigned(a) ?? -1) - (testSetAssigned(b) ?? -1),
     },
     {
       id: 'annotators',
       header: 'Annotators',
       cell: (row) => <AnnotatorsCell eligible={row.ref.eligibleAnnotators} />,
       sortingComparator: (a, b) => eligibleCount(a.ref.eligibleAnnotators) - eligibleCount(b.ref.eligibleAnnotators),
-    },
-    {
-      id: 'priority',
-      header: 'Priority',
-      cell: (row) => row.ref.priority ?? '—',
-      sortingComparator: (a, b) => (a.ref.priority ?? 0) - (b.ref.priority ?? 0),
     },
     {
       id: 'actions',

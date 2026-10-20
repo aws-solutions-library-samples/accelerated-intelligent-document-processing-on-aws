@@ -1819,6 +1819,9 @@ type ReviewHistoryEntry @aws_cognito_user_pools {
 
 type ReviewItemDetail @aws_cognito_user_pools {
   item: ReviewItem!
+  # The item's queue as people see it: its name, or a readable form of its id when
+  # the queue is no longer defined.
+  queueName: String
   sections: [ReviewSectionDetail!]!
   checklist: [String!]!
   rejectReasons: [String!]!
@@ -2349,6 +2352,12 @@ type Mutation {
       cognito_groups: ["Admin"]
     )
   reassignReviewItem(objectKey: String!, cycleId: String!, assigneeEmail: String!): ReviewItem
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin"]
+    )
+  # An Admin takes an item assigned to someone else so they can edit and complete
+  # it; the draft stays with the item and the former assignee is notified.
+  takeOverReviewItem(objectKey: String!, cycleId: String!): ReviewItem
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )
