@@ -135,6 +135,15 @@ def aggregate_page_confidence(values: List[Optional[float]]) -> Optional[float]:
     return min(v for v in values if v is not None)
 
 
+_CLASSIFICATION_METHOD_REMOVED = (
+    "ClassificationService.classification_method was removed in config format "
+    "0.8. Set `classification.granularity` ('page' or 'packet') and, if you want "
+    "it explicit, `classification.modality.text` / `.images` in the config "
+    "instead; a stored config carrying the old key is converted on read. The "
+    "resolved value is readable as `service.granularity`."
+)
+
+
 class ClassificationService:
     """Service for classifying documents using various backends."""
 
@@ -148,6 +157,23 @@ class ClassificationService:
     # `classificationMethod` values, each of which bundled one of each.
     GRANULARITY_PAGE = "page"
     GRANULARITY_PACKET = "packet"
+
+    # ⚠️ `classification_method` is removed, and it refuses rather than
+    # disappearing. Reading a removed attribute raises on its own; **assigning
+    # one does not** — Python creates an instance attribute and nothing reads it,
+    # so `service.classification_method = "textbasedHolisticClassification"`
+    # would look like it switched the service to packet granularity and silently
+    # do nothing. That assignment was a documented way to switch methods and the
+    # shipped notebooks used it, so out-of-tree code doing it is the expected
+    # case rather than a hypothetical one. A failure that names the replacement
+    # is the only useful answer here.
+    @property
+    def classification_method(self):
+        raise AttributeError(_CLASSIFICATION_METHOD_REMOVED)
+
+    @classification_method.setter
+    def classification_method(self, _value):
+        raise AttributeError(_CLASSIFICATION_METHOD_REMOVED)
 
     # Strategy: whether boundaries and classes come from one call or two.
     # The identifier deliberately does not echo its value — see the note on

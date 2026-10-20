@@ -331,3 +331,59 @@ class TestIdenticalSections:
         assert (
             service._get_classification_config()["metering_context"] == "Classification"
         )
+
+
+@pytest.mark.unit
+class TestTheRemovedAttributeRefuses:
+    """⚠️ A removed attribute has to refuse **assignment**, not only reads.
+
+    `classification_method` was a documented way to switch methods after
+    construction and the shipped notebooks used it, so out-of-tree code doing it
+    is the expected case. Python creates an instance attribute on assignment to
+    an ordinary class, so without a setter that raises,
+    `service.classification_method = "textbasedHolisticClassification"` would
+    look like it switched the service to packet granularity and silently do
+    nothing — which is worse than an error, because the run completes with the
+    wrong number of calls and no sign of why.
+    """
+
+    def _service(self):
+        return ClassificationService(
+            region="us-west-2",
+            config={
+                "classes": [
+                    {
+                        "$id": "invoice",
+                        "x-aws-idp-document-type": "invoice",
+                        "type": "object",
+                        "description": "An invoice",
+                        "properties": {},
+                    }
+                ],
+                "classification": {
+                    "model": "us.amazon.nova-2-lite-v1:0",
+                    "granularity": "page",
+                    "confidence": {"mode": "off"},
+                },
+            },
+        )
+
+    def test_reading_it_raises_and_names_the_replacement(self):
+        service = self._service()
+        with pytest.raises(AttributeError, match="granularity"):
+            _ = service.classification_method
+
+    def test_assigning_it_raises_rather_than_being_ignored(self):
+        service = self._service()
+        with pytest.raises(AttributeError, match="granularity"):
+            service.classification_method = "textbasedHolisticClassification"
+        # And the granularity it would have claimed to change is untouched.
+        assert service.granularity == ClassificationService.GRANULARITY_PAGE
+
+    def test_the_message_names_the_config_keys_to_use(self):
+        service = self._service()
+        with pytest.raises(AttributeError) as excinfo:
+            _ = service.classification_method
+        message = str(excinfo.value)
+        assert "classification.granularity" in message
+        assert "service.granularity" in message

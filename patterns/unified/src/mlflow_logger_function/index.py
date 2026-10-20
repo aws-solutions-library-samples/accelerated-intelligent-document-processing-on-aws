@@ -194,14 +194,21 @@ def _extract_config_params(config):
         if isinstance(modality, dict):
             for flag in ("text", "images"):
                 value = modality.get(flag)
-                # An EMPTY value is "infer from the prompt's placeholders",
-                # which is a real setting rather than an absent one — logged as
-                # `infer` so a run using the inference is not indistinguishable
-                # from one where the key was never written.
-                if value is not None:
-                    params[f"classification.modality.{flag}"] = (
-                        str(value) if value != "" else "infer"
-                    )
+                # An UNSET flag is "infer from the prompt's placeholders", which
+                # is a real setting rather than an absent one — logged as `infer`
+                # so a run using the inference is not indistinguishable from one
+                # where the key was never written.
+                #
+                # ⚠️ Unset has two spellings and both have to land here. The raw
+                # YAML and the config form carry `""`; a config that has been
+                # through `IDPConfig(...).model_dump()` carries `None`, because
+                # `ClassificationModalityConfig` types both flags as
+                # `Optional[bool]`. Skipping `None` — the obvious guard — logs
+                # nothing for exactly the validated-dump shape the resolver
+                # sends, which is the outcome this block exists to prevent.
+                params[f"classification.modality.{flag}"] = (
+                    "infer" if value is None or value == "" else str(value)
+                )
 
     # HITL threshold (v0.6: top-level hitl) + confidence list batching (v0.6:
     # extraction.confidence.list_batch_size — granular assessment is retired)

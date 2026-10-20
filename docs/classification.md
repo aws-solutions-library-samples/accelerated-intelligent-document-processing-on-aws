@@ -526,8 +526,9 @@ the `packet` key, and the shipped defaults always supply one — so a packet pro
 written at the flat key is merged onto a default that wins, and the prompt is
 ignored with nothing reporting it. The flat key is the *page* prompt (and Stage B
 of two-stage falls back to it). A configuration carried over from
-`classificationMethod: textbasedHolisticClassification` has its flat prompt moved
-into `packet` automatically — see
+`classificationMethod: textbasedHolisticClassification` has its flat prompt copied
+into `packet` automatically (the flat one stays, because Stage B of two-stage
+falls back to it) — see
 [Classification Method → Granularity](migration-classification-granularity.md) —
 but a hand-written one has to be in the right place.
 

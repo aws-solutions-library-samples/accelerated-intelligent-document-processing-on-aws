@@ -473,3 +473,41 @@ class TestTheWholeChainAndTheMergePath:
         raw = yaml.safe_load(defaults.read_text())["classification"]
         assert "classificationMethod" not in raw
         assert raw["granularity"] == "page"
+
+    def test_an_explicit_packet_granularity_blocks_the_relocation(self):
+        """⚠️ The mirror image of the relocation's own purpose. A config that
+        already said `granularity: packet` has had `classification.packet`
+        available all along, so its `packet.task_prompt` may be a deliberate
+        setting; overwriting it from the flat key would be this function causing
+        the loss it exists to prevent. Only a granularity DERIVED in this call
+        relocates."""
+        out = migrate_v07_to_v08(
+            {
+                "classification": {
+                    "classificationMethod": "textbasedHolisticClassification",
+                    "granularity": "packet",
+                    "task_prompt": "stale flat: return segments with ordinal_start_page",
+                    "packet": {
+                        "task_prompt": "deliberate: return segments with ordinal_start_page"
+                    },
+                }
+            }
+        )
+        assert out["classification"]["granularity"] == "packet"
+        assert (
+            out["classification"]["packet"]["task_prompt"]
+            == "deliberate: return segments with ordinal_start_page"
+        )
+
+    def test_the_empty_placeholder_still_relocates(self):
+        """Empty is not explicit, so it derives — and deriving relocates."""
+        out = migrate_v07_to_v08(
+            {
+                "classification": {
+                    "classificationMethod": "textbasedHolisticClassification",
+                    "granularity": "",
+                    "task_prompt": PACKET_PROMPT,
+                }
+            }
+        )
+        assert out["classification"]["packet"]["task_prompt"] == PACKET_PROMPT

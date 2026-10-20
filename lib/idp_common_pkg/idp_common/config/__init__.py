@@ -130,7 +130,8 @@ class ConfigurationReader:
     #
     # Every live path migrates first, deliberately:
     # `merge_utils.merge_config_with_defaults` migrates the delta at the top (its
-    # docstring says "IMPORTANT — migrate BEFORE merge" about exactly this),
+    # docstring has an "IMPORTANT -- migrate BEFORE merge" section naming this
+    # exact hazard),
     # `ConfigurationManager.get_raw_configuration` and
     # `get_merged_configuration` both migrate before their `deep_update`, and
     # `update_configuration`'s handler goes through `merge_config_with_defaults`.

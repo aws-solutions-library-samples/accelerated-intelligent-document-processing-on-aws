@@ -124,10 +124,20 @@ def migrate_v07_to_v08(config: Dict[str, Any]) -> Dict[str, Any]:
         # so re-running this over a hybrid config cannot clobber a deliberate
         # setting. An EMPTY granularity is not explicit: empty meant "derive it
         # from classificationMethod", which is what this function is doing.
-        if not classification.get("granularity"):
+        derived_here = not classification.get("granularity")
+        if derived_here:
             classification["granularity"] = granularity
 
-        if classification["granularity"] == "packet":
+        # ⚠️ Relocate only when the granularity was DERIVED in this call, not
+        # merely when the result is `packet`. The relocation exists because a
+        # holistic config's flat prompt IS its packet prompt and `granularity:
+        # packet` alone would make the service read the shipped default instead.
+        # A config that already said `granularity: packet` has had the new keys
+        # available all along, so its `packet.task_prompt` may be a deliberate
+        # setting — and overwriting that with a flat prompt would be this
+        # function causing the exact loss it was written to prevent, in the other
+        # direction.
+        if derived_here and classification["granularity"] == "packet":
             _relocate_packet_prompts(classification)
 
         logger.info(

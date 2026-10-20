@@ -281,14 +281,45 @@ class TestExtractConfigParams:
         assert params["classification.modality.text"] == "True"
         assert params["classification.modality.images"] == "False"
 
-    def test_an_inferred_modality_is_logged_as_inferred(self):
-        """An empty flag means "infer from the prompt's placeholders", which is a
+    @pytest.mark.parametrize(
+        "modality",
+        [
+            # The raw YAML and config-form spelling.
+            {"text": "", "images": ""},
+            # ⚠️ The spelling a VALIDATED config carries, and the one that
+            # matters: `ClassificationModalityConfig` types both flags as
+            # `Optional[bool]`, so `IDPConfig(...).model_dump()` writes `None`.
+            # A guard of `if value is not None` logs nothing for exactly this
+            # shape — which is what the resolver sends — so the inferring run
+            # becomes indistinguishable from one where the key was never
+            # written, the outcome this parameter exists to prevent.
+            {"text": None, "images": None},
+            # Mixed, for the same reason in one flag.
+            {"text": None, "images": ""},
+        ],
+    )
+    def test_an_inferred_modality_is_logged_as_inferred(self, modality):
+        """An unset flag means "infer from the prompt's placeholders", which is a
         real setting rather than an absent one — so a run using the inference
         must not look identical to one where the key was never written."""
-        config = {"classification": {"modality": {"text": "", "images": ""}}}
-        params, _, _ = mlflow_logger._extract_config_params(config)
+        params, _, _ = mlflow_logger._extract_config_params(
+            {"classification": {"modality": modality}}
+        )
         assert params["classification.modality.text"] == "infer"
         assert params["classification.modality.images"] == "infer"
+
+    def test_a_validated_config_dump_logs_both_flags(self):
+        """End to end against the real model, so the shape is not guessed."""
+        from idp_common.config.merge_utils import merge_config_with_defaults
+        from idp_common.config.models import IDPConfig
+
+        dumped = IDPConfig(**merge_config_with_defaults({}, validate=False)).model_dump(
+            mode="python"
+        )
+        params, _, _ = mlflow_logger._extract_config_params(dumped)
+        assert params["classification.modality.text"] == "infer"
+        assert params["classification.modality.images"] == "infer"
+        assert params["classification.granularity"] == "page"
 
     def test_the_removed_key_logs_nothing(self):
         """A config still carrying `classificationMethod` reaches this function
