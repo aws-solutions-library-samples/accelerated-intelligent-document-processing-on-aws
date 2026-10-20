@@ -23,7 +23,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from idp_common.config.models import review_queue_display_name
 from idp_common.dynamodb.client import DynamoDBTransactionCanceledError
 
 from . import keys, status_object
@@ -62,6 +61,7 @@ from .models import (
     ReviewItemRecord,
     UserInfo,
 )
+from .queue_defs import DEFAULT_QUEUE_ID, display_name
 from .statuses import (
     LIVE_ITEM_STATES,
     TRACKING_REVIEW_ATTRIBUTES,
@@ -75,6 +75,7 @@ logger = logging.getLogger(__name__)
 OPEN = QueueItemState.OPEN.value
 CLAIMED = QueueItemState.CLAIMED.value
 FINALIZING = QueueItemState.FINALIZING.value
+HOLDING = QueueItemState.HOLDING.value
 WITHDRAWN = QueueItemState.WITHDRAWN.value
 
 #: Finalize recheck delay after a disposition (the sweeper resends if lost).
@@ -88,6 +89,13 @@ CLAIM_NEXT_TIER_PEEK = 5
 DRAFT_KEY_FORMAT = "{doc}/review/drafts/{cycle}/{section}/{revision:06d}.json"
 
 DISPOSITION_METRIC = "ReviewDispositions"
+#: History event and metric ``Kind`` of each disposition.
+_HISTORY_EVENTS = {
+    "complete": "completed",
+    "rejected": "rejected",
+    "removed": "removed",
+}
+_METRIC_KINDS = {"complete": "complete", "rejected": "reject", "removed": "removed"}
 
 
 def utc_now() -> datetime:
@@ -394,8 +402,8 @@ class ReviewQueueService:
                 claimed_by_me=mine_by_queue.get(ref.partition, 0),
                 oldest_enqueued_at=oldest[0].enqueued_at if oldest else None,
                 is_default_queue=definition.id.lower() == rq.default_queue.lower(),
-                is_escalation_queue=definition.id.lower()
-                == rq.escalation_queue.lower(),
+                confidence_threshold=definition.confidence_threshold,
+                enabled=definition.enabled,
                 claim_cap=rq.max_claims_per_reviewer,
                 checklist=list(definition.checklist),
             )
@@ -964,8 +972,21 @@ class ReviewQueueService:
         *,
         disposition: str,
         apply: Callable[[ReviewItemRecord], None],
+        supervised: bool = False,
+        note: Optional[str] = None,
     ) -> ReviewItemView:
-        old = self._disposable(caller, object_key, cycle_id)
+        """Move the item to FINALIZING and send its finalize message.
+
+        ``supervised`` is an Admin acting on an OPEN or CLAIMED item they need not
+        hold (Remove from queue); the write is conditioned on the state read, and
+        a claimant is told their claim ended.
+        """
+        if supervised:
+            old = self._supervised(caller, object_key, cycle_id)
+            if old.state not in (OPEN, CLAIMED):
+                raise ReviewConflict("INVALID_STATE", f"the item is {old.state}")
+        else:
+            old = self._disposable(caller, object_key, cycle_id)
         _, now_ms, now_iso = self._now()
         new = old.model_copy(deep=True)
         apply(new)
@@ -989,28 +1010,32 @@ class ReviewQueueService:
         extra.extend(
             self._history(
                 new,
-                "completed" if disposition == "complete" else "rejected",
+                _HISTORY_EVENTS[disposition],
                 caller.email,
-                {},
+                {"note": note} if note else {},
                 now_ms,
                 now_iso,
             )
         )
-        condition, values = self._disposition_condition(caller, old, now_ms)
+        if supervised:
+            condition, values = "#st = :st", {":st": old.state}
+        else:
+            condition, values = self._disposition_condition(caller, old, now_ms)
         try:
             self._write(old, new, condition=condition, values=values, extra_txn=extra)
         except DynamoDBTransactionCanceledError:
+            if supervised:
+                raise ReviewConflict(
+                    "INVALID_STATE", "the item changed; reload it"
+                ) from None
             self._raise_lease_failure(object_key, owner or caller.reviewer_key)
         self._send_finalize(new)
         _put_metric(
             DISPOSITION_METRIC,
-            dimensions=[
-                {
-                    "Name": "Kind",
-                    "Value": disposition if disposition == "complete" else "reject",
-                }
-            ],
+            dimensions=[{"Name": "Kind", "Value": _METRIC_KINDS[disposition]}],
         )
+        if supervised and old.state == CLAIMED and old.owner_email:
+            self.notify.claim_released(new, old.owner_email, disposition)
         logger.info("event=review_disposed disposition=%s", disposition)
         return item_view(new, caller)
 
@@ -1093,61 +1118,31 @@ class ReviewQueueService:
             caller, object_key, cycle_id, disposition="rejected", apply=apply
         )
 
-    def escalate(
-        self, caller: CallerContext, object_key: str, cycle_id: str, note: str
+    def remove(
+        self,
+        caller: CallerContext,
+        object_key: str,
+        cycle_id: str,
+        note: Optional[str] = None,
     ) -> ReviewItemView:
-        if not note or not note.strip():
-            raise ReviewValidationError(
-                "NOTE_REQUIRED", "add a note for the escalation"
-            )
-        old = self._disposable(caller, object_key, cycle_id)
-        rq = self._rq(old.profile)
-        target = rq.queue(rq.escalation_queue)
-        if target is None:
-            raise ReviewValidationError(
-                "UNKNOWN_QUEUE", "the profile has no escalation queue"
-            )
-        if old.queue.lower() == target.id.lower():
-            raise ReviewConflict(
-                "ALREADY_ESCALATED", "the item is already in the escalation queue"
-            )
-        _, now_ms, now_iso = self._now()
-        new = old.model_copy(deep=True)
-        owner = old.owner_key
-        new.state = OPEN
-        self._release_fields(new)
-        new.escalated_from_queue = old.queue
-        new.queue = target.id
-        new.priority = target.priority
-        new.escalated = True
-        new.escalated_at = now_iso
-        new.escalated_by = caller.email
-        new.escalation_note = note
-        extra = (
-            [self.store.counter_txn_item(owner, -1, now_iso=now_iso)] if owner else []
+        """Admin: take an OPEN or CLAIMED item out of review.
+
+        The document completes with its machine results (no draft is applied),
+        its status object is deleted, and a claimant is told their claim ended.
+        """
+
+        def apply(r: ReviewItemRecord) -> None:
+            r.complete_note = note
+
+        return self._finalize(
+            caller,
+            object_key,
+            cycle_id,
+            disposition="removed",
+            apply=apply,
+            supervised=True,
+            note=note,
         )
-        extra.extend(
-            self._history(
-                new,
-                "escalated",
-                caller.email,
-                {"from": old.queue, "to": target.id},
-                now_ms,
-                now_iso,
-            )
-        )
-        condition, values = self._disposition_condition(caller, old, now_ms)
-        try:
-            self._write(old, new, condition=condition, values=values, extra_txn=extra)
-        except DynamoDBTransactionCanceledError:
-            self._raise_lease_failure(object_key, owner or caller.reviewer_key)
-        groups, emails = self.directory.members(new.profile, new.queue)
-        self._safe_registry(new.ref, groups, emails, now_iso)
-        self.notify.item_escalated(new, (groups, emails))
-        _put_metric(
-            DISPOSITION_METRIC, dimensions=[{"Name": "Kind", "Value": "escalate"}]
-        )
-        return item_view(new, caller)
 
     def _safe_registry(
         self, ref: QueueRef, groups: Sequence[str], emails: Sequence[str], now_iso: str
@@ -1348,6 +1343,66 @@ class ReviewQueueService:
             self.notify.claim_released(new, former_email, "move")
         return item_view(new, caller)
 
+    def delete_queue(self, caller: CallerContext, queue_id: str) -> int:
+        """Admin: delete a queue, moving its items to Default; return how many.
+
+        OPEN and CLAIMED items move with :meth:`move` (unassigned; an assignee is
+        told), and HOLDING items are re-pointed at Default before they activate.
+        Refused while an item is FINALIZING, because its finalize run still
+        reads the queue (``QUEUE_FINALIZING``).
+        """
+        self._require_admin(caller)
+        queue_id = queue_id.strip().lower()
+        if queue_id == DEFAULT_QUEUE_ID:
+            raise ReviewValidationError(
+                "PROTECTED_QUEUE", "the Default queue can't be deleted"
+            )
+        if self.store.in_flight(queue_id, (FINALIZING,)):
+            raise ReviewConflict(
+                "QUEUE_FINALIZING",
+                "an item in this queue is being finalized; try again in a minute",
+            )
+        ref = QueueRef(queue=queue_id)
+        live: list[ReviewItemRecord] = []
+        start: Optional[dict[str, Any]] = None
+        while True:
+            page, start = self.store.query_queue(
+                ref, open_only=False, limit=100, start_key=start
+            )
+            live.extend(page)
+            if not start:
+                break
+        moved = 0
+        for item in live:
+            try:
+                self.move(caller, item.doc_key, item.cycle_id, DEFAULT_QUEUE_ID)
+                moved += 1
+            except (ReviewConflict, ReviewItemNotFound, ReviewValidationError) as exc:
+                # Changed since the listing (disposed, withdrawn, already moved):
+                # it no longer needs moving.
+                logger.info("event=review_queue_delete_item_skipped code=%s", exc.code)
+        default = self._rq("").queue(DEFAULT_QUEUE_ID)
+        _, _, now_iso = self._now()
+        for item in self.store.in_flight(queue_id, (HOLDING,)):
+            try:
+                self.store.transition(
+                    item.doc_key,
+                    expected_version=item.version,
+                    set_={
+                        "Queue": DEFAULT_QUEUE_ID,
+                        "Priority": default.priority if default else item.priority,
+                    },
+                    condition="#st = :holding",
+                    values={":holding": HOLDING},
+                )
+                moved += 1
+            except DynamoDBTransactionCanceledError:
+                # Activated or withdrawn meanwhile: activation re-points it.
+                logger.info("event=review_queue_delete_hold_changed")
+        self.directory.queue_defs.delete(queue_id)
+        logger.info("event=review_queue_deleted moved=%d", moved)
+        return moved
+
     def overview(self, caller: CallerContext) -> ReviewQueuesOverview:
         """Queue health for Admins, including queues no longer in configuration."""
         self._require_admin(caller)
@@ -1389,8 +1444,8 @@ class ReviewQueueService:
                     description=definition.description or None,
                     priority=definition.priority,
                     is_default_queue=definition.id.lower() == rq.default_queue.lower(),
-                    is_escalation_queue=definition.id.lower()
-                    == rq.escalation_queue.lower(),
+                    confidence_threshold=definition.confidence_threshold,
+                    enabled=definition.enabled,
                     claim_cap=rq.max_claims_per_reviewer,
                     checklist=list(definition.checklist),
                     defined_in_config=True,
@@ -1399,7 +1454,7 @@ class ReviewQueueService:
                 summary = ReviewQueueSummary(
                     profile=ref.profile,
                     name=ref.queue,
-                    display_name=review_queue_display_name(ref.queue),
+                    display_name=display_name(ref.queue),
                     priority=0,
                     defined_in_config=False,
                 )

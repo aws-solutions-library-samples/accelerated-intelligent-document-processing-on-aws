@@ -782,9 +782,6 @@ Resources:
           STACK_NAME: !Ref StackName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           USERS_TABLE_NAME: !Ref UsersTableName
-          # A save that points hitl.review_queues.queue at an unknown queue id is
-          # warned about; the queue definitions are read from HITLTable.
-          HITL_TABLE_NAME: !Ref HITLTableName
       LoggingConfig:
         LogGroup: !Ref ConfigurationResolverFunctionLogGroup
       Policies:
@@ -846,14 +843,6 @@ Resources:
               Resource:
                 - !Ref UsersTableArn
                 - !Sub "${UsersTableArn}/index/*"
-        # The system-wide queue definitions (PK=QDEF): read for the unknown-queue
-        # warning; PutItem only seeds Default and Escalation on a stack with none.
-        - Statement:
-            - Effect: Allow
-              Action:
-                - dynamodb:Query
-                - dynamodb:PutItem
-              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
   NotificationsResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

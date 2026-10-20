@@ -17,8 +17,8 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
-from idp_common.config.models import REVIEW_QUEUE_NAME_PATTERN
 from idp_common.notifications.api_models import summarize_validation_error
+from idp_common.review_queues.queue_defs import QUEUE_REF_PATTERN
 
 __all__ = ["summarize_validation_error"]
 
@@ -91,7 +91,7 @@ class ReviewQueueSummary(_View):
     profile: str
     #: The queue id: what items, links and the queue arguments use.
     name: str
-    #: What people see ("Escalation" for the queue id "escalation").
+    #: What people see ("Loan Review" for the queue id "loan_review").
     display_name: str = ""
     description: Optional[str] = None
     priority: int
@@ -106,7 +106,10 @@ class ReviewQueueSummary(_View):
     annotators: int = 0
     oldest_enqueued_at: Optional[str] = None
     is_default_queue: bool = False
-    is_escalation_queue: bool = False
+    #: A document is queued when a field's confidence is below this.
+    confidence_threshold: Optional[float] = None
+    #: When off, no documents are added to the queue.
+    enabled: Optional[bool] = None
     claim_cap: int = 10
     checklist: list[str] = Field(default_factory=list)
     defined_in_config: bool = True
@@ -209,7 +212,7 @@ class ClaimNextArgs(_Args):
     # is still accepted, and ignored, for callers written when queues belonged to a
     # configuration profile.
     queue_profile: Optional[str] = Field(default=None, min_length=1, max_length=256)
-    queue_name: Optional[str] = Field(default=None, pattern=REVIEW_QUEUE_NAME_PATTERN)
+    queue_name: Optional[str] = Field(default=None, pattern=QUEUE_REF_PATTERN)
 
 
 class ListQueueItemsArgs(ClaimNextArgs):
@@ -255,8 +258,8 @@ class RejectArgs(ItemArgs):
     note: Optional[str] = Field(default=None, max_length=MAX_NOTE)
 
 
-class EscalateArgs(ItemArgs):
-    note: str = Field(min_length=1, max_length=MAX_NOTE)
+class RemoveArgs(ItemArgs):
+    note: Optional[str] = Field(default=None, max_length=MAX_NOTE)
 
 
 class ReassignArgs(ItemArgs):
@@ -266,7 +269,7 @@ class ReassignArgs(ItemArgs):
 
 
 class MoveArgs(ItemArgs):
-    target_queue: str = Field(pattern=REVIEW_QUEUE_NAME_PATTERN)
+    target_queue: str = Field(pattern=QUEUE_REF_PATTERN)
 
 
 def draft_depth(value: Any, depth: int = 0) -> int:

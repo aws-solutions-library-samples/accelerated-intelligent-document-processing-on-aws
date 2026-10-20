@@ -9,6 +9,7 @@ query ListReviewQueues {
     timeLimitMinutes
     eligibleAnnotators
     isDefaultQueue
-    isEscalationQueue
+    confidenceThreshold
+    enabled
   }
 }

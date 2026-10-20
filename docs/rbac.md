@@ -110,8 +110,7 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
   - Assignment: `reassignReviewItem` (assign), `forceReleaseReviewItem` (unassign),
     `assignTestSetDocuments`, `unassignTestSetDocuments`.
-  - `moveReviewItem`, `escalateReviewItem` and `renewReviewLease`.
-  - Changing `hitl.review_queues` in a profile.
+  - `moveReviewItem`, `removeReviewItem` and `renewReviewLease`.
 - **What scopes it.**
   - A queue's **Eligible Annotators** list is its membership: an Annotator sees,
     claims and is assigned only in queues that list them. An empty list means no

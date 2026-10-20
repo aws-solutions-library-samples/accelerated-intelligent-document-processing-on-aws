@@ -172,13 +172,13 @@ class TestNotices:
                 send(_item(owner_email=None))
         sent.assert_not_called()
 
-    def test_escalation_goes_to_the_queue_members_only_when_there_are_any(self):
+    def test_a_removal_says_the_document_completes_without_the_draft(self):
         with patch(NOTIFY) as sent:
-            review_notify.item_escalated(_item(), ([], []))
-            sent.assert_not_called()
-            review_notify.item_escalated(_item(), (["Admin"], []))
-        assert sent.call_args.kwargs["groups"] == ["Admin"]
-        assert "escalated" in sent.call_args.kwargs["title"]
+            review_notify.claim_released(_item(), "bob@example.com", "removed")
+        body = sent.call_args.kwargs["body"]
+        assert "removed the document from review" in body
+        assert "machine results" in body and "draft is kept" not in body
+        assert sent.call_args.kwargs["users"] == ["bob@example.com"]
 
     def test_an_unknown_release_reason_still_says_the_draft_is_kept(self):
         with patch(NOTIFY) as sent:

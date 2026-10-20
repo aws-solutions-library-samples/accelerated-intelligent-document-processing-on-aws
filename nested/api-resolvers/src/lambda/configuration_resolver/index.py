@@ -41,11 +41,6 @@ from idp_common.config_scope import (
     scope_allows,
 )
 from idp_common.metering_units import declared_free_units
-from idp_common.review_queues.config_guard import (
-    ReviewQueuesAdminGuard,
-    unknown_queue_ids,
-    warnings_for,
-)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -63,28 +58,6 @@ _USER_SCOPE_CACHE_TTL = 60  # seconds
 
 # Lazy-initialized RuleTranslator (reused across requests within same container)
 _rule_translator = None
-
-# Lazy-initialized queue definitions, for the unknown-queue warning
-_queue_defs = None
-
-
-def _queue_ids():
-    """Ids of the system-wide review queues (``QDEF`` items, cached briefly)."""
-    global _queue_defs
-    if not os.environ.get("HITL_TABLE_NAME"):
-        raise RuntimeError("HITL_TABLE_NAME is not set")
-    if _queue_defs is None:
-        from idp_common.review_queues.directory import QueueDirectory
-
-        _queue_defs = QueueDirectory().queue_defs
-    return [d.id for d in _queue_defs.list()]
-
-
-def _review_queues_guard(caller):
-    """The Admin-only write guard for ``hitl.review_queues`` (FR-4)."""
-    return ReviewQueuesAdminGuard(
-        is_admin=caller["is_admin"], caller_email=caller["email"]
-    )
 
 
 def _get_caller_info(event):
@@ -436,25 +409,17 @@ def handler(event, context):
                             "message": f"Access denied: '{operation_name}' is an Admin-only operation",
                         },
                     }
-            guard = _review_queues_guard(caller)
             success = manager.handle_update_custom_configuration(
                 custom_config,
                 version,
                 description,
                 created_by=caller["email"],
-                write_guard=guard,
-            )
-            warnings = (
-                warnings_for(unknown_queue_ids(guard.changes, _queue_ids))
-                if guard.changes
-                else []
             )
             return {
                 "success": success,
                 "message": "Configuration updated successfully"
                 if success
                 else "Configuration update failed",
-                "warnings": warnings,
             }
         elif operation == "setActiveVersion":
             args = event["arguments"]
@@ -533,11 +498,7 @@ def handler(event, context):
                 return handle_get_profile_revision(manager, profile, revision)
             if operation == "restoreConfigProfileRevision":
                 return handle_restore_profile_revision(
-                    manager,
-                    profile,
-                    revision,
-                    caller["email"],
-                    write_guard=_review_queues_guard(caller),
+                    manager, profile, revision, caller["email"]
                 )
             if operation == "labelConfigProfileRevision":
                 return handle_label_profile_revision(
@@ -613,8 +574,7 @@ def handler(event, context):
         else:
             raise Exception(f"Unsupported operation: {operation}")
     except ConfigurationValidationError as e:
-        # A cross-field rule of hitl.review_queues
-        # (HITLReviewQueuesConfig.cross_field_problems). A deliberate refusal
+        # A cross-field rule checked at the write boundary. A deliberate refusal
         # reported as data, like the inert-hook refusal below.
         logger.error(f"Configuration validation refusal: {e}")
         return {
@@ -672,8 +632,8 @@ def handler(event, context):
             },
         }
     except PermissionError:
-        # An authorization refusal (the Admin-only hitl.review_queues guard) must
-        # reach the dispatcher as 403, not become a 200 "UnexpectedError" payload.
+        # An authorization refusal must reach the dispatcher as 403, not become a
+        # 200 "UnexpectedError" payload.
         raise
     except Exception as e:
         # Catch all other exceptions to prevent lambda failures
@@ -1441,7 +1401,7 @@ def handle_restore_profile_revision(
 
     Restoring is a forward-only operation: the restored configuration is saved as
     a NEW revision, so the state being replaced stays inspectable. ``write_guard``
-    refuses a non-Admin restore that changes ``hitl.review_queues``.
+    (see ``idp_common.config.configuration_manager.WriteGuard``) may refuse it.
     """
     try:
         new_revision = manager.restore_revision(

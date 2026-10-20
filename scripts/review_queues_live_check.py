@@ -7,6 +7,9 @@ Live end-to-end check of the review queues (``make stacktest-review-queues``).
 NOTE: needs reworking. The flow below self-claims the item (``claimReviewItem``)
 and uses a per-profile ``default`` queue; queues are now system-wide and an Admin
 assigns queue items to Annotators, so steps 2 and 4 no longer match the product.
+Routing also no longer reads the profile: a document is queued only when the
+Default queue is enabled (HITL › Queue Management), against that queue's
+confidence threshold, so step 2 must enable Default and set its threshold.
 
 Routes a real document into a review queue on a deployed stack, reviews it
 through the REST API with a real Annotator ID token, and waits for the
@@ -332,29 +335,7 @@ class ReviewQueuesLiveCheck:
         self.auth_enabled = True
         self.user_created = True
         d.create_cognito_user(self.ctx, self.user, APP_GROUP, self.password)
-        config = {
-            "hitl": {
-                "enabled": True,
-                "confidence_threshold": 0.99,
-                "review_queues": {
-                    "enabled": True,
-                    "default_queue": "default",
-                    "escalation_queue": "escalation",
-                    "queues": [
-                        {
-                            "name": "default",
-                            "member_groups": [],
-                            "member_emails": [self.user],
-                        },
-                        {
-                            "name": "escalation",
-                            "member_groups": ["Admin"],
-                            "member_emails": [],
-                        },
-                    ],
-                },
-            }
-        }
+        config = {"hitl": {"enabled": True, "confidence_threshold": 0.99}}
         self.profile_created = True
         d.upload_profile(self.ctx["stack"], self.ctx["region"], self.profile, config)
 

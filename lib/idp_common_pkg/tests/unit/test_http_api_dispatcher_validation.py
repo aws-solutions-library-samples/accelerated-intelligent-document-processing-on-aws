@@ -440,7 +440,7 @@ def test_required_arg_count_is_stable(spec):
     so it is deliberately not among them), the Inbox ops (markInboxMessages,
     deleteInboxMessages, updateInboxPreferences) plus the review-queue operations
     (getReviewItem, claimReviewItem, renewReviewLease, releaseReviewItem,
-    saveReviewDraft, completeReviewItem, rejectReviewItem, escalateReviewItem,
+    saveReviewDraft, completeReviewItem, rejectReviewItem, removeReviewItem,
     forceReleaseReviewItem, reassignReviewItem, moveReviewItem and the rest of
     that family) 117–138, and claimTestSetDocument the 139th)."""
     required = [

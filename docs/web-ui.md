@@ -649,9 +649,13 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   Queues** (one per test set), each listing Queue, Items, Pending, Assigned, In progress, Annotators and Priority with an
   actions menu. Admins create, edit and delete
   Production queues here, setting each one's name, priority, time limit, eligible
-  Annotators (who works the queue) and reject reasons. On each queue's page, Admins select
-  items and **Assign** them to an Annotator, **Unassign** them, or **Move** them to
-  another queue (for example **Escalation**).
+  Annotators (who works the queue), reject reasons, **Enabled** switch and
+  **Confidence threshold**. Low-confidence production documents go to the Default
+  queue when it is enabled, judged against its threshold. Deleting a queue moves its
+  items to Default; Default itself can't be deleted. On each queue's page, Admins
+  select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
+  to another queue, or **Remove** them from the queue (the document completes with
+  its machine output).
 - **My Work › Queues** lists the queues you're listed on. On a queue's page you can
   open any item read-only and **Claim** one nobody holds, which assigns it to you.
 - **My Work › Tasks** lists everything assigned to you, both Production review items
@@ -667,9 +671,6 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   or rejected; a Test Studio item is completed.
 - The Document List shows queue-held documents as **In review**. The legacy Reviewer
   flow (**Start Review**) is unchanged.
-- In the configuration editor, only Admins can edit the **Review queues** block. It
-  picks the queue for the profile's documents. Other users see it read-only, with a
-  note saying why.
 
 ## Inbox
 

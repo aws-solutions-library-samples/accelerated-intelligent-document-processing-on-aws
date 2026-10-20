@@ -83,7 +83,7 @@ Authorization is enforced at multiple layers:
 > processing-breaker badge, three mutations and the eight Inbox operations,
 > resolved at build time to every group `template.yaml` creates); and **8 require only
 > authentication**, which includes a caller in no group at all.
-> 27 additionally enforce config-version scope, 9 filter
+> 26 additionally enforce config-version scope, 9 filter
 > list rows by it, and 17 enforce per-object ownership. `scripts/api_rbac_expectations.yaml`
 > is the manifest of record for all of this. Its `known_gaps` block holds three
 > entries: `GAP-SEC-INCONCLUSIVE-5XX` bounds what the live harness can conclude (a

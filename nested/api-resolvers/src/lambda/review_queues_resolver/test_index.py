@@ -26,7 +26,6 @@ from idp_common.review_queues import (
     ReviewItemNotFound,
     ReviewValidationError,
 )
-from idp_common.review_queues.models import QueueRef
 from idp_common.review_queues.queue_defs import QueueDefinition
 
 _INDEX = Path(__file__).with_name("index.py")
@@ -75,7 +74,13 @@ class TestGroupGate:
             module.handler(_event("dropQueues"), None)
 
     @pytest.mark.parametrize(
-        "field", ["createReviewQueue", "deleteReviewQueue", "reassignReviewItem"]
+        "field",
+        [
+            "createReviewQueue",
+            "deleteReviewQueue",
+            "reassignReviewItem",
+            "removeReviewItem",
+        ],
     )
     def test_annotator_is_refused_admin_operations_before_any_work(self, module, field):
         with (
@@ -201,17 +206,66 @@ class TestQueueDefinitions:
             "timeLimitMinutes": 15,
             "eligibleAnnotators": ["a@x.com"],
             "isDefaultQueue": False,
-            "isEscalationQueue": False,
+            "confidenceThreshold": 0.8,
+            "enabled": True,
         }
+
+    def test_create_takes_the_threshold_and_switch(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = lambda d, create: d
+        result = module.handler(
+            _event(
+                "createReviewQueue",
+                {"input": {"id": "q", "confidenceThreshold": 0.6, "enabled": False}},
+            ),
+            None,
+        )
+        assert (result["confidenceThreshold"], result["enabled"]) == (0.6, False)
+
+    def test_a_threshold_outside_0_1_is_a_bad_request(self, module):
+        with pytest.raises(ValueError, match="BAD_ARGUMENT"):
+            module.handler(
+                _event(
+                    "createReviewQueue",
+                    {"input": {"id": "q", "confidenceThreshold": 1.5}},
+                ),
+                None,
+            )
+        module._SERVICE.directory.queue_defs.put.assert_not_called()
 
     def test_update_writes_over_an_existing_queue(self, module):
         store = module._SERVICE.directory.queue_defs
         store.put.side_effect = lambda d, create: d
+        store.get.return_value = QueueDefinition(
+            id="default", enabled=True, confidence_threshold=0.9
+        )
         result = module.handler(
             _event("updateReviewQueue", {"input": {"id": "default"}}), None
         )
         assert store.put.call_args.kwargs == {"create": False}
         assert result["isDefaultQueue"] is True
+        # Left out of the input, the switch and threshold keep their stored values.
+        assert (result["enabled"], result["confidenceThreshold"]) == (True, 0.9)
+        store.invalidate.assert_called_once()
+
+    def test_update_changes_the_threshold_and_switch(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = lambda d, create: d
+        store.get.return_value = QueueDefinition(id="default", enabled=False)
+        result = module.handler(
+            _event(
+                "updateReviewQueue",
+                {
+                    "input": {
+                        "id": "default",
+                        "enabled": True,
+                        "confidenceThreshold": 0.7,
+                    }
+                },
+            ),
+            None,
+        )
+        assert (result["enabled"], result["confidenceThreshold"]) == (True, 0.7)
 
     def test_invalid_queue_input_is_a_bad_request(self, module):
         with pytest.raises(ValueError, match="BAD_ARGUMENT"):
@@ -220,19 +274,34 @@ class TestQueueDefinitions:
             )
         module._SERVICE.directory.queue_defs.put.assert_not_called()
 
-    def test_a_queue_with_items_is_not_deleted(self, module):
-        module._SERVICE.store.count_queue.return_value = 2
-        with pytest.raises(ValueError, match="QUEUE_NOT_EMPTY"):
-            module.handler(_event("deleteReviewQueue", {"id": "Claims"}), None)
-        module._SERVICE.store.count_queue.assert_called_once_with(
-            QueueRef(queue="claims"), open_only=False
+    def test_delete_moves_items_through_the_service(self, module):
+        module._SERVICE.delete_queue.return_value = 3
+        assert (
+            module.handler(_event("deleteReviewQueue", {"id": " Claims "}), None)
+            is True
         )
-        module._SERVICE.directory.queue_defs.delete.assert_not_called()
+        (caller, queue_id), _ = module._SERVICE.delete_queue.call_args
+        assert queue_id == "claims" and caller.is_admin
 
-    def test_an_empty_queue_is_deleted(self, module):
-        module._SERVICE.store.count_queue.return_value = 0
-        assert module.handler(_event("deleteReviewQueue", {"id": "claims"}), None)
-        module._SERVICE.directory.queue_defs.delete.assert_called_once_with("claims")
+    def test_delete_is_refused_while_an_item_is_finalizing(self, module):
+        module._SERVICE.delete_queue.side_effect = ReviewConflict(
+            "QUEUE_FINALIZING", "try again in a minute"
+        )
+        with pytest.raises(ValueError, match="QUEUE_FINALIZING"):
+            module.handler(_event("deleteReviewQueue", {"id": "claims"}), None)
+
+    def test_remove_passes_the_note(self, module):
+        module._SERVICE.remove.return_value = _model({"objectKey": "a.pdf"})
+        result = module.handler(
+            _event(
+                "removeReviewItem",
+                {"objectKey": "a.pdf", "cycleId": "0" * 21, "note": "dup"},
+            ),
+            None,
+        )
+        assert result == {"objectKey": "a.pdf"}
+        (_caller, key, cycle, note), _ = module._SERVICE.remove.call_args
+        assert (key, cycle, note) == ("a.pdf", "0" * 21, "dup")
 
     def test_delete_needs_an_id(self, module):
         with pytest.raises(ValueError, match="id is required"):

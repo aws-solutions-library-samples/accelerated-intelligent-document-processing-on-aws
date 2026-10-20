@@ -47,7 +47,6 @@ _LAZY = (
     "notify",
     "tracker",
     "sweeper",
-    "config_guard",
     "queue_defs",
     "testset_docs",
 )

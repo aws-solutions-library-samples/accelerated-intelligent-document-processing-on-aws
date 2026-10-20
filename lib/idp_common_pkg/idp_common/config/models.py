@@ -1149,69 +1149,6 @@ class HITLNotificationsConfig(BaseModel):
         return _parse_whole_number(v, info, cls)
 
 
-#: Cognito groups a review queue may list as members (IDP-0002 D2).
-REVIEW_QUEUE_MEMBER_GROUPS: Tuple[str, ...] = ("Annotator", "Admin")
-
-#: A queue id: starts with a letter or digit, then up to 63 of letters,
-#: digits, space, ``_``, ``.`` or ``-``. The id is what items, keys and the
-#: ``default_queue`` / ``escalation_queue`` settings refer to.
-REVIEW_QUEUE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$"
-#: Older name for :data:`REVIEW_QUEUE_ID_PATTERN` (a queue's name used to be its id).
-REVIEW_QUEUE_NAME_PATTERN = REVIEW_QUEUE_ID_PATTERN
-
-
-def review_queue_display_name(queue_id: str) -> str:
-    """A readable name for a queue id: ``"escalation"`` -> ``"Escalation"``."""
-    words = re.split(r"[\s_.-]+", queue_id.strip())
-    return " ".join(w[:1].upper() + w[1:] for w in words if w) or queue_id
-
-
-#: Reasons a reviewer can pick when rejecting a document, unless the profile
-#: sets its own ``hitl.review_queues.reject_reasons``.
-DEFAULT_REJECT_REASONS: Tuple[str, ...] = (
-    "Illegible or poor-quality document",
-    "Wrong document type",
-    "Pages missing or out of order",
-    "Duplicate document",
-    "Other (see note)",
-)
-
-
-class HITLReviewQueuesConfig(BaseModel):
-    """Review queues for low-confidence documents (``idp_common.review_queues``).
-
-    Queues are system-wide (defined once in HITL › Queue Management, see
-    ``idp_common.review_queues.queue_defs``); a profile only turns routing on and
-    names the queue its documents go to. Several profiles may share a queue.
-    Effective only when ``hitl.enabled`` is also true.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Route low-confidence documents to a review queue instead of Review Pending",
-    )
-    queue: str = Field(
-        default="default",
-        pattern=REVIEW_QUEUE_ID_PATTERN,
-        description="Id of the system-wide queue this profile's documents enter",
-    )
-
-    @field_validator("queue", mode="before")
-    @classmethod
-    def normalise_queue(cls, v: Any) -> Any:
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return "default"
-        return v.strip().lower() if isinstance(v, str) else v
-
-    def cross_field_problems(self) -> List[str]:
-        """Problems that a configuration write must refuse. Empty when valid.
-
-        Whether the named queue exists is checked by the configuration editor
-        against the queue list; routing falls back to Default for an unknown id.
-        """
-        return []
-
-
 class HITLConfig(BaseModel):
     """Human-in-the-Loop review configuration (v0.6, top-level ``hitl``).
 
@@ -1234,13 +1171,6 @@ class HITLConfig(BaseModel):
     notifications: HITLNotificationsConfig = Field(
         default_factory=HITLNotificationsConfig,
         description="Inbox message retention and cap. Applies whether or not hitl.enabled is set.",
-    )
-    review_queues: HITLReviewQueuesConfig = Field(
-        default_factory=HITLReviewQueuesConfig,
-        description=(
-            "Review queues for low-confidence documents (idp_common.review_queues). "
-            "Effective only when hitl.enabled is true; only Admins may change it."
-        ),
     )
 
     @field_validator("confidence_threshold", mode="before")

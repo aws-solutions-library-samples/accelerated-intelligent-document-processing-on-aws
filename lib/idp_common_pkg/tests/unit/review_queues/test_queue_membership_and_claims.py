@@ -68,7 +68,8 @@ class TestMembership:
 
     def test_an_admin_works_every_queue(self, directory):
         ids = {r.queue for r, _, _ in directory.queues_for(ADMIN)}
-        assert ids == {"listed", "unlisted"}
+        # Default is seeded whenever it is missing.
+        assert ids == {"listed", "unlisted", "default"}
 
 
 def _service(directory, review_table):

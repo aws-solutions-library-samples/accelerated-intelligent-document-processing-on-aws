@@ -439,7 +439,9 @@ extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
 `hitl.*` block. See [Extraction & Confidence](./extraction-and-confidence.md) for
-the full reference.
+the full reference. Production [review queues](./review-queues.md) are not part of
+the configuration: Admins manage them in HITL › Queue Management, and a stored
+`hitl.review_queues` block is ignored and dropped when the configuration is read.
 
 ### Enable/Disable Confidence
 

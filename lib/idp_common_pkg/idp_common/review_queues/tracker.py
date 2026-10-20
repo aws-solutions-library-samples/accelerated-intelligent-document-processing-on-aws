@@ -13,7 +13,12 @@ Write order (D17):
 * **Finalize** (SUCCEEDED): document status (with the phase-1 metering merged) →
   reporting (finalize-only metering) → run record (``review_final``; none for
   rejected) → tracking review attributes → status object **last** → item
-  terminal (only for this token).
+  terminal (only for this token). An item an Admin removed from review completes
+  like ``complete`` with the machine results, and its status object is deleted
+  rather than written, so consumers read it as withdrawn rather than reviewed.
+
+An item whose queue was deleted while it was HOLDING is activated in the Default
+queue.
 
 The tracker calls these between its own steps; :func:`after_completion` raises on
 failure so the tracker can re-raise after its slot decrement.
@@ -30,6 +35,7 @@ from typing import Any, Literal, Mapping, Optional
 from . import keys, status_object
 from .finalize import is_finalize_token
 from .models import ReviewReportingInfo, RunRef, TrackerReviewContext
+from .queue_defs import DEFAULT_QUEUE_ID
 from .statuses import QueueItemState, ReviewStatus
 
 logger = logging.getLogger(__name__)
@@ -178,6 +184,9 @@ def after_completion(
     if ctx.kind == "hold":
         if workflow_status != "SUCCEEDED":
             return
+        target = _activation_queue(store, item)
+        if target is not None:
+            item = item.model_copy(update=target)
         document_service.update_review_attributes(
             doc_key,
             {
@@ -208,6 +217,9 @@ def after_completion(
             logger.info("event=review_activation_skipped reason=state_changed")
             return
         active = fresh.model_copy(deep=True)
+        if target is not None:
+            active.queue = target["queue"]
+            active.priority = target["priority"]
         active.state = QueueItemState.OPEN.value
         active.sweep_at_ms = None
         active.activated_at = _iso(now)
@@ -282,15 +294,26 @@ def after_completion(
         logger.info("event=review_finalize_run_failed status=%s", workflow_status)
         return
     rejected = ctx.outcome == "rejected"
+    removed = item.disposition == "removed"
     document_service.update_review_attributes(
         doc_key,
         {
             "HITLReviewedBy": item.disposed_by or "",
             "ReviewDisposedAt": item.disposed_at or _iso(now),
-            "ReviewStatusUri": _status_uri(output_bucket, doc_key),
+            **(
+                {}
+                if removed
+                else {"ReviewStatusUri": _status_uri(output_bucket, doc_key)}
+            ),
             **({"ReviewRejectReason": item.reject_reason or ""} if rejected else {}),
         },
-        remove_attrs=() if rejected else ("ReviewRejectReason",),
+        remove_attrs=(
+            ()
+            if rejected
+            else ("ReviewRejectReason", "ReviewStatusUri")
+            if removed
+            else ("ReviewRejectReason",)
+        ),
     )
     machine_ref = (
         RunRef(run_id=item.phase1_run_id, manifest_uri=item.machine_manifest_uri)
@@ -298,17 +321,20 @@ def after_completion(
         else None
     )
     final_ref = None if rejected else run_ref
-    status_object.publish(
-        store,
-        s3,
-        output_bucket,
-        item,
-        ReviewStatus.REJECTED if rejected else ReviewStatus.COMPLETE,
-        run_id=run_ref.run_id if run_ref else None,
-        machine_ref=machine_ref,
-        final_ref=final_ref,
-        now=now,
-    )
+    if removed:
+        status_object.delete(s3, output_bucket, doc_key)
+    else:
+        status_object.publish(
+            store,
+            s3,
+            output_bucket,
+            item,
+            ReviewStatus.REJECTED if rejected else ReviewStatus.COMPLETE,
+            run_id=run_ref.run_id if run_ref else None,
+            machine_ref=machine_ref,
+            final_ref=final_ref,
+            now=now,
+        )
     fresh = store.get_item(doc_key)
     if (
         fresh is None
@@ -334,6 +360,30 @@ def after_completion(
         names={"#st": "State"},
     )
     logger.info("event=review_finalized outcome=%s", ctx.outcome)
+
+
+def _activation_queue(store: Any, item: Any) -> Optional[dict[str, Any]]:
+    """``{"queue", "priority"}`` of Default when the item's queue no longer exists.
+
+    ``None`` keeps the item where it is (its queue exists, or the definitions
+    can't be read, in which case it is activated where it is rather than not at
+    all).
+    """
+    from .routing import queue_definitions
+
+    try:
+        defs = queue_definitions(store)
+        if defs.get(item.queue) is not None:
+            return None
+        default = defs.get(DEFAULT_QUEUE_ID)
+    except Exception:  # noqa: BLE001
+        logger.warning("event=review_queue_defs_unavailable", exc_info=True)
+        return None
+    logger.info("event=review_requeued_to_default reason=queue_missing")
+    return {
+        "queue": DEFAULT_QUEUE_ID,
+        "priority": default.priority if default is not None else item.priority,
+    }
 
 
 def _withdraw(

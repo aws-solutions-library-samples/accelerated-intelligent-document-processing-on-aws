@@ -26,7 +26,6 @@ import SchemaBuilder from '../json-schema-builder/SchemaBuilder';
 import PromptPreview from './PromptPreview';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import useUserRole from '../../hooks/use-user-role';
-import useReviewQueueOptions, { REVIEW_QUEUE_CONFIG_PATH } from '../../hooks/use-review-queue-options';
 import { TEST_STUDIO_PATH } from '../../routes/constants';
 
 // Turn a schema key into a concise, human-readable field label.
@@ -577,8 +576,6 @@ const ConfigBuilder = ({
   const navigate = useNavigate();
   const { available: generatorAvailable } = useSyntheticDataGenerator();
   const { isAdmin } = useUserRole();
-  // Queue definitions are Admin-only to read; other roles keep the text input.
-  const reviewQueueOptions = useReviewQueueOptions(isAdmin);
 
   // Deep-link to Test Studio with the generate modal pre-filled for this version.
   const goGenerateTestSet = (): void => {
@@ -1681,28 +1678,6 @@ const ConfigBuilder = ({
         >
           <span>{value !== undefined && value !== null ? String(value) : ''}</span>
         </ExtBox>
-      );
-    } else if (path === REVIEW_QUEUE_CONFIG_PATH && reviewQueueOptions) {
-      // The queue a profile's documents enter is one of the system-wide queues
-      // defined in HITL › Queue Management.
-      const current = String(displayValue || '');
-      const known = reviewQueueOptions.some((o) => o.value === current);
-      const options =
-        known || !current
-          ? reviewQueueOptions
-          : [
-              ...reviewQueueOptions,
-              { value: current, label: current, description: 'Not a defined queue: documents go to the default queue' },
-            ];
-      input = (
-        <Select
-          selectedOption={options.find((o) => o.value === current) ?? null}
-          onChange={({ detail }) => updateValue(path, detail.selectedOption.value)}
-          options={options}
-          filteringType="auto"
-          placeholder="Choose a queue"
-          empty="No queues. Create one in HITL › Queue Management."
-        />
       );
     } else if (property.enum) {
       input = (

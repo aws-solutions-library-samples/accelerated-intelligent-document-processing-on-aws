@@ -358,8 +358,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
 
         # HITL review queues (idp_common.review_queues). Reviewers work queues in
         # the Web UI, which headless mode removes, so the queue table and the
-        # resources that serve it go too; with no table, routing treats
-        # hitl.review_queues as off and documents take the legacy HITL flow.
+        # resources that serve it go too; with no table, routing stays in the
+        # legacy HITL flow.
         self.review_queue_resources: Set[str] = {
             "HITLTable",
             "ReviewQueueSweeperFunction",

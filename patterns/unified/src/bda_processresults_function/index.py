@@ -51,7 +51,7 @@ _REVIEW_STORE = create_review_store()
 
 
 def legacy_hitl_enabled(config, document=None):
-    """HITL on and handled by the legacy flow (review queues off for the profile).
+    """HITL on and handled by the legacy flow (the Default review queue is off).
 
     Read from the configuration the handler already loaded (version and revision),
     once per invocation.

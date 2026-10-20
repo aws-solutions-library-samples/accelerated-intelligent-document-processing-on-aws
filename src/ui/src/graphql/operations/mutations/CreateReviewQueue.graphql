@@ -9,6 +9,7 @@ mutation CreateReviewQueue($input: ReviewQueueDefinitionInput!) {
     timeLimitMinutes
     eligibleAnnotators
     isDefaultQueue
-    isEscalationQueue
+    confidenceThreshold
+    enabled
   }
 }

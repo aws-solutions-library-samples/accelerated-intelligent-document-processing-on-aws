@@ -235,7 +235,6 @@ const QueueDefinitionModal = ({
       <Form errorText={error ?? undefined}>
         <SpaceBetween size="m">
           {queue?.isDefaultQueue && <Alert type="info">This is the default queue: items with no queue of their own go here.</Alert>}
-          {queue?.isEscalationQueue && <Alert type="info">This is the escalation queue: items moved for escalation go here.</Alert>}
           {testSet && <Alert type="info">This Test Studio queue is the test set {testSet.name}; its documents come from the set.</Alert>}
           <ColumnLayout columns={2}>
             {!testSet && (

@@ -4,24 +4,26 @@
 """One routing function for both processing modes (FR-6, FR-7).
 
 ProcessResults (Pipeline and BDA) call :func:`route_for_review` after their own
-work. With the feature off (``review_mode`` = ``"legacy"``) it does no I/O and
-the handlers keep today's marking through :func:`legacy_section_triggers` and
-:func:`bda_segment_triggers`, which reproduce the code they replace. In queue mode
+work. Queue mode is on when the stack has a review table and its Default queue is
+enabled (HITL › Queue Management); otherwise ``review_mode`` is ``"legacy"`` and
+the handlers keep the profile-driven marking through
+:func:`legacy_section_triggers` and :func:`bda_segment_triggers`. In queue mode
 it either recognises the finalize run of a disposed item, or (a fresh run)
-builds reasons and writes a HOLDING item that the tracker activates when phase 1
+builds reasons against the Default queue's confidence threshold and writes a
+HOLDING item in the Default queue that the tracker activates when phase 1
 succeeds.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from . import keys
 from .finalize import apply_corrections
 from .models import ReviewDecision, ReviewItemRecord
+from .queue_defs import DEFAULT_QUEUE_ID, QueueDefinition, QueueDefStore
 from .reasons import MAX_REASONS, build_reasons
 from .statuses import LIVE_ITEM_STATES, QueueItemState
 
@@ -31,8 +33,6 @@ logger = logging.getLogger(__name__)
 HOLDING_SWEEP_MS = 15 * 60_000
 #: Provisional TTL of a HOLDING item; activation sets the real one (D69).
 HOLDING_TTL_SECONDS = 2 * 86_400
-
-_unavailable_warned = threading.Event()
 
 
 TEST_STUDIO_SOURCE = "test-studio"
@@ -45,44 +45,57 @@ def is_test_studio_document(document: Any) -> bool:
     )
 
 
+def queue_definitions(store: Any) -> QueueDefStore:
+    """The store's queue definitions (cached briefly per process)."""
+    defs = getattr(store, "queue_defs", None)
+    return (
+        defs if isinstance(defs, QueueDefStore) else QueueDefStore(lambda: store.client)
+    )
+
+
+def default_queue(store: Any) -> Optional[QueueDefinition]:
+    """The Default queue's definition, or ``None`` when it can't be read."""
+    try:
+        return queue_definitions(store).get(DEFAULT_QUEUE_ID)
+    except Exception:  # noqa: BLE001 — routing falls back to the legacy flow
+        logger.warning("event=review_queue_defs_unavailable", exc_info=True)
+        return None
+
+
+def _finalizing(store: Any, document: Any) -> bool:
+    """True when the document's item waits for its finalize run."""
+    doc_key = getattr(document, "input_key", None)
+    if not doc_key:
+        return False
+    try:
+        item = store.get_item(doc_key)
+    except Exception:  # noqa: BLE001
+        logger.warning("event=review_item_unavailable", exc_info=True)
+        return False
+    return item is not None and item.state == QueueItemState.FINALIZING.value
+
+
 def review_mode(
     config: Any, store: Any, document: Any = None
 ) -> Literal["legacy", "queues"]:
-    """``"queues"`` only when HITL and review queues are on and a store exists. Pure.
+    """``"queues"`` when a store exists and the Default queue is enabled.
 
     A Test Studio document always reads ``"legacy"``: it keeps the legacy HITL
-    marking and is reviewed as test-set annotation work, never queue-routed.
+    marking and is reviewed as test-set annotation work, never queue-routed. With
+    Default disabled, a document whose item is FINALIZING still reads
+    ``"queues"`` so its finalize run completes after the switch was turned off.
+    ``config`` is accepted for the callers; the profile no longer decides.
     """
     if document is not None and is_test_studio_document(document):
         return "legacy"
-    hitl = getattr(config, "hitl", None) if config is not None else None
-    if hitl is None or not hitl.enabled or not hitl.review_queues.enabled:
+    if store is None:
         return "legacy"
-    return "queues" if store is not None else "legacy"
-
-
-def _warn_unavailable(config: Any, store: Any) -> None:
-    hitl = getattr(config, "hitl", None) if config is not None else None
-    if (
-        hitl is None
-        or not hitl.enabled
-        or not hitl.review_queues.enabled
-        or store is not None
-    ):
-        return
-    if _unavailable_warned.is_set():
-        return
-    _unavailable_warned.set()
-    logger.warning(
-        "Review queues are enabled for this profile but no review queue table is "
-        "configured (headless deployment?); using the legacy HITL flow"
-    )
-    try:
-        from idp_common.metrics import put_metric
-
-        put_metric("ReviewQueuesUnavailable", 1)
-    except Exception:  # noqa: BLE001
-        logger.debug("ReviewQueuesUnavailable metric not published", exc_info=True)
+    default = default_queue(store)
+    if default is not None and default.enabled:
+        return "queues"
+    if document is not None and _finalizing(store, document):
+        return "queues"
+    return "legacy"
 
 
 def legacy_section_triggers(section: Any, *, hitl_enabled: bool) -> bool:
@@ -124,8 +137,7 @@ def route_for_review(
     # reviewed as test-set annotation work, so they are never held in a queue.
     if is_test_studio_document(document):
         return ReviewDecision(mode="legacy")
-    if review_mode(config, store) == "legacy":
-        _warn_unavailable(config, store)
+    if review_mode(config, store, document) == "legacy":
         return ReviewDecision(mode="legacy")
     if s3 is None:
         import idp_common.s3 as s3_module
@@ -158,10 +170,14 @@ def route_for_review(
             )
         except Exception:  # noqa: BLE001 — bookkeeping only
             logger.debug("FinalizeStartedAt not recorded", exc_info=True)
+        outcome: Literal["complete", "rejected"]
         if item.disposition == "complete":
             drafts = store.list_drafts(doc_key, item.cycle_id)
             apply_corrections(document, drafts, s3, out_bucket)
-            outcome: Literal["complete", "rejected"] = "complete"
+            outcome = "complete"
+        elif item.disposition == "removed":
+            # Removed from review by an Admin: completes with the machine results.
+            outcome = "complete"
         else:
             outcome = "rejected"
         logger.info("event=review_finalize_run outcome=%s", outcome)
@@ -169,7 +185,16 @@ def route_for_review(
             mode="queues", outcome=outcome, cycle_id=item.cycle_id, queue=item.queue
         )
 
-    reasons = build_reasons(document, config, mode=mode)
+    # Every low-confidence production document goes to the Default queue, judged
+    # against its threshold.
+    queue = default_queue(store)
+    if queue is None or not queue.enabled:
+        # Default was turned off (or is unreadable) after this run's mode was
+        # decided: nothing new is queued.
+        return ReviewDecision(mode="queues", hold=False)
+    reasons = build_reasons(
+        document, config, threshold=queue.confidence_threshold, mode=mode, s3=s3
+    )
     if not reasons:
         if live:
             _withdraw(
@@ -183,17 +208,7 @@ def route_for_review(
             )
         return ReviewDecision(mode="queues", hold=False)
 
-    # The profile names a system-wide queue; an unknown id falls back to Default.
-    from .queue_defs import DEFAULT_QUEUE_ID, QueueDefStore, QueuesView
-
-    wanted = getattr(config.hitl.review_queues, "queue", None) or DEFAULT_QUEUE_ID
-    try:
-        view = QueuesView(QueueDefStore(lambda: store.client).list())
-    except Exception:  # noqa: BLE001 — route to Default rather than fail the run
-        logger.warning("event=review_queue_defs_unavailable", exc_info=True)
-        view = QueuesView([])
-    queue = view.queue(wanted) or view.queue(DEFAULT_QUEUE_ID)
-    queue_name = queue.id if queue else DEFAULT_QUEUE_ID
+    queue_name = queue.id
     sections = list(dict.fromkeys(r.section_id for r in reasons))
     if item is not None and live and item.phase1_execution_arn == execution_arn:
         # A retry of this execution: keep its cycle.
@@ -210,15 +225,15 @@ def route_for_review(
         queue=queue_name,
         state=QueueItemState.HOLDING.value,
         version=(supersede.version + 1) if supersede else 1,
-        priority=queue.priority if queue else 50,
+        priority=queue.priority,
         enqueued_at=_iso(now),
         enqueued_at_ms=now_ms,
         holding_at=_iso(now),
         reasons=reasons[:MAX_REASONS],
         reason_count=len(reasons),
         sections=sections,
-        announce_groups=list(queue.member_groups) if queue else [],
-        announce_emails=list(queue.member_emails) if queue else [],
+        announce_groups=list(queue.member_groups),
+        announce_emails=list(queue.member_emails),
         phase1_execution_arn=execution_arn,
         sweep_at_ms=now_ms + HOLDING_SWEEP_MS,
         expires_after=int(now.timestamp()) + HOLDING_TTL_SECONDS,

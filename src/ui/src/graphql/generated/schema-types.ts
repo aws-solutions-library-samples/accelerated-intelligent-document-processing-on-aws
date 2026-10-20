@@ -936,7 +936,6 @@ export type Mutation = {
   deleteTestSets: Scalars['Boolean']['output'];
   deleteTests: Scalars['Boolean']['output'];
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
-  escalateReviewItem?: Maybe<ReviewItem>;
   forceReleaseReviewItem?: Maybe<ReviewItem>;
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
@@ -977,6 +976,7 @@ export type Mutation = {
    * config); it is skipped with a warning and the call still succeeds.
    */
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
+  removeReviewItem?: Maybe<ReviewItem>;
   renewReviewLease?: Maybe<ReviewItem>;
   reprocessDocument: Scalars['Boolean']['output'];
   resetTestSetLabels?: Maybe<TestSet>;
@@ -1264,13 +1264,6 @@ export type MutationDeleteUserArgs = {
 };
 
 
-export type MutationEscalateReviewItemArgs = {
-  cycleId: Scalars['String']['input'];
-  note: Scalars['String']['input'];
-  objectKey: Scalars['String']['input'];
-};
-
-
 export type MutationForceReleaseReviewItemArgs = {
   cycleId: Scalars['String']['input'];
   objectKey: Scalars['String']['input'];
@@ -1399,6 +1392,13 @@ export type MutationRemoveDocumentsFromTestSetArgs = {
 
 export type MutationRemoveFeatureConfigPresetArgs = {
   featureId: Scalars['String']['input'];
+};
+
+
+export type MutationRemoveReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -2344,11 +2344,12 @@ export type ReviewItemPage = {
 
 export type ReviewQueueDefinition = {
   checklist: Array<Scalars['String']['output']>;
+  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   description?: Maybe<Scalars['String']['output']>;
   eligibleAnnotators: Array<Scalars['String']['output']>;
+  enabled?: Maybe<Scalars['Boolean']['output']>;
   id: Scalars['String']['output'];
   isDefaultQueue: Scalars['Boolean']['output'];
-  isEscalationQueue: Scalars['Boolean']['output'];
   name: Scalars['String']['output'];
   priority: Scalars['Int']['output'];
   rejectReasons: Array<Scalars['String']['output']>;
@@ -2357,8 +2358,10 @@ export type ReviewQueueDefinition = {
 
 export type ReviewQueueDefinitionInput = {
   checklist?: InputMaybe<Array<Scalars['String']['input']>>;
+  confidenceThreshold?: InputMaybe<Scalars['Float']['input']>;
   description?: InputMaybe<Scalars['String']['input']>;
   eligibleAnnotators?: InputMaybe<Array<Scalars['String']['input']>>;
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
   id: Scalars['String']['input'];
   name?: InputMaybe<Scalars['String']['input']>;
   priority?: InputMaybe<Scalars['Int']['input']>;
@@ -2377,13 +2380,14 @@ export type ReviewQueueSummary = {
   claimCap: Scalars['Int']['output'];
   claimed: Scalars['Int']['output'];
   claimedByMe: Scalars['Int']['output'];
+  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   definedInConfig: Scalars['Boolean']['output'];
   depth: Scalars['Int']['output'];
   description?: Maybe<Scalars['String']['output']>;
   displayName: Scalars['String']['output'];
+  enabled?: Maybe<Scalars['Boolean']['output']>;
   inProgress?: Maybe<Scalars['Int']['output']>;
   isDefaultQueue: Scalars['Boolean']['output'];
-  isEscalationQueue: Scalars['Boolean']['output'];
   name: Scalars['String']['output'];
   oldestEnqueuedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   priority: Scalars['Int']['output'];

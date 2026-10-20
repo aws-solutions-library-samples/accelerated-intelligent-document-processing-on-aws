@@ -1384,15 +1384,13 @@ operations:
     args: { objectKey: "__x__", cycleId: "000000000000000000000", reason: "Other (see note)" }
     note: >-
       Rejects an item assigned to the caller with a reason from the queue's list; the document ends REJECTED.
-  escalateReviewItem:
+  removeReviewItem:
     groups: [Admin]
     kind: mutation
     enforced_in: *rq
-    scope_checked: true
-    scope_enforced_in: _caller_context
     args: { objectKey: "__x__", cycleId: "000000000000000000000", note: "rbac" }
     note: >-
-      Moves an item the caller holds to the Escalation queue with a note. Admin only.
+      Takes an open or assigned item out of review so the document completes with its machine results (the assignee is notified). Admin only.
   getReviewQueuesOverview:
     groups: [Admin]
     kind: read
@@ -1455,7 +1453,7 @@ operations:
     enforced_in: *rq
     args: { id: "__x__" }
     note: >-
-      Deletes a queue definition; Default, Escalation and a queue still holding items are refused. Admin only.
+      Deletes a queue definition after moving its items to the Default queue; Default, and a queue with an item being finalized, are refused. Admin only.
 
   # ==========================================================================
   # Users & profile

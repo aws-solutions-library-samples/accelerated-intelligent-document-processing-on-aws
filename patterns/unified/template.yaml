@@ -2219,26 +2219,6 @@ Resources:
                     maximum: 200
                     default: 50
                     order: 1
-              review_queues:
-                type: object
-                order: 3
-                sectionLabel: "Review queues"
-                adminOnly: true
-                hideWhen: { field: "hitl.enabled", value: false }
-                description: "Route this profile's low-confidence documents to a review queue. Queues are system-wide: Admins create them in HITL › Queue Management and assign their items to Annotators. Only Admins may change these settings."
-                properties:
-                  enabled:
-                    type: boolean
-                    title: "Enable review queues"
-                    description: "Documents with low-confidence fields wait in the queue below instead of finishing, and use the review queues instead of Review Pending."
-                    default: false
-                    order: 0
-                  queue:
-                    type: string
-                    title: "Queue"
-                    description: "Id of the queue this profile's documents enter, as shown in HITL › Queue Management, e.g. default. Several profiles may share a queue; an unknown id falls back to the Default queue."
-                    default: "default"
-                    order: 1
           summarization:
             order: 7
             type: object

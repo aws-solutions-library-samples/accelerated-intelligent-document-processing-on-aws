@@ -34,7 +34,6 @@ from idp_common.review_queues.annotators import annotator_emails
 from idp_common.review_queues.api_models import (
     ClaimNextArgs,
     CompleteArgs,
-    EscalateArgs,
     ItemCycleArgs,
     ItemKeyArgs,
     ListMyWorkArgs,
@@ -44,16 +43,13 @@ from idp_common.review_queues.api_models import (
     NoArgs,
     ReassignArgs,
     RejectArgs,
+    RemoveArgs,
     SaveDraftArgs,
     clamp_limit,
     summarize_validation_error,
 )
 from idp_common.review_queues.models import CallerContext, QueueRef
-from idp_common.review_queues.queue_defs import (
-    DEFAULT_QUEUE_ID,
-    ESCALATION_QUEUE_ID,
-    QueueDefinition,
-)
+from idp_common.review_queues.queue_defs import DEFAULT_QUEUE_ID, QueueDefinition
 from idp_common.review_queues.service import create_review_queue_service
 
 logger = logging.getLogger()
@@ -86,7 +82,7 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "claimNextReviewItem": _WORKERS,
     "releaseReviewItem": _WORKERS,
     "renewReviewLease": _ADMIN,
-    "escalateReviewItem": _ADMIN,
+    "removeReviewItem": _ADMIN,
     "getReviewQueuesOverview": _ADMIN,
     "forceReleaseReviewItem": _ADMIN,
     "reassignReviewItem": _ADMIN,
@@ -224,9 +220,9 @@ def _reject(c, args):
     return _dump(_SERVICE.reject(c, a.object_key, a.cycle_id, a.reason, a.note))
 
 
-def _escalate(c, args):
-    a = EscalateArgs.model_validate(args)
-    return _dump(_SERVICE.escalate(c, a.object_key, a.cycle_id, a.note))
+def _remove(c, args):
+    a = RemoveArgs.model_validate(args)
+    return _dump(_SERVICE.remove(c, a.object_key, a.cycle_id, a.note))
 
 
 def _overview(c, args):
@@ -263,11 +259,17 @@ def _queue_view(d: QueueDefinition) -> dict:
         "timeLimitMinutes": d.time_limit_minutes,
         "eligibleAnnotators": list(d.eligible_annotators),
         "isDefaultQueue": d.id == DEFAULT_QUEUE_ID,
-        "isEscalationQueue": d.id == ESCALATION_QUEUE_ID,
+        "confidenceThreshold": d.confidence_threshold,
+        "enabled": d.enabled,
     }
 
 
-def _queue_input(raw: Any) -> QueueDefinition:
+def _queue_input(raw: Any, existing: QueueDefinition | None = None) -> QueueDefinition:
+    """The definition an input describes.
+
+    ``confidenceThreshold`` and ``enabled`` left out keep the ``existing`` values
+    (an update) or take the defaults (a new queue: 0.8, enabled).
+    """
     data = raw if isinstance(raw, dict) else {}
     fields = {
         "id": data.get("id"),
@@ -280,6 +282,14 @@ def _queue_input(raw: Any) -> QueueDefinition:
     }
     if data.get("rejectReasons"):
         fields["reject_reasons"] = data["rejectReasons"]
+    for key, name in (
+        ("confidenceThreshold", "confidence_threshold"),
+        ("enabled", "enabled"),
+    ):
+        if data.get(key) is not None:
+            fields[name] = data[key]
+        elif existing is not None:
+            fields[name] = getattr(existing, name)
     return QueueDefinition.model_validate(fields)
 
 
@@ -303,19 +313,20 @@ def _create_queue(c, args):
 
 
 def _update_queue(c, args):
-    d = _queue_input(args.get("input"))
-    return _queue_view(_SERVICE.directory.queue_defs.put(d, create=False))
+    raw = args.get("input")
+    queue_id = str((raw or {}).get("id") or "") if isinstance(raw, dict) else ""
+    defs = _SERVICE.directory.queue_defs
+    defs.invalidate()
+    d = _queue_input(raw, defs.get(queue_id) if queue_id else None)
+    return _queue_view(defs.put(d, create=False))
 
 
 def _delete_queue(c, args):
+    """Delete a queue; its items move to the Default queue first."""
     queue_id = str(args.get("id") or "").strip().lower()
     if not queue_id:
         raise ValueError("BAD_ARGUMENT: id is required")
-    if _SERVICE.store.count_queue(QueueRef(queue=queue_id), open_only=False) > 0:
-        raise ReviewValidationError(
-            "QUEUE_NOT_EMPTY", "move or complete this queue's items before deleting it"
-        )
-    _SERVICE.directory.queue_defs.delete(queue_id)
+    _SERVICE.delete_queue(c, queue_id)
     return True
 
 
@@ -331,7 +342,7 @@ _FIELDS: dict[str, Callable[[CallerContext, dict], Any]] = {
     "saveReviewDraft": _save_draft,
     "completeReviewItem": _complete,
     "rejectReviewItem": _reject,
-    "escalateReviewItem": _escalate,
+    "removeReviewItem": _remove,
     "getReviewQueuesOverview": _overview,
     "forceReleaseReviewItem": _force_release,
     "reassignReviewItem": _reassign,

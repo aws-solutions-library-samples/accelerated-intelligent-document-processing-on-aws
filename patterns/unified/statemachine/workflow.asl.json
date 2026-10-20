@@ -1205,7 +1205,7 @@
     },
     "MarkReviewHold": {
       "Type": "Pass",
-      "Comment": "Review queues (hitl.review_queues): phase 1 ends here for a document ProcessResults put in a review queue. Nothing that produces final output runs on unreviewed data (rule validation, summarization, evaluation, the postprocessing hook, the post-processing Lambda); the execution ends and frees its concurrency slot. Sets status HITL_IN_PROGRESS, which the workflow tracker preserves rather than forcing COMPLETED. A Complete or Reject later starts a separate finalize execution that continues the document. The IsPresent and type guards on the CheckHITLRequired rule keep the feature-off path identical: ProcessResults adds review_hold only in queue mode.",
+      "Comment": "Review queues (idp_common.review_queues): phase 1 ends here for a document ProcessResults put in a review queue. Nothing that produces final output runs on unreviewed data (rule validation, summarization, evaluation, the postprocessing hook, the post-processing Lambda); the execution ends and frees its concurrency slot. Sets status HITL_IN_PROGRESS, which the workflow tracker preserves rather than forcing COMPLETED. A Complete or Reject later starts a separate finalize execution that continues the document. The IsPresent and type guards on the CheckHITLRequired rule keep the feature-off path identical: ProcessResults adds review_hold only in queue mode.",
       "Parameters": {
         "document.$": "$.Result.document"
       },

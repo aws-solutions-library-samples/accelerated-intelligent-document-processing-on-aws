@@ -1,5 +1,5 @@
-mutation EscalateReviewItem($objectKey: String!, $cycleId: String!, $note: String!) {
-  escalateReviewItem(objectKey: $objectKey, cycleId: $cycleId, note: $note) {
+mutation RemoveReviewItem($objectKey: String!, $cycleId: String!, $note: String) {
+  removeReviewItem(objectKey: $objectKey, cycleId: $cycleId, note: $note) {
     objectKey
     cycleId
     profile

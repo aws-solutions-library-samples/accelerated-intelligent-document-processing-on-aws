@@ -25,6 +25,7 @@ from idp_common.dynamodb.client import (
 
 from . import keys
 from .models import DraftRecord, HistoryEntry, QueueRef, ReviewItemRecord, to_dynamo
+from .queue_defs import QueueDefStore
 from .statuses import TERMINAL_ITEM_STATES, QueueItemState
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,16 @@ class ReviewStore:
         self._client = client
         self._lock = threading.Lock()
         self._local = threading.local()
+        self._queue_defs: Optional[QueueDefStore] = None
+
+    @property
+    def queue_defs(self) -> QueueDefStore:
+        """The system-wide queue definitions in this table (cached briefly)."""
+        if self._queue_defs is None:
+            with self._lock:
+                if self._queue_defs is None:
+                    self._queue_defs = QueueDefStore(lambda: self.client)
+        return self._queue_defs
 
     @property
     def client(self) -> DynamoDBClient:
@@ -408,6 +419,25 @@ class ReviewStore:
             range_condition=" AND SweepSK <= :until",
             values={":until": keys.sweep_until(until_ms)},
         )
+
+    def in_flight(self, queue: str, states: Sequence[str]) -> list[ReviewItemRecord]:
+        """A queue's items in ``states`` among HOLDING, CLAIMED and FINALIZING.
+
+        Those states carry sweep keys, so every sweep shard is read in full and
+        filtered by queue; only in-flight items are on that index.
+        """
+        wanted = set(states)
+        out: list[ReviewItemRecord] = []
+        for shard in range(keys.SWEEP_SHARDS):
+            start: Optional[dict[str, Any]] = None
+            while True:
+                page, start = self.query_sweep(
+                    shard, 10**13 - 1, limit=100, start_key=start
+                )
+                out.extend(r for r in page if r.queue == queue and r.state in wanted)
+                if not start:
+                    break
+        return out
 
     # --------------------------------------------------------------- counters
 

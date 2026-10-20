@@ -1445,9 +1445,9 @@ type TestSetTask @aws_cognito_user_pools {
   documentClasses: [String!]
 }
 
-# A system-wide production review queue (HITL › Queue Management). Any
-# configuration profile routes its documents to one by id
-# (hitl.review_queues.queue); Admins assign its items to Annotators.
+# A system-wide production review queue (HITL › Queue Management). Low-confidence
+# production documents go to the Default queue when it is enabled; Admins move
+# items between queues and assign them to Annotators.
 type ReviewQueueDefinition @aws_cognito_user_pools {
   id: String!
   name: String!
@@ -1460,7 +1460,10 @@ type ReviewQueueDefinition @aws_cognito_user_pools {
   # Annotators (by email) who work this queue; empty means none (Admins only).
   eligibleAnnotators: [String!]!
   isDefaultQueue: Boolean!
-  isEscalationQueue: Boolean!
+  # A document is queued when a field's confidence is below this (0-1).
+  confidenceThreshold: Float
+  # When false, no documents are added to this queue.
+  enabled: Boolean
 }
 
 input ReviewQueueDefinitionInput {
@@ -1472,6 +1475,10 @@ input ReviewQueueDefinitionInput {
   rejectReasons: [String!]
   timeLimitMinutes: Int
   eligibleAnnotators: [String!]
+  # 0-1; a new queue defaults to 0.8, an update keeps the stored value when omitted.
+  confidenceThreshold: Float
+  # A new queue defaults to true, an update keeps the stored value when omitted.
+  enabled: Boolean
 }
 
 type AnnotationQueue @aws_cognito_user_pools @aws_iam {
@@ -1730,7 +1737,7 @@ type ReviewQueueSummary @aws_cognito_user_pools {
   profile: String!
   # The queue id, which items, links and queue arguments use.
   name: String!
-  # The display name, e.g. Escalation for the queue id escalation.
+  # The display name, e.g. Loan Review for the queue id loan_review.
   displayName: String!
   description: String
   priority: Int!
@@ -1744,7 +1751,8 @@ type ReviewQueueSummary @aws_cognito_user_pools {
   annotators: Int
   oldestEnqueuedAt: AWSDateTime
   isDefaultQueue: Boolean!
-  isEscalationQueue: Boolean!
+  confidenceThreshold: Float
+  enabled: Boolean
   claimCap: Int!
   checklist: [String!]!
   definedInConfig: Boolean!
@@ -2330,7 +2338,9 @@ type Mutation {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator"]
     )
-  escalateReviewItem(objectKey: String!, cycleId: String!, note: String!): ReviewItem
+  # Takes an OPEN or assigned item out of review: the document completes with its
+  # machine results and its review status object is removed.
+  removeReviewItem(objectKey: String!, cycleId: String!, note: String): ReviewItem
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )
@@ -2346,8 +2356,8 @@ type Mutation {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )
-  # System-wide queue definitions. Default and Escalation can't be deleted, nor
-  # can a queue that still holds items.
+  # System-wide queue definitions. Default can't be deleted; deleting another
+  # queue moves its items to Default (refused while one is being finalized).
   createReviewQueue(input: ReviewQueueDefinitionInput!): ReviewQueueDefinition
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]

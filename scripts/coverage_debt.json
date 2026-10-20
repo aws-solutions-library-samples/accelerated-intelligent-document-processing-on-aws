@@ -230,7 +230,6 @@
         "idp_common/review_queues/__init__.py": 71.43,
         "idp_common/review_queues/annotators.py": 21.43,
         "idp_common/review_queues/api_models.py": 88.52,
-        "idp_common/review_queues/config_guard.py": 100.0,
         "idp_common/review_queues/directory.py": 85.48,
         "idp_common/review_queues/exceptions.py": 90.91,
         "idp_common/review_queues/finalize.py": 27.16,

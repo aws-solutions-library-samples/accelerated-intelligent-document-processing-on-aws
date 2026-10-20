@@ -328,7 +328,7 @@ document's `ConfigVersion` against the caller's `allowedConfigVersions`, which r
 a *scoped* caller a document outside their profiles and refuses an *unscoped* one
 nothing, scoping being opt-in per user, and document ownership is not modelled at all.
 
-Beyond the group check, **27** operations verify config-version scope, **9** filter
+Beyond the group check, **26** operations verify config-version scope, **9** filter
 their result rows by it, and **17** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by

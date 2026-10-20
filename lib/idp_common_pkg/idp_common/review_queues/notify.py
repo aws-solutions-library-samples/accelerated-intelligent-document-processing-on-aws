@@ -125,23 +125,6 @@ def item_reassigned(item: ReviewItemRecord, owner_email: str) -> None:
     )
 
 
-def item_escalated(
-    item: ReviewItemRecord, members: tuple[Sequence[str], Sequence[str]]
-) -> None:
-    groups, emails = members
-    if not groups and not emails:
-        return
-    _post(
-        type_id="review.item_escalated",
-        title=f"{_basename(item.doc_key)}: escalated",
-        body=f"**{_basename(item.doc_key)}** was escalated to queue **{item.queue}**.",
-        link=review_item_link(item.doc_key),
-        users=emails,
-        groups=groups,
-        idempotency_key=f"review-escalate:{item.cycle_id}#{item.version}",
-    )
-
-
 def claim_released(
     item: ReviewItemRecord, former_owner_email: str, reason: str
 ) -> None:
@@ -151,10 +134,18 @@ def claim_released(
         "reprocessed": "The document was reprocessed, so its review was withdrawn.",
         "reassign": "An Admin assigned the item to another reviewer.",
     }
+    if reason == "removed":
+        # The draft is not applied: the document completes as processed.
+        body = (
+            "An Admin removed the document from review; it completes with its "
+            "machine results."
+        )
+    else:
+        body = f"{reasons.get(reason, 'Your claim ended.')} Your draft is kept."
     _post(
         type_id="review.claim_released",
         title=f"{_basename(item.doc_key)}: claim released",
-        body=f"{reasons.get(reason, 'Your claim ended.')} Your draft is kept.",
+        body=body,
         link=review_item_link(item.doc_key),
         users=[former_owner_email],
         idempotency_key=f"review-release:{item.cycle_id}#{item.version}",

@@ -1137,20 +1137,8 @@ def seed_review_item(ctx):
 
     from idp_sdk import IDPClient
 
-    config = {
-        "hitl": {
-            "enabled": True,
-            "review_queues": {
-                "enabled": True,
-                "default_queue": "default",
-                "escalation_queue": "escalation",
-                "queues": [
-                    {"name": "default", "member_groups": [], "member_emails": [emails["ReviewIdorA"], emails["ReviewIdorB"]]},
-                    {"name": "escalation", "member_groups": ["Admin"], "member_emails": []},
-                ],
-            },
-        }
-    }
+    # The profile only scopes the seeded item; queues are system-wide.
+    config = {"hitl": {"enabled": True}}
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         yaml.safe_dump(config, f)
         path = f.name

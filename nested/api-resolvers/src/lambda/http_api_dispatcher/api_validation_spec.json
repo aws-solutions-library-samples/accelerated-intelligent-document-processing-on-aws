@@ -706,31 +706,6 @@
         }
       ]
     },
-    "escalateReviewItem": {
-      "args": [
-        {
-          "elem_non_null": false,
-          "is_list": false,
-          "name": "objectKey",
-          "non_null": true,
-          "type": "String"
-        },
-        {
-          "elem_non_null": false,
-          "is_list": false,
-          "name": "cycleId",
-          "non_null": true,
-          "type": "String"
-        },
-        {
-          "elem_non_null": false,
-          "is_list": false,
-          "name": "note",
-          "non_null": true,
-          "type": "String"
-        }
-      ]
-    },
     "estimateReviewEffort": {
       "args": [
         {
@@ -1972,6 +1947,31 @@
           "is_list": false,
           "name": "featureId",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "removeReviewItem": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "cycleId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -3757,6 +3757,20 @@
         "name": "eligibleAnnotators",
         "non_null": false,
         "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "confidenceThreshold",
+        "non_null": false,
+        "type": "Float"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "enabled",
+        "non_null": false,
+        "type": "Boolean"
       }
     ],
     "SectionInput": [

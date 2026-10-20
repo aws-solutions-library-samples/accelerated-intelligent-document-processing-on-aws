@@ -1,38 +1,43 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Why a document is in review: typed reasons built from the stored alerts.
+"""Why a document is in review: typed reasons built against the queue threshold.
 
-Routing consumes ``Section.confidence_threshold_alerts`` (written by assessment
-or BDA ProcessResults with per-field thresholds already resolved) and never
-recomputes thresholds. BDA mode adds an explicit ``blueprint_confidence`` reason
-when the matched blueprint's confidence is under ``hitl.confidence_threshold``,
-which is the second half of today's BDA trigger.
+Routing reads each section's extraction result (``extraction_result_uri``) once
+and compares every field confidence in its ``explainability_info`` with the
+Default queue's ``confidence_threshold``. Per-field schema thresholds and the
+profile's ``hitl.confidence_threshold`` are not used here: they still drive the
+assessment alerts and the field highlights. Both processing modes store field
+confidences the same way (``explainability_info`` in the section's
+``result.json``); BDA mode adds a ``blueprint_confidence`` reason when the
+matched blueprint's confidence is under the same threshold. A section whose
+result can't be read gives a reason too, so a read failure never skips review.
 """
 
 from __future__ import annotations
 
+import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, Mapping, Optional
 
 from .models import ReviewReason
 
+logger = logging.getLogger(__name__)
+
 #: Reasons kept on an item and in the status object; ``ReasonCount`` has the total.
 MAX_REASONS = 20
+#: The label of the reason recorded when a section's confidences can't be read.
+UNAVAILABLE_LABEL = "Confidence unavailable"
+#: Section results read at once.
+_READ_WORKERS = 8
 
 _INDEX = re.compile(r"\[(\d+)\]")
 
 
-def _alert_fields(
-    alert: Mapping[str, Any],
-) -> tuple[str, Optional[float], Optional[float]]:
-    name = alert.get("attribute_name") or alert.get("attributeName") or ""
-    score = alert.get("confidence")
-    threshold = alert.get("confidence_threshold", alert.get("confidenceThreshold"))
-    return str(name), _num(score), _num(threshold)
-
-
 def _num(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
     try:
         return None if value is None else float(value)
     except (TypeError, ValueError):
@@ -47,37 +52,89 @@ def _class_schema(config: Any, doc_class: Optional[str]) -> Optional[Mapping[str
     return find_class_schema(doc_class, getattr(config, "classes", None))
 
 
+def _read_confidences(section: Any, s3: Any) -> Optional[list]:
+    """``(confidence, threshold, path)`` per field, or ``None`` when unreadable."""
+    from .testset_summaries import walk_confidence_named
+
+    uri = getattr(section, "extraction_result_uri", None)
+    if not uri:
+        logger.warning(
+            "event=review_confidence_unavailable section=%s reason=no_result",
+            getattr(section, "section_id", None),
+        )
+        return None
+    try:
+        result = s3.get_json_content(uri)
+    except Exception:  # noqa: BLE001 — fail toward review, never skip it
+        logger.warning(
+            "event=review_confidence_unavailable section=%s reason=read_failed",
+            getattr(section, "section_id", None),
+            exc_info=True,
+        )
+        return None
+    if not isinstance(result, Mapping):
+        return None
+    return walk_confidence_named(result.get("explainability_info") or [])
+
+
 def build_reasons(
-    document: Any, config: Any, *, mode: Literal["pipeline", "bda"]
+    document: Any,
+    config: Any = None,
+    *,
+    threshold: float,
+    mode: Literal["pipeline", "bda"],
+    s3: Any = None,
 ) -> list[ReviewReason]:
-    """Every reason for the document's sections, worst first (callers truncate)."""
-    threshold = float(
-        getattr(getattr(config, "hitl", None), "confidence_threshold", 0.8)
-    )
+    """Every reason for the document's sections, worst first (callers truncate).
+
+    ``threshold`` is the Default queue's; ``config`` only supplies the schema
+    titles used as field labels.
+    """
+    if s3 is None:
+        import idp_common.s3 as s3_module
+
+        s3 = s3_module
+    sections = list(getattr(document, "sections", None) or [])
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(_READ_WORKERS, len(sections)))
+    ) as pool:
+        found = list(pool.map(lambda sec: _read_confidences(sec, s3), sections))
     reasons: list[ReviewReason] = []
-    for section in getattr(document, "sections", None) or []:
-        schema = _class_schema(config, getattr(section, "classification", None))
-        for alert in getattr(section, "confidence_threshold_alerts", None) or []:
-            name, score, alert_threshold = _alert_fields(alert)
-            if score is None or alert_threshold is None:
-                continue
+    for section, confidences in zip(sections, found):
+        section_id = str(section.section_id)
+        if confidences is None:
             reasons.append(
                 ReviewReason(
                     kind="low_confidence",
-                    section_id=str(section.section_id),
-                    field=name or None,
-                    label=field_label(schema, name) if name else None,
-                    score=score,
-                    threshold=alert_threshold,
+                    section_id=section_id,
+                    field=None,
+                    label=UNAVAILABLE_LABEL,
+                    score=0.0,
+                    threshold=threshold,
                 )
             )
+        else:
+            schema = _class_schema(config, getattr(section, "classification", None))
+            for score, _field_threshold, path in confidences:
+                if score >= threshold:
+                    continue
+                reasons.append(
+                    ReviewReason(
+                        kind="low_confidence",
+                        section_id=section_id,
+                        field=path,
+                        label=field_label(schema, path) if path else None,
+                        score=score,
+                        threshold=threshold,
+                    )
+                )
         if mode == "bda":
             confidence = _num(getattr(section, "confidence", None))
             if confidence is not None and confidence < threshold:
                 reasons.append(
                     ReviewReason(
                         kind="blueprint_confidence",
-                        section_id=str(section.section_id),
+                        section_id=section_id,
                         field=None,
                         label=None,
                         score=confidence,

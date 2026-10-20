@@ -241,11 +241,9 @@ const QueuesPage = (): React.JSX.Element => {
       ? 'This queue is not defined'
       : d.isDefaultQueue
         ? "The default queue can't be deleted"
-        : d.isEscalationQueue
-          ? "The escalation queue can't be deleted"
-          : depth > 0
-            ? 'Move or finish its items first'
-            : undefined;
+        : depth > 0
+          ? 'Move or finish its items first'
+          : undefined;
     return [
       { id: 'view', text: 'View' },
       { id: 'edit', text: 'Settings', disabled: !d, disabledReason: d ? undefined : 'This queue is not defined' },

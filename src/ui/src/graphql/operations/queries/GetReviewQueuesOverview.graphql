@@ -15,7 +15,8 @@ query GetReviewQueuesOverview {
         annotators
         oldestEnqueuedAt
         isDefaultQueue
-        isEscalationQueue
+        confidenceThreshold
+        enabled
         claimCap
         checklist
         definedInConfig

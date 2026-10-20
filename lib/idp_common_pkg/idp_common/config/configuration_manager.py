@@ -48,17 +48,15 @@ logger = logging.getLogger(__name__)
 class ConfigurationValidationError(ValueError):
     """A configuration write breaks a rule checked at the write boundary.
 
-    Raised for cross-field rules (for example ``hitl.review_queues`` naming a
-    default queue it doesn't define) that are deliberately not model validators,
-    so a stored configuration that breaks them still loads.
+    Raised for cross-field rules that are deliberately not model validators, so a
+    stored configuration that breaks them still loads.
     """
 
 
 #: Called before every configuration-profile save with
 #: ``(config before the write or None, config about to be saved, profile)``.
 #: It raises to refuse the write. ``handle_update_custom_configuration`` and
-#: ``restore_revision`` accept one; the API resolver passes the Admin-only check
-#: for ``hitl.review_queues`` (``idp_common.review_queues.config_guard``).
+#: ``restore_revision`` accept one.
 WriteGuard = Callable[[Optional[IDPConfig], IDPConfig, str], None]
 
 # Marker field added to full-format config versions in DynamoDB
@@ -1618,7 +1616,6 @@ class ConfigurationManager:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
             self._reject_inert_gating_hooks(config, config_dict)
-            self._reject_invalid_review_queues(config, config_dict)
             if write_guard is not None:
                 write_guard(
                     self._get_full_config_for_version(DEFAULT_VERSION),
@@ -1660,7 +1657,6 @@ class ConfigurationManager:
                 # Validate
                 full_config = IDPConfig(**full_dict)
                 self._reject_inert_gating_hooks(full_config, config_dict)
-                self._reject_invalid_review_queues(full_config, config_dict)
                 if write_guard is not None:
                     write_guard(
                         self._get_full_config_for_version(version) or default_config,
@@ -1680,7 +1676,6 @@ class ConfigurationManager:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
                 self._reject_inert_gating_hooks(config, config_dict)
-                self._reject_invalid_review_queues(config, config_dict)
                 if write_guard is not None:
                     write_guard(self._get_full_config_for_version(version), config, version)
                 self.save_configuration(
@@ -1737,7 +1732,6 @@ class ConfigurationManager:
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
         self._reject_inert_gating_hooks(updated_config, config_dict)
-        self._reject_invalid_review_queues(updated_config, config_dict)
         if write_guard is not None:
             write_guard(before_config, updated_config, version)
         self.save_configuration(
@@ -1793,32 +1787,6 @@ class ConfigurationManager:
         reject_inert_gating_hooks(
             config.model_dump(mode="python"), delta, log=logger
         )
-
-    @staticmethod
-    def _reject_invalid_review_queues(
-        config: IDPConfig, delta: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """Refuse a write whose ``hitl.review_queues`` breaks a cross-field rule.
-
-        Checked only when ``delta`` is ``None`` (a whole configuration) or touches
-        ``hitl.review_queues``, so an unrelated save of a stored configuration that
-        already breaks a rule still succeeds. Like the inert-hook check this is
-        the WRITE boundary only, not a model validator, and it is not applied to
-        reset-to-default or to restoring a revision (both copy a body that was
-        once live).
-
-        Raises:
-            ConfigurationValidationError: naming every problem found
-        """
-        if delta is not None:
-            hitl_delta = delta.get("hitl") if isinstance(delta, dict) else None
-            if not isinstance(hitl_delta, dict) or "review_queues" not in hitl_delta:
-                return
-        problems = config.hitl.review_queues.cross_field_problems()
-        if problems:
-            raise ConfigurationValidationError(
-                "hitl.review_queues: " + "; ".join(problems)
-            )
 
     def _get_full_config_for_version(self, version: str) -> Optional[IDPConfig]:
         """
