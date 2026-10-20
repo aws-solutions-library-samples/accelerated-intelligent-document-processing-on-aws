@@ -762,3 +762,147 @@ class TestPacketTextUnavailable:
             result = service.packet_classify_document(document)
         assert invoke.call_count == 1
         assert result.sections[0].page_ids == ["1", "2", "3"]
+
+
+# --------------------------------------------------------------------------
+# Per-segment confidence
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPacketConfidence:
+    """⚠️ A live defect, found by running this against Nova 2 Lite on a 6-page
+    packet and not by any test here.
+
+    In the default `topk` mode the packet prompt asks each segment for ranked
+    candidates. The model answered with them — `candidates: [{class, probability}
+    ...]` on every segment — and every segment still came back **unscored**,
+    because the parse read only a `confidence` key and nothing looked at the key
+    the request had asked for. Output tokens bought and discarded, which is the
+    same shape as the page-path defect in GitHub #673.
+
+    The fix routes the packet parse through `resolve_class_and_confidence`, the
+    same function the page path uses, so the two cannot disagree about what
+    counts as a reported confidence.
+    """
+
+    def _segment(self, **extra):
+        base = {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "invoice"}
+        base.update(extra)
+        return base
+
+    def test_a_candidates_list_yields_a_confidence(self):
+        service = _service()
+        segments = service._parse_model_segments(
+            [
+                self._segment(
+                    candidates=[
+                        {"class": "invoice", "probability": 0.95},
+                        {"class": "receipt", "probability": 0.03},
+                    ]
+                )
+            ],
+            _document(2),
+        )
+        assert segments[0].confidence == pytest.approx(0.95)
+
+    def test_the_candidates_are_carried_on_the_segment(self):
+        """They are what makes the score interpretable — '95% invoice, 3%
+        receipt' says what else the pages could have been."""
+        service = _service()
+        segments = service._parse_model_segments(
+            [
+                self._segment(
+                    candidates=[
+                        {"class": "invoice", "probability": 0.8},
+                        {"class": "receipt", "probability": 0.2},
+                    ]
+                )
+            ],
+            _document(2),
+        )
+        assert [c["class"] for c in segments[0].candidates] == ["invoice", "receipt"]
+
+    def test_an_explicit_confidence_still_wins(self):
+        """Precedence matches the page path: a prompt that asks for a number
+        means it."""
+        service = _service()
+        segments = service._parse_model_segments(
+            [
+                self._segment(
+                    confidence=0.42,
+                    candidates=[{"class": "invoice", "probability": 0.95}],
+                )
+            ],
+            _document(2),
+        )
+        assert segments[0].confidence == pytest.approx(0.42)
+
+    def test_neither_key_leaves_the_segment_unscored(self):
+        service = _service()
+        segments = service._parse_model_segments([self._segment()], _document(2))
+        assert segments[0].confidence is None
+        assert segments[0].candidates == []
+
+    def test_a_forced_class_ignores_both(self):
+        service = _service()
+        segments = service._parse_model_segments(
+            [
+                self._segment(
+                    confidence=0.9,
+                    candidates=[{"class": "invoice", "probability": 0.9}],
+                )
+            ],
+            _document(2),
+            forced_class="invoice",
+        )
+        assert segments[0].confidence is None
+        assert segments[0].candidates == []
+
+    def test_the_confidence_reaches_the_section_and_the_candidates_the_pages(self):
+        service = _service()
+        document = _document(2)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model") as invoke,
+        ):
+            invoke.return_value = _bedrock_reply(
+                [
+                    {
+                        "ordinal_start_page": 1,
+                        "ordinal_end_page": 2,
+                        "type": "invoice",
+                        "candidates": [
+                            {"class": "invoice", "probability": 0.88},
+                            {"class": "receipt", "probability": 0.1},
+                        ],
+                    }
+                ]
+            )
+            result = service.packet_classify_document(document)
+
+        assert result.sections[0].confidence == pytest.approx(0.88)
+        # Persisted on a DECLARED Page field, so it survives the Step Functions
+        # hop and reaches DynamoDB (GitHub #565 is that distinction).
+        for page_id in ("1", "2"):
+            assert [
+                c["class"] for c in result.pages[page_id].classification_candidates
+            ] == ["invoice", "receipt"]
+
+    def test_an_out_of_vocabulary_candidate_is_dropped_from_the_list(self):
+        """Shared with the page path via resolve_class_and_confidence: a model
+        that invents a class to fill the list must not have it persisted."""
+        service = _service()
+        segments = service._parse_model_segments(
+            [
+                self._segment(
+                    candidates=[
+                        {"class": "invoice", "probability": 0.7},
+                        {"class": "mystery", "probability": 0.3},
+                    ]
+                )
+            ],
+            _document(2),
+        )
+        assert [c["class"] for c in segments[0].candidates] == ["invoice"]

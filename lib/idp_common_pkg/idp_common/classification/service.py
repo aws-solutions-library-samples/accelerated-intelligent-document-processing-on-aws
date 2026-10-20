@@ -65,7 +65,6 @@ from idp_common.models import Document, ProcessingIssue, Section, Status
 from idp_common.utils import (
     extract_json_from_text,
     extract_structured_data_from_text,
-    parse_confidence,
 )
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
 
@@ -3696,6 +3695,7 @@ class ClassificationService:
             if page_id in document.pages:
                 document.pages[page_id].classification = segment.doc_class
                 document.pages[page_id].confidence = confidence
+                self._apply_segment_candidates(document, page_id, segment)
 
             document.sections.append(
                 Section(
@@ -3740,6 +3740,7 @@ class ClassificationService:
                 document.pages[page_id].confidence = (
                     verdicts[page_id][1] if page_id in verdicts else segment.confidence
                 )
+                self._apply_segment_candidates(document, page_id, segment)
 
             document.sections.append(
                 Section(
@@ -3755,6 +3756,25 @@ class ClassificationService:
             f"{len(segments)} segments (sectionSplitting=llm_determined)"
         )
         return document
+
+    @staticmethod
+    def _apply_segment_candidates(
+        document: Document, page_id: str, segment: Segment
+    ) -> None:
+        """Persist a segment's ranked candidates onto one of its pages.
+
+        ``Page.classification_candidates`` is a declared field, so unlike the
+        metadata dict it survives the Step Functions hop and reaches DynamoDB
+        (GitHub #565 is that distinction). A page that already carries its own
+        candidates keeps them: on the page-level path they are the page's own,
+        which is finer than the segment's.
+        """
+        if not segment.candidates:
+            return
+        page = document.pages.get(page_id)
+        if page is None or getattr(page, "classification_candidates", None):
+            return
+        page.classification_candidates = segment.candidates
 
     @staticmethod
     def _pages_in_segment_order(
@@ -4345,15 +4365,31 @@ class ClassificationService:
             if doc_type is not None and doc_type not in self.valid_doc_types:
                 logger.warning(f"Unknown document type '{doc_type}', using anyway")
 
-            # Optional, exactly as on the page-level path: used when the packet
-            # prompt asks each segment for a confidence, None otherwise. A
-            # forced class is the operator's own assertion, so the model's
+            # Resolved exactly as on the page-level path, and through the same
+            # function, because the two must not disagree about what counts as a
+            # reported confidence. An explicit `confidence` wins when present;
+            # otherwise it is derived from the probability this segment's own
+            # `candidates` list assigns to the class the model chose.
+            #
+            # ⚠️ Reading only `confidence` here was a live defect. In the
+            # default `topk` mode the packet prompt asks each segment for ranked
+            # candidates, the model answers with them — measured against Nova 2
+            # Lite on a 6-page packet — and every segment still came back
+            # unscored, because nothing looked at the key the request had asked
+            # for. That is output tokens bought and discarded, which is the same
+            # shape as GitHub #673 on the page path.
+            #
+            # A forced class is the operator's own assertion, so the model's
             # number does not describe it.
-            confidence = (
-                None
-                if forced_class
-                else parse_confidence(segment.get("confidence"), context=f"segment {i}")
-            )
+            confidence: Optional[float] = None
+            candidates: List[Dict[str, Any]] = []
+            if not forced_class:
+                confidence, candidates = resolve_class_and_confidence(
+                    reported_class=doc_type,
+                    reported_confidence=segment.get("confidence"),
+                    reported_candidates=segment.get("candidates"),
+                    valid_classes=self.valid_doc_types,
+                )
 
             page_ids = [
                 page_id
@@ -4371,7 +4407,12 @@ class ClassificationService:
                 continue
 
             parsed.append(
-                Segment(page_ids=page_ids, doc_class=doc_type, confidence=confidence)
+                Segment(
+                    page_ids=page_ids,
+                    doc_class=doc_type,
+                    confidence=confidence,
+                    candidates=candidates,
+                )
             )
 
         return parsed

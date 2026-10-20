@@ -138,6 +138,7 @@ class TestSegment:
             "page_ids": ["1", "2"],
             "class": "invoice",
             "confidence": 0.8,
+            "candidates": [],
         }
 
 
