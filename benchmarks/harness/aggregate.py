@@ -198,8 +198,36 @@ CSV_COLS = [
     "page_count",
     "completeness_recall",
     "truncation_prefix",
+    # `completeness_recall`'s own denominator problem, beside it (#1500). The recall
+    # is distinct rows recovered over truth rows, and a reader cannot tell a run that
+    # lost rows from one whose row IDENTIFIERS collapsed unless the identifier
+    # figures are in the same table. All seven are new to the CSV, and three of them
+    # are not new to the row: `rows_truth`, `rows_extracted` and `dups` have been
+    # recorded on every synthetic row for releases and were readable only out of
+    # `summary.json` — which is why the discriminating figure existed on each of the
+    # affected runs and was consulted by nothing. Then `rows_tagged` is how many tags
+    # came back, `rows_id_repaired` how many of them the canonicalisation had to
+    # repair, `rows_id_unresolved` how many named no truth row at all, and
+    # `unverified_row_shortfall` names the shape, if any, that says this run's
+    # shortfall is not row loss.
+    # `DictWriter(extrasaction="ignore")` drops any row key not listed here, so a
+    # column absent from this list is a column no reader of the CSV ever sees.
+    "rows_truth",
+    "rows_extracted",
+    "rows_tagged",
+    "rows_id_repaired",
+    "rows_id_unresolved",
+    "dups",
+    "unverified_row_shortfall",
     "scalar_accuracy",
     "typed_accuracy",
+    # `typed_accuracy`'s DENOMINATOR, and the reason column that distinguishes "this
+    # document has no typed scalar truth, so the pair is absent" from "measured and
+    # there was nothing to join" (#1490). `typed_fields` was written by the scorer and
+    # readable from nothing, the same way `cells_compared` was: a ratio in the CSV
+    # without the count it was taken over, and a blank cell a reader fills in as zero.
+    "typed_fields",
+    "typed_truth_unavailable",
     "cell_accuracy",
     # `cell_accuracy`'s DENOMINATOR, beside it. Without it the CSV carries a ratio and
     # not the count it was taken over, which is the "a null column scores 1.000" blind
@@ -208,6 +236,21 @@ CSV_COLS = [
     # scorer has always written it and `METHODOLOGY.md` has always said it is printed
     # beside `cell_accuracy`; `DictWriter(extrasaction="ignore")` was dropping it.
     "cells_compared",
+    # ...and the reason column that tells the two blanks apart (#1497). A document
+    # with no list attribute now carries NEITHER of the two columns above, because
+    # there were no cells to compare rather than zero correct ones, and this says so.
+    # A document that has a list and joined nothing still carries both, with
+    # `cells_compared` the literal 0 — so a blank `cells_compared` now means "does not
+    # apply to this row" and nothing else.
+    #
+    # `cell_accuracy`'s blank is NOT unique, and the CSV is the one artifact where that
+    # is true: `DictWriter`'s default `restval` is `''`, so an absent key and a null
+    # value render as the same empty cell, and state 2 deliberately keeps
+    # `cell_accuracy: None` because 0/0 is undefined. In `summary.json` the two states
+    # differ on that key alone — absent against present-and-null — while here a blank
+    # `cell_accuracy` is either "no list" or "a list that joined nothing", which
+    # `cells_compared`'s 0 and this column tell apart.
+    "cell_truth_unavailable",
     # Mean over repeats IS the boundary-detection pass rate.
     "sections_correct",
     "weighted_accuracy",
@@ -293,6 +336,14 @@ CSV_COLS = [
 # The accuracy family `score_synthetic` owns and `score_reference` cannot produce.
 # Presence of ANY of them identifies the exact-truth scorer on a row written before
 # `scored_against` existed; membership is what `row_scored_against` falls back to.
+#
+# ANY is load-bearing, not a convenience: two of the four are now conditional on the
+# document. `cells_compared` and `cell_accuracy` are absent on a synthetic row with no
+# list attribute (#1497) and `typed_accuracy` on one with no typed scalars (#1490), so a
+# `kv_form` row is identified by the two that are unconditional — `scalar_accuracy` and
+# `completeness_recall`, which `score_synthetic` writes on every row it scores. A row
+# scored by current code also records `scored_against` outright, so this fallback only
+# has to classify the committed grids.
 EXACT_TRUTH_METRICS = (
     "cells_compared",
     "cell_accuracy",
@@ -430,6 +481,27 @@ def cell_stats(rows):
             # Successful runs whose section objects could not all be read, so they
             # contribute to none of the quality statistics below.
             "n_sections_unread": sum(1 for r in succ if r.get("sections_unread")),
+            # Successful runs whose row shortfall is not evidence of a missing row,
+            # because row identity was not readable on them (#1500). The mean
+            # `completeness_recall` below is the figure a release A/B reads, and a
+            # single run of nine carrying this shape is enough to move a cell mean
+            # into a headline finding. On record at `docs/release-validation/
+            # v0.6.11.md` ("recall +0.042 (0.958 -> 1.000)"), over the
+            # `core-llm-simple-sep` cell where `small_narrow.pdf` records 62 of 100
+            # rows with `dups: 38` in every committed grid from v0.5.16 on. So the
+            # count belongs beside the mean, not only on the rows. On a grid scored
+            # before this existed the same verdict is derivable from the rows, which
+            # is what `_unverified_row_shortfall_counts` does for the comparison;
+            # this block is the figure a fresh grid publishes. It is 0 on a cell
+            # whose identifiers all resolved.
+            "n_unverified_row_shortfall": sum(
+                1 for r in succ if r.get("unverified_row_shortfall")
+            ),
+            # Runs on which the OCR backend perturbed identifier widths and the
+            # canonicalisation repaired them. A finding about the backend, not about
+            # completeness — and its absence from the artifact is why the same
+            # instrumentation artifact read as a product regression four times.
+            "n_rows_id_repaired": sum(1 for r in succ if r.get("rows_id_repaired")),
             "max_repeat": max((r.get("repeat", 0) for r in rs), default=0) + 1,
             # How this cell's successful runs split between the two scorers (#1364).
             # A `core` cell holds both — 21 synthetic runs and 120 reference-corpus
@@ -802,6 +874,44 @@ def _cells(summary):
     return summary.get("cell_stats") or cell_stats(summary.get("rows", []))
 
 
+def _unverified_row_shortfall_counts(summary):
+    """Per-cell count of successful runs whose row shortfall is not row loss (#1500).
+
+    Derived from the **rows**, never read from the `cell_stats` block, and that is the
+    whole point of the function. `_cells` prefers a STORED block, and every
+    `cell_stats` block committed to this repository was written before
+    `n_unverified_row_shortfall` existed — so asking the block answers 0 for every
+    baseline in the tree, which is exactly the side of a release A/B that carries the
+    shape. A post-fix grid compared against `v0.6.11` would report the recall move as
+    an improvement with nothing saying the older figure was an instrument artifact:
+    the mirror image of the reading #1500 is about.
+
+    The verdict is recoverable from an old row because its three inputs are not new:
+    `rows_truth`, `rows_extracted` and `dups` are on every synthetic row of every
+    committed grid. `rows_id_unresolved` is new and absent there, which reads as 0 —
+    correct, since a grid scored before canonicalisation existed resolved every tag
+    it could match. A row that already records `unverified_row_shortfall` is taken at
+    its word rather than recomputed.
+
+    `LATE_ADDED_METRICS` is the wrong instrument for this one: entries there are
+    judged by truthiness, and this counter is legitimately 0 on a healthy grid, so
+    registering it would report "never recorded it" on every clean run.
+    """
+    out = {}
+    for row in summary.get("rows") or []:
+        if not row.get("success"):
+            continue
+        reason = row.get("unverified_row_shortfall") or lib.unverified_row_shortfall(
+            row.get("rows_truth"),
+            row.get("rows_extracted"),
+            row.get("dups"),
+            row.get("rows_id_unresolved") or 0,
+        )
+        if reason:
+            out[row.get("cell")] = out.get(row.get("cell"), 0) + 1
+    return out
+
+
 QUALITY_METRICS = ("scalar_accuracy", "completeness_recall", "weighted_accuracy")
 
 
@@ -1098,6 +1208,12 @@ def compare_cells(summary_path, baseline_path):
     )
     cur = _cells(cur_summary)
     base = _cells(base_summary)
+    # Read from the rows on both sides rather than from the stats blocks — see
+    # `_unverified_row_shortfall_counts` for why a stored block cannot answer this.
+    unverified = {
+        "baseline": _unverified_row_shortfall_counts(base_summary),
+        "current": _unverified_row_shortfall_counts(cur_summary),
+    }
     paired = _paired_quality_deltas(cur_summary, base_summary)
     reg, imp, weak = [], [], []
     unread = {}
@@ -1186,6 +1302,26 @@ def compare_cells(summary_path, baseline_path):
                 f"{lbl} {d:+.3f} ({bm:.3f}->{cm:.3f}); paired per-doc deltas "
                 f"n={len(deltas)} spread±{spread:.3f}"
             )
+            # Say so when the recall move is over runs whose row identity was not
+            # readable (#1500). This is the exact finding that was published as a
+            # product signal on four consecutive releases: one run of nine on a
+            # `bedrock_llm` arm, reported as recall 1.000 -> 0.958, with the
+            # discriminating figure (`dups` at or above the shortfall) recorded on
+            # the row and consulted by nothing. It is printed rather than suppressed
+            # — the delta is real arithmetic over the recorded numbers — but a reader
+            # must not take it for row loss without reading those runs.
+            if m == "completeness_recall":
+                flagged = [
+                    f"{side} {n}/{stats.get('n_success') or 0}"
+                    for side, stats in (("baseline", b), ("current", c))
+                    if (n := unverified[side].get(cell) or 0)
+                ]
+                if flagged:
+                    tag += (
+                        "  [NOT ROW LOSS on " + ", ".join(flagged) + " run(s): their "
+                        "shortfall is matched by `dups` or by unresolved row ids — "
+                        "see `unverified_row_shortfall` on the rows (#1500)]"
+                    )
             if abs(d) <= spread:
                 weak.append(
                     (
@@ -1495,6 +1631,7 @@ def augment_summary(path, corpus_dir, dry_run=False):
                 sections,
                 (truth or {}).get("rows_typed"),
                 (truth or {}).get("list_key"),
+                seq_ids=(truth or {}).get("seq_ids"),
             )
         )
         updated += 1
@@ -1710,7 +1847,10 @@ def calibration_study(
                 continue
             sections = read.sections
             scored = analyze.score_calibration(
-                sections, truth.get("rows_typed"), truth.get("list_key")
+                sections,
+                truth.get("rows_typed"),
+                truth.get("list_key"),
+                seq_ids=truth.get("seq_ids"),
             )
             if not scored["calibration_curve"]:
                 leaves = sum(

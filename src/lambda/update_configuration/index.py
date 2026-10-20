@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from idp_common.config.configuration_manager import (
     ConfigurationManager,  # type: ignore[import-untyped]
 )
+from idp_common.config.flags import flag_is_true
 from idp_common.config.merge_utils import merge_config_with_defaults
 
 # One definition of "strip the cross-region profile prefix", shared with the
@@ -441,16 +442,21 @@ def detect_pattern_from_config(config: Dict[str, Any]) -> str:
     Returns:
         Pattern name (pattern-1 or pattern-2)
     """
-    # Check classification method
-    classification_method = config.get("classification", {}).get(
-        "classificationMethod", ""
-    )
-
-    if classification_method == "bda":
+    # BDA mode is `use_bda`, which is the flag the pipeline itself branches on.
+    # This used to sniff `classification.classificationMethod == "bda"` — a THIRD
+    # value that key never legitimately held (its enum was
+    # multimodalPageLevel/textbasedHolistic) and that nothing in the product
+    # wrote. It was removed in config format 0.8 and is migrated away on read,
+    # so a sniff for it now matches nothing.
+    #
+    # ⚠️ Read through `flag_is_true`, not plain truthiness: a YAML, DynamoDB or
+    # UI round-trip can deliver this flag as the string "false", which is truthy,
+    # and the wrong answer here merges a pipeline configuration onto the BDA
+    # defaults.
+    if flag_is_true(config.get("use_bda")):
         return "pattern-1"
-    else:
-        # Default to pattern-2 (most common - Textract + Bedrock LLM)
-        return "pattern-2"
+    # Default to pattern-2 (most common - Textract + Bedrock LLM)
+    return "pattern-2"
 
 
 def merge_custom_with_defaults(

@@ -36,6 +36,7 @@ export default defineConfig({
               label: "Blogs, Customer Stories & Research",
               slug: "references",
             },
+            { label: "Hands-on Workshops", slug: "workshops" },
           ],
         },
         {
@@ -315,6 +316,10 @@ export default defineConfig({
         {
           label: "Migration",
           items: [
+            {
+              label: "Classification Method → Granularity",
+              slug: "migration-classification-granularity",
+            },
             { label: "v0.5 → v0.6 Migration", slug: "migration-v05-to-v06" },
             { label: "v0.4 → v0.5 Migration", slug: "migration-v04-to-v05" },
             {

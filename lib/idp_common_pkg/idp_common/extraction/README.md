@@ -2325,6 +2325,65 @@ signals make both loud without changing what is extracted:
   attributed to it; and because the recorded corpus cannot bound the false-failure rate —
   it holds no legitimately-empty-list document that also carries a same-width table, so
   the case needs its own measurement. Tracked with the narrowing in GitHub issue #1046.
+- `extraction_list_field_not_a_list` (**error**, always) — a field the class schema declares
+  as an array came back as a string carrying content, a number, a bool or an object, so none
+  of its rows reaches confidence scoring, evaluation or any other consumer of the result.
+  The live shape is a model declining *inside the field* instead of failing: measured
+  on a 400-row statement, `Transactions` came back as `'The statement contains 400
+  transactions (SEQ00000 to SEQ00399). They are too many to list in full here without
+  risking errors, so this field is not populated.'`
+
+  ⚠️ **A blank value is not this code.** `""` or `"   "` says what `[]` says — there were
+  no rows — and a genuinely empty section is legitimate, which is the reason
+  `extraction_incomplete` is a `warning`; the `error` rationale below holds for a refusal
+  sentence and not for a blank. A blank therefore joins `extraction_incomplete` and only a
+  value carrying content reaches this code. The message is correspondingly bounded to what
+  is known — the rows are not *available*, rather than provably destroyed — because a value
+  holding content is not always unrecoverable: a JSON-serialized array is the #783 shape,
+  and `coercion.py`'s `json_parsed_from_string` repairs exactly that when coercion is
+  enabled on the simple path, so the rows may be sitting in the string.
+
+  **Scope** is `_declared_array_non_lists`, which matches `_object_list_targets` — top-level
+  declared arrays, `items` resolved through `$ref`, and one level into an array of
+  instances — rather than top-level `properties` alone. The nested shape ships:
+  `checkpoints[].items`, `glossarySections[].terms` and `employees[].shifts` in both
+  `ocr-benchmark` presets, reported as `outer[].inner`. Two levels down is not reached and
+  no shipped preset declares one.
+
+  ⚠️ **Every other signal here is structurally unable to see it, which is why detection
+  could not be left where it was.** `extraction_incomplete` tests absent / `None` / empty
+  and a string is none of the three; all three OCR-grounded codes above compare a row
+  *count* and there is no list to count, with full exact-width evidence present;
+  `confidence_coverage` reports no denominator, correctly. Full-schema validation *does*
+  report it, as `extraction_validation_failed` — but only when
+  `extraction.validation.enabled` is true, at `warning`, with a message that reads the same
+  for a total loss as for a reformatted date. `coercion.py` sees it too and refuses, which
+  is the right call — it performs exactly one cross-family repair,
+  `json_parsed_from_string`, described there as "the one cross-family repair that is
+  lossless and unambiguous", and a prose sentence is not it — but that refusal is gated on
+  `extraction.coercion.enabled` and emits no issue at all. On
+  the v0.6.12 grid the one affected run that recorded **no issue of any kind** was the one
+  with enforcement off. This check reads `_class_schema` against the final extracted
+  fields, so it needs neither toggle.
+
+  `error`, unconditionally: it is the one code in this family that is not an estimate — a
+  declared type and a returned value leave nothing to infer — which is the distinction that
+  keeps `extraction_row_count_unverified` and `extraction_sparse` at `info`. It does **not**
+  fail the section (`_generate_processing_report` fails only on `ROW_SHORTFALL_CODE` at
+  `error`, so the report reads `COMPLETED WITH ERRORS`) and
+  `extraction.row_shortfall_action` does not govern it, for the reason it governs neither
+  `extraction_output_truncated` nor `extraction_partial_row_shortfall`: widening that knob
+  would start failing runs that complete today on a deployment already opted into `fail`.
+
+  `details` carries `returned_types` per field and `returned_values` for the string cases,
+  truncated at `_NOT_A_LIST_PREVIEW_CHARS` (300) — the refusal sentence is the only record
+  of *why* the model declined and nothing else in the pipeline keeps it, but it is unbounded
+  model-authored text going into a DynamoDB item. In simple mode the message recommends
+  Advanced (agentic) extraction, which is the measured remedy rather than boilerplate: on
+  the v0.6.12 grid the advanced cells returned 400 of 400 rows on all three 400-row
+  documents, 18 runs of 18, while the traditional cells lost nearly the whole list on 13 of
+  39. `tests/unit/extraction/test_list_field_not_a_list.py` is the whole surface, driven
+  from the three refusal sentences the grid recorded verbatim.
 - `extraction_partial_row_shortfall` (warning, **always**) — the band the half ratio left
   silent, and the reason it was there to leave: ⚠️ **`_OCR_ROW_SHORTFALL_RATIO` goes quiet
   well before half the document is gone.** Sweeping every extracted count from 1 to 800
@@ -2391,6 +2450,113 @@ signals make both loud without changing what is extracted:
   alone. That matters here specifically: taken against `ocr_matched_table_rows` instead, the
   #1361 case reads 0.501 rather than 0.511 and nothing else in the issue looks wrong.
   `tests/unit/extraction/test_partial_row_shortfall.py` is the whole surface.
+- `extraction_row_count_unverified` (info, **always**) — the two codes above did not run,
+  which until this one existed produced the same output as their running and finding
+  nothing: no issue, and `Status: SUCCESS`. ⚠️ **Both are grounded in the same evidence —
+  OCR tables whose column count EQUALS the item schema's property count — and that evidence
+  is routinely zero.** At zero matched rows `expected < _OCR_ROW_ESTIMATE_MIN` holds for
+  every extracted count and every document size, so neither check is merely quiet: both are
+  structurally unable to fire. This code reports that condition, so "could not check" is
+  distinguishable from "checked and found complete".
+
+  It fires when a list of objects came back with at least `_OCR_ROW_ESTIMATE_MIN` (30) rows
+  while the section's OCR text holds fewer than that many rows in tables of the list's own
+  width. ⚠️ **It is a statement about the EVIDENCE, never about the result**, and it is the
+  correct answer on a complete extraction — which is why the message says the count is
+  unverified and equally consistent with a complete list, and why the severity is `info`.
+  Two ordinary configurations reach it with nothing wrong: an item schema carrying a
+  property the rendered table does not have (a derived `Balance`), and an OCR configuration
+  that emits no Markdown tables at all. At `warning` those runs' reports would move from
+  `SUCCESS` to `COMPLETED WITH WARNINGS` for a condition the operator may have chosen, so
+  `info` is what keeps the status line while still putting the code in `processing_issues`
+  and in the processing report's issue list. `extraction.row_shortfall_action` does **not**
+  govern it, for the reason it governs neither `extraction_output_truncated` nor
+  `extraction_partial_row_shortfall`.
+
+  ⚠️ **`info` is not invisible, and two UI surfaces are severity-blind.** They are
+  count-based, so an `info` issue moves them exactly as a `warning` would:
+
+  | Surface | Reader | Before | After |
+  |---|---|---|---|
+  | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Auto-recovered** |
+  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py`, or summed from the sections on the GSI path | `0` | non-zero |
+
+  So on an OCR configuration that renders no exact-width tables, a document where
+  nothing is wrong gets a non-zero issue count and a section labelled
+  **Auto-recovered** — which is close to the opposite of "the row count is
+  unverified". That label is `getSectionIssueStatus`'s generic text for an
+  info-only section and is shared with `extraction_sparse` and
+  `extraction_off_schema_fields`, so it is not specific to this code and giving it
+  a case is a UI change rather than a backend one; `processing-issues-utils.ts`
+  already special-cases `FAILURE_CODES`, so the precedent exists. Note that the
+  sparse `HasProcessingIssues` attribute is **not** a third surface: its own
+  writer records that it has no reader anywhere — not a GSI key, not projected, not
+  queried, absent from the UI and from every Glue and Athena schema.
+
+  **Which OCR renderings reach it, measured rather than assumed.** On a 3-property item
+  schema, `_ocr_tables` plus the exact-width match sum to **0** rows of evidence for a
+  GitHub-legal pipe table written without leading pipes, for the same table carrying a
+  fourth column the schema does not have, for one carrying an added row-number column, and
+  for a list rendered as bullets. An LLM OCR backend renders its own Markdown and can
+  produce any of them.
+
+  ⚠️ **A table-emitting backend reaches this too, and the deciding factor is the width
+  rather than the backend.** Textractor's `TABLES` rendering does not produce the four
+  shapes above, but it renders the table the document actually has — and if the list
+  item's schema carries one property more than that table has columns (a derived or
+  document-level field is the ordinary case), the exact-width match rejects it and the
+  evidence sums to 0 just the same. Measured on a live stack running the shipped
+  `lending-package-sample` preset: a 5-property `transaction_details` returned 68 rows
+  while the section rendered tables **2 and 3 columns wide**, so
+  `ocr_matched_table_rows` was 0 and the issue fired on a list that looks complete.
+
+  The two causes need different
+  remedies and the issue tells them apart: `details["ocr_table_widths"]` holds every table
+  width that WAS found in the section, so `[]` means no table was recognised while `[4]`
+  against `item_property_count: 3` means the evidence is there and the wrong shape.
+
+  ⚠️ **The exact-width match is deliberately NOT loosened, not even as a fallback reachable
+  only when the exact-width evidence is empty.** "Empty" is the ordinary state for a schema
+  with a derived property, so a tolerance would be reachable on the backends where detection
+  works today — a two-column key/value block counting against a three-column list and
+  reporting a shortfall that is not one, against a population currently at 48-of-49
+  detection. Carrying the widths in `details` gives a reader the same diagnosis with no
+  count tolerated into any sum. ⚠️ **The residual is the other end of the floor:** a list
+  that came back with fewer than 30 rows and has no evidence either still reports nothing
+  here, because without evidence a 5-row list cannot be told from a correct one;
+  `extraction_incomplete`, `extraction_sparse` and a declared `minItems` are the signals
+  that cover a list that small.
+
+  ⚠️ **Gated on `ocr_rows`, not on the `expected` the branch itself tests.** `expected` is
+  `min(ocr_rows, group_cap)`, so the branch is also reached with the OCR evidence
+  *plentiful* and the group's summed declared `maxItems` under the floor — 400 matched rows
+  against `maxItems: 20`. Every string this code emits describes the absent-evidence half of
+  that disjunction, so firing there would state a contradiction, and the condition really is
+  different: the evidence is present and it is the config author's own ceiling that makes
+  the comparison inapplicable. **That case reports nothing, which is the residual**, and it
+  is reachable rather than hypothetical — `shard_validation_schema` strips `maxItems` for a
+  shard on purpose, so a merged section can hold more rows than its declared cap. Reading
+  the gate against `ocr_rows` is a strict narrowing (`ocr_rows < 30` forces
+  `expected < 30`), so nothing that was silent before this code can start speaking.
+
+  **Where it meets `extraction_output_truncated`.** Nothing suppresses either, so one
+  section can carry both, and read together without a qualifier they contradict: that code
+  is the one *certain* completeness signal and says the response stopped early, while this
+  one says the row count is equally consistent with a complete list. The "equally
+  consistent" claim is about **this check's own evidence**, and the message says so by
+  name when `metadata["output_truncated"]` is set, deferring to the certain signal.
+
+  ⚠️ **`details["ocr_tables"]` is not size-bounded.** It carries one entry per table found
+  in the section, matching the two sibling row checks, and `ProcessingIssue._bound_details`
+  elides oversized *strings* while leaving list length alone — so the payload grows with the
+  document, at ~24 bytes per table and one issue per width group. That needs on the order of
+  ten thousand tables in one section to approach DynamoDB's 400 KB item ceiling, and a table
+  costs at least five OCR lines, so the measured bound is comfortable rather than absent;
+  `TestTheDetailsPayloadIsBoundedByMeasurement` pins the figures so a change that makes the
+  payload bigger per table shows up as a diff in them.
+
+  `tests/unit/extraction/test_row_count_unverified.py` is the whole surface, and it pins the
+  exact-width match in the direction a future tolerance would have to break deliberately.
 - `extraction_list_truncated` (warning) — a non-empty list came back under its schema
   `minItems`. The one completeness signal with no false positives by construction, because
   the config author declared the floor rather than a heuristic inferring it. ⚠️ **What

@@ -36,6 +36,7 @@ from idp_common.evaluation.stickler_backend import (
     DocSplitClassificationMetrics,
     SticklerConfigMapper,
     attach_page_confidence,
+    compute_boundary_and_label_accuracy,
     compute_graded_packet_metrics,
     get_stickler_model,
     load_sections_for_doc_split,
@@ -1855,6 +1856,13 @@ class EvaluationService:
                     doc_split_calculator.sections_pred,
                 )
 
+                # #1329: the boundary half and the label half of section
+                # accuracy, which split_accuracy_without_order conflates.
+                halves = compute_boundary_and_label_accuracy(
+                    doc_split_calculator.sections_gt,
+                    doc_split_calculator.sections_pred,
+                )
+
                 doc_split_metrics_obj = DocSplitMetrics(
                     page_level_accuracy=page_level["accuracy"],
                     split_accuracy_without_order=split_no_order["accuracy"],
@@ -1883,12 +1891,18 @@ class EvaluationService:
                     avg_ordering_score=(
                         graded.get("avg_ordering_score") if graded else None
                     ),
+                    boundary_accuracy=halves["boundary_accuracy"],
+                    label_accuracy=halves["label_accuracy"],
+                    boundary_matched_sections=halves["boundary_matched_sections"],
+                    label_matched_sections=halves["label_matched_sections"],
                 )
 
                 logger.info(
                     f"Doc split metrics calculated - Page accuracy: {page_level['accuracy']:.3f}, "
                     f"Split accuracy (no order): {split_no_order['accuracy']:.3f}, "
-                    f"Split accuracy (with order): {split_with_order['accuracy']:.3f}"
+                    f"Split accuracy (with order): {split_with_order['accuracy']:.3f}, "
+                    f"Boundary accuracy: {halves['boundary_accuracy']}, "
+                    f"Label accuracy: {halves['label_accuracy']}"
                 )
 
             except Exception as e:

@@ -249,6 +249,30 @@ axes:
     # its cost against nova_lite with that in mind, and read the note on its
     # model_config_limits.yaml entry before publishing a cost claim.
     haiku55:      {extraction.model: us.anthropic.claude-haiku-5-5}
+    # Claude Sonnet 5.5 — selectable for every model-taking service since v0.6.12 and
+    # in no axis before this one, so no published figure of any kind covered it. Three
+    # things make its arm read differently from Sonnet 5's, and none is a harness bug:
+    #
+    # 1. It REJECTS a forced toolChoice, so Schema Enforcement falls back to the prose
+    #    schema and the run records metadata.forced_tool.skipped. An `enforcement` or
+    #    `forcing` cell on this model therefore measures the PROSE path whatever the
+    #    knob says — read forced_tool_honored_rate before comparing it to any other
+    #    model's forcing arm.
+    # 2. It rejects temperature/top_p/top_k outright (400). The accelerator strips them
+    #    for this model id, so this is invisible at the harness level, but a cell that
+    #    reaches Bedrock by any other route will fail rather than degrade.
+    # 3. 1M is its DEFAULT window with no `:1m` id, which makes the derived agentic
+    #    shard budget 578,400 tokens against Sonnet 5's 18,400. Wide shards defeat
+    #    prompt caching, so its cost per document is NOT comparable with Sonnet 5's on
+    #    the agentic path unless extraction.agentic.shard_token_budget is pinned — the
+    #    same hazard the haiku55 note above describes, arriving by a different route.
+    #
+    # Per-token input and output prices are IDENTICAL to Sonnet 5's ($2.20/$11.00 per
+    # MTok); only cache reads differ ($0.11 vs $0.22). ⚠️ A cost report will nonetheless
+    # show it ~33% cheaper, because the Sonnet 5 rows in pricing.yaml carry Sonnet 4.6's
+    # rates by a separately-tracked decision. Do NOT publish a 5.5-vs-5 cost ratio from
+    # this arm: compare the two from the AWS price list.
+    sonnet55:     {extraction.model: us.anthropic.claude-sonnet-5-5}
   # extraction.agentic.max_pages_per_shard — the lever that decides whether a big
   # context window is reachable at all on the AGENTIC path.
   #
@@ -518,7 +542,14 @@ sweeps:
   # only be answered across a family boundary. It is also the arm a cost-sensitive
   # user now lands on by default when they ask for the cheapest Claude, so a guide
   # that omits it recommends from a price list that no longer has a floor.
-  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, opus55, astra, haiku55]
+  # sonnet55 is swept because v0.6.12 makes it selectable for every model-taking
+  # service while its own CHANGELOG entry states it is in no benchmark sweep and that
+  # no accuracy, completeness or cost figure should be quoted for it — which is a
+  # guide recommending from a price list whose newest entry is blank. Its arm needs
+  # the three caveats on its axis entry above read first: the forcing interaction and
+  # the shard-budget cost hazard both make individual columns non-comparable with
+  # Sonnet 5's even though accuracy and completeness are.
+  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, opus55, astra, haiku55, sonnet55]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
   # haiku55 is swept; haiku45 deliberately is not, which keeps this sweep the same
   # width as before plus one. The Haiku-4.5-vs-5.5 comparison this model's cost case

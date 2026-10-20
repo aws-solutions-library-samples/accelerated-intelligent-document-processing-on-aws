@@ -62,7 +62,7 @@ _CONFIG = {
         "model": "us.amazon.nova-lite-v1:0",
         "system_prompt": "classify",
         "task_prompt": "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}",
-        "classificationMethod": "multimodalPageLevelClassification",
+        "granularity": "page",
     },
 }
 

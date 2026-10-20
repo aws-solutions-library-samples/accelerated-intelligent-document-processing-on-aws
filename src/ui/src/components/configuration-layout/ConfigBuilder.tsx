@@ -24,6 +24,7 @@ import type { BoxProps } from '@cloudscape-design/components';
 import { useNavigate } from 'react-router-dom';
 import SchemaBuilder from '../json-schema-builder/SchemaBuilder';
 import PromptPreview from './PromptPreview';
+import FieldDescription, { stripInlineMarkdown } from './FieldDescription';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import { TEST_STUDIO_PATH } from '../../routes/constants';
 
@@ -134,6 +135,37 @@ interface SchemaProperty {
     // family and therefore can't be gated by a single valuePrefix.
     reasoningCapable?: boolean;
   };
+  // Show this field only when EVERY listed condition holds. Composes with
+  // dependsOn and hideWhen (all three must pass to render).
+  //
+  // Why this exists alongside dependsOn: dependsOn takes exactly ONE field and
+  // one value set, which cannot express "images are on AND granularity is
+  // page" — the shape the classification panel needs, where granularity and
+  // modality are deliberately independent settings whose combinations decide
+  // what applies. Rather than growing dependsOn into something that means two
+  // things depending on its keys, this is the n-condition form, and `not` gives
+  // it the negation dependsOn also lacks.
+  //
+  // `field` resolves in the NEAREST ENCLOSING SCOPE that has it: from
+  // `classification.image.target_width`, the field `modality.images` is looked
+  // for at `classification.image.modality.images`, then
+  // `classification.modality.images`, then `modality.images`. That is what lets
+  // a condition reference a sibling object's field without spelling out the
+  // whole path, which dependsOn (sibling-then-root only) cannot do.
+  showWhen?: Array<{
+    field: string;
+    value?: unknown;
+    values?: unknown[];
+    not?: unknown;
+    notValues?: unknown[];
+  }>;
+  // An authored group: renders a titled (optionally collapsible) section, and
+  // renders even when its own key is absent from the stored configuration. See
+  // the note in renderField — that second half is a property of every authored
+  // group, not an opt-in, because a group whose key has never been written (or
+  // was deleted when its last field was cleared) would otherwise be invisible
+  // with every field inside it unreachable and nothing saying why. Modality,
+  // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
   // sibling field matches (e.g. expand "Agentic Extraction" when enabled=true).
@@ -208,7 +240,32 @@ const customStyles = `
     overflow-y: auto !important;
     resize: vertical;
   }
-  
+
+  /* Schema descriptions are markdown (see FieldDescription). Every block
+     element is rendered as a span there, so these rules only have to stop the
+     spans stacking and keep code spans legible at help-text size. */
+  .config-field-description-block {
+    display: block;
+  }
+  .config-field-description-block + .config-field-description-block {
+    margin-top: 4px;
+  }
+  .config-field-description code,
+  .config-field-description-code {
+    font-family: Monaco, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.06);
+  }
+  /* A description's list keeps its structure but not its default indent, which
+     is sized for body copy rather than for a help slot. */
+  .config-field-description ul,
+  .config-field-description ol {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+
   /* Make form fields more compact */
   .awsui-form-field {
     margin-bottom: 4px !important;
@@ -721,6 +778,53 @@ const ConfigBuilder = ({
     return result;
   };
 
+  // Normalize string "true"/"false" to booleans. Schema values deserialize from
+  // DynamoDB as strings while form state holds real booleans, so a boolean
+  // toggle would never strict-equal 'false' without this.
+  const normalizeBoolish = (v: unknown): unknown => {
+    if (typeof v === 'string' && (v === 'true' || v === 'false')) return v === 'true';
+    return v;
+  };
+
+  // Resolve a showWhen field in the nearest enclosing scope that defines it.
+  // See the showWhen comment on SchemaProperty for why the walk-up exists.
+  const resolveShowWhenValue = (fieldPath: string, field: string): unknown => {
+    const segments = fieldPath.split('.');
+    // Drop the field's own name first, then walk outwards one scope at a time,
+    // ending with the bare field name (the form root).
+    for (let depth = segments.length - 1; depth >= 0; depth -= 1) {
+      const scope = segments.slice(0, depth).join('.');
+      const candidate = scope ? `${scope}.${field}` : field;
+      const value = getValueAtPath(formValues, candidate);
+      if (value !== undefined) return value;
+    }
+    return undefined;
+  };
+
+  // True when every showWhen condition holds (or there are none). Absent values
+  // fail a positive condition and pass a negative one: a field that is not in
+  // the form cannot equal a required value, and does not equal an excluded one.
+  const showWhenPasses = (property: SchemaProperty, fieldPath: string): boolean => {
+    if (!property.showWhen || !Array.isArray(property.showWhen)) return true;
+
+    return property.showWhen.every((condition) => {
+      if (!condition || typeof condition.field !== 'string') return true;
+      const actual = normalizeBoolish(resolveShowWhenValue(fieldPath, condition.field));
+
+      if (condition.notValues !== undefined || condition.not !== undefined) {
+        const excluded = (Array.isArray(condition.notValues) ? condition.notValues : [condition.not]).map(normalizeBoolish);
+        if (excluded.includes(actual)) return false;
+      }
+
+      if (condition.values !== undefined || condition.value !== undefined) {
+        const allowed = (Array.isArray(condition.values) ? condition.values : [condition.value]).map(normalizeBoolish);
+        if (!allowed.includes(actual)) return false;
+      }
+
+      return true;
+    });
+  };
+
   const updateValue = (path: string, value: unknown): void => {
     // Don't create properties for empty/meaningless values, BUT preserve empty arrays
     // as they represent intentional user deletions of list items
@@ -808,11 +912,29 @@ const ConfigBuilder = ({
     const value = getValueAtPath(formValues, currentPath);
 
     // For objects with properties, ensure the object exists in formValues.
-    // Exception: a `ghostGroup` object is a purely visual grouping whose own
-    // key never exists in the data (its children render at the parent path),
-    // so its value is always undefined — it must still render.
+    // Two exceptions, for different reasons:
+    //
+    // - A `ghostGroup` object is a purely visual grouping whose own key never
+    //   exists in the data (its children render at the parent path), so its
+    //   value is always undefined — it must still render.
+    // - ⚠️ An object with a `sectionLabel` is an AUTHORED group, and its own key
+    //   being absent is an ordinary state: nothing writes a nested object until
+    //   one of its fields is edited, and `updateValue` deletes an object again
+    //   once its last field is cleared. Hiding the group then makes every field
+    //   inside it unreachable — the user cannot set a value because the control
+    //   is not rendered, and nothing says why. `classification.modality` is
+    //   permanently in that state: both its flags default to empty. Children
+    //   read their own schema defaults when the parent is absent, so rendering
+    //   is safe.
+    //
+    //   ⚠️ Gated on `sectionLabel` itself rather than on an opt-in flag, so a
+    //   group added later cannot forget it. That is wider than the one field
+    //   that exposed the problem, deliberately: the reasoning above holds
+    //   identically for every authored group, so a per-group flag would just be
+    //   the same bug waiting on whichever group got written without one.
     const isGhostGroupObject = property.ghostGroup === true || property.ghostGroup === 'true';
-    if (property.type === 'object' && property.properties && value === undefined && !isGhostGroupObject) {
+    const isAuthoredGroup = Boolean(property.sectionLabel);
+    if (property.type === 'object' && property.properties && value === undefined && !isGhostGroupObject && !isAuthoredGroup) {
       return null;
     }
 
@@ -824,16 +946,14 @@ const ConfigBuilder = ({
     // extraction.confidence.mode === "integrated").
     if (property.hideWhen) {
       const hideVal = getValueAtPath(formValues, property.hideWhen.field);
-      // Normalize string "true"/"false" to booleans on BOTH sides: schema values
-      // deserialize from DynamoDB as strings, while form state holds real booleans,
-      // so a boolean toggle (e.g. hitl.enabled) would never strict-equal 'false'.
-      const normalizeBool = (v: unknown): unknown => {
-        if (typeof v === 'string' && (v === 'true' || v === 'false')) return v === 'true';
-        return v;
-      };
-      if (normalizeBool(hideVal) === normalizeBool(property.hideWhen.value)) {
+      if (normalizeBoolish(hideVal) === normalizeBoolish(property.hideWhen.value)) {
         return null;
       }
+    }
+
+    // n-condition show gate; composes with dependsOn and hideWhen.
+    if (!showWhenPasses(property, currentPath)) {
+      return null;
     }
 
     // Check dependencies FIRST, before any rendering - applies to all field types
@@ -1008,7 +1128,7 @@ const ConfigBuilder = ({
           </ExtBox>
           {groupDescription && (
             <ExtBox fontSize="body-s" color="text-body-secondary" style={{ marginBottom: '6px' }}>
-              {groupDescription}
+              <FieldDescription>{groupDescription}</FieldDescription>
             </ExtBox>
           )}
           <SpaceBetween size="s">
@@ -1092,7 +1212,7 @@ const ConfigBuilder = ({
         <ExtBox padding={{ left: `${nestLevel * 50 + 200}px`, top: '0' }} className="list-content-indented">
           {nestedDescription && (
             <ExtBox fontSize="body-s" color="text-body-secondary" style={{ marginBottom: '6px' }}>
-              {nestedDescription}
+              <FieldDescription>{nestedDescription}</FieldDescription>
             </ExtBox>
           )}
           <SpaceBetween size="s">
@@ -1286,6 +1406,7 @@ const ConfigBuilder = ({
 
                         // Function to check if a field should be visible (not hidden by dependencies)
                         const isFieldVisible = (propKey: string, propSchema: SchemaProperty) => {
+                          if (!showWhenPasses(propSchema, `${itemPath}.${propKey}`)) return false;
                           if (!propSchema.dependsOn) return true;
 
                           const dependencyField = propSchema.dependsOn.field;
@@ -1797,7 +1918,10 @@ const ConfigBuilder = ({
     return (
       <FormField
         label={labelContent}
-        description={fieldDescription}
+        // `undefined`, not an always-present element: FieldDescription renders
+        // null for blank text, but Cloudscape reads a truthy `description` as
+        // present and reserves its spacing. See the same guard below.
+        description={fieldDescription?.trim() ? <FieldDescription>{fieldDescription}</FieldDescription> : undefined}
         constraintText={finalConstraints}
         stretch
         className={fieldClasses.join(' ')}
@@ -1829,6 +1953,9 @@ const ConfigBuilder = ({
 
   // Render each top-level property
   const renderTopLevelProperty = ({ key, property }: { key: string; property: SchemaProperty }) => {
+    if (!showWhenPasses(property, key)) {
+      return null;
+    }
     // Check top-level dependsOn before rendering (hides entire sections when dependency not met)
     if (property.dependsOn) {
       const depField = property.dependsOn.field;
@@ -1868,7 +1995,7 @@ const ConfigBuilder = ({
             key={key}
             variant="container"
             headerText={sectionTitle}
-            headerDescription={sectionDescription}
+            headerDescription={sectionDescription ? stripInlineMarkdown(sectionDescription) : undefined}
             expanded={isExpanded}
             onChange={({ detail }) => {
               setExpandedSections((prev) => ({ ...prev, [key]: detail.expanded }));
@@ -1883,7 +2010,10 @@ const ConfigBuilder = ({
         <Container
           key={key}
           header={
-            <Header variant="h3" description={sectionDescription}>
+            <Header
+              variant="h3"
+              description={sectionDescription?.trim() ? <FieldDescription>{sectionDescription}</FieldDescription> : undefined}
+            >
               {sectionTitle}
             </Header>
           }
