@@ -1348,7 +1348,8 @@ def test_kill_strays_kills_every_browser_process_and_names_those_outside_the_gro
 ) -> None:
     """A group kill never reaches a process that called ``setsid``, so after it the
     sweep finds the uid's processes by ``/proc``: the group's own are being killed
-    already, and anything else left the group and would outlive the audit."""
+    already, and anything else that is still running once the wait is over left
+    the group and would outlive the audit."""
     import signal
 
     chrome_group = 4100
@@ -1358,12 +1359,95 @@ def test_kill_strays_kills_every_browser_process_and_names_those_outside_the_gro
     _proc_entry(tmp_path, 4200, uid=PROXY_UID, group=4200, name="python3")
     (tmp_path / "self").mkdir()
     kill = FakeKill(tmp_path)
+    fake = FakeTime()
     strays = chrome.kill_strays(
-        BROWSER_UID, chrome_group, proc=tmp_path, kill=kill, sleep=lambda s: None
+        BROWSER_UID,
+        chrome_group,
+        proc=tmp_path,
+        kill=kill,
+        sleep=fake.sleep,
+        clock=fake.clock,
     )
     assert strays == ("pid 4180 (chrome_crashpad)",)
     assert sorted(kill.sent) == [(4100, signal.SIGKILL), (4180, signal.SIGKILL)]
     assert (tmp_path / "4200").is_dir(), "the proxy's process is not the browser's"
+    *polls, pause = fake.sleeps
+    assert pause == chrome._STRAY_PAUSE_SECONDS
+    assert set(polls) == {chrome._STRAY_POLL_SECONDS}
+    assert sum(polls) == pytest.approx(
+        chrome._STRAY_GRACE_SECONDS, abs=2 * chrome._STRAY_POLL_SECONDS
+    )
+
+
+@pytest.mark.unit
+def test_kill_strays_lets_chromes_crashpad_handlers_exit_by_themselves_first(
+    tmp_path: Path,
+) -> None:
+    """Chrome's two crashpad handlers sit outside its process group and exit once
+    Chrome has gone, which on a busy host is a moment after the termination
+    returns: measured in the image, a sweep made at once named them in 7 of 20
+    runs. Ones that go within the wait are neither killed nor named, and the wait
+    ends as soon as the uid runs nothing."""
+    chrome_group = 4100
+    _proc_entry(tmp_path, 4100, uid=BROWSER_UID, group=chrome_group)
+    _proc_entry(tmp_path, 4180, uid=BROWSER_UID, group=4180, name="chrome_crashpad")
+    _proc_entry(tmp_path, 4183, uid=BROWSER_UID, group=4183, name="chrome_crashpad")
+    kill = FakeKill(tmp_path)
+    fake = FakeTime()
+
+    def sleep(seconds: float) -> None:
+        fake.sleep(seconds)
+        if len(fake.sleeps) == 2:
+            shutil.rmtree(tmp_path / "4100")
+        if len(fake.sleeps) == 3:
+            shutil.rmtree(tmp_path / "4180")
+            shutil.rmtree(tmp_path / "4183")
+
+    strays = chrome.kill_strays(
+        BROWSER_UID,
+        chrome_group,
+        proc=tmp_path,
+        kill=kill,
+        sleep=sleep,
+        clock=fake.clock,
+    )
+    assert strays == ()
+    assert kill.sent == []
+    assert fake.sleeps == [chrome._STRAY_POLL_SECONDS] * 3
+
+
+@pytest.mark.unit
+def test_a_cancel_during_the_wait_still_kills_what_the_browser_uid_runs(
+    tmp_path: Path,
+) -> None:
+    """A job cancel raises in the main thread wherever it is, and the wait is the
+    longest thing here when something really stays, so the kill must not depend on
+    the wait finishing: the cancel goes on, but only after the sweep."""
+    import signal
+
+    _proc_entry(tmp_path, 4180, uid=BROWSER_UID, group=4180, name="setsid-child")
+    kill = FakeKill(tmp_path)
+    pauses: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        if len(pauses) == 1:
+            raise processes.Terminated("received signal 15")
+
+    with pytest.raises(processes.Terminated):
+        chrome.kill_strays(BROWSER_UID, 4100, proc=tmp_path, kill=kill, sleep=sleep)
+    assert kill.sent == [(4180, signal.SIGKILL)]
+    assert not (tmp_path / "4180").exists()
+    assert pauses == [chrome._STRAY_POLL_SECONDS, chrome._STRAY_PAUSE_SECONDS]
+
+
+@pytest.mark.unit
+def test_the_wait_outlasts_the_longest_crashpad_exit_measured_on_a_busy_host() -> None:
+    """With sixty busy loops on ten CPUs the handlers took up to 0.33 s to exit
+    after the termination returned. The wait is only spent in full when something
+    of the browser's uid really does stay, so it is set well above that."""
+    assert chrome._STRAY_GRACE_SECONDS >= 10 * 0.33
+    assert chrome._STRAY_POLL_SECONDS <= 0.33 / 4
 
 
 @pytest.mark.unit
@@ -1374,8 +1458,14 @@ def test_kill_strays_reads_the_uid_from_status_not_the_entrys_owner(
     directory would hide exactly the process that went out of its way to hide."""
     _proc_entry(tmp_path, 5100, uid=BROWSER_UID, group=5100, name="hidden")
     kill = FakeKill(tmp_path)
+    fake = FakeTime()
     assert chrome.kill_strays(
-        BROWSER_UID, 4100, proc=tmp_path, kill=kill, sleep=lambda s: None
+        BROWSER_UID,
+        4100,
+        proc=tmp_path,
+        kill=kill,
+        sleep=fake.sleep,
+        clock=fake.clock,
     ) == ("pid 5100 (hidden)",)
 
 
@@ -1387,7 +1477,7 @@ def test_kill_strays_keeps_sweeping_and_stops_after_a_bounded_number_of_passes(
     kill = FakeKill(tmp_path, unkillable=(6100,))
     pauses: list[float] = []
     assert chrome.kill_strays(
-        BROWSER_UID, 4100, proc=tmp_path, kill=kill, sleep=pauses.append
+        BROWSER_UID, 4100, proc=tmp_path, kill=kill, sleep=pauses.append, grace=0
     ) == ("pid 6100 (chrome)",)
     assert len(kill.sent) == chrome._STRAY_SWEEPS
     assert pauses == [chrome._STRAY_PAUSE_SECONDS] * chrome._STRAY_SWEEPS

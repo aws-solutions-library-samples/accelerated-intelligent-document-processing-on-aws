@@ -567,11 +567,15 @@ treats that file as diagnostics only.
   as the recorder stops, so render and the post never run beside a live signed-in
   page. Terminating Chrome kills its process group and then every process its uid
   still runs, so one that left the group with `setsid` cannot outlive the audit
-  either. It reads the TCP, UDP, UDP-Lite, ping and raw tables, and an unconnected
-  socket counts as harmless only when it is bound to loopback. Nothing is posted
-  when Chrome held any other socket, when a process of its uid had left its process
-  group, or when the audit was unavailable, which includes an audit in which no
-  pass saw a single socket of Chrome's uid.
+  either. That second kill waits up to five seconds for the uid's processes to exit
+  by themselves first, because Chrome's own two crashpad handlers sit outside its
+  process group too and, on a busy runner, are still exiting when the termination
+  returns. The audit reads the TCP, UDP, UDP-Lite, ping and raw tables, and an
+  unconnected socket counts as harmless only when it is bound to loopback. Nothing
+  is posted when Chrome held any other socket, when a process of its uid that had
+  left its process group was still running once that wait was over, or when the
+  audit was unavailable, which includes an audit in which no pass saw a single
+  socket of Chrome's uid.
 - The proxy confines Chrome as configured, not a subverted one: a renderer the MR's
   page compromises runs as `uxbrowser` and can open sockets of its own to anything
   the job container can reach, which the proxy never sees and the audit only

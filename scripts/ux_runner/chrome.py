@@ -29,8 +29,9 @@ How it is confined
   ``--no-sandbox`` is required, because the default Docker executor offers neither
   a setuid sandbox nor user namespaces, so the uid, the proxy, the policy and the
   audit are the containment. When Chrome's process group has been killed,
-  :func:`kill_strays` kills whatever that uid still runs, so no browser process
-  that left the group outlives the audit, and names each one that had left it.
+  :func:`kill_strays` gives that uid's processes a few seconds to exit by
+  themselves and then kills whatever it still runs, so no browser process that
+  left the group outlives the audit, and names each one that had left it.
 * **The socket audit** (:func:`audit_sockets`, :class:`SocketWatch`). Reading
   ``/proc/<pid>/fd`` of another uid needs ``CAP_SYS_PTRACE``, which Docker drops,
   but the ``/proc/net`` tables are world-readable and carry each socket's owner
@@ -106,10 +107,14 @@ Bounds worth knowing
 * Chrome starts two crashpad handlers, each in a session of its own and so
   outside the process group a termination kills. Their command line carries no
   upload URL, so a crash is written only under the run's own Chrome home. They
-  exit as soon as Chrome does: in each of twelve runs measured in the image they
-  were gone before :func:`kill_strays` looked. One still running at that moment
-  would be killed and named like any other stray, which fails the run rather
-  than letting it post.
+  exit by themselves once Chrome has gone, but not at once on a busy host:
+  measured in the image, a sweep made as soon as the termination returned found
+  them still running in 7 of 20 runs with thirty busy loops on ten CPUs, and with
+  sixty they took up to a third of a second to go. :func:`kill_strays` therefore
+  waits up to :data:`_STRAY_GRACE_SECONDS` for the uid to run nothing before it
+  kills anything, and names only what is still running then. A handler that
+  outlives the wait is killed and named like any other stray, which fails the
+  run rather than letting it post.
 * ``/proc/net`` holds the addresses in host byte order, read here as little-endian,
   which is what x86-64 and arm64 are.
 * The proxy confines Chrome as configured, not a Chrome that has been subverted.
@@ -230,6 +235,14 @@ _LOCAL_FIELD = 1
 _REMOTE_FIELD = 2
 #: The process states that run nothing: zombie and dead.
 _ENDED_STATES = ("Z", "X")
+#: How long :func:`kill_strays` lets the browser uid's processes exit by themselves
+#: before it kills what is left. Chrome's crashpad handlers, outside its process
+#: group, exit once they notice Chrome has gone: in the image that took them up to
+#: 0.33 s after the termination returned with sixty busy loops on ten CPUs, so this
+#: leaves a busy CI runner fifteen times that.
+_STRAY_GRACE_SECONDS = 5.0
+#: How often :func:`kill_strays` looks while it waits.
+_STRAY_POLL_SECONDS = 0.05
 #: How many times :func:`kill_strays` looks again after killing what it found.
 _STRAY_SWEEPS = 5
 _STRAY_PAUSE_SECONDS = 0.1
@@ -904,35 +917,30 @@ def _pid_entries(proc: Path) -> list[Path]:
         return []
 
 
-def kill_strays(
-    uid: int | None,
+def _running(proc: Path, uid: int) -> list[_Process]:
+    """Every live process ``uid`` runs, as ``proc`` lists them."""
+    return [
+        process
+        for entry in _pid_entries(proc)
+        if (process := _process_of(entry, uid)) is not None
+    ]
+
+
+def _sweep(
+    uid: int,
     group: int | None,
     *,
-    proc: Path = Path("/proc"),
-    kill: Callable[[int, int], None] = os.kill,
-    sleep: Callable[[float], None] = time.sleep,
+    proc: Path,
+    kill: Callable[[int, int], None],
+    sleep: Callable[[float], None],
 ) -> tuple[str, ...]:
-    """SIGKILL every process ``uid`` still runs, and name each one outside ``group``.
+    """SIGKILL what ``uid`` runs until it runs nothing, naming each outside ``group``.
 
-    Called once Chrome's process group ``group`` has been killed. A process of the
-    browser's uid still in that group is one the group kill has not finished with
-    yet; one outside it left the group with ``setsid``, which a group kill never
-    reaches, and it would otherwise run on unwatched once the socket audit stops.
-    Each such process is reported as ``pid <n> (<name>)``, and the caller treats
-    any as a run that is not clean. The sweep repeats until the uid runs nothing,
-    a few times at most, so a stray that forks while it is being killed is caught
-    too. ``()`` when there is no uid to sweep, which is when the harness could not
-    switch users, or no ``/proc`` to read.
+    :data:`_STRAY_SWEEPS` passes at most, each followed by a pause.
     """
-    if uid is None or not proc.is_dir():
-        return ()
     strays: dict[int, str] = {}
     for _ in range(_STRAY_SWEEPS):
-        found = [
-            process
-            for entry in _pid_entries(proc)
-            if (process := _process_of(entry, uid)) is not None
-        ]
+        found = _running(proc, uid)
         if not found:
             break
         for process in found:
@@ -942,3 +950,44 @@ def kill_strays(
                 kill(process.pid, signal.SIGKILL)
         sleep(_STRAY_PAUSE_SECONDS)
     return tuple(f"pid {pid} ({name})" for pid, name in sorted(strays.items()))
+
+
+def kill_strays(
+    uid: int | None,
+    group: int | None,
+    *,
+    proc: Path = Path("/proc"),
+    kill: Callable[[int, int], None] = os.kill,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    grace: float = _STRAY_GRACE_SECONDS,
+) -> tuple[str, ...]:
+    """SIGKILL what ``uid`` runs once ``grace`` is over, naming what left ``group``.
+
+    Called once Chrome's process group ``group`` has been killed. It first waits,
+    ``grace`` seconds at most, for the uid to run nothing, because Chrome's own
+    crashpad handlers sit outside that group by design and exit by themselves once
+    Chrome has gone, which on a busy host takes a moment
+    (:data:`_STRAY_GRACE_SECONDS`). A process that exits within the wait is not
+    named: it has not outlived the socket audit, which is still running while this
+    waits. Whatever is still running then is killed. A process of the browser's
+    uid still in that group is one the group kill has not finished with yet; one
+    outside it left the group with ``setsid``, which a group kill never reaches,
+    and it would otherwise run on unwatched once the socket audit stops. Each such
+    process is reported as ``pid <n> (<name>)``, and the caller treats any as a
+    run that is not clean. The sweep repeats until the uid runs nothing, a few
+    times at most, so a stray that forks while it is being killed is caught too.
+    A cancel that arrives during the wait cuts it short, not the kill: what the
+    uid runs is killed before the cancel goes on. ``()`` when there is no uid to
+    sweep, which is when the harness could not switch users, or no ``/proc`` to
+    read.
+    """
+    if uid is None or not proc.is_dir():
+        return ()
+    deadline = clock() + grace
+    try:
+        while _running(proc, uid) and clock() < deadline:
+            sleep(_STRAY_POLL_SECONDS)
+    finally:
+        strays = _sweep(uid, group, proc=proc, kill=kill, sleep=sleep)
+    return strays

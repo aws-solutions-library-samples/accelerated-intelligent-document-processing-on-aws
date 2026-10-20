@@ -23,10 +23,11 @@ The socket audit starts the moment Chrome is launched, before the self-tests and
 the sign-in, and its last pass runs after Chrome has exited, so it covers every
 moment Chrome could open a socket. On SIGTERM (``run_in_docker.py browser
 --stop``, which is ``docker stop``) it stops the forwarder and Chrome, kills
-whatever Chrome's uid still runs (``chrome.kill_strays``), writes
-``browser-audit.json`` from that audit, naming each such process that had left
-Chrome's process group under ``strays``, then stops the proxy; every other
-process is killed by process group.
+whatever Chrome's uid still runs once its processes have had a few seconds to
+exit by themselves (``chrome.kill_strays``), writes ``browser-audit.json`` from
+that audit, naming each such process that had left Chrome's process group under
+``strays``, then stops the proxy; every other process is killed by process
+group.
 
 Who can reach the forwarder
 ---------------------------
@@ -317,8 +318,9 @@ def _stop_browser(
 ) -> tuple[str, ...]:
     """Kill Chrome's process group, then every process its uid still runs.
 
-    Returns the processes that had left the group, which a group kill never
-    reaches and which would otherwise outlive the audit.
+    Returns the processes that had left the group and were still running once
+    ``chrome.kill_strays`` had let them exit by themselves, which a group kill
+    never reaches and which would otherwise outlive the audit.
     """
     group = browser.pid
     browser.terminate()

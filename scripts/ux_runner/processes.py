@@ -34,9 +34,10 @@ Bounds worth knowing
 --------------------
 * A descendant that calls ``setsid`` itself leaves the group and is not reached by
   any kill here. For the browser that is closed elsewhere: once Chrome's group is
-  killed, ``chrome.kill_strays`` kills every process its uid still runs and names
-  each one that had left the group, which the orchestrator treats as a run that is
-  not clean, and the socket audit, which reads sockets by uid, watched such a
+  killed and its uid's processes have had a few seconds to exit by themselves,
+  ``chrome.kill_strays`` kills every process that uid still runs and names each one
+  that had left the group, which the orchestrator treats as a run that is not
+  clean, and the socket audit, which reads sockets by uid, watched such a
   process's sockets for as long as it ran. For every other group the job
   container's teardown is the backstop.
 * :func:`run_in_group` waits for end-of-file on the child's output, so a descendant

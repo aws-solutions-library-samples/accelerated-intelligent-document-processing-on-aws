@@ -52,10 +52,12 @@ Properties it is built around
    sign-in on the MR's own login page is inside it, and its last pass runs after
    Chrome has been terminated, which happens as soon as the recorder stops and
    before anything is rendered or posted. Terminating Chrome kills its process
-   group and then every process its uid still runs (``chrome.kill_strays``), so a
-   browser process that left the group with ``setsid`` cannot outlive the audit
-   either. Nothing is posted unless the audit is clean and no such process was
-   found. The proxy's directory is ``uxproxy``'s, so its ready file, refusal log,
+   group and then, once the uid's processes have had a few seconds to exit by
+   themselves as Chrome's own crashpad handlers do, every process its uid still
+   runs (``chrome.kill_strays``), so a browser process that left the group with
+   ``setsid`` cannot outlive the audit either. Nothing is posted unless the audit
+   is clean and no such process was still running once that wait was over. The
+   proxy's directory is ``uxproxy``'s, so its ready file, refusal log,
    stats and log are read back the way render's outputs are (``egress``,
    ``readback``): a link, a pipe, another uid's file or an oversized one in their
    place is refused unread. That fails the run for all but the stats, which are
@@ -1633,7 +1635,8 @@ class _Run:
         relative to the artifacts, so it exists whatever happens next; a post
         replaces it with the text that was posted. A socket the browser must not
         have opened fails the run in every mode, and so does a process of the
-        browser's uid that had left Chrome's process group. A dry run, and with it
+        browser's uid that had left Chrome's process group and was still running
+        once ``chrome.kill_strays`` had waited for it. A dry run, and with it
         ``--dev-unconfined``, stops here. An audit that could not run posts nothing
         either, because a clean audit is the condition for posting, not the
         absence of a dirty one.
@@ -2148,7 +2151,10 @@ class _Run:
         A process that called ``setsid`` is outside the group the first kill
         reaches, and once the socket audit stops nothing would watch it, so the
         second kill takes every process of the uid, and each one that had left the
-        group is kept in :attr:`strays`, which fails the run.
+        group is kept in :attr:`strays`, which fails the run. That second kill
+        comes only once ``chrome.kill_strays`` has given the uid's processes a few
+        seconds to exit by themselves, because Chrome's own crashpad handlers are
+        outside the group as well and need a moment to go on a busy runner.
         """
         process, self.chrome_proc = self.chrome_proc, None
         if process is None:
