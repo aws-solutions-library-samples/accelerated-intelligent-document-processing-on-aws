@@ -341,7 +341,7 @@ def _config(section_splitting="llm_determined"):
             "model": "anthropic.claude-3-sonnet-20240229-v1:0",
             "system_prompt": "classify",
             "task_prompt": "{CLASS_NAMES_AND_DESCRIPTIONS}{DOCUMENT_TEXT}",
-            "classificationMethod": "multimodalPageLevelClassification",
+            "granularity": "page",
             "sectionSplitting": section_splitting,
         },
     }

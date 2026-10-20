@@ -9,19 +9,17 @@
  * edited, and `updateValue` deletes the object again once its last field is
  * cleared — so "key absent" is an ordinary state rather than an error. Hiding
  * the group then makes every field inside it unreachable, with no control to
- * click and nothing saying why. `classification.modality` shipped in exactly
- * that state: both its flags default to empty, so nothing ever wrote the object.
+ * click and nothing saying why. `classification.modality` is permanently in that
+ * state: both its flags default to empty, so nothing ever writes the object.
  *
  * ⚠️ **The two tests that matter here are the ones NOT about Modality.** The gate
  * is `sectionLabel` itself, so the behaviour applies to every authored group in
  * the schema — 58 of them in `patterns/unified/template.yaml` — and that breadth
  * is deliberate rather than incidental: the reasoning above holds identically
  * for all of them, so a per-group opt-in flag would just be the same bug waiting
- * on whichever group was written next without one. A flag of that kind was
- * authored once here and never read, which is worse than either answer, because
- * it reads as a control that exists. If someone reintroduces a flag-based gate,
- * `renders an authored group the classification panel knows nothing about` is the
- * test that fails.
+ * on whichever group was written next without one. If someone narrows the gate to
+ * a flag, `renders an authored group the classification panel knows nothing
+ * about` is the test that fails.
  *
  * A plain object group with no `sectionLabel` keeps the old behaviour and stays
  * hidden when absent — that is the other half, and without it this test would

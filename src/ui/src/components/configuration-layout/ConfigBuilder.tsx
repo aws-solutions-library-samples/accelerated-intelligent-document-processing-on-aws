@@ -163,8 +163,9 @@ interface SchemaProperty {
   // renders even when its own key is absent from the stored configuration. See
   // the note in renderField — that second half is a property of every authored
   // group, not an opt-in, because a group whose key has never been written (or
-  // was deleted when its last field was cleared) is otherwise invisible with
-  // every field inside it unreachable and nothing saying why.
+  // was deleted when its last field was cleared) would otherwise be invisible
+  // with every field inside it unreachable and nothing saying why. Modality,
+  // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
   // sibling field matches (e.g. expand "Agentic Extraction" when enabled=true).
@@ -921,16 +922,16 @@ const ConfigBuilder = ({
     //   one of its fields is edited, and `updateValue` deletes an object again
     //   once its last field is cleared. Hiding the group then makes every field
     //   inside it unreachable — the user cannot set a value because the control
-    //   is not rendered, and nothing says why. `classification.modality`
-    //   shipped in exactly that state. Its children read their own schema
-    //   defaults when the parent is absent, so rendering is safe.
+    //   is not rendered, and nothing says why. `classification.modality` is
+    //   permanently in that state: both its flags default to empty. Children
+    //   read their own schema defaults when the parent is absent, so rendering
+    //   is safe.
     //
-    //   ⚠️ This is deliberately a property of EVERY authored group rather than
-    //   an opt-in flag, and that is wider than the one field that exposed it:
-    //   the reasoning holds identically for all of them, so a per-group flag
-    //   would just be the same bug waiting on whichever group got written next
-    //   without one. A flag was authored here once and never read, which reads
-    //   as a control that exists — hence the gate being `sectionLabel` itself.
+    //   ⚠️ Gated on `sectionLabel` itself rather than on an opt-in flag, so a
+    //   group added later cannot forget it. That is wider than the one field
+    //   that exposed the problem, deliberately: the reasoning above holds
+    //   identically for every authored group, so a per-group flag would just be
+    //   the same bug waiting on whichever group got written without one.
     const isGhostGroupObject = property.ghostGroup === true || property.ghostGroup === 'true';
     const isAuthoredGroup = Boolean(property.sectionLabel);
     if (property.type === 'object' && property.properties && value === undefined && !isGhostGroupObject && !isAuthoredGroup) {

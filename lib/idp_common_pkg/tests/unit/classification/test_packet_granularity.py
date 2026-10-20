@@ -38,6 +38,7 @@ import pytest
 
 from idp_common.classification.models import Segment
 from idp_common.classification.service import ClassificationService
+from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.models import Document, Page
 
 PACKET_PROMPT = (
@@ -208,26 +209,39 @@ class TestPromptResolution:
         instead — ours, not theirs. `migrations.v07_to_v08` relocates the flat
         prompt into `packet` for exactly this reason.
 
-        The config here carries NO `packet` block, which is the real legacy
-        shape; a config that already had one is the "existing packet prompt
-        wins" case covered in the migration suite.
+        ⚠️ **Two things have to be right for this to test the relocation at
+        all**, and getting either wrong leaves a passing test that proves
+        nothing. The prompt must be packet-shaped — naming both `segments` and
+        `ordinal_start_page`, the keys the parser reads — or `_is_packet_shaped`
+        refuses it and nothing is copied. And the config must be MERGED with the
+        shipped defaults, because those always supply `packet.task_prompt`: on an
+        unmerged config that key defaults to `""` and `_stage_prompt` falls back
+        to the flat prompt, so the assertion below passes with the relocation
+        removed entirely. A real deployment is always merged.
         """
+        hand_written = (
+            "my own holistic prompt: return segments with ordinal_start_page "
+            "and ordinal_end_page {DOCUMENT_TEXT}"
+        )
         service = ClassificationService(
             region="us-west-2",
-            config={
-                "classes": _classes("invoice", "receipt"),
-                "classification": {
-                    "model": "us.amazon.nova-2-lite-v1:0",
-                    "classificationMethod": "textbasedHolisticClassification",
-                    "system_prompt": "You split packets, by hand.",
-                    "task_prompt": "my own holistic prompt {DOCUMENT_TEXT}",
-                    "confidence": {"mode": "off"},
+            config=merge_config_with_defaults(
+                {
+                    "classes": _classes("invoice", "receipt"),
+                    "classification": {
+                        "model": "us.amazon.nova-2-lite-v1:0",
+                        "classificationMethod": "textbasedHolisticClassification",
+                        "system_prompt": "You split packets, by hand.",
+                        "task_prompt": hand_written,
+                        "confidence": {"mode": "off"},
+                    },
                 },
-            },
+                validate=False,
+            ),
         )
         assert service.granularity == ClassificationService.GRANULARITY_PACKET
         config = service._get_classification_config()
-        assert config["task_prompt"] == "my own holistic prompt {DOCUMENT_TEXT}"
+        assert config["task_prompt"] == hand_written
         assert config["system_prompt"] == "You split packets, by hand."
 
     def test_an_empty_packet_prompt_falls_back_and_warns(self, caplog):
@@ -275,23 +289,33 @@ class TestPacketConfidenceBlocks:
         warning, because its prompt was hand-written and there was no output
         shape to describe. The migration relocates that prompt into
         `classification.packet`, so there is no longer a packet config without a
-        packet prompt — and the per-segment block is always the right one."""
+        packet prompt — and the per-segment block is always the right one.
+
+        Merged with the defaults, and packet-shaped, for the reason spelled out
+        in `test_a_legacy_holistic_config_keeps_its_own_hand_written_prompt`:
+        unmerged, this passes whether or not the relocation happened."""
         service = ClassificationService(
             region="us-west-2",
-            config={
-                "classes": _classes("invoice", "receipt"),
-                "classification": {
-                    "model": "us.amazon.nova-2-lite-v1:0",
-                    "classificationMethod": "textbasedHolisticClassification",
-                    "system_prompt": "You split packets, by hand.",
-                    "task_prompt": "my own prompt {DOCUMENT_TEXT}",
-                    "confidence": {
-                        "mode": "topk",
-                        "task_prompt_topk": "PAGE BLOCK",
-                        "task_prompt_topk_packet": "PACKET BLOCK per segment",
+            config=merge_config_with_defaults(
+                {
+                    "classes": _classes("invoice", "receipt"),
+                    "classification": {
+                        "model": "us.amazon.nova-2-lite-v1:0",
+                        "classificationMethod": "textbasedHolisticClassification",
+                        "system_prompt": "You split packets, by hand.",
+                        "task_prompt": (
+                            "my own prompt: return segments with "
+                            "ordinal_start_page {DOCUMENT_TEXT}"
+                        ),
+                        "confidence": {
+                            "mode": "topk",
+                            "task_prompt_topk": "PAGE BLOCK",
+                            "task_prompt_topk_packet": "PACKET BLOCK per segment",
+                        },
                     },
                 },
-            },
+                validate=False,
+            ),
         )
         prompt = service._get_classification_config()["task_prompt"]
         assert "PACKET BLOCK per segment" in prompt

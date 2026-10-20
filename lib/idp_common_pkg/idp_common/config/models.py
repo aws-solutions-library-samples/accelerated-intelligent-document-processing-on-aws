@@ -52,7 +52,11 @@ from typing_extensions import Self
 # and introduced the top-level `hitl` block. v0.7 moved
 # `extraction.agentic.validation` up to `extraction.validation`, because simple
 # extraction now runs the same validate-and-retry path and the knob is no longer
-# agentic-only.
+# agentic-only. v0.8 removed `classification.classificationMethod`, whose two
+# values each bundled two independent choices, in favour of
+# `classification.granularity` plus `classification.modality`; a holistic
+# configuration also has its hand-written flat prompts copied into
+# `classification.packet`, which is where packet granularity reads them.
 CONFIG_FORMAT_VERSION = "0.8"
 
 

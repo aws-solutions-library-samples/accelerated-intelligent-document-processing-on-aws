@@ -119,14 +119,14 @@ class ConfigurationReader:
     # rather than kept because config format 0.8 turned it from unused into a
     # trap.
     #
-    # ⚠️ The hazard is specific. The 0.8 migration's "an explicit granularity
-    # wins" rule is `if not classification.get("granularity")`, and the shipped
-    # default moved from `granularity: ""` to `granularity: page`. So on any path
-    # that merges a legacy delta onto the new defaults BEFORE migrating, that
-    # `page` default would shadow `classificationMethod:
-    # textbasedHolisticClassification` and silently downgrade an operator's
-    # packet behaviour to page — where the old `""` default could not, because it
-    # was falsy.
+    # ⚠️ The hazard is specific. A configuration stored by an earlier release
+    # carries `classificationMethod` and NO `granularity` key at all, and the
+    # 0.8 migration's "an explicit granularity wins" rule is `if not
+    # classification.get("granularity")`. The shipped default is `page`. So on
+    # any path that merges such a delta onto the defaults BEFORE migrating, that
+    # `page` arrives as the delta's own value, shadows `classificationMethod:
+    # textbasedHolisticClassification`, and silently runs page classification on
+    # a configuration asking for packet.
     #
     # Every live path migrates first, deliberately:
     # `merge_utils.merge_config_with_defaults` migrates the delta at the top (its

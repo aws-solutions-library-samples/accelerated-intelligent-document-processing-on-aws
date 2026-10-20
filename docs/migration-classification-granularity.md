@@ -45,14 +45,14 @@ classification:
 | `classificationMethod: multimodalPageLevelClassification` | `granularity: page` |
 | `classificationMethod: textbasedHolisticClassification` | `granularity: packet`, **and the flat prompts are copied to `classification.packet`** (see below) |
 | An unrecognised value | `granularity: page`, with a warning — the same thing the service did with it |
-| `granularity` already set | Left alone. An explicit setting always wins over the migrated one |
+| `granularity` already set to `page` or `packet` | Left alone. An explicit setting always wins over the migrated one |
+| `granularity: ""` | Converted. An empty value means "derive it from `classificationMethod`", which is what the conversion does, so it is not an explicit setting |
 
 ⚠️ **Upgrading from a release, your configuration carries `classificationMethod`
 and no `granularity` at all**, because `granularity` is new in this release — so
-the first row or the second applies to you. The `granularity: ""` row exists for
-a configuration written by a `develop` build that had the setting but not yet the
-removal; an empty value means "derive it", so it is converted rather than treated
-as a deliberate choice.
+the first row or the second is the one that applies to you. The last two rows
+matter only if you have already set `granularity` by hand, or are coming from a
+`develop` build that had the setting.
 
 The value is matched case- and whitespace-insensitively, since a hand-written
 config is where this key most often came from.
@@ -120,9 +120,14 @@ Two details:
 - **Copied, not moved.** The flat prompt stays where it is, because two-stage
   Stage B falls back to it and a config later switched back to `page` would
   otherwise have no page prompt at all.
-- **Only a packet-shaped prompt is copied**, and the test is that it names both
-  keys the segments parser reads: `segments` **and** `ordinal_start_page`. A
-  prompt naming neither, or only one, is the page-level default, which means that
+- **Only a packet-shaped prompt is copied**, and the test is applied to the
+  **task** prompt: it must name both keys the segments parser reads, `segments`
+  **and** `ordinal_start_page`. The system prompt moves with it or not at all —
+  the two were written to describe one output shape, and half a hand-written pair
+  is worse than neither. ⚠️ So a holistic configuration that put its output
+  schema in `system_prompt` and left `task_prompt` minimal gets the shipped
+  packet prompt instead; check the result if that is your shape. A task prompt
+  naming neither key, or only one, is the page-level default, which means that
   configuration was
   *already broken* under holistic — the page prompt asks for one class plus a
   boundary verdict, which the segments parser cannot read. Such a config gets

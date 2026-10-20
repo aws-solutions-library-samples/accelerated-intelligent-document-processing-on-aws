@@ -5,7 +5,12 @@
 # Classification (minimal — single doc type for testing)
 # ============================================================================
 classification:
-  granularity: packet
+  # No `granularity` here on purpose. This file carried
+  # `classificationMethod: textbasedHolisticClassification` at the TOP level,
+  # outside the `classification` block, so nothing ever read it and the config
+  # ran at page granularity. Writing `granularity: packet` would switch on a
+  # setting that was inert, next to a task prompt asking for a `pages` array
+  # that neither parser reads. The notebook using this file does not classify.
   model: us.anthropic.claude-sonnet-4-6
   temperature: "0"
   top_p: "0"
