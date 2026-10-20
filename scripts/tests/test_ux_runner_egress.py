@@ -296,10 +296,10 @@ def test_a_build_extracted_world_writable_is_left_writable_by_its_owner_alone(
     script = build / "assets" / "tool.sh"
     index.write_text("<html></html>")
     script.write_text("#!/bin/sh\n")
-    os.chmod(index, 0o666)
-    os.chmod(script, 0o777)
-    os.chmod(build / "assets", 0o777)
-    os.chmod(build, 0o777)
+    os.chmod(index, 0o666)  # nosec B103 - reproduces GitLab's umask-0000 extraction
+    os.chmod(script, 0o777)  # nosec B103 - reproduces GitLab's umask-0000 extraction
+    os.chmod(build / "assets", 0o777)  # nosec B103 - reproduces GitLab's umask-0000 extraction
+    os.chmod(build, 0o777)  # nosec B103 - reproduces GitLab's umask-0000 extraction
 
     egress.prepare_site(build)
 
