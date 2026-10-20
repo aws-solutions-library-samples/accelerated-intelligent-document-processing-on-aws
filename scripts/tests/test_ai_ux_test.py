@@ -1447,6 +1447,15 @@ def test_a_dry_run_writes_every_artifact_and_makes_no_forge_write(
     assert summary["flows"][0] == "change"
 
 
+#: A claim that the review stack's backend is ``develop``'s, in the shapes it has
+#: been written in: "`develop`'s backend", "the backend behind it is `develop`" and
+#: "backend is `develop` as of the last nightly update". The stack runs whatever it
+#: was last deployed with, which the note and the prompt state as the UI reports it.
+_DEVELOP_BACKEND_RE = re.compile(
+    r"`?\bdevelop\b`?'s backend|\bbackend\b[^.\n]{0,40}\bdevelop\b", re.IGNORECASE
+)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("version", "build", "backend"),
@@ -1465,20 +1474,25 @@ def test_the_note_and_the_prompt_name_the_backend_the_stack_reported(
 ) -> None:
     """The backend caveat is what the signed-in sidebar showed, read once the
     page is signed in, and says so when it showed nothing: the review stack's
-    version and build, never an assumption about where it was last updated from."""
+    version and build, never an assumption about where it was last updated from.
+    The prompt carries both skill files in full, and the model repeats their
+    "Bounds worth stating" list in its report, so no part of it may say otherwise
+    either."""
     harness.facts = signin.PageFacts(
         "idp-ux-nightly", version, build, (1600, 1000, 1.0), None
     )
     assert harness.main("--dry-run") == 0
+    note = harness.artifact("section.md")
     caveats = next(
-        line
-        for line in harness.artifact("section.md").splitlines()
-        if line.startswith("**Caveats:**")
+        line for line in note.splitlines() if line.startswith("**Caveats:**")
     ).replace(section.ZERO_WIDTH_SPACE, "")
     assert caveats.startswith(f"**Caveats:** {backend}")
     assert "nightly update" not in caveats
-    assert backend in harness.agent_args[0]
-    assert "as of the last nightly update" not in harness.agent_args[0]
+    prompt = harness.agent_args[0]
+    assert backend in prompt
+    for text, where in ((prompt, "the prompt"), (note, "the note")):
+        claim = _DEVELOP_BACKEND_RE.search(text)
+        assert claim is None, f"{where} says the backend is develop's: {claim[0]!r}"
     stack = harness.summary()["stack"]
     assert (stack["version"], stack["build"]) == (version, build)
 

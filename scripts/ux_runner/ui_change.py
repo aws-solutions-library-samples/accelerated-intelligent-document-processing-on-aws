@@ -32,8 +32,8 @@ user-visible file exists.
 
 :data:`API_CONTRACT_GLOBS` and :data:`BACKEND_GLOBS` are read over every changed
 path, inside ``src/ui/`` or not. They do not decide anything here; they become
-caveats in the note, because the review stack runs ``develop``'s backend rather
-than the MR's.
+caveats in the note, because the review stack runs its own deployed backend
+rather than the MR's.
 
 Why the globs are matched here
 ------------------------------

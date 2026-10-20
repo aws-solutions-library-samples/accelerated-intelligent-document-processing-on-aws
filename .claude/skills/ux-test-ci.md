@@ -122,7 +122,7 @@ last thing in the message:
 
 The note is read by someone who did not watch the run, so say what it could not do:
 
-- It looked at the MR's UI build against `develop`'s backend on a shared stack, and
-  committed nothing.
+- It looked at the MR's UI build against the review stack's own deployed backend,
+  not the MR's, on a shared stack, and committed nothing.
 - It saw only what the confined browser could reach.
 - It is one machine's look at a screen, not an approval.
