@@ -19,15 +19,20 @@ from unittest.mock import Mock
 import pytest
 
 from idp_common.classification.models import DocumentClassification, PageClassification
-from idp_common.classification.service import (
-    aggregate_page_confidence,
-    parse_confidence,
-)
+from idp_common.classification.service import aggregate_page_confidence
 from idp_common.dynamodb.service import (
     DocumentDynamoDBService,
     serialize_page_classification_signals,
 )
 from idp_common.models import Document, Page, Section
+
+# Imported from its own module rather than through the classification service.
+# The service used to re-export it incidentally, and the packet path's switch to
+# `resolve_class_and_confidence` — which honours a `candidates` list as well as
+# an explicit `confidence` — left the service with no reason to import it, so a
+# test reaching through the service broke on a change that was about something
+# else entirely.
+from idp_common.utils import parse_confidence
 
 
 @pytest.mark.unit
