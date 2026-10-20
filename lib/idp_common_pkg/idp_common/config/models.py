@@ -2131,11 +2131,12 @@ class ClassificationConfig(BaseModel):
         and accuracy decision the operator did not make. (``sectionSplitting``
         below does fall back, which predates this and is a smaller difference.)
 
-        Empty is accepted and resolves to ``page`` so that a stored config
-        carrying the pre-0.8 placeholder — the old default wrote
-        ``granularity: ""`` meaning "derive from classificationMethod" — loads
-        without an error. The migration normally fills it in; this covers a
-        config that carried the empty placeholder and no method at all.
+        Empty is accepted and resolves to ``page``, so a stored config written
+        before this setting existed loads without an error: an empty value meant
+        "derive it from ``classificationMethod``", and with that key gone the
+        page path is what the derivation produced for every value but one. The
+        migration normally fills it in from the method; this covers a config
+        carrying the empty value and no method at all.
         """
         if v is None:
             return "page"

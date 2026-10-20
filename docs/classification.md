@@ -520,36 +520,48 @@ model to:
 3. Match each document segment to one of the defined document types
 4. Record the start and end pages for each identified segment
 
+⚠️ **Write a packet prompt under `classification.packet.task_prompt`, not the
+flat `classification.task_prompt`.** At packet granularity the service prefers
+the `packet` key, and the shipped defaults always supply one — so a packet prompt
+written at the flat key is merged onto a default that wins, and the prompt is
+ignored with nothing reporting it. The flat key is the *page* prompt (and Stage B
+of two-stage falls back to it). A configuration carried over from
+`classificationMethod: textbasedHolisticClassification` has its flat prompt moved
+into `packet` automatically — see
+[Classification Method → Granularity](migration-classification-granularity.md) —
+but a hand-written one has to be in the right place.
+
 Example configuration:
 
 ```yaml
 classification:
   granularity: packet
   model: us.amazon.nova-pro-v1:0
-  task_prompt: >-
-    <task-description>
-    You are a document classification system. Your task is to analyze a document package 
-    containing multiple pages and identify distinct document segments, classifying each 
-    segment according to the predefined document types provided below.
-    </task-description>
+  packet:
+    task_prompt: >-
+      <task-description>
+      You are a document classification system. Your task is to analyze a document package 
+      containing multiple pages and identify distinct document segments, classifying each 
+      segment according to the predefined document types provided below.
+      </task-description>
 
-    <document-types>
-    {CLASS_NAMES_AND_DESCRIPTIONS}
-    </document-types>
+      <document-types>
+      {CLASS_NAMES_AND_DESCRIPTIONS}
+      </document-types>
 
-    <document-boundary-rules>
-    Rules for determining document boundaries:
-    - Content continuity: Pages with continuing paragraphs, numbered sections, or ongoing narratives belong to the same document
-    - Visual consistency: Similar layouts, headers, footers, and styling indicate pages belong together
-    - Logical structure: Documents typically have clear beginning, middle, and end sections
-    - New document indicators: Title pages, cover sheets, or significantly different subject matter signal a new document
-    </document-boundary-rules>
+      <document-boundary-rules>
+      Rules for determining document boundaries:
+      - Content continuity: Pages with continuing paragraphs, numbered sections, or ongoing narratives belong to the same document
+      - Visual consistency: Similar layouts, headers, footers, and styling indicate pages belong together
+      - Logical structure: Documents typically have clear beginning, middle, and end sections
+      - New document indicators: Title pages, cover sheets, or significantly different subject matter signal a new document
+      </document-boundary-rules>
 
-    <<CACHEPOINT>>
+      <<CACHEPOINT>>
 
-    <document-text>
-    {DOCUMENT_TEXT}
-    </document-text>
+      <document-text>
+      {DOCUMENT_TEXT}
+      </document-text>
   ```
 
 ##### Packet granularity: images, few-shot examples and windowing

@@ -12,11 +12,12 @@ constructs `IDPConfig` from whatever dict it is handed, so a bad value is a
 `ValidationError` on the first cell of a notebook rather than a warning in a log.
 
 The migration converts a *legacy* config correctly (`classificationMethod:
-textbasedHolisticClassification` → `granularity: packet`). The failure mode this
-gate exists for is the one edit that defeats it: **renaming the key and keeping
-the old value.** `_has_legacy_markers` then does not fire, the long legacy string
-goes straight to the validator, and five shipped notebooks stop loading. That
-happened on the 0.8 sweep and reached review.
+textbasedHolisticClassification` → `granularity: packet`). The one edit that
+defeats it is **renaming the key and keeping the old value**: `_has_legacy_markers`
+does not fire, the long legacy string goes straight to the validator, and the
+notebook stops loading. That is the shape this gate exists to catch, and it is a
+plausible one every time these settings are swept — a key rename is mechanical and
+the values are not.
 
 ⚠️ **Nothing else in the tree can see it.** `**/*.ipynb` is a scope exclusion for
 both ruff and basedpyright (`CLAUDE.md`), and no suite loads a notebook's config
@@ -47,8 +48,8 @@ VALID_GRANULARITY = {"page", "packet"}
 VALID_STRATEGY = {"single_pass", "two_stage"}
 
 # `"granularity": "x"` (JSON and a notebook's `\"`-escaped source) and
-# `granularity: x` (YAML). An empty value is legitimate — it means "derive it",
-# and the validator accepts it.
+# `granularity: x` (YAML). An empty value is legitimate: the validator accepts it
+# and resolves it to `page`.
 #
 # ⚠️ The value must be **quoted, or a bare scalar running to end of line**. A
 # looser rule that accepted any identifier after the colon read the prose
@@ -146,8 +147,8 @@ def test_the_scan_would_catch_the_defect_it_was_written_for():
         assert hits, spelling
         assert all((q or b) not in VALID_GRANULARITY for _, q, b in hits), spelling
 
-    # It does not fire on a correct value, on the empty "derive it" value, or on
-    # prose that happens to put a word after the key.
+    # It does not fire on a correct value, on the empty value the validator
+    # accepts, or on prose that happens to put a word after the key.
     for ok in (
         "granularity: page",
         '"granularity": "packet"',

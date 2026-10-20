@@ -449,7 +449,15 @@ class ConfigOperation:
                 # multimodalPageLevel/textbasedHolistic) and that nothing in the
                 # product wrote. It was removed in config format 0.8 and is
                 # migrated away on read, so a sniff for it now matches nothing.
-                uses_bda = bool(config_data.get("use_bda")) if config_data else False
+                # ⚠️ Read through `flag_is_true`, not plain truthiness: a
+                # YAML, DynamoDB or UI round-trip can deliver this flag as the
+                # string "false", which is truthy, and the wrong answer here
+                # merges a pipeline configuration onto the BDA defaults.
+                from idp_common.config.flags import flag_is_true
+
+                uses_bda = bool(
+                    config_data and flag_is_true(config_data.get("use_bda"))
+                )
                 pattern = "pattern-1" if uses_bda else "pattern-2"
 
             defaults = load_system_defaults(pattern)

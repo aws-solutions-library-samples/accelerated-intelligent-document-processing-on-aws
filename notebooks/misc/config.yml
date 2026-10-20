@@ -5,169 +5,170 @@ classification:
   top_p: "0.0"
   max_tokens: '4096'
   top_k: '5'
-  task_prompt: >-
-    <task-description>
-
-    You are a document classification system. Your task is to analyze a document
-    package containing multiple pages and identify distinct document segments,
-    classifying each segment according to the predefined document types provided
-    below.
-
-    </task-description>
-
-
-    <document-types>
-
-    {CLASS_NAMES_AND_DESCRIPTIONS}
-
-    </document-types>
-
-
-    <terminology-definitions>
-
-    Key terms used in this task:
-
-    - ordinal_start_page: The one-based beginning page number of a document
-    segment within the document package
-
-    - ordinal_end_page: The one-based ending page number of a document segment
-    within the document package
-
-    - document_type: The document type code detected for a document segment
-
-    - document segment: A continuous range of pages that form a single, complete
-    document
-
-    </terminology-definitions>
-
-
-    <classification-instructions>
-
-    Follow these steps to classify documents:
-
-    1. Read through the entire document package to understand its contents
-
-    2. Identify page ranges that form complete, distinct documents
-
-    3. Match each document segment to ONE of the document types listed in
-    <document-types>
-
-    4. CRITICAL: Only use document types explicitly listed in the
-    <document-types> section
-
-    5. If a document doesn't clearly match any listed type, assign it to the
-    most similar listed type
-
-    6. Pay special attention to adjacent documents of the same type - they must
-    be separated into distinct segments
-
-    7. Record the ordinal_start_page and ordinal_end_page for each identified
-    segment
-
-    8. Provide appropriate reasons and facts for the predicted document type
-
-    </classification-instructions>
-
-
-    <document-boundary-rules>
-
-    Rules for determining document boundaries:
-
-    - Content continuity: Pages with continuing paragraphs, numbered sections,
-    or ongoing narratives belong to the same document
-
-    - Visual consistency: Similar layouts, headers, footers, and styling
-    indicate pages belong together
-
-    - Logical structure: Documents typically have clear beginning, middle, and
-    end sections
-
-    - New document indicators: Title pages, cover sheets, or significantly
-    different subject matter signal a new document
-
-    - Topic coherence: Pages discussing the same subject should be grouped
-    together
-
-    - IMPORTANT: Distinct documents of the same type that are adjacent must be
-    separated into different segments
-
-    </document-boundary-rules>
-
-
-    <output-format>
-
-    Return your classification as valid JSON following this exact structure:
-
-    ```json
-
-    {
-        "segments": [
-            {
-                "ordinal_start_page": 1,
-                "ordinal_end_page": 3,
-                "type": "document_type_from_list",
-                "reason": "facts and reasons to classify as the predicted type",
-            },
-            {
-                "ordinal_start_page": 4,
-                "ordinal_end_page": 7,
-                "type": "document_type_from_list"
-                "reason": "facts and reasons to classify as the predicted type",
-            }
-        ]
-    }
-
-    ```
-
-    </output-format>
-
-
-    <<CACHEPOINT>>
-
-
-    <document-text>
-
-    {DOCUMENT_TEXT}
-
-    </document-text>
-
-
-    <final-instructions>
-
-    Analyze the <document-text> provided above and:
-
-    1. Apply the <classification-instructions> to identify distinct document
-    segments
-
-    2. Use the <document-boundary-rules> to determine where one document ends
-    and another begins
-
-    3. Classify each segment using ONLY the document types from the
-    <document-types> list
-
-    4. Ensure adjacent documents of the same type are separated into distinct
-    segments
-
-    5. Output your classification in the exact JSON format specified in
-    <output-format>
-
-    6. You can get this information from the previous message. Analyze the
-    previous messages to get these instructions.
-
-
-    Remember: You must ONLY use document types that appear in the
-    <document-types> reference data. Do not invent or create new document types.
-
-    </final-instructions>
   temperature: "0.0"
   model: us.amazon.nova-pro-v1:0
-  system_prompt: >
-    You are a document classification expert who can analyze and classify
-    multiple documents and their page boundaries within a document package from
-    various domains. Your task is to determine the document type based on its
-    content and structure, using the provided document type definitions. Your
-    output must be valid JSON according to the requested format.
   granularity: packet
+  packet:
+    system_prompt: >
+      You are a document classification expert who can analyze and classify
+      multiple documents and their page boundaries within a document package from
+      various domains. Your task is to determine the document type based on its
+      content and structure, using the provided document type definitions. Your
+      output must be valid JSON according to the requested format.
+    task_prompt: >-
+      <task-description>
+
+      You are a document classification system. Your task is to analyze a document
+      package containing multiple pages and identify distinct document segments,
+      classifying each segment according to the predefined document types provided
+      below.
+
+      </task-description>
+
+
+      <document-types>
+
+      {CLASS_NAMES_AND_DESCRIPTIONS}
+
+      </document-types>
+
+
+      <terminology-definitions>
+
+      Key terms used in this task:
+
+      - ordinal_start_page: The one-based beginning page number of a document
+      segment within the document package
+
+      - ordinal_end_page: The one-based ending page number of a document segment
+      within the document package
+
+      - document_type: The document type code detected for a document segment
+
+      - document segment: A continuous range of pages that form a single, complete
+      document
+
+      </terminology-definitions>
+
+
+      <classification-instructions>
+
+      Follow these steps to classify documents:
+
+      1. Read through the entire document package to understand its contents
+
+      2. Identify page ranges that form complete, distinct documents
+
+      3. Match each document segment to ONE of the document types listed in
+      <document-types>
+
+      4. CRITICAL: Only use document types explicitly listed in the
+      <document-types> section
+
+      5. If a document doesn't clearly match any listed type, assign it to the
+      most similar listed type
+
+      6. Pay special attention to adjacent documents of the same type - they must
+      be separated into distinct segments
+
+      7. Record the ordinal_start_page and ordinal_end_page for each identified
+      segment
+
+      8. Provide appropriate reasons and facts for the predicted document type
+
+      </classification-instructions>
+
+
+      <document-boundary-rules>
+
+      Rules for determining document boundaries:
+
+      - Content continuity: Pages with continuing paragraphs, numbered sections,
+      or ongoing narratives belong to the same document
+
+      - Visual consistency: Similar layouts, headers, footers, and styling
+      indicate pages belong together
+
+      - Logical structure: Documents typically have clear beginning, middle, and
+      end sections
+
+      - New document indicators: Title pages, cover sheets, or significantly
+      different subject matter signal a new document
+
+      - Topic coherence: Pages discussing the same subject should be grouped
+      together
+
+      - IMPORTANT: Distinct documents of the same type that are adjacent must be
+      separated into different segments
+
+      </document-boundary-rules>
+
+
+      <output-format>
+
+      Return your classification as valid JSON following this exact structure:
+
+      ```json
+
+      {
+          "segments": [
+              {
+                  "ordinal_start_page": 1,
+                  "ordinal_end_page": 3,
+                  "type": "document_type_from_list",
+                  "reason": "facts and reasons to classify as the predicted type",
+              },
+              {
+                  "ordinal_start_page": 4,
+                  "ordinal_end_page": 7,
+                  "type": "document_type_from_list"
+                  "reason": "facts and reasons to classify as the predicted type",
+              }
+          ]
+      }
+
+      ```
+
+      </output-format>
+
+
+      <<CACHEPOINT>>
+
+
+      <document-text>
+
+      {DOCUMENT_TEXT}
+
+      </document-text>
+
+
+      <final-instructions>
+
+      Analyze the <document-text> provided above and:
+
+      1. Apply the <classification-instructions> to identify distinct document
+      segments
+
+      2. Use the <document-boundary-rules> to determine where one document ends
+      and another begins
+
+      3. Classify each segment using ONLY the document types from the
+      <document-types> list
+
+      4. Ensure adjacent documents of the same type are separated into distinct
+      segments
+
+      5. Output your classification in the exact JSON format specified in
+      <output-format>
+
+      6. You can get this information from the previous message. Analyze the
+      previous messages to get these instructions.
+
+
+      Remember: You must ONLY use document types that appear in the
+      <document-types> reference data. Do not invent or create new document types.
+
+      </final-instructions>
 notes: Default settings
 classes:
   - name: letter

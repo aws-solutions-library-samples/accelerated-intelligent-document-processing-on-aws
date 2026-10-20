@@ -1178,7 +1178,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
 
       // Stage A reports no class, so there is nothing to be confident about and
       // no block is composed for it.
-      const confMode = String(conf.mode ?? 'off');
+      // `topk` is `ClassificationConfidenceConfig.mode`'s default, so an absent
+      // key must preview the block the service WILL send. Defaulting to 'off'
+      // is only right when `formValues` is a merged config (where the key is
+      // always present); on a sparse one it hides a block from the preview.
+      const confMode = String(conf.mode ?? 'topk');
       if (selectedStep !== 'classification_segmentation' && confMode !== 'off') {
         // Stage B returns one class, so it takes the PAGE-shaped block whatever
         // the granularity is; the packet block describes a segments array it

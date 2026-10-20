@@ -800,6 +800,17 @@ def test_an_empty_config_file_uploads_an_empty_mapping(
     [
         ({"use_bda": True}, "pattern-1"),
         ({"use_bda": False}, "pattern-2"),
+        # ⚠️ The STRING spellings are the cases plain truthiness gets wrong, and
+        # "false" is the one that matters: a YAML, DynamoDB or UI round-trip can
+        # deliver this flag as a string, and `if config.get("use_bda")` reads
+        # "false" as True — merging a pipeline configuration onto the BDA
+        # defaults, which is the opposite of the harmless direction.
+        ({"use_bda": "false"}, "pattern-2"),
+        ({"use_bda": "False"}, "pattern-2"),
+        ({"use_bda": "true"}, "pattern-1"),
+        # An unrecognised string is NOT truthy either: a typo must not opt a
+        # deployment into the wrong pattern (see `config.flags.flag_is_true`).
+        ({"use_bda": "yes please"}, "pattern-2"),
         ({"classification": {"granularity": "page"}}, "pattern-2"),
         ({}, "pattern-2"),
     ],

@@ -47,11 +47,12 @@ classification:
 | An unrecognised value | `granularity: page`, with a warning — the same thing the service did with it |
 | `granularity` already set | Left alone. An explicit setting always wins over the migrated one |
 
-⚠️ **A released deployment carries `classificationMethod` and no `granularity`
-at all.** `granularity` was added one commit before this change, so only a
-configuration written by an unreleased `develop` build can carry the
-`granularity: ""` placeholder the "already set" row excludes. If you are
-upgrading from a release, the first row or the second applies to you.
+⚠️ **Upgrading from a release, your configuration carries `classificationMethod`
+and no `granularity` at all**, because `granularity` is new in this release — so
+the first row or the second applies to you. The `granularity: ""` row exists for
+a configuration written by a `develop` build that had the setting but not yet the
+removal; an empty value means "derive it", so it is converted rather than treated
+as a deliberate choice.
 
 The value is matched case- and whitespace-insensitively, since a hand-written
 config is where this key most often came from.
@@ -119,8 +120,10 @@ Two details:
 - **Copied, not moved.** The flat prompt stays where it is, because two-stage
   Stage B falls back to it and a config later switched back to `page` would
   otherwise have no page prompt at all.
-- **Only a packet-shaped prompt is copied.** A prompt that does not ask for
-  `segments` is the page-level default, which means that configuration was
+- **Only a packet-shaped prompt is copied**, and the test is that it names both
+  keys the segments parser reads: `segments` **and** `ordinal_start_page`. A
+  prompt naming neither, or only one, is the page-level default, which means that
+  configuration was
   *already broken* under holistic — the page prompt asks for one class plus a
   boundary verdict, which the segments parser cannot read. Such a config gets
   the shipped packet prompt instead, which actually works. If you want the old

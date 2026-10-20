@@ -122,8 +122,8 @@ def migrate_v07_to_v08(config: Dict[str, Any]) -> Dict[str, Any]:
 
         # An explicit `granularity` always wins over the migrated legacy value,
         # so re-running this over a hybrid config cannot clobber a deliberate
-        # setting. An EMPTY granularity is not explicit — that is the "derive it"
-        # placeholder the old default carried.
+        # setting. An EMPTY granularity is not explicit: empty meant "derive it
+        # from classificationMethod", which is what this function is doing.
         if not classification.get("granularity"):
             classification["granularity"] = granularity
 
