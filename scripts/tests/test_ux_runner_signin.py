@@ -8,15 +8,21 @@ signed-in app, with ``localStorage`` and a reload) and records every call. That
 call log is what pins the module's central property: the password reaches the
 page in exactly one call, ``Input.insertText``, and never in page JavaScript or in
 any error, whatever the page throws back. ``UX_TEST_PERSONAS`` decoding and the
-sidebar facts are covered alongside, with every message checked for values.
+sidebar facts are covered alongside, with every message checked for values. The
+facts script itself runs under node against the signed-in sidebar's markup; that
+test skips when node is absent, except in CI, where it fails instead.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+from collections.abc import Iterator
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -562,43 +568,76 @@ SPINNER_HTML = (
 
 
 class _Dom(HTMLParser):
-    """A fixture page's elements in document order, each with its text content."""
+    """A fixture page as a tree: each element a ``{"tag", "attrs", "children"}``
+    mapping, and each run of text a string among its parent's children."""
 
     def __init__(self, markup: str) -> None:
         super().__init__()
-        self.elements: list[tuple[str, dict[str, str | None], list[str]]] = []
-        self._open: list[tuple[str, dict[str, str | None], list[str]]] = []
+        self.root: dict[str, Any] = {"tag": "#document", "attrs": {}, "children": []}
+        self._open = [self.root]
         self.feed(markup)
         self.close()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        element = (tag, dict(attrs), [])
-        self.elements.append(element)
+        element = {
+            "tag": tag,
+            "attrs": {name: value or "" for name, value in attrs},
+            "children": [],
+        }
+        self._open[-1]["children"].append(element)
         self._open.append(element)
 
     def handle_endtag(self, tag: str) -> None:
-        while self._open and self._open.pop()[0] != tag:
+        while len(self._open) > 1 and self._open.pop()["tag"] != tag:
             pass
 
     def handle_data(self, data: str) -> None:
-        for _tag, _attrs, text in self._open:
-            text.append(data)
+        self._open[-1]["children"].append(data)
 
     def link_text(self, href: str) -> str | None:
         """``document.querySelector('a[href="<href>"]').textContent``, or None."""
-        for tag, attrs, text in self.elements:
-            if tag == "a" and attrs.get("href") == href:
-                return "".join(text)
+        for element in _elements(self.root):
+            if element["tag"] == "a" and element["attrs"].get("href") == href:
+                return _text_content(element)
         return None
+
+
+def _elements(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Every element under ``node``, in document order."""
+    for child in node["children"]:
+        if isinstance(child, dict):
+            yield child
+            yield from _elements(child)
+
+
+def _text_content(node: dict[str, Any]) -> str:
+    return "".join(
+        child if isinstance(child, str) else _text_content(child)
+        for child in node["children"]
+    )
+
+
+def _facts_of(dom: _Dom) -> dict[str, Any]:
+    """What the facts script answers on ``dom``, computed here in Python: each
+    Deployment Info link's text content cut to the reader's bound, or ``None``
+    when the page has no such link, and the stand-in window's viewport and URL.
+    ``test_the_facts_script_reads_the_sidebar_links_under_node`` runs the script
+    itself over the same markup and requires the same answer."""
+    value: dict[str, Any] = {}
+    for fact, (href, _label) in signin.DEPLOYMENT_INFO_LINKS.items():
+        text = dom.link_text(href)
+        value[fact] = None if text is None else text[: signin._FACT_LIMIT]
+    value.update(w=1600, h=1000, dpr=1, url="http://localhost:3000/#/documents")
+    return value
 
 
 class SidebarPage:
     """A signed-in page whose facts script reads fixture markup.
 
     Each evaluation sees the next of ``pages`` and the last for good, so a page
-    can show the spinner a few times before its layout. The answer is what the
-    script computes in Chrome: each Deployment Info link's text content, cut to
-    the reader's bound, or ``null`` when the page has no such link.
+    can show the spinner a few times before its layout. The answer is
+    :func:`_facts_of` that page, which the node test holds equal to what the
+    script itself computes.
     """
 
     def __init__(self, *pages: str) -> None:
@@ -612,12 +651,7 @@ class SidebarPage:
         assert params["expression"] == signin._FACTS_JS
         dom = self.pages[min(self.evaluations, len(self.pages) - 1)]
         self.evaluations += 1
-        value: dict[str, Any] = {}
-        for fact, (href, _label) in signin.DEPLOYMENT_INFO_LINKS.items():
-            text = dom.link_text(href)
-            value[fact] = None if text is None else text[: signin._FACT_LIMIT]
-        value.update(w=1600, h=1000, dpr=1, url="http://localhost:3000/#/documents")
-        return {"result": {"value": value}}
+        return {"result": {"value": _facts_of(dom)}}
 
 
 @pytest.mark.unit
@@ -680,3 +714,112 @@ def test_the_links_read_are_the_ones_the_ui_source_renders() -> None:
             rf"href: '{re.escape(href)}'"
         )
         assert re.search(item, source), f"navigation.tsx renders no {label} {href}"
+
+
+HAS_NODE = shutil.which("node") is not None
+IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS"))
+
+#: Runs a page script under node against stub documents built from fixture trees:
+#: elements with their attributes and children, ``textContent`` as the DOM defines
+#: it, and a ``querySelector`` that reads ``tag[attr="value"]`` and throws on any
+#: other selector, so one the stub cannot read fails the test instead of matching
+#: nothing. ``window`` and ``location`` stand in with the values ``_facts_of``
+#: assumes.
+FACTS_HARNESS_JS = r"""
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+class Text {
+  constructor(data) { this.data = data; }
+  get textContent() { return this.data; }
+}
+class Element {
+  constructor(node) {
+    this.localName = node.tag;
+    this.attrs = node.attrs;
+    this.childNodes = node.children.map(
+      (child) => (typeof child === 'string' ? new Text(child) : new Element(child)));
+  }
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
+  }
+  get textContent() { return this.childNodes.map((child) => child.textContent).join(''); }
+  *elements() {
+    for (const child of this.childNodes) {
+      if (child instanceof Element) { yield child; yield* child.elements(); }
+    }
+  }
+}
+const matcher = (selector) => {
+  const parts = /^([a-z][a-z0-9-]*)\[([a-z-]+)="([^"]*)"\]$/.exec(selector);
+  if (!parts) {
+    throw new Error('selector syntax this stub does not implement: ' + JSON.stringify(selector));
+  }
+  const [, tag, name, value] = parts;
+  return (el) => el.localName === tag && el.getAttribute(name) === value;
+};
+const answers = input.pages.map((page) => {
+  const root = new Element(page);
+  globalThis.document = {
+    querySelector: (selector) => {
+      const test = matcher(selector);
+      for (const el of root.elements()) { if (test(el)) { return el; } }
+      return null;
+    },
+  };
+  globalThis.window = { innerWidth: 1600, innerHeight: 1000, devicePixelRatio: 1 };
+  globalThis.location = { href: 'http://localhost:3000/#/documents' };
+  return (0, eval)(input.script);
+});
+process.stdout.write(JSON.stringify(answers));
+"""
+
+
+@pytest.fixture(scope="module")
+def facts_under_node(tmp_path_factory: pytest.TempPathFactory) -> list[Any]:
+    """``signin._FACTS_JS`` as shipped, run under node over the signed-in
+    sidebar and the spinner before it; skipped without node, except in CI, where
+    a skip would let the only check on the script itself go missing."""
+    if not HAS_NODE:
+        reason = "node is not on PATH, and this test runs the facts script under it"
+        if IN_CI:
+            pytest.fail(f"{reason}. CI must run it, so give this job node.")
+        pytest.skip(reason)
+    harness = tmp_path_factory.mktemp("facts") / "harness.js"
+    harness.write_text(FACTS_HARNESS_JS, encoding="utf-8")
+    pages = [_Dom(DEPLOYMENT_INFO_HTML).root, _Dom(SPINNER_HTML).root]
+    done = subprocess.run(
+        ["node", str(harness)],
+        input=json.dumps({"script": signin._FACTS_JS, "pages": pages}),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if done.returncode != 0:
+        pytest.fail(f"node could not run the facts script: {done.stderr.strip()}")
+    return json.loads(done.stdout)
+
+
+@pytest.mark.unit
+def test_the_facts_script_reads_the_sidebar_links_under_node(
+    facts_under_node: list[Any],
+) -> None:
+    """Every other facts test reads the fixture through ``_facts_of``, a Python
+    stand-in for the script. This runs the script itself, so a selector, a
+    property or a bound it gets wrong fails here: on the sidebar it answers each
+    link's whole text, on the spinner nothing, and both answers equal the
+    stand-in's."""
+    sidebar, spinner = facts_under_node
+    assert sidebar == _facts_of(_Dom(DEPLOYMENT_INFO_HTML))
+    assert spinner == _facts_of(_Dom(SPINNER_HTML))
+    assert (sidebar["stack"], sidebar["version"], sidebar["build"]) == (
+        "Stack Name: idp-ux-nightly",
+        "Version: 0.6.12",
+        "Build: 2026-10-16 21:07:20",
+    )
+    assert [spinner[fact] for fact in signin.DEPLOYMENT_INFO_LINKS] == [None] * 3
+    facts = signin.page_facts(FactsPage(sidebar), timeout=0)
+    assert (facts.stack_name, facts.version, facts.build) == (
+        "idp-ux-nightly",
+        "0.6.12",
+        "2026-10-16",
+    )
