@@ -475,12 +475,38 @@ def _code(text: object, limit: int) -> str:
     return sanitize(text, limit).replace("`", "'")
 
 
+def _backend(stack: StackFacts) -> str:
+    """The backend the MR's UI ran against: the stack, its version and its build.
+
+    Each of the two is shown only in the shape :class:`StackFacts` accepts, and
+    one the UI did not show that way is named as unread instead.
+    """
+    text = f"backend: `{_code(stack.name, NAME_CHARS)}`"
+    if stack.shown_version:
+        text += f" v{stack.shown_version}"
+    if stack.shown_build:
+        text += f", build {stack.shown_build}"
+    unread = [
+        fact
+        for fact, shown in (
+            ("version", stack.shown_version),
+            ("build", stack.shown_build),
+        )
+        if not shown
+    ]
+    if unread:
+        text += f"; its {' and '.join(unread)} could not be read from the UI"
+    return text
+
+
 def caveats_for(change: ui_change.UiChange, stack: StackFacts) -> list[str]:
-    """What a reader must know to weigh the section, in note order."""
-    first = (
-        f"backend is `develop` as of the last nightly update of "
-        f"`{_code(stack.name, NAME_CHARS)}`"
-    )
+    """What a reader must know to weigh the section, in note order.
+
+    The first names the backend the UI ran against as the UI reports it, which
+    is the review stack's own deployment and not the MR's, so it says when the MR
+    changes backend files that the stack therefore does not run.
+    """
+    first = _backend(stack)
     if change.backend:
         first += "; this MR's own backend changes are not deployed there"
     caveats = [first]
@@ -494,8 +520,6 @@ def caveats_for(change: ui_change.UiChange, stack: StackFacts) -> list[str]:
             f"this MR changes the API contract ({shown}), so screens that depend "
             "on it are reported as blocked, not broken"
         )
-    if stack.shown_version is None:
-        caveats.append("the stack version could not be read from the UI")
     return caveats
 
 

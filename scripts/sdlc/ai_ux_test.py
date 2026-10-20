@@ -138,9 +138,9 @@ What it does NOT protect, stated rather than implied
   than its sign-in address once the page has loaded it; until then, on every full
   page load, and on a page that lists users, the frames show the address, which
   is a fixed, non-secret name. The password never reaches a frame.
-* **The version and build in the note's heading are the MR's to choose.** The MR's
-  own UI renders them, so they are shown only in the expected shapes and labelled
-  as the UI reports them.
+* **The version and build in the note's heading and backend caveat are the MR's to
+  choose.** The MR's own UI renders them, so they are shown only in the expected
+  shapes and labelled as the UI reports them.
 * **The socket audit is an alarm, not the enforcement.** It polls, so a socket
   opened and closed between two polls is not seen, during the sign-in as at any
   other time; the proxy is the enforcement. It needs the job to run as root;

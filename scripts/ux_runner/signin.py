@@ -62,6 +62,15 @@ SUBMIT_SELECTORS = ('button[type="submit"]',)
 #: The ``localStorage`` key the UI sets when the welcome page is dismissed
 #: (``WELCOME_DISMISSED_KEY`` in ``src/ui/src/routes/constants.ts``).
 WELCOME_DISMISSED_KEY = "idp-welcome-dismissed"
+#: The sidebar's Deployment Info items :func:`page_facts` reads, by fact: the
+#: ``href`` of each one's link and the label its text starts with.
+#: ``src/ui/src/components/genaiidp-layout/navigation.tsx`` renders each as a link
+#: whose whole text is the label and the value, ``Version: 0.6.12``.
+DEPLOYMENT_INFO_LINKS: dict[str, tuple[str, str]] = {
+    "stack": ("#stackname", "Stack Name:"),
+    "version": ("#version", "Version:"),
+    "build": ("#builddatetime", "Build:"),
+}
 
 #: Where Amplify UI shows a sign-in error.
 _ALERT_SELECTORS = ('[role="alert"]', ".amplify-alert")
@@ -161,13 +170,15 @@ _LOADED_JS = (
 )
 _FACTS_JS = (
     "(() => { "
-    "const pick = (h) => document.querySelector('a[href=\"#' + h + '\"]') "
-    "|| document.getElementById(h); "
-    "const text = (h) => { const el = pick(h); "
+    "const text = (href) => { "
+    "const el = document.querySelector('a[href=\"' + href + '\"]'); "
     f"return el ? String(el.textContent || '').slice(0, {_FACT_LIMIT}) : null; }}; "
-    "return { stack: text('stackname'), version: text('version'), "
-    "build: text('builddatetime'), w: window.innerWidth, h: window.innerHeight, "
-    "dpr: window.devicePixelRatio, "
+    "return { "
+    + "".join(
+        f"{fact}: text({json.dumps(href)}), "
+        for fact, (href, _label) in DEPLOYMENT_INFO_LINKS.items()
+    )
+    + "w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio, "
     f"url: String(location.href).slice(0, {_URL_LIMIT}) }}; }})()"
 )
 
@@ -352,13 +363,13 @@ def _labelled(value: Any, prefix: str) -> str | None:
 
 
 def _version(value: Any) -> str | None:
-    text = _labelled(value, "Version:")
+    text = _labelled(value, DEPLOYMENT_INFO_LINKS["version"][1])
     token = text.split()[0] if text else ""
     return token if _VERSION_RE.fullmatch(token) else None
 
 
 def _build_date(value: Any) -> str | None:
-    text = _labelled(value, "Build:") or ""
+    text = _labelled(value, DEPLOYMENT_INFO_LINKS["build"][1]) or ""
     found = _DATE_RE.search(text)
     if found is None:
         return None
@@ -377,20 +388,36 @@ def _viewport(width: Any, height: Any, ratio: Any) -> tuple[int, int, float] | N
     return int(width), int(height), float(ratio)
 
 
-def page_facts(session: chrome.CdpLike) -> PageFacts:
-    """Stack name, version, build date, viewport and URL, in one evaluation.
+def page_facts(
+    session: chrome.CdpLike,
+    *,
+    timeout: float = 30.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> PageFacts:
+    """Stack name, version, build date, viewport and URL, once the sidebar has them.
 
-    The sidebar's ``Stack Name:``, ``Version:`` and ``Build:`` items are read by
-    their ``#stackname``, ``#version`` and ``#builddatetime`` links. A version
-    that does not have a version's shape and a build without a date read as
-    ``None``.
+    The sidebar's Deployment Info items are read by their links
+    (:data:`DEPLOYMENT_INFO_LINKS`). The UI renders no sidebar at all until its
+    settings, which carry those three, have arrived from SSM after the sign-in, so
+    straight after the reload the page shows only a spinner. The page is read
+    again every quarter second until one of the three links is there or
+    ``timeout`` seconds have passed, and then taken as it is: a fact the page
+    does not show reads as ``None``, and so do a version without a version's
+    shape and a build without a date.
     """
-    value = chrome.evaluate(session, _FACTS_JS)
-    facts = value if isinstance(value, dict) else {}
+    deadline = clock() + timeout
+    while True:
+        value = chrome.evaluate(session, _FACTS_JS)
+        facts = value if isinstance(value, dict) else {}
+        shown = any(facts.get(fact) is not None for fact in DEPLOYMENT_INFO_LINKS)
+        if shown or clock() >= deadline:
+            break
+        sleep(_POLL_SECONDS)
     url = facts.get("url")
     shown_url = _page_text(url, _URL_LIMIT) if isinstance(url, str) else ""
     return PageFacts(
-        stack_name=_labelled(facts.get("stack"), "Stack Name:"),
+        stack_name=_labelled(facts.get("stack"), DEPLOYMENT_INFO_LINKS["stack"][1]),
         version=_version(facts.get("version")),
         build=_build_date(facts.get("build")),
         viewport=_viewport(facts.get("w"), facts.get("h"), facts.get("dpr")),

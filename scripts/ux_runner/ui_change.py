@@ -85,8 +85,8 @@ UI_PREFIX = "src/ui/"
 TEST_PATH_GLOBS = ("**/__tests__/**", "**/*.test.*", "**/*.spec.*")
 
 #: Files that define the contract between the UI and its API. The review stack
-#: runs develop's backend, so a screen that needs a contract this MR changes is
-#: reported as blocked rather than broken.
+#: runs its own deployed backend, not this MR's, so a screen that needs a contract
+#: this MR changes is reported as blocked rather than broken.
 API_CONTRACT_GLOBS = (
     "**/schema.graphql",
     "**/api_validation_spec.json",
@@ -94,8 +94,8 @@ API_CONTRACT_GLOBS = (
     "src/ui/src/graphql/operations/**",
 )
 
-#: Files whose change only takes effect once deployed. The review stack is develop
-#: as of its last nightly update, so the note says when an MR carries any.
+#: Files whose change only takes effect once deployed. The review stack runs its
+#: own deployment, not this MR's, so the note says when an MR carries any.
 BACKEND_GLOBS = (
     "template.yaml",
     "nested/**",

@@ -489,6 +489,9 @@ class Harness:
         }
         self.viewport: dict[str, Any] = {"w": 1600, "h": 1000, "dpr": 1}
         self.viewport_error: Exception | None = None
+        self.facts = signin.PageFacts(
+            "idp-ux-nightly", "0.6.12", "2026-10-13", (1600, 1000, 1.0), None
+        )
         self.chapter_list = [("0:00", "Open the viewer"), ("0:31", "Rotate page 2")]
         self.refusals = [
             {
@@ -586,12 +589,7 @@ class Harness:
             verify_policy=self._step("verify_policy", None),
             verify_proxy_path=self._step("verify_proxy_path", None),
             sign_in=self._sign_in,
-            page_facts=self._step(
-                "page_facts",
-                signin.PageFacts(
-                    "idp-ux-nightly", "0.6.12", "2026-10-13", (1600, 1000, 1.0), None
-                ),
-            ),
+            page_facts=self._step("page_facts", self.facts),
             verify_viewport=self._verify_viewport,
             measure_viewport=self._measure_viewport,
             socket_watch=self._socket_watch,
@@ -1417,6 +1415,42 @@ def test_a_dry_run_writes_every_artifact_and_makes_no_forge_write(
     assert summary["toolchain"]["node"] == "v22.14.0"
     assert summary["model"]["stop"] == "end_turn"
     assert summary["flows"][0] == "change"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("version", "build", "backend"),
+    [
+        ("0.6.12", "2026-10-16", "backend: `idp-ux-nightly` v0.6.12, build 2026-10-16"),
+        (
+            None,
+            None,
+            "backend: `idp-ux-nightly`; its version and build could not be read from "
+            "the UI",
+        ),
+    ],
+)
+def test_the_note_and_the_prompt_name_the_backend_the_stack_reported(
+    harness: Harness, version: str | None, build: str | None, backend: str
+) -> None:
+    """The backend caveat is what the signed-in sidebar showed, read once the
+    page is signed in, and says so when it showed nothing: the review stack's
+    version and build, never an assumption about where it was last updated from."""
+    harness.facts = signin.PageFacts(
+        "idp-ux-nightly", version, build, (1600, 1000, 1.0), None
+    )
+    assert harness.main("--dry-run") == 0
+    caveats = next(
+        line
+        for line in harness.artifact("section.md").splitlines()
+        if line.startswith("**Caveats:**")
+    ).replace(section.ZERO_WIDTH_SPACE, "")
+    assert caveats.startswith(f"**Caveats:** {backend}")
+    assert "nightly update" not in caveats
+    assert backend in harness.agent_args[0]
+    assert "as of the last nightly update" not in harness.agent_args[0]
+    stack = harness.summary()["stack"]
+    assert (stack["version"], stack["build"]) == (version, build)
 
 
 @pytest.mark.unit

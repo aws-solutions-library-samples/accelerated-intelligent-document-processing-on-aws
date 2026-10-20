@@ -15,13 +15,18 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+NAVIGATION_TSX = (
+    SCRIPTS.parent / "src" / "ui" / "src" / "components" / "genaiidp-layout"
+) / "navigation.tsx"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -445,7 +450,8 @@ def test_page_facts_strip_the_sidebar_prefixes_and_read_the_viewport() -> None:
         url="http://localhost:3000/#/documents",
     )
     assert len(page.expressions) == 1
-    assert 'a[href="#' in page.expressions[0]
+    for href, _label in signin.DEPLOYMENT_INFO_LINKS.values():
+        assert f"text({json.dumps(href)})" in page.expressions[0]
 
 
 @pytest.mark.unit
@@ -463,7 +469,8 @@ def test_page_facts_strip_the_sidebar_prefixes_and_read_the_viewport() -> None:
 def test_a_version_without_a_versions_shape_reads_as_none(
     version: str | None, expected: str | None
 ) -> None:
-    assert signin.page_facts(FactsPage({"version": version})).version == expected
+    facts = signin.page_facts(FactsPage({"version": version}), timeout=0)
+    assert facts.version == expected
 
 
 @pytest.mark.unit
@@ -505,6 +512,171 @@ def test_page_rendered_facts_are_bounded_and_printable() -> None:
     ],
 )
 def test_missing_or_malformed_facts_read_as_none(value: Any) -> None:
-    facts = signin.page_facts(FactsPage(value))
+    facts = signin.page_facts(FactsPage(value), timeout=0)
     assert facts.viewport is None
     assert facts.stack_name is None and facts.version is None and facts.build is None
+
+
+#: The signed-in sidebar's Deployment Info section on the review stack, as
+#: Cloudscape's SideNavigation renders the items navigation.tsx gives it: each item
+#: an ``li`` holding one link whose only child is a ``span`` of the item's text, and
+#: the version's "Update" badge a sibling of that link, not inside it. The classes
+#: are the UI bundle's; the expandable section's header is cut to its text and the
+#: popover around the badge is left out.
+DEPLOYMENT_INFO_HTML = """\
+<div class="idp-side-nav"><nav class="awsui_root_l0dv0_1qeic_145">
+<ul class="awsui_list_l0dv0_1qeic_224 awsui_list-variant-root_l0dv0_1qeic_245">
+<li data-itemid="item-1" class="awsui_list-item_l0dv0_1qeic_260"><a href="#/documents" \
+class="awsui_link_l0dv0_1qeic_318 awsui_link-active_l0dv0_1qeic_327" aria-current="page">\
+<span class="awsui_link-text_eymn4_rug8v_6">Document List</span></a></li>
+<li data-itemid="item-9" class="awsui_list-item_l0dv0_1qeic_260">\
+<div class="awsui_section_l0dv0_1qeic_271 awsui_refresh_l0dv0_1qeic_284">\
+<div role="button" aria-expanded="true"><span>Deployment Info</span></div><div>\
+<ul class="awsui_list_l0dv0_1qeic_224">
+<li data-itemid="item-1" class="awsui_list-item_l0dv0_1qeic_260"><a href="#stackname" \
+class="awsui_link_l0dv0_1qeic_318"><span class="awsui_link-text_eymn4_rug8v_6">\
+Stack Name: idp-ux-nightly</span></a></li>
+<li data-itemid="item-2" class="awsui_list-item_l0dv0_1qeic_260"><a href="#version" \
+class="awsui_link_l0dv0_1qeic_318"><span class="awsui_link-text_eymn4_rug8v_6">\
+Version: 0.6.12</span></a><span class="awsui_info_l0dv0_1qeic_364 awsui_info_1fhsi_6k3bb_5">\
+<span class="awsui_badge_1yjyg_12ixj_145 awsui_badge-color-blue_1yjyg_12ixj_197">\
+Update</span></span></li>
+<li data-itemid="item-3" class="awsui_list-item_l0dv0_1qeic_260"><a href="#builddatetime" \
+class="awsui_link_l0dv0_1qeic_318"><span class="awsui_link-text_eymn4_rug8v_6">\
+Build: 2026-10-16 21:07:20</span></a></li>
+<li data-itemid="item-4" class="awsui_list-item_l0dv0_1qeic_260"><a href="#idppattern" \
+class="awsui_link_l0dv0_1qeic_318"><span class="awsui_link-text_eymn4_rug8v_6">\
+Pattern: Unified</span></a></li>
+<li data-itemid="item-5" class="awsui_list-item_l0dv0_1qeic_260"><a href="#region" \
+class="awsui_link_l0dv0_1qeic_318"><span class="awsui_link-text_eymn4_rug8v_6">\
+Region: us-east-1</span></a></li>
+</ul></div></div></li>
+</ul></nav></div>
+"""
+#: What the page holds after the sign-in's reload and until the UI's settings
+#: arrive: the layout waits for them behind a spinner, so there is no sidebar.
+SPINNER_HTML = (
+    '<div style="display: flex; justify-content: center">'
+    '<span role="progressbar" aria-label="Loading"></span></div>'
+)
+
+
+class _Dom(HTMLParser):
+    """A fixture page's elements in document order, each with its text content."""
+
+    def __init__(self, markup: str) -> None:
+        super().__init__()
+        self.elements: list[tuple[str, dict[str, str | None], list[str]]] = []
+        self._open: list[tuple[str, dict[str, str | None], list[str]]] = []
+        self.feed(markup)
+        self.close()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        element = (tag, dict(attrs), [])
+        self.elements.append(element)
+        self._open.append(element)
+
+    def handle_endtag(self, tag: str) -> None:
+        while self._open and self._open.pop()[0] != tag:
+            pass
+
+    def handle_data(self, data: str) -> None:
+        for _tag, _attrs, text in self._open:
+            text.append(data)
+
+    def link_text(self, href: str) -> str | None:
+        """``document.querySelector('a[href="<href>"]').textContent``, or None."""
+        for tag, attrs, text in self.elements:
+            if tag == "a" and attrs.get("href") == href:
+                return "".join(text)
+        return None
+
+
+class SidebarPage:
+    """A signed-in page whose facts script reads fixture markup.
+
+    Each evaluation sees the next of ``pages`` and the last for good, so a page
+    can show the spinner a few times before its layout. The answer is what the
+    script computes in Chrome: each Deployment Info link's text content, cut to
+    the reader's bound, or ``null`` when the page has no such link.
+    """
+
+    def __init__(self, *pages: str) -> None:
+        self.pages = [_Dom(page) for page in pages]
+        self.evaluations = 0
+
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, timeout: float = 30.0
+    ) -> dict[str, Any]:
+        assert method == "Runtime.evaluate" and params is not None
+        assert params["expression"] == signin._FACTS_JS
+        dom = self.pages[min(self.evaluations, len(self.pages) - 1)]
+        self.evaluations += 1
+        value: dict[str, Any] = {}
+        for fact, (href, _label) in signin.DEPLOYMENT_INFO_LINKS.items():
+            text = dom.link_text(href)
+            value[fact] = None if text is None else text[: signin._FACT_LIMIT]
+        value.update(w=1600, h=1000, dpr=1, url="http://localhost:3000/#/documents")
+        return {"result": {"value": value}}
+
+
+@pytest.mark.unit
+def test_the_facts_are_read_from_the_links_the_sidebar_renders() -> None:
+    """The live review stack's sidebar showed "Version: 0.6.12" and "Build:
+    2026-10-16 21:07:20" under Deployment Info; read from that structure, the
+    version is the release and the build its date, and the "Update" badge beside
+    the version's link stays out of the version."""
+    time = FakeTime()
+    page = SidebarPage(DEPLOYMENT_INFO_HTML)
+    facts = signin.page_facts(page, sleep=time.sleep, clock=time.clock)
+    assert facts == signin.PageFacts(
+        stack_name="idp-ux-nightly",
+        version="0.6.12",
+        build="2026-10-16",
+        viewport=(1600, 1000, 1.0),
+        url="http://localhost:3000/#/documents",
+    )
+    assert (page.evaluations, time.now) == (1, 0.0)
+
+
+@pytest.mark.unit
+def test_the_facts_wait_for_the_sidebar_the_ui_renders_once_its_settings_arrive() -> (
+    None
+):
+    """Straight after the sign-in's reload the UI shows only a spinner, because it
+    renders its layout once its settings have come from SSM; reading then gave
+    a run no version and no build although the sidebar showed both."""
+    time = FakeTime()
+    page = SidebarPage(SPINNER_HTML, SPINNER_HTML, SPINNER_HTML, DEPLOYMENT_INFO_HTML)
+    facts = signin.page_facts(page, sleep=time.sleep, clock=time.clock)
+    assert (facts.stack_name, facts.version, facts.build) == (
+        "idp-ux-nightly",
+        "0.6.12",
+        "2026-10-16",
+    )
+    assert page.evaluations == 4
+    assert time.now == pytest.approx(3 * signin._POLL_SECONDS)
+
+
+@pytest.mark.unit
+def test_a_sidebar_that_never_appears_gives_no_facts_once_the_wait_is_over() -> None:
+    time = FakeTime()
+    page = SidebarPage(SPINNER_HTML)
+    facts = signin.page_facts(page, timeout=5.0, sleep=time.sleep, clock=time.clock)
+    assert (facts.stack_name, facts.version, facts.build) == (None, None, None)
+    assert facts.viewport == (1600, 1000, 1.0)
+    assert 5.0 <= time.now < 5.0 + signin._POLL_SECONDS
+    assert page.evaluations == round(5.0 / signin._POLL_SECONDS) + 1
+
+
+@pytest.mark.unit
+def test_the_links_read_are_the_ones_the_ui_source_renders() -> None:
+    """Each fact's ``href`` and label are those navigation.tsx gives the
+    Deployment Info item, so a change to either there fails here first."""
+    source = NAVIGATION_TSX.read_text(encoding="utf-8")
+    for href, label in signin.DEPLOYMENT_INFO_LINKS.values():
+        item = (
+            rf"text: `{re.escape(label)} \$\{{settings\.\w+\}}`,\s*"
+            rf"href: '{re.escape(href)}'"
+        )
+        assert re.search(item, source), f"navigation.tsx renders no {label} {href}"

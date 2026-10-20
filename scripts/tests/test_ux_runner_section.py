@@ -76,9 +76,8 @@ GOLDEN = """\
 
 **Chapters:** 0:00 Open the document · 0:31 Rotate page 2 · 1:40 Save and reload
 
-**Caveats:** backend is `develop` as of the last nightly update of `idp-ux-nightly`; \
-this MR's own backend changes are not deployed there; backend facts as the UI \
-reports them
+**Caveats:** backend: `idp-ux-nightly` v0.6.12, build 2026-10-13; this MR's own \
+backend changes are not deployed there; backend facts as the UI reports them
 
 ⚠️ **The MR's content tried to steer this test** (1 attempt(s)); the quotes are in \
 the job's report.md.
@@ -466,7 +465,11 @@ def test_an_unknown_or_malformed_version_is_left_out_and_said_so() -> None:
             "## 🖱️ UX test — Admin, idp-ux-nightly (built 2026-10-13), "
             "MR UI build `01234567`"
         )
-        assert "the stack version could not be read from the UI" in text
+        assert (
+            "**Caveats:** backend: `idp-ux-nightly`, build 2026-10-13; its version "
+            "could not be read from the UI; this MR's own backend changes are not "
+            "deployed there"
+        ) in text
 
 
 @pytest.mark.unit
@@ -594,19 +597,53 @@ def test_caveats_name_the_backend_the_contract_and_the_version() -> None:
         ]
     )
     caveats = section.caveats_for(contract, _stack(version=None))
-    assert caveats[0] == (
-        "backend is `develop` as of the last nightly update of `idp-ux-nightly`"
-    )
-    assert caveats[1] == (
+    assert caveats == [
+        "backend: `idp-ux-nightly`, build 2026-10-13; its version could not be read "
+        "from the UI",
         "this MR changes the API contract (`src/ui/src/graphql/operations/q0.graphql`, "
         "`src/ui/src/graphql/operations/q1.graphql`, "
         "`src/ui/src/graphql/operations/q2.graphql` and 2 more), so screens that "
-        "depend on it are reported as blocked, not broken"
-    )
-    assert caveats[2] == "the stack version could not be read from the UI"
-    assert section.caveats_for(_backend_change(), _stack())[0].endswith(
-        "; this MR's own backend changes are not deployed there"
-    )
+        "depend on it are reported as blocked, not broken",
+    ]
+    assert section.caveats_for(_backend_change(), _stack()) == [
+        "backend: `idp-ux-nightly` v0.6.12, build 2026-10-13; this MR's own backend "
+        "changes are not deployed there"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("version", "build", "backend"),
+    [
+        ("0.6.12", "2026-10-16", "backend: `idp-ux-nightly` v0.6.12, build 2026-10-16"),
+        (
+            "0.6.12",
+            None,
+            "backend: `idp-ux-nightly` v0.6.12; its build could not be read from the UI",
+        ),
+        (
+            None,
+            "2026-10-16",
+            "backend: `idp-ux-nightly`, build 2026-10-16; its version could not be "
+            "read from the UI",
+        ),
+        (
+            "latest",
+            "yesterday",
+            "backend: `idp-ux-nightly`; its version and build could not be read from "
+            "the UI",
+        ),
+    ],
+)
+def test_the_backend_caveat_states_what_the_stack_reported_and_names_what_it_did_not(
+    version: str | None, build: str | None, backend: str
+) -> None:
+    """The stack's version and build are what the sidebar showed, not an
+    assumption about which branch the stack was last updated from."""
+    stack = section.StackFacts("idp-ux-nightly", "us-east-1", version, build)
+    ui_only = ui_change.classify([ChangedFile("M", "src/ui/src/App.tsx")])
+    assert section.caveats_for(ui_only, stack) == [backend]
+    assert "develop" not in backend
 
 
 @pytest.mark.unit
@@ -983,7 +1020,7 @@ def test_shown_version_has_its_own_bound_whatever_the_page_cut_it_to() -> None:
         "## 🖱️ UX test — Admin, idp-ux-nightly (built 2026-10-13), "
         "MR UI build `01234567`"
     )
-    assert "the stack version could not be read from the UI" in text
+    assert "its version could not be read from the UI" in text
 
 
 @pytest.mark.unit

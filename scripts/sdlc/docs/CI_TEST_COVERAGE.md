@@ -478,8 +478,9 @@ treats that file as diagnostics only.
    Chrome for Testing headless as uid `uxbrowser`, with the hardened flags and the
    managed policy, and starts the socket audit of Chrome's uid at the same moment;
 6. verifies that the policy is in force and that the browser's traffic reaches the
-   proxy, then signs the persona in over DevTools and checks that the signed-in
-   page's viewport is 1600×1000, all before recording starts;
+   proxy, then signs the persona in over DevTools, reads the stack's version and
+   build from the signed-in sidebar for the note's backend caveat, and checks that
+   the signed-in page's viewport is 1600×1000, all before recording starts;
 7. starts `scripts/ux_recorder.py`, then runs `claude -p` with the prompt on stdin, in
    its own process group, holding only `chrome-devtools-mcp`'s navigation, input,
    snapshot and screenshot tools and the four tools of the recorder's stdio adapter
