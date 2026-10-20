@@ -886,9 +886,12 @@ class TestPacketConfidence:
         # Persisted on a DECLARED Page field, so it survives the Step Functions
         # hop and reaches DynamoDB (GitHub #565 is that distinction).
         for page_id in ("1", "2"):
-            assert [
-                c["class"] for c in result.pages[page_id].classification_candidates
-            ] == ["invoice", "receipt"]
+            persisted = result.pages[page_id].classification_candidates
+            # Asserted non-None separately: the field is Optional, and `or []`
+            # would quietly turn "nothing was persisted" into a passing empty
+            # comparison, which is the failure this test exists to catch.
+            assert persisted is not None
+            assert [c["class"] for c in persisted] == ["invoice", "receipt"]
 
     def test_an_out_of_vocabulary_candidate_is_dropped_from_the_list(self):
         """Shared with the page path via resolve_class_and_confidence: a model

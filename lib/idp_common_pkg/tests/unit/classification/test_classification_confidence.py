@@ -20,6 +20,11 @@ import pytest
 
 from idp_common.classification.models import DocumentClassification, PageClassification
 from idp_common.classification.service import aggregate_page_confidence
+from idp_common.dynamodb.service import (
+    DocumentDynamoDBService,
+    serialize_page_classification_signals,
+)
+from idp_common.models import Document, Page, Section
 
 # Imported from its own module rather than through the classification service.
 # The service used to re-export it incidentally, and the packet path's switch to
@@ -28,11 +33,6 @@ from idp_common.classification.service import aggregate_page_confidence
 # test reaching through the service broke on a change that was about something
 # else entirely.
 from idp_common.utils import parse_confidence
-from idp_common.dynamodb.service import (
-    DocumentDynamoDBService,
-    serialize_page_classification_signals,
-)
-from idp_common.models import Document, Page, Section
 
 
 @pytest.mark.unit
