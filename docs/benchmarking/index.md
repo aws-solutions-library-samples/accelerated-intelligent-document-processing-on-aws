@@ -366,7 +366,12 @@ Three things about reading the result:
   than `0` when nothing carried a request count, because not every metering entry
   does and "made no calls" is a different claim from "not metered".
   **`classification_output_tokens_per_page`** separates the granularities too,
-  and independently of metering coverage: page granularity emits a verdict per
+  and on a more robust basis — it is a mechanical consequence of how many answers
+  the model emits rather than of a request count the runtime may or may not
+  record. ⚠️ It is still a metering figure, so like the cost figures it is
+  computed over the documents whose metering read, not over every document
+  scored; compare `n_docs` with the `read(s) FAILED` line to see whether that
+  was all of them. Page granularity emits a verdict per
   page, measured at 216.7 against 45.7 for `packet-text` on the same 8-document
   `docsplit` corpus. ⚠️ A token count from a corpus that small is a reliable
   signal — it is a mechanical consequence of how many answers the model emits —

@@ -177,7 +177,7 @@ def build_config(base_path, model_id, mode, top_k, variant=None):
     return merge_config_with_defaults(copy.deepcopy(cfg), validate=True)
 
 
-def assert_variant_merged(cfg, variant, mode):
+def variant_merge_problems(cfg, variant, mode):
     """Refuse a config whose variant did not survive the merge.
 
     The same reasoning as the confidence-block check: a cell whose `granularity`
@@ -435,6 +435,10 @@ def score_run(res, run_id):
     cls_tokens = {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0}
     cls_by_context = {}
     page_count = 0
+    # Documents and pages whose metering read. See the note at the accumulation
+    # site: these are the denominators for anything derived from metering.
+    metered_docs = 0
+    metered_pages = 0
     # Pooled across documents rather than averaged per document, for the same
     # reason the confidence separation is: most single documents have too few
     # sections for a per-doc figure to mean anything, and averaging a
@@ -553,9 +557,23 @@ def score_run(res, run_id):
             unread.append(f"{doc_name}: metering {metering_read.state}")
         row = lib.doc_row(tracking, run_id, doc_name)
         try:
-            page_count += int(row.get("PageCount") or 0)
+            pages = int(row.get("PageCount") or 0)
         except (TypeError, ValueError):
-            pass
+            pages = 0
+        page_count += pages
+        # ⚠️ Every per-document and per-page figure built from METERING must
+        # divide by the documents whose metering actually read, not by every
+        # document scored. The numerators above accumulate inside
+        # `metering_read.is_present`; `docs` and `page_count` do not. Dividing a
+        # partial numerator by a full denominator understates in exact proportion
+        # to how much went unread, which is the dilution #1079 is about and which
+        # this function prints "excluded, not zeroed" about four lines up — then
+        # zeroed them in the divisor. Measured: an 8-document run with 4
+        # documents' metering unread, each metered document making 6 Bedrock
+        # calls, reported `bedrock_calls_per_document: 3.0`.
+        if metering_read.is_present:
+            metered_docs += 1
+            metered_pages += pages
 
     scored = pooled_right + pooled_wrong
     sep = None
@@ -630,55 +648,68 @@ def score_run(res, run_id):
         else None,
         "classification_cost": round(cls_cost, 5) if priceable else None,
         "pages_processed": page_count,
-        "classification_cost_per_page": round(cls_cost / page_count, 6)
-        if page_count and priceable
+        "classification_cost_per_page": round(cls_cost / metered_pages, 6)
+        if metered_pages and priceable
         else None,
         # Reported alongside per-page because the two flatter opposite
         # granularities: per-page favours packet on long packets, per-document
         # favours page on short ones, and quoting one alone invites the wrong
         # conclusion about which setting to use.
-        "classification_cost_per_document": round(cls_cost / len(docs), 6)
-        if docs and priceable
+        # ⚠️ `metered_docs`/`metered_pages`, not `docs`/`page_count`: every figure
+        # below is built from metering, whose numerator accumulates only for a
+        # document whose metering read. See the note at the accumulation site.
+        "classification_cost_per_document": round(cls_cost / metered_docs, 6)
+        if metered_docs and priceable
         else None,
         "classification_output_tokens_per_page": round(
-            cls_tokens["outputTokens"] / page_count, 1
+            cls_tokens["outputTokens"] / metered_pages, 1
         )
-        if page_count
+        if metered_pages
         else None,
         # The prefix saving is an INPUT effect and the per-page reasoning saving
         # is an OUTPUT effect; a single total hides which one a given corpus
         # realises, and they move in opposite directions between granularities.
         "classification_input_tokens_per_page": round(
-            cls_tokens["inputTokens"] / page_count, 1
+            cls_tokens["inputTokens"] / metered_pages, 1
         )
-        if page_count
+        if metered_pages
         else None,
         "classification_tokens": cls_tokens,
         # Per metering context, so a two-stage run shows where the money and the
         # tokens went — Segmentation or Labeling — rather than only their sum.
         # See the note on `lambda_invocations` above for what that count does and
         # does not evidence.
-        # The loop variable is `totals`, not `bucket`: a comprehension scopes its
-        # own name so this one cannot leak, but `bucket` is the S3 output bucket
-        # in this function and copying this block somewhere it would leak is the
-        # whole shape of the defect fixed above.
+        # The loop variable is `totals` rather than `bucket`, which in this
+        # function is the S3 output bucket. A comprehension scopes its own name,
+        # so this one could not leak even if it were called `bucket` — the naming
+        # is for whoever copies the block somewhere it would.
         "classification_by_context": {
             context: {
-                **totals,
+                # Named rather than spread: `**totals` carried the internal
+                # bookkeeping counter `cost_unpriced_docs` into the published
+                # summary by inheritance rather than by decision.
+                "inputTokens": totals["inputTokens"],
+                "outputTokens": totals["outputTokens"],
+                "cacheReadInputTokens": totals["cacheReadInputTokens"],
+                "lambda_invocations": totals["lambda_invocations"],
+                "bedrock_calls": totals["bedrock_calls"],
+                # Kept: a reader needs to know the cost below is withheld because
+                # some document could not be priced, not because it was free.
+                "cost_unpriced_docs": totals["cost_unpriced_docs"],
                 "cost": round(totals["cost"], 6)
                 if not totals["cost_unpriced_docs"]
                 else None,
                 "lambda_invocations_per_document": round(
-                    totals["lambda_invocations"] / len(docs), 2
+                    totals["lambda_invocations"] / metered_docs, 2
                 )
-                if docs
+                if metered_docs
                 else None,
                 # The figure the N-calls-to-one claim is actually about. `None`
                 # when nothing carried a Bedrock request count, never 0.
                 "bedrock_calls_per_document": round(
-                    totals["bedrock_calls"] / len(docs), 2
+                    totals["bedrock_calls"] / metered_docs, 2
                 )
-                if docs and totals["bedrock_calls"] is not None
+                if metered_docs and totals["bedrock_calls"] is not None
                 else None,
             }
             for context, totals in sorted(cls_by_context.items())
@@ -794,7 +825,7 @@ def main():
         # is indistinguishable from a real result saying the two settings perform
         # identically, which is the question being asked.
         if variant:
-            problems = assert_variant_merged(cfg, variant, a.mode)
+            problems = variant_merge_problems(cfg, variant, a.mode)
         else:
             block = (cfg.get("classification", {}).get("confidence") or {}).get(
                 f"task_prompt_{'topk' if a.mode == 'topk' else 'verbalized'}", ""

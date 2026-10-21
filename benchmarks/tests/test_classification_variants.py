@@ -13,7 +13,7 @@ because a setting did not survive the merge with the system defaults. That
 result is indistinguishable from a real one saying the two settings perform
 identically, which is exactly the question the run is asking.
 
-``assert_variant_merged`` is the guard against it, and a guard is only worth
+``variant_merge_problems`` is the guard against it, and a guard is only worth
 having if it actually fires. So this suite drives it in both directions:
 
 * every variant in :data:`VARIANTS` merges to a config that genuinely carries
@@ -90,7 +90,7 @@ def test_the_shipped_default_is_available_as_a_baseline():
 @pytest.mark.parametrize("variant", sorted(bench.VARIANTS))
 def test_every_variant_merges_to_what_it_claims(docsplit_base, a_model, variant):
     cfg = _config(docsplit_base, a_model, variant)
-    assert bench.assert_variant_merged(cfg, variant, "topk") == []
+    assert bench.variant_merge_problems(cfg, variant, "topk") == []
 
 
 @pytest.mark.parametrize("variant", sorted(bench.VARIANTS))
@@ -219,7 +219,7 @@ def test_the_guard_refuses_a_config_that_lost_its_setting(
     config is worse than no guard, because the run then looks checked."""
     cfg = copy.deepcopy(_config(docsplit_base, a_model, variant))
     break_it(cfg["classification"])
-    problems = bench.assert_variant_merged(cfg, variant, "topk")
+    problems = bench.variant_merge_problems(cfg, variant, "topk")
     assert problems, f"breaking {expected} was not detected"
     assert any(expected in p for p in problems), (
         f"problems do not name {expected}: {problems}"
@@ -396,7 +396,8 @@ def test_an_unscored_label_half_stays_none_rather_than_zero():
 
 
 def test_an_older_report_without_the_halves_reports_none():
-    """Results committed before #1510 carry neither key."""
+    """A report produced before the boundary/label split (#1329) carries
+    neither key."""
     analyze = harness_module("analyze")
     scored = analyze.score_classification(
         {"doc_split_metrics": {"page_level_accuracy": 0.9, "page_details": []}}
@@ -506,12 +507,26 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
 # --------------------------------------------------------------------------
 
 
+#: Set by the stub below, so a negative assertion can prove execution got past
+#: the site it is asserting about.
+reached: dict[str, bool] = {}
+
+
 def _main_with(monkeypatch, argv):
     """Drive `main()` far enough to reach its --variants validation and no
     further: every call after it needs AWS."""
     import sys as _sys
 
     monkeypatch.setattr(_sys, "argv", ["run_classification_bench.py", *argv])
+
+    reached.clear()
+    reached["resolve_stack"] = False
+
+    def _tripwire(*a, **k):
+        reached["resolve_stack"] = True
+        raise RuntimeError("stop here: past the warning site")
+
+    monkeypatch.setattr(bench, "resolve_stack", _tripwire)
     return bench.main
 
 
@@ -559,6 +574,10 @@ def test_main_warns_when_no_baseline_cell_is_requested(monkeypatch, capsys):
 
 
 def test_main_does_not_warn_when_the_baseline_is_requested(monkeypatch, capsys):
+    """⚠️ Asserting the ABSENCE of a string needs proof that execution reached
+    the site that would print it, or it passes vacuously on any earlier failure.
+    The plan line is printed just before the warning site, so requiring it is
+    what makes this test able to fail."""
     main = _main_with(
         monkeypatch,
         [
@@ -572,7 +591,14 @@ def test_main_does_not_warn_when_the_baseline_is_requested(monkeypatch, capsys):
     )
     with pytest.raises(BaseException):
         main()
-    assert "no baseline" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # Proof of reach: `resolve_stack` is the first call AFTER the warning site, so
+    # its having been attempted is what rules out an earlier exit. Without this
+    # the assertion below passes on any failure raised before the warning.
+    assert reached["resolve_stack"], (
+        "never reached the warning site, so the assertion below proves nothing"
+    )
+    assert "no baseline" not in out
 
 
 def test_the_bedrock_call_count_is_captured_per_context():
@@ -692,3 +718,97 @@ class TestThePooledBoundaryFigureIsNotZeroWhenNothingWasJudged:
         assert out["boundary_accuracy"] == 0.0
         # No boundary matched, so no label was judged: not scored, not zero.
         assert out["label_accuracy"] is None
+
+
+@pytest.mark.unit
+class TestMeteringFiguresDivideByMeteredDocumentsOnly:
+    """⚠️ "Excluded, not zeroed" has to hold in the DIVISOR too.
+
+    Every figure derived from metering accumulates its numerator inside
+    ``if metering_read.is_present``, while ``docs`` and ``page_count`` advance for
+    every document whose evaluation report read. Dividing the one by the other
+    understates in exact proportion to how much metering went unread — the
+    dilution #1079 is about — while the harness prints "excluded, not zeroed"
+    four lines above.
+
+    Measured before the fix on an 8-document run with 4 documents' metering
+    unread, each metered document making 6 Bedrock calls:
+    ``bedrock_calls_per_document: 3.0`` and
+    ``lambda_invocations_per_document: 0.5``.
+    """
+
+    REPORT = {
+        "doc_split_metrics": {
+            "total_splits": 4,
+            "boundary_matched_sections": 3,
+            "label_matched_sections": 2,
+            "page_details": [{"correct": True, "predicted_confidence": 0.9}],
+        }
+    }
+    METERING = {
+        "Classification/bedrock/m": {
+            "inputTokens": 1000,
+            "outputTokens": 200,
+            "requests": 6,
+        },
+        "Classification/lambda/requests": {"requests": 1},
+    }
+
+    def _score(self, monkeypatch, metered: set[str], n: int = 8):
+        monkeypatch.setattr(
+            lib,
+            "list_doc_prefixes",
+            lambda *a, **k: [f"r/d{i}/" for i in range(1, n + 1)],
+        )
+        monkeypatch.setattr(
+            lib, "read_json", lambda b, k: lib.Reading.present(self.REPORT)
+        )
+        monkeypatch.setattr(
+            lib,
+            "read_metering",
+            lambda _t, _r, doc: (
+                lib.Reading.present(self.METERING)
+                if doc in metered
+                else lib.Reading.absent("gone")
+            ),
+        )
+        monkeypatch.setattr(lib, "doc_row", lambda *a, **k: {"PageCount": 2})
+        return bench.score_run({"output_bucket": "b", "tracking_table": "t"}, "r")
+
+    def test_half_the_metering_unread_does_not_halve_the_call_counts(self, monkeypatch):
+        out = self._score(monkeypatch, {"d1", "d2", "d3", "d4"})
+        ctx = out["classification_by_context"]["Classification"]
+        assert ctx["bedrock_calls_per_document"] == pytest.approx(6.0), (
+            "diluted by the documents whose metering never read"
+        )
+        assert ctx["lambda_invocations_per_document"] == pytest.approx(1.0)
+
+    def test_half_the_metering_unread_does_not_halve_the_per_page_tokens(
+        self, monkeypatch
+    ):
+        out = self._score(monkeypatch, {"d1", "d2", "d3", "d4"})
+        assert out["classification_output_tokens_per_page"] == pytest.approx(100.0)
+        assert out["classification_input_tokens_per_page"] == pytest.approx(500.0)
+
+    def test_the_counts_a_full_read_produces_are_unchanged(self, monkeypatch):
+        """The figures must not move when nothing is unread — otherwise this fix
+        would be trading one wrong answer for another."""
+        everything = {f"d{i}" for i in range(1, 9)}
+        out = self._score(monkeypatch, everything)
+        ctx = out["classification_by_context"]["Classification"]
+        assert ctx["bedrock_calls_per_document"] == pytest.approx(6.0)
+        assert out["classification_output_tokens_per_page"] == pytest.approx(100.0)
+
+    def test_no_metering_at_all_reports_none_rather_than_zero(self, monkeypatch):
+        out = self._score(monkeypatch, set())
+        assert out["classification_by_context"] is None
+        assert out["classification_output_tokens_per_page"] is None
+        assert out["classification_cost_per_document"] is None
+
+    def test_the_document_and_page_totals_still_count_every_document(self, monkeypatch):
+        """`n_docs` and `pages_processed` are about what was SCORED, not what was
+        metered, and must keep counting everything — they are how a reader sees
+        that metering was partial in the first place."""
+        out = self._score(monkeypatch, {"d1"})
+        assert out["n_docs"] == 8
+        assert out["pages_processed"] == 16
