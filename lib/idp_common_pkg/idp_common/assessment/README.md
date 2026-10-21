@@ -447,6 +447,55 @@ the standalone and in-shard paths: it confirms every extracted value has a real
 box, emitting `assessment_confidence_out_of_range` / `assessment_geometry_incomplete`
 for anything structurally wrong.
 
+### Omitted fields, as distinct from unscored rows
+
+The recovery and reporting above are built around list **rows**, and a populated
+**non-list** field the response omitted outright was invisible to all of it
+([#1474](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1474)).
+Three separate mechanisms each stopped short of it, which is why a section could
+record confidence for 3 of its 6 populated fields and still report unqualified
+success with a tick beside Confidence:
+
+- `reconcile_assessment_to_data` padded list fields only, so the field got no
+  placeholder — and since geometry grounding attaches a box per confidence leaf,
+  no leaf meant no bounding box either.
+- Both recovery call sites gate the ladder on there being a list field to retry
+  rows *of* (`if all_list_fields:` in `assess_results_batched`; an early return
+  whose own comment said "scalar-only classes always land here" in the integrated
+  path), so this shape reached **no** rung at all.
+- The gate's scalar branch range-checked the leaves it *found*, and an omitted
+  field yields none. The coverage rung below it could not reach the section
+  either: its denominator counts list rows and it is gated on that being
+  non-zero, so a form with no list attribute has a zero denominator.
+
+The cause measured was not truncation — the response was valid JSON carrying the
+first three keys, and the same model on the same class answered about all ten
+fields for the next section of the same packet. So `_retry_missing_scalars` is one
+same-model rung asking about only the still-missing fields, bounded by
+`max_retries` and stopping on a round that recovers nothing; it does **not**
+escalate, because `escalation_rounds` is a bound shared with the row ladder and
+the evidence is that the same model can answer. Whatever survives it is reported
+as `assessment_fields_unscored` (**warning**; **error** when no populated field in
+the section is scored) and counted in `split_stats` as `scalar_retry_calls`,
+`fields_recovered_by_retry` and `unrecoverable_fields`.
+
+Two design points worth not re-deciding by accident:
+
+- **The findings stay out of `gaps`.** That dict is keyed field → row *index* and
+  its lengths are the numerator `coverage_from_gaps` divides by a list-row
+  denominator, so a scalar entry there makes `unscored_rows` exceed
+  `expected_rows` and drives `scored_rows` negative. The coverage denominator is
+  therefore **unchanged**, and `conf_coverage` still means what the benchmark
+  grids measured; whether it should also count scalar leaves is a separate
+  decision with a published-metric consequence.
+- **Scalar padding belongs to the final assembly only.** `reconcile_assessment_to_data`
+  takes `pad_missing_scalars`, and the intermediate reconciles reach it through
+  `_reconcile_rows_only` with padding off. Those callers hand their non-big fields
+  on as a slice's `scalars`, and the batched path takes the first slice whose
+  `scalars` is non-empty — so padding per chunk would let a first chunk that
+  omitted a scalar shadow a later chunk's real score with a null placeholder,
+  losing data the pipeline already had.
+
 It also reports **partial coverage**
 ([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)
 item 3). The gate already computed which rows carry no confidence, but every

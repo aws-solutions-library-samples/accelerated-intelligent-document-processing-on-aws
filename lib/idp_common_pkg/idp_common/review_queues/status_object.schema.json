@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/review-status-1.0.json",
+  "title": "IDP review status object",
+  "description": "s3://<OutputBucket>/<documentKey>/review/status.json, written by idp_common.review_queues. See idp_common/review_queues/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_key",
+    "status",
+    "sequence",
+    "cycle_id",
+    "profile",
+    "queue",
+    "reasons",
+    "reason_count",
+    "sections_in_review",
+    "escalated",
+    "timestamps"
+  ],
+  "$defs": {
+    "runRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "manifest_uri": { "type": ["string", "null"] }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "section_id", "score", "threshold"],
+      "properties": {
+        "kind": { "enum": ["low_confidence", "blueprint_confidence"] },
+        "section_id": { "type": "string" },
+        "field": { "type": ["string", "null"] },
+        "label": { "type": ["string", "null"] },
+        "score": { "type": "number" },
+        "threshold": { "type": "number" }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "document_key": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["in_review", "complete", "rejected"] },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "cycle_id": { "type": "string", "pattern": "^[0-9a-f]{21}$" },
+    "profile": { "type": "string" },
+    "queue": { "type": "string" },
+    "run_id": { "type": ["string", "null"] },
+    "machine_output": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/runRef" }] },
+    "final_output": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/runRef" }] },
+    "reasons": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/reason" } },
+    "reason_count": { "type": "integer", "minimum": 0 },
+    "sections_in_review": { "type": "array", "items": { "type": "string" } },
+    "escalated": { "type": "boolean" },
+    "disposition": { "enum": [null, "complete", "rejected"] },
+    "reviewer": { "type": ["string", "null"] },
+    "reject_reason": { "type": ["string", "null"] },
+    "reject_note": { "type": ["string", "null"] },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enqueued_at", "updated_at"],
+      "properties": {
+        "enqueued_at": { "type": "string" },
+        "disposed_at": { "type": ["string", "null"] },
+        "finalized_at": { "type": ["string", "null"] },
+        "updated_at": { "type": "string" }
+      }
+    }
+  }
+}

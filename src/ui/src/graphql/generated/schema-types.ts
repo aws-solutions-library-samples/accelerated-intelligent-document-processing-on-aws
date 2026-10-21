@@ -69,7 +69,9 @@ export type AgentJobConnection = {
 
 export type AnnotationQueue = {
   baseVersion?: Maybe<Scalars['Int']['output']>;
+  claimLeaseMinutes?: Maybe<Scalars['Int']['output']>;
   claimedByOthers: Scalars['Int']['output'];
+  completedDocs?: Maybe<Scalars['Int']['output']>;
   documents: Array<AnnotationQueueItem>;
   draftVersion?: Maybe<Scalars['Int']['output']>;
   inspectedDocs?: Maybe<Scalars['Int']['output']>;
@@ -79,12 +81,16 @@ export type AnnotationQueue = {
   nextObjectKey?: Maybe<Scalars['String']['output']>;
   remainingDocs: Scalars['Int']['output'];
   reviewedDocs: Scalars['Int']['output'];
+  summaryCount?: Maybe<Scalars['Int']['output']>;
+  summaryStatus?: Maybe<Scalars['String']['output']>;
   testSetId: Scalars['String']['output'];
   totalDocs: Scalars['Int']['output'];
 };
 
 export type AnnotationQueueItem = {
   alertCount?: Maybe<Scalars['Int']['output']>;
+  assignedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  assignedTo?: Maybe<Scalars['String']['output']>;
   available: Scalars['Boolean']['output'];
   claimedBy?: Maybe<Scalars['String']['output']>;
   claimedByMe: Scalars['Boolean']['output'];
@@ -93,13 +99,16 @@ export type AnnotationQueueItem = {
   fieldCount?: Maybe<Scalars['Int']['output']>;
   inputKey: Scalars['String']['output'];
   labelSource?: Maybe<Scalars['String']['output']>;
+  leaseExpiresAt?: Maybe<Scalars['AWSDateTime']['output']>;
   minConfidence?: Maybe<Scalars['Float']['output']>;
   objectKey: Scalars['String']['output'];
   reviewObjectKey?: Maybe<Scalars['String']['output']>;
   reviewStatus?: Maybe<Scalars['String']['output']>;
   reviewed: Scalars['Boolean']['output'];
+  reviewedSections?: Maybe<Scalars['Int']['output']>;
   sectionCount: Scalars['Int']['output'];
   sections?: Maybe<Array<TestSetDocumentSection>>;
+  skipped?: Maybe<Scalars['Boolean']['output']>;
 };
 
 /**
@@ -211,6 +220,11 @@ export type CircuitBreakerStatus = {
   openedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   recoveryAttempts?: Maybe<Scalars['Int']['output']>;
   state?: Maybe<Scalars['String']['output']>;
+};
+
+export type ClaimNextResult = {
+  item?: Maybe<ReviewItem>;
+  reason?: Maybe<Scalars['String']['output']>;
 };
 
 export type ClassCandidate = {
@@ -731,6 +745,46 @@ export type GenerateRuleJsonResponse = {
   success: Scalars['Boolean']['output'];
 };
 
+export type InboxMessage = {
+  body: Scalars['String']['output'];
+  createdAt: Scalars['AWSDateTime']['output'];
+  id: Scalars['ID']['output'];
+  link?: Maybe<Scalars['String']['output']>;
+  metadata?: Maybe<Scalars['AWSJSON']['output']>;
+  read: Scalars['Boolean']['output'];
+  readAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  severity: Scalars['String']['output'];
+  source: Scalars['String']['output'];
+  title: Scalars['String']['output'];
+  type: Scalars['String']['output'];
+};
+
+export type InboxMessagePage = {
+  items: Array<InboxMessage>;
+  nextToken?: Maybe<Scalars['String']['output']>;
+  unreadCount: Scalars['Int']['output'];
+};
+
+export type InboxMessageType = {
+  defaultSeverity: Scalars['String']['output'];
+  description: Scalars['String']['output'];
+  displayName: Scalars['String']['output'];
+  id: Scalars['String']['output'];
+  muted: Scalars['Boolean']['output'];
+};
+
+export type InboxMutationResult = {
+  notFoundIds: Array<Scalars['ID']['output']>;
+  unreadCount: Scalars['Int']['output'];
+  updated: Scalars['Int']['output'];
+};
+
+export type InboxPreferences = {
+  mutedTypes: Array<Scalars['String']['output']>;
+  types: Array<InboxMessageType>;
+  updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
 /**
  * A feature installed in this IDP stack via AWS Marketplace (or the simulator).
  *
@@ -852,14 +906,21 @@ export type Mutation = {
    * the feature stack's ui-deployer custom resource.
    */
   applyFeatureConfigPreset: FeatureConfigPresetResult;
+  assignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   autoDetectSections?: Maybe<Scalars['String']['output']>;
+  claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
+  claimReviewItem?: Maybe<ReviewItem>;
+  claimTestSetDocument?: Maybe<TestSetDocumentAssignment>;
   clearDraftLabels?: Maybe<TestSet>;
+  clearReadInboxMessages?: Maybe<InboxMutationResult>;
+  completeReviewItem?: Maybe<ReviewItem>;
   completeSectionReview?: Maybe<Document>;
   copyToBaseline: CopyToBaselineResponse;
   createDocument?: Maybe<CreateDocumentOutput>;
   createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
+  createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
@@ -870,12 +931,18 @@ export type Mutation = {
   deleteDocument: Scalars['Boolean']['output'];
   deleteDocumentVersion: Scalars['Boolean']['output'];
   deleteFinetuningJob?: Maybe<Scalars['Boolean']['output']>;
+  deleteInboxMessages?: Maybe<InboxMutationResult>;
+  deleteReviewQueue?: Maybe<Scalars['Boolean']['output']>;
   deleteTestSets: Scalars['Boolean']['output'];
   deleteTests: Scalars['Boolean']['output'];
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
+  forceReleaseReviewItem?: Maybe<ReviewItem>;
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
   labelConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
+  markAllInboxMessagesRead?: Maybe<InboxMutationResult>;
+  markInboxMessages?: Maybe<InboxMutationResult>;
+  moveReviewItem?: Maybe<ReviewItem>;
   openTestSetAnnotationDraft?: Maybe<TestSetAnnotationDraft>;
   pauseCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   probeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
@@ -883,6 +950,7 @@ export type Mutation = {
   publishCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   publishTestSetVersion?: Maybe<TestSetVersion>;
   putConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
+  reassignReviewItem?: Maybe<ReviewItem>;
   reextractTestSetDocument?: Maybe<DraftLabelJob>;
   /** Called by a feature stack's RegisterFeature custom resource once the stack has deployed. */
   registerFeature: InstalledFeature;
@@ -898,7 +966,9 @@ export type Mutation = {
    * custom resource.
    */
   registerFeatureHooks: FeatureHooksRegistration;
+  rejectReviewItem?: Maybe<ReviewItem>;
   releaseReview?: Maybe<Document>;
+  releaseReviewItem?: Maybe<ReviewItem>;
   removeDocumentsFromTestSet?: Maybe<TestSet>;
   /**
    * Delete all of a feature's preset config versions on uninstall. A
@@ -906,17 +976,22 @@ export type Mutation = {
    * config); it is skipped with a warning and the call still succeeds.
    */
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
+  removeReviewItem?: Maybe<ReviewItem>;
+  renewReviewLease?: Maybe<ReviewItem>;
   reprocessDocument: Scalars['Boolean']['output'];
   resetTestSetLabels?: Maybe<TestSet>;
   restoreConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
+  saveReviewDraft?: Maybe<ReviewDraft>;
+  saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
   skipAllSectionsReview?: Maybe<Document>;
+  skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
   startMultiDocDiscovery?: Maybe<MultiDocDiscoveryJob>;
   startTestRun?: Maybe<TestRun>;
   /**
@@ -932,6 +1007,8 @@ export type Mutation = {
    */
   subscribeFeature?: Maybe<FeatureEntitlement>;
   syncBdaIdp?: Maybe<SyncBdaIdpResponse>;
+  takeOverReviewItem?: Maybe<ReviewItem>;
+  unassignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   /** Called by a feature stack's RegisterFeature custom resource on stack delete. */
   unregisterFeature: Scalars['Boolean']['output'];
   /**
@@ -958,10 +1035,13 @@ export type Mutation = {
   updateDocumentSections: ProcessChangesResponse;
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
+  updateInboxPreferences?: Maybe<InboxPreferences>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
+  updateReviewQueue?: Maybe<ReviewQueueDefinition>;
   updateTestSet?: Maybe<TestSet>;
   updateTestSetDocumentSections?: Maybe<TestSetDocumentSections>;
+  updateTestSetQueue?: Maybe<TestSetQueueSettings>;
   updateUser?: Maybe<User>;
   uploadDiscoveryDocument: DisPresignedUrlResponse;
   uploadDocument: PresignedUrlResponse;
@@ -1021,10 +1101,23 @@ export type MutationApplyFeatureConfigPresetArgs = {
 };
 
 
+export type MutationAssignTestSetDocumentsArgs = {
+  assigneeEmail: Scalars['String']['input'];
+  objectKeys: Array<Scalars['String']['input']>;
+  testSetId: Scalars['String']['input'];
+};
+
+
 export type MutationAutoDetectSectionsArgs = {
   bucket: Scalars['String']['input'];
   documentKey: Scalars['String']['input'];
   version?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type MutationClaimNextReviewItemArgs = {
+  queueName?: InputMaybe<Scalars['String']['input']>;
+  queueProfile?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -1033,8 +1126,28 @@ export type MutationClaimReviewArgs = {
 };
 
 
+export type MutationClaimReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+};
+
+
+export type MutationClaimTestSetDocumentArgs = {
+  objectKey: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
+};
+
+
 export type MutationClearDraftLabelsArgs = {
   testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationCompleteReviewItemArgs = {
+  checklist?: InputMaybe<Array<Scalars['Boolean']['input']>>;
+  cycleId: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -1064,6 +1177,11 @@ export type MutationCreateEmptyTestSetArgs = {
 
 export type MutationCreateFinetuningJobArgs = {
   input: CreateFinetuningJobInput;
+};
+
+
+export type MutationCreateReviewQueueArgs = {
+  input: ReviewQueueDefinitionInput;
 };
 
 
@@ -1122,6 +1240,16 @@ export type MutationDeleteFinetuningJobArgs = {
 };
 
 
+export type MutationDeleteInboxMessagesArgs = {
+  ids: Array<Scalars['ID']['input']>;
+};
+
+
+export type MutationDeleteReviewQueueArgs = {
+  id: Scalars['String']['input'];
+};
+
+
 export type MutationDeleteTestSetsArgs = {
   testSetIds: Array<Scalars['String']['input']>;
 };
@@ -1134,6 +1262,12 @@ export type MutationDeleteTestsArgs = {
 
 export type MutationDeleteUserArgs = {
   userId: Scalars['ID']['input'];
+};
+
+
+export type MutationForceReleaseReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -1152,6 +1286,19 @@ export type MutationLabelConfigProfileRevisionArgs = {
   notes?: InputMaybe<Scalars['String']['input']>;
   profileName: Scalars['String']['input'];
   revision: Scalars['Int']['input'];
+};
+
+
+export type MutationMarkInboxMessagesArgs = {
+  ids: Array<Scalars['ID']['input']>;
+  read: Scalars['Boolean']['input'];
+};
+
+
+export type MutationMoveReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+  targetQueue: Scalars['String']['input'];
 };
 
 
@@ -1197,6 +1344,13 @@ export type MutationPutConfigPrefixMappingArgs = {
 };
 
 
+export type MutationReassignReviewItemArgs = {
+  assigneeEmail: Scalars['String']['input'];
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+};
+
+
 export type MutationReextractTestSetDocumentArgs = {
   input: ReextractTestSetDocumentInput;
 };
@@ -1212,7 +1366,21 @@ export type MutationRegisterFeatureHooksArgs = {
 };
 
 
+export type MutationRejectReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKey: Scalars['String']['input'];
+  reason: Scalars['String']['input'];
+};
+
+
 export type MutationReleaseReviewArgs = {
+  objectKey: Scalars['String']['input'];
+};
+
+
+export type MutationReleaseReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
   objectKey: Scalars['String']['input'];
 };
 
@@ -1225,6 +1393,19 @@ export type MutationRemoveDocumentsFromTestSetArgs = {
 
 export type MutationRemoveFeatureConfigPresetArgs = {
   featureId: Scalars['String']['input'];
+};
+
+
+export type MutationRemoveReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKey: Scalars['String']['input'];
+};
+
+
+export type MutationRenewReviewLeaseArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -1248,6 +1429,23 @@ export type MutationRestoreConfigProfileRevisionArgs = {
 
 export type MutationResumeCircuitBreakerArgs = {
   reason: Scalars['String']['input'];
+};
+
+
+export type MutationSaveReviewDraftArgs = {
+  baseRevision?: InputMaybe<Scalars['Int']['input']>;
+  cycleId: Scalars['String']['input'];
+  data: Scalars['AWSJSON']['input'];
+  objectKey: Scalars['String']['input'];
+  sectionId: Scalars['String']['input'];
+};
+
+
+export type MutationSaveTestSetDocumentSectionArgs = {
+  data?: InputMaybe<Scalars['AWSJSON']['input']>;
+  objectKey: Scalars['String']['input'];
+  sectionId: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
 };
 
 
@@ -1289,6 +1487,12 @@ export type MutationSkipAllSectionsReviewArgs = {
 };
 
 
+export type MutationSkipTestSetDocumentArgs = {
+  objectKey: Scalars['String']['input'];
+  testSetId: Scalars['String']['input'];
+};
+
+
 export type MutationStartMultiDocDiscoveryArgs = {
   configVersion: Scalars['String']['input'];
   s3Bucket?: InputMaybe<Scalars['String']['input']>;
@@ -1316,6 +1520,18 @@ export type MutationSyncBdaIdpArgs = {
   saveArn?: InputMaybe<Scalars['Boolean']['input']>;
   syncMode?: InputMaybe<Scalars['String']['input']>;
   versionName?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type MutationTakeOverReviewItemArgs = {
+  cycleId: Scalars['String']['input'];
+  objectKey: Scalars['String']['input'];
+};
+
+
+export type MutationUnassignTestSetDocumentsArgs = {
+  objectKeys: Array<Scalars['String']['input']>;
+  testSetId: Scalars['String']['input'];
 };
 
 
@@ -1416,6 +1632,11 @@ export type MutationUpdateFinetuningJobStatusArgs = {
 };
 
 
+export type MutationUpdateInboxPreferencesArgs = {
+  mutedTypes: Array<Scalars['String']['input']>;
+};
+
+
 export type MutationUpdateModelConfigLimitsArgs = {
   modelConfigLimits: Scalars['AWSJSON']['input'];
 };
@@ -1426,6 +1647,11 @@ export type MutationUpdatePricingArgs = {
 };
 
 
+export type MutationUpdateReviewQueueArgs = {
+  input: ReviewQueueDefinitionInput;
+};
+
+
 export type MutationUpdateTestSetArgs = {
   input: UpdateTestSetInput;
 };
@@ -1433,6 +1659,11 @@ export type MutationUpdateTestSetArgs = {
 
 export type MutationUpdateTestSetDocumentSectionsArgs = {
   input: UpdateTestSetDocumentSectionsInput;
+};
+
+
+export type MutationUpdateTestSetQueueArgs = {
+  input: TestSetQueueSettingsInput;
 };
 
 
@@ -1479,6 +1710,13 @@ export type MutationUploadSampleDocumentArgs = {
   prefix?: InputMaybe<Scalars['String']['input']>;
   sampleId: Scalars['String']['input'];
   version?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type MyReviewQueues = {
+  enabledProfiles: Array<Scalars['String']['output']>;
+  items: ReviewItemPage;
+  myClaimCount: Scalars['Int']['output'];
+  queues: Array<ReviewQueueSummary>;
 };
 
 export type OpenTestSetAnnotationDraftInput = {
@@ -1600,10 +1838,15 @@ export type Query = {
   getFilePresignedUrl?: Maybe<FilePresignedUrlResponse>;
   getFilePresignedUrls?: Maybe<FilePresignedUrlsResponse>;
   getFinetuningJob?: Maybe<FinetuningJob>;
+  getInboxPreferences?: Maybe<InboxPreferences>;
+  getInboxUnreadCount?: Maybe<Scalars['Int']['output']>;
   getLatestPublishedVersion?: Maybe<LatestPublishedVersion>;
   getModelConfigLimits?: Maybe<ModelConfigLimitsResponse>;
   getMyProfile?: Maybe<User>;
+  getMyReviewQueues?: Maybe<MyReviewQueues>;
   getPricing?: Maybe<PricingResponse>;
+  getReviewItem?: Maybe<ReviewItemDetail>;
+  getReviewQueuesOverview?: Maybe<ReviewQueuesOverview>;
   getSampleDocumentUrl?: Maybe<SampleDocumentUrl>;
   getStepFunctionExecution?: Maybe<StepFunctionExecutionResponse>;
   getTestRun?: Maybe<TestRun>;
@@ -1613,6 +1856,7 @@ export type Query = {
   getTestSetVersions?: Maybe<Array<Maybe<TestSetVersion>>>;
   getTestSets?: Maybe<Array<Maybe<TestSet>>>;
   listAgentJobs?: Maybe<AgentJobConnection>;
+  listAnnotators?: Maybe<Array<Scalars['String']['output']>>;
   listAvailableAgents?: Maybe<Array<Maybe<Agent>>>;
   listAvailableModels?: Maybe<AvailableModelsResult>;
   listBucketFiles?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
@@ -1634,6 +1878,7 @@ export type Query = {
   listDocumentsDateHour?: Maybe<DocumentList>;
   listDocumentsDateShard?: Maybe<DocumentList>;
   listFinetuningJobs?: Maybe<FinetuningJobConnection>;
+  listInboxMessages?: Maybe<InboxMessagePage>;
   /**
    * List all features currently installed in this IDP stack.
    * Returns null when EnableFeaturePlatform=false (no resolver attached).
@@ -1641,7 +1886,12 @@ export type Query = {
    * installed extensions via SigV4 — the InstalledFeature type is already @aws_iam.
    */
   listInstalledFeatures?: Maybe<Array<InstalledFeature>>;
+  listMyReviewWork?: Maybe<ReviewItemPage>;
+  listMyTestSetTasks?: Maybe<Array<TestSetTask>>;
+  listReviewQueueItems?: Maybe<ReviewItemPage>;
+  listReviewQueues?: Maybe<Array<ReviewQueueDefinition>>;
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
+  listTestSetQueues?: Maybe<Array<TestSetQueueSummary>>;
   listUsers?: Maybe<UserList>;
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
   resolveConfigPrefixMapping?: Maybe<ConfigAssignmentPreviewResponse>;
@@ -1693,6 +1943,8 @@ export type QueryGetAgentJobStatusArgs = {
 export type QueryGetAnnotationQueueArgs = {
   includeCompleted?: InputMaybe<Scalars['Boolean']['input']>;
   limit?: InputMaybe<Scalars['Int']['input']>;
+  mineOnly?: InputMaybe<Scalars['Boolean']['input']>;
+  objectKey?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -1769,6 +2021,16 @@ export type QueryGetFilePresignedUrlsArgs = {
 
 export type QueryGetFinetuningJobArgs = {
   jobId: Scalars['ID']['input'];
+};
+
+
+export type QueryGetMyReviewQueuesArgs = {
+  itemLimit?: InputMaybe<Scalars['Int']['input']>;
+};
+
+
+export type QueryGetReviewItemArgs = {
+  objectKey: Scalars['String']['input'];
 };
 
 
@@ -1884,6 +2146,30 @@ export type QueryListFinetuningJobsArgs = {
 };
 
 
+export type QueryListInboxMessagesArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+  read?: InputMaybe<Scalars['Boolean']['input']>;
+  severities?: InputMaybe<Array<Scalars['String']['input']>>;
+  types?: InputMaybe<Array<Scalars['String']['input']>>;
+};
+
+
+export type QueryListMyReviewWorkArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListReviewQueueItemsArgs = {
+  claimable?: InputMaybe<Scalars['Boolean']['input']>;
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+  queueName?: InputMaybe<Scalars['String']['input']>;
+  queueProfile?: InputMaybe<Scalars['String']['input']>;
+};
+
+
 export type QueryQueryKnowledgeBaseArgs = {
   input: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -1973,6 +2259,15 @@ export type ReviewBurndownPoint = {
   residualErrorPct: Scalars['Float']['output'];
 };
 
+export type ReviewDraft = {
+  changedFieldCount: Scalars['Int']['output'];
+  draftUri: Scalars['String']['output'];
+  leaseExpiresAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  revision: Scalars['Int']['output'];
+  sectionId: Scalars['String']['output'];
+  updatedAt: Scalars['AWSDateTime']['output'];
+};
+
 export type ReviewEffortEstimate = {
   auditSampleSize: Scalars['Int']['output'];
   baselineError: Scalars['Float']['output'];
@@ -1999,6 +2294,143 @@ export type ReviewEffortEstimate = {
   targetAccuracy: Scalars['Float']['output'];
   testSetId: Scalars['String']['output'];
   totalDocs: Scalars['Int']['output'];
+};
+
+export type ReviewHistoryEntry = {
+  actor?: Maybe<Scalars['String']['output']>;
+  at: Scalars['AWSDateTime']['output'];
+  details?: Maybe<Scalars['AWSJSON']['output']>;
+  event: Scalars['String']['output'];
+};
+
+export type ReviewItem = {
+  claimedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  cycleId: Scalars['String']['output'];
+  disposedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  disposedBy?: Maybe<Scalars['String']['output']>;
+  disposition?: Maybe<Scalars['String']['output']>;
+  draftUpdatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  draftUpdatedBy?: Maybe<Scalars['String']['output']>;
+  enqueuedAt: Scalars['AWSDateTime']['output'];
+  escalated: Scalars['Boolean']['output'];
+  escalationNote?: Maybe<Scalars['String']['output']>;
+  hasDraft: Scalars['Boolean']['output'];
+  isMine: Scalars['Boolean']['output'];
+  leaseExpiresAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  objectKey: Scalars['String']['output'];
+  ownerEmail?: Maybe<Scalars['String']['output']>;
+  priority: Scalars['Int']['output'];
+  profile: Scalars['String']['output'];
+  queue: Scalars['String']['output'];
+  reasonCount: Scalars['Int']['output'];
+  reasons: Array<ReviewReason>;
+  rejectReason?: Maybe<Scalars['String']['output']>;
+  reviewStatus: Scalars['String']['output'];
+  sections: Array<Scalars['String']['output']>;
+  state: Scalars['String']['output'];
+  version: Scalars['Int']['output'];
+};
+
+export type ReviewItemDetail = {
+  canClaim: Scalars['Boolean']['output'];
+  checklist: Array<Scalars['String']['output']>;
+  claimBlockedReason?: Maybe<Scalars['String']['output']>;
+  claimCap: Scalars['Int']['output'];
+  history: Array<ReviewHistoryEntry>;
+  item: ReviewItem;
+  machineOutputManifestUri?: Maybe<Scalars['String']['output']>;
+  myClaimCount: Scalars['Int']['output'];
+  queueName?: Maybe<Scalars['String']['output']>;
+  rejectReasons: Array<Scalars['String']['output']>;
+  sections: Array<ReviewSectionDetail>;
+};
+
+export type ReviewItemPage = {
+  items: Array<ReviewItem>;
+  nextToken?: Maybe<Scalars['String']['output']>;
+};
+
+export type ReviewQueueDefinition = {
+  checklist: Array<Scalars['String']['output']>;
+  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  eligibleAnnotators: Array<Scalars['String']['output']>;
+  enabled?: Maybe<Scalars['Boolean']['output']>;
+  id: Scalars['String']['output'];
+  isDefaultQueue: Scalars['Boolean']['output'];
+  name: Scalars['String']['output'];
+  priority: Scalars['Int']['output'];
+  rejectReasons: Array<Scalars['String']['output']>;
+  timeLimitMinutes: Scalars['Int']['output'];
+};
+
+export type ReviewQueueDefinitionInput = {
+  checklist?: InputMaybe<Array<Scalars['String']['input']>>;
+  confidenceThreshold?: InputMaybe<Scalars['Float']['input']>;
+  description?: InputMaybe<Scalars['String']['input']>;
+  eligibleAnnotators?: InputMaybe<Array<Scalars['String']['input']>>;
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+  id: Scalars['String']['input'];
+  name?: InputMaybe<Scalars['String']['input']>;
+  priority?: InputMaybe<Scalars['Int']['input']>;
+  rejectReasons?: InputMaybe<Array<Scalars['String']['input']>>;
+  timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
+};
+
+export type ReviewQueueHealth = {
+  reviewers: Array<ReviewerLoad>;
+  summary: ReviewQueueSummary;
+};
+
+export type ReviewQueueSummary = {
+  annotators?: Maybe<Scalars['Int']['output']>;
+  checklist: Array<Scalars['String']['output']>;
+  claimCap: Scalars['Int']['output'];
+  claimed: Scalars['Int']['output'];
+  claimedByMe: Scalars['Int']['output'];
+  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
+  definedInConfig: Scalars['Boolean']['output'];
+  depth: Scalars['Int']['output'];
+  description?: Maybe<Scalars['String']['output']>;
+  displayName: Scalars['String']['output'];
+  enabled?: Maybe<Scalars['Boolean']['output']>;
+  inProgress?: Maybe<Scalars['Int']['output']>;
+  isDefaultQueue: Scalars['Boolean']['output'];
+  name: Scalars['String']['output'];
+  oldestEnqueuedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  priority: Scalars['Int']['output'];
+  profile: Scalars['String']['output'];
+  unclaimed: Scalars['Int']['output'];
+};
+
+export type ReviewQueuesOverview = {
+  queues: Array<ReviewQueueHealth>;
+};
+
+export type ReviewReason = {
+  field?: Maybe<Scalars['String']['output']>;
+  kind: Scalars['String']['output'];
+  label?: Maybe<Scalars['String']['output']>;
+  score: Scalars['Float']['output'];
+  sectionId: Scalars['String']['output'];
+  threshold: Scalars['Float']['output'];
+};
+
+export type ReviewSectionDetail = {
+  documentClass?: Maybe<Scalars['String']['output']>;
+  draftRevision?: Maybe<Scalars['Int']['output']>;
+  draftUpdatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  draftUpdatedBy?: Maybe<Scalars['String']['output']>;
+  draftUri?: Maybe<Scalars['String']['output']>;
+  pageIds: Array<Scalars['String']['output']>;
+  reasons: Array<ReviewReason>;
+  resultUri?: Maybe<Scalars['String']['output']>;
+  sectionId: Scalars['String']['output'];
+};
+
+export type ReviewerLoad = {
+  claimed: Scalars['Int']['output'];
+  email: Scalars['String']['output'];
 };
 
 export type SampleDocument = {
@@ -2190,6 +2622,7 @@ export type TestRunStatus = {
 
 export type TestSet = {
   activeReference?: Maybe<Scalars['Int']['output']>;
+  claimLeaseMinutes?: Maybe<Scalars['Int']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   createdAt: Scalars['AWSDateTime']['output'];
   description?: Maybe<Scalars['String']['output']>;
@@ -2204,8 +2637,11 @@ export type TestSet = {
   lastAddResult?: Maybe<Scalars['String']['output']>;
   latestVersion?: Maybe<Scalars['Int']['output']>;
   name: Scalars['String']['output'];
+  queueCountsAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  reviewedDocs?: Maybe<Scalars['Int']['output']>;
   source?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
+  summaryStatus?: Maybe<Scalars['String']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
 };
 
@@ -2242,6 +2678,13 @@ export type TestSetDocument = {
   size?: Maybe<Scalars['Int']['output']>;
 };
 
+export type TestSetDocumentAssignment = {
+  assignedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  assignedTo?: Maybe<Scalars['String']['output']>;
+  objectKey: Scalars['String']['output'];
+  testSetId: Scalars['String']['output'];
+};
+
 export type TestSetDocumentSection = {
   baselineKey: Scalars['String']['output'];
   documentClass?: Maybe<Scalars['String']['output']>;
@@ -2252,6 +2695,12 @@ export type TestSetDocumentSection = {
 export type TestSetDocumentSections = {
   objectKey: Scalars['String']['output'];
   sections: Array<TestSetSectionGrouping>;
+  testSetId: Scalars['String']['output'];
+};
+
+export type TestSetDocumentSkipResult = {
+  objectKey: Scalars['String']['output'];
+  skipped: Scalars['Boolean']['output'];
   testSetId: Scalars['String']['output'];
 };
 
@@ -2271,6 +2720,44 @@ export type TestSetDocumentsUploadInput = {
   testSetId: Scalars['String']['input'];
 };
 
+export type TestSetQueueSettings = {
+  checklist: Array<Scalars['String']['output']>;
+  claimLeaseMinutes?: Maybe<Scalars['Int']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  eligibleAnnotators: Array<Scalars['String']['output']>;
+  priority?: Maybe<Scalars['Int']['output']>;
+  testSetId: Scalars['String']['output'];
+};
+
+export type TestSetQueueSettingsInput = {
+  checklist?: InputMaybe<Array<Scalars['String']['input']>>;
+  description?: InputMaybe<Scalars['String']['input']>;
+  eligibleAnnotators?: InputMaybe<Array<Scalars['String']['input']>>;
+  priority?: InputMaybe<Scalars['Int']['input']>;
+  testSetId: Scalars['String']['input'];
+  timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
+};
+
+export type TestSetQueueSummary = {
+  annotators?: Maybe<Scalars['Int']['output']>;
+  assignedDocs?: Maybe<Scalars['Int']['output']>;
+  checklist?: Maybe<Array<Scalars['String']['output']>>;
+  claimLeaseMinutes?: Maybe<Scalars['Int']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  eligibleAnnotators?: Maybe<Array<Scalars['String']['output']>>;
+  fileCount?: Maybe<Scalars['Int']['output']>;
+  id: Scalars['String']['output'];
+  inProgressDocs?: Maybe<Scalars['Int']['output']>;
+  name: Scalars['String']['output'];
+  pendingDocs?: Maybe<Scalars['Int']['output']>;
+  priority?: Maybe<Scalars['Int']['output']>;
+  queueCountsAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  reviewedDocs?: Maybe<Scalars['Int']['output']>;
+  status?: Maybe<Scalars['String']['output']>;
+  summaryStatus?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
 export type TestSetSectionGrouping = {
   documentClass?: Maybe<Scalars['String']['output']>;
   pageIndices: Array<Scalars['Int']['output']>;
@@ -2281,6 +2768,23 @@ export type TestSetSectionGroupingInput = {
   documentClass?: InputMaybe<Scalars['String']['input']>;
   pageIndices: Array<Scalars['Int']['input']>;
   sectionId: Scalars['String']['input'];
+};
+
+export type TestSetSectionSaveResult = {
+  objectKey: Scalars['String']['output'];
+  reviewed: Scalars['Boolean']['output'];
+  sectionId: Scalars['String']['output'];
+  testSetId: Scalars['String']['output'];
+};
+
+export type TestSetTask = {
+  alertCount?: Maybe<Scalars['Int']['output']>;
+  assignedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  assignedTo?: Maybe<Scalars['String']['output']>;
+  documentClasses?: Maybe<Array<Scalars['String']['output']>>;
+  labelSource?: Maybe<Scalars['String']['output']>;
+  objectKey: Scalars['String']['output'];
+  testSetId: Scalars['String']['output'];
 };
 
 export type TestSetUploadInput = {
@@ -2365,6 +2869,7 @@ export type UpdateConfigurationResponse = {
   message?: Maybe<Scalars['String']['output']>;
   success: Scalars['Boolean']['output'];
   versionName?: Maybe<Scalars['String']['output']>;
+  warnings?: Maybe<Array<Scalars['String']['output']>>;
 };
 
 export type UpdateDocumentInput = {
@@ -2434,6 +2939,7 @@ export type UpdateTestSetDocumentSectionsInput = {
 };
 
 export type UpdateTestSetInput = {
+  claimLeaseMinutes?: InputMaybe<Scalars['Int']['input']>;
   description?: InputMaybe<Scalars['String']['input']>;
   documentClassType?: InputMaybe<DocumentClassType>;
   id: Scalars['String']['input'];

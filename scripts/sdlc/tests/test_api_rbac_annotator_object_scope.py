@@ -45,7 +45,9 @@ No AWS and no network.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -82,6 +84,34 @@ DOCUMENT_SUBJECT_HELPER = "_assert_annotator_scope"
 # configuration read, and a configuration read is partitioned per caller by profile, not
 # by test set. See `test_a_read_scoped_on_the_configuration_axis_is_scoped_per_object`.
 _CONFIG_AXIS = "allowedConfigVersions"
+
+# Annotators also work production review-queue items (HITL review queues). Those
+# items belong to no test set, so `allowedTestSets` has nothing to match; what
+# confines the role per object is queue membership — the queue's eligible
+# Annotators list, intersected with `allowedConfigVersions`, plus claim ownership
+# for drafts and dispositions. The resolver hands every such operation to
+# `ReviewQueueService`, so the axis is measured there: the service methods an
+# operation calls must reach one of these, and each is asserted below to call both
+# halves of the membership rule.
+_REVIEW_QUEUE_RESOLVER = (
+    "nested/api-resolvers/src/lambda/review_queues_resolver/index.py"
+)
+_REVIEW_QUEUE_SERVICE = _REPO / "lib/idp_common_pkg/idp_common/review_queues/service.py"
+_REVIEW_QUEUE_SERVICE_CLASS = "ReviewQueueService"
+REVIEW_QUEUE_MEMBERSHIP_RULES = ("_check_access", "_caller_refs")
+_MEMBERSHIP_HALVES = ("self.directory.in_scope(", "self.directory.is_member(")
+
+# Test Studio queue reads an Annotator reaches across sets, which a single
+# `testSetId` cannot confine: the queue list is filtered to the sets whose queue
+# lists the caller, and My Work › Tasks to the caller's own assignments, keyed on
+# the verified-claims email. Read axes only: a write to a test-set document is
+# still required to reach the test-set rule.
+TEST_SET_QUEUE_LISTING_RULE = "_queue_annotators("
+OWN_ASSIGNMENTS_RULE = ("caller_email(event)", ".assigned_to(caller)")
+
+# Axes that confine a WRITE per object: the document's test set, or the review
+# queue item's queue membership and ownership.
+_MUTATION_AXES = {"test-set", "review-queue"}
 
 
 def _load_scanner():
@@ -132,6 +162,73 @@ def _reachable_source(name: str, cfg: dict, ops: dict) -> tuple[str | None, str]
     )
 
 
+def _service_methods() -> dict[str, ast.FunctionDef]:
+    """`ReviewQueueService`'s methods, by name."""
+    tree = ast.parse(_REVIEW_QUEUE_SERVICE.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == _REVIEW_QUEUE_SERVICE_CLASS:
+            return {
+                item.name: item
+                for item in node.body
+                if isinstance(item, ast.FunctionDef)
+            }
+    raise AssertionError(f"{_REVIEW_QUEUE_SERVICE_CLASS} not found in service.py")
+
+
+def _self_calls(node: ast.AST) -> set[str]:
+    return {
+        sub.func.attr
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and isinstance(sub.func.value, ast.Name)
+        and sub.func.value.id == "self"
+    }
+
+
+def _service_closure(entry: str, methods: dict[str, ast.FunctionDef]) -> set[str]:
+    """Every service method `entry` can reach through `self.<method>(...)` calls."""
+    seen: set[str] = set()
+    pending = [entry]
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in methods:
+            continue
+        seen.add(name)
+        pending.extend(_self_calls(methods[name]))
+    return seen
+
+
+def _review_queue_field_source(name: str) -> str:
+    """The resolver function the `_FIELDS` table maps `name` to, with its closure."""
+    text = (_REPO / _REVIEW_QUEUE_RESOLVER).read_text()
+    for node in ast.parse(text).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        if not (isinstance(target, ast.Name) and target.id == "_FIELDS"):
+            continue
+        assert isinstance(node.value, ast.Dict)
+        for key, value in zip(node.value.keys, node.value.values):
+            if isinstance(key, ast.Constant) and key.value == name:
+                assert isinstance(value, ast.Name), f"{name}: dispatch is not a name"
+                error, source = scanner.op_scope_source(
+                    text, name, declared_entry=value.id, sole_op=False
+                )
+                assert not error, f"{name}: {error}"
+                return source
+    return ""
+
+
+def _reaches_review_queue_membership(name: str, cfg: dict) -> bool:
+    if cfg["enforced_in"] != _REVIEW_QUEUE_RESOLVER:
+        return False
+    called = set(re.findall(r"_SERVICE\.(\w+)\(", _review_queue_field_source(name)))
+    methods = _service_methods()
+    reached = set().union(*(_service_closure(m, methods) for m in called))
+    return bool(reached & set(REVIEW_QUEUE_MEMBERSHIP_RULES))
+
+
 def _scope_axes(name: str, cfg: dict, ops: dict) -> tuple[str | None, set[str]]:
     """`(error, axes)` — which per-object scope axes this operation's code reaches."""
     error, source = _reachable_source(name, cfg, ops)
@@ -142,6 +239,12 @@ def _scope_axes(name: str, cfg: dict, ops: dict) -> tuple[str | None, set[str]]:
         axes.add("test-set")
     if any(pattern in source for pattern in scanner.SCOPE_PATTERNS):
         axes.add("config-version")
+    if _reaches_review_queue_membership(name, cfg):
+        axes.add("review-queue")
+    if TEST_SET_QUEUE_LISTING_RULE in source:
+        axes.add("test-set-queue-listing")
+    if all(rule in source for rule in OWN_ASSIGNMENTS_RULE):
+        axes.add("own-assignments")
     return None, axes
 
 
@@ -209,13 +312,17 @@ def test_every_operation_admitting_an_annotator_is_scoped_per_object():
 
 
 def test_every_mutation_admitting_an_annotator_is_scoped_on_the_test_set_axis():
-    """A write by an Annotator is confined by `allowedTestSets` specifically.
+    """A write by an Annotator is confined by the object it writes, specifically.
 
-    The axis matters, not merely that there is one. `allowedTestSets` is what
-    partitions the documents an annotator works on, and every mutation the role can
-    reach writes to one of those documents. Satisfying the test above on the
-    configuration axis instead would mean a write confined by which configuration
-    profiles the caller may read, which answers a different question.
+    The axis matters, not merely that there is one. A test-set document is
+    partitioned by `allowedTestSets`; a production review-queue item belongs to no
+    test set and is partitioned by the queue's eligible Annotators and its claim
+    owner (`ReviewQueueService._check_access` / `_caller_refs`, both of which also
+    apply `allowedConfigVersions`). Every mutation the role can reach writes one of
+    those two kinds of object. Satisfying the test above on the configuration axis
+    alone would mean a write confined by which configuration profiles the caller may
+    read, which answers a different question; a test-set queue listing alone would
+    leave a write to a test-set document unconfined by `allowedTestSets`.
 
     This is the assertion `updateDocumentSections` failed: a mutation, admitting the
     role, reaching no test-set rule at all.
@@ -227,15 +334,46 @@ def test_every_mutation_admitting_an_annotator_is_scoped_on_the_test_set_axis():
             continue
         error, axes = _scope_axes(name, cfg, ops)
         assert not error, f"{name}: {error}"
-        if "test-set" not in axes:
+        if not axes & _MUTATION_AXES:
             offenders.append(
                 f"{name} ({cfg['enforced_in']}) reaches {sorted(axes) or 'no'} scope "
-                f"axis but never calls {TESTSET_RULE}"
+                f"axis but never calls {TESTSET_RULE} (or, for a review-queue item, "
+                f"one of {REVIEW_QUEUE_MEMBERSHIP_RULES})"
             )
 
     assert not offenders, (
         "a mutation an Annotator may call must confine the role to its "
-        "allowedTestSets:\n  " + "\n  ".join(offenders)
+        "allowedTestSets, or to the review queues that list it:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_review_queue_membership_rules_check_scope_and_membership():
+    """The review-queue axis rests on code, so the code is asserted too.
+
+    Each rule credited as the review-queue axis must call both halves of the rule:
+    the caller's `allowedConfigVersions` (`in_scope`) and the queue's eligible
+    Annotators (`is_member`). A rule that lost either half would still be credited
+    by the closure check above, so it is pinned here. And the axis must be reached by
+    at least one Annotator mutation, or it credits nothing and this is vacuous.
+    """
+    methods = _service_methods()
+    for rule in REVIEW_QUEUE_MEMBERSHIP_RULES:
+        assert rule in methods, f"{_REVIEW_QUEUE_SERVICE_CLASS}.{rule} not found"
+        body = ast.unparse(methods[rule])
+        for half in _MEMBERSHIP_HALVES:
+            assert half in body, f"{rule} no longer calls {half}"
+
+    ops = _operations()
+    credited = [
+        name
+        for name, cfg in _annotator_operations(ops).items()
+        if cfg.get("kind") == "mutation" and _reaches_review_queue_membership(name, cfg)
+    ]
+    assert credited, (
+        "no Annotator mutation reaches the review-queue membership rules, so the "
+        "review-queue axis credits nothing — the dispatch table or the service "
+        "method names have changed"
     )
 
 

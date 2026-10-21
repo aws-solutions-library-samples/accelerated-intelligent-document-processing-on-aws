@@ -1,0 +1,10 @@
+mutation UpdateTestSetQueue($input: TestSetQueueSettingsInput!) {
+  updateTestSetQueue(input: $input) {
+    testSetId
+    description
+    priority
+    claimLeaseMinutes
+    eligibleAnnotators
+    checklist
+  }
+}

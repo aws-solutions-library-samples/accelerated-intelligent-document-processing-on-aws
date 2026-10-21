@@ -63,6 +63,8 @@ class DocumentState(str, Enum):
     # Listed in the monitor's terminal-state sets too, or monitoring would wait
     # forever for a document that will never reach COMPLETED.
     REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"
+    # Terminal, not success: a reviewer rejected the document in a review queue.
+    REJECTED = "REJECTED"
     # Terminal, and refused rather than failed: the ingest malware gate did not
     # admit the document. QUARANTINED means a threat was found; MALWARE_SCAN_FAILED
     # means no verdict was obtainable (password-protected, over quota, scan error)
@@ -117,6 +119,10 @@ FAILED_DOCUMENT_STATES = frozenset(
         DocumentState.FAILED,
         DocumentState.ABORTED,
         DocumentState.NOT_FOUND,
+        # Terminal, not success: a reviewer rejected it (IDP-0002 D1). Reported
+        # as REJECTED, never collapsed to FAILED, but bucketed with the failures
+        # so every caller treating this bucket as "no usable result" is correct.
+        DocumentState.REJECTED,
         # Refused at the ingest malware gate. Not successes — the document was
         # never processed and no output exists — so they cannot go above with
         # REDACTED_SUPERSEDED, whose point is that the requested outcome was

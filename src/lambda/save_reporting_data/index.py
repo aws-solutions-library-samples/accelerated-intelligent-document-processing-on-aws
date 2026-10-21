@@ -113,7 +113,13 @@ def handler(event, context):
         # Pass database_name to enable automatic Glue table creation
         # Pass config dictionary to enable dynamic pricing from configuration
         reporter = SaveReportingData(reporting_bucket, database_name, config)
-        results = reporter.save(document, data_to_save)
+        # Review-queue reporting info (routed documents only; validated).
+        review = None
+        if event.get("review"):
+            from idp_common.review_queues.models import ReviewReportingInfo
+
+            review = ReviewReportingInfo.model_validate(event["review"])
+        results = reporter.save(document, data_to_save, review=review)
 
         # If no data was processed, return a warning
         if not results:

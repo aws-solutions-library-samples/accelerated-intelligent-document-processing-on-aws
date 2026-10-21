@@ -93,6 +93,10 @@ class ConfigUploadResult(BaseModel):
         ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Non-fatal problems with the uploaded configuration",
+    )
 
 
 class ConfigActivateResult(BaseModel):

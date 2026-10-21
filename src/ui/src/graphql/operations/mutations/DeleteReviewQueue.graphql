@@ -1,0 +1,3 @@
+mutation DeleteReviewQueue($id: String!) {
+  deleteReviewQueue(id: $id)
+}

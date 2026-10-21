@@ -40,6 +40,9 @@ The headless transformation strips the following resource groups from the templa
 - UI-only resolver Lambdas in the main template (capacity planning, version
   check, fine-tuning)
 - Chat processors and the chat streaming endpoint (Lambda Function URL)
+- Inbox: the `NotificationsTable` table and the Inbox API operations;
+  `idp_common.notifications` producers no-op (`create_notification_service()`
+  returns `None`)
 
 ### Authentication
 

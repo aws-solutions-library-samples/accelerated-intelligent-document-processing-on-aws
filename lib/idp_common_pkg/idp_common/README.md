@@ -28,6 +28,8 @@ The IDP Common library provides these main modules:
 - **[Agents](agents/README.md)**: Conversational AI agent framework
 - **[Model Finetuning](model_finetuning/README.md)**: Nova fine-tuning utilities
 - **[DynamoDB](dynamodb/README.md)**: Document tracking and HITL state management
+- **[Review queues](review_queues/README.md)**: HITL review queues — routing for both modes, claims and leases, drafts, dispositions, durable finalize, the sweeper and the `review/status.json` status contract
+- **[Notifications](notifications/README.md)**: Host Inbox messages — `notify()` to users or Cognito groups, with dedupe, idempotency, muting, retention and a per-user cap
 - **[Image](image/README.md)**: Image resizing and format conversion
 - **[S3](s3/README.md)**: S3 read/write utilities
 - **[Utils](utils/README.md)**: Common utility functions

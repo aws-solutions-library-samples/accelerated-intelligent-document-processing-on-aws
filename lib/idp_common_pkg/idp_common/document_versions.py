@@ -35,6 +35,17 @@ logger = logging.getLogger(__name__)
 # evaluation/ ...) and must survive reprocess output deletion.
 RUNS_PREFIX_SEGMENT = "runs"
 
+# Reserved sub-prefix holding the review status object and review drafts
+# (idp_common.review_queues). Not an artifact of a processing run, so run
+# manifests exclude it; unlike runs/ it is NOT preserved by Reprocess, which
+# withdraws the review and starts over.
+REVIEW_PREFIX_SEGMENT = "review"
+
+
+def review_prefix(input_key: str) -> str:
+    """Return the reserved review prefix for a document, e.g. ``<key>/review/``."""
+    return f"{input_key}/{REVIEW_PREFIX_SEGMENT}/"
+
 
 def runs_prefix(input_key: str) -> str:
     """Return the reserved runs prefix for a document, e.g. ``<key>/runs/``."""
@@ -264,13 +275,14 @@ def list_current_output_versions(
 
     Uses ListObjectVersions and keeps only ``IsLatest`` non-delete-marker
     entries, excluding the reserved ``runs/`` prefix (prior run manifests are
-    not artifacts of this run).
+    not artifacts of this run) and ``review/`` (the review status object and
+    drafts belong to the review, not to a run).
 
     Returns:
         List of ``{"key", "version_id", "size", "last_modified", "etag"}``.
     """
     prefix = f"{input_key}/"
-    excluded_prefix = runs_prefix(input_key)
+    excluded_prefixes = (runs_prefix(input_key), review_prefix(input_key))
     files: List[Dict[str, Any]] = []
 
     paginator = s3_client.get_paginator("list_object_versions")
@@ -279,7 +291,7 @@ def list_current_output_versions(
             if not version.get("IsLatest"):
                 continue
             key = version["Key"]
-            if key.startswith(excluded_prefix):
+            if key.startswith(excluded_prefixes):
                 continue
             last_modified = version.get("LastModified")
             files.append(

@@ -17,5 +17,9 @@ query GetTestSets {
     error
     documentClassType
     configVersion
+    reviewedDocs
+    claimLeaseMinutes
+    queueCountsAt
+    summaryStatus
   }
 }

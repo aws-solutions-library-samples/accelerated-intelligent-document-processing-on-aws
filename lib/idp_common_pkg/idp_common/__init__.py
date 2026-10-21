@@ -31,6 +31,8 @@ _LAZY_SUBMODULES = frozenset(
         "reporting",
         "agents",
         "delete_documents",
+        "notifications",
+        "review_queues",
     }
 )
 
@@ -96,6 +98,8 @@ __all__ = [
     "reporting",
     "agents",
     "delete_documents",
+    "notifications",
+    "review_queues",
     "get_config",
     "IDPConfig",
     "Document",

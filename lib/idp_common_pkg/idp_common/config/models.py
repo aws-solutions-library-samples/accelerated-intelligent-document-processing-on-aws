@@ -94,6 +94,32 @@ def _parse_required_int(v: Any, info: ValidationInfo, cls: type) -> int:
     return int(v)
 
 
+def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
+    """Parse a whole number from an int, a numeric string or an integral float.
+
+    The Configuration editor saves ``type: number`` fields as numbers, and stored
+    records are stringified (``"30"``, ``"30.0"``). Empty/None falls back to the
+    field's declared default. Fractions (``30.5``), non-numeric strings and
+    booleans are rejected with ``ValueError``.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return int(cls.model_fields[info.field_name].default)
+    if isinstance(v, bool):
+        raise ValueError("must be a whole number, not a boolean")
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            v = float(v.strip())
+        except ValueError:
+            raise ValueError(f"must be a whole number, got {v!r}") from None
+    if isinstance(v, float):
+        if not v.is_integer():
+            raise ValueError(f"must be a whole number, got {v!r}")
+        return int(v)
+    raise ValueError(f"must be a whole number, got {type(v).__name__}")
+
+
 class ImageConfig(BaseModel):
     """Image processing configuration"""
 
@@ -1105,6 +1131,28 @@ class GeometryConfig(BaseModel):
         return v_str
 
 
+class HITLNotificationsConfig(BaseModel):
+    """Inbox message retention and per-user cap (idp_common.notifications)."""
+
+    retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Days an Inbox message is kept before DynamoDB TTL removes it.",
+    )
+    max_per_user: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Messages kept per user; the oldest read message is removed first.",
+    )
+
+    @field_validator("retention_days", "max_per_user", mode="before")
+    @classmethod
+    def parse_whole_number(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_whole_number(v, info, cls)
+
+
 class HITLConfig(BaseModel):
     """Human-in-the-Loop review configuration (v0.6, top-level ``hitl``).
 
@@ -1123,6 +1171,10 @@ class HITLConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="Confidence threshold below which a field is flagged for review",
+    )
+    notifications: HITLNotificationsConfig = Field(
+        default_factory=HITLNotificationsConfig,
+        description="Inbox message retention and cap. Applies whether or not hitl.enabled is set.",
     )
 
     @field_validator("confidence_threshold", mode="before")
