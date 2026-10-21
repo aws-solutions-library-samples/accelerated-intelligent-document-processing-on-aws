@@ -256,6 +256,49 @@ class TestPersonaPrecedence:
         assert index._determine_persona_from_groups(groups) == "Annotator"
 
 
+class TestUnknownPersona:
+    """Only the five Cognito groups are personas: anything else can be neither
+    granted nor inferred by User Management."""
+
+    def test_the_personas_are_exactly_the_five_groups(self):
+        index = _load_index()
+        assert set(index.VALID_PERSONAS) == {
+            "Admin",
+            "Author",
+            "Reviewer",
+            "Annotator",
+            "Viewer",
+        }
+
+    def test_creating_an_unknown_persona_is_refused_before_any_write(self, users_table):
+        index = _load_index()
+        with (
+            patch.object(index, "sync_user_to_cognito") as sync,
+            patch.object(
+                index,
+                "_get_caller_identity",
+                return_value={
+                    "is_admin": True,
+                    "email": "admin@example.com",
+                    "username": "admin",
+                    "groups": ["Admin"],
+                },
+            ),
+        ):
+            with pytest.raises(ValueError, match="Invalid persona: Ghost"):
+                index.create_user({"email": "ghost@example.com", "persona": "Ghost"})
+        sync.assert_not_called()
+        assert users_table.scan()["Items"] == []
+
+    def test_a_stray_unknown_group_confers_no_persona(self):
+        index = _load_index()
+        pick = index._determine_persona_from_cognito_groups
+        assert pick(["Annotator", "Ghost"]) == "Annotator"
+        assert pick(["Ghost", "Reviewer"]) == "Reviewer"
+        objects = [{"GroupName": "Annotator"}, {"GroupName": "Ghost"}]
+        assert index._determine_persona_from_groups(objects) == "Annotator"
+
+
 class TestMissingCognitoSync:
     def test_create_rolls_back_dynamodb_when_cognito_fails(self, users_table):
         index = _load_index()

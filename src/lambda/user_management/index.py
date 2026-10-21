@@ -3,7 +3,8 @@
 
 """Lambda function for user management operations with DynamoDB storage and Cognito sync.
 
-Supports five roles (Cognito groups): Admin, Author, Reviewer, Annotator, Viewer.
+Supports every role in ``VALID_PERSONAS`` (one Cognito group each): Admin,
+Author, Reviewer, Annotator and Viewer.
 Users can optionally have allowedConfigVersions for config-version scoping.
 
 Annotator is a least-privilege role for ground-truth annotation, scoped by
@@ -297,7 +298,7 @@ def create_user(args):
                     f"Allowed domains: {', '.join(allowed_domains)}"
                 )
 
-    # Validate persona - support all five roles
+    # Validate persona - support every role in VALID_PERSONAS
     if persona not in VALID_PERSONAS:
         raise ValueError(
             f"Invalid persona: {persona}. Must be one of: {', '.join(VALID_PERSONAS.keys())}"
@@ -874,6 +875,9 @@ def sync_cognito_users_to_dynamodb():
                 "email": email,
                 "persona": persona,
                 "status": "active",
+                # Created from an existing Cognito account: user-sync must not
+                # create that account again (see user_sync.handle_user_created).
+                "source": "cognito",
                 "createdAt": created_at,
                 "updatedAt": datetime.utcnow().isoformat() + "Z",
             }

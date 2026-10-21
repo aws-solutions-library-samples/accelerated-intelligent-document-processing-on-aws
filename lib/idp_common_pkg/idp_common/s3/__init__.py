@@ -4,7 +4,7 @@
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 import boto3
 
@@ -108,6 +108,8 @@ def write_content(
     bucket: str,
     key: str,
     content_type: Optional[str] = None,
+    *,
+    metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
     """
     Write content to S3
@@ -117,6 +119,7 @@ def write_content(
         bucket: The S3 bucket
         key: The S3 key
         content_type: Optional content type for the S3 object
+        metadata: Optional user metadata (stored as ``x-amz-meta-<name>``)
     """
     try:
         s3 = get_s3_client()
@@ -139,12 +142,28 @@ def write_content(
         extra_args = {}
         if content_type:
             extra_args["ContentType"] = content_type
+        if metadata:
+            extra_args["Metadata"] = dict(metadata)
 
         s3.put_object(Bucket=bucket, Key=key, Body=body, **extra_args)
         logger.info(f"Successfully wrote to s3://{bucket}/{key}")
     except Exception as e:
         logger.error(f"Error writing to s3://{bucket}/{key}: {e}")
         raise
+
+
+def copy_object(src_bucket: str, src_key: str, dst_bucket: str, dst_key: str) -> None:
+    """Server-side copy of one object (metadata and content type are kept)."""
+    get_s3_client().copy_object(
+        Bucket=dst_bucket,
+        Key=dst_key,
+        CopySource={"Bucket": src_bucket, "Key": src_key},
+    )
+
+
+def delete_content(bucket: str, key: str) -> None:
+    """Delete one object. A missing object is not an error (S3 semantics)."""
+    get_s3_client().delete_object(Bucket=bucket, Key=key)
 
 
 def list_images_from_path(image_path: str) -> List[str]:

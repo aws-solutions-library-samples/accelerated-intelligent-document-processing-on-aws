@@ -313,7 +313,7 @@ class TestBDASectionClassConfidence:
         with (
             patch.object(bda_index, "download_json", return_value=custom_output),
             patch.object(bda_index, "download_decimal", return_value=custom_output),
-            patch.object(bda_index, "is_hitl_enabled", return_value=False),
+            patch.object(bda_index, "legacy_hitl_enabled", return_value=False),
             patch.object(bda_index, "resolve_class_schema", return_value=None),
             patch.dict(os.environ, {"DB_NAME": ""}, clear=False),
             patch.object(bda_index, "boto3", MagicMock()),

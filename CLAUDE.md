@@ -8,6 +8,15 @@ GenAI Intelligent Document Processing (GenAIIDP) is a serverless solution for au
 
 The system uses a modular architecture with nested CloudFormation stacks supporting multiple document processing patterns while maintaining common infrastructure for queueing, tracking, and monitoring.
 
+## Rules
+
+Short, normative project rules live in [`.claude/rules/`](.claude/rules/README.md):
+Lambda and library code, web UI, infrastructure, API authorization, SDK/CLI/MCP,
+agents, configuration and models, testing, lint and gates, documentation, security
+and published text, and the Feature Platform. Path-scoped files load when you work
+on matching files. The rules summarize this file and the skill files, and link to
+them for procedures and detail.
+
 ## Build & Development Commands
 
 ### Building and Publishing

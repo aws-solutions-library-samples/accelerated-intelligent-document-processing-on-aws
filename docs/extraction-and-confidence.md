@@ -1815,12 +1815,24 @@ HITL is configured under the top-level `hitl` block in v0.6:
 hitl:
   enabled: true
   confidence_threshold: 0.85   # fields below this are flagged for review
+  notifications:
+    retention_days: 30         # 1-365: days an Inbox message is kept
+    max_per_user: 50           # 1-200: Inbox messages kept per user
 ```
 
 Human review integrates confidence scores and geometry so reviewers see exactly
 which fields need attention and where they appear on the page. For the full
 workflow, the review UI, and Amazon A2I integration, see
 [Human Review](human-review.md).
+
+`hitl.notifications` sets how long [Inbox](web-ui.md#inbox) messages are kept and how
+many each user keeps. It is read from the **active** configuration profile, cached
+for about 60 seconds, applies to messages written after a change, and applies
+whether or not `hitl.enabled` is set. When a user goes over the cap, expired
+messages are removed first, then the oldest read ones, and the oldest unread one
+only when every message is unread. See
+[Inbox message retention](configuration.md#inbox-message-retention) for the full
+reference.
 
 ---
 

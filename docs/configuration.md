@@ -442,7 +442,8 @@ extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
 `hitl.*` block. See [Extraction & Confidence](./extraction-and-confidence.md) for
-the full reference.
+the full reference. Production [review queues](./review-queues.md) are not part of
+the configuration: Admins manage them in HITL › Queue Management.
 
 ### Enable/Disable Confidence
 
@@ -539,6 +540,40 @@ score reaches the UI and what a `None` confidence means.
 See [Granular Assessment Retirement](./migration-granular-retirement.md) for details.
 
 For detailed information, see [Extraction & Confidence](extraction-and-confidence.md).
+
+## Inbox Message Retention
+
+The [Inbox](web-ui.md#inbox) keeps each user's messages for a limited time and up to
+a per-user cap. Both are configuration settings under `hitl.notifications`, shown in
+the Web UI configuration editor as **Inbox messages** inside the
+**Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  enabled: false            # does not affect the Inbox settings below
+  notifications:
+    retention_days: 30      # 1-365: days a message is kept before it is removed automatically
+    max_per_user: 50        # 1-200: messages kept per user
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.notifications.retention_days` | 30 | 1–365 | Days an Inbox message is kept. DynamoDB TTL removes it afterwards, and an expired message is never listed or counted, even before TTL deletes it. |
+| `hitl.notifications.max_per_user` | 50 | 1–200 | Messages kept per user. When a new message takes a user over the cap, expired messages are removed first, then the oldest read messages, and the oldest unread message only when every message is unread. |
+
+How the settings apply:
+
+- They are read from the **active** [configuration profile](configuration-profiles.md).
+- They are cached for about 60 seconds, so a change can take up to a minute to reach
+  every writer.
+- They apply to messages written after the change. Existing messages keep the
+  expiry they were written with, and the cap is enforced the next time a message is
+  written for that user.
+- They apply whether or not `hitl.enabled` is set.
+- If the configuration cannot be read, the defaults apply.
+
+For how platform components post messages, see the
+[notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
 ## Stack Parameters
 

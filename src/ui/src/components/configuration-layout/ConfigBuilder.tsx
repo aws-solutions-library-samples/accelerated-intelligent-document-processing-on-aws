@@ -26,6 +26,7 @@ import SchemaBuilder from '../json-schema-builder/SchemaBuilder';
 import PromptPreview from './PromptPreview';
 import FieldDescription, { stripInlineMarkdown } from './FieldDescription';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
+import useUserRole from '../../hooks/use-user-role';
 import { TEST_STUDIO_PATH } from '../../routes/constants';
 
 // Turn a schema key into a concise, human-readable field label.
@@ -167,6 +168,8 @@ interface SchemaProperty {
   // with every field inside it unreachable and nothing saying why. Modality,
   // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
+  // Only Admins may change this object: other users see its fields read-only.
+  adminOnly?: boolean | string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
   // sibling field matches (e.g. expand "Agentic Extraction" when enabled=true).
   expandWhen?: { field: string; value?: unknown };
@@ -629,6 +632,7 @@ const ConfigBuilder = ({
 }: ConfigBuilderProps): React.JSX.Element => {
   const navigate = useNavigate();
   const { available: generatorAvailable } = useSyntheticDataGenerator();
+  const { isAdmin } = useUserRole();
 
   // Deep-link to Test Studio with the generate modal pre-filled for this version.
   const goGenerateTestSet = (): void => {
@@ -1058,7 +1062,20 @@ const ConfigBuilder = ({
     }
 
     if (property.type === 'object') {
-      return renderObjectField(key, property, path);
+      const rendered = renderObjectField(key, property, path);
+      if (rendered && property.adminOnly && !isAdmin) {
+        // A disabled fieldset makes every control inside it read-only; the server
+        // refuses the change anyway, this keeps the UI from offering it.
+        return (
+          <SpaceBetween size="xs">
+            <Alert type="info">Only Admins can change review queue settings.</Alert>
+            <fieldset disabled style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+              {rendered}
+            </fieldset>
+          </SpaceBetween>
+        );
+      }
+      return rendered;
     }
 
     return renderInputField(key, property, value, currentPath);

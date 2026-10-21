@@ -108,10 +108,11 @@ describe('importing by file pattern', () => {
   const SCHEMA = readFileSync(join(ROOT, 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
 
   it('is refused server-side for anyone but an Admin', () => {
-    const adminOnly = RESOLVER.slice(
-      RESOLVER.indexOf('ADMIN_ONLY_FIELDS = ('),
-      RESOLVER.indexOf(')', RESOLVER.indexOf('ADMIN_ONLY_FIELDS = (')),
-    );
+    // The tuple ends at the ')' that opens a line; a ')' inside a comment in the
+    // tuple (e.g. "(Admin-only page)") must not end the slice early.
+    const start = RESOLVER.indexOf('ADMIN_ONLY_FIELDS = (');
+    expect(start, 'ADMIN_ONLY_FIELDS not found').toBeGreaterThanOrEqual(0);
+    const adminOnly = RESOLVER.slice(start, RESOLVER.indexOf('\n)', start));
     for (const op of ['listBucketFiles', 'addTestSet', 'addDocumentsToTestSet']) {
       expect(adminOnly, op).toContain(`"${op}"`);
       expect(RBAC, op).toMatch(new RegExp(`^ {2}${op}:\n {4}groups: \\[Admin\\]`, 'm'));
