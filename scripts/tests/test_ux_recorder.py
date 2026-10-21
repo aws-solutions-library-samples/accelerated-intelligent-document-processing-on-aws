@@ -326,7 +326,7 @@ class TestScreencast:
 
 @pytest.mark.unit
 class TestCursorOverlay:
-    def test_overlay_is_installed_now_and_for_new_documents(self):
+    def test_overlay_is_installed_now_and_for_new_documents_in_its_own_world(self):
         ws, session = _session(
             {
                 "Runtime.enable": {"result": {}},
@@ -334,6 +334,8 @@ class TestCursorOverlay:
                 "Page.addScriptToEvaluateOnNewDocument": {
                     "result": {"identifier": "s1"}
                 },
+                "Page.getFrameTree": {"result": {"frameTree": {"frame": {"id": "F1"}}}},
+                "Page.createIsolatedWorld": {"result": {"executionContextId": 7}},
                 "Runtime.evaluate": {"result": {}},
             }
         )
@@ -343,10 +345,24 @@ class TestCursorOverlay:
             "Runtime.enable",
             "Runtime.addBinding",
             "Page.addScriptToEvaluateOnNewDocument",
+            "Page.getFrameTree",
+            "Page.createIsolatedWorld",
             "Runtime.evaluate",
         ]
-        assert ws.sent[1]["params"] == {"name": cdp.CLICK_BINDING}
-        assert ws.sent[2]["params"]["source"] == cdp.CURSOR_OVERLAY_JS
+        world = cdp.OVERLAY_WORLD
+        assert ws.sent[1]["params"] == {
+            "name": cdp.CLICK_BINDING,
+            "executionContextName": world,
+        }
+        assert ws.sent[2]["params"] == {
+            "source": cdp.CURSOR_OVERLAY_JS,
+            "worldName": world,
+        }
+        assert ws.sent[4]["params"] == {"frameId": "F1", "worldName": world}
+        assert ws.sent[5]["params"] == {
+            "expression": cdp.CURSOR_OVERLAY_JS,
+            "contextId": 7,
+        }
 
     def test_overlay_reports_clicks_through_the_binding(self):
         js = cdp.CURSOR_OVERLAY_JS

@@ -32,6 +32,9 @@
 #   title       What the person is trying to do.
 #   persona     Which group to run as. The session helper creates this user.
 #   priority    p0 = a blocking flow; p1 = important; p2 = nice.
+#   paths       Optional. Globs of src/ui files whose change makes this flow
+#               worth reviewing on an MR; absent means the MR selector never
+#               picks it.
 #   setup       Preconditions the agent must establish or verify before starting.
 #   steps       What to do, in order, in the UI.
 #   expect      Functional pass criteria. Objective — these are pass/fail.
@@ -44,6 +47,11 @@ flows:
     title: Correct a wrong field value in the annotation queue
     persona: Admin
     priority: p0
+    paths:
+      - src/ui/src/components/test-studio/AnnotationQueueLanding.tsx
+      - src/ui/src/components/test-studio/AnnotationWorkspace.tsx
+      - src/ui/src/components/test-studio/GroundTruthVisualEditor.tsx
+      - src/ui/src/components/test-studio/TestSetDocumentDetail.tsx
     setup:
       - A test set exists with at least one labeled document.
       - Reachable from Test Studio → Test sets → (set) → Annotate.
@@ -68,6 +76,10 @@ flows:
     title: See that a document's class is wrong
     persona: Admin
     priority: p0
+    paths:
+      - src/ui/src/components/document-details/**
+      - src/ui/src/components/document-viewer/**
+      - src/ui/src/components/evaluation-correction/**
     setup:
       # Do NOT create this by using flow 6.2 — that flow is currently broken and
       # drops the corrected class, so the fixture never appears and 6.1 looks
@@ -98,6 +110,9 @@ flows:
     title: Correct a wrong class and re-extract
     persona: Admin
     priority: p0
+    paths:
+      - src/ui/src/components/test-studio/AnnotationWorkspace.tsx
+      - src/ui/src/components/test-studio/classConfigVersion.ts
     setup:
       - A test set document whose class is wrong (see 6.1).
     steps:
@@ -118,6 +133,10 @@ flows:
     title: Find which documents a test run misclassified
     persona: Admin
     priority: p0
+    paths:
+      - src/ui/src/components/test-studio/ClassificationErrorsPanel.tsx
+      - src/ui/src/components/test-studio/TestResults.tsx
+      - src/ui/src/components/test-studio/TestResultsList.tsx
     setup:
       - A completed test run over a set containing at least one misclassified
         document.
@@ -139,6 +158,8 @@ flows:
     title: Work the queue worst-first
     persona: Annotator
     priority: p1
+    paths:
+      - src/ui/src/components/test-studio/AnnotationQueueLanding.tsx
     setup:
       - An annotator assigned to exactly one test set with several labeled
         documents of differing confidence.
@@ -159,6 +180,9 @@ flows:
     title: A scoped annotator cannot reach anything else
     persona: Annotator
     priority: p1
+    paths:
+      - src/ui/src/routes/**
+      - src/ui/src/components/genaiidp-layout/navigation.tsx
     setup:
       - The same annotator as 4.1.
     steps:
