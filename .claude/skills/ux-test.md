@@ -270,7 +270,7 @@ in the player (QuickTime: View → Subtitles; VLC: Subtitle menu) — and writte
 Recordings land under `scratch/ux-recordings/`, which is gitignored. Two things
 about them are easy to miss: the frames are not redacted, so a password revealed
 by a show-password toggle is in the video, and Polly receives only the narration
-text you wrote, never a frame. Share a recording only when the user asks for it.
+text you wrote, never a frame.
 
 Each click is also logged, with a label, in `events.jsonl` and `timeline.json`,
 and `render` prints the same labels in its click table and quotes them in its
