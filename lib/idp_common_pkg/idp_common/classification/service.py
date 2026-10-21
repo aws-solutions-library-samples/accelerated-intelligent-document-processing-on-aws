@@ -145,6 +145,105 @@ _CLASSIFICATION_METHOD_REMOVED = (
 )
 
 
+#: Bedrock's own wording when a request carries images a model cannot take. Matched
+#: loosely and used only to APPEND a hint to the original error, never to replace
+#: it, so a false match costs one unhelpful sentence rather than a wrong diagnosis.
+_IMAGE_REFUSAL_MARKERS = (
+    "image",
+    "multimodal",
+    "vision",
+    "modality",
+)
+
+
+def _looks_like_an_image_refusal(exc: Exception) -> bool:
+    """Whether ``exc`` reads like a model refusing image content.
+
+    Deliberately permissive on the message and strict on the caller: the caller
+    only consults this when the request actually carried images, so the worst case
+    is appending an image hint to an image-shaped error that had another cause.
+    """
+    text = str(exc).lower()
+    if not any(marker in text for marker in _IMAGE_REFUSAL_MARKERS):
+        return False
+    # ⚠️ Not every image-shaped error is a CAPABILITY refusal, and the remedy
+    # differs: "set modality.images to false" is wrong advice for an image that
+    # was too large or badly encoded, which is a sizing or upstream problem on a
+    # model that does accept images. Screened here along with throttles and
+    # timeouts, which can also mention an image.
+    return not any(
+        benign in text
+        for benign in (
+            "throttl",
+            "timed out",
+            "timeout",
+            "too many requests",
+            "exceeds",
+            "too large",
+            "maximum size",
+            "base64",
+            "decode",
+            "malformed",
+            "invalid image",
+        )
+    )
+
+
+def _count_image_blocks(content: Any) -> int:
+    """Image blocks in a Bedrock request body, at any nesting this builder emits."""
+    if isinstance(content, dict):
+        if "image" in content:
+            return 1
+        return sum(_count_image_blocks(v) for v in content.values())
+    if isinstance(content, list):
+        return sum(_count_image_blocks(v) for v in content)
+    return 0
+
+
+def _annotate_image_refusal(
+    exc: Exception, content: Any, config: Dict[str, Any]
+) -> None:
+    """Append a hint naming ``modality.images`` when a model refuses the images.
+
+    ⚠️ A model that does not accept images refuses the request, and its own
+    message does not mention the setting that caused it — so the operator sees a
+    Bedrock validation error with no reason to look at
+    ``classification.modality.images``.
+
+    This is done at the call rather than refused when a configuration is saved,
+    because deciding it up front needs a per-model vision list this repository
+    does not have (``model_config_limits.yaml`` carries token limits only) and
+    which would go stale every time a model is added — a stale entry refuses a
+    configuration for a model that *does* accept images, which is worse than the
+    error it replaces. Bedrock already knows; the only thing missing was the
+    pointer.
+
+    ⚠️ **Mutates ``args`` rather than re-raising a new instance.** ``raise
+    type(exc)(msg)`` fails on the one class this path actually receives:
+    botocore's ``ClientError.__init__`` takes ``(error_response,
+    operation_name)``, so rebuilding it from a single string throws ``TypeError``
+    inside the handler and the operator ends up with less information than before
+    this existed. Mutating keeps the class, the traceback and every attribute.
+
+    Does nothing unless the request actually carried images, so an error with
+    another cause is never mis-attributed. Issue #1524.
+    """
+    images = _count_image_blocks(content)
+    if not images or not _looks_like_an_image_refusal(exc):
+        return
+    model = config.get("model_id") or "this model"
+    hint = (
+        f"This classification request carried {images} page image(s) because "
+        f"classification.modality.images is on. If {model} does not accept "
+        f"images, set classification.modality.images to false, or choose a model "
+        f"that does."
+    )
+    try:
+        exc.args = (f"{exc}\n{hint}",) + tuple(exc.args[1:])
+    except Exception:  # pragma: no cover - an exception with read-only args
+        pass
+
+
 class ClassificationService:
     """Service for classifying documents using various backends."""
 
@@ -2788,21 +2887,33 @@ class ClassificationService:
         Returns:
             Dictionary with response and metering data
         """
-        return bedrock.invoke_model(
-            model_id=config["model_id"],
-            system_prompt=config["system_prompt"],
-            content=content,
-            temperature=config["temperature"],
-            top_k=config["top_k"],
-            top_p=config["top_p"],
-            max_tokens=config["max_tokens"],
-            # Single-pass keeps "Classification" with unchanged units, so a cost
-            # comparison across this change is a straight read. Two-stage bills
-            # its halves under "Segmentation" and "Labeling".
-            context=config.get("metering_context", "Classification"),
-            model_lambda_hook_arn=self.config.classification.model_lambda_hook_arn,
-            reasoning_effort=config.get("reasoning_effort"),
-        )
+        try:
+            return bedrock.invoke_model(
+                model_id=config["model_id"],
+                system_prompt=config["system_prompt"],
+                content=content,
+                temperature=config["temperature"],
+                top_k=config["top_k"],
+                top_p=config["top_p"],
+                max_tokens=config["max_tokens"],
+                # Single-pass keeps "Classification" with unchanged units, so a
+                # cost comparison across this change is a straight read.
+                # Two-stage bills its halves under "Segmentation" and "Labeling".
+                context=config.get("metering_context", "Classification"),
+                model_lambda_hook_arn=self.config.classification.model_lambda_hook_arn,
+                reasoning_effort=config.get("reasoning_effort"),
+            )
+        except Exception as exc:
+            # ⚠️ Enriched HERE rather than at a call site, because this is the one
+            # choke point every classification request goes through — page-level,
+            # packet, Stage A segmentation and Stage B labeling. The same
+            # `classification.modality.images` setting attaches images on the
+            # first three, and page granularity is the DEFAULT, so a hint added
+            # only to the packet path would miss the common case. Fixing the
+            # instance and not the class is the recurring defect this repository
+            # names; this is the class.
+            _annotate_image_refusal(exc, content, config)
+            raise
 
     def _create_unclassified_result(
         self,
