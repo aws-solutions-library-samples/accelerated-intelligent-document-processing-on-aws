@@ -742,3 +742,131 @@ class TestComposition:
             Document(id="d", input_key="d.pdf", pages={})
         )
         assert any("no pages" in e for e in result.errors)
+
+
+@pytest.mark.unit
+class TestAPreUpgradeProfileWithEmptyStagePrompts:
+    """⚠️ Reported from a live stack: an existing profile switched to
+    ``two_stage`` + ``packet`` failed EVERY document in ~28s with "Two-stage
+    segmentation (Stage A) produced no segments", while a profile created after
+    the upgrade worked end to end.
+
+    The cause is not in this service. A profile stored in "full" format before
+    ``classification.packet`` / ``.segmentation`` / ``.labeling`` existed was
+    returned to the runtime directly, so those prompts arrived from Pydantic's
+    field defaults — empty strings — rather than from the shipped defaults
+    (2567, 1786/2676 and 1028 characters). ``ConfigurationManager`` now backfills
+    them, and ``test_configuration_manager_coverage.py`` holds that.
+
+    What is pinned HERE is the second half: an empty stage prompt must resolve to
+    the SHIPPED default rather than to the single-pass page prompt. The old
+    fallback could not work — the page prompt makes the model answer in page
+    shape, which the segments parser cannot read — so it turned a missing field
+    into a total failure. **A fallback that always fails is not a fallback.**
+    """
+
+    def _service(self, classification_overrides):
+        base = {
+            "model": "us.amazon.nova-2-lite-v1:0",
+            "granularity": "packet",
+            "strategy": "two_stage",
+            "task_prompt": (
+                "PAGE PROMPT: classify this page and give a document_boundary. "
+                "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}"
+            ),
+            "system_prompt": "PAGE SYSTEM PROMPT",
+            "confidence": {"mode": "off"},
+        }
+        base.update(classification_overrides)
+        return ClassificationService(
+            region="us-west-2",
+            config={
+                "classes": [
+                    {
+                        "$id": "invoice",
+                        "x-aws-idp-document-type": "invoice",
+                        "type": "object",
+                        "description": "An invoice",
+                        "properties": {},
+                    }
+                ],
+                "classification": base,
+            },
+        )
+
+    def test_an_empty_packet_stage_a_prompt_uses_the_shipped_one(self, caplog):
+        """The exact reported shape: packet + two_stage with every new prompt
+        empty."""
+        import logging
+
+        service = self._service(
+            {
+                "packet": {"task_prompt": "", "system_prompt": ""},
+                "segmentation": {"packet": {"task_prompt": "", "system_prompt": ""}},
+                "labeling": {"task_prompt": "", "system_prompt": ""},
+            }
+        )
+        with caplog.at_level(logging.WARNING):
+            prompt = service._stage_prompt(
+                ClassificationService.STAGE_SEGMENTATION, "task_prompt"
+            )
+        assert prompt, "Stage A resolved to an empty prompt"
+        assert "PAGE PROMPT" not in prompt, (
+            "fell back to the page prompt, which the segments parser cannot read"
+        )
+        # It is the shipped prompt, and it asks for what the parser reads.
+        assert "segments" in prompt
+        assert "SHIPPED default" in caplog.text
+
+    def test_an_empty_labeling_prompt_uses_the_shipped_one(self):
+        service = self._service({"labeling": {"task_prompt": ""}})
+        prompt = service._stage_prompt(
+            ClassificationService.STAGE_LABELING, "task_prompt"
+        )
+        assert prompt
+        assert "PAGE PROMPT" not in prompt
+
+    def test_an_empty_packet_prompt_uses_the_shipped_one_in_single_pass(self):
+        """Same class of failure off the two-stage path: `packet` granularity
+        with an empty packet prompt used to send the page prompt."""
+        service = self._service(
+            {"strategy": "single_pass", "packet": {"task_prompt": ""}}
+        )
+        prompt = service._stage_prompt(
+            ClassificationService.STAGE_CLASSIFICATION, "task_prompt"
+        )
+        assert "PAGE PROMPT" not in prompt
+        assert "segments" in prompt
+
+    def test_an_operators_own_prompt_still_wins(self):
+        """The shipped default is a fallback for ABSENT, never a preference. A
+        configured prompt must not be replaced by ours — that is the hazard the
+        0.8 migration's prompt relocation exists to prevent."""
+        mine = "MY OWN STAGE A: return segments with ordinal_start_page"
+        service = self._service({"segmentation": {"packet": {"task_prompt": mine}}})
+        assert (
+            service._stage_prompt(
+                ClassificationService.STAGE_SEGMENTATION, "task_prompt"
+            )
+            == mine
+        )
+
+    def test_the_shipped_defaults_are_read_from_disk_not_hardcoded(self):
+        """So the fallback is what THIS build would write into a new profile."""
+        shipped = ClassificationService._shipped_classification_defaults()
+        assert shipped, "the shipped classification defaults did not load"
+        assert shipped["packet"]["task_prompt"].strip()
+        assert shipped["labeling"]["task_prompt"].strip()
+
+    def test_an_unreadable_defaults_file_does_not_raise(self, monkeypatch):
+        """A missing defaults file must not turn into a classification failure;
+        the caller's existing fallback still applies."""
+        ClassificationService._shipped_classification_defaults.cache_clear()
+        monkeypatch.setattr(
+            "idp_common.config.merge_utils.load_system_defaults",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("gone")),
+        )
+        try:
+            assert ClassificationService._shipped_classification_defaults() == {}
+        finally:
+            ClassificationService._shipped_classification_defaults.cache_clear()
