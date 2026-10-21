@@ -1464,6 +1464,10 @@ class ClassificationService:
         """
         return self._stage_prompt(stage, "system_prompt")
 
+    # ⚠️ The memo is PROCESS-GLOBAL and survives across tests and across Lambda
+    # invocations, which is what makes it worth having on a disk read — and what
+    # obliges a test that monkeypatches the defaults file to call `cache_clear()`
+    # in a `finally`, or the next test reads a stale block.
     @staticmethod
     @functools.lru_cache(maxsize=1)
     def _shipped_classification_defaults() -> Dict[str, Any]:
@@ -1483,7 +1487,9 @@ class ClassificationService:
             defaults = load_system_defaults()
             block = defaults.get("classification")
             return block if isinstance(block, dict) else {}
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
+            # Covered by `test_an_unreadable_defaults_file_does_not_raise`, so no
+            # `# pragma: no cover` here — the pragma would hide real coverage.
             logger.warning(
                 "Could not read the shipped classification defaults: %s", exc
             )

@@ -410,11 +410,16 @@ class ConfigurationManager:
         # it recurs on every future field that is added with a non-empty shipped
         # default.
         full_config_fallback: Optional[IDPConfig] = None
+        raw_version: Optional[Dict[str, Any]] = None
         try:
             config = self.get_configuration(CONFIG_TYPE_CONFIG, version)
             if config is not None and isinstance(config, IDPConfig):
-                raw = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
-                if raw and _is_full_config(raw):
+                # Kept and reused below rather than re-fetched: this record is
+                # gzip-compressed precisely because it is large, and nothing on
+                # this path is cached — `get_config()` builds a fresh manager per
+                # call — so a second `get_item` is paid per invocation.
+                raw_version = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+                if raw_version and _is_full_config(raw_version):
                     # Keep it, in case `default` cannot be read below: returning a
                     # usable config beats returning None, which is what the merge
                     # path does when the default profile is missing.
@@ -446,8 +451,13 @@ class ConfigurationManager:
             )
             return None
 
-        # Get version as RAW dict (no Pydantic defaults)
-        version_dict = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+        # Get version as RAW dict (no Pydantic defaults), reusing the read above
+        # when it succeeded.
+        version_dict = (
+            raw_version
+            if raw_version is not None
+            else self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+        )
         if not version_dict:
             raise ValueError(f"No Version {version} configuration found")
 
@@ -472,6 +482,10 @@ class ConfigurationManager:
         deep_update(merged_dict, version_dict)
 
         merged_config = IDPConfig(**merged_dict)
+        # ⚠️ Top-level SECTIONS only. In the case that motivates this — a nested
+        # key such as `classification.packet.task_prompt` appearing while
+        # `classification` itself is present — this list is empty, so an empty
+        # list does not mean nothing was backfilled.
         backfilled = sorted(set(default_dict) - set(version_dict))
         logger.info(
             "Resolved version %s against the default profile%s",
@@ -491,6 +505,24 @@ class ConfigurationManager:
         if full_config_fallback is not None and merged_config.model_dump(
             mode="python"
         ) == full_config_fallback.model_dump(mode="python"):
+            return merged_config
+
+        # ⚠️ A `cut_revision=False` save rewrites the head WITHOUT refreshing the
+        # published revision's `storedHash`, and for one kind of published
+        # revision that destroys its only integrity proof. See
+        # `config/README.md`: a revision cut before `storedHash` existed is proven
+        # only by the legacy `UpdatedAt <= createdAt` comparison, "and that proof
+        # is gone the first time anything rewrites the head" — after which a
+        # pinned read of it raises once its body expires.
+        #
+        # That hazard existed before this change, but only for legacy sparse
+        # profiles. Resolving every profile against the default would take it to
+        # every profile, once, after any field-adding upgrade — so the write-back
+        # is skipped exactly when it could destroy a proof. Correctness does not
+        # depend on it: the resolution happens on every read regardless, and all
+        # that is lost in the skipped case is the stored record catching up, which
+        # is a convenience for the form.
+        if not self._backfill_may_be_persisted(version):
             return merged_config
 
         # Save the resolved config back, so the next read is a direct one and so
@@ -514,6 +546,58 @@ class ConfigurationManager:
             logger.warning(f"Failed to auto-migrate version {version}: {e}")
 
         return merged_config
+
+    def _backfill_may_be_persisted(self, version: str) -> bool:
+        """Whether the resolved configuration may be written back to the head.
+
+        ⚠️ **The one case it must not be is a published revision whose only proof
+        is the legacy one.** A save that cuts no revision does not refresh the
+        published entry's ``storedHash``, so for a revision cut before that field
+        existed, rewriting the head destroys the ``UpdatedAt <= createdAt``
+        comparison that is its sole proof — and a pinned read of it then raises
+        once its body expires (``config/README.md``).
+
+        A published entry that already carries ``storedHash`` is unaffected: its
+        proof is the hash, which does not depend on the head's timestamp. No
+        published revision at all means there is nothing to lose. History being
+        disabled means the same.
+
+        Fails CLOSED on an unreadable index: skipping a convenience write is
+        always recoverable, destroying a proof is not.
+        """
+        try:
+            if not self.revisions.enabled:
+                return True
+            head = self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item", {})
+            published = head.get("PublishedRevision")
+            if published is None:
+                return True
+            entry = self.revisions.get_entry(version, int(published))
+            if entry is None:
+                # Not retained, so there is no index entry to invalidate.
+                return True
+            if entry.get("storedHash"):
+                return True
+            logger.info(
+                "Not writing the resolved configuration of %s back: its published "
+                "revision r%s predates storedHash, and rewriting the head would "
+                "destroy the only proof it has. The resolution still applies to "
+                "this read.",
+                version,
+                published,
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not establish whether %s's head may be rewritten (%s); "
+                "not writing it back",
+                version,
+                exc,
+            )
+            return False
 
     def save_configuration(
         self,

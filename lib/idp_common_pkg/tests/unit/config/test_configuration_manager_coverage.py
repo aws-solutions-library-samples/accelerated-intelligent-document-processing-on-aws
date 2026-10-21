@@ -2836,3 +2836,142 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 
         assert merged is not None
         assert merged.classification.model == "us.amazon.nova-2-lite-v1:0"
+
+
+@pytest.mark.unit
+@mock_aws
+class TestTheBackfillWriteBackPreservesRevisionProofs:
+    """⚠️ A save that cuts no revision rewrites the head without refreshing the
+    published entry's ``storedHash``, and for one kind of published revision that
+    destroys its only integrity proof.
+
+    ``config/README.md``: a revision cut before ``storedHash`` existed is proven
+    only by the legacy ``UpdatedAt <= createdAt`` comparison, "and that proof is
+    gone the first time anything rewrites the head" — after which a pinned read of
+    it raises once its body expires.
+
+    The hazard predates the backfill, but only for legacy sparse profiles.
+    Resolving **every** profile against the default would take it to every
+    profile, once, after any field-adding upgrade. So the write-back is skipped
+    exactly where it could destroy a proof, and nowhere else: correctness never
+    depended on it, since the resolution happens on every read regardless.
+    """
+
+    @staticmethod
+    def _put_full(table, version: str):
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}",
+                "ocr": {"backend": "textract"},
+                "classification": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+                # `summarization` is deliberately ABSENT: four sections still
+                # route this as full, and it gives the backfill something to do,
+                # which is what the "resolved on this read even when nothing is
+                # persisted" assertion needs.
+                "classes": [],
+                "PublishedRevision": 1,
+            }
+        )
+
+    @staticmethod
+    def _index(table, version: str, entry: dict):
+        table.put_item(
+            Item={
+                "Configuration": f"ConfigRevIndex#{version}",
+                "IndexSeq": 1,
+                "Revisions": [entry],
+            }
+        )
+
+    def _run(self, monkeypatch, entry: dict | None):
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        if entry is not None:
+            self._index(table, "p", entry)
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            merged = manager.get_merged_configuration("p")
+        return merged, spy
+
+    def test_a_published_revision_with_a_hash_is_written_back(self, monkeypatch):
+        """Its proof is the hash, which does not depend on the head's timestamp,
+        so the convenience write is safe."""
+        merged, spy = self._run(
+            monkeypatch,
+            {"revision": 1, "createdAt": "2026-01-01T00:00:00Z", "storedHash": "abc"},
+        )
+        assert merged is not None
+        assert spy.called, "a hashed published revision should not block the write-back"
+
+    def test_a_published_revision_without_a_hash_is_not_written_back(self, monkeypatch):
+        """⚠️ The case the guard exists for. The resolution must still apply to
+        this read — only the stored record is left alone."""
+        merged, spy = self._run(
+            monkeypatch, {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"}
+        )
+        assert merged is not None
+        assert merged.classification.model == "us.amazon.nova-2-lite-v1:0"
+        # Backfilled on THIS read even though nothing was persisted.
+        assert merged.summarization.model == SEEDED_MODEL
+        spy.assert_not_called()
+
+    def test_no_published_revision_is_written_back(self, monkeypatch):
+        """Nothing to lose."""
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#p",
+                "ocr": {"backend": "textract"},
+                "classification": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "classes": [],
+                "summarization": {"model": "us.amazon.nova-2-lite-v1:0"},
+            }
+        )
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            manager.get_merged_configuration("p")
+        assert spy.called
+
+    def test_a_retired_published_revision_is_written_back(self, monkeypatch):
+        """No index entry means no entry to invalidate."""
+        merged, spy = self._run(monkeypatch, {"revision": 7, "storedHash": "x"})
+        assert merged is not None
+        assert spy.called
+
+    def test_history_disabled_is_written_back(self, monkeypatch):
+        """With no bucket there is no revision history to protect, and this is
+        the pre-existing behaviour for a sparse profile."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            manager.get_merged_configuration("p")
+        assert spy.called
+
+    def test_an_unreadable_index_fails_closed(self, monkeypatch):
+        """Skipping a convenience write is recoverable; destroying a proof is
+        not. So the unknown answer is 'do not write'."""
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        with patch.object(
+            manager.revisions, "get_entry", side_effect=RuntimeError("index unreadable")
+        ):
+            with patch.object(
+                manager, "save_configuration", wraps=manager.save_configuration
+            ) as spy:
+                merged = manager.get_merged_configuration("p")
+        assert merged is not None, "the read must still succeed"
+        spy.assert_not_called()
