@@ -384,8 +384,10 @@
         "scripts/ux_runner/section.py": 99.11,
         "scripts/ux_runner/signin.py": 100.0,
         "scripts/ux_runner/stories.py": 99.38,
+        "scripts/ux_runner/story_verdict.py": 98.24,
         "scripts/ux_runner/tool_profiles.py": 100.0,
         "scripts/ux_runner/ui_change.py": 98.26,
+        "scripts/ux_story_mcp.py": 98.4,
         "scripts/ux_test_proxy.py": 97.99,
         "scripts/ux_test_session.py": 0.0
       }
