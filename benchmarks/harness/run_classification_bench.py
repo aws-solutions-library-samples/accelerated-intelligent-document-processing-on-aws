@@ -390,11 +390,11 @@ def classification_cost(metering):
                     # `classification.model_lambda_hook_arn` emits (see
                     # `bedrock/client.py`), and it is a MODEL call made through a
                     # hook rather than an invocation of this pipeline's own
-                    # Lambda. Counting it as an invocation would overstate those;
-                    # counting it nowhere left `bedrock_calls_per_document`
-                    # silent about every call such a configuration made — and
-                    # silent as `None`, which reads as "not metered" rather than
-                    # as a gap.
+                    # Lambda. It belongs in the model count and not the
+                    # invocation count: counting it as an invocation overstates
+                    # those, and counting it nowhere leaves the model count
+                    # silent as `None` — "not metered" rather than "calls we did
+                    # not count", which is the harder reading to doubt.
                     bucket["bedrock_calls"] = (bucket["bedrock_calls"] or 0) + n
     for context in CLASSIFICATION_CONTEXTS:
         name = context.rstrip("/")
@@ -635,8 +635,12 @@ def score_run(res, run_id):
         "label_accuracy": round(label_matched / label_total, 4)
         if label_total
         else None,
-        "sections_boundary_matched": boundary_matched,
-        "sections_label_matched": label_matched,
+        # `None` not `0` when nothing was measured, matching the rule the row
+        # above and `bedrock_calls` already follow: a report predating the two
+        # halves scored these `0` beside a `null` accuracy, which reads as "none
+        # matched" rather than "never judged".
+        "sections_boundary_matched": boundary_matched if boundary_total else None,
+        "sections_label_matched": label_matched if label_total else None,
         "class_calibration_separation": sep,
         "mean_conf_correct": round(statistics.fmean(pooled_right), 4)
         if pooled_right
@@ -701,9 +705,8 @@ def score_run(res, run_id):
         # block somewhere it would.
         "classification_by_context": {
             context: {
-                # Named rather than spread: `**totals` carried the internal
-                # bookkeeping counter `cost_unpriced_docs` into the published
-                # summary by inheritance rather than by decision.
+                # Named rather than spread, so adding an internal counter to
+                # `totals` cannot publish it into the artifact by inheritance.
                 "inputTokens": totals["inputTokens"],
                 "outputTokens": totals["outputTokens"],
                 "cacheReadInputTokens": totals["cacheReadInputTokens"],
@@ -824,8 +827,16 @@ def main():
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     outdir = os.path.join(RESULTS, f"clsconf-{stamp}")
     os.makedirs(outdir, exist_ok=True)
-    runs = []
-
+    # ⚠️ Check EVERY cell's merged config before launching ANY of them. The
+    # check is offline and model-independent, so running it per cell inside the
+    # launch loop meant a broken variant at cell 7 of 14 aborted only after six
+    # cells had drained — six times `--n` documents of wall clock and Bedrock
+    # spend, to learn something knowable before the first call. A cell whose
+    # granularity or confidence block failed to merge would otherwise launch,
+    # drain and score while measuring the DEFAULT under another cell's name,
+    # which is indistinguishable from a real result saying the two settings
+    # perform identically — the question being asked.
+    failures = []
     for cell in cells:
         name, variant = cell["model"], cell["variant"]
         cell_id = f"{name}-{variant}" if variant else name
@@ -833,13 +844,6 @@ def main():
         cfg = build_config(
             TESTSETS[a.testset], MODELS[name], a.mode, a.top_k, variant=variant
         )
-        path = os.path.join(outdir, f"{version}.yaml")
-        yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)
-        # Prove the composed config really is what the cell claims. A cell whose
-        # granularity or confidence block failed to merge would launch, drain and
-        # score while measuring the DEFAULT under another cell's name — and that
-        # is indistinguishable from a real result saying the two settings perform
-        # identically, which is the question being asked.
         if variant:
             problems = variant_merge_problems(cfg, variant, a.mode)
         else:
@@ -852,12 +856,25 @@ def main():
                 else ["confidence prompt block is empty after merge"]
             )
         if problems:
-            sys.exit(
-                f"{version}: the merged config is not what this cell claims, so "
-                f"the run would measure something else:\n  - "
-                + "\n  - ".join(problems)
-                + "\nCheck base-classification.yaml."
-            )
+            failures.append(f"{version}:\n  - " + "\n  - ".join(problems))
+    if failures:
+        sys.exit(
+            "the merged config is not what these cells claim, so the run would "
+            "measure something else — and every cell is reported, not just the "
+            "first:\n" + "\n".join(failures)
+        )
+
+    runs = []
+
+    for cell in cells:
+        name, variant = cell["model"], cell["variant"]
+        cell_id = f"{name}-{variant}" if variant else name
+        version = f"bench-clsconf-{cell_id}-{a.mode}"
+        cfg = build_config(
+            TESTSETS[a.testset], MODELS[name], a.mode, a.top_k, variant=variant
+        )
+        path = os.path.join(outdir, f"{version}.yaml")
+        yaml.safe_dump(cfg, open(path, "w"), sort_keys=False)
         ok = upload_config(a.stack, version, path, res=res)
         print(f"  config {version}: {'ok' if ok else 'FAIL'} ({path})")
         if not ok:

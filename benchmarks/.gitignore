@@ -10,8 +10,8 @@ corpus/configs/
 results/run-*/
 # ad-hoc classification-bench runs: `run_classification_bench.py` writes
 # results/clsconf-<stamp>/, which matched neither the ignore above nor the
-# keep patterns below, so an ordinary measurement run turned up as 6 untracked
-# files in `git status` and was committed once by accident. A run worth keeping
+# keep patterns below, so an ordinary measurement run turns up as untracked
+# files in `git status` and is one `git add -A` away from the tree. A run worth keeping
 # is promoted to results/<release>/<suite>/ like every other suite's.
 results/clsconf-*/
 

@@ -159,7 +159,7 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
 ):
     """An omitted variant keeps the pre-axis behaviour: the test set's own
     stored classification settings, with nothing forced. Asserted on `modality`
-    specifically, which is what the name used to overstate."""
+    specifically, which is the whole of what it claims."""
     cfg = _config(docsplit_base, a_model, None)
     assert "modality" not in cfg["classification"] or cfg["classification"][
         "modality"
@@ -295,7 +295,7 @@ def test_the_per_context_lambda_invocation_count_is_captured():
 
 
 def test_the_invocation_count_does_not_measure_bedrock_calls():
-    """⚠️ Measured on IDP1, and the reason the field is not called `calls`.
+    """⚠️ The invocation count and the model-call count are different numbers.
 
     A 6-page document at `page` granularity makes six Bedrock calls inside ONE
     Lambda invocation, so this counter reads 1 — identical to `packet`, which
@@ -486,9 +486,9 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
         assert out["n_docs"] == 3
 
     def test_the_per_context_totals_accumulate_across_documents(self, monkeypatch):
-        """The figures the variants axis exists to report. With the shadowing in
-        place these held one document's tokens, which is indistinguishable from a
-        corpus three times cheaper than it is."""
+        """The figures the variants axis exists to report. Pooled over one
+        document instead of the corpus they are indistinguishable from a corpus
+        three times cheaper than it is."""
         out, _ = self._run(monkeypatch, n_docs=3)
         by_context = out["classification_by_context"]
         assert set(by_context) == {"Segmentation", "Labeling"}
@@ -737,10 +737,10 @@ class TestMeteringFiguresDivideByMeteredDocumentsOnly:
     dilution #1079 is about — while the harness prints "excluded, not zeroed"
     four lines above.
 
-    Measured before the fix on an 8-document run with 4 documents' metering
-    unread, each metered document making 6 Bedrock calls:
-    ``bedrock_calls_per_document: 3.0`` and
-    ``lambda_invocations_per_document: 0.5``.
+    The invariant: a per-document or per-page figure derived from metering is
+    the value FOR A METERED DOCUMENT, and does not move with how many documents
+    went unmetered. On a corpus where half the metering is unread, a 6-call
+    document must still read 6.
     """
 
     REPORT = {
@@ -825,10 +825,10 @@ def test_a_lambda_hook_model_call_is_counted_as_a_model_call():
 
     A configured `classification.model_lambda_hook_arn` makes the model call
     through a Lambda hook, and `bedrock/client.py` meters it as
-    `<ctx>/lambda_hook/<name>` with `requests: 1`. Matched by neither test, both
-    counters stayed empty for that context and `bedrock_calls_per_document` came
-    out `None` — "not metered" rather than "this configuration made calls we did
-    not count", which is the harder error to notice.
+    `<ctx>/lambda_hook/<name>` with `requests: 1`. Matching neither test leaves
+    both counters empty for that context, so the model count reads `None` — "not
+    metered" rather than "calls we did not count", which is the harder reading to
+    doubt.
 
     It counts as a model call rather than as a Lambda invocation: the invocation
     counter is about this pipeline's own functions, and conflating them would
@@ -851,3 +851,59 @@ def test_bedrock_and_lambda_hook_calls_sum_in_one_context():
     }
     _c, _t, _w, by_context = bench.classification_cost(metering)
     assert by_context["Classification"]["bedrock_calls"] == 5
+
+
+def test_a_broken_cell_is_caught_before_anything_launches(monkeypatch):
+    """⚠️ The check is offline, so it must run over EVERY cell before the first
+    launch. Per cell inside the launch loop, a broken variant at cell 7 of 14
+    aborts only after six cells have drained — six times `--n` documents of wall
+    clock and Bedrock spend, to learn something knowable before the first call.
+    """
+    launched: list[str] = []
+    monkeypatch.setattr(bench, "upload_config", lambda *a, **k: launched.append("up"))
+    monkeypatch.setattr(bench, "launch", lambda *a, **k: launched.append("launch"))
+    # Break the merge for every variant by emptying the packet prompt the guard
+    # requires, so the first cell is fine only if nothing is checked up front.
+    real = bench.build_config
+
+    def broken(*args, **kwargs):
+        cfg = real(*args, **kwargs)
+        if kwargs.get("variant") == "packet-text":
+            cfg["classification"]["packet"]["task_prompt"] = ""
+        return cfg
+
+    monkeypatch.setattr(bench, "build_config", broken)
+    # Not `_main_with`: its tripwire fires on `resolve_stack`, which runs BEFORE
+    # the pre-flight, so this test has to let that call succeed to reach it.
+    import sys as _sys
+
+    monkeypatch.setattr(
+        _sys,
+        "argv",
+        [
+            "run_classification_bench.py",
+            "--stack",
+            "s",
+            "--models",
+            "nova2lite",
+            "--variants",
+            "page-both,packet-text",
+        ],
+    )
+    monkeypatch.setattr(
+        bench,
+        "resolve_stack",
+        lambda *a, **k: {
+            "testset_bucket": "tb",
+            "output_bucket": "ob",
+            "tracking_table": "tt",
+            "config_table": "ct",
+        },
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        bench.main()
+    assert "packet-text" in str(excinfo.value)
+    assert not launched, (
+        "a cell launched before the broken one was reported, which is the spend "
+        "the pre-flight exists to avoid"
+    )
