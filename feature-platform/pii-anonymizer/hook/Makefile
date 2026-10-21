@@ -3,11 +3,12 @@
 # Why a makefile instead of letting SAM's PythonPipBuilder handle it: that
 # builder asks pip for exactly ONE platform tag — `--platform
 # manylinux2014_aarch64` — and Pillow stopped publishing aarch64 wheels under
-# that tag at 12.3.0 (12.2.0 is the last one); 12.3.0 ships
-# `manylinux_2_27_aarch64`/`manylinux_2_28_aarch64` only. Since this feature's
+# that tag at 12.3.0 (12.2.0 is the last one); every release from 12.3.0 on,
+# 13.0.0 included, ships `manylinux_2_27_aarch64`/`manylinux_2_28_aarch64`
+# only. Since this feature's
 # functions are arm64 (see Globals in ../template.yaml) and the build host is
 # usually x86_64, PythonPipBuilder fails with
-# `PythonPipBuilder:ResolveDependencies - {pillow==12.3.0(wheel)}`.
+# `PythonPipBuilder:ResolveDependencies - {pillow==13.0.0(wheel)}`.
 #
 # Staying on 12.2.0 was the previous workaround, but that leaves 9 HIGH Pillow
 # advisories unfixed (heap out-of-bounds writes in Image.paste/crop and
@@ -16,7 +17,7 @@
 # them. So instead of downgrading, name the platform tags explicitly.
 #
 # BOTH tags are passed, and that is the point: this dependency set straddles the
-# manylinux generations. Pillow 12.3.0 ships manylinux_2_27/2_28_aarch64 only,
+# manylinux generations. Pillow ships manylinux_2_27/2_28_aarch64 only,
 # while pypdfium2 still ships manylinux2014_aarch64 (= manylinux_2_17) only — so
 # either tag ALONE fails on one of them. pip accepts --platform repeatedly and
 # takes a wheel matching ANY listed tag, which is exactly the semantics needed

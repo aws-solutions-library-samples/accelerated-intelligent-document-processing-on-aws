@@ -4,4 +4,4 @@
 
 # PDF to image conversion for fine-tuning data generation
 pypdfium2>=4.0.0
-Pillow>=10.0.0
+Pillow>=13.0.0
