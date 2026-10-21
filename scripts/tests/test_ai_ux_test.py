@@ -3117,6 +3117,78 @@ def test_the_ci_skill_states_only_how_the_unattended_run_differs() -> None:
     assert not re.search(r"(?<![0-9])[0-9]{12}(?![0-9])", ci)
 
 
+def _headed_bodies(text: str) -> list[tuple[str, str, str]]:
+    """``(## heading, ### heading, line)`` for every line of a skill outside a fence."""
+    found: list[tuple[str, str, str]] = []
+    h2 = h3 = ""
+    fenced = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("## "):
+            h2, h3 = line[3:].strip(), ""
+            continue
+        elif not fenced and line.startswith("### "):
+            h3 = line[4:].strip()
+            continue
+        found.append((h2, h3, line))
+    return found
+
+
+@pytest.mark.unit
+def test_the_ci_skill_overrides_all_of_the_interactive_setup_and_its_gotchas() -> None:
+    """The interactive skill's advice for a desktop Chrome (a profile directory, the
+    debugging port, ``chrome://inspect``, ``list_pages``) sits only in its Setup
+    section and in "Before you start", and the CI skill's first difference
+    overrides that section whole, Gotchas included, rather than parts of it: a part
+    left standing is advice about a browser the session does not have."""
+    ci = (REPO_ROOT / ".claude/skills/ux-test-ci.md").read_text(encoding="utf-8")
+    interactive = (REPO_ROOT / ".claude/skills/ux-test.md").read_text(encoding="utf-8")
+    first = re.search(r"^### 1\. [^\n]*\n(.*?)^### ", ci, re.M | re.S)
+    assert first, "ux-test-ci.md no longer opens its differences with a ### 1."
+    overrides = " ".join(first.group(1).split()).split(". ")[0]
+    for needle in (
+        "the whole of `ux-test.md`'s Setup section",
+        "every one of its Gotchas",
+        '"Before you start"',
+    ):
+        assert needle in overrides, (needle, overrides)
+    lines = _headed_bodies(interactive)
+    gotchas = [h3 for h2, h3, _ in lines if h2.startswith("Setup") and "Gotchas" in h3]
+    assert gotchas, "ux-test.md no longer holds its Gotchas under Setup"
+    for needle in ("--user-data-dir", "chrome://inspect", "9222", "list_pages"):
+        homes = {(h2, h3) for h2, h3, line in lines if needle in line}
+        assert homes, f"ux-test.md no longer mentions {needle}"
+        outside = sorted(
+            (h2, h3)
+            for h2, h3 in homes
+            if not h2.startswith("Setup") and h3 != "Before you start"
+        )
+        assert not outside, f"{needle} is advised where §1 does not override: {outside}"
+
+
+@pytest.mark.unit
+def test_the_ci_skill_names_the_console_and_network_only_as_out_of_reach() -> None:
+    """The session holds no tool that reads the console or the network, so the
+    skill names either only to say so: listing them among what the browser shows
+    invites a claim about a surface the session cannot see."""
+    for tool in (
+        "list_console_messages",
+        "get_console_message",
+        "list_network_requests",
+        "get_network_request",
+    ):
+        name = tool_profiles.mcp_tool(tool_profiles.CHROME_DEVTOOLS_SERVER, tool)
+        assert name in tool_profiles.EXPERT_DISALLOWED_TOOLS, name
+        assert not tool_profiles.is_granted(name), name
+    ci = (REPO_ROOT / ".claude/skills/ux-test-ci.md").read_text(encoding="utf-8")
+    sentences = re.split(r"(?<=[.;:!?])\s+", " ".join(ci.split()))
+    mentions = [s for s in sentences if re.search(r"\b(?:console|network)\b", s, re.I)]
+    assert mentions, "ux-test-ci.md no longer says the console and network are unread"
+    for sentence in mentions:
+        assert re.search(r"\b(?:cannot|no tool)\b", sentence), sentence
+
+
 @pytest.mark.unit
 def test_the_ci_skill_links_only_to_files_that_exist() -> None:
     skill = REPO_ROOT / ".claude/skills/ux-test-ci.md"
