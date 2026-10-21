@@ -244,14 +244,29 @@ class TestPromptResolution:
         assert config["task_prompt"] == hand_written
         assert config["system_prompt"] == "You split packets, by hand."
 
-    def test_an_empty_packet_prompt_falls_back_and_warns(self, caplog):
+    def test_an_empty_packet_prompt_uses_the_shipped_one_and_warns(self, caplog):
+        """⚠️ This asserted the opposite until a live stack showed why it was
+        wrong: an empty packet prompt used to fall back to the PAGE prompt, and
+        that fallback cannot work. The page prompt asks for one class plus a
+        document_boundary, so the model answers in page shape and the segments
+        parser finds nothing — every document failed with "No segments found".
+
+        An empty packet prompt is the ordinary state of a profile saved before
+        `classification.packet` existed, so this was reachable by switching an
+        existing profile to `granularity: packet`. The read path now backfills
+        the field; this is the service-level net underneath it, and the shipped
+        default is the only fallback with the right output shape.
+        """
         import logging
 
         service = _service(granularity="packet", packet={"task_prompt": ""})
         with caplog.at_level(logging.WARNING):
             config = service._get_classification_config()
-        assert config["task_prompt"].startswith("page prompt")
-        assert "written for PAGE granularity" in caplog.text
+        assert not config["task_prompt"].startswith("page prompt"), (
+            "fell back to the page prompt, which the segments parser cannot read"
+        )
+        assert "segments" in config["task_prompt"]
+        assert "SHIPPED default" in caplog.text
 
 
 @pytest.mark.unit

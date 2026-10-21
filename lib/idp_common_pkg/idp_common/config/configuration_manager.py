@@ -384,33 +384,66 @@ class ConfigurationManager:
                 logger.warning("No active version found, using default")
                 version = DEFAULT_VERSION
 
-        # Try reading as a full config first (new format + default version)
+        # ⚠️ A FULL config is merged onto `default` too, and that is the whole
+        # point of this branch no longer returning early.
+        #
+        # "Full" means "has every top-level section", which is a statement about
+        # the schema AT THE TIME IT WAS SAVED. It says nothing about fields added
+        # since. Returned directly, every such field arrives from its **Pydantic**
+        # default rather than the shipped one — and for a prompt the Pydantic
+        # default is `""`.
+        #
+        # That shipped as a failure an operator could not diagnose: a profile
+        # saved before `classification.packet` / `.segmentation` / `.labeling`
+        # existed read back with all three prompts EMPTY, so switching it to
+        # `strategy: two_stage` + `granularity: packet` fell back to the page
+        # prompt, the model answered in page shape, the segments parser found
+        # nothing, and every document FAILED in ~28s. A profile created after the
+        # upgrade worked, which makes it look like the feature works and the
+        # profile is cursed. The UI's only hint was an empty box with a "Restore
+        # default" button beside it.
+        #
+        # So the two paths now differ only in a log line. `deep_update` keeps every
+        # key the stored config HAS — including one deliberately set empty — and
+        # fills only what it LACKS, which is exactly the distinction that matters:
+        # absent is not cleared. This is a defect class rather than one field, and
+        # it recurs on every future field that is added with a non-empty shipped
+        # default.
+        full_config_fallback: Optional[IDPConfig] = None
         try:
             config = self.get_configuration(CONFIG_TYPE_CONFIG, version)
             if config is not None and isinstance(config, IDPConfig):
-                # Check if this is truly a full config by examining the raw data
                 raw = self.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
                 if raw and _is_full_config(raw):
-                    logger.info(f"Loaded full configuration for version: {version}")
-                    return config
-                # else: Pydantic filled defaults - it's actually sparse, fall through to legacy path
+                    # Keep it, in case `default` cannot be read below: returning a
+                    # usable config beats returning None, which is what the merge
+                    # path does when the default profile is missing.
+                    full_config_fallback = config
         except Exception as e:
             logger.debug(f"Could not load version {version} as full config: {e}")
 
-        # LEGACY PATH: sparse delta config - merge with default
-        logger.info(
-            f"Version {version} appears to be legacy sparse format, merging with default"
-        )
+        if full_config_fallback is not None:
+            logger.info(f"Loaded full configuration for version: {version}")
+        else:
+            logger.info(
+                f"Version {version} appears to be legacy sparse format, merging with default"
+            )
 
         default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
-        if default_config is None:
+        if default_config is None or not isinstance(default_config, IDPConfig):
+            if full_config_fallback is not None:
+                # A full config with no backfill is what every release before this
+                # one returned, so it is the right answer when there is nothing to
+                # backfill from.
+                logger.warning(
+                    "Default configuration not readable; returning version %s "
+                    "without backfilling fields added since it was saved",
+                    version,
+                )
+                return full_config_fallback
             logger.warning(
                 "Default configuration not found - cannot create merged config"
             )
-            return None
-
-        if not isinstance(default_config, IDPConfig):
-            logger.error(f"Default config is not IDPConfig: {type(default_config)}")
             return None
 
         # Get version as RAW dict (no Pydantic defaults)
@@ -431,18 +464,43 @@ class ConfigurationManager:
 
         version_dict = migrate_config(version_dict)
 
-        # Merge: Start with Default, deep update with version deltas
+        # Merge: start from the default profile, then let every key the stored
+        # config HAS override it. A key it lacks is backfilled; a key it holds
+        # wins even when the value is empty, because absent is not cleared.
         default_dict = default_config.model_dump(mode="python")
         merged_dict = deepcopy(default_dict)
         deep_update(merged_dict, version_dict)
 
         merged_config = IDPConfig(**merged_dict)
-        logger.info(f"Merged default + version (legacy sparse) for version: {version}")
+        backfilled = sorted(set(default_dict) - set(version_dict))
+        logger.info(
+            "Resolved version %s against the default profile%s",
+            version,
+            f"; backfilled absent top-level section(s): {backfilled}"
+            if backfilled
+            else "",
+        )
 
-        # Auto-migrate: save the merged full config back so future reads are fast.
+        # ⚠️ Persist only when the resolution CHANGED something. Every read now
+        # goes through the merge, so an unconditional save would rewrite every
+        # profile head on every read — churning the record and its content hash
+        # for nothing.
+        # Compare the VALIDATED forms, not `merged_dict`: that one is still the
+        # pre-validation dict, so it carries DynamoDB `Decimal`s and whatever the
+        # raw record held, and would never equal a model dump.
+        if full_config_fallback is not None and merged_config.model_dump(
+            mode="python"
+        ) == full_config_fallback.model_dump(mode="python"):
+            return merged_config
+
+        # Save the resolved config back, so the next read is a direct one and so
+        # the UI shows the fields that were backfilled instead of empty boxes —
+        # which is what made the two-stage failure undiagnosable.
+        #
         # Not a revision: this is a storage-format rewrite, not a user's edit, and
         # recording it would make every legacy profile's history start with a
-        # revision nobody made.
+        # revision nobody made. The same reasoning covers a backfill, which is the
+        # shipped default arriving where there was previously nothing at all.
         try:
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,

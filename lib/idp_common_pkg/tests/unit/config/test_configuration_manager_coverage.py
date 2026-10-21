@@ -2647,3 +2647,192 @@ class TestSyncCustomWithNewDefault:
 
         assert result is old_custom
         assert result.notes == "mine"
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
+    """⚠️ "Full" is a statement about the schema AT THE TIME OF SAVING.
+
+    A profile is routed as "full" when it carries enough top-level sections, and
+    it used to be returned to the runtime directly. That says nothing about
+    fields added to the model since: every one of them arrived from **Pydantic's**
+    field default rather than from the stack's shipped one.
+
+    Reported from a live stack, and the reason this class exists: a Custom
+    profile saved before `classification.packet` / `.segmentation` / `.labeling`
+    existed read those prompts back EMPTY, so switching it to `strategy:
+    two_stage` + `granularity: packet` made Stage A send the page prompt, the
+    model answer in page shape, and the segments parser find nothing — every
+    document FAILED in ~28s with "produced no segments". A profile created after
+    the upgrade worked, so the feature looked fine and the profile looked cursed.
+    The web UI's only hint was an empty prompt box with a "Restore default"
+    button beside it.
+
+    **This is a defect class, not a field.** It recurs for every future field
+    added with a non-empty shipped default, which is why the tests below assert
+    on an arbitrary new field as well as on the three that were reported.
+
+    The rule: a key the stored profile HAS wins, including one deliberately set
+    empty; only a key it LACKS is backfilled. Absent is not cleared.
+    """
+
+    @staticmethod
+    def _put_full(table, version: str, body: dict):
+        """A profile with every top-level section, so `_is_full_config` is true,
+        but missing whichever nested field the test is about."""
+        item = {
+            "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}",
+            "ocr": {"backend": "textract"},
+            "classification": {"model": "us.amazon.nova-2-lite-v1:0"},
+            "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+            "classes": [],
+            "summarization": {"model": "us.amazon.nova-2-lite-v1:0"},
+        }
+        for key, value in body.items():
+            if value == "__omit__":
+                item.pop(key, None)
+            elif isinstance(value, dict) and isinstance(item.get(key), dict):
+                item[key] = {**item[key], **value}
+            else:
+                item[key] = value
+        table.put_item(Item=item)
+        assert _is_full_config(
+            {k: v for k, v in item.items() if k != "Configuration"}
+        ), "the fixture must be routed as a FULL config or it tests nothing"
+
+    def _default_with_stage_prompts(self, manager):
+        """A `default` carrying the prompts the shipped defaults carry."""
+        default = IDPConfig(
+            notes="seeded-default-notes",
+            classification={
+                "model": SEEDED_MODEL,
+                "packet": {
+                    "task_prompt": "SHIPPED PACKET: segments ordinal_start_page"
+                },
+                "segmentation": {
+                    "task_prompt": "SHIPPED STAGE A",
+                    "packet": {"task_prompt": "SHIPPED STAGE A PACKET"},
+                },
+                "labeling": {"task_prompt": "SHIPPED STAGE B"},
+            },
+            summarization={"model": SEEDED_MODEL},
+        )
+        manager.save_configuration(CONFIG_TYPE_CONFIG, default, version=DEFAULT_VERSION)
+        return default
+
+    def test_the_reported_stage_prompts_are_backfilled(self, monkeypatch):
+        """The exact failure: all three empty on a pre-upgrade full profile."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(table, "pre-upgrade", {})
+
+        merged = manager.get_merged_configuration("pre-upgrade")
+
+        assert merged is not None
+        cls = merged.classification
+        assert cls.packet.task_prompt == "SHIPPED PACKET: segments ordinal_start_page"
+        assert cls.segmentation.packet.task_prompt == "SHIPPED STAGE A PACKET"
+        assert cls.segmentation.task_prompt == "SHIPPED STAGE A"
+        assert cls.labeling.task_prompt == "SHIPPED STAGE B"
+
+    def test_the_profiles_own_value_still_wins(self, monkeypatch):
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(
+            table,
+            "mine",
+            {"classification": {"packet": {"task_prompt": "MY OWN PACKET PROMPT"}}},
+        )
+
+        merged = manager.get_merged_configuration("mine")
+
+        assert merged is not None
+        assert merged.classification.packet.task_prompt == "MY OWN PACKET PROMPT"
+
+    def test_a_value_deliberately_set_empty_is_not_overwritten(self, monkeypatch):
+        """⚠️ Absent is not cleared, and the difference is the operator's
+        intent. A stored empty string is a decision; a missing key is not."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(
+            table, "cleared", {"classification": {"packet": {"task_prompt": ""}}}
+        )
+
+        merged = manager.get_merged_configuration("cleared")
+
+        assert merged is not None
+        assert merged.classification.packet.task_prompt == ""
+
+    def test_any_field_added_later_is_backfilled_not_only_the_reported_ones(
+        self, monkeypatch
+    ):
+        """The class, not the instance. `summarization.model` stands in for "a
+        field this profile does not carry": if backfill only covered the three
+        classification prompts, this would read Pydantic's default instead of
+        the stack's."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        # `__omit__` drops the key entirely, which is what "a field added after
+        # this profile was saved" looks like on disk. Passing `{}` would merge
+        # into the fixture's own section and leave the model present, so the
+        # assertion would pass without any backfill happening.
+        self._put_full(table, "partial", {"summarization": "__omit__"})
+
+        merged = manager.get_merged_configuration("partial")
+
+        assert merged is not None
+        assert merged.summarization.model == SEEDED_MODEL
+        assert merged.summarization.model != PYDANTIC_DEFAULT_MODEL
+
+    def test_the_backfill_is_persisted_so_the_ui_stops_showing_empty_boxes(
+        self, monkeypatch
+    ):
+        """One of the reported symptoms was the UI: the operator saw an empty
+        "Packet task prompt" with no indication why."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(table, "pre-upgrade", {})
+
+        manager.get_merged_configuration("pre-upgrade")
+
+        raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, "pre-upgrade")
+        assert raw is not None
+        assert raw["classification"]["packet"]["task_prompt"].startswith(
+            "SHIPPED PACKET"
+        )
+
+    def test_a_second_read_does_not_rewrite_the_record(self, monkeypatch):
+        """Every read goes through the merge now, so an unconditional save would
+        rewrite every profile head on every read."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._default_with_stage_prompts(manager)
+        self._put_full(table, "pre-upgrade", {})
+        manager.get_merged_configuration("pre-upgrade")
+
+        with patch.object(manager, "save_configuration") as spy:
+            again = manager.get_merged_configuration("pre-upgrade")
+        spy.assert_not_called()
+        assert again is not None
+        assert again.classification.packet.task_prompt.startswith("SHIPPED PACKET")
+
+    def test_an_unreadable_default_returns_the_profile_rather_than_none(
+        self, monkeypatch
+    ):
+        """Behaviour before this change was to return the full config directly,
+        so that is the right answer when there is nothing to backfill from.
+        Returning None here would fail every document instead."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._put_full(table, "orphan", {})  # no Config#default seeded
+
+        merged = manager.get_merged_configuration("orphan")
+
+        assert merged is not None
+        assert merged.classification.model == "us.amazon.nova-2-lite-v1:0"
