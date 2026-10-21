@@ -535,7 +535,7 @@ def _main_with(monkeypatch, argv):
     return bench.main
 
 
-def test_main_refuses_an_unknown_variant_by_name(monkeypatch, capsys):
+def test_main_refuses_an_unknown_variant_by_name(monkeypatch):
     """⚠️ The user-facing half. A typo'd variant must stop the run rather than
     being dropped silently, because a cell that does not run is a cell whose
     absence from the summary looks like a configuration that was not worth
@@ -570,9 +570,9 @@ def test_main_warns_when_no_baseline_cell_is_requested(monkeypatch, capsys):
         monkeypatch,
         ["--stack", "s", "--models", "nova2lite", "--variants", "packet-text"],
     )
-    # It proceeds past the warning and fails later, when it reaches AWS — as
-    # SystemExit locally or as the offline suite's outbound-request guard in CI,
-    # so the type is not the assertion. The printed warning is.
+    # It proceeds past the warning and then hits the `resolve_stack` tripwire
+    # `_main_with` installs, which raises to stop the run before any AWS call.
+    # The exception type is not the assertion; the printed warning is.
     with pytest.raises(BaseException):
         main()
     assert "no baseline" in capsys.readouterr().out
@@ -581,8 +581,9 @@ def test_main_warns_when_no_baseline_cell_is_requested(monkeypatch, capsys):
 def test_main_does_not_warn_when_the_baseline_is_requested(monkeypatch, capsys):
     """⚠️ Asserting the ABSENCE of a string needs proof that execution reached
     the site that would print it, or it passes vacuously on any earlier failure.
-    The plan line is printed just before the warning site, so requiring it is
-    what makes this test able to fail."""
+    `_main_with` installs a tripwire on `resolve_stack`, the first call after the
+    warning site, and requiring that it fired is what makes this test able to
+    fail."""
     main = _main_with(
         monkeypatch,
         [

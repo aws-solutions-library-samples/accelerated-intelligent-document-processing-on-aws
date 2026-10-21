@@ -476,37 +476,39 @@ def score_run(res, run_id):
         ds = (ev or {}).get("doc_split_metrics") or {}
         # Pool the COUNTS, not the per-document ratios: a 1-section document and
         # a 12-section one would otherwise weigh the same.
-        for counter, key in (
-            ("boundary", "boundary_matched_sections"),
-            ("label", "label_matched_sections"),
-        ):
-            matched = ds.get(key)
-            if isinstance(matched, int):
-                if counter == "boundary":
-                    boundary_matched += matched
-                else:
-                    label_matched += matched
+        # Two plain blocks rather than a loop with a branch inside it: the guard
+        # conditions are the interesting part and belong side by side.
+        boundary_m = ds.get("boundary_matched_sections")
+        if isinstance(boundary_m, int) and not isinstance(boundary_m, bool):
+            boundary_matched += boundary_m
+        label_m = ds.get("label_matched_sections")
+        if isinstance(label_m, int) and not isinstance(label_m, bool):
+            label_matched += label_m
         # ⚠️ `total_splits` predates the two halves (#1329), so a report from an
         # older stack — or an older runmap replayed through `--score-only`, both
         # supported, and comparing across releases is a stated purpose of this
         # driver — carries the denominator and NOT the numerator. Adding to it
-        # unconditionally made the pooled figure read `boundary_accuracy: 0.0`
-        # alongside `sections_evaluated: 8`: "every boundary placed wrong", for a
-        # corpus where no boundary was judged at all. Measured, not supposed.
+        # unconditionally makes the pooled figure read as "every boundary placed
+        # wrong" for a corpus where no boundary was judged at all. The invariant:
+        # the figure must be `None` where the numerator was never reported.
         #
         # That is the silent zero #1079/#1146 put off limits, and `label_total`
         # below already avoided it by keying off a field only the new reports
         # carry. The denominator therefore advances only for a document that also
         # carries the numerator, so an old report pools nothing and the figure
         # comes out `None` — not scored, which is the truth.
-        if isinstance(ds.get("total_splits"), int) and isinstance(
-            ds.get("boundary_matched_sections"), int
+        total = ds.get("total_splits")
+        if (
+            isinstance(total, int)
+            and not isinstance(total, bool)
+            and isinstance(boundary_m, int)
+            and not isinstance(boundary_m, bool)
         ):
             boundary_total += ds["total_splits"]
         # The label denominator is the sections whose BOUNDARIES matched — the
         # only ones where a label was judged at all.
-        if isinstance(ds.get("boundary_matched_sections"), int):
-            label_total += ds["boundary_matched_sections"]
+        if isinstance(boundary_m, int) and not isinstance(boundary_m, bool):
+            label_total += boundary_m
         for row in ds.get("page_details") or []:
             pages_total += 1
             if row.get("correct"):
@@ -577,9 +579,9 @@ def score_run(res, run_id):
         # partial numerator by a full denominator understates in exact proportion
         # to how much went unread, which is the dilution #1079 is about and which
         # this function prints "excluded, not zeroed" about four lines up — then
-        # zeroed them in the divisor. Measured: an 8-document run with 4
-        # documents' metering unread, each metered document making 6 Bedrock
-        # calls, reported `bedrock_calls_per_document: 3.0`.
+        # zeroed them in the divisor. The invariant: a per-document or per-page
+        # figure derived from metering must be the value FOR A METERED DOCUMENT,
+        # independent of how many documents went unmetered.
         if metering_read.is_present:
             metered_docs += 1
             metered_pages += pages
@@ -657,6 +659,12 @@ def score_run(res, run_id):
         else None,
         "classification_cost": round(cls_cost, 5) if priceable else None,
         "pages_processed": page_count,
+        # ⚠️ The divisors for every metering-derived figure below. Emitted rather
+        # than left implicit: without them a reader cannot tell a cheap corpus
+        # from a partially-metered one, and `pages_processed` alone invites
+        # dividing by the wrong number by hand.
+        "documents_metered": metered_docs,
+        "pages_metered": metered_pages,
         "classification_cost_per_page": round(cls_cost / metered_pages, 6)
         if metered_pages and priceable
         else None,
