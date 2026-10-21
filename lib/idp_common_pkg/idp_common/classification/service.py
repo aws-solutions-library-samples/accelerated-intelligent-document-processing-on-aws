@@ -189,6 +189,61 @@ def _looks_like_an_image_refusal(exc: Exception) -> bool:
     )
 
 
+def _count_image_blocks(content: Any) -> int:
+    """Image blocks in a Bedrock request body, at any nesting this builder emits."""
+    if isinstance(content, dict):
+        if "image" in content:
+            return 1
+        return sum(_count_image_blocks(v) for v in content.values())
+    if isinstance(content, list):
+        return sum(_count_image_blocks(v) for v in content)
+    return 0
+
+
+def _annotate_image_refusal(
+    exc: Exception, content: Any, config: Dict[str, Any]
+) -> None:
+    """Append a hint naming ``modality.images`` when a model refuses the images.
+
+    ⚠️ A model that does not accept images refuses the request, and its own
+    message does not mention the setting that caused it — so the operator sees a
+    Bedrock validation error with no reason to look at
+    ``classification.modality.images``.
+
+    This is done at the call rather than refused when a configuration is saved,
+    because deciding it up front needs a per-model vision list this repository
+    does not have (``model_config_limits.yaml`` carries token limits only) and
+    which would go stale every time a model is added — a stale entry refuses a
+    configuration for a model that *does* accept images, which is worse than the
+    error it replaces. Bedrock already knows; the only thing missing was the
+    pointer.
+
+    ⚠️ **Mutates ``args`` rather than re-raising a new instance.** ``raise
+    type(exc)(msg)`` fails on the one class this path actually receives:
+    botocore's ``ClientError.__init__`` takes ``(error_response,
+    operation_name)``, so rebuilding it from a single string throws ``TypeError``
+    inside the handler and the operator ends up with less information than before
+    this existed. Mutating keeps the class, the traceback and every attribute.
+
+    Does nothing unless the request actually carried images, so an error with
+    another cause is never mis-attributed. Issue #1524.
+    """
+    images = _count_image_blocks(content)
+    if not images or not _looks_like_an_image_refusal(exc):
+        return
+    model = config.get("model_id") or "this model"
+    hint = (
+        f"This classification request carried {images} page image(s) because "
+        f"classification.modality.images is on. If {model} does not accept "
+        f"images, set classification.modality.images to false, or choose a model "
+        f"that does."
+    )
+    try:
+        exc.args = (f"{exc}\n{hint}",) + tuple(exc.args[1:])
+    except Exception:  # pragma: no cover - an exception with read-only args
+        pass
+
+
 class ClassificationService:
     """Service for classifying documents using various backends."""
 
@@ -2832,21 +2887,33 @@ class ClassificationService:
         Returns:
             Dictionary with response and metering data
         """
-        return bedrock.invoke_model(
-            model_id=config["model_id"],
-            system_prompt=config["system_prompt"],
-            content=content,
-            temperature=config["temperature"],
-            top_k=config["top_k"],
-            top_p=config["top_p"],
-            max_tokens=config["max_tokens"],
-            # Single-pass keeps "Classification" with unchanged units, so a cost
-            # comparison across this change is a straight read. Two-stage bills
-            # its halves under "Segmentation" and "Labeling".
-            context=config.get("metering_context", "Classification"),
-            model_lambda_hook_arn=self.config.classification.model_lambda_hook_arn,
-            reasoning_effort=config.get("reasoning_effort"),
-        )
+        try:
+            return bedrock.invoke_model(
+                model_id=config["model_id"],
+                system_prompt=config["system_prompt"],
+                content=content,
+                temperature=config["temperature"],
+                top_k=config["top_k"],
+                top_p=config["top_p"],
+                max_tokens=config["max_tokens"],
+                # Single-pass keeps "Classification" with unchanged units, so a
+                # cost comparison across this change is a straight read.
+                # Two-stage bills its halves under "Segmentation" and "Labeling".
+                context=config.get("metering_context", "Classification"),
+                model_lambda_hook_arn=self.config.classification.model_lambda_hook_arn,
+                reasoning_effort=config.get("reasoning_effort"),
+            )
+        except Exception as exc:
+            # ⚠️ Enriched HERE rather than at a call site, because this is the one
+            # choke point every classification request goes through — page-level,
+            # packet, Stage A segmentation and Stage B labeling. The same
+            # `classification.modality.images` setting attaches images on the
+            # first three, and page granularity is the DEFAULT, so a hint added
+            # only to the packet path would miss the common case. Fixing the
+            # instance and not the class is the recurring defect this repository
+            # names; this is the class.
+            _annotate_image_refusal(exc, content, config)
+            raise
 
     def _create_unclassified_result(
         self,
@@ -5044,51 +5111,9 @@ class ClassificationService:
             window_page_ids[-1],
             len(page_images),
         )
-        try:
-            response_with_metering = self._invoke_bedrock_model(
-                content=content, config=config
-            )
-        except Exception as exc:
-            # ⚠️ A model that does not accept images refuses this request, and its
-            # own message does not mention the setting that caused it — so the
-            # operator sees a Bedrock validation error and no reason to look at
-            # `classification.modality.images`.
-            #
-            # This is caught here rather than refused at save time ON PURPOSE.
-            # Deciding it up front needs a per-model vision list, which this
-            # repository does not have (`model_config_limits.yaml` carries token
-            # limits only) and which would go stale every time a model is added —
-            # and a stale entry refuses a configuration for a model that does
-            # support images, which is worse than the error it replaces. Bedrock
-            # already knows the answer; the only thing missing was the pointer.
-            #
-            # The original exception is re-raised with the hint appended, never
-            # replaced, so a validation error with some other cause is not
-            # mis-attributed. Issue #1524.
-            if page_images and _looks_like_an_image_refusal(exc):
-                # ⚠️ `raise type(exc)(msg)` does NOT work here, and the one
-                # exception class this path actually receives is the one it fails
-                # on: botocore's `ClientError.__init__` takes `(error_response,
-                # operation_name)`, so reconstructing it with a single string
-                # raises `TypeError` *inside* this handler and the operator ends
-                # up with less information than before the hint existed. The
-                # non-retryable Bedrock branch re-raises the original
-                # `ClientError`, so that is the production shape.
-                #
-                # Mutating `args` and re-raising keeps the class, the traceback
-                # and every other attribute, and works for any exception type.
-                hint = (
-                    f"This packet classification request carried "
-                    f"{len(page_images)} page image(s) because "
-                    f"classification.modality.images is on. If "
-                    f"{config.get('model_id') or 'this model'} does not accept "
-                    f"images, set classification.modality.images to false — "
-                    f"packet granularity works text-only — or choose a model "
-                    f"that does."
-                )
-                exc.args = (f"{exc}\n\n{hint}",) + tuple(exc.args[1:])
-                raise
-            raise
+        response_with_metering = self._invoke_bedrock_model(
+            content=content, config=config
+        )
 
         response = response_with_metering["response"]
         window_metering = response_with_metering.get("metering", {})
