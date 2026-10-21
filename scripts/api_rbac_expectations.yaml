@@ -764,9 +764,9 @@ operations:
     groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
-    args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
+    args: { testSetId: "nonexistent-test-set", objectKey: "__x__", reason: "Other (see note)" }
     note: >-
-      Hands a test-set document back to its queue: the assignment ends and the document is unassigned again, not completed. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
+      Hands a test-set document back to its queue, with a reason from the set's skip list: the assignment ends and the document is unassigned again, not completed. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
 
   claimTestSetDocument:
     groups: [Admin, Annotator]

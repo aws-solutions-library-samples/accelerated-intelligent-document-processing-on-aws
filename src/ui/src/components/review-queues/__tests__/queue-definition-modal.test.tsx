@@ -176,7 +176,9 @@ describe('the queue dialog', () => {
   });
 
   it('leaves the threshold and switch off a Test Studio queue, which has neither', async () => {
-    const onSaved = open({ testSet: { testSetId: 'ts-1', name: 'Invoices', priority: 0, claimLeaseMinutes: 30 } });
+    const onSaved = open({
+      testSet: { testSetId: 'ts-1', name: 'Invoices', priority: 0, claimLeaseMinutes: 30, skipReasons: ['Out of time'] },
+    });
     const labels = createWrapper(document.body)
       .findAllFormFields()
       .map((f) => f.findLabel()?.getElement().textContent);
@@ -187,6 +189,8 @@ describe('the queue dialog', () => {
     const sent = updateTestSetQueue.mock.calls[0][0] as Record<string, unknown>;
     expect(sent).not.toHaveProperty('confidenceThreshold');
     expect(sent).not.toHaveProperty('enabled');
+    // A Test Studio queue has skip reasons too, saved with its settings.
+    expect(sent.skipReasons).toEqual(['Out of time']);
   });
 
   it('has no reject-reasons editor, and an edit keeps the stored list', async () => {

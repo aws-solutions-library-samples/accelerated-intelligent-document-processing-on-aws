@@ -161,7 +161,10 @@ when the finalize run ends.
   section is reviewed, `complete_section_review` ends the assignment.
   `skipTestSetDocument` (`unassign`) hands the document back: the assignment ends,
   the document is unassigned again and still counts as remaining, and its labels
-  are left alone. Documents skipped before this behaviour carry `Skipped`,
+  are left alone. It takes a `reason` from the set's `skipReasons` (its queue
+  settings, or `DEFAULT_SKIP_REASONS` until one is saved; `getAnnotationQueue`
+  returns the list) and an optional `note`; `unassign(skip=...)` appends who, when,
+  the reason and the note to the document's `SkipHistory` in the same write. Documents skipped before this behaviour carry `Skipped`,
   `SkippedBy` and `SkippedAtMs` (`mark_skipped`); summary rebuilds keep those,
   `assign` clears them, and `assignment_counts` and `getAnnotationQueue`'s
   `completedDocs` still treat such a document as completed.

@@ -20,7 +20,7 @@ import { MY_QUEUES_PATH, productionQueuePath, reviewItemHref } from '../../route
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import ReviewPresence from '../review-queues/ReviewPresence';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
-import ReviewItemHistory from '../review-queues/ReviewItemHistory';
+import ReviewHistoryModal from '../review-queues/ReviewHistoryModal';
 import ReasonModal from '../common/ReasonModal';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import type { ReviewItem } from '../../graphql/generated/operation-types';
@@ -54,7 +54,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   const exit = useAnnotationExit();
   const [searchParams] = useSearchParams();
   const focusField = searchParams.get('field');
-  const [checklist, setChecklist] = useState<boolean[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
   const [busy, setBusy] = useState<AnnotationAction | null>(null);
   const [askSkipReason, setAskSkipReason] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -64,10 +64,6 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   // The latest item read, and the one claim in flight: concurrent saves share it.
   const itemRef = useRef<ReviewItem | null>(null);
   const assigningRef = useRef<Promise<boolean> | null>(null);
-
-  useEffect(() => {
-    if (detail && checklist.length !== detail.checklist.length) setChecklist(detail.checklist.map(() => false));
-  }, [detail, checklist.length]);
 
   useEffect(() => {
     itemRef.current = detail?.item ?? null;
@@ -172,8 +168,6 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   else if (!canEdit) lockedReason = assignee ? `Assigned to ${assignee}` : 'This item is not assigned to you';
   else if (dirty) lockedReason = 'Saving your latest edits…';
 
-  const unticked = detail.checklist.filter((_, i) => !checklist[i]);
-
   const run = async (action: AnnotationAction, fn: () => Promise<void>, failure: string): Promise<boolean> => {
     setBusy(action);
     try {
@@ -244,7 +238,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
       'complete',
       async () => {
         if (!(await ensureAssigned())) throw new AssignedElsewhere();
-        await adapter.complete(detail.checklist.length ? checklist : undefined);
+        await adapter.complete();
       },
       'complete the review',
     );
@@ -300,20 +294,21 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
       }
       actions={{
         completeDisabledReason: lockedReason,
-        completeHint: unticked.length > 0 ? `Not yet ticked: ${unticked.join('; ')}` : 'Apply your corrections and finish the review',
+        completeHint: 'Apply your corrections and finish the review',
         // Skip gives the item back to its queue: only its holder can.
         showSkip: assignedToMe,
         skipDisabledReason: dirty ? 'Saving your latest edits…' : undefined,
         showClaim: canClaim,
+        onShowHistory: () => setShowHistory(true),
         busy,
         onAction: (action) => void handleAction(action),
       }}
       notices={notices}
-      context={
-        <SpaceBetween size="m">
-          <ReviewTaskContext detail={detail} checklist={checklist} onChecklistChange={setChecklist} disabled={!canEdit} />
-          <ReviewItemHistory history={detail.history} />
-          {/* Mounted only while asked, so its buttons are not on the screen otherwise. */}
+      context={<ReviewTaskContext detail={detail} />}
+      dialogs={
+        <>
+          {/* Mounted only while open, so their buttons are not on the screen otherwise. */}
+          {showHistory && <ReviewHistoryModal history={detail.history} onDismiss={() => setShowHistory(false)} />}
           {askSkipReason && (
             <ReasonModal
               visible
@@ -327,7 +322,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
               <Box>It goes back to its queue, unassigned and not finished. Your saved edits are kept for whoever picks it up next.</Box>
             </ReasonModal>
           )}
-        </SpaceBetween>
+        </>
       }
     >
       {adapter.sections.length === 0 ? (

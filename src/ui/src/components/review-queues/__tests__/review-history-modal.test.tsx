@@ -1,13 +1,13 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-/** The work screen shows why an item was skipped or rejected, newest first. */
+/** History, from the annotation screen, shows why an item was skipped or rejected, newest first. */
 
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 
-import ReviewItemHistory, { entryDetails, eventLabel } from '../ReviewItemHistory';
+import ReviewHistoryModal, { entryDetails, eventLabel } from '../ReviewHistoryModal';
 
 const HISTORY = [
   { at: '2026-10-20T09:00:00.000Z', event: 'claimed', actor: 'ann@example.com', details: null },
@@ -19,9 +19,10 @@ const HISTORY = [
   },
 ];
 
-describe('ReviewItemHistory', () => {
+describe('ReviewHistoryModal', () => {
   it('shows a skip with its reason and note, newest first', () => {
-    render(<ReviewItemHistory history={HISTORY} />);
+    render(<ReviewHistoryModal history={HISTORY} onDismiss={() => undefined} />);
+    expect(screen.getByText('Review history (2)')).toBeInTheDocument();
     const rows = screen.getAllByRole('row').slice(1);
     expect(within(rows[0]).getByText('Skipped')).toBeInTheDocument();
     expect(within(rows[0]).getByText('Needs expert review')).toBeInTheDocument();

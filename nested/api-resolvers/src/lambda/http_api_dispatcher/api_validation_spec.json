@@ -2375,6 +2375,20 @@
           "name": "objectKey",
           "non_null": true,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -4023,6 +4037,13 @@
         "elem_non_null": true,
         "is_list": true,
         "name": "checklist",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "skipReasons",
         "non_null": false,
         "type": "String"
       }

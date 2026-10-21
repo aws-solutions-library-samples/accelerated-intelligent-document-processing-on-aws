@@ -5,10 +5,9 @@
 // name, priority, reminder time limit, confidence threshold, enabled switch and
 // eligible Annotators — or edit a Test Studio queue's settings (the same, less the
 // id, name, threshold and switch, which a test set doesn't have: its documents come
-// from the set, not from the pipeline). A production queue's skip reasons, which an
-// Annotator picks from when giving an item back, are edited here one per line. Its
-// stored checklist and reject reasons are kept as they are; the dialog doesn't edit
-// them.
+// from the set, not from the pipeline). Every queue's skip reasons, which an Annotator
+// picks from when giving an item back, are edited here one per line. A queue's stored
+// checklist and reject reasons are kept as they are; the dialog doesn't edit them.
 import React, { useEffect, useState } from 'react';
 import type { MultiselectProps } from '@cloudscape-design/components';
 import {
@@ -42,6 +41,7 @@ export interface TestSetQueueTarget {
   claimLeaseMinutes?: number | null;
   eligibleAnnotators?: readonly string[] | null;
   checklist?: readonly string[] | null;
+  skipReasons?: readonly string[] | null;
 }
 
 /** The backend's queue id rule. */
@@ -110,7 +110,7 @@ const QueueDefinitionModal = ({
     setEnabled(queue?.enabled ?? true);
     setEligible((testSet?.eligibleAnnotators ?? queue?.eligibleAnnotators ?? []).map((e) => ({ value: e, label: e })));
     setChecklist([...(testSet?.checklist ?? queue?.checklist ?? [])]);
-    setSkipReasonsText((queue?.skipReasons ?? []).join('\n'));
+    setSkipReasonsText((testSet?.skipReasons ?? queue?.skipReasons ?? []).join('\n'));
     setSubmitted(false);
     setError(null);
   }, [visible, queue, testSet]);
@@ -141,7 +141,7 @@ const QueueDefinitionModal = ({
     ),
   ];
   const skipReasonsError =
-    testSet || creating || skipReasons.length > 0
+    creating || skipReasons.length > 0
       ? skipReasons.length > MAX_SKIP_REASONS
         ? `Keep it to ${MAX_SKIP_REASONS} reasons.`
         : undefined
@@ -168,6 +168,7 @@ const QueueDefinitionModal = ({
           timeLimitMinutes: timeLimitNumber,
           eligibleAnnotators,
           checklist,
+          skipReasons,
         });
         onSaved(undefined, {
           ...testSet,
@@ -175,6 +176,7 @@ const QueueDefinitionModal = ({
           priority: priorityNumber,
           claimLeaseMinutes: timeLimitNumber,
           eligibleAnnotators,
+          skipReasons,
         });
       } catch (err) {
         setError(describeApiError(err, 'save the queue settings'));
@@ -300,17 +302,15 @@ const QueueDefinitionModal = ({
           <FormField label="Description" stretch>
             <Textarea value={description} rows={2} onChange={({ detail }) => setDescription(detail.value)} />
           </FormField>
-          {!testSet && (
-            <FormField
-              label="Skip reasons"
-              description="An Annotator who gives an item back unfinished chooses one; it is kept in the item's review history. One per line."
-              constraintText={creating ? 'Leave empty to use the default reasons.' : undefined}
-              errorText={submitted ? skipReasonsError : undefined}
-              stretch
-            >
-              <Textarea value={skipReasonsText} rows={4} onChange={({ detail }) => setSkipReasonsText(detail.value)} />
-            </FormField>
-          )}
+          <FormField
+            label="Skip reasons"
+            description="An Annotator who gives an item back unfinished chooses one; it is kept in the item's review history. One per line."
+            constraintText={creating ? 'Leave empty to use the default reasons.' : undefined}
+            errorText={submitted ? skipReasonsError : undefined}
+            stretch
+          >
+            <Textarea value={skipReasonsText} rows={4} onChange={({ detail }) => setSkipReasonsText(detail.value)} />
+          </FormField>
           <FormField
             label="Eligible Annotators"
             description="The Annotators who work this queue: they see it in My Work › Queues, claim its items and can be assigned them. With none listed, only Admins work it."

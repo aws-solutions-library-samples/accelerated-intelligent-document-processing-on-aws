@@ -1392,6 +1392,8 @@ type TestSetQueueSummary @aws_cognito_user_pools {
   priority: Int
   eligibleAnnotators: [String!]
   checklist: [String!]
+  # What an Annotator chooses from to give a document back unfinished (Skip).
+  skipReasons: [String!]
   claimLeaseMinutes: Int
   queueCountsAt: AWSDateTime
   updatedAt: AWSDateTime
@@ -1423,6 +1425,7 @@ type TestSetQueueSettings @aws_cognito_user_pools {
   # Annotators who work this queue; empty means none (Admins only).
   eligibleAnnotators: [String!]!
   checklist: [String!]!
+  skipReasons: [String!]!
 }
 
 input TestSetQueueSettingsInput {
@@ -1432,6 +1435,8 @@ input TestSetQueueSettingsInput {
   timeLimitMinutes: Int
   eligibleAnnotators: [String!]
   checklist: [String!]
+  # Omitted, the set keeps its list (the review queues' defaults until one is saved).
+  skipReasons: [String!]
 }
 
 # A Test Studio document assigned to the caller (My Work › Tasks).
@@ -1490,6 +1495,8 @@ type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   # The set's time limit in minutes: an assigned document still open after this
   # long sends its Annotator a reminder. Assignments do not expire.
   claimLeaseMinutes: Int
+  # What a Skip may give as its reason (skipTestSetDocument).
+  skipReasons: [String!]
   # BUILDING while the set's document summaries are built in the background
   # (documents listed so far are returned meanwhile); READY once current.
   summaryStatus: String
@@ -2252,7 +2259,7 @@ type Mutation {
   # Hand a test-set document back to its queue: the assignment ends and the document
   # is unassigned again, not completed. Annotators may skip only documents assigned
   # to them.
-  skipTestSetDocument(testSetId: String!, objectKey: String!): TestSetDocumentSkipResult
+  skipTestSetDocument(testSetId: String!, objectKey: String!, reason: String!, note: String): TestSetDocumentSkipResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   # An Annotator listed on a set's queue takes one of its unassigned, unreviewed
   # documents: it is assigned to them and appears in My Work › Tasks.

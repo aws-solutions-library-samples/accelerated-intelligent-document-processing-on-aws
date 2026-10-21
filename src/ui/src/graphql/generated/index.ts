@@ -672,6 +672,7 @@ export const getAnnotationQueue = /* GraphQL */ `
     getAnnotationQueue(testSetId: $testSetId, limit: $limit, includeCompleted: $includeCompleted) {
       testSetId
       claimLeaseMinutes
+      skipReasons
       summaryStatus
       summaryCount
       totalDocs
@@ -723,6 +724,7 @@ export const getAnnotationQueueDocument = /* GraphQL */ `
     getAnnotationQueue(testSetId: $testSetId, objectKey: $objectKey, includeCompleted: true) {
       testSetId
       claimLeaseMinutes
+      skipReasons
       summaryStatus
       summaryCount
       totalDocs
@@ -2098,6 +2100,7 @@ export const listTestSetQueues = /* GraphQL */ `
       priority
       eligibleAnnotators
       checklist
+      skipReasons
       claimLeaseMinutes
       queueCountsAt
       updatedAt
@@ -2907,8 +2910,8 @@ export const skipAllSectionsReview = /* GraphQL */ `
 ` as GeneratedMutation<SkipAllSectionsReviewMutationVariables, SkipAllSectionsReviewMutation>;
 
 export const skipTestSetDocument = /* GraphQL */ `
-  mutation SkipTestSetDocument($testSetId: String!, $objectKey: String!) {
-    skipTestSetDocument(testSetId: $testSetId, objectKey: $objectKey) {
+  mutation SkipTestSetDocument($testSetId: String!, $objectKey: String!, $reason: String!, $note: String) {
+    skipTestSetDocument(testSetId: $testSetId, objectKey: $objectKey, reason: $reason, note: $note) {
       testSetId
       objectKey
       skipped
@@ -3198,6 +3201,7 @@ export const updateTestSetQueue = /* GraphQL */ `
       claimLeaseMinutes
       eligibleAnnotators
       checklist
+      skipReasons
     }
   }
 ` as GeneratedMutation<UpdateTestSetQueueMutationVariables, UpdateTestSetQueueMutation>;

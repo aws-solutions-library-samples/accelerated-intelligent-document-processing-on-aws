@@ -1,14 +1,14 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// What the reviewer is asked to do: why the document is here (reason chips), the
-// queue's checklist (sent with Complete) and any escalation note.
+// Why the document is in review (reason chips) and any escalation note: the one panel
+// above the editor, kept to what the reviewer needs to review.
 //
 // Reasons arrive worst first (largest gap below the threshold), so the first few are
 // the ones to look at. Only TOP_REASONS are shown until the reviewer asks for the
 // rest; the server stores at most its own cap, so the total beyond that is a count.
 import React, { useState } from 'react';
-import { Alert, Badge, Box, Button, Checkbox, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
+import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { reasonText } from './review-api';
@@ -19,12 +19,9 @@ const alerts = (n: number): string => `${n} more alert${n === 1 ? '' : 's'}`;
 
 interface ReviewTaskContextProps {
   detail: ReviewItemDetail;
-  checklist: boolean[];
-  onChecklistChange: (values: boolean[]) => void;
-  disabled: boolean;
 }
 
-const ReviewTaskContext = ({ detail, checklist, onChecklistChange, disabled }: ReviewTaskContextProps): React.JSX.Element => {
+const ReviewTaskContext = ({ detail }: ReviewTaskContextProps): React.JSX.Element => {
   const { item } = detail;
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? item.reasons : item.reasons.slice(0, TOP_REASONS);
@@ -34,7 +31,7 @@ const ReviewTaskContext = ({ detail, checklist, onChecklistChange, disabled }: R
     <Container
       header={
         <Header variant="h2" counter={`(${item.reasonCount})`}>
-          Why this document needs review
+          Review Reason
         </Header>
       }
     >
@@ -85,25 +82,6 @@ const ReviewTaskContext = ({ detail, checklist, onChecklistChange, disabled }: R
             </Button>
           )}
         </SpaceBetween>
-        {detail.checklist.length > 0 && (
-          <SpaceBetween size="xxs">
-            <Box variant="h4">Checklist</Box>
-            {detail.checklist.map((label, i) => (
-              <Checkbox
-                key={label}
-                checked={checklist[i] ?? false}
-                disabled={disabled}
-                onChange={({ detail: d }) => {
-                  const next = [...checklist];
-                  next[i] = d.checked;
-                  onChecklistChange(next);
-                }}
-              >
-                {label}
-              </Checkbox>
-            ))}
-          </SpaceBetween>
-        )}
       </SpaceBetween>
     </Container>
   );

@@ -81,6 +81,7 @@ export type AnnotationQueue = {
   nextObjectKey?: Maybe<Scalars['String']['output']>;
   remainingDocs: Scalars['Int']['output'];
   reviewedDocs: Scalars['Int']['output'];
+  skipReasons?: Maybe<Array<Scalars['String']['output']>>;
   summaryCount?: Maybe<Scalars['Int']['output']>;
   summaryStatus?: Maybe<Scalars['String']['output']>;
   testSetId: Scalars['String']['output'];
@@ -1500,7 +1501,9 @@ export type MutationSkipAllSectionsReviewArgs = {
 
 
 export type MutationSkipTestSetDocumentArgs = {
+  note?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  reason: Scalars['String']['input'];
   testSetId: Scalars['String']['input'];
 };
 
@@ -2741,6 +2744,7 @@ export type TestSetQueueSettings = {
   description?: Maybe<Scalars['String']['output']>;
   eligibleAnnotators: Array<Scalars['String']['output']>;
   priority?: Maybe<Scalars['Int']['output']>;
+  skipReasons: Array<Scalars['String']['output']>;
   testSetId: Scalars['String']['output'];
 };
 
@@ -2749,6 +2753,7 @@ export type TestSetQueueSettingsInput = {
   description?: InputMaybe<Scalars['String']['input']>;
   eligibleAnnotators?: InputMaybe<Array<Scalars['String']['input']>>;
   priority?: InputMaybe<Scalars['Int']['input']>;
+  skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
 };
@@ -2768,6 +2773,7 @@ export type TestSetQueueSummary = {
   priority?: Maybe<Scalars['Int']['output']>;
   queueCountsAt?: Maybe<Scalars['AWSDateTime']['output']>;
   reviewedDocs?: Maybe<Scalars['Int']['output']>;
+  skipReasons?: Maybe<Array<Scalars['String']['output']>>;
   status?: Maybe<Scalars['String']['output']>;
   summaryStatus?: Maybe<Scalars['String']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;

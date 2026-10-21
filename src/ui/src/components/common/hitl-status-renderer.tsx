@@ -30,8 +30,8 @@ export const renderHitlStatus = (item: HitlItem, reviewHref?: string): React.JSX
         status
       );
     }
-    if (view.kind === 'complete') return <StatusIndicator type="success">Review complete</StatusIndicator>;
-    return <StatusIndicator type="stopped">Rejected</StatusIndicator>;
+    if (view.kind === 'complete') return <StatusIndicator type="success">Review Completed</StatusIndicator>;
+    return <StatusIndicator type="stopped">Review Rejected</StatusIndicator>;
   }
 
   if (!item.hitlTriggered) {

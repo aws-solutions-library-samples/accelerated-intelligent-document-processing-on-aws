@@ -672,8 +672,10 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   for the assignee, **Skip**. An Admin edits an unassigned Production item directly
   (the first saved edit, or Complete, assigns it to them) and uses **Take over** on
   one assigned to someone else.
-- The Document List shows queue-held documents as **In review**. The legacy Reviewer
-  flow (**Start Review**) is unchanged.
+- The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
+  **Review Status** as **In Review**, which for Admins and Annotators links to the queue
+  item. A queued document is reviewed only from that item; the legacy Reviewer flow
+  (**Start Review**) applies to documents outside the queues.
 
 ## Inbox
 

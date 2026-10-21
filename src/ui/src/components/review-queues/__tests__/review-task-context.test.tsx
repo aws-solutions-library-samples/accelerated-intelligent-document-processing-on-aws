@@ -33,12 +33,18 @@ const detail = (stored: number, total: number) =>
     checklist: [],
   }) as unknown as ReviewItemDetail;
 
-const renderPanel = (stored: number, total: number) =>
-  render(<ReviewTaskContext detail={detail(stored, total)} checklist={[]} onChecklistChange={() => undefined} disabled={false} />);
+const renderPanel = (stored: number, total: number) => render(<ReviewTaskContext detail={detail(stored, total)} />);
 
 const shownReasons = () => screen.queryAllByText(/^Low confidence: Field \d+/);
 
 describe('ReviewTaskContext reasons', () => {
+  it('is headed Review Reason and shows no checklist', () => {
+    render(<ReviewTaskContext detail={{ ...detail(3, 3), checklist: ['Check every highlighted field'] } as unknown as ReviewItemDetail} />);
+    expect(screen.getByRole('heading', { name: /Review Reason/ })).toBeInTheDocument();
+    expect(screen.queryByText('Check every highlighted field')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
   it('shows only the top five and counts every other alert, stored or not', () => {
     renderPanel(20, 37);
     expect(shownReasons()).toHaveLength(TOP_REASONS);

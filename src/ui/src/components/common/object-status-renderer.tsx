@@ -4,12 +4,14 @@ import React from 'react';
 import { StatusIndicator } from '@cloudscape-design/components';
 import type { StatusIndicatorProps } from '@cloudscape-design/components';
 
-const VIEWS: Record<string, { type: StatusIndicatorProps.Type; label?: string }> = {
+// The Status column shows each stored value as it is, so it reads the same as the CLI,
+// the SDK and IDP Monitor, which report the same values.
+const VIEWS: Record<string, { type: StatusIndicatorProps.Type }> = {
   COMPLETED: { type: 'success' },
   FAILED: { type: 'error' },
   ABORTED: { type: 'stopped' },
-  HITL_IN_PROGRESS: { type: 'in-progress', label: 'In Review' },
-  REJECTED: { type: 'stopped', label: 'Rejected' },
+  HITL_IN_PROGRESS: { type: 'in-progress' },
+  REJECTED: { type: 'stopped' },
   REDACTED_SUPERSEDED: { type: 'info' },
   QUEUED: { type: 'pending' },
   // Refused at the ingest malware gate (see ../common/malware-scan).
@@ -34,7 +36,7 @@ const IN_FLIGHT = new Set([
 export const renderObjectStatus = (status: string | null | undefined): React.JSX.Element => {
   const raw = status ?? '';
   const view = VIEWS[raw];
-  if (view) return <StatusIndicator type={view.type}>{view.label ?? raw}</StatusIndicator>;
+  if (view) return <StatusIndicator type={view.type}>{raw}</StatusIndicator>;
   if (IN_FLIGHT.has(raw)) return <StatusIndicator type="in-progress">{raw}</StatusIndicator>;
   return <StatusIndicator type="info">{raw || 'Unknown'}</StatusIndicator>;
 };

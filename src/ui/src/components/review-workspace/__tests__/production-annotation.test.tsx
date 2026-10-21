@@ -266,6 +266,27 @@ describe('the actions', () => {
     expect(buttons()).not.toContain('Skip');
   });
 
+  it('open the review history from History, which is not on the screen otherwise', () => {
+    server.detail = {
+      ...mine(),
+      history: [{ at: '2026-10-20T09:00:00.000Z', event: 'claimed', actor: ADMIN, details: null }],
+    } as ReviewItemDetail;
+    renderScreen();
+    expect(buttons()).toContain('History');
+    expect(createWrapper(document.body).findModal()).toBeNull();
+    button('History').click();
+    const modal = createWrapper(document.body).findModal()!;
+    expect(modal.findHeader().getElement().textContent).toBe('Review history (1)');
+    expect(modal.findContent().getElement().textContent).toContain('Claimed');
+  });
+
+  it('offer History beside Claim to an Annotator viewing an unassigned item', () => {
+    role.isAdmin = false;
+    role.isAnnotator = true;
+    renderScreen();
+    expect(buttons()).toEqual(expect.arrayContaining(['History', 'Claim']));
+  });
+
   it('ask why before skipping, and skip with that reason', async () => {
     server.detail = { ...mine(), skipReasons: ['Out of time', 'Needs expert review'] } as ReviewItemDetail;
     releaseItem.mockResolvedValue({});

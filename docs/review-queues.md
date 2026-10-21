@@ -57,7 +57,7 @@ a new stack, and while it is off documents keep the existing
    (the reason reads **Confidence unavailable**), so a read failure never skips
    review.
 
-   Its status becomes `HITL_IN_PROGRESS` ("In review"), and the machine output is
+   Its status becomes `HITL_IN_PROGRESS`, and the machine output is
    kept as the run's manifest. Admins see it waiting in HITL › Queue Management.
 3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
@@ -92,22 +92,22 @@ Inbox; other users have neither.
 - Select an item to open it in the **annotation screen**. Production and Test Studio
   items use the same screen, whether you open them from Tasks, an Inbox message or
   Queue Management. The document's page images are shown beside its fields.
-  - **Production item**: the reasons it is in review are at the top, worst first.
-    The five lowest-confidence alerts are shown; **+N more alerts** lists the rest
-    and **Show fewer** collapses them again. Hover a reason chip to see the field,
-    the score and the threshold. Your edits are saved as a draft as you type. The
-    queue's checklist is advisory. **Complete** applies your corrections. **Review
-    history**, below the reasons, lists who claimed, skipped or completed the item in
-    this review, with any skip reason and note.
+  - **Production item**: **Review Reason**, at the top, lists why it is in review,
+    worst first. The five lowest-confidence alerts are shown; **+N more alerts**
+    lists the rest and **Show fewer** collapses them again. Hover a reason chip to
+    see the field, the score and the threshold. Your edits are saved as a draft as
+    you type. **Complete** applies your corrections. **History** opens the item's
+    review history: who claimed, skipped or completed it in this review, with any
+    skip reason and note.
   - **Test Studio item**: correct the labels and choose **Complete**. You can also
     choose **Complete** without changing anything, which confirms the labels as
     correct; it needs no **Start annotating** first. Saving and versioning work
     exactly as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
     Tasks and goes back to its queue unassigned, where another Annotator can claim
-    it. It isn't finished, and a Production item's draft is kept. On a Production
-    item, choose a reason from the queue's skip list and optionally add a note;
-    both are kept in the item's review history.
+    it. It isn't finished, and a Production item's draft is kept. Choose a reason
+    from the queue's skip list and optionally add a note; both are recorded with the
+    skip (in a Production item's review history).
   - The breadcrumbs read **My Work › Queues**, then the item's queue (linking to its
     page), then the document.
 - When you complete an item, it leaves your Tasks and the queue's progress counts it
@@ -218,8 +218,8 @@ Assigning a document also gives the Annotator access to that test set.
 
 A Test Studio queue's **Settings** are the production settings less the id, name,
 Enabled switch and confidence threshold (its documents come from the
-set, not from the pipeline): description, priority, time limit (the reminder) and Eligible
-Annotators. They are kept with the test set.
+set, not from the pipeline): description, priority, time limit (the reminder), skip
+reasons and Eligible Annotators. They are kept with the test set.
 
 A Test Studio queue loads quickly because each document's summary (label source,
 alert count, lowest confidence, classes, sections, assignee, reviewed) is kept in

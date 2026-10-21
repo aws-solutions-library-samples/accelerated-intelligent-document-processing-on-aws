@@ -51,6 +51,13 @@ describe('renderHitlStatus In Review link', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
+  it('names finished queue reviews like the legacy ones', () => {
+    render(renderHitlStatus({ hitlStatus: 'complete', hitlTriggered: true }));
+    expect(screen.getByText('Review Completed')).toBeInTheDocument();
+    render(renderHitlStatus({ hitlStatus: 'rejected', hitlTriggered: true }));
+    expect(screen.getByText('Review Rejected')).toBeInTheDocument();
+  });
+
   it('never links a legacy status', () => {
     render(renderHitlStatus({ hitlStatus: 'Review Pending', hitlTriggered: true }, '#/x'));
     expect(screen.queryByRole('link')).toBeNull();

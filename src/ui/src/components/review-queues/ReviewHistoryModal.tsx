@@ -1,11 +1,12 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The review item's history for this cycle: who claimed, skipped, completed or
-// rejected it, and why. A skip or reject reason and its note are shown with the
-// event, so the next reviewer can see why the item came back.
+// The review item's history for this cycle, opened from the annotation screen's
+// History button: who claimed, skipped, completed or rejected it, and why. A skip or
+// reject reason and its note are shown with the event, so the next reviewer can see
+// why the item came back. Kept off the screen itself, which stays on the review.
 import React from 'react';
-import { Box, ExpandableSection, Table } from '@cloudscape-design/components';
+import { Box, Button, Modal, Table } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { formatDateTime } from '../../utils/date-time';
@@ -49,8 +50,25 @@ export const entryDetails = (entry: HistoryEntry): EntryDetails => {
   }
 };
 
-const ReviewItemHistory = ({ history }: { history: ReviewItemDetail['history'] }): React.JSX.Element => (
-  <ExpandableSection variant="container" headerText="Review history" headerCounter={`(${history.length})`}>
+interface ReviewHistoryModalProps {
+  history: ReviewItemDetail['history'];
+  onDismiss: () => void;
+}
+
+const ReviewHistoryModal = ({ history, onDismiss }: ReviewHistoryModalProps): React.JSX.Element => (
+  <Modal
+    visible
+    size="large"
+    onDismiss={onDismiss}
+    header={`Review history (${history.length})`}
+    footer={
+      <Box float="right">
+        <Button variant="primary" onClick={onDismiss}>
+          Close
+        </Button>
+      </Box>
+    }
+  >
     <Table
       variant="embedded"
       items={[...history].reverse()}
@@ -80,7 +98,7 @@ const ReviewItemHistory = ({ history }: { history: ReviewItemDetail['history'] }
       ]}
       empty={<Box color="text-body-secondary">Nothing has happened to this item yet.</Box>}
     />
-  </ExpandableSection>
+  </Modal>
 );
 
-export default ReviewItemHistory;
+export default ReviewHistoryModal;
