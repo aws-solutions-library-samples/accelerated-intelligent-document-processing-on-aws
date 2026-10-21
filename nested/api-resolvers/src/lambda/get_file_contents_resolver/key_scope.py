@@ -68,6 +68,7 @@ from typing import Any, Mapping, Optional, Tuple
 import boto3
 import config_scope
 import testset_scope
+from s3_targets import ResourceAccessDenied
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ TEST_SET = "test-set"
 _REVISION_KEY_RE = re.compile(r"^config_revisions/([^/]+)/")
 
 # The S3 prefix the revision store writes under, on its own, for the near-miss check
-# in `_assert_canonical_key`.
+# in `assert_canonical_key`.
 _REVISION_PREFIX = "config_revisions"
 
 # The character class `ConfigRevisionStore._safe_profile` enforces on every profile
@@ -143,7 +144,7 @@ def _dynamodb_resource():
     return _dynamodb
 
 
-def _assert_canonical_key(key: str) -> None:
+def assert_canonical_key(key: str) -> None:
     """Refuse a key in a partitioned bucket that is not in canonical form.
 
     Raises ``ValueError`` — a 400 — for a leading ``/``, an internal ``//``, or a ``.``
@@ -247,7 +248,7 @@ def scope_subject(
                 raise ValueError("Invalid S3 URI: key is not in canonical form")
             return CONFIG_PROFILE, profile
 
-        _assert_canonical_key(key)
+        assert_canonical_key(key)
 
         # Anything else under the revision prefix is not a revision body — a key of the
         # wrong depth, or the prefix with nothing after it. Refused rather than read as
@@ -281,7 +282,7 @@ def scope_subject(
         return None
 
     if test_set_bucket and bucket == test_set_bucket:
-        _assert_canonical_key(key)
+        assert_canonical_key(key)
         match = _TEST_SET_KEY_RE.match(key)
         if match:
             return TEST_SET, match.group(1)
@@ -363,7 +364,18 @@ def _assert_config_profile_allowed(
             "Refusing a configuration-revision read: the requested profile is "
             "outside the caller's allowedConfigVersions."
         )
-        raise PermissionError(_REFUSAL)
+        # The one refusal in this module that is a decision about the object the
+        # caller named, so it declares itself: `ResourceAccessDenied` reaches the
+        # client as `authzControl: "resource"`. The branches around it stay the
+        # unattributed `PermissionError` on purpose — an unevaluable scope and a
+        # missing identity are facts about the deployment and the principal, and
+        # `_assert_test_set_allowed` additionally folds this resolver's own GROUP
+        # check into one exception (`assert_can_access_test_set` refuses a Viewer or
+        # Reviewer outright), which `resource` would misattribute.
+        #
+        # No existence oracle here: the profile name comes out of the key and is
+        # matched against a set, with no lookup asking whether it exists.
+        raise ResourceAccessDenied(_REFUSAL)
 
 
 def _assert_test_set_allowed(
@@ -407,8 +419,11 @@ def assert_key_in_scope(
     """Refuse the read unless the caller's scope covers this key.
 
     A no-op for every key no scope axis partitions, which is the majority of them.
-    Raises ``PermissionError`` (HTTP 403 ``Unauthorized``) otherwise, with a message
-    that discloses nothing about the object.
+    Raises a ``PermissionError`` (HTTP 403 ``Unauthorized``) otherwise, with a
+    message that discloses nothing about the object. The configuration-profile
+    mismatch raises the ``ResourceAccessDenied`` subclass, which additionally
+    declares itself as a per-object control; see that branch for why its neighbours
+    do not.
     """
     subject = scope_subject(
         bucket,

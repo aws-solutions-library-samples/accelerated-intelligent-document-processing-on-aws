@@ -322,10 +322,14 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 # (issue #1256).
 #
 # Two things keep the added wall clock down, and neither is a cache:
-#   --jobs   measures trees concurrently. It has to be concurrency ACROSS trees:
-#            `scripts` declares Tree.serial because xdist under-collects a suite that
-#            drives its subject as a subprocess, so that tree cannot be sped up from
-#            the inside and its ~16 min is hidden behind the other eight instead.
+#   --jobs   measures trees concurrently, and it has to be concurrency ACROSS trees
+#            because a tree may decline xdist: Tree.serial records that, per entry,
+#            with the measurement. It is NOT a claim that a suite cannot be
+#            parallelised -- `scripts` carried the flag on that belief and lost it
+#            when the figures turned out identical per file, serial against the
+#            worker count CI gives it. The job therefore costs its slowest tree
+#            rather than the sum, and which tree that is moves; measure rather than
+#            reading a figure here.
 #   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
 #            step below still requires it BY NAME, so dropping the wrong tree here
 #            turns the gate red rather than quietly narrowing it.
@@ -355,7 +359,7 @@ check-coverage-debt: ## Ratchet per-file coverage across every registered tree: 
 # measured were reported and passed for as long as that was the arrangement. Requiring
 # every tree turns a missing report into a red mark that names the tree. The required
 # list is derived from TREES inside the script, so adding a Tree cannot leave it behind
-# and no Makefile or CI config holds a second copy of the nine names.
+# and no Makefile or CI config holds a second copy of the registry's names.
 check-coverage-debt-cicd: ## The ratchet, failing by name if ANY registry tree has no report from this run
 	@python3 scripts/check_coverage_debt.py --require-all-trees $(CHECK_COVERAGE_DEBT_ARGS)
 
@@ -868,6 +872,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/review_queue_sweeper && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# DockerBuildRun's ECR image verification: the bounded scan wait (#1336) and
 	@# the presence poll (#1310). `crhelper` is a Lambda-layer dependency and not a
@@ -895,6 +900,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/list_documents_range_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/sync_bda_idp_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
+	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -988,10 +996,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
-		scripts/tests/test_check_shared_branch.py -v
+		scripts/tests/test_check_shared_branch.py \
+		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -1061,6 +1071,32 @@ endif
 
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
+
+# Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=<region>]
+# End-to-end Inbox check against a DEPLOYED stack: posts through
+# idp_common.notifications with local credentials (direct, group fan-out,
+# idempotency, dedupe), then reads back through the REST API with real ID tokens.
+# Creates and removes a temporary Cognito group, two temporary users and their
+# Inbox items, and restores the app client's auth flows. Exit 0 = PASS,
+# 1 = FAIL, 2 = a check errored or was skipped (never a pass).
+stacktest-inbox: ## Inbox live check: posts through idp_common.notifications and reads via the API (STACK_NAME=...; creates and removes temporary Cognito users and a group)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
+
+# Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
+# End-to-end review-queue check against a DEPLOYED stack: routes a sample document
+# under a temporary profile, claims it, saves a draft and completes it through
+# the REST API with a real Annotator ID token, then waits for the finalize
+# run and the final review status object. Creates and removes a temporary
+# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
+# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state

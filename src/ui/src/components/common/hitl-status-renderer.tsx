@@ -3,6 +3,8 @@
 import React from 'react';
 import { StatusIndicator } from '@cloudscape-design/components';
 
+import { normalizeHitlStatus } from './review-status';
+
 interface HitlItem {
   hitlTriggered?: boolean;
   hitlStatus?: string;
@@ -10,29 +12,31 @@ interface HitlItem {
 }
 
 export const renderHitlStatus = (item: HitlItem): React.JSX.Element => {
+  const view = normalizeHitlStatus(item.hitlStatus);
+
+  // Queue-managed documents carry their status whether or not the legacy flag is set.
+  if (view.queueManaged) {
+    if (view.kind === 'in_review') return <StatusIndicator type="in-progress">In review</StatusIndicator>;
+    if (view.kind === 'complete') return <StatusIndicator type="success">Review complete</StatusIndicator>;
+    return <StatusIndicator type="stopped">Rejected</StatusIndicator>;
+  }
+
   if (!item.hitlTriggered) {
     return <StatusIndicator type="stopped">N/A</StatusIndicator>;
   }
 
   const status = item.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
 
-  // Check for failed status
   if (status === 'failed' || status === 'reviewfailed') {
     return <StatusIndicator type="error">Review Failed</StatusIndicator>;
   }
-
-  // Check for skipped status
-  if (status === 'skipped' || status === 'reviewskipped') {
+  if (view.kind === 'skipped') {
     return <StatusIndicator type="stopped">Review Skipped</StatusIndicator>;
   }
-
-  // Check for completed status
-  if (item.hitlCompleted || status === 'completed' || status === 'reviewcompleted') {
+  if (item.hitlCompleted || view.kind === 'complete') {
     return <StatusIndicator type="success">Review Completed</StatusIndicator>;
   }
-
-  // Check for in-progress status
-  if (status === 'inprogress' || status === 'reviewinprogress') {
+  if (view.kind === 'in_progress') {
     return <StatusIndicator type="in-progress">Review In Progress</StatusIndicator>;
   }
 

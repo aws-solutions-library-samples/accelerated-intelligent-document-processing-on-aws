@@ -371,11 +371,19 @@ def _display_deployment_failure(client, stack_name: str, result):
         console.print()
 
 
-# Region-specific template URLs
+# Region-specific template URLs. One entry per Region `scripts/aws-release.sh`
+# publishes to: this dict and that script are the two halves of the same claim,
+# and a Region in one but not the other is the failure to avoid — an entry here
+# with no published artifact serves a 404 to `idp-cli deploy`, and a published
+# Region missing here is refused by all three deploy paths that read this dict
+# (`--govcloud`, `--headless` and the plain deploy below) while the README and
+# `docs/deployment.md` Launch Stack buttons still offer it.
 TEMPLATE_URLS = {
     "us-west-2": "https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main.yaml",
     "us-east-1": "https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml",
     "eu-central-1": "https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml",
+    # Canada publishes to a different bucket basename; see scripts/aws-release.sh.
+    "ca-central-1": "https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml",
 }
 
 
@@ -469,7 +477,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.11")
+@click.version_option(version="0.6.12")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -535,7 +543,7 @@ def cli():
     help=(
         "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
         "stack parameter: enable it in the Web UI under Configuration → "
-        "Assessment & HITL Configuration, or in the config YAML."
+        "Human-in-the-Loop (HITL) Review, or in the config YAML."
     ),
 )
 @click.option(
@@ -685,7 +693,7 @@ def deploy(
             console.print(
                 "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
                 "  HITL became a configuration setting in v0.4.11. Enable it in the "
-                "Web UI under Configuration → Assessment & HITL Configuration, or "
+                "Web UI under Configuration → Human-in-the-Loop (HITL) Review, or "
                 "in the config YAML passed to --custom-config."
             )
             sys.exit(1)
@@ -3880,6 +3888,8 @@ def _batch_status_to_display_dicts(batch_status):
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,
             "error": doc.error or "",
+            # in_review / complete / rejected (review queues); None if never routed.
+            "review_status": getattr(doc.review_status, "value", doc.review_status),
         }
         # The producer's own verdict wins when it recorded one, and
         # `idp_sdk.models.classify_document_state` -- total over `DocumentState`
@@ -7945,9 +7955,8 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
-        # and Rich would read that as a style tag and drop it -- leaving the user told
-        # to `pip install idp_common`, which is already installed. The constant is
+        # `escape`, because INSTALL_HINT is shared text and Rich reads any `[...]` in
+        # it (a pip extra, say) as a style tag and silently drops it. The constant is
         # shared with consumers that do not render through Rich (the bootstrap
         # module, the capability field), so the escape belongs at this call site
         # rather than in the constant.

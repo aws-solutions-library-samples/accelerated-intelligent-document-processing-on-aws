@@ -102,11 +102,16 @@ Resources:
   # Redaction MAPPING table — OWNED by this feature. Holds the original->
   # synthetic value map (a RE-IDENTIFICATION KEY containing real PII), keyed by
   # documentId, only when store_mapping is enabled. Deliberately a feature-owned
-  # DynamoDB table — NOT the host Output/Working buckets — because the host's
-  # getFileContents resolver proxies any Output-bucket key to any caller holding
-  # one of the five Cognito groups (no key-level or config-version scoping), and
-  # the browser's Identity Pool role reads that bucket directly whatever group the
-  # caller is in. Either path would bypass the RBAC gate. Reachable
+  # DynamoDB table — NOT the host Output/Working buckets — because none of the
+  # controls on the host's object-read path (getFileContents /
+  # getFilePresignedUrl / getFilePresignedUrls) makes the decision this record
+  # needs: the group floor is satisfied by every one of the five Cognito groups,
+  # the bucket allow-list bounds which bucket rather than which object, and the
+  # per-document check matches the OWNING document's ConfigVersion against the
+  # caller's allowedConfigVersions — a no-op for a caller whose scope is unset
+  # (opt-in per user, so the default) and, where it applies, a decision about
+  # that document's profile and not about who may re-identify PII, which only
+  # the ORIGINAL document's config version answers. Reachable
   # ONLY via the feature API's RBAC-gated /report/{docId}/mapping route.
   ###########################################################################
   RedactionMappingTable:

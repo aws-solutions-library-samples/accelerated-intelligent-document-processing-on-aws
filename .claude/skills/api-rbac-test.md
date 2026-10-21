@@ -39,7 +39,7 @@ for APIs" checklist. Mapping (suite → checklist item), implemented in
 |---|----------------|-------|
 | 1 | Unauthenticated access denied | `run_group_matrix` (unauth cell) + `run_token_negatives` |
 | 2 / 2.2 | Authorization matrix, negative + positive; role X not authorized for API Y | `run_group_matrix` (every op × every role) |
-| 2.1 | IDOR — User A's data unreachable by User B | `run_idor_suite` (chat session ownership) |
+| 2.1 | IDOR — User A's data unreachable by User B | `run_idor_suite` (chat session ownership); `run_inbox_idor_suite` (Inbox ownership: another user's message id is not listed, marked or deleted) |
 | 2.1 | Caller-supplied resource reference bounded to the deployment and the caller's config scope | `run_caller_supplied_ref_suite` — `getStepFunctionExecution` must refuse an ARN naming another state machine, still serve this deployment's own, and refuse a config-scoped caller an out-of-scope execution. **Needs a processed document**, else all three SKIP (see below) |
 | 2.3 | Tokens rejected after expiry | `run_token_lifecycle_suite` (+ token negatives); real-expiry wait via `IDP_SECTEST_WAIT_EXPIRY=<seconds>` |
 | 2.4 | Tokens revoked after logout | `run_token_lifecycle_suite` — global sign-out then re-test; **stateless-JWT reuse is a documented gap** (`GAP-SEC-LOGOUT`, WARN — see AUTH.T10) |
@@ -98,7 +98,7 @@ Notes:
   `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
   ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
   `scripts/test_api_rbac.py`) — **`Annotator` is not one** — and it creates **no
-  groupless user**. 18 operations are declared `ANY_GROUP` today, and "denied to a
+  groupless user**. 27 operations are declared `ANY_GROUP` today, and "denied to a
   caller in no group" — the whole point of that policy — is asserted offline only, in
   `test_http_api_dispatcher_authz.py`. The *mechanism* is live-proven: step 4 of the
   chain measured in
@@ -177,7 +177,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (123 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (162 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -240,7 +240,7 @@ layer:
 | The response means | Control | `authzControl` |
 |---|---|---|
 | "this caller's **groups** do not admit this operation" | the field-level floor in `authz.py` — also an undeclared field and an `IAM_ONLY` op | `api-group-floor` |
-| "this caller's groups were **fine** and the **object** they named was refused" | a per-object control in a resolver: the bucket allow-list, the write-once key rule, chat-session ownership, the test-set selection scope | `resource` |
+| "this caller's groups were **fine** and the **object** they named was refused" | a per-object control in a resolver: the bucket allow-list, the write-once key rule, chat-session ownership, the test-set selection scope, the per-document config-profile scope on object bytes | `resource` |
 | the resolver refused and did not say which control it was — every resolver's own group check is here | a resolver | `resolver` |
 | an invocation asserted its own `identity` | `normalize_event` | `unverified-identity` |
 
@@ -278,6 +278,34 @@ itself costs a visible failure rather than a silent pass. Declare one by raising
 `ResourceAccessDenied` (`idp_common.api_adapter`; a `PermissionError` subclass,
 recognised by class **name** across the invoke boundary, so a layerless resolver may
 declare its own). Keep the `Unauthorized` message prefix.
+
+⚠️ **Declare it per BRANCH, and uniformly across the ones that decide about the
+object.** A control whose refusal sites split between the two labels tells the
+caller which branch answered, and for an object-scoped control that is an existence
+oracle: `resource` on "exists but out of your scope" beside `resolver` on "no such
+object" is one bit per key, over objects entirely outside the caller's scope. So
+convert every branch that decides about the object the caller named, including any
+budget or cap whose refusal depends on which objects exist, and leave the branches
+that are facts about the **deployment** or the **principal** unattributed — an
+unevaluable scope, a throttled table, an unwired table name. `resolver` is the true
+answer for those and the strict reading is what keeps a deployment fault in the row
+an operator reads first. `document_scope` and `key_scope` in
+`get_file_contents_resolver` are the worked example of the split (#1478), and
+`key_scope._assert_test_set_allowed` is the counter-example: it folds the resolver's
+own **group** check into the same exception as its per-object one, so it stays
+unattributed — `resource` there would lose a group refusal, which is the one
+misattribution direction that matters.
+
+⚠️ **`object_scoped_roles:` is not the way to cover a control keyed on
+`allowedConfigVersions`.** That key names a role the matrix drives, and every matrix
+principal is unscoped, so a config-scope control is a no-op for all of them and the
+cell fails as NOT REFUSED. Those belong in the config-version scope suite, where a
+seeded scoped Author exists — `run_document_bytes_scope_suite` is the pattern: refuse
+the scoped caller a real document's bytes, require `resource` on the refusal, and
+assert an unrestricted Admin is **not refused** the same URI so the first arm cannot
+pass on a deployment that refuses the object to everybody. "Not refused" rather than
+"served" on purpose: a 400 `File not found` is the honest answer on a stack whose
+input bucket has been swept, and requiring a 200 would fail there.
 
 ⚠️ **An absent label is not the same as `resolver`.** `None` means the deployment
 did not say — a stack older than the field, the route's Cognito authorizer answering
@@ -387,9 +415,24 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 4. **Regenerate the dispatcher manifest:**
    `python3 scripts/sdlc/generate_api_rbac_manifest.py`, and commit the changed
    `nested/api-resolvers/src/lambda/http_api_dispatcher/api_rbac_manifest.json`.
-5. `make api-test-static` must be clean (it runs the manifest drift check too),
+5. **Route it.** A new resolver Lambda gets one key in
+   `HttpApiFieldFunctionMapParam` (`nested/api-resolvers/template.yaml`); a field
+   served by an existing Lambda goes in `FIELD_ALIASES`
+   (`http_api_dispatcher/index.py`) instead. An unrouted field is default-denied.
+   `scripts/tests/test_http_api_field_map_size.py` checks that the map's resolved
+   worst case still fits the 8,192-byte SSM Advanced-tier limit.
+6. **Regenerate the validation spec:**
+   `python3 scripts/sdlc/generate_api_validation_spec.py`, and commit the changed
+   `http_api_dispatcher/api_validation_spec.json` (the dispatcher's argument check).
+7. **Regenerate the UI types:** `make codegen` rewrites
+   `src/ui/src/graphql/generated/`; never hand-edit it.
+8. **Update the stated policy counts.** `scripts/tests/test_api_policy_counts_in_docs.py`
+   and `scripts/tests/test_well_architected_doc.py` compare every page that states
+   an operation or policy count against the expectations file; run them and fix the
+   prose they name.
+9. `make api-test-static` must be clean (it runs the manifest drift check too),
    then run `make api-test` live.
-6. If the op is **also** reachable off the REST route (a Function URL route, a
+10. If the op is **also** reachable off the REST route (a Function URL route, a
    direct `lambda:InvokeFunction` path), put the group check in the component
    that does the work and declare the route under `function_url_endpoints:` —
    otherwise S6 fails and the check covers only one path. The dispatcher's
@@ -406,7 +449,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 123 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 162 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,
@@ -465,9 +508,17 @@ policy, which the generator never reads.) `authz.py` never sees `ANY_GROUP`: it 
 expanded before the manifest is written, and an unexpanded one there means a broken
 build and is treated as one (deny-all).
 
-⚠️ **A group floor is not the whole control.** It gates the REST API. The Identity
-Pool attaches one `authenticated` role with no role mappings, so every signed-in
-user — group or no group — holds `s3:GetObject`/`ListBucket` on the document
-buckets, and the UI reads them directly by default. Do not describe an `ANY_GROUP`
-operation as making document content unreachable; it makes that *operation*
-unreachable. See the residuals in `docs/rbac.md` and AUTH.T03.
+⚠️ **A group floor is not the whole control, even where it now reaches the bytes.**
+It gates the REST API. The Identity Pool attaches one `authenticated` role with no
+role mappings, so whatever that role grants is held by every signed-in user, group
+or no group — which is why it grants **nothing** on the Input and Output buckets and
+**no** `s3:GetObject` or `s3:ListBucket` on any bucket, and why the UI asks
+`getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls` for every document
+byte. For the document read path the floor and the asset therefore coincide. What the
+floor still does not supply is per-document authorization: `document_scope` matches
+the owning document's `ConfigVersion` against the caller's `allowedConfigVersions`,
+which refuses a **scoped** caller a document outside their profiles and refuses an
+**unscoped** one nothing, scoping being opt-in per user. So do not describe an
+`ANY_GROUP` operation as making document content unreachable; it makes that
+*operation* unreachable, and on this path that is as far as the floor goes. See the
+residuals in `docs/rbac.md` and AUTH.T03.

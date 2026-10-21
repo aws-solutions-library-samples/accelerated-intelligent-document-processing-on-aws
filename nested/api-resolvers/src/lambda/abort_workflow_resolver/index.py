@@ -23,6 +23,22 @@ sfn_client = boto3.client('stepfunctions')
 # Initialize document service (uses AppSync by default)
 document_service = create_document_service()
 
+# Review queues: aborting withdraws the document's review item (claim released,
+# status object deleted). Built on first use; None when no table is configured.
+_REVIEW_SERVICE_CACHE = {}
+
+
+def _review_service():
+    if "svc" not in _REVIEW_SERVICE_CACHE:
+        if os.environ.get("HITL_TABLE_NAME"):
+            from idp_common.review_queues.service import create_review_queue_service
+
+            _REVIEW_SERVICE_CACHE["svc"] = create_review_queue_service()
+        else:
+            _REVIEW_SERVICE_CACHE["svc"] = None
+    return _REVIEW_SERVICE_CACHE["svc"]
+
+
 # Statuses that can be aborted (have active workflows or are waiting to start)
 ABORTABLE_STATUSES = {
     Status.QUEUED,
@@ -190,7 +206,16 @@ def abort_document(object_key):
     try:
         document_service.update_document(document)
         logger.info(f"Document {object_key} status updated to ABORTED")
-        return {"success": True}
     except Exception as e:
         logger.error(f"Failed to update document status: {str(e)}")
         return {"success": False, "error": f"Failed to update status: {str(e)}"}
+
+    # Withdraw a review in progress (idempotent; the tracker also withdraws when
+    # an aborted finalize execution ends).
+    review_service = _review_service()
+    if review_service is not None:
+        try:
+            review_service.withdraw(object_key, "aborted")
+        except Exception:
+            logger.error("Failed to withdraw the review item on abort", exc_info=True)
+    return {"success": True}

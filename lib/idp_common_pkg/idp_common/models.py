@@ -64,6 +64,9 @@ class Status(Enum):
     REDACTED_SUPERSEDED = "REDACTED_SUPERSEDED"  # A preprocessing hook (e.g. PII
     # anonymization) produced a redacted copy that is processed as a separate
     # document; this original was intentionally not processed further.
+    REJECTED = (
+        "REJECTED"  # Human reviewer rejected the document (terminal, not success)
+    )
     QUARANTINED = "QUARANTINED"  # GuardDuty Malware Protection reported
     # THREATS_FOUND. Terminal: the document was never admitted to the pipeline,
     # so it has no pages, no sections and no workflow execution. The threat name
@@ -74,6 +77,72 @@ class Status(Enum):
     # SSE-C, access denied, internal error) and the configured policy is to fail
     # closed. Deliberately distinct from QUARANTINED: "we found malware" and "we
     # could not look" call for different operator actions.
+
+
+#: Statuses a workflow can end on with SUCCEEDED while the document is not
+#: COMPLETED. The state machine puts them on ``$.document.status`` in Pass
+#: states before ``WorkflowComplete`` and the tracker preserves them.
+_SUCCEEDED_WRAPPER_STATUSES = frozenset(
+    {"REDACTED_SUPERSEDED", "HITL_IN_PROGRESS", "REJECTED"}
+)
+
+
+def terminal_document_status(
+    workflow_status: str, wrapper_status: Optional[str]
+) -> "Status":
+    """Document status for a finished Step Functions execution.
+
+    ``SUCCEEDED`` maps to ``COMPLETED`` unless the output document carries one of
+    ``REDACTED_SUPERSEDED``, ``HITL_IN_PROGRESS`` (phase 1 of a review-queue
+    document ended at the review point) or ``REJECTED`` (a reviewer rejected it).
+    ``ABORTED`` maps to ``ABORTED``; anything else is ``FAILED``.
+    """
+    if workflow_status == "SUCCEEDED":
+        if wrapper_status in _SUCCEEDED_WRAPPER_STATUSES:
+            return Status(wrapper_status)
+        return Status.COMPLETED
+    if workflow_status == "ABORTED":
+        return Status.ABORTED
+    return Status.FAILED
+
+
+def document_wrapper_status(output_data: Any) -> Optional[str]:
+    """The status the state machine put on the output document's wrapper.
+
+    The output holds the document at the root (``document``), under
+    ``Result.document``, or is the document itself. A terminal status set by a
+    Pass state before ``WorkflowComplete`` (``REDACTED_SUPERSEDED``,
+    ``HITL_IN_PROGRESS``, ``REJECTED``) lives on that wrapper, not inside a
+    compressed snapshot serialized earlier in the run.
+    """
+    if isinstance(output_data, str):
+        try:
+            output_data = json.loads(output_data)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(output_data, dict):
+        return None
+    if "document" in output_data:
+        document_data = output_data["document"]
+    elif (
+        isinstance(output_data.get("Result"), dict)
+        and "document" in output_data["Result"]
+    ):
+        document_data = output_data["Result"]["document"]
+    else:
+        document_data = output_data
+    if not isinstance(document_data, dict):
+        return None
+    status = document_data.get("status")
+    return status if isinstance(status, str) else None
+
+
+#: Statuses for which the post-processing Lambda hook is not invoked: the
+#: document either continues elsewhere (redacted copy, review queue) or was
+#: rejected, so there is no usable result to hand over.
+POST_PROCESSING_SUPPRESSED_STATUSES = frozenset(
+    {Status.REDACTED_SUPERSEDED, Status.HITL_IN_PROGRESS, Status.REJECTED}
+)
 
 
 @dataclass

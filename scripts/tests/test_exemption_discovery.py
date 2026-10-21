@@ -443,3 +443,115 @@ def test_both_routes_find_something_in_this_repository() -> None:
             f"{by_route}. That route has stopped working; the total floor in "
             "test_gate_exemption_registry.py cannot see this."
         )
+
+
+@pytest.mark.parametrize("fragment", exemption_discovery.NAME_VOCABULARY)
+def test_a_name_fragment_matches_at_the_START_of_a_make_or_shell_variable(
+    fragment: str,
+) -> None:
+    """The fragment at position zero, which is how one of these is usually spelled.
+
+    ``_probe_name`` builds ``PROBE_<fragment>_SET``, so every other probe in this module
+    puts the fragment in the middle -- and the Make and shell patterns consumed their
+    first character with a class before looking for the fragment, so the natural spellings
+    (``SKIP_TESTS``, ``ALLOWED_BUCKETS``, ``EXEMPT_PATHS``) matched on neither surface
+    while the Python route matched them all. A vocabulary exercised only against names the
+    test builds is exercised against itself, which is the caveat this module's docstring
+    states and the hole it had.
+    """
+    name = f"{fragment}PROBE_SET"
+    _assert_attributable(fragment, name)
+    assert exemption_discovery._matches_name(name), (
+        f"{name} is not matched by the Python route either, so it is not a probe for "
+        f"{fragment!r} at the leading position -- pick a spelling that route accepts."
+    )
+    found = _discover(
+        {
+            "Makefile": f"{name} = a b\n",
+            "scripts/probe.sh": f"#!/bin/sh\n{name.lower()}=1\n",
+        }
+    )
+    for rel, spelling in (("Makefile", name), ("scripts/probe.sh", name.lower())):
+        assert f"{rel}::{spelling}" in found, (
+            f"{spelling} in {rel} puts {fragment!r} at the start of the variable name and "
+            f"is not discovered, while the Python route matches it -- the two surfaces "
+            f"have diverged. Check the lookahead in exemption_discovery._text_pattern. "
+            f"Found: {sorted(found)}"
+        )
+
+
+def test_a_make_variable_and_a_shell_variable_outside_their_old_globs_are_found() -> (
+    None
+):
+    """``TEXT_SOURCES`` paired the Make pattern with a bare, wildcard-less ``Makefile``.
+
+    A git pathspec with no wildcard matches one path, so that entry reached the repository
+    root file and nothing else -- while five Makefiles and two shell scripts live elsewhere
+    in this tree, several of them beside the Lambda handlers they build. A ``SKIP_TESTS``
+    in one of those was as invisible to the registry as if the surface had never been
+    listed, and the Makefile is the surface this module's own docstring opens with.
+    """
+    found = _discover(
+        {
+            "src/lambda/chat_stream_processor/Makefile": "SKIPPED_TARGETS = a b\n",
+            "src/lambda/chat_stream_processor/run.sh": "#!/bin/sh\nexempt_paths=1\n",
+            "nested/api-resolvers/build.mk": "IGNORED_SOURCES := x\n",
+        }
+    )
+    for rel, name in (
+        ("src/lambda/chat_stream_processor/Makefile", "SKIPPED_TARGETS"),
+        ("src/lambda/chat_stream_processor/run.sh", "exempt_paths"),
+        ("nested/api-resolvers/build.mk", "IGNORED_SOURCES"),
+    ):
+        assert f"{rel}::{name}" in found, (
+            f"{name} in {rel} is not discovered, so a Make or shell carve-out outside the "
+            f"repository root needs no registry entry. Found: {sorted(found)}"
+        )
+
+
+def test_a_shell_exemption_inside_a_function_is_discovered() -> None:
+    """Indented, and with each of the four declarators.
+
+    The shell pattern was anchored at column zero with no declarator, so none of these was
+    reachable -- and a shell exemption variable inside a function is always indented, which
+    makes that the common case rather than an edge one.
+    """
+    source = (
+        "#!/bin/sh\n"
+        "run() {\n"
+        "  skip_paths=1\n"
+        "  export exempt_roots=2\n"
+        "  local allow_hosts=3\n"
+        "  readonly ignored_rules=4\n"
+        "  declare -a suppressed_ids=5\n"
+        "}\n"
+    )
+    found = _discover({"scripts/probe.sh": source})
+    for name in (
+        "skip_paths",
+        "exempt_roots",
+        "allow_hosts",
+        "ignored_rules",
+        "suppressed_ids",
+    ):
+        assert f"scripts/probe.sh::{name}" in found, (
+            f"{name} inside a shell function is not discovered, so a shell carve-out "
+            f"needs no registry entry unless it happens to sit at column zero. Found: "
+            f"{sorted(found)}"
+        )
+
+
+def test_an_assignment_inside_a_makefile_recipe_is_not_a_make_variable() -> None:
+    """The other side of that decision, so it cannot be widened away by accident.
+
+    A recipe line is tab-indented and its assignments are shell. Reporting one as a Make
+    variable is a false positive, and the registry's remedy for a discovered surface is an
+    authored judgement -- so a registry that asks for judgements on noise is the cost.
+    Measured on this repository's own Makefile: allowing leading whitespace on the Make
+    pattern discovers a ``SKIP=0`` inside a recipe.
+    """
+    found = _discover({"Makefile": "target:\n\tSKIP=0; echo $$SKIP\n"})
+    assert not found, (
+        "a shell assignment inside a Makefile recipe is discovered as a Make variable: "
+        f"{sorted(found)}"
+    )

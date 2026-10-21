@@ -18,7 +18,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
 | **Amazon S3** | Stores input documents, processed outputs, and web UI assets | ✓ | ✓ |
-| **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency | ✓ | ✓ |
+| **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency, stores each user's [Inbox](./web-ui.md#inbox) messages (`NotificationsTable`), and holds HITL review queues, assignments and Test Studio queue summaries (`HITLTable`) | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
 | **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
@@ -230,9 +230,10 @@ The solution creates various IAM roles to run different components of the system
 
 #### Web UI & API Roles
 * **API Dispatcher Role** (the single Lambda behind `POST /op/{field}`, which fans a request out to the per-field resolver Lambdas and serves the DynamoDB-direct fields in process):
-  * `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`
-  * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`
-  * `lambda:InvokeFunction` (only the resolver functions in its field → function map)
+  * SAM `DynamoDBCrudPolicy` on the Tracking, Discovery Tracking and Agent tables, for the DynamoDB-direct fields it serves itself
+  * `kms:Decrypt`, `kms:GenerateDataKey` on the customer-managed key that encrypts those tables
+  * `lambda:InvokeFunction` on the stack's resolver functions (by function-name prefix) and the main-stack resolver ARNs in its field → function map
+  * `ssm:GetParameter` on the stack's field → function map parameter, read at cold start
 
 * **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
@@ -245,10 +246,21 @@ The solution creates various IAM roles to run different components of the system
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
 
+* **Notifications Resolver Role** (API resolver Lambda that serves each user's own [Inbox](./web-ui.md#inbox)):
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
+* **Inbox producers** (none in this release). A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
+  * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
+  * read access to the Configuration table (for retention and the per-user cap)
+  * `cognito-idp:ListUsersInGroup` on the user pool, only when it posts to Cognito groups
+  * `cloudwatch:PutMetricData`
+  * KMS use of the customer-managed key that encrypts the table
+
 * **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
   * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.
-  * `s3:GetObject` and `s3:GetObjectVersion` on the Input and Output buckets, plus `kms:Decrypt` on the customer-managed key. Object read only: both actions authorize against a key, and the role holds no `s3:ListBucket`, so it cannot enumerate either bucket. This is the browser reading document bytes with the signed-in user's own credentials — the file viewer, the page thumbnails, the page-image viewer and the document export all sign S3 GETs client-side. ⚠️ A single `authenticated` role is attached with no `RoleMappings`, so **every** signed-in user holds this regardless of Cognito group, with no resolver in the path to apply one. The buckets partitioned **per user** — Configuration (configuration-profile revisions) and Test Set — are deliberately **absent**, because no IAM grant on one shared role can express `allowedConfigVersions` or `allowedTestSets`; those objects are served only through `getFileContents` / `getFilePresignedUrl`, which check the key against the caller's scope. Narrowing what remains is [issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033); see [RBAC](./rbac.md) for the boundary this leaves.
-  * `ssm:GetParameter` (for settings — the UI reads its runtime settings blob, which includes the stack's bucket names, directly from Parameter Store)
+  * **No S3 and no KMS.** This role grants **nothing** on the Input and Output buckets, and **no** `s3:GetObject`, `s3:GetObjectVersion` or `s3:ListBucket` on any bucket in the deployment ([issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)). ⚠️ A single `authenticated` role is attached with **no `RoleMappings`**, so every signed-in user holds exactly this role regardless of Cognito group — including a user in no group, which self-signup produces — with no resolver in the path to apply a group check, a per-document check or a per-user scope check. That is why the document read path runs through `getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls` instead: the browser asks the backend for a presigned URL and the resolver applies the dispatcher's group floor, a bucket allow-list, the per-user key scope on the Configuration and Test Set buckets, and the owning document's `ConfigVersion` against the caller's `allowedConfigVersions` on the Input and Output ones. The KMS grant went with the S3 one — a presigned URL minted by the resolver is decrypted under the resolver's role, which holds its own grant on the key. See [RBAC](./rbac.md) for what the per-document check does and does not close.
+  * `ssm:GetParameter` (for settings — the UI reads its runtime settings blob, which includes the stack's bucket names, directly from Parameter Store. ⚠️ The names being readable is not a grant: with no S3 action on this role there is no bucket those names open)
 
 * **Knowledge Base Query Role**:
   * `bedrock:InvokeModel`

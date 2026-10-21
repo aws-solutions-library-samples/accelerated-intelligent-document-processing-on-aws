@@ -24,7 +24,18 @@ from idp_sdk.models import (
     DocumentStatus,
     DocumentUploadResult,
     RerunStep,
+    ReviewInfo,
 )
+
+
+def _review_store(resources, region):
+    """The review queue store for deletes, or None when the stack has none."""
+    table = resources.get("HITLTable")
+    if not table:
+        return None
+    from idp_common.review_queues.store import ReviewStore
+
+    return ReviewStore(table, region=region)
 
 
 class DocumentOperation:
@@ -125,6 +136,8 @@ class DocumentOperation:
                         num_pages=doc.get("num_pages"),
                         num_sections=doc.get("num_sections"),
                         error=doc.get("error"),
+                        review=ReviewInfo.from_lookup(doc.get("review")),
+                        review_status=(doc.get("review") or {}).get("status"),
                     )
 
         raise IDPResourceNotFoundError(f"Document not found: {document_id}")
@@ -338,6 +351,7 @@ class DocumentOperation:
         dynamodb = boto3.resource("dynamodb", region_name=self._client._region)
         tracking_table = dynamodb.Table(documents_table_name)
         s3_client = boto3.client("s3", region_name=self._client._region)
+        review_store = _review_store(resources, self._client._region)
 
         try:
             result = delete_documents(
@@ -348,6 +362,7 @@ class DocumentOperation:
                 output_bucket=output_bucket,
                 dry_run=dry_run,
                 continue_on_error=False,
+                review_store=review_store,
             )
 
             if result.get("results"):

@@ -427,6 +427,7 @@ const TestSets = (): React.JSX.Element => {
         id: string;
         description?: string;
         documentClassType?: DocumentClassType | null;
+        claimLeaseMinutes?: number | null;
       } = {
         id: selected.id,
         description: editDescription.trim(),

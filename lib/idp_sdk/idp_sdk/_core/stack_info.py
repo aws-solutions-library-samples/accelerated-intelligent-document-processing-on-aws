@@ -64,6 +64,8 @@ class StackInfo:
 
         # Get DynamoDB table name (for document status tracking)
         resources["DocumentsTable"] = self._get_table_name("TrackingTable")
+        # Review queue table (absent on stacks without review queues, e.g. headless)
+        resources["HITLTable"] = outputs.get("HITLTableName", "")
 
         # Get settings parameter name
         resources["SettingsParameter"] = f"{self.stack_name}-Settings"

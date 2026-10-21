@@ -1,0 +1,11 @@
+query ListMyTestSetTasks {
+  listMyTestSetTasks {
+    testSetId
+    objectKey
+    assignedTo
+    assignedAt
+    labelSource
+    alertCount
+    documentClasses
+  }
+}

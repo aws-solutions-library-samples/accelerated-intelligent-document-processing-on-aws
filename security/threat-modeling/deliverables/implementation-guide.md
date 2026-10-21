@@ -148,16 +148,18 @@ and mapped to the specific threats they address.
 | **Short expiration** | Short expiration on upload URLs |
 | **Minting authorization** | `uploadDocument` requires the Admin/Author group (server-side) |
 | **Read allow-list** | `getFilePresignedUrl`/`getFileContents` restrict the target to this stack's buckets (`_validate_bucket`), and fail closed if the allow-list is unset |
-| **Read key scope** | The same two operations match the requested **key** against the caller's scope for the two per-user-partitioned buckets — `allowedConfigVersions` against the profile in a `config_revisions/<profile>/` key, `allowedTestSets` against the test set in a `<test_set_id>/` key — in the one function both fields call before any S3 call (`_validate_key_scope`) |
+| **Read key scope** | `getFileContents`, `getFilePresignedUrl` and `getFilePresignedUrls` match the requested **key** against the caller's scope for the two per-user-partitioned buckets — `allowedConfigVersions` against the profile in a `config_revisions/<profile>/` key, `allowedTestSets` against the test set in a `<test_set_id>/` key — in the one function all three fields call before any S3 call (`_validate_key_scope`, reached from `_parse_and_validate_one`) |
+| **Read document scope** | On the Input and Output buckets the same choke point resolves the **document** owning the key from the tracking table and matches its `ConfigVersion` against the caller's `allowedConfigVersions` (`document_scope`). Fail-closed on an unidentifiable key and on an unstamped document; on the batch field one refusal fails the whole request, so it is not a per-key authorization oracle |
+| **No browser read path** | The Identity Pool's `authenticated` role grants no S3 and no KMS, so there is no bucket the browser can read with the signed-in user's own credentials and every document byte goes through the three operations above (`scripts/tests/test_browser_s3_grants.py`) |
 
-> **Read-scoping gap (UI.T06).** Object reads are not scoped per **document**:
-> nothing records which documents belong to whom, so for the Input and Output
-> buckets a key is bounded only by the bucket allow-list, and any authenticated
-> caller holding *any one of the five groups* can read any document's bytes. The
-> two per-user scope axes are enforced (see **Read key scope** above) and the
-> buckets they govern are off the browser's Identity Pool role, so
-> `allowedConfigVersions` and `allowedTestSets` are real boundaries here. Closing
-> the rest needs a document ownership model — issue #1033. Open item.
+> **Read-scoping residual (UI.T06).** The per-document check runs on the
+> configuration-profile axis, because that is the only per-document axis the
+> product records — nothing says which user or tenant a document belongs to. For a
+> **scoped** caller it is a real refusal; for an **unscoped** one (no
+> `allowedConfigVersions`, which is a user row's default, since scoping is opt-in
+> per user) it is a deliberate no-op, so a caller holding any one of the five
+> groups still reads any document's bytes through the resolver. Closing the rest
+> needs a document ownership model — issue #1033. Partially Mitigated.
 
 ## 4. Data Protection
 

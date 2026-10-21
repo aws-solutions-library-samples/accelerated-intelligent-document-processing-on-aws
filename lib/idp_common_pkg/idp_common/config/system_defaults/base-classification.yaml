@@ -6,7 +6,287 @@
 # =============================================================================
 
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  # How many calls classification makes.
+  #   page   - one call per page; each returns that page's class and whether it
+  #            starts a new document. N calls, each repeating the whole prefix
+  #            (instructions, class list, few-shot examples) and paying ~150-350
+  #            output tokens of reasoning.
+  #   packet - one call per packet, or per window; returns the segments
+  #            directly. Prefix and output are paid ONCE.
+  # Image tokens are the SAME either way: packet granularity saves the repeated
+  # prefix and the per-page output, not the images. So `packet` plus
+  # `modality.images: false` is the large cost lever, and `packet` with images
+  # on is mainly an ACCURACY change — it is the only way the model ever sees the
+  # whole packet when deciding where documents start.
+  #
+  # Replaced `classificationMethod` in config format 0.8, which bundled this
+  # choice with the modality one below. A stored config carrying the old key is
+  # converted on read by migrations/v07_to_v08.py.
+  granularity: page
+  packet:
+    # Maximum pages per packet call; a larger packet is split into overlapping
+    # windows and the results merged. 0 means never window (one call for the
+    # whole packet, which is what legacy holistic classification did, and which
+    # fails outright above the model's context window).
+    #
+    # 20 because that is where Bedrock starts downscaling: above 20 image blocks
+    # in one request, every image is shrunk to 2,000px (#994). A wider window
+    # with images on therefore halves its own page resolution silently.
+    window_pages: "20"
+    # Pages repeated between adjacent windows. The overlap exists so the window
+    # AFTER a junction can see what came before its first page; the overlapping
+    # pages' own verdicts are taken from the EARLIER window, which is the one
+    # that had their preceding context.
+    overlap_pages: "2"
+    system_prompt: >-
+      You are a document classification expert who analyses multi-document packets. Your task is to identify where each document in the packet starts and ends, and to classify each one into a predefined category, using both the visual layout of each page and its text content. Your output must be valid JSON according to the requested format.
+      <variables>
+      <document-text>: OCR-extracted text for every page of the packet, each page preceded by its page number
+      <document-images>: Page images for every page of the packet, each preceded by its page number
+      <document-types>: List of valid document types with their descriptions
+      </variables>
+    # Asks for `segments` rather than one class plus a boundary verdict, which is
+    # why it is a separate key from classification.task_prompt: packet and page
+    # granularity have different output schemas and different parsers. Sharing
+    # one key is what made the old classificationMethod dropdown unusable —
+    # selecting holistic sent this page prompt to the segments parser and the
+    # document failed with "No segments found in the classification result".
+    task_prompt: >-
+      <task-description>
+      Analyse the document packet below and split it into the separate documents it contains. For each document, report the page range it occupies and its document type.
+      </task-description>
+
+      <document-types>
+      {CLASS_NAMES_AND_DESCRIPTIONS}
+      </document-types>
+
+      <few-shot-examples>
+      {FEW_SHOT_EXAMPLES}
+      </few-shot-examples>
+
+      <segmentation-instructions>
+      1. Read every page of the packet before deciding anything. A boundary is a statement about the packet, not about one page.
+      2. A new document STARTS on a page that carries an opening identity block: the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement date or period, and account or reference numbers.
+      3. A page CONTINUES the current document when it lacks that opening block. Repeated table column headings (for example "Date | Description | Amount") are printed on every page of a long table and do NOT start a new document.
+      4. Pagination is strong evidence: "Page 1 of 3" starts a document, "Page 2 of 3" or "continued" does not.
+      5. Two copies of the same form filed back to back are TWO documents. Emit two segments of the same type rather than one merged segment.
+      6. Every page of the packet must belong to exactly one segment. Segments must be contiguous, must not overlap, and must cover the full page range in order.
+      7. CRITICAL: use only document types listed in <document-types>. If a segment matches none of them, use the closest listed type and say so in its reason.
+      8. PRECEDENCE: if a matched type's description gives explicit boundary or page-ordering instructions, follow those instead of rules 2-5 for that type.
+      </segmentation-instructions>
+
+      <output-format>
+      Report page numbers exactly as they are labelled in the packet below, where the first page shown is page 1.
+      {
+        "segments": [
+          {
+            "ordinal_start_page": <first page of this document>,
+            "ordinal_end_page": <last page of this document>,
+            "type": "exact_document_type_from_list",
+            "reason": "The opening-block elements and pagination evidence that place this document's start and end here"
+          }
+        ]
+      }
+      </output-format>
+
+      <<CACHEPOINT>>
+
+      <document-text>
+      {DOCUMENT_TEXT}
+      </document-text>
+
+      <document-images>
+      {DOCUMENT_IMAGE}
+      </document-images>
+
+      <final-instructions>
+      Split the packet above by:
+      1. Applying the <segmentation-instructions> across every page
+      2. Selecting ONLY from document types in <document-types>
+      3. Covering every page exactly once, in order
+      4. Outputting in the exact JSON format specified in <output-format>
+      </final-instructions>
+  # What each classification call SEES, independent of granularity above: the
+  # same two flags apply to a per-page call and a per-packet call.
+  #
+  # Empty means "infer from the task prompt's placeholders", which is exactly
+  # what the service did before this setting existed — {DOCUMENT_TEXT} present
+  # meant text was sent, and deleting {DOCUMENT_IMAGE} was the documented way to
+  # get text-only classification. So every configuration written before this is
+  # a literal no-op, including that workaround.
+  #
+  # Setting a flag explicitly takes over and the prompt is rewritten to match.
+  # Images are usually the largest input cost per page (~1.1K-4.8K tokens
+  # depending on model and size), so `images: false` is the lever for
+  # image-dominated classification cost. Both false is refused at save time.
+  modality:
+    text: ""
+    images: ""
+  # single_pass - one call returns both the boundaries and the classes. What
+  #               classification has always done, and the default.
+  # two_stage   - Stage A finds the boundaries with NO class vocabulary in the
+  #               prompt; Stage B labels each segment with one call. Saves the
+  #               class list, the descriptions and the few-shot examples on
+  #               every boundary call, and labels once per document instead of
+  #               once per page. Also separates a wrong boundary from a wrong
+  #               label, which one section-level outcome cannot.
+  strategy: single_pass
+  # Stage A of two_stage. Reuses granularity, modality, image.*,
+  # contextPagesCount and packet.window_pages/overlap_pages — the same call
+  # shape, asked a smaller question.
+  #
+  # NOT the same thing as sectionSplitting below, which decides how segments
+  # become sections and applies to both strategies.
+  segmentation:
+    # Empty uses classification.model. Named separately because the two stages
+    # have different needs: boundary detection may want a capable multimodal
+    # model looking at a whole packet, while labeling a clean segment is often a
+    # much easier problem.
+    model: ""
+    # none        - send no class vocabulary at all (default).
+    # class_names - send the class NAMES only, not their descriptions and not
+    #               their examples. Helps when boundaries are marked by a form
+    #               number or title the names mention.
+    boundary_hints: none
+    system_prompt: >-
+      You are a document segmentation expert. Your only task is to decide where each document in a packet starts. You do not classify documents and you do not name document types. Your output must be valid JSON according to the requested format.
+    # PAGE granularity: one call per page, asking only "does a document start
+    # here?". No class list, no descriptions, no examples — which is the prefix
+    # a single-pass page call pays on every one of its N calls.
+    task_prompt: >-
+      <task-description>
+      Decide whether the page below is the FIRST page of a document, or a later page of a document that began earlier.
+      </task-description>
+
+      {BOUNDARY_HINTS}
+
+      <boundary-detection-rules>
+      You are looking at ONE page. Any pages shown to you as context are there only to help you judge this page.
+      Decide from this page's own evidence, in priority order:
+      1. PAGINATION: pagination such as "Page 2 of 2", "Page 3 of 5", "2/2", or "continued" with a number greater than 1 means this page is NOT a first page - output "continue".
+      2. If pagination indicates the first page (for example "Page 1 of 2"), output "start".
+      3. OPENING HEADER BLOCK: a first page carries the document's opening identity block - the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement or document date or period, and account or reference numbers. Output "start" ONLY when this page carries that opening block.
+      4. TABLE CONTINUATION: a page whose content is a table or list of rows - even when the table's COLUMN HEADINGS (for example "Date | Description | Amount") are repeated at the top of the page - and that does NOT carry the opening block is a continuation page. Repeated column headings are printed on every page of a long table; they are NOT a document title. Output "continue".
+      5. OTHER CONTINUATION EVIDENCE: a later page may show a form number only in the footer, a running balance or subtotal carried forward, or a trailing signature/consent/certification section. Output "continue".
+      CRITICAL - no preceding page shown: if you are not shown the preceding page, do NOT conclude that this page must be a first page. Pages are judged independently, so the absence of a preceding page tells you nothing. A page showing only table rows, or marked "Page 2 of 2", is a continuation page even when you cannot see page 1.
+      CRITICAL - consecutive documents: output "start" whenever this page IS a first page, even when the preceding page belongs to a document of the same kind. Two copies of the same form filed back to back are two separate documents.
+      If evidence is genuinely balanced, prefer "continue" for a page lacking the opening block and "start" for a page carrying a complete opening block.
+      </boundary-detection-rules>
+
+      <output-format>
+      {
+        "boundary_reason": "Which opening-block elements (title, issuer, addressee and address, date or period, account or reference number) and pagination evidence this page does or does not carry",
+        "document_boundary": "start or continue"
+      }
+      </output-format>
+
+      <<CACHEPOINT>>
+
+      <document-ocr-data>
+      {DOCUMENT_TEXT}
+      </document-ocr-data>
+
+      <document-image>
+      {DOCUMENT_IMAGE}
+      </document-image>
+    packet:
+      system_prompt: >-
+        You are a document segmentation expert who analyses multi-document packets. Your only task is to decide where each document in the packet starts and ends. You do not classify documents and you do not name document types. Your output must be valid JSON according to the requested format.
+      # PACKET granularity: one call, asking for page RANGES only.
+      task_prompt: >-
+        <task-description>
+        Split the document packet below into the separate documents it contains. Report only the page range each document occupies. Do NOT name or classify the documents.
+        </task-description>
+
+        {BOUNDARY_HINTS}
+
+        <segmentation-instructions>
+        1. Read every page of the packet before deciding anything. A boundary is a statement about the packet, not about one page.
+        2. A new document STARTS on a page that carries an opening identity block: the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement date or period, and account or reference numbers.
+        3. A page CONTINUES the current document when it lacks that opening block. Repeated table column headings (for example "Date | Description | Amount") are printed on every page of a long table and do NOT start a new document.
+        4. Pagination is strong evidence: "Page 1 of 3" starts a document, "Page 2 of 3" or "continued" does not.
+        5. Two copies of the same form filed back to back are TWO documents. Report two ranges rather than one merged range.
+        6. Every page of the packet must belong to exactly one range. Ranges must be contiguous, must not overlap, and must cover the full page range in order.
+        </segmentation-instructions>
+
+        <output-format>
+        Report page numbers exactly as they are labelled in the packet below, where the first page shown is page 1.
+        {
+          "segments": [
+            {
+              "ordinal_start_page": <first page of this document>,
+              "ordinal_end_page": <last page of this document>,
+              "boundary_reason": "The opening-block elements and pagination evidence that place this document's start and end here"
+            }
+          ]
+        }
+        </output-format>
+
+        <<CACHEPOINT>>
+
+        <document-text>
+        {DOCUMENT_TEXT}
+        </document-text>
+
+        <document-images>
+        {DOCUMENT_IMAGE}
+        </document-images>
+  # Stage B of two_stage: ONE call per segment, not per page. This is the other
+  # half of the saving — a 40-page statement is labeled once instead of forty
+  # times — and it is where the class vocabulary and the few-shot examples live.
+  labeling:
+    # 'llm' is the only value today. Embeddings and external classifier
+    # endpoints are the other two methods in GitHub issue #1329, and both need a
+    # measurement before their defaults can be set honestly. Shipping the enum
+    # with one value means adding another later breaks nobody's config.
+    method: llm
+    model: ""
+    # first   - the first page of the segment only
+    # first_k - the first `k` pages (default)
+    # all     - every page of the segment
+    # first_k by default because a document's identity is almost always on its
+    # opening pages, while `all` makes labeling a long segment cost what
+    # page-level classification cost to classify it.
+    pages: first_k
+    k: "2"
+    system_prompt: >-
+      You are a document classification expert. You are given the opening pages of ONE document and a list of document types. Your task is to say which type it is. Your output must be valid JSON according to the requested format.
+    task_prompt: >-
+      <task-description>
+      Identify the type of the single document whose pages are shown below. The pages all belong to one document; you are not being asked to split anything.
+      </task-description>
+
+      <document-types>
+      {CLASS_NAMES_AND_DESCRIPTIONS}
+      </document-types>
+
+      <few-shot-examples>
+      {FEW_SHOT_EXAMPLES}
+      </few-shot-examples>
+
+      <classification-instructions>
+      1. Examine the visual layout: headers, logos, formatting, structure, and visual organization
+      2. Analyze the textual content: key phrases, terminology, purpose, and information type
+      3. Identify distinctive features that match the document type descriptions
+      4. CRITICAL: only use document types explicitly listed in the <document-types> section
+      </classification-instructions>
+
+      <output-format>
+      {
+        "classification_reason": "Specific visual and textual evidence that identifies this document's type",
+        "class": "exact_document_type_from_list"
+      }
+      </output-format>
+
+      <<CACHEPOINT>>
+
+      <document-ocr-data>
+      {DOCUMENT_TEXT}
+      </document-ocr-data>
+
+      <document-image>
+      {DOCUMENT_IMAGE}
+      </document-image>
   maxPagesForClassification: "ALL"
   contextPagesCount: "0"
   sectionSplitting: llm_determined
@@ -59,6 +339,32 @@ classification:
       Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
 
       Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence.
+      </class-confidence>
+    # Packet variants. Separate templates because the UNIT differs: a page-level
+    # call scores one page's class, a packet-level call scores each segment it
+    # returns — so the instruction has to name the key it goes in and say
+    # per-segment. Empty falls back to the page variants above, which is what a
+    # custom config predating packet granularity gets.
+    task_prompt_topk_packet: >-
+      <class-confidence>
+      Each object in your "segments" array MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for THAT segment, most likely first, each with the probability that it is the correct type.
+
+      "candidates": [
+        {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
+        {"class": "<next most likely type>", "probability": <number between 0.0 and 1.0>}
+      ]
+
+      Rules:
+      1. Every "class" value must be one of the types listed in <document-types>.
+      2. The first candidate must be the same type you report in that segment's "type".
+      3. The probabilities for a segment must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type".
+      4. Score each segment independently and honestly. A short segment, or one whose evidence is thin, should not look as certain as a clearly-identified multi-page document.
+      </class-confidence>
+    task_prompt_verbalized_packet: >-
+      <class-confidence>
+      Each object in your "segments" array MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report for THAT segment is correct.
+
+      Base it on how much better the segment's pages match the type you chose than the other types in <document-types>. Do not default to a high value: a segment whose evidence is thin or ambiguous should carry a low confidence.
       </class-confidence>
   image:
     target_height: ""

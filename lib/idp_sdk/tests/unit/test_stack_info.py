@@ -55,6 +55,7 @@ ALL_OUTPUTS = {
     "S3ConfigurationBucketName": "idp-test-configurationbucket-1a2b",
     "S3EvaluationBaselineBucketName": "idp-test-evaluationbaselinebucket-1a2b",
     "S3TestSetBucketName": "idp-test-testsetbucket-1a2b",
+    "HITLTableName": "idp-test-HITLTable-1a2b",
     "LambdaLookupFunctionName": "IDP-test-DocumentStatusLookup-abc",
     "StateMachineArn": (
         "arn:aws:states:us-east-1:123456789012:stateMachine:IDP-test-StateMachine"
@@ -164,6 +165,7 @@ def test_every_friendly_name_resolves_from_the_stack(aws):
         "LookupFunctionName": ALL_OUTPUTS["LambdaLookupFunctionName"],
         "StateMachineArn": ALL_OUTPUTS["StateMachineArn"],
         "DocumentsTable": TABLE_NAME,
+        "HITLTable": ALL_OUTPUTS["HITLTableName"],
         "SettingsParameter": f"{STACK_NAME}-Settings",
     }
     assert resources["DocumentQueueUrl"].endswith(QUEUE_NAME)

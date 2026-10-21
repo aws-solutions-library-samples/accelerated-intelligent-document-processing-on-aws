@@ -843,7 +843,6 @@ ocr:
     dpi:
     preprocessing:
 classification:
-  classificationMethod: multimodalPageLevelClassification
   maxPagesForClassification: ALL
   contextPagesCount: '0'
   sectionSplitting: llm_determined

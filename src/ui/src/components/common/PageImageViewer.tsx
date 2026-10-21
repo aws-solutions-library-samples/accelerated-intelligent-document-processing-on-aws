@@ -4,10 +4,10 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, memo, useCallback, useImperativeHandle } from 'react';
 import { Box, Spinner, Button } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import generateS3PresignedUrl from './generate-s3-presigned-url';
+import { presignBatch, presignedUrlsNeedRefresh, type PresignBatchResult } from '../../api/presign-batch';
+import { FILE_ACCESS_DENIED_MESSAGE } from '../../hooks/utils/graphql-error';
 import { rotateBoundingBox, rotateOffset, rotationFitScale } from './page-rotation-utils';
 import type { NormalisedBox } from './page-rotation-utils';
-import useAppContext from '../../contexts/app';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 const logger = new ConsoleLogger('PageImageViewer');
@@ -242,11 +242,18 @@ const PageImageViewer = ({
   boundingBoxes = [],
   zoomHandle,
 }: PageImageViewerProps): React.JSX.Element => {
-  const { currentCredentials } = useAppContext();
   // Pin page images to the selected run's object versions when viewing history.
   const { versionIdForUri, runId: viewingRunId } = useDocumentVersion();
   const [pageImages, setPageImages] = useState<Record<string, string>>({});
   const [loadingImages, setLoadingImages] = useState(true);
+  /**
+   * Why a page has no URL, when that is the server's answer rather than the page
+   * simply having no image. Without it a refused document showed a spinner for
+   * ever: the resolver's per-document scope check fails the WHOLE batch with a
+   * 403, so every page is missing at once and "still loading" is indistinguishable
+   * from "never allowed" (issue #1033).
+   */
+  const [imageErrorMessage, setImageErrorMessage] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState<string | null>(initialPage || (pageIds.length > 0 ? pageIds[0] : null));
   const [zoomLevel, setZoomLevel] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -256,6 +263,41 @@ const PageImageViewer = ({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const imageRef = useRef<HTMLImageElement | null>(null);
   const imageContainerRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Re-signing, and why it is driven from page navigation rather than from a clock.
+   *
+   * The URLs in `pageImages` are bearer capabilities minted by the resolver with a
+   * 300 s life (`_PRESIGNED_URL_EXPIRY_SECONDS`, see `api/presign-batch` for the
+   * whole trade). The signing effect below depends on `[pageIds, documentPages,
+   * viewingRunId]`, and for a **completed** document none of those ever changes
+   * again — detail polling has stopped — so nothing re-fires it. Open such a
+   * document, leave it five minutes and page forward, and the new page's `<img>`
+   * fetches an expired URL: S3 answers 403 and the viewer shows its fallback, which
+   * reads as flakiness rather than as an expiry.
+   *
+   * An expired URL only matters at the moment a **new** image is fetched — bytes
+   * already displayed are not re-fetched — so checking staleness exactly there
+   * covers every case where one would be used, at no cost on an idle tab. `signedRef`
+   * holds the last signing's outcome so the check needs no state, and bumping
+   * `refreshToken` is what re-fires the effect.
+   */
+  const [refreshToken, setRefreshToken] = useState(0);
+  const signedRef = useRef<PresignBatchResult | null>(null);
+
+  /**
+   * Called just before a page the user has not been shown yet becomes current.
+   * Not from render and not from an effect keyed on `currentPage`: a render-time
+   * side effect risks a signing loop, and the two navigation paths are the only
+   * places a new image is needed.
+   */
+  const refreshSignedUrlsIfStale = useCallback(() => {
+    if (!presignedUrlsNeedRefresh(signedRef.current)) return;
+    // Cleared before bumping so that two quick navigations while the re-sign is
+    // still in flight raise the token once, not once each.
+    signedRef.current = null;
+    setRefreshToken((prev) => prev + 1);
+  }, []);
 
   // Load page images
   useEffect(() => {
@@ -271,29 +313,47 @@ const PageImageViewer = ({
         logger.debug('PageImageViewer - Loading images for pageIds:', pageIds);
         const images: Record<string, string> = {};
 
-        await Promise.all(
-          pageIds.map(async (pageId) => {
-            const page = documentPages.find((p) => p.Id === pageId);
+        // One resolver call for every s3:// page rather than one per page — see
+        // `api/presign-batch` for why the browser no longer signs these itself.
+        const toSign: Array<{ pageId: string; s3Uri: string }> = [];
+        for (const pageId of pageIds) {
+          const uri = documentPages.find((p) => p.Id === pageId)?.ImageUri;
+          if (!uri) continue;
+          // Only s3:// URIs need presigning; blob:/data:/https: URIs
+          // (e.g. pages rendered client-side from a PDF) are usable as-is.
+          if (!uri.startsWith('s3://')) {
+            images[pageId] = uri;
+            continue;
+          }
+          toSign.push({ pageId, s3Uri: uri });
+        }
 
-            if (page?.ImageUri) {
-              // Only s3:// URIs need presigning; blob:/data:/https: URIs
-              // (e.g. pages rendered client-side from a PDF) are usable as-is.
-              if (!page.ImageUri.startsWith('s3://')) {
-                images[pageId] = page.ImageUri;
-                return;
-              }
-              try {
-                logger.debug(`PageImageViewer - generating presigned URL for page ${pageId}`);
-                const url = await generateS3PresignedUrl(page.ImageUri, currentCredentials as Record<string, unknown>, {
-                  versionId: versionIdForUri(page.ImageUri),
-                });
-                images[pageId] = url;
-              } catch (err) {
-                logger.error(`Error generating presigned URL for page ${pageId}:`, err);
-              }
+        let failureMessage: string | null = null;
+        // Nothing signed yet for this run of the effect. A view whose pages are all
+        // `blob:`/`data:`/`https:` leaves it null and so never re-signs — there is
+        // no capability to expire.
+        signedRef.current = null;
+        if (toSign.length > 0) {
+          logger.debug(`PageImageViewer - presigning ${toSign.length} page image(s) in one batch`);
+          const signed = await presignBatch(toSign.map(({ s3Uri }) => ({ s3Uri, versionId: versionIdForUri(s3Uri) })));
+          // Kept so a later navigation can ask how old these URLs are.
+          signedRef.current = signed;
+          let missing = 0;
+          for (const { pageId, s3Uri } of toSign) {
+            const url = signed.get(s3Uri, versionIdForUri(s3Uri));
+            if (url) images[pageId] = url;
+            else {
+              missing += 1;
+              logger.error(`No presigned URL returned for page ${pageId}`);
             }
-          }),
-        );
+          }
+          // The reason comes from the call, not from counting absences: the whole
+          // batch is refused together, so a 403 and "this document has no page
+          // images" produce the same empty record.
+          if (signed.accessDenied) failureMessage = FILE_ACCESS_DENIED_MESSAGE;
+          else if (signed.failed || missing > 0) failureMessage = 'The page images for this document could not be loaded.';
+        }
+        setImageErrorMessage(failureMessage);
 
         logger.debug('PageImageViewer - Successfully loaded images for', Object.keys(images).length, 'pages');
         setPageImages(images);
@@ -313,7 +373,11 @@ const PageImageViewer = ({
     };
 
     loadImages();
-  }, [pageIds, documentPages, currentCredentials, viewingRunId]);
+    // `refreshToken` is the re-sign trigger; see `refreshSignedUrlsIfStale`. The
+    // effect's `setLoadingImages(true)` therefore shows the spinner for the length
+    // of a re-sign, which is the honest surface: the page being navigated to has no
+    // usable URL until the new batch arrives.
+  }, [pageIds, documentPages, viewingRunId, refreshToken]);
 
   // Handle geometry-based page switching
   useEffect(() => {
@@ -322,6 +386,9 @@ const PageImageViewer = ({
       if (pageIndex >= 0 && pageIndex < pageIds.length) {
         const targetPageId = pageIds[pageIndex];
         if (targetPageId !== currentPage) {
+          // A programmatic page move needs a new image just as much as the
+          // control does, so it is a re-sign trigger too.
+          refreshSignedUrlsIfStale();
           setCurrentPage(targetPageId);
           if (onPageChange) {
             onPageChange(targetPageId);
@@ -329,7 +396,7 @@ const PageImageViewer = ({
         }
       }
     }
-  }, [activeFieldGeometry, pageIds, currentPage, onPageChange]);
+  }, [activeFieldGeometry, pageIds, currentPage, onPageChange, refreshSignedUrlsIfStale]);
 
   // Zoom controls
   const handleZoomIn = useCallback(() => {
@@ -438,24 +505,28 @@ const PageImageViewer = ({
     const currentIndex = pageIds.indexOf(currentPage);
     if (currentIndex > 0) {
       const newPage = pageIds[currentIndex - 1];
+      // The moment a new image is needed: re-sign first if the URLs are stale.
+      refreshSignedUrlsIfStale();
       setCurrentPage(newPage);
       if (onPageChange) {
         onPageChange(newPage);
       }
     }
-  }, [currentPage, pageIds, onPageChange]);
+  }, [currentPage, pageIds, onPageChange, refreshSignedUrlsIfStale]);
 
   const goToNextPage = useCallback(() => {
     if (currentPage === null) return;
     const currentIndex = pageIds.indexOf(currentPage);
     if (currentIndex < pageIds.length - 1) {
       const newPage = pageIds[currentIndex + 1];
+      // The moment a new image is needed: re-sign first if the URLs are stale.
+      refreshSignedUrlsIfStale();
       setCurrentPage(newPage);
       if (onPageChange) {
         onPageChange(newPage);
       }
     }
-  }, [currentPage, pageIds, onPageChange]);
+  }, [currentPage, pageIds, onPageChange, refreshSignedUrlsIfStale]);
 
   /**
    * Zoom to a field and centre it.
@@ -633,9 +704,11 @@ const PageImageViewer = ({
             ))}
           </>
         ) : (
-          <Box padding="xl" textAlign="center">
-            <Spinner />
-            <div>Loading image...</div>
+          /* Never a spinner here. Signing has finished by this point, so a page
+             with no URL is a settled outcome — a refusal, a failure, or a page
+             that carries no image — and each of those says so. */
+          <Box padding="xl" textAlign="center" color={imageErrorMessage ? 'text-status-error' : 'inherit'}>
+            {imageErrorMessage ?? 'No image is available for this page.'}
           </Box>
         )}
       </div>

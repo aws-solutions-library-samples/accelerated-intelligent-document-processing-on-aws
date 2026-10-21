@@ -12,6 +12,12 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
+#: Applied at module scope rather than per class. These are hermetic unit tests, and
+#: without the marker a `pytest -m unit` selection runs none of them — one of the two
+#: invocation shapes the repository's testing standard names, and a deselected test is
+#: indistinguishable from a passing one in a summary line (#1468).
+pytestmark = pytest.mark.unit
+
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "index.py")
 _MODULE_NAME = "circuit_breaker_manager_index_under_test"
 

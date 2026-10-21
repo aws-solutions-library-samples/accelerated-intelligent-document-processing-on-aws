@@ -1,0 +1,5 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+opus5-adv-sep,10,0,0.66045,0.38128,0.5773,0.2684,1.1423,1.0,1.0,110.41909
+opus5-simple-sep,10,0,0.60984,0.36729,0.6023,0.2587,0.9693,1.0,1.0,176.70349
+opus55-adv-sep,10,0,0.627,0.40085,0.6393,0.2001,1.1465,1.0,1.0,116.279
+opus55-simple-sep,10,0,0.52043,0.31525,0.6058,0.2199,0.8847,1.0,1.0,189.27956

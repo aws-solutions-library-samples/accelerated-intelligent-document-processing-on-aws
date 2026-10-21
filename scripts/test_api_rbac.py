@@ -60,7 +60,8 @@ USAGE
   ... --setup-only | --no-teardown | --teardown-only
 
 Requires: awscli v2 on PATH; credentials with Cognito admin + CloudFormation read
-+ DynamoDB read/write on the UsersTable (the deploy account creds are enough).
++ DynamoDB read/write on the UsersTable, AgentTable and NotificationsTable (the
+deploy account creds are enough).
 """
 
 import argparse
@@ -96,6 +97,7 @@ from rbac_common import (  # noqa: E402
     global_sign_out,
     resolve_stack,
     restore_auth_flows,
+    template_group_names,
 )
 
 #: Every Cognito group `template.yaml` creates, which is the population the matrix
@@ -107,7 +109,9 @@ from rbac_common import (  # noqa: E402
 #: OBJECT (`allowedTestSets` — the only such role), so the seven test-set
 #: operations that admit it had no live cell at all. See `_seed_annotator_scope`
 #: for why driving it needs a scope seeded first. Issue #1065.
-ROLES = ["Admin", "Author", "Viewer", "Reviewer", "Annotator"]
+#: Read from template.yaml (Admin first), so a new role joins the live matrix
+#: without editing a list here.
+ROLES = template_group_names()
 #: A caller holding NO Cognito group. Not a role and deliberately not in `ROLES`:
 #: no `AWS::Cognito::UserPoolGroup` has this name, which is the whole point — every
 #: group-restricted policy must refuse it, `ANY_GROUP` must refuse it (that is what
@@ -790,12 +794,29 @@ class ApiResult(tuple):
     ``authz_control`` is the dispatcher's ``errors[0].authzControl`` or ``None``;
     ``message`` is ``errors[0].message``, which the report prints so a refusal can
     be read without a CloudWatch query.
+
+    ``body`` is the WHOLE response text, and it is here because a check that reads
+    only ``message`` answers a narrower question than it looks like: a refusal that
+    carried a presigned URL in a top-level field, or in a second ``errors`` entry,
+    satisfies every status assertion and hands over the object. Carrying the raw
+    text means the leak check and the verdict are made against the SAME response —
+    a second call for the body would leave the two about different ones.
     """
 
-    def __new__(cls, status, error_type, in_band, request_id, control=None, message=""):
+    def __new__(
+        cls,
+        status,
+        error_type,
+        in_band,
+        request_id,
+        control=None,
+        message="",
+        body="",
+    ):
         self = tuple.__new__(cls, (status, error_type, in_band, request_id))
         self.authz_control = control
         self.message = message
+        self.body = body
         return self
 
 
@@ -845,8 +866,9 @@ def call(api_base, field, args, token):
         # matrix, and it must not be mistaken for a refusal either.
         return ApiResult(0, None, None, f"<request error: {e}>")
 
+    text = (raw or b"").decode("utf-8", "replace")
     if not (raw or b"").strip():
-        return ApiResult(status, UNREADABLE_BODY, None, request_id)
+        return ApiResult(status, UNREADABLE_BODY, None, request_id, body=text)
 
     et = None
     in_band = None
@@ -855,7 +877,7 @@ def call(api_base, field, args, token):
     try:
         p = json.loads(raw)
     except (ValueError, TypeError):
-        return ApiResult(status, UNREADABLE_BODY, None, request_id)
+        return ApiResult(status, UNREADABLE_BODY, None, request_id, body=text)
     if isinstance(p, dict):
         errors = p.get("errors")
         if isinstance(errors, list) and errors:
@@ -882,7 +904,9 @@ def call(api_base, field, args, token):
         err = p.get("error")
         if isinstance(err, dict):
             in_band = err.get("type")
-    return ApiResult(status, et, in_band, request_id, control=control, message=message)
+    return ApiResult(
+        status, et, in_band, request_id, control=control, message=message, body=text
+    )
 
 
 def call_body(api_base, field, args, token):
@@ -991,6 +1015,285 @@ def cleanup_seeded_agent_jobs(ctx):
             )
         except Exception:  # noqa: BLE001
             pass
+
+
+def _notifications_table_name(ctx):
+    """The parent stack's ``NotificationsTableName`` output (cached on ctx).
+
+    Empty when the stack predates the Inbox, which makes the Inbox IDOR suite
+    SKIP rather than pass.
+    """
+    if "_notifications_table" in ctx:
+        return ctx["_notifications_table"]
+    name = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs[?OutputKey=='NotificationsTableName'].OutputValue",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    name = (name or "").strip()
+    ctx["_notifications_table"] = "" if name in ("", "None") else name
+    return ctx["_notifications_table"]
+
+
+def seed_inbox_message(ctx, notification_id, marker):
+    """Seed an unread Inbox message OWNED BY the Admin test user, for the Inbox
+    IDOR suite. The item uses the layout ``idp_common.notifications`` writes:
+    ``PK=USER#<lowercased email>``, ``SK=N#<id>``, ``UnreadPK=PK`` while unread,
+    and a one-day ``ExpiresAfter``. The marker is the title, a field the API
+    returns, so a leak is visible.
+
+    Returns the owner's recipient key, or None when the stack has no
+    ``NotificationsTableName`` output (-> suite SKIPs). A failed write raises,
+    which the suite records as an ERROR: the table exists, so the check should
+    have run.
+    """
+    table = _notifications_table_name(ctx)
+    if not table:
+        return None
+    keys = sec.notification_keys()
+    owner = keys.normalize_recipient_key(test_email("Admin"))
+    pk = keys.partition_key(owner)
+    item = {
+        "PK": {"S": pk},
+        "SK": {"S": keys.message_sk(notification_id)},
+        "UnreadPK": {"S": pk},
+        "Type": {"S": "rbac.idor-probe"},
+        "Title": {"S": marker},
+        "Body": {"S": ""},
+        "Severity": {"S": "info"},
+        "Source": {"S": "rbac-harness"},
+        "CreatedAt": {
+            "S": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        },
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws(
+        "dynamodb",
+        "put-item",
+        "--table-name",
+        table,
+        "--item",
+        json.dumps(item),
+        region=ctx["region"],
+    )
+    ctx.setdefault("_seeded_inbox_messages", []).append((pk, notification_id))
+    return owner
+
+
+def _review_queue_table_name(ctx):
+    """The parent stack's ``HITLTableName`` output (cached on ctx).
+
+    Empty when the stack has no review queues (an older or headless stack),
+    which makes the review-queue IDOR suite SKIP rather than pass.
+    """
+    if "_review_table" in ctx:
+        return ctx["_review_table"]
+    name = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs[?OutputKey=='HITLTableName'].OutputValue",
+        "--output",
+        "text",
+        region=ctx["region"],
+    )
+    name = (name or "").strip()
+    ctx["_review_table"] = "" if name in ("", "None") else name
+    return ctx["_review_table"]
+
+
+REVIEW_IDOR_USERS = ("ReviewIdorA", "ReviewIdorB", "ReviewIdorC")
+
+
+def _tracking_table_name(ctx):
+    """Physical name of the stack's TrackingTable (cached on ctx)."""
+    if "_tracking_table" not in ctx:
+        name = aws(
+            "cloudformation",
+            "describe-stack-resource",
+            "--stack-name",
+            ctx["stack"],
+            "--logical-resource-id",
+            "TrackingTable",
+            "--query",
+            "StackResourceDetail.PhysicalResourceId",
+            "--output",
+            "text",
+            region=ctx["region"],
+        )
+        ctx["_tracking_table"] = (name or "").strip()
+    return ctx["_tracking_table"]
+
+
+def seed_review_item(ctx):
+    """Seed the review-queue IDOR fixture (see run_review_queue_idor_suite).
+
+    Creates Annotators A, B (members by email of a temporary profile's
+    ``default`` queue) and C (not a member), the profile, a tracking row and a
+    queue item CLAIMED by A under a 30-minute lease. Returns the fixture dict, or
+    None when the stack has no HITLTableName output.
+    """
+    table = _review_queue_table_name(ctx)
+    if not table:
+        return None
+    emails = {u: test_email(u) for u in REVIEW_IDOR_USERS}
+    for user in REVIEW_IDOR_USERS:
+        create_cognito_user(ctx, emails[user], "Annotator", TEST_PW)
+    ctx["_review_idor_users"] = list(emails.values())
+
+    profile = f"rbac-review-idor-{secrets.token_hex(4)}"
+    ctx["_review_idor_profile"] = profile
+    import tempfile
+
+    import yaml
+
+    from idp_sdk import IDPClient
+
+    # The profile only scopes the seeded item; queues are system-wide.
+    config = {"hitl": {"enabled": True}}
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.safe_dump(config, f)
+        path = f.name
+    client = IDPClient(stack_name=ctx["stack"], region=ctx["region"])
+    upload = client.config.upload(path, config_profile=profile, validate=False)
+    if not upload.success:
+        raise RuntimeError(f"profile upload failed: {upload.error}")
+
+    object_key = f"rbac-review-idor/{secrets.token_hex(6)}.pdf"
+    now_ms = int(time.time() * 1000)
+    cycle_id = f"{now_ms:013d}{secrets.token_hex(4)}"
+    owner = emails["ReviewIdorA"].lower()
+    h16 = __import__("hashlib").sha256(object_key.encode()).hexdigest()[:16]
+    lease = now_ms + 30 * 60_000
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    item = {
+        "PK": {"S": f"DOC#{object_key}"},
+        "SK": {"S": "ITEM"},
+        "DocKey": {"S": object_key},
+        "CycleId": {"S": cycle_id},
+        "Profile": {"S": profile},
+        "Queue": {"S": "default"},
+        "State": {"S": "CLAIMED"},
+        "Version": {"N": "1"},
+        "Priority": {"N": "50"},
+        "EnqueuedAt": {"S": iso},
+        "EnqueuedAtMs": {"N": str(now_ms)},
+        "Sections": {"L": [{"S": "1"}]},
+        "OwnerKey": {"S": owner},
+        "OwnerEmail": {"S": owner},
+        "ClaimedAt": {"S": iso},
+        "ClaimedAtMs": {"N": str(now_ms)},
+        "LeaseExpiresAtMs": {"N": str(lease)},
+        "LeaseMinutes": {"N": "30"},
+        "QueuePK": {"S": f"Q#{profile}#default"},
+        "QueueSK": {"S": f"{now_ms:013d}#{h16}"},
+        "OwnerPK": {"S": f"R#{owner}"},
+        "OwnerSK": {"S": f"{now_ms:013d}#{h16}"},
+        "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+    }
+    aws("dynamodb", "put-item", "--table-name", table, "--item", json.dumps(item), region=ctx["region"])
+    tracking = _tracking_table_name(ctx)
+    if tracking:
+        row = {
+            "PK": {"S": f"doc#{object_key}"},
+            "SK": {"S": "none"},
+            "ObjectKey": {"S": object_key},
+            "ObjectStatus": {"S": "HITL_IN_PROGRESS"},
+            "HITLStatus": {"S": "in_review"},
+            "ConfigVersion": {"S": profile},
+            "ExpiresAfter": {"N": str(int(time.time()) + 86400)},
+        }
+        aws("dynamodb", "put-item", "--table-name", tracking, "--item", json.dumps(row), region=ctx["region"])
+    ctx["_review_idor_key"] = object_key
+    return {
+        "tokens": {
+            "A": get_id_token(ctx, emails["ReviewIdorA"], TEST_PW),
+            "B": get_id_token(ctx, emails["ReviewIdorB"], TEST_PW),
+            "C": get_id_token(ctx, emails["ReviewIdorC"], TEST_PW),
+        },
+        "object_key": object_key,
+        "cycle_id": cycle_id,
+    }
+
+
+def cleanup_review_item(ctx, seeded=None):
+    """Remove the review-queue IDOR fixture (best-effort, idempotent)."""
+    table = ctx.get("_review_table")
+    key = ctx.get("_review_idor_key")
+    if table and key:
+        for sk in ("ITEM",):
+            try:
+                aws(
+                    "dynamodb", "delete-item", "--table-name", table, "--key",
+                    json.dumps({"PK": {"S": f"DOC#{key}"}, "SK": {"S": sk}}),
+                    region=ctx["region"],
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  (review item cleanup error: {e})")
+    tracking = _tracking_table_name(ctx)
+    if tracking and key:
+        try:
+            aws(
+                "dynamodb", "delete-item", "--table-name", tracking, "--key",
+                json.dumps({"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}}),
+                region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (tracking row cleanup error: {e})")
+    profile = ctx.get("_review_idor_profile")
+    if profile:
+        try:
+            from idp_sdk import IDPClient
+
+            IDPClient(stack_name=ctx["stack"], region=ctx["region"]).config.delete(
+                config_profile=profile
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review profile cleanup error: {e})")
+    for email in ctx.get("_review_idor_users", []):
+        try:
+            delete_cognito_user(ctx, email)
+        except Exception as e:  # noqa: BLE001
+            print(f"  (review user cleanup error: {e})")
+
+
+def cleanup_inbox_message(ctx, notification_id):
+    """Delete one seeded Inbox message (best-effort, idempotent)."""
+    table = ctx.get("_notifications_table")
+    if not table:
+        return
+    keys = sec.notification_keys()
+    for pk, seeded_id in ctx.get("_seeded_inbox_messages", []):
+        if seeded_id != notification_id:
+            continue
+        try:
+            aws(
+                "dynamodb",
+                "delete-item",
+                "--table-name",
+                table,
+                "--key",
+                json.dumps(
+                    {"PK": {"S": pk}, "SK": {"S": keys.message_sk(seeded_id)}}
+                ),
+                region=ctx["region"],
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"  (cleanup_inbox_message failed: {e})")
+
+
+def cleanup_seeded_inbox_messages(ctx):
+    """Delete every Inbox message the suite seeded (best-effort)."""
+    for _pk, notification_id in list(ctx.get("_seeded_inbox_messages", [])):
+        cleanup_inbox_message(ctx, notification_id)
 
 
 # ----------------------------------------------------------------------------
@@ -1375,11 +1678,43 @@ def _input_bucket(ctx):
                 "text",
                 region=ctx["region"],
             )
-    except RuntimeError as e:
-        print(f"  could not resolve the input bucket: {e}")
+    except (RuntimeError, KeyError) as e:
+        # KeyError as well as RuntimeError, because "never raises" has to be true of
+        # the ctx and not only of the AWS call: `ctx["stack"]` and `ctx["region"]`
+        # are read inside this `try`, and a caller holding a partial ctx — every
+        # offline test of a suite that reaches this does — got a KeyError out of a
+        # function whose contract is to answer "" and let the caller SKIP.
+        print(f"  could not resolve the input bucket: {e!r}")
         name = ""
     ctx["input_bucket"] = "" if (not name or name == "None") else name
     return ctx["input_bucket"]
+
+
+def resolve_document_object_key(ctx, tokens):
+    """The ``ObjectKey`` of any processed document in this stack, or None.
+
+    Read as Admin, deliberately: the caller this key is used against is the SCOPED
+    user, whose own ``listDocuments`` is filtered by the very scope the check under
+    test enforces, so asking them would return nothing and the arm would skip for
+    the reason it exists to assert.
+
+    Any document will do, and that is a property of the seeded scope rather than
+    laziness: :data:`SCOPE_VERSION` is a synthetic profile name no processed
+    document carries, so **every** document in the deployment is outside the scoped
+    user's ``allowedConfigVersions``. A real profile name here would make the arm
+    depend on which documents happen to be in the stack.
+    """
+    st, body = call_body(ctx["api_base"], "listDocuments", {}, tokens["Admin"])
+    if st != 200:
+        return None
+    try:
+        documents = (json.loads(body) or {}).get("Documents") or []
+    except Exception:  # noqa: BLE001 - an unreadable list is "no key", not a crash
+        return None
+    for summary in documents:
+        if isinstance(summary, dict) and summary.get("ObjectKey"):
+            return str(summary["ObjectKey"])
+    return None
 
 
 def apply_dynamic_args(ops, ctx, tokens):
@@ -1426,17 +1761,26 @@ def apply_dynamic_args(ops, ctx, tokens):
     # offline, where the allow-list contents are known:
     # nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py.
     bucket = _input_bucket(ctx)
-    for field in ("getFileContents", "getFilePresignedUrl"):
+    uri_fields = ("getFileContents", "getFilePresignedUrl")
+    # The batch field takes the same URI inside a list, so the substitution has to
+    # reach into it. Written as its own tuple rather than branching on the field
+    # name inside one loop, so adding a field to either shape is a one-line edit
+    # that cannot accidentally give a batch field a scalar argument the validator
+    # would reject before the group floor ever answered.
+    list_fields = ("getFilePresignedUrls",)
+    for field in uri_fields + list_fields:
         if field not in ops:
             continue
-        if bucket:
-            ops[field]["args"] = {
-                "s3Uri": f"s3://{bucket}/__sectest-nonexistent-key__.json"
-            }
-            print(f"  {field}: using this stack's input bucket {bucket}")
-        else:
+        if not bucket:
             skip.add(field)
             print(f"  {field}: could not resolve the stack's input bucket")
+            continue
+        uri = f"s3://{bucket}/__sectest-nonexistent-key__.json"
+        if field in list_fields:
+            ops[field]["args"] = {"files": [{"s3Uri": uri}]}
+        else:
+            ops[field]["args"] = {"s3Uri": uri}
+        print(f"  {field}: using this stack's input bucket {bucket}")
 
     if "getStepFunctionExecution" in ops:
         arn = resolve_execution_arn(ctx, tokens)
@@ -1705,6 +2049,191 @@ def run_scope_suite(ctx, tokens, results):
     print(
         f"  scoped Author getConfigVersions -> {st} "
         f"({'OK' if ok else 'unexpectedly denied'})"
+    )
+
+
+#: The operation the document-bytes arm drives. The single-object presign rather
+#: than ``getFileContents``, because it is the capability-issuing one — a refusal
+#: that leaked here would hand out a URL carrying its own authorization for the
+#: lifetime of the signature — and both reach the same
+#: ``_parse_and_validate_one`` choke point, so one of them exercises the control.
+_DOCUMENT_BYTES_FIELD = "getFilePresignedUrl"
+
+
+def run_document_bytes_scope_suite(ctx, tokens, results):
+    """The per-DOCUMENT scope on object bytes, and the label it declares.
+
+    Its own suite rather than a fourth arm of :func:`run_scope_suite`, because its
+    preconditions are different in kind: that one needs only the scoped user's
+    token, this one needs a resolvable input bucket **and** a processed document in
+    the stack, so it SKIPs where the other three still reach a verdict. Folding it
+    in would make one suite answer two availability questions.
+
+    The group matrix cannot assert this either. Every principal it drives is
+    unscoped, and ``document_scope.assert_document_in_scope`` is a documented no-op
+    for an unscoped caller, so the matrix's nonexistent-key argument never reaches
+    the control at all — which is also why ``object_scoped_roles:`` is the wrong
+    vehicle for these fields: that key declares a ROLE the per-object control
+    refuses, and the axis here is ``allowedConfigVersions``, not a group.
+
+    Two arms, and both have to hold:
+
+    * the **scoped** caller is refused a real document's bytes, and the refusal is
+      labelled ``resource`` — the per-object control, positively attributed. An
+      unattributed refusal is ``ERROR`` rather than ``PASS`` for the reason
+      :func:`refusal_is_resource_level` is fail-closed: without the label this cell
+      cannot tell the control it is testing from the resolver's own group check, so
+      it established neither;
+    * **Admin** is *not* refused the same URI. Without this arm the first one passes
+      on a deployment that refuses the object to everybody — a broken bucket
+      allow-list, an unwired tracking table — and reports the scope working. ⚠️ It
+      asserts "not refused" rather than "served": a 400 `File not found`, which is
+      what a tracking row outliving its S3 object produces, passes this arm. That is
+      deliberate — the arm exists to rule out a blanket refusal, and requiring a 200
+      would make it fail on a stack whose input bucket has been swept.
+
+    No signed URL may appear anywhere in the refusal, and that is checked over the
+    **whole response text** rather than over `errors[0].message`: the point of the
+    control is that the capability is never minted, and a 403 carrying the URL in a
+    top-level field or in a second `errors` entry would satisfy every status
+    assertion above while handing over the object. It is the same response the label
+    came from, which is why `ApiResult` carries the body.
+
+    An inconclusive call carries ``_inconclusive_gap`` like every other arm in this
+    file, so a 5xx is a WARN that still reports itself as having established
+    nothing rather than an ERROR indistinguishable from a real refusal.
+    """
+    print("\n=== PER-DOCUMENT SCOPE ON OBJECT BYTES ===")
+    if "scoped" not in tokens:
+        print("  SKIP (scoped user unavailable)")
+        _record(
+            results,
+            _DOCUMENT_BYTES_FIELD,
+            "scoped(document bytes)",
+            "SKIP",
+            False,
+            "scoped user unavailable",
+            outcome="SKIP",
+        )
+        return
+
+    bucket = _input_bucket(ctx)
+    key = resolve_document_object_key(ctx, tokens) if bucket else None
+    if not bucket or not key:
+        why = (
+            "could not resolve the input bucket"
+            if not bucket
+            else "no processed document found in this stack"
+        )
+        print(f"  SKIP ({why})")
+        _record(
+            results,
+            _DOCUMENT_BYTES_FIELD,
+            "scoped(document bytes)",
+            "SKIP",
+            False,
+            f"per-document scope not exercised: {why}",
+            outcome="SKIP",
+        )
+        return
+
+    uri = f"s3://{bucket}/{key}"
+
+    res = call(ctx["api_base"], _DOCUMENT_BYTES_FIELD, {"s3Uri": uri}, tokens["scoped"])
+    st, et, ib, rid = res
+    why = inconclusive(st, et)
+    control = res.authz_control
+    message = res.message or ""
+    # Two markers, because either alone is reachable without the other: a URL built
+    # from a VPC endpoint or a custom domain need not contain "s3", and an
+    # unsigned bucket URL is not a capability. `X-Amz-Signature` is what makes a
+    # presigned GET usable by whoever holds it.
+    body = res.body or ""
+    leaked = "https://" in body or "X-Amz-Signature" in body
+    if why:
+        detail, passed, outcome = f"INCONCLUSIVE: {why}", False, "ERROR"
+    elif not _denied(st, et, ib):
+        detail, passed, outcome = (
+            f"NOT REFUSED ({st}/{et}/{ib}): the scoped caller was served another "
+            "configuration profile's document bytes",
+            False,
+            None,
+        )
+    elif leaked:
+        detail, passed, outcome = (
+            "REFUSED but the response carries a signed URL, so the capability was "
+            "minted anyway",
+            False,
+            None,
+        )
+    elif control == CONTROL_UNLABELLED:
+        detail, passed, outcome = (
+            "REFUSED but unattributed: this deployment sets no authzControl, so "
+            "the per-object control cannot be told from the resolver's own group "
+            "check — redeploy to evaluate this cell",
+            False,
+            "ERROR",
+        )
+    elif not refusal_is_resource_level(control):
+        detail, passed, outcome = (
+            f"REFUSED with authzControl={control!r}, not {CONTROL_RESOURCE!r}: a "
+            "per-document refusal is a decision about the object the caller named "
+            "and must declare itself (raise ResourceAccessDenied in "
+            "document_scope), or an operator reads it as a group check",
+            False,
+            None,
+        )
+    else:
+        detail, passed, outcome = (
+            f"refused as {CONTROL_RESOURCE} with no URL in the body ({st}/{et})",
+            True,
+            None,
+        )
+    _record(
+        results,
+        _DOCUMENT_BYTES_FIELD,
+        "scoped(out-of-scope document)",
+        st,
+        passed,
+        detail,
+        et,
+        ib,
+        rid,
+        control=control,
+        message=message,
+        gap=_inconclusive_gap(st) if why else None,
+        outcome=outcome,
+    )
+    print(
+        f"  scoped Author {_DOCUMENT_BYTES_FIELD} (out-of-scope document) -> "
+        f"{st}/{et or ib} control={control!r} ({'OK' if passed else 'PROBLEM'})"
+    )
+
+    res = call(ctx["api_base"], _DOCUMENT_BYTES_FIELD, {"s3Uri": uri}, tokens["Admin"])
+    st, et, ib, rid = res
+    why = inconclusive(st, et)
+    ok = (not why) and not _denied(st, et, ib)
+    _record(
+        results,
+        _DOCUMENT_BYTES_FIELD,
+        "admin(unrestricted)",
+        st,
+        ok,
+        f"INCONCLUSIVE: {why}"
+        if why
+        else "expect the same URI NOT refused an unrestricted caller; "
+        f"got {st}/{et}/{ib}",
+        et,
+        ib,
+        rid,
+        control=res.authz_control,
+        message=res.message,
+        gap=_inconclusive_gap(st) if why else None,
+        outcome="ERROR" if why else None,
+    )
+    print(
+        f"  Admin {_DOCUMENT_BYTES_FIELD} (same document) -> {st} "
+        f"({'OK allowed' if ok else 'WRONGLY DENIED — the first arm proves nothing'})"
     )
 
 
@@ -2131,6 +2660,7 @@ def main():
         skip_fields = apply_dynamic_args(ops, ctx, tokens)
         run_group_matrix(ops, ctx, tokens, results, skip_fields)
         run_scope_suite(ctx, tokens, results)
+        run_document_bytes_scope_suite(ctx, tokens, results)
         run_token_negatives(ctx, tokens, results)
 
         # --- Mandatory security-focused test cases (checklist 2.1-4) ---------
@@ -2143,6 +2673,23 @@ def main():
             tokens,
             seed_fn=lambda jid, marker: seed_agent_job(ctx, jid, marker),
             call_body=call_body,
+        )
+        sec.run_inbox_idor_suite(
+            ctx,
+            _record,
+            results,
+            tokens,
+            seed_fn=lambda nid, marker: seed_inbox_message(ctx, nid, marker),
+            call_body=call_body,
+            cleanup_fn=lambda nid: cleanup_inbox_message(ctx, nid),
+        )
+        sec.run_review_queue_idor_suite(
+            ctx,
+            _record,
+            results,
+            seed_fn=lambda: seed_review_item(ctx),
+            call_body=call_body,
+            cleanup_fn=lambda seeded: cleanup_review_item(ctx, seeded),
         )
         sec.run_deleted_resource_suite(
             ctx, call, _record, results, tokens, call_body=call_body
@@ -2207,6 +2754,7 @@ def main():
         # Always remove any agent-job rows the IDOR suite seeded (independent of
         # --no-teardown, which only preserves the Cognito users for debugging).
         cleanup_seeded_agent_jobs(ctx)
+        cleanup_seeded_inbox_messages(ctx)
         if args.no_teardown:
             print(f"--no-teardown: keeping test users (password: {TEST_PW})")
         else:

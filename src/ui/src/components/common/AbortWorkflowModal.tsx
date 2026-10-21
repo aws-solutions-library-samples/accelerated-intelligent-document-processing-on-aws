@@ -3,23 +3,9 @@
 import React from 'react';
 import { Box, Modal, SpaceBetween, Button, Alert } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { ABORTABLE_STATUSES } from './document-statuses';
 
 const logger = new ConsoleLogger('AbortWorkflowModal');
-
-// Statuses that can be aborted
-const ABORTABLE_STATUSES = [
-  'QUEUED',
-  'RUNNING',
-  'PREPROCESSING',
-  'OCR',
-  'CLASSIFYING',
-  'EXTRACTING',
-  'ASSESSING',
-  'POSTPROCESSING',
-  'HITL_IN_PROGRESS',
-  'SUMMARIZING',
-  'EVALUATING',
-];
 
 interface AbortWorkflowItem {
   objectKey: string;

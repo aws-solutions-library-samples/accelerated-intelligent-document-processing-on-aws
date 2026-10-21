@@ -22,12 +22,24 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 
-vi.mock('../generate-s3-presigned-url', () => ({ default: vi.fn(() => Promise.resolve('https://example.test/signed')) }));
-// Stable identities on purpose: the viewer's image-load effect is keyed on
-// these, so a fresh object per render re-enters loading forever.
-const APP_CONTEXT = { currentCredentials: {} };
+// Partial: only the transport is stubbed. `presignedUrlsNeedRefresh` is the real
+// one, because the viewer consults it on every page turn and a module mock that
+// omits it throws there — which is a failure in *this* suite caused by a change to
+// the viewer, with nothing about rotation wrong. `signedAt` is omitted below, which
+// the real predicate reads as "nothing to re-sign", so navigation here never fires a
+// refresh and the rotation assertions stay about rotation.
+vi.mock('../../../api/presign-batch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../api/presign-batch')>()),
+  presignBatch: vi.fn(async (requests: Array<{ s3Uri: string }>) => ({
+    get: (s3Uri: string) => (requests.some((r) => r.s3Uri === s3Uri) ? 'https://example.test/signed' : undefined),
+    size: requests.length,
+    failed: false,
+    accessDenied: false,
+  })),
+}));
+// Stable identity on purpose: the viewer's image-load effect is keyed on this,
+// so a fresh object per render re-enters loading forever.
 const VERSION_CONTEXT = { isHistorical: false, runId: null, versionIdForUri: () => undefined };
-vi.mock('../../../contexts/app', () => ({ default: () => APP_CONTEXT }));
 vi.mock('../../../contexts/document-version', () => ({ useDocumentVersion: () => VERSION_CONTEXT }));
 
 import PageImageViewer from '../PageImageViewer';

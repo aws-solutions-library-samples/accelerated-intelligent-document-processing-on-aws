@@ -208,3 +208,20 @@ class TestClassifyDocumentState:
         assert classify_document_state(empty) == classify_document_state(
             DocumentState.UNKNOWN
         )
+
+
+class TestRejected:
+    """`REJECTED` (a reviewer rejected the document, IDP-0002 D1)."""
+
+    def test_rejected_is_in_exactly_the_failed_bucket(self):
+        holders = [
+            name
+            for name, members in _DOCUMENT_STATE_BUCKETS.items()
+            if DocumentState.REJECTED in members
+        ]
+        assert holders == [DocumentBucket.FAILED]
+        assert classify_document_state(DocumentState.REJECTED) is DocumentBucket.FAILED
+
+    def test_rejected_is_terminal_and_not_success(self):
+        assert DocumentState.REJECTED in TERMINAL_DOCUMENT_STATES
+        assert DocumentState.REJECTED not in SUCCESS_DOCUMENT_STATES

@@ -377,6 +377,13 @@ TIGHTENED_TO_ANY_GROUP = (
     # document content, and the means of obtaining it
     "getFileContents",
     "getFilePresignedUrl",
+    # The batch presign form. It is the ONLY way the web UI obtains a page-image
+    # URL now that the Identity Pool's authenticated role grants the document
+    # buckets nothing (#1033), so this entry is what refuses a self-registered
+    # caller in no group the document bytes they used to be able to read directly
+    # from S3 with their own credentials. Declaring it `ANY` would put that hole
+    # back behind an operation instead of behind an IAM policy.
+    "getFilePresignedUrls",
     "getDocument",
     "getDocumentVersion",
     "compareDocumentVersions",
@@ -397,6 +404,17 @@ TIGHTENED_TO_ANY_GROUP = (
     # ...and this one for one field: `lastError` carries the pausing
     # administrator's email after a manual pause.
     "getCircuitBreakerStatus",
+    # The Inbox operations were declared ANY_GROUP from the start rather than
+    # tightened: each is self-scoped to the caller's verified identity, and every
+    # signed-in role has an Inbox, so an assigned group is the right floor.
+    "listInboxMessages",
+    "getInboxUnreadCount",
+    "getInboxPreferences",
+    "markInboxMessages",
+    "markAllInboxMessagesRead",
+    "deleteInboxMessages",
+    "clearReadInboxMessages",
+    "updateInboxPreferences",
 )
 
 

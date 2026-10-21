@@ -184,10 +184,14 @@ in ca-central-1. See [Document Knowledge Base Query](./knowledge-base.md#configu
 
 ## Deploying to ca-central-1
 
-There is no Quick Launch template URL for ca-central-1 yet; the maintainers
-publish one at release time, and a follow-up adds it. Until then,
-`idp-cli deploy --region ca-central-1` is refused unless you supply the
-template yourself, in one of two forms:
+ca-central-1 is one of the four Regions each release is published to, so it has
+a Launch Stack button in the [Deployment Guide](./deployment.md) and a plain
+`idp-cli deploy --region ca-central-1` resolves the published template without
+your having to name one. ⚠️ **0.6.11 and every release before it have no
+ca-central-1 artifacts** — Canada joined the published set in 0.6.12, so both
+routes work only from that release on, and until it is published the Launch
+Stack button answers 404. To deploy an earlier release, or unreleased code,
+supply the template yourself in one of two forms:
 
 ```bash
 # Build, publish to a bucket in your account and deploy in one step

@@ -32,7 +32,11 @@ vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} })
 vi.mock('../../../hooks/use-user-role', () => ({
   default: () => ({ isReviewerOnly: false, canWrite: true, canReview: true }),
 }));
-vi.mock('../../common/generate-s3-presigned-url', () => ({ default: () => Promise.resolve(null) }));
+// No thumbnails, and nothing failed: this suite is about the class-confidence
+// column, and a `failed` result would put an alert above the table.
+vi.mock('../../../api/presign-batch', () => ({
+  presignBatch: async () => ({ get: () => undefined, size: 0, failed: false, accessDenied: false }),
+}));
 
 import PagesPanel from '../PagesPanel';
 import { DocumentVersionProvider } from '../../../contexts/document-version';

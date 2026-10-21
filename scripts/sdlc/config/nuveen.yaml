@@ -84,7 +84,7 @@ classification:
   top_k: '5.0'
   max_tokens: '4096'
   maxPagesForClassification: ALL
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   sectionSplitting: llm_determined
   contextPagesCount: '0'
   image:

@@ -324,7 +324,9 @@ def test_recent_completions_falls_back_when_a_document_has_no_id_or_duration():
 
     assert _cells(table, 0) == ["unknown"]
     assert _cells(table, 1) == ["✓ Success"]
-    assert _cells(table, 2) == ["0.0s"]
+    # Review column: a document that was never routed to a review queue.
+    assert _cells(table, 2) == ["—"]
+    assert _cells(table, 3) == ["0.0s"]
 
 
 @pytest.mark.unit
@@ -333,7 +335,16 @@ def test_recent_completions_renders_the_duration_to_one_decimal():
         _status_data(total=1, completed=[_doc(duration=123.456)])
     )
 
-    assert _cells(table, 2) == ["123.5s"]
+    assert _cells(table, 3) == ["123.5s"]
+
+
+@pytest.mark.unit
+def test_recent_completions_shows_the_review_status_of_a_routed_document():
+    table = display.create_recent_completions_table(
+        _status_data(total=1, completed=[_doc(review_status="rejected")])
+    )
+
+    assert _cells(table, 2) == ["rejected"]
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +672,8 @@ def test_json_single_completed_document_exits_zero_and_carries_its_section_count
         "duration": 12.5,
         "start_time": "2025-01-10T10:00:00Z",
         "end_time": "2025-01-10T10:05:00Z",
+        # None for a document never routed to a review queue.
+        "review_status": None,
         "num_sections": 3,
         "exit_code": 0,
     }
@@ -1477,3 +1490,41 @@ def test_a_redacted_superseded_document_is_reported_as_the_success_it_is():
     assert payload["status"] == "REDACTED_SUPERSEDED"
     assert "num_sections" in payload
     assert payload["num_sections"] is None
+
+
+# --- REJECTED (IDP-0002 D1): terminal, not success, reported by name ---------
+
+
+@pytest.mark.unit
+def test_json_a_rejected_document_exits_one_and_keeps_its_status():
+    """A reviewer rejected it: exit 1 like a failure, but never shown as FAILED."""
+    doc = _doc(status="REJECTED", error="Rejected by reviewer")
+    payload = json.loads(
+        display.format_status_json(
+            _status_data(total=1, failed=[doc]), _stats(total=1, failed=1)
+        )
+    )
+
+    assert payload["status"] == "REJECTED"
+    assert payload["exit_code"] == 1
+
+
+@pytest.mark.unit
+def test_summary_single_rejected_document_is_labelled_rejected(pinned_display_console):
+    with pinned_display_console.capture() as capture:
+        code = display.show_final_status_summary(
+            _status_data(total=1, failed=[_doc(status="REJECTED", duration=3.0)]),
+            _stats(total=1, failed=1, all_complete=True),
+        )
+
+    assert code == 1
+    assert "FINAL STATUS: REJECTED | Duration: 3.0s | Exit Code: 1" in capture.get()
+
+
+@pytest.mark.unit
+def test_failures_table_title_names_rejections():
+    table = display.create_failures_table(
+        _status_data(total=1, failed=[_doc(document_id="d", status="REJECTED")])
+    )
+
+    assert "Rejected / Failed Documents" in _render(table)

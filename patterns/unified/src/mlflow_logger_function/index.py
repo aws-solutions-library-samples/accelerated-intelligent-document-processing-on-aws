@@ -171,12 +171,44 @@ def _extract_config_params(config):
     if use_bda is not None:
         params["use_bda"] = str(use_bda)
 
-    # Classification method
+    # Classification settings. These are what make one experiment
+    # distinguishable from another: `granularity` decides how many calls are
+    # made, `modality` what each call sees, and `strategy` whether boundaries
+    # and classes come from one call or two.
+    #
+    # This logged `classification.method` from `classificationMethod`, which was
+    # removed in config format 0.8 and is migrated away on read — so the
+    # parameter would have silently disappeared from every run with nothing
+    # replacing it, which is worse than not logging it at all: an old run and a
+    # new one would look identically configured.
     cls_cfg = config.get("classification")
     if isinstance(cls_cfg, dict):
-        cls_method = cls_cfg.get("classificationMethod")
-        if cls_method:
-            params["classification.method"] = str(cls_method)
+        for key, param in (
+            ("granularity", "classification.granularity"),
+            ("strategy", "classification.strategy"),
+        ):
+            value = cls_cfg.get(key)
+            if value:
+                params[param] = str(value)
+        modality = cls_cfg.get("modality")
+        if isinstance(modality, dict):
+            for flag in ("text", "images"):
+                value = modality.get(flag)
+                # An UNSET flag is "infer from the prompt's placeholders", which
+                # is a real setting rather than an absent one — logged as `infer`
+                # so a run using the inference is not indistinguishable from one
+                # where the key was never written.
+                #
+                # ⚠️ Unset has two spellings and both have to land here. The raw
+                # YAML and the config form carry `""`; a config that has been
+                # through `IDPConfig(...).model_dump()` carries `None`, because
+                # `ClassificationModalityConfig` types both flags as
+                # `Optional[bool]`. Skipping `None` — the obvious guard — logs
+                # nothing for exactly the validated-dump shape the resolver
+                # sends, which is the outcome this block exists to prevent.
+                params[f"classification.modality.{flag}"] = (
+                    "infer" if value is None or value == "" else str(value)
+                )
 
     # HITL threshold (v0.6: top-level hitl) + confidence list batching (v0.6:
     # extraction.confidence.list_batch_size — granular assessment is retired)

@@ -925,7 +925,7 @@ class TestTheOtherCallSites:
     def test_classification_cost_withholds_the_cost_and_keeps_the_tokens(
         self, unpriced_model
     ):
-        cost, tokens, why = run_classification_bench.classification_cost(
+        cost, tokens, why, _by_context = run_classification_bench.classification_cost(
             {
                 f"Classification/bedrock/{unpriced_model}": {
                     "inputTokens": 3000,
@@ -938,7 +938,7 @@ class TestTheOtherCallSites:
         assert tokens["inputTokens"] == 3000
 
     def test_classification_cost_prices_a_known_model(self):
-        cost, tokens, why = run_classification_bench.classification_cost(
+        cost, tokens, why, _by_context = run_classification_bench.classification_cost(
             {f"Classification/{REAL_MODEL}": {"inputTokens": 3000}}
         )
         assert why is None
@@ -946,9 +946,17 @@ class TestTheOtherCallSites:
         assert tokens["inputTokens"] == 3000
 
     def test_classification_cost_ignores_other_phases(self, unpriced_model):
-        """Only the Classification step is priced here, so an unpriced model in
-        another phase is not this function's business."""
-        cost, _tokens, why = run_classification_bench.classification_cost(
+        """Only the classification step is priced here, so an unpriced model in
+        another phase is not this function's business.
+
+        ⚠️ "The classification step" is three metering contexts, not one:
+        `single_pass` bills under `Classification/` while `two_stage` bills under
+        `Segmentation/` and `Labeling/` (GitHub #1329). `Extraction/` is the
+        other-phase case this asserts about; the two-stage contexts are covered
+        in `test_classification_variants.py`, which also pins that a two-stage
+        run is not reported as free.
+        """
+        cost, _tokens, why, _by_context = run_classification_bench.classification_cost(
             {
                 f"Classification/{REAL_MODEL}": {"inputTokens": 100},
                 f"Extraction/bedrock/{unpriced_model}": {"inputTokens": 100},
@@ -956,6 +964,25 @@ class TestTheOtherCallSites:
         )
         assert why is None
         assert cost is not None
+
+    def test_classification_cost_withholds_when_a_two_stage_half_is_unpriced(
+        self, unpriced_model
+    ):
+        """The same withholding rule across the new contexts. A `Labeling/` model
+        with no price would otherwise contribute nothing — arithmetically a zero
+        — and report a two-stage run as cheaper than it was."""
+        cost, tokens, why, by_context = run_classification_bench.classification_cost(
+            {
+                f"Segmentation/{REAL_MODEL}": {"inputTokens": 100},
+                f"Labeling/bedrock/{unpriced_model}": {"inputTokens": 900},
+            }
+        )
+        assert cost is None
+        assert why and unpriced_model in why
+        # Tokens were read, not priced, so they stay.
+        assert tokens["inputTokens"] == 1000
+        assert by_context["Labeling"]["cost"] is None
+        assert by_context["Segmentation"]["cost"] is not None
 
     def test_score_run_reports_no_pooled_cost_when_one_document_is_unpriced(
         self, monkeypatch, unpriced_model, capsys

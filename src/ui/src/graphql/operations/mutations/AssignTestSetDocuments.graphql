@@ -1,0 +1,8 @@
+mutation AssignTestSetDocuments($testSetId: String!, $objectKeys: [String!]!, $assigneeEmail: String!) {
+  assignTestSetDocuments(testSetId: $testSetId, objectKeys: $objectKeys, assigneeEmail: $assigneeEmail) {
+    testSetId
+    objectKey
+    assignedTo
+    assignedAt
+  }
+}

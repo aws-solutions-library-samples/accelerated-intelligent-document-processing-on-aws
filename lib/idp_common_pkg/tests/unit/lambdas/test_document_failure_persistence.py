@@ -325,8 +325,8 @@ def test_rule_validation_root_cause_is_bounded(monkeypatch, rv_service):
 @pytest.fixture
 def pr_service(monkeypatch):
     monkeypatch.setenv("WORKING_BUCKET", "")
+    # HITL is off: the handler reads ``hitl.enabled`` from the config it loads.
     monkeypatch.setattr(processresults_index, "get_config", lambda **kw: IDPConfig())
-    monkeypatch.setattr(processresults_index, "is_hitl_enabled", lambda *a, **kw: False)
     monkeypatch.setattr(
         processresults_index, "create_metadata_file", lambda *a, **kw: None
     )

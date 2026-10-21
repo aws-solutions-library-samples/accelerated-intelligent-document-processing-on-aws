@@ -434,7 +434,18 @@ def merge_config_with_defaults(
         # Result has all fields populated from defaults, with user's model override
 
     IMPORTANT -- migrate BEFORE merge:
-        The system defaults are already in the current (v0.6) shape. If a v0.5-shaped
+        The v0.8 case is the sharpest one and it is worth stating first:
+        ``classification.granularity`` has a NON-EMPTY default (``page``). So a
+        legacy delta carrying ``classificationMethod:
+        textbasedHolisticClassification`` and no ``granularity``, merged first,
+        arrives at the migration with ``page`` already present -- as if the
+        operator had chosen it -- and the "an explicit setting wins" rule keeps
+        it. The config then runs page classification while asking for packet,
+        with no error anywhere. ``ConfigurationReader.simple_merge`` was removed
+        rather than left in the tree for this reason.
+
+        The same shape, with an earlier format: the system defaults are already
+        in the current (v0.6) shape. If a v0.5-shaped
         ``user_config`` (e.g. a top-level ``assessment`` block, or
         ``extraction.assessment_integration``) is merged onto the v0.6 defaults FIRST,
         the merged dict carries BOTH the v0.6 default keys and the legacy keys. A later

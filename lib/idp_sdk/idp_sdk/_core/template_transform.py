@@ -349,6 +349,25 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "MULTIDOCDISCOVERYSTACK",
         }
 
+        # Inbox (idp_common.notifications). Only the UI API reads the table and
+        # no producer is wired in headless mode, where create_notification_service()
+        # returns None and notify() is a no-op.
+        self.inbox_resources: Set[str] = {
+            "NotificationsTable",
+        }
+
+        # HITL review queues (idp_common.review_queues). Reviewers work queues in
+        # the Web UI, which headless mode removes, so the queue table and the
+        # resources that serve it go too; with no table, routing stays in the
+        # legacy HITL flow.
+        self.review_queue_resources: Set[str] = {
+            "HITLTable",
+            "ReviewQueueSweeperFunction",
+            "ReviewQueueSweeperFunctionLogGroup",
+            "ReviewQueueSweepRule",
+            "ReviewQueueSweepPermission",
+        }
+
         self.appsync_dependent_resources: Set[str] = {
             "StepFunctionSubscriptionPublisher",
             "StepFunctionSubscriptionPublisherLogGroup",
@@ -411,6 +430,7 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
         # ---- Outputs to remove ----
 
         self.outputs_to_remove: Set[str] = {
+            "HITLTableName",
             "ApplicationWebURL",
             "WebUIBucketName",
             "WebUITestEnvFile",
@@ -437,6 +457,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             # headless deployment. Kept here as a defensive strip in case the
             # base template still emits it.
             "AppSyncEndpointForDNS",
+            # Inbox table (removed with inbox_resources).
+            "NotificationsTableName",
         }
 
         # ---- Conditions to remove ----
@@ -509,6 +531,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             | self.kb_resources
             | self.discovery_resources
             | self.feature_platform_resources
+            | self.inbox_resources
+            | self.review_queue_resources
         )
 
     # ---- Public API ----
@@ -829,6 +853,9 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             # (state management, alarm processing); we keep it but drop the
             # empty APPSYNC_API_URL env var and any appsync:GraphQL policy.
             "CircuitBreakerManagerFunction",
+            # Test sets stay in headless mode; their queue summaries (HITLTable)
+            # don't, and the copier skips the summary build without HITL_TABLE_NAME.
+            "TestSetFileCopierFunction",
         ]
         for func_name in functions_to_clean:
             if func_name in resources:
@@ -878,6 +905,16 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             env_vars.setdefault("DOCUMENT_TRACKING_MODE", "dynamodb")
             env_vars.setdefault("TRACKING_TABLE", {"Ref": "TrackingTable"})
             logger.debug(f"Removed empty APPSYNC_API_URL env var from {func_name}")
+
+        # Drop environment variables that point at a removed resource (e.g. the
+        # review queue and Inbox tables on the WorkflowTracker). Generic, so a
+        # new reference to a stripped resource can't leave a dangling Ref.
+        removed = self.all_resources_to_remove
+        for name in [
+            n for n, v in env_vars.items() if self._mentions_removed(v, removed)
+        ]:
+            del env_vars[name]
+            logger.debug(f"Removed env var {name} (removed resource) from {func_name}")
 
         # Add DynamoDB CRUD policy if not present
         policies = func_def.get("Properties", {}).get("Policies", [])
@@ -986,7 +1023,38 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
         if self._references_removed_resource(resource, "ExternalMCPAgentsSecret"):
             return self._MCP_GRANT_REASON
 
+        if resource is not None and self._mentions_removed(
+            resource, self.all_resources_to_remove
+        ):
+            return self._REMOVED_RESOURCE_GRANT_REASON
+
         return None
+
+    # A grant on a resource this transform removes (the review queue and Inbox
+    # tables, their indexes): the Ref/GetAtt would dangle.
+    _REMOVED_RESOURCE_GRANT_REASON = "grant on a resource the transform removes"
+
+    @classmethod
+    def _mentions_removed(cls, value: Any, removed: Set[str]) -> bool:
+        """Whether a Ref, GetAtt or Sub anywhere in ``value`` names a removed resource."""
+        if isinstance(value, dict):
+            if value.get("Ref") in removed:
+                return True
+            get_att = value.get("Fn::GetAtt")
+            if isinstance(get_att, list) and get_att and get_att[0] in removed:
+                return True
+            if isinstance(get_att, str) and get_att.split(".", 1)[0] in removed:
+                return True
+            sub = value.get("Fn::Sub")
+            text = sub[0] if isinstance(sub, list) and sub else sub
+            if isinstance(text, str):
+                for token in re.findall(r"\$\{([^}!]+)\}", text):
+                    if token.split(".", 1)[0] in removed:
+                        return True
+            return any(cls._mentions_removed(v, removed) for v in value.values())
+        if isinstance(value, list):
+            return any(cls._mentions_removed(v, removed) for v in value)
+        return False
 
     def _should_remove_statement(self, stmt: Dict[str, Any]) -> bool:
         """Whether a policy statement is dead in a headless template."""
@@ -1036,6 +1104,9 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "DiscoveryBucketName",
             "DiscoveryTrackingTableName",
             "MultiDocDiscoveryStateMachineArn",
+            # Review queues are stripped in headless; the nested stacks default
+            # HITLTableName to "", which keeps routing on the legacy flow.
+            "HITLTableName",
         ]:
             if param in stack_params:
                 del stack_params[param]
