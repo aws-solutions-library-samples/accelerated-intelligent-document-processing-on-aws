@@ -53,6 +53,17 @@ interface FieldHighlightInfo {
 
 interface FieldConfidenceInfo {
   hasConfidenceInfo: boolean;
+  /**
+   * Whether `explainability_info` holds an entry for this field at all,
+   * regardless of whether it carried a usable confidence number.
+   *
+   * Distinct from `hasConfidenceInfo` because the two answer different
+   * questions, and a caller that needs "was anything recorded about this
+   * field?" gets the wrong answer from the other one. A field assessed at a
+   * finer granularity — a scalar value whose entry is an object of sub-field
+   * confidences — has an entry and no number of its own.
+   */
+  hasEntry?: boolean;
   confidence?: number;
   confidenceThreshold?: number;
   isAboveThreshold?: boolean;
@@ -389,14 +400,14 @@ export const getFieldConfidenceInfo = (
   mergedConfig: MergedConfig | null = null,
 ): FieldConfidenceInfo => {
   if (!explainabilityInfo || !fieldName) {
-    return { hasConfidenceInfo: false };
+    return { hasConfidenceInfo: false, hasEntry: false };
   }
 
   // explainabilityInfo is typically an array, get the first element
   const explainabilityData = Array.isArray(explainabilityInfo) ? explainabilityInfo[0] : explainabilityInfo;
 
   if (!explainabilityData || typeof explainabilityData !== 'object') {
-    return { hasConfidenceInfo: false };
+    return { hasConfidenceInfo: false, hasEntry: false };
   }
 
   // Navigate to the nested location in explainabilityData using the path
@@ -413,7 +424,7 @@ export const getFieldConfidenceInfo = (
           // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop - Controlled data source, input validation performed upstream
           currentExplainabilityData = currentExplainabilityData[index] as Record<string, unknown>;
         } else {
-          return { hasConfidenceInfo: false };
+          return { hasConfidenceInfo: false, hasEntry: false };
         }
       } else {
         // Handle object properties
@@ -421,18 +432,31 @@ export const getFieldConfidenceInfo = (
         currentExplainabilityData = currentExplainabilityData[pathSegment] as Record<string, unknown>;
       }
     } else {
-      return { hasConfidenceInfo: false };
+      return { hasConfidenceInfo: false, hasEntry: false };
     }
   }
 
   // Now look for the field in the current explainability data location
   if (!currentExplainabilityData || typeof currentExplainabilityData !== 'object') {
-    return { hasConfidenceInfo: false };
+    return { hasConfidenceInfo: false, hasEntry: false };
   }
 
-  const fieldData = currentExplainabilityData[fieldName] as ConfidenceFieldData | null | undefined;
+  /**
+   * An array item's own entry is the node the path already reached.
+   *
+   * The renderer names a primitive list item `[0]` and passes the index in the
+   * path, so the navigation above has already arrived at the element; looking
+   * for a child key literally called "[0]" finds nothing, and the field reads as
+   * having no assessment entry when it has one. Array items that are objects are
+   * unaffected — their leaves are named fields resolved the usual way.
+   */
+  const isArrayItemKey = /^\[\d+\]$/.test(fieldName);
+  const fieldData = (isArrayItemKey ? currentExplainabilityData : currentExplainabilityData[fieldName]) as
+    | ConfidenceFieldData
+    | null
+    | undefined;
   if (!fieldData || typeof fieldData !== 'object') {
-    return { hasConfidenceInfo: false };
+    return { hasConfidenceInfo: false, hasEntry: false };
   }
 
   let { confidence } = fieldData;
@@ -456,9 +480,10 @@ export const getFieldConfidenceInfo = (
 
   // Check if we have confidence data
   if (typeof confidence !== 'number') {
-    return { hasConfidenceInfo: false };
+    return { hasConfidenceInfo: false, hasEntry: true };
   }
   const hasConfidence = true;
+  const hasEntry = true;
 
   // Use dynamic threshold from configuration if available and no field-specific threshold
   if (mergedConfig && (confidenceThreshold === undefined || confidenceThreshold === null)) {
@@ -472,6 +497,7 @@ export const getFieldConfidenceInfo = (
     const isAboveThreshold = confidence >= confidenceThreshold!;
     return {
       hasConfidenceInfo: true,
+      hasEntry,
       confidence,
       confidenceThreshold,
       isAboveThreshold,
@@ -485,6 +511,7 @@ export const getFieldConfidenceInfo = (
   if (hasConfidence && !hasThreshold) {
     return {
       hasConfidenceInfo: true,
+      hasEntry,
       confidence,
       confidenceThreshold: undefined,
       isAboveThreshold: undefined,
@@ -495,7 +522,7 @@ export const getFieldConfidenceInfo = (
   }
 
   // Case 3: Neither available (handled by the hasConfidence check above)
-  return { hasConfidenceInfo: false };
+  return { hasConfidenceInfo: false, hasEntry: true };
 };
 
 /**

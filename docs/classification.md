@@ -9,6 +9,88 @@ SPDX-License-Identifier: MIT-0
 
 Document classification is a key component of the GenAIIDP solution that categorizes each document or page into predefined classes. This guide explains how to customize classification to best suit your document processing needs.
 
+## The three settings that decide everything else
+
+Classification does two jobs: it **splits** the file into documents, and it
+**labels** each one. Three independent settings decide how:
+
+| Setting | Values | What it decides |
+|---|---|---|
+| `granularity` | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's class and whether it starts a new document, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. |
+| `modality.text` / `modality.images` | `true` \| `false` \| empty | **What each call sees.** Both apply at either granularity. Empty means "infer from the task prompt's placeholders", which is what the service did before these flags existed. |
+| `strategy` | `single_pass` (default) \| `two_stage` | **Whether splitting and labeling are one call or two.** `two_stage` finds the boundaries with no class vocabulary in the prompt, then labels each segment with one call. |
+
+All three combine freely. `granularity: packet` with `modality: {text: true,
+images: true}` and `strategy: two_stage` is one boundary call over the whole
+packet with its page images, followed by one labeling call per document found.
+
+### Why these replaced `classificationMethod`
+
+`classificationMethod` had two values, and each bundled one granularity with one
+modality:
+
+| | Text only | Text + images | Images only |
+|---|---|---|---|
+| **Per page** (N calls) | prompt editing only | `multimodalPageLevelClassification` | prompt editing only |
+| **Whole packet** (1 call) | `textbasedHolisticClassification` | not available | not available |
+
+Four of the six combinations had no setting at all, and the two that did could
+only be reached by editing the task prompt to add or remove a placeholder. Two
+independent settings cover all six; an enum of combinations would have to grow
+by a factor for every modality added.
+
+The key was **removed** in config format 0.8 rather than deprecated in place, and
+a stored configuration carrying it is converted automatically on every read.
+Nothing needs editing. [Classification Method →
+Granularity](migration-classification-granularity.md) covers the conversion,
+including the two cases where it is not a pure rename — modality is deliberately
+left unset so a prompt-editing workaround keeps working, and a holistic config's
+hand-written prompt is copied into `classification.packet`, where packet
+granularity reads it.
+
+### What each setting costs
+
+- **`granularity: packet` saves the repeated prefix and the per-page output.**
+  A page-level call re-sends the instructions, the class list, every class
+  description and every few-shot example on every page, and asks for roughly
+  150–350 output tokens of reasoning each time. A packet call pays all of that
+  once.
+- **It does *not* reduce image tokens.** A page's image costs the same whether
+  it arrives in its own call or alongside nineteen others. So
+  **`packet` + `modality.images: false` is the large cost lever**, and `packet`
+  with images on is mainly an *accuracy* change — it is the only way the model
+  ever sees the whole packet when deciding where documents start.
+- **Images are usually the largest single input cost per page**, roughly
+  1.1K–4.8K tokens depending on the model and the image size, against a few
+  hundred output tokens. `image.target_width` / `target_height` and
+  `modality.images: false` are the two levers on that.
+- **`contextPagesCount` is the most expensive setting per unit of change.**
+  Each call carries up to 2k+1 pages: ×3 at k=1 and ×5 at k=2, in both text and
+  image tokens.
+- **`strategy: two_stage` drops the class vocabulary from every boundary call
+  and labels once per document instead of once per page.** A clear win on long
+  documents with few sections; roughly a wash on single-page files, where it
+  adds a second call to save a prefix that was only paid once.
+- **The model choice outweighs all of it.** On the benchmark suite Nova 2 Lite,
+  Claude Haiku 4.5 and Claude Sonnet 5 reached the same classification accuracy
+  at $0.007, $0.047 and $0.189 per document respectively — see
+  [`benchmarking/config-guidance.md`](./benchmarking/config-guidance.md) §5.3.
+  With Sonnet 5 as the classifier, classification reached 67% of total document
+  cost on a 9-page benchmark row.
+
+### Combinations refused when you save
+
+- `modality.text: false` **and** `modality.images: false` — nothing left to
+  classify.
+- `ocr.backend: none` with `modality.images: false` — no OCR text is produced
+  and no images are sent, so classification would be working from the literal
+  string `[No text content for page N]`. A packet call in that state used to go
+  out anyway and return a confident class derived from nothing; it now fails
+  with a message naming both remedies.
+- `packet.overlap_pages` greater than or equal to `packet.window_pages` — each
+  window would cover no new pages, so a long packet would cost one call per page
+  while claiming to be the cost-saving granularity.
+
 ## Classification Methods Across Patterns
 
 The solution supports multiple classification approaches that vary by pattern:
@@ -78,7 +160,7 @@ The multimodal page-level classification supports including surrounding pages as
 
 ```yaml
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   contextPagesCount: 1  # Include 1 page before and 1 page after as context
   # contextPagesCount: 0  # Default: no additional context (current behavior)
   # contextPagesCount: 2  # Include 2 pages before and 2 pages after
@@ -391,7 +473,7 @@ classifications:
 
 ```yaml
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   enforceValidClasses: true       # Validate + retry on invalid class (default: true)
   maxValidationRetries: 2         # Re-prompt up to N times (default: 2)
   invalidClassFallback: unclassified  # Class used when retries are exhausted (default: unclassified)
@@ -427,53 +509,113 @@ the retry correct it) is available in
 - Better suited for multi-document packets where context spans multiple pages
 - Deployed when you select the default pipeline mode configuration during stack deployment or update
 
-The default configuration in `config_library/unified/default/config.yaml` implements this approach with a task prompt that instructs the model to:
+The packet task prompt lives in
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`
+under `classification.packet.task_prompt`, and the configuration panel exposes
+it as *Packet task prompt* once `granularity` is `packet`. It instructs the
+model to:
 
 1. Read through the entire document package to understand its contents
 2. Identify page ranges that form complete, distinct documents
 3. Match each document segment to one of the defined document types
 4. Record the start and end pages for each identified segment
 
+⚠️ **Write a packet prompt under `classification.packet.task_prompt`, not the
+flat `classification.task_prompt`.** At packet granularity the service prefers
+the `packet` key, and the shipped defaults always supply one — so a packet prompt
+written at the flat key is merged onto a default that wins, and the prompt is
+ignored with nothing reporting it. The flat key is the *page* prompt (and Stage B
+of two-stage falls back to it). A configuration carried over from
+`classificationMethod: textbasedHolisticClassification` has its flat prompt copied
+into `packet` automatically (the flat one stays, because Stage B of two-stage
+falls back to it) — see
+[Classification Method → Granularity](migration-classification-granularity.md) —
+but a hand-written one has to be in the right place.
+
 Example configuration:
 
 ```yaml
 classification:
-  classificationMethod: textbasedHolisticClassification
+  granularity: packet
   model: us.amazon.nova-pro-v1:0
-  task_prompt: >-
-    <task-description>
-    You are a document classification system. Your task is to analyze a document package 
-    containing multiple pages and identify distinct document segments, classifying each 
-    segment according to the predefined document types provided below.
-    </task-description>
+  packet:
+    task_prompt: >-
+      <task-description>
+      You are a document classification system. Your task is to analyze a document package 
+      containing multiple pages and identify distinct document segments, classifying each 
+      segment according to the predefined document types provided below.
+      </task-description>
 
-    <document-types>
-    {CLASS_NAMES_AND_DESCRIPTIONS}
-    </document-types>
+      <document-types>
+      {CLASS_NAMES_AND_DESCRIPTIONS}
+      </document-types>
 
-    <document-boundary-rules>
-    Rules for determining document boundaries:
-    - Content continuity: Pages with continuing paragraphs, numbered sections, or ongoing narratives belong to the same document
-    - Visual consistency: Similar layouts, headers, footers, and styling indicate pages belong together
-    - Logical structure: Documents typically have clear beginning, middle, and end sections
-    - New document indicators: Title pages, cover sheets, or significantly different subject matter signal a new document
-    </document-boundary-rules>
+      <document-boundary-rules>
+      Rules for determining document boundaries:
+      - Content continuity: Pages with continuing paragraphs, numbered sections, or ongoing narratives belong to the same document
+      - Visual consistency: Similar layouts, headers, footers, and styling indicate pages belong together
+      - Logical structure: Documents typically have clear beginning, middle, and end sections
+      - New document indicators: Title pages, cover sheets, or significantly different subject matter signal a new document
+      </document-boundary-rules>
 
-    <<CACHEPOINT>>
+      <<CACHEPOINT>>
 
-    <document-text>
-    {DOCUMENT_TEXT}
-    </document-text>
+      <document-text>
+      {DOCUMENT_TEXT}
+      </document-text>
   ```
 
-##### Limitations of Text-Based Holistic Classification
+##### Packet granularity: images, few-shot examples and windowing
 
-Despite its strengths in handling full-document context, this method has several limitations:
+Packet granularity gives this path three things the old
+`textbasedHolisticClassification` did not have:
+
+**Page images.** The packet call sent one text block and nothing else, so no
+setting produced packet-level classification that could read page layout — and
+layout is most of what tells you where a document starts. Every page's image is
+now attached, each labelled with its ordinal in the call so the model can say
+which image it is looking at. Subject to `modality.images`.
+
+**Few-shot examples.** `{FEW_SHOT_EXAMPLES}` was never substituted on this path,
+so a configured `x-aws-idp-examples` reached the model as the literal
+placeholder string. It is now filled, the same way the page-level path fills it.
+
+**Windowing.** A packet larger than the context window failed outright. It is
+now split into overlapping windows whose results are merged:
+
+```yaml
+classification:
+  granularity: packet
+  packet:
+    window_pages: "20"    # 0 = never window (the old behaviour)
+    overlap_pages: "2"
+```
+
+The default of 20 is where Bedrock starts downscaling: above 20 image blocks in
+one request every image is shrunk to 2,000px, so a wider window with images on
+silently halves its own page resolution.
+
+The overlap exists so the window *after* a junction can see the pages before its
+own first page — a boundary landing on a window's first page would otherwise
+have to be judged with no preceding context, which is precisely the weakness
+packet granularity exists to fix. The overlapping pages' own verdicts are taken
+from the **earlier** window, which is the one that had their preceding context.
+Windows are merged by projecting each window's segments onto per-page verdicts
+and re-running the same fold page-level classification uses, so a windowed packet
+and a page-level document cannot disagree about how verdicts become segments.
+A single window (the common case) uses the model's segments directly.
+
+One window failing no longer discards the others: on a long packet that turned a
+transient throttle into a total loss of the document's boundaries.
+
+##### Limitations of packet-level classification
+
+Despite its strengths in handling full-document context, this granularity has several limitations:
 
 **Context & Model Constraints:**: 
-- Long documents can exceed the context window of smaller models, resulting in request failure.
+- Long documents can exceed the context window of smaller models. Set `packet.window_pages` to split them; with `window_pages: 0` the request fails outright.
 - Lengthy inputs may dilute the model’s focus, leading to inaccurate or inconsistent classifications.
-- Requires high-context models. The extended-context Claude variants — `us.anthropic.claude-sonnet-4-6:1m`, `us.anthropic.claude-sonnet-5:1m` and the `:1m` Opus variants — carry a 1-million-token input window; the base Claude 4.x/5 models carry 200K and the Nova family ~300K. Smaller models are not suitable for this method.
+- Requires high-context models. A 1-million-token input window is reached two different ways, and only one of them is a `:1m` id. The extended-context Claude variants — `us.anthropic.claude-sonnet-4-6:1m`, `us.anthropic.claude-sonnet-5:1m` and the `:1m` Opus variants — **opt into** it; `us.anthropic.claude-sonnet-5-5` and `us.anthropic.claude-haiku-5-5` have it **by default** and have no `:1m` id at all, so looking for one rules out two models that already qualify. Every other base Claude 4.x/5 model carries 200K and the Nova family ~300K. Smaller models are not suitable for this method. `config_library/model_config_limits.yaml` is the authority for which id gets which window.
 - For more details on supported models and their context limits, refer to the [Amazon Bedrock Supported Models documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html).
 
 **Scalability Challenges**: Not ideal for very large or visually complex document sets. In such cases, the Multi-Modal Page-Level Classification method is more appropriate.
@@ -511,7 +653,7 @@ The `sectionSplitting` configuration controls how classified pages are grouped i
 ```yaml
 classification:
   sectionSplitting: disabled
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 ```
 
 **Result:**
@@ -567,7 +709,7 @@ This voting behavior addresses [Issue #167](https://github.com/aws-solutions-lib
 ```yaml
 classification:
   sectionSplitting: page
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 ```
 
 **Result:**
@@ -593,7 +735,7 @@ This strategy directly addresses [Issue #146](https://github.com/aws-solutions-l
 ```yaml
 classification:
   sectionSplitting: llm_determined  # This is the default
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 ```
 
 **Result:**
@@ -615,7 +757,7 @@ The `sectionSplitting` setting is placed in the classification configuration sec
 ```yaml
 classification:
   model: us.amazon.nova-pro-v1:0
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
   sectionSplitting: page  # Options: disabled, page, llm_determined
   maxPagesForClassification: "ALL"
   temperature: "0.0"
@@ -835,36 +977,155 @@ OCR → classification (LLM + optional regex) → extraction → assessment
 ships at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
-## Choosing Between Classification Methods
+## Two-stage classification: segmentation, then labeling
 
-When deciding between Text-Based Holistic Classification and MultiModal Page-Level Classification with Sequence Segmentation, consider these factors:
+`strategy: two_stage` splits the two jobs into two calls. The single-pass
+behaviour stays the default.
 
-### Use Text-Based Holistic Classification When:
-- Documents have clear logical boundaries based on content
-- Text context spans multiple pages and requires understanding the full document
-- You have access to high-context models (e.g. `us.anthropic.claude-sonnet-4-6:1m`)
-- Document packets are relatively small (within model context limits)
-- Visual elements are less important than textual continuity
+```
+packet ──► Stage A: segmentation ──► segments {start_page, end_page}
+                                        │
+                                        ▼
+           Stage B: labeling  ──────► segments {start_page, end_page, class, confidence}
+                                        │
+                                        ▼
+                     section forming, HITL, extraction (unchanged)
+```
 
-### Use MultiModal Page-Level Classification with Sequence Segmentation When:
-- **Document packets contain multiple documents of the same type** (e.g., multiple invoices)
-- **Visual layout and image content are important for classification**
-- **You need to process very large document packets** that might exceed context limits
-- **Documents have clear visual boundaries** (headers, footers, different layouts)
-- **You want to leverage both text and image information** for better accuracy
-- **Processing speed is important** (parallel page processing is possible)
+A single-pass call does two different jobs at once, and pays for it in two ways.
+**Every boundary decision carries the whole class vocabulary** — the class list,
+every description and every few-shot example — although finding a boundary does
+not depend on any of it; at page granularity that prefix is paid once per page.
+And **labeling scales with pages rather than documents**: a 40-page statement is
+labeled forty times to produce one answer.
+
+```yaml
+classification:
+  strategy: two_stage
+  granularity: packet          # Stage A honours this, and modality, and windowing
+  segmentation:                # Stage A
+    model: ""                  # empty = classification.model
+    boundary_hints: none       # or class_names (names only, no descriptions)
+  labeling:                    # Stage B
+    method: llm
+    model: ""
+    pages: first_k             # first | first_k | all
+    k: "2"
+```
+
+Stage A reuses `granularity`, `modality`, `image.*`, `contextPagesCount` and
+`packet.window_pages` / `overlap_pages` — the same call shape as single-pass,
+asked a smaller question. At packet granularity it is one call (or one per
+window) asking for page ranges; at page granularity it is one call per page
+asking only `start` or `continue`, which still makes N calls but drops the
+prefix from each.
+
+Stage B is **one call per segment**, over the pages `labeling.pages` selects.
+`first_k` is the default because a document's identity is almost always on its
+opening pages, while `all` makes labeling a long segment cost what page-level
+classification cost to classify it.
+
+Three things worth knowing:
+
+- **Either stage can name its own model.** That is most of the point: boundary
+  detection may want a capable multimodal model looking at a whole packet, while
+  labeling a clean segment is often a much easier problem a cheaper model
+  answers just as well.
+- **The halves are metered separately**, as `Segmentation/...` and
+  `Labeling/...` in the cost table and the reporting database, while
+  `single_pass` keeps `Classification/...` with unchanged units. That split is
+  what makes "is this actually cheaper on my documents?" answerable from the
+  cost table rather than from arithmetic.
+- **A document-name regex match skips Stage B entirely.** The name already
+  asserts the class, so a name-matched 40-page packet costs its boundary calls
+  and no labeling calls at all.
+
+A segment whose labeling call fails keeps **no class** and is reported in the
+document's errors. Its boundaries are still good, and an invented class would
+propagate into extraction as though it had been decided.
+
+`labeling.method` ships with one value, `llm`. Embeddings-based labeling and
+external classifier endpoints (SageMaker, a Bedrock custom model, or a Lambda
+adapter in front of anything else) are described in
+[issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329);
+both need measurement on real documents before their defaults — which embeddings
+model, text or image or both, how many exemplars a class needs — can be set
+honestly. The enum exists now so adding a value later is not a breaking change.
+
+### Telling a wrong boundary from a wrong label
+
+`split_accuracy_without_order` requires a predicted section to match on **both**
+its page set and its class, so a wrong boundary and a wrong label are reported
+as the same failure — and those two call for different fixes. The evaluation
+report now also carries the two halves:
+
+| Metric | Means |
+|---|---|
+| `boundary_accuracy` | Ground-truth sections whose exact page set a predicted section matched, ignoring class |
+| `label_accuracy` | Of those, the fraction whose class also matched |
+
+The decomposition is exact: `split_accuracy_without_order =
+boundary_accuracy × label_accuracy`. `label_accuracy` is reported as *not
+scored* rather than `0.0` when no section's boundaries matched — "we never got
+far enough to judge the labels" is a different fact from "every label was
+wrong", and that is the pair of readings the split exists to keep apart. Both
+are computed for `single_pass` too.
+
+## Choosing granularity, modality and strategy
+
+### Use `granularity: packet` when
+
+- **Boundaries depend on seeing the packet**, not on each page in isolation —
+  continuing narratives, numbered sections, a cover sheet whose role is only
+  clear from what follows it.
+- **Classification cost is a large share of the bill.** Packet granularity pays
+  the prefix and the output once instead of per page, which matters most on long
+  packets with few sections.
+- The packet fits the window you set, or you are happy to window it. Set
+  `packet.window_pages` rather than relying on a model's context size.
+
+### Use `granularity: page` when
+
+- **Document packets contain multiple documents of the same type** and the
+  boundary cue is a per-page detail (a restarting page number, a repeated
+  header) that a per-page verdict catches reliably.
+- **Processing speed matters**: pages are classified in parallel, so a long
+  packet's wall-clock cost is roughly one call rather than N.
+- You want a per-page confidence score. Packet granularity scores per *segment*,
+  which is a coarser signal for HITL routing.
+
+### Modality
+
+- **Both on** (the default) is the right starting point: layout and text each
+  carry boundary and class evidence the other does not.
+- **`images: false`** is the lever for image-dominated cost, and the one to
+  reach for first — it is usually a far larger saving than anything else here.
+  Measure the accuracy cost on your own documents; on clean text documents it is
+  often nil.
+- **`text: false`** suits scans whose OCR is poor enough to mislead, and
+  requires a real OCR backend only if you still want the page-content regex
+  shortcut (which reads the text even when it is not sent).
+
+### Strategy
+
+- **`single_pass`** for single-page files and short packets, where two-stage
+  adds a call to save a prefix that was only paid once.
+- **`two_stage`** for long documents with few sections, when you want to use a
+  cheaper model for labeling than for boundary detection, or when you need to
+  know whether your section errors are boundary errors or label errors.
 
 ### Comparison Table
 
-| Feature | Text-Based Holistic | MultiModal Page-Level with Sequence Segmentation |
-|---------|-------------------|--------------------------------------------------|
-| Context Awareness | Full document context | Page-level with boundary detection |
-| Multi-document Packets | Good | Excellent (handles same-type documents) |
-| Visual Processing | Text only | Text + Images |
-| Model Requirements | High-context models | Standard models |
-| Processing Speed | Sequential | Can be parallelized |
-| Boundary Detection | Content-based | BIO-like tagging |
-| Large Documents | Limited by context | No practical limit |
+| | `page` | `packet` |
+|---|---|---|
+| Calls per document | N (one per page) | 1, or ⌈N / `window_pages`⌉ |
+| Context when deciding a boundary | One page, plus `contextPagesCount` neighbours | The whole packet (or window) |
+| Prefix cost | Paid per page | Paid once per call |
+| Image tokens | Same | Same |
+| Confidence unit | Per page | Per segment |
+| Parallelism | Pages run concurrently | Windows run in sequence |
+| Large packets | No practical limit | Windowed; `window_pages: 0` is limited by context |
+| Multi-document packets of one type | Excellent (per-page `start` verdict) | Good, and improving with a packet view |
 
 ## Customizing Classification in Pattern 2
 
@@ -1648,7 +1909,7 @@ For multi-class configurations using page-level classification, you can use page
 
 ```yaml
 classification:
-  classificationMethod: multimodalPageLevelClassification
+  granularity: page
 
 classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"

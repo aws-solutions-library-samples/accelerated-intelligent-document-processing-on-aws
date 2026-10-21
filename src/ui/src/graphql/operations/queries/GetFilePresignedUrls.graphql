@@ -1,0 +1,9 @@
+query GetFilePresignedUrls($files: [FilePresignRequest!]!) {
+  getFilePresignedUrls(files: $files) {
+    results {
+      s3Uri
+      presignedUrl
+      contentType
+    }
+  }
+}

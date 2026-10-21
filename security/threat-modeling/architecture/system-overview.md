@@ -22,7 +22,7 @@
 > `template.yaml`, `nested/api-resolvers/template.yaml`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor
 > source rather than edited in place. The main user pool has **five** groups (an
-> `Annotator` group scoped by `allowedTestSets`); **123** operations are routable
+> `Annotator` group scoped by `allowedTestSets`); **161** operations are routable
 > through the dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover,
 > including the absence of a default deny at the dispatcher; §5.2 covers the two
@@ -103,7 +103,7 @@ flowchart TD
 | **Document Queue** | Amazon SQS (17 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
 | **Event Routing** | Amazon EventBridge | S3 events → Lambda, Step Functions status tracking |
 | **Workflow Orchestration** | AWS Step Functions (4 state machines) | Multi-step document processing, agentic shard Distributed Map |
-| **Document Tracking** | Amazon DynamoDB (12 tables) | Documents, Configuration, Users, Metering, ChatSessions, ChatMessages, Agents, TestSets, etc. |
+| **Document Tracking** | Amazon DynamoDB (13 tables) | Documents, Configuration, Users, Metering, ChatSessions, ChatMessages, Agents, TestSets, Notifications (each user's Inbox, `NotificationsTable`), etc. |
 | **UI API Layer** | **Amazon API Gateway REST** (`POST /op/{field}`) | Single Cognito-authorized route + dispatcher to resolver Lambdas |
 | **Chat Streaming** | **AWS Lambda Function URL** (`AuthType=AWS_IAM`, `RESPONSE_STREAM`) | SSE token-delta streaming for the two chat flows |
 | **Jobs API** (optional) | Amazon API Gateway REST (PRIVATE) | `EnableJobsApi=true`: `/jobs` endpoints for machine-to-machine batch submission |
@@ -279,45 +279,57 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
 
-**123 operations** are routable — 40 mapped directly by the
+**161 operations** are routable — 42 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **73** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **109** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 124, not 123, because one field (`getCircuitBreakerStatus`)
+three sets sum to 162, not 161, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 123, which is exactly the number of entries in
+union is 161, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
 | Admin + Author | 42 |
-| Admin only | 24 |
-| Any assigned group, whichever one (`ANY_GROUP`) | 18 |
+| Admin only | 38 |
+| Any assigned group, whichever one (`ANY_GROUP`) | 27 |
 | Admin + Author + Viewer | 15 |
 | Any authenticated user, group or no group (`ANY`) | 8 |
-| Admin + Annotator + Author | 7 |
+| Admin + Annotator + Author | 10 |
+| Admin + Annotator | 12 |
 | Admin + Annotator + Reviewer | 4 |
 | Admin + Reviewer | 2 |
 | Admin + Annotator + Author + Viewer | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
 
 `ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
-group added there joins those 18 without an edit per operation; what they refuse is a
+group added there joins those 27 without an edit per operation; what they refuse is a
 caller an administrator has not placed in any group, which domain-scoped self-signup
 produces. Every document read is in that set, including the ones that return an object
 key, an `s3://` URI, a list of extracted attribute names or a model-written page
 description rather than a value, because those compose into one chain that was measured
-running end to end for a groupless caller. ⚠️ That is a check on the **API**.
+running end to end for a groupless caller. ⚠️ That is a check on the **API**, and the
+**document** bytes are behind it rather than beside it.
 `CognitoIdentityPoolSetRole` attaches one `authenticated` role with no `RoleMappings`,
-and it grants `s3:GetObject` and `s3:ListBucket` on the document buckets to every
-authenticated user irrespective of group, so the **document** bytes are not behind this
-distribution (see UI.T06 and AUTH.T03). The two buckets partitioned per user —
-Configuration and Test Set — are deliberately not on that role, so the
-configuration-revision store and the test-set documents are reachable only through a
-resolver that applies the caller's scope to the key.
+so whatever that role can read is readable by every authenticated user irrespective of
+group, with no resolver in the path to apply a check of any kind — which is why it
+grants **nothing** on the document buckets, **no** `s3:GetObject`,
+`s3:GetObjectVersion` or `s3:ListBucket` on any bucket, and **no** KMS action. Its two
+inline policies are `lambda:InvokeFunction` on the chat-streaming Function URL and
+`ssm:GetParameter` on the settings parameter. A document read is therefore an API call
+— `getFileContents`, `getFilePresignedUrl` or `getFilePresignedUrls`, each declared
+`ANY_GROUP` — so the distribution above does bound the bytes (see UI.T06 and
+AUTH.T03). The two buckets partitioned per user — Configuration and Test Set — are
+absent from that role for the same reason, so the configuration-revision store and the
+test-set documents are likewise reachable only through a resolver that applies the
+caller's scope to the key. ⚠️ What the distribution does **not** supply is
+per-document authorization: on the document buckets the resolver matches the owning
+document's `ConfigVersion` against the caller's `allowedConfigVersions`, which refuses
+a *scoped* caller a document outside their profiles and refuses an *unscoped* one
+nothing, scoping being opt-in per user, and document ownership is not modelled at all.
 
-Beyond the group check, **18** operations verify config-version scope, **5** filter
-their result rows by it, and **9** verify per-object ownership.
+Beyond the group check, **26** operations verify config-version scope, **9** filter
+their result rows by it, and **17** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
@@ -410,6 +422,7 @@ over-admission. See SDK.T04.
 | Configuration | Internal | S3 Config Bucket, DynamoDB | SSE-KMS (stack CMK); DynamoDB SSE-KMS |
 | User credentials | Restricted | Cognito | AWS-managed encryption |
 | Chat conversations | Customer Confidential | DynamoDB | DynamoDB SSE-KMS (stack CMK) + TTL |
+| Inbox messages and preferences | Customer Confidential | DynamoDB (`NotificationsTable`, partitioned per user) | DynamoDB SSE-KMS (stack CMK) + TTL |
 | **PII redaction mappings** | **Restricted** | DynamoDB (feature-owned table) | **SSE with CMK; opt-in storage only** |
 | Reporting data | Customer Confidential | S3 Reporting Bucket (Parquet) | SSE-KMS (stack CMK) |
 | Test sets + ground truth | Customer Confidential | S3 TestSetBucket | SSE-KMS (stack CMK) |

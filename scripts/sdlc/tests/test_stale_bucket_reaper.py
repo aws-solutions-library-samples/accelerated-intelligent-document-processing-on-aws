@@ -362,11 +362,16 @@ def test_a_per_bucket_delete_failure_stays_best_effort(cbd, monkeypatch, capsys)
 def test_a_sweep_abandoned_part_way_is_a_finding_too(cbd, monkeypatch):
     """Iteration giving out mid-selection leaves buckets unconsidered.
 
-    A naive `CreationDate` is the live shape — subtracting it from an aware
-    `now` raises a TypeError, which under the single blanket `except` abandoned
-    the whole sweep and printed the same warning as a denial. Partial is not
-    clean, so it reports for the same reason enumeration does; the remaining
-    buckets were never looked at.
+    Partial is not clean, so it reports for the same reason enumeration does:
+    the buckets after the one that broke were never looked at, and the sweep
+    cannot be read as one that enumerated and found nothing.
+
+    The vehicle is a listing entry that is not a mapping, which is synthetic —
+    the shape that used to arrive here was an undateable `CreationDate`, and
+    `_listing_age_seconds` now answers None for it so that one is a single
+    skipped bucket (see the test below) rather than an abandoned sweep. What is
+    pinned here is the handler, not any particular way of reaching it, so a
+    vehicle that still raises mid-selection keeps the claim intact.
     """
     old = cbd.IDP_BUCKET_STALE_AGE_SECONDS + 3600
     client, _ = _install(
@@ -375,12 +380,46 @@ def test_a_sweep_abandoned_part_way_is_a_finding_too(cbd, monkeypatch):
         buckets=[("idp-0709-160356-inputbucket-abc", old)],
         live_stacks=[],
     )
+    now = datetime.now(tz=timezone.utc)
     monkeypatch.setattr(
         client,
         "list_buckets",
         lambda: {
             "Buckets": [
-                # Naive datetime: no tzinfo, so the age computation raises.
+                {
+                    "Name": "idp-0709-160356-inputbucket-abc",
+                    "CreationDate": now - timedelta(seconds=old),
+                },
+                # Not a mapping, so selection raises before the delete pass and
+                # the bucket above is never attempted.
+                "idp-0709-160357-inputbucket-def",
+            ]
+        },
+    )
+
+    findings = cbd.cleanup_stale_idp_buckets()
+
+    assert findings
+    assert all(f.startswith(cbd.STALE_BUCKET_SWEEP_FINDING) for f in findings)
+    assert client.deleted == []
+
+
+def test_a_bucket_whose_age_cannot_be_established_is_skipped_not_reaped(
+    cbd, monkeypatch, capsys
+):
+    """A naive `CreationDate` is one skipped bucket, not a reaped one (#1445).
+
+    Both halves matter. The bucket is kept, because an age that cannot be
+    established is not the same claim as being old enough to delete and this
+    path empties the bucket before deleting it; and the sweep still completes,
+    because every bucket the listing returned was considered.
+    """
+    client, _ = _install(cbd, monkeypatch, buckets=[], live_stacks=[])
+    monkeypatch.setattr(
+        client,
+        "list_buckets",
+        lambda: {
+            "Buckets": [
                 {
                     "Name": "idp-0709-160356-inputbucket-abc",
                     "CreationDate": datetime(2026, 1, 1),  # noqa: DTZ001
@@ -391,9 +430,13 @@ def test_a_sweep_abandoned_part_way_is_a_finding_too(cbd, monkeypatch):
 
     findings = cbd.cleanup_stale_idp_buckets()
 
-    assert findings
-    assert all(f.startswith(cbd.STALE_BUCKET_SWEEP_FINDING) for f in findings)
+    assert findings == []
     assert client.deleted == []
+    out = capsys.readouterr().out
+    assert "idp-0709-160356-inputbucket-abc" in out
+    assert "age not establishable" in out
+    # Not misreported as the routine case, which needs no attention.
+    assert "younger than the age gate" not in out
 
 
 # ---------------------------------------------------------------------------

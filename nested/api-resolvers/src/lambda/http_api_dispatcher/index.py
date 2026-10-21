@@ -242,15 +242,19 @@ def _load_field_function_map() -> Dict[str, str]:
 FIELD_FUNCTION_MAP: Dict[str, str] = _load_field_function_map()
 
 # Field aliases: fields served by the SAME resolver Lambda as another field.
-# Kept out of FIELD_FUNCTION_MAP (the SSM parameter that carries it) because
-# that parameter is at the 8 KB Advanced-tier ceiling — one map entry per
-# GraphQL field (rather than per unique resolver Lambda) would duplicate the
-# same ARN/name dozens of times and overflow it (worse in GovCloud, where
-# arn:aws-us-gov:... is longer than arn:aws:...). Each alias's resolver
+# Kept out of FIELD_FUNCTION_MAP (the SSM parameter that carries it): one map
+# entry per unique resolver Lambda, not per GraphQL field. Advanced-tier SSM
+# value limit is 8,192 bytes; the resolved worst case is checked by
+# scripts/tests/test_http_api_field_map_size.py. Route additional fields of an
+# existing Lambda through FIELD_ALIASES. Each alias's resolver
 # branches on the GraphQL `fieldName`, which the normalized event carries
 # regardless of which field name routed to it.
 FIELD_ALIASES: Dict[str, str] = {
     "getFilePresignedUrl": "getFileContents",
+    # Both presign fields alias the same resolver, which dispatches on fieldName.
+    # An alias rather than a FIELD_FUNCTION_MAP entry for the reason stated below:
+    # HttpApiFieldFunctionMap is already at its 8 KB Advanced-tier ceiling.
+    "getFilePresignedUrls": "getFileContents",
     "listSampleDocuments": "uploadDocument",
     "uploadSampleDocument": "uploadDocument",
     # addDocumentsToTestSet (TestSetResolverFunction)
@@ -263,8 +267,17 @@ FIELD_ALIASES: Dict[str, str] = {
     "deleteTestSets": "addDocumentsToTestSet",
     "estimateReviewEffort": "addDocumentsToTestSet",
     "getAnnotationQueue": "addDocumentsToTestSet",
-    # Single hop to a real SSM map entry: HttpApiFieldFunctionMap is at its 8 KB
-    # Advanced-tier ceiling, so a new key would overflow the parameter.
+    "assignTestSetDocuments": "addDocumentsToTestSet",
+    "unassignTestSetDocuments": "addDocumentsToTestSet",
+    "listMyTestSetTasks": "addDocumentsToTestSet",
+    "listTestSetQueues": "addDocumentsToTestSet",
+    "saveTestSetDocumentSection": "addDocumentsToTestSet",
+    "skipTestSetDocument": "addDocumentsToTestSet",
+    "claimTestSetDocument": "addDocumentsToTestSet",
+    "updateTestSetQueue": "addDocumentsToTestSet",
+    # Single hop to a real SSM map entry (aliases do not chain). Advanced-tier
+    # SSM value limit is 8,192 bytes; the resolved worst case is checked by
+    # scripts/tests/test_http_api_field_map_size.py.
     "openTestSetAnnotationDraft": "addDocumentsToTestSet",
     "generateDraftLabels": "addDocumentsToTestSet",
     "getDraftLabelJob": "addDocumentsToTestSet",
@@ -338,6 +351,36 @@ FIELD_ALIASES: Dict[str, str] = {
     "listFinetuningJobs": "createFinetuningJob",
     # sendTestRunToReview (TestRunnerFunction)
     "sendTestRunToReview": "startTestRun",
+    # listInboxMessages (NotificationsResolverFunction)
+    "getInboxUnreadCount": "listInboxMessages",
+    "getInboxPreferences": "listInboxMessages",
+    "markInboxMessages": "listInboxMessages",
+    "markAllInboxMessagesRead": "listInboxMessages",
+    "deleteInboxMessages": "listInboxMessages",
+    "clearReadInboxMessages": "listInboxMessages",
+    "updateInboxPreferences": "listInboxMessages",
+    # getMyReviewQueues (ReviewQueuesResolverFunction)
+    "listReviewQueueItems": "getMyReviewQueues",
+    "listMyReviewWork": "getMyReviewQueues",
+    "getReviewItem": "getMyReviewQueues",
+    "claimReviewItem": "getMyReviewQueues",
+    "claimNextReviewItem": "getMyReviewQueues",
+    "renewReviewLease": "getMyReviewQueues",
+    "releaseReviewItem": "getMyReviewQueues",
+    "saveReviewDraft": "getMyReviewQueues",
+    "completeReviewItem": "getMyReviewQueues",
+    "rejectReviewItem": "getMyReviewQueues",
+    "removeReviewItem": "getMyReviewQueues",
+    "getReviewQueuesOverview": "getMyReviewQueues",
+    "forceReleaseReviewItem": "getMyReviewQueues",
+    "reassignReviewItem": "getMyReviewQueues",
+    "takeOverReviewItem": "getMyReviewQueues",
+    "moveReviewItem": "getMyReviewQueues",
+    "listReviewQueues": "getMyReviewQueues",
+    "listAnnotators": "getMyReviewQueues",
+    "createReviewQueue": "getMyReviewQueues",
+    "updateReviewQueue": "getMyReviewQueues",
+    "deleteReviewQueue": "getMyReviewQueues",
 }
 
 

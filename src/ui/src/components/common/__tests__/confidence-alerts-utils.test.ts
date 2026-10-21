@@ -77,3 +77,38 @@ describe('getFieldConfidenceInfo decomposed-string aggregation', () => {
     expect(info.confidence).toBe(0.7);
   });
 });
+
+describe('getFieldConfidenceInfo entry resolution', () => {
+  const scored = { confidence: 0.9, confidence_threshold: 0.8 };
+
+  it('resolves a primitive list item, whose name is its index', () => {
+    // The renderer names a primitive list item `[0]` and puts the index in the
+    // path, so the navigation has already reached the element: looking for a
+    // child key called "[0]" finds nothing, and the field reads as never
+    // assessed. `Keywords: ['alpha']` is the shape.
+    const info = getFieldConfidenceInfo('[0]', [{ Keywords: [scored] }], ['Keywords', 0], null);
+    expect(info.hasEntry).toBe(true);
+    expect(info.confidence).toBe(0.9);
+  });
+
+  it('resolves a named field inside a list row unchanged', () => {
+    // Array items that are objects were never affected — their leaves are named
+    // fields — and must stay that way.
+    const info = getFieldConfidenceInfo('Cell', [{ Rows: [{ Cell: scored }] }], ['Rows', 0], null);
+    expect(info.hasEntry).toBe(true);
+  });
+
+  it('reports no entry for a field that is genuinely absent', () => {
+    // The distinction the caller draws between "assessed" and "skipped" depends
+    // on this staying false.
+    expect(getFieldConfidenceInfo('Absent', [{ Other: scored }], [], null).hasEntry).toBe(false);
+  });
+
+  it('reports an entry that carries no usable confidence number', () => {
+    // Assessed at a finer granularity: an entry exists, with sub-field
+    // confidences and none of its own.
+    const nested = { Sub_one: scored, Sub_two: scored };
+    const info = getFieldConfidenceInfo('Field', [{ Field: nested }], [], null);
+    expect(info.hasEntry).toBe(true);
+  });
+});

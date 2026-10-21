@@ -1,7 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import hashlib
 import json
 import logging
 import os
@@ -17,10 +16,21 @@ from botocore.exceptions import BotoCoreError, ClientError
 from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
+from idp_common.utils.execution_names import (  # noqa: F401 — re-exported
+    _EXECUTION_NAME_MAX_LEN,
+    _EXECUTION_NAME_UNSAFE,
+    execution_name_for,
+)
+from idp_common.utils.execution_names import execution_arn_for as _execution_arn_for
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.transient_errors import is_transient_error
 
 patch_all()
+
+# Same pattern as idp_common.review_queues.finalize.FINALIZE_TOKEN_RE; kept local
+# here so the handler (and its hermetic tests, which stub idp_common) needs no
+# review_queues import on its hot path.
+_FINALIZE_TOKEN_RE = re.compile(r"^rvw-[0-9a-f]{32}$")
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -116,14 +126,6 @@ COUNTER_CONFLICT_BASE_DELAY_SECONDS = float(
     os.environ.get("COUNTER_CONFLICT_BASE_DELAY_SECONDS", "0.2")
 )
 
-# Step Functions execution names: 1-80 chars, no whitespace, brackets, wildcards
-# or the characters " # % \ ^ | ~ ` $ & , ; : /. The name also becomes the last
-# ARN segment, which document_versions.build_run_id and the classification cache
-# key both take with ``split(":")[-1]``, so it is kept to a set that is safe in
-# an S3 key and a DynamoDB sort key as well.
-_EXECUTION_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-_EXECUTION_NAME_MAX_LEN = 80
-
 
 class ExecutionAlreadyStarted(Exception):
     """StartExecution was refused because this message already started a workflow.
@@ -142,50 +144,9 @@ class ExecutionAlreadyStarted(Exception):
         self.execution_arn = execution_arn
 
 
-def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
-    """Derive the idempotent execution name for one SQS message.
-
-    SQS is at-least-once: a message whose StartExecution succeeded is redelivered
-    whenever the invocation that handled it dies before it can report the batch
-    outcome (issue #904 saw one message delivered 24 times and started 6 times).
-    Step Functions refuses a second StartExecution with the same name for 90
-    days, so naming the execution after the message turns every redelivery into
-    a harmless ``ExecutionAlreadyExists``.
-
-    The message id, not the document, is the key: the same object re-uploaded,
-    reprocessed from the UI or re-run through the SDK is a NEW message and must
-    get a new execution, while every redelivery of one message carries the same
-    id. A human-readable prefix from the object's basename is kept so the
-    Step Functions console still reads like a document list.
-
-    Returns None when there is no message id (a direct invocation), in which case
-    Step Functions assigns a name and duplicate protection does not apply.
-    """
-    if not message_id:
-        return None
-    token = message_id
-    if _EXECUTION_NAME_UNSAFE.search(token) or len(token) > 64:
-        token = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
-    basename = (input_key or "").rsplit("/", 1)[-1]
-    prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
-    room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
-    prefix = prefix[:room].rstrip("-.")
-    # Preserve the "looks like a document list" property in the Step
-    # Functions console even for basenames that yield no allowed chars
-    # (e.g. all-emoji filenames, extension-only basenames like ``.pdf``).
-    # A bare token — 32-char sha1 or 36-char UUID — is uninformative and
-    # loses the browse-by-name affordance the prefix exists for. Fall
-    # back to a generic ``doc-`` prefix so the execution row still reads
-    # as "some document" rather than "some hash".
-    return f"{prefix}-{token}" if prefix else f"doc-{token}"
-
-
 def execution_arn_for(execution_name: str) -> str:
     """The ARN Step Functions gives an execution of our state machine by name."""
-    return (
-        state_machine_arn.replace(":stateMachine:", ":execution:", 1)
-        + f":{execution_name}"
-    )
+    return _execution_arn_for(state_machine_arn, execution_name)
 
 
 def ack_message(receipt_handle: str) -> bool:
@@ -228,28 +189,69 @@ def update_counter(increment: bool = True) -> bool:
     the same shape the tracker's decrement uses, and deliberately conservative:
     the real conflict rate is unmeasured (this change is not deploy-validated).
 
+    Both directions are conditional, and on DIFFERENT conditions: the increment
+    refuses to cross ``MAX_CONCURRENT`` and the decrement refuses to cross zero.
+    Each supplies only the expression value its own condition references — see
+    the comment below, which is the defect that made that worth spelling out.
+
+    Two guards cover this function, and they prove different things.
+    ``scripts/tests/test_dynamodb_unused_expression_values.py`` reads the pairing
+    below out of the source: a value supplied in a branch needs an expression
+    referencing it in that branch or above it, so hoisting either
+    ``ExpressionAttributeValues`` line out of its ``if`` fails that gate (#1461 —
+    it used to decline this shape, which left the call site it was written for
+    outside its reach). ``test_counter_decrement.py`` drives both directions
+    against a real expression engine, which is what catches a defect no source
+    reading can see — the condition itself being wrong, or the wrong value
+    reaching it.
+
     Args:
         increment: Whether to increment (True) or decrement (False) the counter
 
     Returns:
-        bool: True if update successful, False if at limit
+        bool: True if the write landed. False if its condition refused it: at
+        ``MAX_CONCURRENT`` for an increment, at zero for a decrement. Callers
+        act on the increment's answer (it is the admission decision); a refused
+        decrement is logged, because the slot it would have released is not held
+        and there is nothing for the caller to do differently.
 
     Raises:
         ClientError: If DynamoDB operation fails
     """
     logger.info(f"Updating counter: increment={increment}, max={MAX_CONCURRENT}")
-    update_args = {
+    update_args: Dict[str, Any] = {
         "Key": {"counter_id": COUNTER_ID},
         "UpdateExpression": "ADD active_count :inc",
-        "ExpressionAttributeValues": {
-            ":inc": 1 if increment else -1,
-            ":max": MAX_CONCURRENT,
-        },
+        "ExpressionAttributeValues": {":inc": 1 if increment else -1},
         "ReturnValues": "UPDATED_NEW",
     }
 
+    # ``:max`` is supplied ONLY on the path that references it. DynamoDB rejects
+    # an UpdateItem carrying an expression value no expression mentions, with
+    # ``ValidationException: Value provided in ExpressionAttributeValues unused
+    # in expressions``. Supplying it unconditionally therefore made every
+    # DECREMENT fail — the increment path was fine, because its
+    # ``ConditionExpression`` referenced it — so both compensating decrements in
+    # ``process_message`` leaked a slot each time they ran, and a repeatedly
+    # redelivered message could walk the counter up to ``MAX_CONCURRENT`` and
+    # block admission entirely until ``reconcile_counter`` or an operator
+    # corrected it (issue #1358).
     if increment:
         update_args["ConditionExpression"] = "active_count < :max"
+        update_args["ExpressionAttributeValues"][":max"] = MAX_CONCURRENT
+    else:
+        # The same floor the tracker's decrement carries (issue #915), and it
+        # matters here for the first time: until the ``:max`` defect above was
+        # fixed this write never landed at all. ``ADD active_count :inc`` with
+        # ``:inc = -1`` is unconditional arithmetic, so a hand-back racing a
+        # ``reconcile_counter`` reset — or any decrement the counter has already
+        # accounted for — drives it NEGATIVE. Admission is ``active_count <
+        # :max``, so every unit below zero permanently raises the effective
+        # ceiling above MaxConcurrentWorkflows, and the only thing that notices
+        # is ``_repair_if_counter_was_negative`` on some later increment.
+        # Refusing the write is the safe direction: the slot stays released.
+        update_args["ConditionExpression"] = "active_count > :zero"
+        update_args["ExpressionAttributeValues"][":zero"] = 0
 
     last_conflict: Optional[ClientError] = None
     for attempt in range(1, COUNTER_CONFLICT_MAX_ATTEMPTS + 1):
@@ -266,7 +268,29 @@ def update_counter(increment: bool = True) -> bool:
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code")
             if code == "ConditionalCheckFailedException":
-                logger.warning("Concurrency limit reached")
+                # Direction-aware: the two paths now carry DIFFERENT conditions,
+                # and the same message for both would report a counter at its
+                # floor as a counter at its ceiling — the opposite reading, on
+                # the one log line an operator goes looking for when intake
+                # stops.
+                if increment:
+                    logger.warning("Concurrency limit reached")
+                else:
+                    # "not above zero" rather than "already 0": the condition
+                    # also fails on a counter that is NEGATIVE (from a release
+                    # before this floor existed, or from the tracker's path) and
+                    # on an absent item or attribute. All three mean the same
+                    # thing to the reader — there is no slot here to release.
+                    logger.warning(
+                        "Counter decrement refused: active_count is not above "
+                        "zero, so the slot this hand-back would release is not "
+                        "held. Leaving it rather than driving the counter "
+                        "negative, which would admit work above "
+                        "MaxConcurrentWorkflows. Investigate duplicate delivery "
+                        "of this message, or a counter edited out from under the "
+                        "stack."
+                    )
+                    _emit_concurrency_event_metric("ConcurrencyCounterUnderflow")
                 return False
             if code == "TransactionConflictException":
                 last_conflict = e
@@ -793,6 +817,43 @@ def _emit_counter_active_metric(active: int) -> None:
         logger.warning(f"Could not emit concurrency counter metric: {e}")
 
 
+def _emit_concurrency_event_metric(metric_name: str) -> None:
+    """Publish a single count for an exceptional concurrency-counter event.
+
+    Deliberately the same shape as the workflow tracker's ``_emit_event_metric``:
+    namespace is the stack name and there are no dimensions, so an alarm declared
+    without dimensions fires whichever function published. Two conditions use it.
+
+    ``ConcurrencyCounterUnderflow`` — a hand-back refused because the counter held
+    no slot. The tracker publishes the same name for the same condition on its own
+    decrement, so one alarm covers both and the operator question is identical
+    either way: a slot was released that nobody held.
+
+    ``ConcurrencyCounterUpdateFailed`` — the counter write RAISED, and the caller
+    logged it and carried on. #1358 was not unlogged — both call sites log at
+    ERROR with a traceback — it was UNALARMED: a ``ValidationException`` on every
+    decrement produced a log line and no datapoint, so nothing anyone watches
+    moved while the counter climbed. The refusal case above is now visible; this
+    makes the raising case visible too, which is the shape of the next variant
+    rather than of this one.
+
+    Never allowed to affect the write it reports on.
+    """
+    try:
+        boto3.client("cloudwatch").put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit {metric_name} metric: {e}")
+
+
 def _emit_circuit_breaker_check_failure(classification: str) -> None:
     """Record that the breaker's state could not be read, and how it was judged.
 
@@ -810,9 +871,7 @@ def _emit_circuit_breaker_check_failure(classification: str) -> None:
             MetricData=[
                 {
                     "MetricName": "CircuitBreakerCheckFailed",
-                    "Dimensions": [
-                        {"Name": "Classification", "Value": classification}
-                    ],
+                    "Dimensions": [{"Name": "Classification", "Value": classification}],
                     "Value": 1,
                     "Unit": "Count",
                 }
@@ -1162,7 +1221,9 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
 
 
 def start_workflow(
-    document: Document, execution_name: Optional[str] = None
+    document: Document,
+    execution_name: Optional[str] = None,
+    review_finalize_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Start Step Functions workflow
@@ -1172,6 +1233,9 @@ def start_workflow(
         execution_name: Deterministic name for the execution (see
             ``execution_name_for``). None lets Step Functions pick one, which
             disables duplicate protection.
+        review_finalize_token: A review-queue finalize token; adds
+            ``review.finalizeToken`` to the input so the tracker recognises the
+            finalize run. None (every other message) leaves the input as before.
 
     Returns:
         Dict containing execution details
@@ -1309,6 +1373,8 @@ def start_workflow(
         compressed_document["use_bda"] = False
 
     event = {"document": compressed_document}
+    if review_finalize_token:
+        event["review"] = {"finalizeToken": review_finalize_token}
 
     logger.info(
         f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
@@ -1348,6 +1414,24 @@ def start_workflow(
         raise
 
 
+def review_finalize_token_of(record: Dict[str, Any]) -> Optional[str]:
+    """The ``ReviewFinalizeToken`` message attribute, when valid.
+
+    A review-queue finalize message names its execution from this token instead
+    of the message id, so a re-send by the sweeper collapses into
+    ``ExecutionAlreadyExists`` rather than starting a second finalize run. An
+    invalid value is ignored with a WARNING (today's naming applies).
+    """
+    attribute = (record.get("messageAttributes") or {}).get("ReviewFinalizeToken") or {}
+    token = attribute.get("stringValue")
+    if token is None:
+        return None
+    if isinstance(token, str) and _FINALIZE_TOKEN_RE.match(token):
+        return token
+    logger.warning("Ignoring an invalid ReviewFinalizeToken message attribute")
+    return None
+
+
 def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Process a single SQS message
@@ -1362,6 +1446,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
     """
     message = record["body"]
     message_id = record["messageId"]
+    finalize_token = review_finalize_token_of(record)
     receipt_handle = record.get("receiptHandle", "")
 
     try:
@@ -1449,7 +1534,9 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             # Start workflow with the document
             try:
                 execution = start_workflow(
-                    document, execution_name_for(object_key, message_id)
+                    document,
+                    execution_name_for(object_key, finalize_token or message_id),
+                    review_finalize_token=finalize_token,
                 )
             except ExecutionAlreadyStarted as dup:
                 # An earlier delivery of this same message already started the
@@ -1468,6 +1555,12 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                     logger.error(
                         f"Failed to decrement counter: {counter_error}", exc_info=True
                     )
+                    # Swallowing this is right — the execution exists and the
+                    # message must be acked. What #1358 lacked was not the log
+                    # line above (ERROR, with a traceback) but a DATAPOINT: no
+                    # metric moved while the counter climbed, so nothing anyone
+                    # watches showed the leak.
+                    _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
                 ack_message(receipt_handle)
                 return True, message_id
             workflow_started = True
@@ -1520,6 +1613,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
                 logger.error(
                     f"Failed to decrement counter: {counter_error}", exc_info=True
                 )
+                _emit_concurrency_event_metric("ConcurrencyCounterUpdateFailed")
             return False, message_id
 
     except json.JSONDecodeError as e:

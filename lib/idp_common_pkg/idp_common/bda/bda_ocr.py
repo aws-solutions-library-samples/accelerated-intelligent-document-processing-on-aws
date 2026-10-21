@@ -623,12 +623,14 @@ def delete_ocr_project_by_name(
 
 
 # Geo prefixes used by BDA cross-region data-automation profiles. The naive
-# region.split("-")[0] is wrong for Asia Pacific (ap-* -> "apac", not "ap").
+# region.split("-")[0] is wrong for Asia Pacific (ap-* -> "apac", not "ap") and
+# for Canada: AWS names the Canada (Central) profile na.data-automation-v1 (it also
+# covers ca-west-1 and three US regions); ca.data-automation-v1 is not a valid profile.
 _PROFILE_GEO_PREFIXES = {
     "us": "us",
     "eu": "eu",
     "ap": "apac",
-    "ca": "ca",
+    "ca": "na",
     "sa": "sa",
 }
 

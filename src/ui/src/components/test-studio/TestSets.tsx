@@ -69,6 +69,25 @@ interface TestSetItem {
  */
 const compareByCreatedAt = (a: TestSetItem, b: TestSetItem): number => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
 
+/**
+ * The statuses in which a set's contents are still being written. Mirrors
+ * `IN_FLUX_TEST_SET_STATUSES` in the test-set resolver, plus nothing: the list is
+ * closed, and everything outside it is treated as settled.
+ *
+ * ⚠️ The polarity is the point. Each of these surfaces used to ask `status !==
+ * 'COMPLETED' && status !== 'FAILED'`, which makes an *unrecognised* status
+ * in-flux — so a row that is in fact finished gets disabled (unselectable, so
+ * undeletable, and no link to its detail page) and keeps the 3s poll running
+ * forever. That is not hypothetical: the benchmark harness writes its own
+ * `bench-*` metadata rows straight to the tracking table, said `READY`, and put
+ * 22 permanently disabled rows in this table. Asking the question this way round
+ * means an out-of-band writer, or a status added to the backend before this file
+ * hears about it, degrades to a fully usable row rather than an inert one.
+ */
+export const IN_FLUX_TEST_SET_STATUSES: ReadonlySet<string> = new Set(['QUEUED', 'COPYING', 'GENERATING', 'UPDATING']);
+
+export const isInFlux = (status?: string | null): boolean => IN_FLUX_TEST_SET_STATUSES.has(status || '');
+
 const TestSets = (): React.JSX.Element => {
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
@@ -188,7 +207,7 @@ const TestSets = (): React.JSX.Element => {
         const backendIds = new Set(nonNullBackendTestSets.map((ts) => ts.id));
 
         // Keep UI test sets that don't exist in backend (active processing)
-        const uiOnlyTestSets = prevTestSets.filter((ts) => !backendIds.has(ts.id) && ts.status !== 'COMPLETED' && ts.status !== 'FAILED');
+        const uiOnlyTestSets = prevTestSets.filter((ts) => !backendIds.has(ts.id) && isInFlux(ts.status));
 
         // Combine backend test sets (always win) with UI-only active test sets
         return [...nonNullBackendTestSets, ...uiOnlyTestSets];
@@ -257,7 +276,7 @@ const TestSets = (): React.JSX.Element => {
 
   // Simple polling for active test sets
   React.useEffect(() => {
-    const hasActiveTestSets = testSets.some((testSet) => testSet.status !== 'COMPLETED' && testSet.status !== 'FAILED');
+    const hasActiveTestSets = testSets.some((testSet) => isInFlux(testSet.status));
 
     if (!hasActiveTestSets) {
       console.log('No active test sets, no polling needed');
@@ -408,6 +427,7 @@ const TestSets = (): React.JSX.Element => {
         id: string;
         description?: string;
         documentClassType?: DocumentClassType | null;
+        claimLeaseMinutes?: number | null;
       } = {
         id: selected.id,
         description: editDescription.trim(),
@@ -499,7 +519,11 @@ const TestSets = (): React.JSX.Element => {
     {
       id: 'name',
       header: 'Test Set Name',
-      cell: (item: TestSetItem) => (item.status === 'COMPLETED' ? <Link href={testSetDetailHref(item.id)}>{item.name}</Link> : item.name),
+      // Linked unless the set is still being written, when the detail page would
+      // read a half-copied prefix. A settled set is linked whatever its status
+      // says — including FAILED, whose detail page the Actions menu already
+      // reaches for any single selection, so this adds no new destination.
+      cell: (item: TestSetItem) => (isInFlux(item.status) ? item.name : <Link href={testSetDetailHref(item.id)}>{item.name}</Link>),
       sortingField: 'name',
     },
     {
@@ -662,6 +686,10 @@ const TestSets = (): React.JSX.Element => {
                   { id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
                   { id: 'browse', text: 'Browse documents', disabled: selectedItems.length !== 1 },
                   {
+                    // Exactly COMPLETED here, deliberately not `!isInFlux`: this
+                    // mirrors the resolver's own append guard
+                    // (`_begin_test_set_append` rejects anything else), so widening
+                    // it would only move the refusal to a server-side error.
                     id: 'add-docs',
                     text: 'Add documents',
                     disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED',
@@ -737,7 +765,7 @@ const TestSets = (): React.JSX.Element => {
         selectionType="multi"
         loading={initialLoading}
         loadingText="Loading test sets..."
-        isItemDisabled={(item) => item.status !== 'COMPLETED' && item.status !== 'FAILED'}
+        isItemDisabled={(item) => isInFlux(item.status)}
         empty={
           <Box textAlign="center" color="inherit">
             <b>No test sets</b>

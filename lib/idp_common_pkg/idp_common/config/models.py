@@ -52,8 +52,12 @@ from typing_extensions import Self
 # and introduced the top-level `hitl` block. v0.7 moved
 # `extraction.agentic.validation` up to `extraction.validation`, because simple
 # extraction now runs the same validate-and-retry path and the knob is no longer
-# agentic-only.
-CONFIG_FORMAT_VERSION = "0.7"
+# agentic-only. v0.8 removed `classification.classificationMethod`, whose two
+# values each bundled two independent choices, in favour of
+# `classification.granularity` plus `classification.modality`; a holistic
+# configuration also has its hand-written flat prompts copied into
+# `classification.packet`, which is where packet granularity reads them.
+CONFIG_FORMAT_VERSION = "0.8"
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -88,6 +92,32 @@ def _parse_required_int(v: Any, info: ValidationInfo, cls: type) -> int:
         default = cls.model_fields[info.field_name].default
         return int(default) if default is not None else 0
     return int(v)
+
+
+def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
+    """Parse a whole number from an int, a numeric string or an integral float.
+
+    The Configuration editor saves ``type: number`` fields as numbers, and stored
+    records are stringified (``"30"``, ``"30.0"``). Empty/None falls back to the
+    field's declared default. Fractions (``30.5``), non-numeric strings and
+    booleans are rejected with ``ValueError``.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return int(cls.model_fields[info.field_name].default)
+    if isinstance(v, bool):
+        raise ValueError("must be a whole number, not a boolean")
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            v = float(v.strip())
+        except ValueError:
+            raise ValueError(f"must be a whole number, got {v!r}") from None
+    if isinstance(v, float):
+        if not v.is_integer():
+            raise ValueError(f"must be a whole number, got {v!r}")
+        return int(v)
+    raise ValueError(f"must be a whole number, got {type(v).__name__}")
 
 
 class ImageConfig(BaseModel):
@@ -490,8 +520,9 @@ class ForcedToolConfig(BaseModel):
             "response SHAPE, not the values in it, so it is not self-evidently an "
             "improvement and is gated on a measured win. Models that cannot carry "
             "a toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced "
-            "toolChoice (Claude Opus 5.5) fall back to the prompt automatically, "
-            "and the reason is recorded in the section metadata. "
+            "toolChoice (Claude Opus 5.5, Claude Sonnet 5.5) fall back to the "
+            "prompt automatically, and the reason is recorded in the section "
+            "metadata. "
             "Property names Bedrock rejects are sanitized on the way out and "
             "restored on the way back, so no extracted field is renamed."
         ),
@@ -1056,13 +1087,23 @@ class GeometryConfig(BaseModel):
     mode: str = Field(
         default="ocr_only",
         description=(
-            "How field bounding boxes are produced. 'ocr_only' (default): DO NOT "
-            "ask the model for boxes — derive geometry purely by matching each "
-            "extracted value to real OCR lines (pageData.json), disambiguating "
-            "repeated values by row order. Cheaper and more accurate than "
-            "LLM-estimated boxes. 'llm_grounded': the model emits boxes and OCR "
-            "grounding refines them. 'llm': use the model's boxes as-is with no "
-            "grounding. 'off': no geometry is produced at all."
+            "How field bounding boxes are produced. A box locates an extracted "
+            "VALUE on the page, so a field the model returned nothing for is never "
+            "located under any mode. "
+            "'ocr_only' (default): the model is not asked for boxes — each "
+            "extracted value is matched to real OCR lines (pageData.json), "
+            "repeated values disambiguated by row order. No added prompt tokens, "
+            "and more accurate than LLM-estimated boxes. "
+            "'llm_grounded': the model emits boxes and OCR grounding corrects "
+            "them; use this when values are not present verbatim in the OCR text "
+            "(reformatted dates, figures read off a chart) and ocr_only therefore "
+            "matches too little. "
+            "'llm': the model's boxes as-is. DISCOURAGED, and retained only for "
+            "compatibility — it sends the same prompt as llm_grounded and costs "
+            "the same, then skips the correction step, so there is no case where "
+            "it is the better of the two. "
+            "'off': no geometry at all; the viewers stop offering to show fields "
+            "on the page."
         ),
     )
     task_prompt_bbox: str = Field(
@@ -1090,6 +1131,28 @@ class GeometryConfig(BaseModel):
         return v_str
 
 
+class HITLNotificationsConfig(BaseModel):
+    """Inbox message retention and per-user cap (idp_common.notifications)."""
+
+    retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Days an Inbox message is kept before DynamoDB TTL removes it.",
+    )
+    max_per_user: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Messages kept per user; the oldest read message is removed first.",
+    )
+
+    @field_validator("retention_days", "max_per_user", mode="before")
+    @classmethod
+    def parse_whole_number(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_whole_number(v, info, cls)
+
+
 class HITLConfig(BaseModel):
     """Human-in-the-Loop review configuration (v0.6, top-level ``hitl``).
 
@@ -1108,6 +1171,10 @@ class HITLConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description="Confidence threshold below which a field is flagged for review",
+    )
+    notifications: HITLNotificationsConfig = Field(
+        default_factory=HITLNotificationsConfig,
+        description="Inbox message retention and cap. Applies whether or not hitl.enabled is set.",
     )
 
     @field_validator("confidence_threshold", mode="before")
@@ -1504,6 +1571,24 @@ class ClassificationClassConfidenceConfig(BaseModel):
             "splice rules as task_prompt_topk."
         ),
     )
+    task_prompt_topk_packet: str = Field(
+        default="",
+        description=(
+            "The 'topk' block for PACKET granularity. A separate template "
+            "because the unit differs: a page-level call scores one page's "
+            "class, a packet-level call scores each segment it returns, so the "
+            "instruction has to name the key it goes in and the per-segment "
+            "scope. Empty falls back to task_prompt_topk."
+        ),
+    )
+    task_prompt_verbalized_packet: str = Field(
+        default="",
+        description=(
+            "The 'verbalized' block for PACKET granularity, on the same "
+            "per-segment rules as task_prompt_topk_packet. Empty falls back to "
+            "task_prompt_verbalized."
+        ),
+    )
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -1526,6 +1611,371 @@ class ClassificationClassConfidenceConfig(BaseModel):
         if v is None or (isinstance(v, str) and not v.strip()):
             return 3
         return int(v)
+
+
+def _parse_tristate_bool(v: Any, field: str) -> Optional[bool]:
+    """Parse a bool that has a third state: ``None`` meaning "not configured".
+
+    Stored configurations are string-typed (the UI writes strings, and so does
+    DynamoDB), so ``""`` has to mean unset rather than ``False``. Getting that
+    wrong on a modality flag is the difference between "infer from the prompt,
+    as every existing config does" and "send nothing", so an unreadable value
+    raises instead of defaulting either way.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if not s:
+            return None
+        if s in ("true", "yes", "y", "on", "1"):
+            return True
+        if s in ("false", "no", "n", "off", "0"):
+            return False
+        raise ValueError(
+            f"{field} must be true, false, or empty (meaning 'infer from the "
+            f"prompt's placeholders'), got {v!r}"
+        )
+    if isinstance(v, (int, float)):
+        return bool(v)
+    raise ValueError(f"{field} must be a boolean or empty, got {v!r}")
+
+
+class ClassificationModalityConfig(BaseModel):
+    """What each classification call sees: the page's text, its image, or both.
+
+    Both flags are **tri-state**, and ``None`` — the default — means *infer from
+    the prompt's placeholders*, which is precisely what the service did before
+    this setting existed: ``{DOCUMENT_TEXT}`` present meant text was sent and
+    ``{DOCUMENT_IMAGE}`` present meant the image was. Defaulting to ``None``
+    rather than ``True`` is what makes every configuration written before this
+    option a literal no-op, including the documented workaround of deleting a
+    placeholder to get a single modality.
+
+    Setting a flag explicitly takes over from the inference and the prompt is
+    normalised to match: ``images: false`` removes the image placeholder (and so
+    the image), ``images: true`` adds one if the prompt has none. The two
+    directions are logged, because a prompt the operator did not write is a
+    thing they need to be able to see.
+    """
+
+    text: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Send each page's OCR text. Empty (default) infers it from whether "
+            "the task prompt contains {DOCUMENT_TEXT}. Forced to false by an OCR "
+            "backend of 'none', which produces no text to send."
+        ),
+    )
+    images: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Send each page's image. Empty (default) infers it from whether the "
+            "task prompt contains {DOCUMENT_IMAGE}. Usually the largest input "
+            "cost per page (roughly 1.1K-4.8K tokens depending on the model and "
+            "the image size), so turning it off is the main lever on "
+            "image-dominated classification cost."
+        ),
+    )
+
+    @field_validator("text", "images", mode="before")
+    @classmethod
+    def parse_tristate(cls, v: Any, info: ValidationInfo) -> Optional[bool]:
+        return _parse_tristate_bool(v, f"classification.modality.{info.field_name}")
+
+    @model_validator(mode="after")
+    def refuse_no_modality(self) -> "ClassificationModalityConfig":
+        """Refuse the one combination that sends the model nothing to look at.
+
+        Raised at configuration-save time (every save validates through
+        ``IDPConfig``), so the message lands in the UI next to the setting
+        rather than as a failed document an hour later. Only the *explicit*
+        pair is refused — if either flag is unset it is inferred from the
+        prompt, and a prompt with neither placeholder is a deliberate,
+        long-standing way to write a classifier that works from the class
+        descriptions alone.
+        """
+        if self.text is False and self.images is False:
+            raise ValueError(
+                "classification.modality has both text and images turned off, "
+                "which leaves nothing to classify. Turn at least one on."
+            )
+        return self
+
+
+class ClassificationPacketConfig(BaseModel):
+    """Settings that apply only to ``granularity: packet``.
+
+    Grouped rather than flattened so the configuration panel can show or hide
+    the whole block on one condition, and so the packet prompts sit beside the
+    windowing they interact with.
+
+    **The prompts here are separate from ``classification.task_prompt`` because
+    granularity is not orthogonal to the prompt**, even though modality is. A
+    page-level call is asked for one class plus a ``start``/``continue`` verdict;
+    a packet-level call is asked for a list of segments. Different output
+    schemas, so different prompts and different parsers.
+
+    Sharing one key is what made the ``classificationMethod`` dropdown that
+    preceded these settings unusable: selecting holistic sent the page prompt —
+    which asks for ``{"class", "document_boundary"}`` — to the packet parser,
+    which reads ``segments``, and the document failed with "No segments found in
+    the classification result". No shipped preset set that value, so the enum
+    was effectively unreachable from the UI. It was removed in config format
+    0.8; a stored config carrying it is migrated by
+    ``migrations.v07_to_v08``, which relocates such a hand-written flat prompt
+    into this block.
+    """
+
+    window_pages: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Maximum pages per packet call. A larger packet is split into "
+            "overlapping windows whose results are merged. 0 means never window "
+            "— one call for the whole packet, which is what legacy holistic "
+            "classification did and which fails outright on a packet larger "
+            "than the model's context window. The default of 20 is where "
+            "Bedrock starts downscaling images: above 20 image blocks in one "
+            "request every image is shrunk to 2,000px, so a wider window with "
+            "images on silently halves its own page resolution."
+        ),
+    )
+    overlap_pages: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Pages repeated between adjacent windows, so a document boundary "
+            "falling at a window edge is still seen with the pages before it. "
+            "Costs `overlap` extra pages per additional window."
+        ),
+    )
+    system_prompt: str = Field(
+        default="",
+        description=(
+            "System prompt for packet-level calls. Empty falls back to "
+            "classification.system_prompt."
+        ),
+    )
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Task prompt for packet-level calls. Asks for a `segments` array "
+            "rather than one class plus a boundary verdict, so it is a separate "
+            "key from classification.task_prompt. Empty falls back to "
+            "classification.task_prompt, which is also where the migration from "
+            "config format 0.7 copies a pre-0.8 packet configuration's "
+            "hand-written prompt from."
+        ),
+    )
+
+    @field_validator("window_pages", "overlap_pages", mode="before")
+    @classmethod
+    def parse_page_count(cls, v: Any, info: ValidationInfo) -> int:
+        """Parse from a string (stored configs are string-typed) or number."""
+        default = 20 if info.field_name == "window_pages" else 2
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return default
+        try:
+            return int(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"classification.packet.{info.field_name} must be a whole number "
+                f"of pages, got {v!r}"
+            ) from exc
+
+    @model_validator(mode="after")
+    def refuse_non_advancing_window(self) -> "ClassificationPacketConfig":
+        """Refuse an overlap that would make the window stop advancing.
+
+        With ``overlap >= window`` each window starts no later than the last, so
+        a packet larger than one window never terminates — or, with the step
+        clamped to 1, costs one call per page while claiming to be the
+        cost-saving granularity.
+        """
+        if self.window_pages and self.overlap_pages >= self.window_pages:
+            raise ValueError(
+                f"classification.packet.overlap_pages ({self.overlap_pages}) must "
+                f"be smaller than window_pages ({self.window_pages}); an overlap "
+                f"at least as large as the window means each window covers no new "
+                f"pages, so a long packet would cost one call per page."
+            )
+        return self
+
+
+class ClassificationStagePromptsConfig(BaseModel):
+    """Packet-granularity prompt overrides for a two-stage stage.
+
+    Separate from the page-granularity prompts for the same reason
+    ``classification.packet`` is separate from ``classification``: a page-level
+    call and a packet-level call are asked for different output shapes, so they
+    need different prompts and are read by different parsers.
+    """
+
+    system_prompt: str = Field(default="")
+    task_prompt: str = Field(default="")
+
+
+class ClassificationSegmentationConfig(BaseModel):
+    """Stage A of two-stage classification: where each document starts and ends.
+
+    Only read when ``classification.strategy`` is ``two_stage``. Stage A reuses
+    ``granularity``, ``modality``, ``image.*``, ``contextPagesCount`` and
+    ``packet.window_pages``/``overlap_pages`` — it is the same call shape as
+    single-pass classification, asked a smaller question.
+
+    **The saving is the prefix.** A single-pass call carries the class list,
+    every class description and every few-shot example on every call, even
+    though finding a boundary does not depend on the class vocabulary. Stage A
+    drops all of it, which on a page-granularity configuration is the dominant
+    per-call cost and is paid N times.
+    """
+
+    model: str = Field(
+        default="",
+        description=(
+            "Bedrock model for Stage A. Empty uses classification.model. The "
+            "point of naming it separately is that the two stages have "
+            "different needs: boundary detection may want a capable multimodal "
+            "model looking at a whole packet, while labeling a clean segment is "
+            "often a much easier problem."
+        ),
+    )
+    boundary_hints: str = Field(
+        default="none",
+        description=(
+            "Whether Stage A is told the class NAMES as hints for where a new "
+            "document starts. 'none' (default) sends no vocabulary at all. "
+            "'class_names' sends the names only — not the descriptions and not "
+            "the examples — which can help when boundaries are marked by a form "
+            "number or title the names mention, at the cost of a small prefix."
+        ),
+    )
+    system_prompt: str = Field(
+        default="",
+        description="Stage A system prompt for page granularity.",
+    )
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Stage A task prompt for page granularity: asks only whether this "
+            "page starts a new document, with no class list and no class in the "
+            "answer."
+        ),
+    )
+    packet: ClassificationStagePromptsConfig = Field(
+        default_factory=ClassificationStagePromptsConfig,
+        description=(
+            "Stage A prompts for packet granularity: ask for page RANGES only, "
+            "with no type per range."
+        ),
+    )
+
+    @field_validator("boundary_hints", mode="before")
+    @classmethod
+    def validate_boundary_hints(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "none"
+        v_str = str(v).strip().lower()
+        if v_str not in ("none", "class_names"):
+            raise ValueError(
+                "classification.segmentation.boundary_hints must be 'none' or "
+                f"'class_names', got {v!r}"
+            )
+        return v_str
+
+
+class ClassificationLabelingConfig(BaseModel):
+    """Stage B of two-stage classification: what class each segment is.
+
+    Only read when ``classification.strategy`` is ``two_stage``. **One call per
+    segment, not per page** — which is the other half of the two-stage saving: a
+    40-page statement is labeled once instead of forty times.
+
+    ``method`` is deliberately a single-value enum today. Embeddings and
+    external classifier endpoints are the other two methods #1329 describes, and
+    both need a measurement before their defaults can be set honestly (which
+    embeddings model, text or image or both, how many exemplars a class needs to
+    be labeled reliably). Shipping the enum with one value means adding one
+    later is not a breaking change to anyone's configuration.
+    """
+
+    method: str = Field(
+        default="llm",
+        description=(
+            "How each segment gets its class. 'llm' (the only value today) makes "
+            "one LLM call per segment with the class vocabulary and the few-shot "
+            "examples."
+        ),
+    )
+    model: str = Field(
+        default="",
+        description="Bedrock model for Stage B. Empty uses classification.model.",
+    )
+    pages: str = Field(
+        default="first_k",
+        description=(
+            "Which pages of a segment represent it for labeling. 'first' sends "
+            "only the first page, 'first_k' the first `k`, 'all' every page. "
+            "'first_k' is the default because a document's identity is almost "
+            "always on its opening pages, while 'all' makes a long segment cost "
+            "as much to label as page-level classification cost to classify it."
+        ),
+    )
+    k: int = Field(
+        default=2,
+        ge=1,
+        description="How many pages 'first_k' sends.",
+    )
+    system_prompt: str = Field(default="", description="Stage B system prompt.")
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Stage B task prompt: given a segment's pages, return its class. "
+            "Carries the class vocabulary and {FEW_SHOT_EXAMPLES}."
+        ),
+    )
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def validate_method(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "llm"
+        v_str = str(v).strip().lower()
+        if v_str != "llm":
+            raise ValueError(
+                f"classification.labeling.method must be 'llm', got {v!r}. "
+                "'embeddings' and 'classifier' are planned but not implemented; "
+                "see GitHub issue #1329."
+            )
+        return v_str
+
+    @field_validator("pages", mode="before")
+    @classmethod
+    def validate_pages(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "first_k"
+        v_str = str(v).strip().lower()
+        if v_str not in ("first", "first_k", "all"):
+            raise ValueError(
+                "classification.labeling.pages must be 'first', 'first_k', or "
+                f"'all', got {v!r}"
+            )
+        return v_str
+
+    @field_validator("k", mode="before")
+    @classmethod
+    def parse_k(cls, v: Any) -> int:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return 2
+        try:
+            return int(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"classification.labeling.k must be a whole number of pages, got {v!r}"
+            ) from exc
 
 
 class ClassificationConfig(BaseModel):
@@ -1575,14 +2025,60 @@ class ClassificationConfig(BaseModel):
         default="ALL",
         description="Max pages to use for classification. 'ALL' = all pages, or a number to limit to N pages",
     )
-    classificationMethod: str = Field(default="multimodalPageLevelClassification")
+    # `classificationMethod` was removed in config format 0.8. It is migrated to
+    # `granularity` on every read by `migrations.v07_to_v08`, which also
+    # relocates a holistic config's hand-written flat prompts into
+    # `classification.packet` — so nothing here needs to read it, and a stored
+    # config still carrying it is converted before this model sees it.
+    granularity: str = Field(
+        default="page",
+        description=(
+            "How many calls classification makes. 'page': one call per page. "
+            "'packet': one call per packet, or per window, which pays the "
+            "instructions, class list and few-shot examples once instead of per "
+            "page. Image tokens are the same either way."
+        ),
+    )
+    packet: ClassificationPacketConfig = Field(
+        default_factory=ClassificationPacketConfig,
+        description=(
+            "Settings used only when granularity is 'packet': the window size, "
+            "the overlap between windows, and the packet-level prompts."
+        ),
+    )
+    strategy: str = Field(
+        default="single_pass",
+        description=(
+            "'single_pass' (default): one call returns both the boundaries and "
+            "the classes, which is what classification has always done. "
+            "'two_stage': boundaries first with no class vocabulary in the "
+            "prompt, then one call per segment to label it. Two-stage saves the "
+            "class list and the few-shot examples on every boundary call, and "
+            "labels once per document rather than once per page; it also "
+            "separates a wrong boundary from a wrong label, which a single "
+            "section-level outcome cannot."
+        ),
+    )
+    segmentation: ClassificationSegmentationConfig = Field(
+        default_factory=ClassificationSegmentationConfig,
+        description=(
+            "Stage A of two-stage classification (strategy: two_stage). Not to "
+            "be confused with `sectionSplitting`, which decides how the "
+            "resulting segments become sections and applies to both strategies."
+        ),
+    )
+    labeling: ClassificationLabelingConfig = Field(
+        default_factory=ClassificationLabelingConfig,
+        description="Stage B of two-stage classification (strategy: two_stage).",
+    )
     sectionSplitting: str = Field(
         default="llm_determined",
         description="Section splitting strategy: 'disabled' (entire doc as one section), 'page' (one section per page), 'llm_determined' (use LLM boundary detection)",
     )
     contextPagesCount: int = Field(
         default=0,
-        description="Number of pages before/after target page to include as context for multimodalPageLevelClassification. "
+        description="Number of pages before/after target page to include as context. "
+        "Applies to granularity 'page' only. "
         "0=no context (default), 1=include 1 page on each side, 2=include 2 pages on each side.",
     )
     enforceValidClasses: bool = Field(
@@ -1590,7 +2086,7 @@ class ClassificationConfig(BaseModel):
         description="When True, validate the predicted class against the configured "
         "class vocabulary and retry (re-prompting the model) on out-of-vocabulary "
         "predictions. When False, an out-of-vocabulary prediction is logged and used "
-        "as-is (legacy behavior). Applies to multimodalPageLevelClassification.",
+        "as-is (legacy behavior). Applies to granularity 'page'.",
     )
     maxValidationRetries: int = Field(
         default=2,
@@ -1614,6 +2110,15 @@ class ClassificationConfig(BaseModel):
         ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)
+    modality: ClassificationModalityConfig = Field(
+        default_factory=ClassificationModalityConfig,
+        description=(
+            "What each classification call sees — text, images, or both. "
+            "Independent of granularity: the same two flags apply to page-level "
+            "and packet-level calls. See ClassificationModalityConfig; both "
+            "default to 'infer from the prompt'."
+        ),
+    )
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
@@ -1651,6 +2156,54 @@ class ClassificationConfig(BaseModel):
                 return "ALL"
             return v.strip()
         return str(v)
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def validate_strategy(cls, v: Any) -> str:
+        """Normalize the strategy; reject an unknown value loudly.
+
+        Not a silent fallback, for the same reason as ``granularity``: the two
+        strategies make a different number of calls with different prompts, so
+        quietly picking one is a cost decision the operator did not make.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "single_pass"
+        v_str = str(v).strip().lower()
+        if v_str not in ("single_pass", "two_stage"):
+            raise ValueError(
+                "classification.strategy must be 'single_pass' or 'two_stage', "
+                f"got {v!r}"
+            )
+        return v_str
+
+    @field_validator("granularity", mode="before")
+    @classmethod
+    def validate_granularity(cls, v: Any) -> str:
+        """Normalize granularity; empty means the ``page`` default.
+
+        An unrecognised value raises rather than falling back, because the two
+        values produce different prompts, different parsers and a roughly
+        N-fold difference in call count — silently picking one would be a cost
+        and accuracy decision the operator did not make. (``sectionSplitting``
+        below does fall back, which predates this and is a smaller difference.)
+
+        Empty is accepted and resolves to ``page``, so a stored config written
+        before this setting existed loads without an error: an empty value meant
+        "derive it from ``classificationMethod``", and with that key gone the
+        page path is what the derivation produced for every value but one. The
+        migration normally fills it in from the method; this covers a config
+        carrying the empty value and no method at all.
+        """
+        if v is None:
+            return "page"
+        v_str = str(v).strip().lower()
+        if v_str == "":
+            return "page"
+        if v_str in ("page", "packet"):
+            return v_str
+        raise ValueError(
+            f"classification.granularity must be 'page' or 'packet', got {v!r}"
+        )
 
     @field_validator("sectionSplitting", mode="before")
     @classmethod
@@ -4162,6 +4715,39 @@ class IDPConfig(BaseModel):
             log_ignored_config_keys(data, cls)
 
         return data
+
+    @model_validator(mode="after")
+    def refuse_classification_with_no_content(self) -> "IDPConfig":
+        """Refuse a classification modality that can only ever send empty content.
+
+        One cross-section combination is unsatisfiable and silent: an OCR
+        backend of ``none`` produces no page text at all, so a classification
+        configuration that also turns images **off** has nothing left. Before
+        this check the request still went out, with every page substituted as
+        the literal string ``[No text content for page N]``, and the model
+        returned a confident class derived from nothing — a document that
+        completes green with a fabricated answer.
+
+        Only the explicit ``images: false`` is refused here. When ``images`` is
+        unset it is inferred from the prompt, and the prompt the inference reads
+        depends on the granularity, so the residual case is caught at the point
+        the request is built instead (see
+        ``ClassificationService._packet_text_unavailable_error``). That split is
+        deliberate: a config-load failure must be a thing the operator can act
+        on from the message alone.
+        """
+        if (
+            self.ocr.backend
+            and self.ocr.backend.strip().lower() == "none"
+            and self.classification.modality.images is False
+        ):
+            raise ValueError(
+                "ocr.backend is 'none' (no page text is produced) and "
+                "classification.modality.images is false, so classification "
+                "would have no text and no images to work from. Either choose a "
+                "real OCR backend, or turn classification.modality.images on."
+            )
+        return self
 
     def to_dict(self, **extra_fields: Any) -> Dict[str, Any]:
         """

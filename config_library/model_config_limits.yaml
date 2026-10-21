@@ -98,6 +98,43 @@ model_limits:
     reference: "https://docs.anthropic.com/claude/docs/models-overview#model-comparison"
 
   # ---------------------------------------------------------------------------
+  # Anthropic Claude Sonnet 5.5 — MUST precede the Sonnet 5 entry
+  # ---------------------------------------------------------------------------
+  # Placement is load-bearing, not stylistic: patterns are matched as substrings
+  # with first-match-wins, and 'claude-sonnet-5' matches 'claude-sonnet-5-5'. Below
+  # the Sonnet 5 entry this model would silently inherit a 200,000-token window.
+  #
+  # ⚠️ The window is 1,000,000 and there is no ':1m' id to opt into or out of it.
+  # 'us.anthropic.claude-sonnet-5-5:1m' is not an identifier Bedrock knows ("The
+  # provided model identifier is invalid", measured us-east-1 2026-10-14), because
+  # 1M is this model's DEFAULT window — the same shape as Haiku 5.5 below, and
+  # unlike Sonnet 5 above, whose base id is deliberately pinned at 200,000 so that
+  # auto-sizing stays conservative unless the user selects the ':1m' variant.
+  # Stating 200,000 here would therefore be false as a statement of fact (this
+  # field's documented meaning, at the top of this file, is "the model's
+  # context/input window") AND unrecoverable, since there is no wider id to choose.
+  #
+  # The consequence is a SIZING one, and it is explicitly NOT the cost warning that
+  # the Haiku 5.5 entry below carries: the AWS price list gives this model a single
+  # prompt-length band (see pricing.yaml), so no request here is under-reported.
+  # What the 1M window changes is the derived agentic shard budget — measured
+  # 578,400 tokens against Sonnet 5's 18,400 at the default 0.30 context_buffer,
+  # the same figure Sonnet 5's own ':1m' variant and Haiku 5.5 get. Wide shards
+  # defeat prompt caching, measured at 5x the cost of the 5-page default in
+  # docs/benchmarking/studies/advanced-extraction-refinements.md. In practice
+  # max_pages_per_shard stays at its 5-page default, which is what usually binds
+  # first, so the budget is a ceiling rather than a target. If predictable
+  # prompt-cache behaviour matters more than window size here, set
+  # extraction.agentic.shard_token_budget explicitly rather than lowering the number
+  # below — that number is read by every other consumer of this file as a statement
+  # about the model.
+  - pattern: "claude-sonnet-5-5"
+    max_output_tokens: 128000
+    max_input_tokens: 1000000
+    description: "Claude Sonnet 5.5 — 1M context (default, no ':1m' id), 128K max output"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html"
+
+  # ---------------------------------------------------------------------------
   # Anthropic Claude Sonnet 5 (extended output, 128K)
   # ---------------------------------------------------------------------------
   # Sonnet 5 supports 128K max output. Base context window is 200K; the :1m

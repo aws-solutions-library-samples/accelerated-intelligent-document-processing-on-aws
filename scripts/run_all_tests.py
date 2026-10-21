@@ -72,6 +72,11 @@ PRUNE_DIR_MARKERS = (
     # scratch/ is gitignored (local benchmarks, cloned tools, throwaway work);
     # never part of the gate. CI never sees it, so prune it locally too.
     "/scratch/",
+    # `.ai-review/base/` is a whole copy of the tree at the merge base, written
+    # into the review worktree by scripts/sdlc/ai_mr_review.py. Same hazard as
+    # the worktrees below, and the one case where this repository's own tooling
+    # creates the copy. Gitignored, so CI never sees it.
+    "/.ai-review/",
     # Two gitignored, locally-staged copies of lib/idp_common_pkg that the
     # idp-data-generator feature's build drops next to its Lambda sources. They
     # hold library code only (no tests/ dir), so every test_*.py they contain is
@@ -170,6 +175,10 @@ RUN_ROOTS = [
     # date-range list, and the reviewer-owner matching that an absent email claim
     # would otherwise widen.
     "nested/api-resolvers/src/lambda/list_documents_range_resolver",
+    # Inbox and review-queue resolvers: the dispatcher contract (group gate,
+    # caller from verified claims, exact error classes) over a stub service.
+    "nested/api-resolvers/src/lambda/notifications_resolver",
+    "nested/api-resolvers/src/lambda/review_queues_resolver",
     # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
     # caller whose scope cannot be resolved must be refused in-band.
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
@@ -209,6 +218,8 @@ RUN_ROOTS = [
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
+    # Review queue sweeper: the no-table path, the deadline and the wiring.
+    "src/lambda/review_queue_sweeper",
     "src/lambda/save_reporting_data",
     # DockerBuildRun's ECR image verification: the bounded image-scan wait and the
     # presence poll. An unbounded wait here fails the stack at CloudFormation's

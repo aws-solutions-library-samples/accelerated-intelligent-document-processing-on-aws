@@ -62,7 +62,51 @@ def test_handler_success(
         "test-stack-reporting-db",
         mock_config,
     )
-    mock_reporter.save.assert_called_once_with(mock_document, ["evaluation_results"])
+    # No review-queue info on the event: the reporter is told so explicitly.
+    mock_reporter.save.assert_called_once_with(
+        mock_document, ["evaluation_results"], review=None
+    )
+
+
+@pytest.mark.unit
+@patch.dict(
+    os.environ,
+    {"CONFIGURATION_TABLE_NAME": "test-config-table", "STACK_NAME": "test-stack"},
+)
+@patch("index.ConfigurationManager")
+@patch("index.get_config")
+@patch("index.SaveReportingData")
+@patch("index.Document.from_dict")
+def test_handler_passes_validated_review_info(
+    mock_document_from_dict,
+    mock_save_reporting_data,
+    mock_get_config,
+    mock_config_manager,
+):
+    """A routed document's review info reaches the reporter as the model."""
+    from idp_common.review_queues.models import ReviewReportingInfo
+
+    mock_config_manager.return_value.get_merged_pricing.return_value = None
+    mock_reporter = mock_save_reporting_data.return_value
+    mock_reporter.save.return_value = ["result1"]
+    review = {
+        "cycle_id": "c-1",
+        "review_status": "APPROVED",
+        "profile": "lending",
+        "queue": "default",
+    }
+    event = {
+        "document": {"id": "test-doc", "input_key": "test.pdf"},
+        "reporting_bucket": "test-reporting-bucket",
+        "data_to_save": ["document_sections"],
+        "review": review,
+    }
+
+    assert handler(event, {})["statusCode"] == 200
+
+    passed = mock_reporter.save.call_args.kwargs["review"]
+    assert isinstance(passed, ReviewReportingInfo)
+    assert passed == ReviewReportingInfo.model_validate(review)
 
 
 @pytest.mark.unit

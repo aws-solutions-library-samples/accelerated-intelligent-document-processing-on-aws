@@ -56,13 +56,16 @@ from rbac_common import (  # noqa: E402
     create_cognito_user,
     delete_cognito_user,
     resolve_stack,
+    template_group_names,
 )
 
 # Groups a UX test might legitimately run as. Annotator is included because the
 # scoped queue is a distinct experience — an annotator sees a different
 # navigation and a subset of test sets — and reviewing it as an Admin would miss
 # exactly the confusion an annotator hits.
-VALID_GROUPS = ("Admin", "Author", "Reviewer", "Annotator", "Viewer")
+# Read from template.yaml so a new role is available
+# without editing a list here.
+VALID_GROUPS = tuple(template_group_names())
 
 
 def _password() -> str:

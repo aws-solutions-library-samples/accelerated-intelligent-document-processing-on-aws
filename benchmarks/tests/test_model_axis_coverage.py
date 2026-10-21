@@ -126,7 +126,7 @@ class TestEveryNamedModelIsReal:
         quietly ran over fewer of them. That is the shape that hides, so the count is
         asserted exactly and this test is meant to be updated deliberately when an
         axis value is added or removed — the failure message says so."""
-        assert len(axis_models) == 19, (
+        assert len(axis_models) == 20, (
             f"the matrix now pins {len(axis_models)} model-valued axis values, not "
             "19. If that is intended, update this number in the same change; it is "
             "asserted exactly so that a model DISAPPEARING from an axis fails here "

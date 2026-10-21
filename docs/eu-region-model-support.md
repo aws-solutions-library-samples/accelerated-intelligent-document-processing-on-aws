@@ -29,6 +29,7 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.anthropic.claude-sonnet-4-6:1m` | `eu.anthropic.claude-sonnet-4-6:1m` | Direct mapping |
 | `us.anthropic.claude-sonnet-5` | `eu.anthropic.claude-sonnet-5` | Direct mapping |
 | `us.anthropic.claude-sonnet-5:1m` | `eu.anthropic.claude-sonnet-5:1m` | Direct mapping |
+| `us.anthropic.claude-sonnet-5-5` | `eu.anthropic.claude-sonnet-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
 | `us.anthropic.claude-opus-4-20250514-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | **Fallback mapping.** Claude Opus 4 is end-of-life, so this row is reachable only by a configuration stored before its removal. Opus 4.5 keeps it on an Opus rather than demoting it to a Sonnet |
 | `us.anthropic.claude-opus-4-1-20250805-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | **Fallback mapping.** Claude Opus 4.1 is legacy (end of life 2027-01-08) and has no EU profile |
 | `us.anthropic.claude-opus-4-5-20251101-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | Direct mapping |
@@ -122,6 +123,7 @@ Based on the mappings above, the following EU models are supported:
 - `eu.anthropic.claude-sonnet-4-6:1m`
 - `eu.anthropic.claude-sonnet-5`
 - `eu.anthropic.claude-sonnet-5:1m`
+- `eu.anthropic.claude-sonnet-5-5`
 - `eu.anthropic.claude-opus-4-5-20251101-v1:0`
 - `eu.anthropic.claude-opus-4-6-v1`
 - `eu.anthropic.claude-opus-4-6-v1:1m`
@@ -225,6 +227,7 @@ The following US models do not have direct EU equivalents:
 This feature supports all AWS regions but is specifically designed for:
 - **EU Regions**: `eu-west-1`, `eu-central-1`, `eu-north-1`, etc.
 - **US Regions**: `us-east-1`, `us-west-2`, etc.
+- **Canada (Central)**: `ca-*` regions have their own picklist filter and default swaps, described in [Canada (Central) Region Model Support](canada-region-model-support.md)
 
 Other regions (Asia-Pacific, etc.) will use the original model IDs without mapping.
 

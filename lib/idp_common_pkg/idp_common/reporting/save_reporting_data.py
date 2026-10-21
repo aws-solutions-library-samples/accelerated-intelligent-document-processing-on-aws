@@ -23,6 +23,7 @@ from idp_common.metering_units import (
     classify_absent_unit,
     pricing_key_service,
 )
+from idp_common.metrics import emit_document_cost_metrics
 from idp_common.models import Document
 from idp_common.s3 import get_json_content
 from idp_common.utils import parse_s3_uri
@@ -564,18 +565,28 @@ class SaveReportingData:
                 )
                 return False
 
-    def save(self, document: Document, data_to_save: List[str]) -> List[Dict[str, Any]]:
+    def save(
+        self,
+        document: Document,
+        data_to_save: List[str],
+        *,
+        review: Any = None,
+    ) -> List[Dict[str, Any]]:
         """
         Save document data based on the data_to_save list.
 
         Args:
             document: Document object containing data to save
             data_to_save: List of data types to save
+            review: Optional ``idp_common.review_queues.models.ReviewReportingInfo``
+                for a document routed to a review queue. Only then do section
+                rows carry review columns and ``document_reviews`` get a row.
 
         Returns:
             List of results from each save operation
         """
         results = []
+        self._review = review
 
         # Process each data type based on data_to_save
         if "evaluation_results" in data_to_save:
@@ -602,6 +613,12 @@ class SaveReportingData:
             if result:
                 results.append(result)
 
+        if "document_reviews" in data_to_save and review is not None:
+            logger.info("Processing document review status")
+            result = self.save_document_reviews(document, review)
+            if result:
+                results.append(result)
+
         # Add more data types here as needed
         # if 'document_metadata' in data_to_save:
         #     logger.info("Processing document metadata")
@@ -610,6 +627,89 @@ class SaveReportingData:
         #         results.append(result)
 
         return results
+
+    def save_document_reviews(
+        self, document: Document, review: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Write the document's ``document_reviews`` row (latest status wins).
+
+        Key ``document_reviews/date=<d>/<escaped_doc_id>.parquet`` is
+        deterministic, so the finalize run's row overwrites the phase-1 row.
+        """
+        document_id = document.id or document.input_key or "unknown"
+        escaped_doc_id = re.sub(r"[/\\]", "_", document_id)
+        moment = None
+        if document.initial_event_time:
+            try:
+                moment = datetime.datetime.fromisoformat(
+                    document.initial_event_time.replace("Z", "+00:00")
+                )
+                if moment.tzinfo is not None:
+                    moment = moment.astimezone(datetime.timezone.utc).replace(
+                        tzinfo=None
+                    )
+            except (ValueError, TypeError):
+                moment = None
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        date_partition = (moment or now).strftime("%Y-%m-%d")
+
+        def ts(value: Optional[str]):
+            if not value:
+                return None
+            try:
+                parsed = datetime.datetime.fromisoformat(
+                    str(value).replace("Z", "+00:00")
+                )
+            except ValueError:
+                return None
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+            return parsed
+
+        record = {
+            "document_id": document_id,
+            "cycle_id": review.cycle_id,
+            "review_status": review.review_status,
+            "disposition": review.disposition,
+            "profile": review.profile,
+            "queue": review.queue,
+            "reviewer": review.reviewer,
+            "reviewed_at": ts(review.reviewed_at),
+            "enqueued_at": ts(review.enqueued_at),
+            "reason_count": int(review.reason_count or 0),
+            "top_reason_kind": review.top_reason_kind,
+            "reject_reason": review.reject_reason,
+            "escalated": bool(review.escalated),
+            "machine_run_id": review.machine_run_id,
+            "final_run_id": review.final_run_id,
+            "timestamp": now,
+        }
+        schema = pa.schema(
+            [
+                ("document_id", pa.string()),
+                ("cycle_id", pa.string()),
+                ("review_status", pa.string()),
+                ("disposition", pa.string()),
+                ("profile", pa.string()),
+                ("queue", pa.string()),
+                ("reviewer", pa.string()),
+                ("reviewed_at", pa.timestamp("ms")),
+                ("enqueued_at", pa.timestamp("ms")),
+                ("reason_count", pa.int32()),
+                ("top_reason_kind", pa.string()),
+                ("reject_reason", pa.string()),
+                ("escalated", pa.bool_()),
+                ("machine_run_id", pa.string()),
+                ("final_run_id", pa.string()),
+                ("timestamp", pa.timestamp("ms")),
+            ]
+        )
+        s3_key = f"document_reviews/date={date_partition}/{escaped_doc_id}.parquet"
+        self._save_records_as_parquet([record], s3_key, schema)
+        return {
+            "statusCode": 200,
+            "body": f"Saved document review row to s3://{self.reporting_bucket}/{s3_key}",
+        }
 
     def save_evaluation_results(self, document: Document) -> Optional[Dict[str, Any]]:
         """
@@ -1242,6 +1342,22 @@ class SaveReportingData:
         # nothing declares as free (#1212). Naming only the service would report
         # the second case as though the whole model were unpriced.
         unpriced_rows = set()
+        # Running total of the per-row ``estimated_cost`` values below, for the
+        # ``DocumentEstimatedCost`` CloudWatch metric (GitHub issue #934 item 2).
+        # Accumulated from the SAME figure written to the parquet row, so the
+        # metric cannot drift from the Athena ledger; nothing is recomputed and no
+        # pricing decision is taken here.
+        #
+        # Starts at None and only becomes a number once a priced row is seen, so
+        # a document whose every row is unpriced emits NO cost datapoint rather
+        # than a 0.00 — the same NULL-not-zero rule the metering columns follow,
+        # and for the same reason: a zero there is indistinguishable from
+        # something genuinely free and silently understates spend.
+        # ``unpriced_row_count`` is counted separately from the ``unpriced_rows``
+        # set because that set is keyed on (service, unit) and so de-duplicates;
+        # the metric needs a row count.
+        priced_cost_total: Optional[float] = None
+        unpriced_row_count = 0
 
         for key, metrics in document.metering.items():
             # Split the key into context and service_api
@@ -1286,8 +1402,14 @@ class SaveReportingData:
                 if unit_cost is None:
                     unpriced_rows.add(f"{service_api} [{unit}]")
                     estimated_cost = None
+                    unpriced_row_count += 1
                 else:
                     estimated_cost = float_value * unit_cost
+                    priced_cost_total = (
+                        estimated_cost
+                        if priced_cost_total is None
+                        else priced_cost_total + estimated_cost
+                    )
 
                 metering_record = {
                     "document_id": document_id,
@@ -1315,6 +1437,17 @@ class SaveReportingData:
                 f"in idp_common.metering_units only with the AWS price-list "
                 f"reading that shows it is."
             )
+
+        # Emit the document's cost to CloudWatch so it can be alarmed on, which
+        # the parquet ledger cannot be. Deliberately BEFORE the parquet write and
+        # outside its success path: the spend happened whether or not the write
+        # succeeds, and a cost figure suppressed by a reporting-bucket failure is
+        # the one time you most want it. Fire-and-forget inside the helper, so a
+        # CloudWatch outage cannot fail this document's reporting.
+        emit_document_cost_metrics(
+            estimated_cost=priced_cost_total,
+            unpriced_row_count=unpriced_row_count,
+        )
 
         # Save metering data in Parquet format. Path is date+hour partitioned
         # so the tier picker's <2h tail query can prune to the current hour
@@ -1533,6 +1666,16 @@ class SaveReportingData:
                         "config_version": document.config_version or "default",
                     }
                     section_records.append(record)
+
+                # Review columns only for documents routed to a review queue,
+                # so rows of every other document are unchanged (add-only).
+                review = getattr(self, "_review", None)
+                if review is not None:
+                    for record in section_records:
+                        record["review_status"] = review.review_status
+                        record["reviewed_by"] = review.reviewer
+                        record["reviewed_at"] = review.reviewed_at
+                        record["review_queue"] = review.queue
 
                 if not section_records:
                     logger.warning(

@@ -34,10 +34,11 @@ classes:
         description: "Field description"
 ```
 
-**Override only what differs from defaults.** For example, to change the classification method:
+**Override only what differs from defaults.** For example, to classify a whole
+packet in one call instead of one call per page:
 ```yaml
 classification:
-  classificationMethod: textbasedHolisticClassification
+  granularity: packet
 ```
 
 ## OCR Backend Selection

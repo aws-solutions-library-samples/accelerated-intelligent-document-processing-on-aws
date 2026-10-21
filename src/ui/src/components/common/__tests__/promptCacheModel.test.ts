@@ -74,6 +74,16 @@ describe('summarizeCacheUsage (mirrors idp_common.bedrock.prompt_cache)', () => 
     // widening the pattern cannot make both sides agree unnoticed.
     expect(minCacheablePrefixTokens('us.anthropic.claude-haiku-5-5')).toBe(512);
     expect(minCacheablePrefixTokens('global.anthropic.claude-haiku-5-5')).toBe(512);
+    // The two Sonnets are a pair for a sharper version of the same reason: here the
+    // shadowing is in the ids themselves, since 'claude-sonnet-5' is a SUBSTRING of
+    // 'claude-sonnet-5-5'. Drop the sonnet-5-5 alternative and 5.5 silently reports
+    // 1024 — double its real minimum — so the UI warns that a 512-1024 token class
+    // will not cache when it does. Measured as a pair on Converse (us-east-1,
+    // 2026-10-14): 5.5 cached a 513-token prefix and not a 508-token one, while
+    // Sonnet 5 cached nothing at 825 tokens and cached at 1,223.
+    expect(minCacheablePrefixTokens('us.anthropic.claude-sonnet-5-5')).toBe(512);
+    expect(minCacheablePrefixTokens('global.anthropic.claude-sonnet-5-5')).toBe(512);
+    expect(minCacheablePrefixTokens('us.anthropic.claude-sonnet-5')).toBe(1024);
   });
 
   it('measured caching beats the disabled flag', () => {

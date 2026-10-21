@@ -82,7 +82,9 @@ describe('GroundTruthVisualEditor with no field values', () => {
     renderEditor();
 
     expect(await screen.findByText(/No field values for this section/i)).toBeInTheDocument();
-    expect(screen.getByText(/extraction ran but produced no fields/i)).toBeInTheDocument();
+    // The class arrives with the baseline after the alert first renders, so wait for
+    // the body that depends on it rather than reading it on the same tick.
+    expect(await screen.findByText(/extraction ran but produced no fields/i)).toBeInTheDocument();
     // And the heading it used to show alone is gone.
     expect(screen.queryByText('Document Data')).not.toBeInTheDocument();
   });

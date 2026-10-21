@@ -311,7 +311,7 @@ coverage: ## Re-measure idp_common and print its table, worst-covered first (oth
 coverage-table: ## Print a tree's table from the last run, without re-measuring (COVERAGE_ARGS=--tree=NAME)
 	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
 
-coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
+coverage-all: ## Measure EVERY tree the registry names and print each one's figure
 	@python3 scripts/coverage_all.py $(COVERAGE_ARGS)
 
 # What both CIs run, and the reason the ratchet can now reach more than one tree.
@@ -322,10 +322,14 @@ coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
 # (issue #1256).
 #
 # Two things keep the added wall clock down, and neither is a cache:
-#   --jobs   measures trees concurrently. It has to be concurrency ACROSS trees:
-#            `scripts` declares Tree.serial because xdist under-collects a suite that
-#            drives its subject as a subprocess, so that tree cannot be sped up from
-#            the inside and its ~16 min is hidden behind the other eight instead.
+#   --jobs   measures trees concurrently, and it has to be concurrency ACROSS trees
+#            because a tree may decline xdist: Tree.serial records that, per entry,
+#            with the measurement. It is NOT a claim that a suite cannot be
+#            parallelised -- `scripts` carried the flag on that belief and lost it
+#            when the figures turned out identical per file, serial against the
+#            worker count CI gives it. The job therefore costs its slowest tree
+#            rather than the sum, and which tree that is moves; measure rather than
+#            reading a figure here.
 #   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
 #            step below still requires it BY NAME, so dropping the wrong tree here
 #            turns the gate red rather than quietly narrowing it.
@@ -347,7 +351,7 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.
 CHECK_COVERAGE_DEBT_ARGS ?=
-check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
+check-coverage-debt: ## Ratchet per-file coverage across every registered tree: fail if a file loses coverage, or a new module arrives unratcheted
 	@python3 scripts/check_coverage_debt.py $(CHECK_COVERAGE_DEBT_ARGS)
 
 # The CI form. `--require-all-trees` is the difference and it is not cosmetic: with no
@@ -355,7 +359,7 @@ check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a 
 # measured were reported and passed for as long as that was the arrangement. Requiring
 # every tree turns a missing report into a red mark that names the tree. The required
 # list is derived from TREES inside the script, so adding a Tree cannot leave it behind
-# and no Makefile or CI config holds a second copy of the nine names.
+# and no Makefile or CI config holds a second copy of the registry's names.
 check-coverage-debt-cicd: ## The ratchet, failing by name if ANY registry tree has no report from this run
 	@python3 scripts/check_coverage_debt.py --require-all-trees $(CHECK_COVERAGE_DEBT_ARGS)
 
@@ -868,6 +872,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/review_queue_sweeper && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# DockerBuildRun's ECR image verification: the bounded scan wait (#1336) and
 	@# the presence poll (#1310). `crhelper` is a Lambda-layer dependency and not a
@@ -895,6 +900,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/list_documents_range_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/sync_bda_idp_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
+	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -988,10 +996,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
-		scripts/tests/test_check_shared_branch.py -v
+		scripts/tests/test_check_shared_branch.py \
+		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -1061,6 +1071,32 @@ endif
 
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
+
+# Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=<region>]
+# End-to-end Inbox check against a DEPLOYED stack: posts through
+# idp_common.notifications with local credentials (direct, group fan-out,
+# idempotency, dedupe), then reads back through the REST API with real ID tokens.
+# Creates and removes a temporary Cognito group, two temporary users and their
+# Inbox items, and restores the app client's auth flows. Exit 0 = PASS,
+# 1 = FAIL, 2 = a check errored or was skipped (never a pass).
+stacktest-inbox: ## Inbox live check: posts through idp_common.notifications and reads via the API (STACK_NAME=...; creates and removes temporary Cognito users and a group)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
+
+# Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
+# End-to-end review-queue check against a DEPLOYED stack: routes a sample document
+# under a temporary profile, claims it, saves a draft and completes it through
+# the REST API with a real Annotator ID token, then waits for the finalize
+# run and the final review status object. Creates and removes a temporary
+# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
+# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
+endif
+	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1183,6 +1219,35 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
 ##@ UI Development
+
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
+# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
+# those targets then runs a node tool out of that same tree. So two UI targets at
+# once in ONE checkout corrupt each other, and the loser does not report
+# contention — it reports a missing or half-deleted module from whatever package
+# the other lane was unpacking (issue #1447).
+#
+# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
+# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
+# realistic composition is "lint in one lane, UI tests in another", which looks
+# like two unrelated things and is not.
+#
+# $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
+# an exclusive lock for the whole command, so a second UI target waits instead of
+# racing. Uncontended it costs one exec and prints nothing; contended it says it is
+# waiting and gives up with an error after UI_DEPS_LOCK_WAIT_SECONDS (default 900,
+# settable either as `make <target> UI_DEPS_LOCK_WAIT_SECONDS=n` or in the
+# environment) rather than blocking forever. There is no stale-lock state — the kernel
+# drops the lock when the holder exits, however it exits. The full rationale,
+# including why nesting cannot deadlock, is in the script's header.
+#
+# Two residuals, stated so a green run is not over-read. `ui-start`'s dev SERVER
+# runs unlocked (it is long-lived, and holding the lock for hours would block every
+# gate), so its `npm ci` is guarded but its `npm run start` is not — do not reinstall
+# UI deps under a running dev server. And a target invoked NOT through make, by
+# running `npm` in src/ui by hand, takes no lock at all.
+UI_DEPS_LOCK := scripts/ui_deps_lock.sh
+
 # Usage: make ui-start STACK_NAME=<stack-name>
 ui-start: ## Start UI dev server (requires STACK_NAME for .env generation)
 ifndef STACK_NAME
@@ -1209,7 +1274,7 @@ endif
 		exit 1; \
 	fi
 	@echo "Installing UI dependencies..."
-	cd src/ui && npm ci --prefer-offline --no-audit
+	$(UI_DEPS_LOCK) 'npm ci --prefer-offline --no-audit'
 	@echo "Starting UI development server..."
 	cd src/ui && npm run start
 
@@ -1218,6 +1283,13 @@ endif
 # codegen-check). Set SKIP_NPM_CI=1 when the caller has ALREADY installed UI
 # deps (the CI code_checks job installs once in before_script) to make these a
 # no-op; unset (local) installs as before.
+#
+# ⚠️ The skip is a COST optimisation and nothing more. It does not make two UI
+# targets safe to run at the same time: the second one still reads node_modules
+# while the first may be rebuilding it, which is the half of the hazard that
+# produced the missing-eslint-formatter failure in #1447. $(UI_DEPS_LOCK) above is
+# what makes concurrency safe, and every target below takes it whether or not the
+# install is skipped.
 NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 
 # THE GATE CHECKS; THE FIXER FIXES. Never the same invocation.
@@ -1244,6 +1316,14 @@ NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 # warm tree produced a success line for work that did not happen — `npm run
 # lint` AND `npm run typecheck`, the second of which the target's name does not
 # even imply. Issue #1152.
+#
+# The checksum is written to `src/ui/.checksum` by its full path, and that is
+# load-bearing rather than tidiness. This whole recipe is ONE shell: the lint line
+# used to begin `cd src/ui &&`, and the bare `.checksum` that followed it landed in
+# src/ui only by inheriting that cd. The lint now runs through $(UI_DEPS_LOCK),
+# which is a child process, so this shell stays at the repository root — and a root
+# `.checksum` is gitignored as well, so the cache would have gone to a file
+# STORED_HASH never reads and simply stopped hitting, with nothing to see.
 ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run; UI_LINT_NO_SKIP=1 forbids the skip.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
@@ -1256,8 +1336,8 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
-		cd src/ui && $(NPM_CI) && npm run lint && npm run typecheck || exit 1; \
-		echo "$$CURRENT_HASH" > .checksum; \
+		$(UI_DEPS_LOCK) '$(NPM_CI) && npm run lint && npm run typecheck' || exit 1; \
+		echo "$$CURRENT_HASH" > src/ui/.checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
 		echo -e "$(YELLOW)⏭️  UI lint SKIPPED - src/ui matches src/ui/.checksum, so eslint and tsc did NOT run.$(NC)"; \
@@ -1271,31 +1351,41 @@ ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict g
 	@# aborts here and the re-check below never runs, leaving the operator with the
 	@# fixer's output instead of the gate's. Ignoring this line's status is safe:
 	@# the gate runs next and decides the target's exit status.
-	-@cd src/ui && $(NPM_CI) && npm run lint:fix
+	-@$(UI_DEPS_LOCK) '$(NPM_CI) && npm run lint:fix'
 	@# Deliberately re-runs the CHECKING form, so the exit status reflects what is
 	@# left rather than what was repaired.
 	@$(MAKE) --no-print-directory ui-lint FORCE=1
 
 ui-build: ## Build UI for production (runs lint + typecheck + vite build)
 	@echo "Checking UI build"
-	cd src/ui && $(NPM_CI) && npm run build
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run build'
 
 ui-build-only: ## Vite production build ONLY (no lint/typecheck) — for CI, where ui-lint already ran them
 	@echo "Building UI (vite only; lint+typecheck already done by ui-lint)"
-	cd src/ui && $(NPM_CI) && npm run build:only
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run build:only'
 
+# $(NPM_CI), not a hardcoded `npm ci`. The literal here was not a decision: this
+# target landed ten days before NPM_CI existed, and the commit that introduced the
+# variable converted the four install sites among the lint/build/codegen gates it
+# was speeding up — this one is not in that set. So SKIP_NPM_CI=1 could not make
+# this target a no-op, and an install-once-then-skip ordering had to carry it as a
+# special case. Nothing in either CI depends on the literal: both inline their own
+# `npm ci && npx vitest run --silent` rather than invoking this target.
+#
+# `ui-start`'s install above stays literal, and that one IS deliberate — it starts
+# a dev server, so an install it was told to skip leaves nothing to serve.
 ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
-	cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
 
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
-	@cd src/ui && npm run codegen
+	@$(UI_DEPS_LOCK) 'npm run codegen'
 	@echo -e "$(GREEN)✅ GraphQL types regenerated. Don't forget to commit the changes.$(NC)"
 
 codegen-check: ## Verify GraphQL codegen output is up-to-date
 	@echo "Checking if GraphQL codegen output is up-to-date..."
-	@cd src/ui && $(NPM_CI) && npm run codegen
+	@$(UI_DEPS_LOCK) '$(NPM_CI) && npm run codegen'
 	@if ! git diff --quiet src/ui/src/graphql/generated/; then \
 		if [ -n "$$CI" ] || [ -n "$$GITHUB_ACTIONS" ]; then \
 			echo -e "$(RED)ERROR: Generated GraphQL files are out of date!$(NC)"; \

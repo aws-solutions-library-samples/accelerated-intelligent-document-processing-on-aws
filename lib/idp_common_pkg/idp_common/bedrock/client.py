@@ -166,6 +166,14 @@ _CLAUDE_4_7_BASE_NAMES = {
     # top_p=0.0, so Sonnet 5 must be treated like the sampling-param-stripped models
     # (this is a deliberate deviation from Sonnet 4.6, which still accepts them).
     "anthropic.claude-sonnet-5",
+    # Claude Sonnet 5.5. The entry is REQUIRED, not redundant: this set is matched
+    # EXACTLY on the base name (see is_claude_4_7_model), so "claude-sonnet-5" does
+    # not cover "claude-sonnet-5-5" — the same trap the Opus 5.5 comment above
+    # names. Verified live on Bedrock Converse (us.anthropic.claude-sonnet-5-5,
+    # us-east-1, 2026-10-14): each of `temperature`, `top_p` and `top_k` comes back
+    # "is deprecated for this model". IDP's default decoding config sets top_k=5 /
+    # top_p=0.0, so without this entry every Sonnet 5.5 request 400s.
+    "anthropic.claude-sonnet-5-5",
     # Claude Haiku 5.5 joins the set, and this is the first Haiku to do so —
     # Haiku 4.5 still accepts all three parameters, so "it's a Haiku" is not the
     # rule. Verified live on Bedrock Converse (us.anthropic.claude-haiku-5-5,
@@ -240,6 +248,18 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     # "anthropic.claude-opus-5". Relying on that would make the set silently
     # wrong for any future Opus 5.x that does NOT take effort.
     "anthropic.claude-opus-5-5",
+    # Claude Sonnet 5.5, and redundant-by-prefix in the same way: the lookup is
+    # `base.startswith(name)`, so "anthropic.claude-sonnet-5-5" already matched via
+    # "anthropic.claude-sonnet-5". Listed for the same reason as Opus 5.5 — a future
+    # Sonnet 5.x that does NOT take effort has to be decided here rather than
+    # inheriting a match. Verified live on Bedrock Converse
+    # (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14): all five of
+    # low/medium/high/xhigh/max are accepted, and "max" measurably spent more output
+    # tokens on the same prompt. Its default is "high" per the Bedrock model card
+    # ("effort level configurable - low, medium, high, xhigh, max; default: high"),
+    # read rather than measured since Converse reports no effort back — note that is
+    # the ordinary default, NOT the "medium" that Opus 5.5 and Haiku 5.5 carry.
+    "anthropic.claude-sonnet-5-5",
     "anthropic.claude-fable-5",
     # Claude Haiku 5.5 is the FIRST Haiku to accept effort — Haiku 4.5 rejects it
     # with a 400, and that rejection is the reason the comment above names Haiku
@@ -271,22 +291,68 @@ _CLAUDE_EFFORT_BASE_NAMES = {
 # ``thinking = {"type": "disabled"}`` (verified live, us.anthropic.claude-haiku-5-5,
 # us-west-2, 2026-10-08) and so is deliberately absent, even though it shares Opus
 # 5.5's sampling-parameter surface and its effort control.
+#
+# Claude Sonnet 5.5 is absent too, and for a THIRD reason that neither of the other
+# two illustrates: thinking can be turned off on it, but not with this payload — see
+# _THINKING_DISABLE_PAYLOAD_OVERRIDES below. Adding it here would read as "effort is
+# the only control", which is false for it.
 _THINKING_ALWAYS_ON_BASE_NAMES = {
     "anthropic.claude-opus-5-5",
 }
 
+#: ``thinking`` payload that turns thinking off, for models where it is NOT the
+#: ordinary ``{"type": "disabled"}``.
+#:
+#: Claude Sonnet 5.5 is the first model here that needs this. Verified live on
+#: Bedrock Converse (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14):
+#: ``{"type": "disabled"}`` is rejected with 'To turn thinking off on this model,
+#: send "thinking": {"type": "between_tools"} instead of {"type": "disabled"}', and
+#: ``{"type": "between_tools"}`` is accepted. So the model is neither
+#: thinking-always-on (Opus 5.5) nor ordinary (Haiku 5.5): it is a third answer, and
+#: a boolean cannot carry it. ``thinking_can_be_disabled`` would be False for it
+#: under its own documented contract while being a misleading statement of fact, so
+#: the spelling lives here and the boolean keeps meaning what its name says.
+_THINKING_DISABLE_PAYLOAD_OVERRIDES: Dict[str, Dict[str, str]] = {
+    "anthropic.claude-sonnet-5-5": {"type": "between_tools"},
+}
+
 
 def thinking_can_be_disabled(model_id: str) -> bool:
-    """False if ``model_id`` rejects ``thinking: {"type": "disabled"}``.
+    """False if thinking cannot be turned off on ``model_id`` at all.
 
     Lower ``output_config.effort`` is the only way to reduce thinking spend on
     such a model.
+
+    ⚠️ A True answer does NOT mean ``{"type": "disabled"}`` is the payload to send —
+    on Claude Sonnet 5.5 that exact value is rejected and ``{"type":
+    "between_tools"}`` is what works. Call :func:`thinking_disable_payload` for the
+    value rather than constructing one.
     """
     if not model_id:
         return True
     return _strip_region_and_1m(resolve_model_id_from_arn(model_id)) not in (
         _THINKING_ALWAYS_ON_BASE_NAMES
     )
+
+
+def thinking_disable_payload(model_id: str) -> Optional[Dict[str, str]]:
+    """The ``thinking`` field that turns thinking off on ``model_id``.
+
+    Returns None when thinking cannot be turned off at any effort level (see
+    :func:`thinking_can_be_disabled`), otherwise the payload to put in
+    ``additionalModelRequestFields["thinking"]``.
+
+    This file's Converse path never sends a ``thinking`` field, so nothing here
+    currently builds such a request — this exists so a caller that wants to disable
+    thinking asks once instead of discovering the 400 in production.
+    """
+    if not model_id:
+        return {"type": "disabled"}
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
+    if base in _THINKING_ALWAYS_ON_BASE_NAMES:
+        return None
+    return _THINKING_DISABLE_PAYLOAD_OVERRIDES.get(base, {"type": "disabled"})
+
 
 # Effort levels accepted by Claude models. There are now THREE vocabularies on
 # this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
@@ -625,6 +691,17 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-sonnet-4-6:1m",
     "us.anthropic.claude-sonnet-5",
     "us.anthropic.claude-sonnet-5:1m",
+    # Claude Sonnet 5.5. Explicit caching confirmed live rather than read off the
+    # card: a cachePoint after a 513-token text block wrote 513 tokens
+    # (cacheWriteInputTokens), and 508 tokens wrote nothing (us-east-1,
+    # 2026-10-14) — so the card's 512-token minimum is the real floor, which is
+    # HALF Sonnet 5's 1,024 (see prompt_cache.py; measured as a pair, Sonnet 5 wrote
+    # nothing at 825 tokens and 1,223 at 1,223). Like Haiku 5.5 the id carries no
+    # date or ``-v1:0`` suffix and has no ``:1m`` twin:
+    # ``us.anthropic.claude-sonnet-5-5:1m`` is not an id Bedrock knows ("The
+    # provided model identifier is invalid"), because the 1M window is this model's
+    # default rather than an opt-in.
+    "us.anthropic.claude-sonnet-5-5",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Claude Haiku 5.5. Explicit caching confirmed live rather than inferred from
     # the model card: a >512-token system prefix followed by a cachePoint block
@@ -643,6 +720,7 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "eu.anthropic.claude-sonnet-4-6:1m",
     "eu.anthropic.claude-sonnet-5",
     "eu.anthropic.claude-sonnet-5:1m",
+    "eu.anthropic.claude-sonnet-5-5",
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "eu.anthropic.claude-haiku-5-5",
     "eu.anthropic.claude-opus-4-5-20251101-v1:0",
@@ -661,6 +739,11 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "eu.amazon.nova-2-lite-v1:0",
     "eu.amazon.nova-2-lite-v1:0:priority",
     "eu.amazon.nova-2-lite-v1:0:flex",
+    # Canada geo profile of Nova Lite. Measured in ca-central-1 on 2026-10-12: a
+    # 7,530-token system prompt followed by a cachePoint wrote 7,530 tokens
+    # (cacheWriteInputTokens) and an identical second call read 7,530
+    # (cacheReadInputTokens).
+    "ca.amazon.nova-lite-v1:0",
     "global.amazon.nova-2-lite-v1:0",
     "global.amazon.nova-2-lite-v1:0:priority",
     "global.amazon.nova-2-lite-v1:0:flex",
@@ -671,6 +754,7 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.anthropic.claude-sonnet-4-6:1m",
     "global.anthropic.claude-sonnet-5",
     "global.anthropic.claude-sonnet-5:1m",
+    "global.anthropic.claude-sonnet-5-5",
     "global.anthropic.claude-opus-4-5-20251101-v1:0",
     "global.anthropic.claude-opus-4-6-v1",
     "global.anthropic.claude-opus-4-6-v1:1m",
@@ -694,13 +778,21 @@ CACHEPOINT_SUPPORTED_MODELS = [
 # a 400. Before it, every Converse-reachable family accepted all three modes, so
 # one gate covered both and this comment said so.
 #
+# ⚠️ Nor is the forcing answer a property of the FAMILY, which is the next thing a
+# reader assumes once one model splits the two questions. Claude Sonnet 5.5 rejects
+# forcing while Claude Sonnet 5 accepts it, so the Sonnet family now spans both
+# answers exactly as the Opus family does, and only an exact base-name lookup gets
+# that right (``FORCED_TOOL_CHOICE_UNSUPPORTED`` below).
+#
 # Verified live across the other currently selectable families (Claude
 # 3.5/3.7/4.x/5 and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig``
 # AND all three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the
-# Converse API, and actually emit the ``toolUse`` block. So for THIS gate the only
-# real question remains "does this model reach Converse at all", and exactly two
-# routes in invoke_model do not. They are named here so the exclusions are
-# discoverable and testable rather than buried in an `if`.
+# Converse API, and actually emit the ``toolUse`` block. The two 5.5 models above
+# are the exceptions to the forcing half of that, and to that half only: both still
+# carry a ``toolConfig``. So for THIS gate the only real question remains "does this
+# model reach Converse at all", and exactly two routes in invoke_model do not. They
+# are named here so the exclusions are discoverable and testable rather than buried
+# in an `if`.
 #
 # NOTE: OpenAI GPT-6 Astra is deliberately NOT one of them. It reaches Converse
 # and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
@@ -774,9 +866,22 @@ def supports_tool_config(model_id: str) -> bool:
 # equivalent and must fall back to the prose schema — which
 # ``forced_tool.should_force_tool`` already knows how to do, recording the reason in
 # the section's audit metadata rather than skipping silently.
+# Claude Sonnet 5.5 is the second entry, and the one that shows this is not an
+# Opus-only quirk. Verified live on Bedrock Converse
+# (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14) with the same three
+# requests: ``auto`` answered with stopReason ``tool_use`` and a toolUse block,
+# while ``{"any": {}}`` and ``{"tool": {"name": ...}}`` both returned the identical
+# ValidationException Opus 5.5 gives. The key is an EXACT base name, so
+# "anthropic.claude-sonnet-5" does not shadow it and Sonnet 5 — which does accept
+# both forcing modes — keeps the permissive answer.
 FORCED_TOOL_CHOICE_UNSUPPORTED: Dict[str, str] = {
     "anthropic.claude-opus-5-5": (
         "Claude Opus 5.5 accepts a Converse toolConfig but rejects a forced "
+        'toolChoice: \'tool_choice: type "tool" and "any" are not supported for '
+        "this model.' Use toolChoice auto and steer from the prompt"
+    ),
+    "anthropic.claude-sonnet-5-5": (
+        "Claude Sonnet 5.5 accepts a Converse toolConfig but rejects a forced "
         'toolChoice: \'tool_choice: type "tool" and "any" are not supported for '
         "this model.' Use toolChoice auto and steer from the prompt"
     ),
@@ -810,9 +915,25 @@ def supports_forced_tool_choice(model_id: str) -> bool:
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
 # e.g., "us.anthropic.claude-sonnet-4-6" -> "anthropic.claude-sonnet-4-6"
 # and "eu.amazon.nova-2-lite-v1:0:priority" -> "amazon.nova-2-lite-v1:0"
+#
+# The prefix set is _REGION_PREFIXES, not a local tuple. A hand-rolled ("us",
+# "eu", "global") here silently ignored every other geo an entry can carry, so
+# the `ca.`, `apac.`, `au.`, `jp.` or `us-gov.` spelling of a cachePoint-capable
+# model contributed no base name — and BedrockClient._is_model_cachepoint_supported
+# resolves an inference-profile ARN to its foundation model and looks the result
+# up in THIS set, so such a model would quietly lose prompt caching when it is
+# named by ARN.
+#
+# Latent when ca.amazon.nova-lite-v1:0 was added (its base is already seeded by
+# the us. twin, so the set is the same 23 names either way); the first model
+# offered under a geo prefix with no us. twin is what would have made it real.
+#
+# The tier/version suffix handling is deliberately NOT _strip_region_and_1m():
+# that helper strips `:1m`, which here must be KEPT, since a 1m profile is a
+# separate entry in the list above.
 for _model_id in CACHEPOINT_SUPPORTED_MODELS:
     _parts = _model_id.split(".", 1)
-    if len(_parts) == 2 and _parts[0] in ("us", "eu", "global"):
+    if len(_parts) == 2 and _parts[0] in _REGION_PREFIXES:
         _base = _parts[1]
         # Strip tier suffixes (:priority, :flex) but keep version suffixes (:0, :1m)
         if _base.endswith(":priority") or _base.endswith(":flex"):

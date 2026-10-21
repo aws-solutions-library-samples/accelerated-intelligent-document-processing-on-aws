@@ -1,0 +1,48 @@
+query GetMyAnnotationClaims($testSetId: String!) {
+  getAnnotationQueue(testSetId: $testSetId, mineOnly: true, limit: 200) {
+    testSetId
+    claimLeaseMinutes
+    summaryStatus
+    summaryCount
+    totalDocs
+    inspectedDocs
+    reviewedDocs
+    completedDocs
+    remainingDocs
+    claimedByOthers
+    nextObjectKey
+    labelJobStatus
+    labelJobLabeled
+    labelJobTotal
+    draftVersion
+    baseVersion
+    documents {
+      objectKey
+      inputKey
+      reviewObjectKey
+      minConfidence
+      confidenceThreshold
+      alertCount
+      documentClasses
+      fieldCount
+      labelSource
+      sectionCount
+      sections {
+        sectionId
+        baselineKey
+        documentClass
+        pageIndices
+      }
+      assignedTo
+      assignedAt
+      reviewedSections
+      skipped
+      claimedBy
+      claimedByMe
+      leaseExpiresAt
+      reviewStatus
+      reviewed
+      available
+    }
+  }
+}

@@ -1093,9 +1093,13 @@ class TestDownload:
         """The auto-detected BDA branch of `download(format="minimal")`.
 
         With no `pattern=`, this is the one call site that reaches
-        `load_system_defaults("pattern-1")` — it sniffs
-        `classification.classificationMethod` and asks for the BDA pattern's
-        defaults. That raised `FileNotFoundError` for everyone while
+        `load_system_defaults("pattern-1")` — it sniffs `use_bda` and asks for
+        the BDA pattern's defaults. (It sniffed
+        `classification.classificationMethod == "bda"` until config format 0.8;
+        that was a THIRD value the key never legitimately held, and it is
+        migrated away on read now, so `use_bda` — the flag the pipeline itself
+        branches on — is what identifies a BDA config.) It raised
+        `FileNotFoundError` for everyone while
         `pattern-1.yaml` inherited a module the v0.6 confidence/geometry split had
         deleted, so `config download --format minimal` was unusable on exactly the
         deployments it auto-detects, and failed with a message about a missing YAML
@@ -1115,7 +1119,6 @@ class TestDownload:
                 tmp_path / "c.yaml",
                 classes=[],
                 use_bda=True,
-                classification={"classificationMethod": "bda"},
             ),
             config_profile="bda",
             validate=False,
@@ -1147,7 +1150,6 @@ class TestDownload:
                 tmp_path / "c.yaml",
                 classes=[],
                 use_bda=True,
-                classification={"classificationMethod": "bda"},
             ),
             config_profile="bda",
             validate=False,

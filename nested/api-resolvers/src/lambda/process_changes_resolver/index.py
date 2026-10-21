@@ -12,6 +12,7 @@ from idp_common.docs_service import create_document_service
 
 # Import IDP Common modules
 from idp_common.models import Section, Status
+from idp_common.review_queues.statuses import LegacyHitlStatus, normalize_hitl_status
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -23,6 +24,10 @@ sqs_client = boto3.client("sqs")
 
 # Environment variables
 QUEUE_URL = os.environ.get("QUEUE_URL")
+
+_QUEUE_MANAGED_MESSAGE = (
+    "QUEUE_MANAGED: this document is in a review queue; work it from Review Queues"
+)
 
 # Groups permitted per operation in this resolver. updateDocumentSections matches
 # completeSectionReview (Admin, Reviewer, Annotator) — the sibling that edits a
@@ -441,6 +446,15 @@ def handler(event, context):
             if not document:
                 raise ValueError(f"Document {object_key} not found")
 
+            # A document waiting in a review queue is worked through the review
+            # operations; editing it here would bypass the reviewer's lease (D30).
+            # A finished queue document can be edited (a fresh, rerouted run).
+            if normalize_hitl_status(document.hitl_status).in_review:
+                logger.warning(
+                    "Rejecting processChanges on a document in a review queue"
+                )
+                raise ValueError(_QUEUE_MANAGED_MESSAGE)
+
             # Set bucket names from environment variables (fix for null bucket issue)
             input_bucket = os.environ.get("INPUT_BUCKET")
             output_bucket = os.environ.get("OUTPUT_BUCKET")
@@ -471,7 +485,7 @@ def handler(event, context):
                 completed_sections = list(document.hitl_sections_completed or [])
                 completed_sections.extend(pending_sections)
 
-                document.hitl_status = "Review Completed"
+                document.hitl_status = LegacyHitlStatus.REVIEW_COMPLETED.value
                 document.hitl_sections_pending = []
                 document.hitl_sections_completed = completed_sections
 
@@ -485,7 +499,7 @@ def handler(event, context):
                         Key={"PK": f"doc#{object_key}", "SK": "none"},
                         UpdateExpression="SET HITLStatus = :status, HITLReviewedBy = :reviewedBy, HITLReviewedByEmail = :reviewedByEmail, HITLCompleted = :completed REMOVE HITLPendingReview",
                         ExpressionAttributeValues={
-                            ":status": "Review Completed",
+                            ":status": LegacyHitlStatus.REVIEW_COMPLETED.value,
                             ":reviewedBy": username,
                             ":reviewedByEmail": user_email,
                             ":completed": True,
@@ -496,6 +510,13 @@ def handler(event, context):
                     f"Marked HITL review as completed by {username} via Process Changes"
                 )
 
+        except ValueError as e:
+            if str(e) == _QUEUE_MANAGED_MESSAGE:
+                raise
+            logger.error(f"Error retrieving document {object_key}: {str(e)}")
+            raise ValueError(
+                f"Document {object_key} not found or error retrieving: {str(e)}"
+            )
         except Exception as e:
             logger.error(f"Error retrieving document {object_key}: {str(e)}")
             raise ValueError(
@@ -720,6 +741,16 @@ def handler(event, context):
     except PermissionError:
         # RBAC denial must reach the dispatcher as 403; do not swallow into 200.
         raise
+    except ValueError as e:
+        if str(e) == _QUEUE_MANAGED_MESSAGE:
+            # A refusal, not a processing error: 400 through the dispatcher.
+            raise
+        logger.error(f"Error processing changes: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"Error processing changes: {str(e)}",
+            "processingJobId": None,
+        }
     except Exception as e:
         logger.error(f"Error processing changes: {str(e)}", exc_info=True)
 

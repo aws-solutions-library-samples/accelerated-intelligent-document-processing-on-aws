@@ -272,7 +272,8 @@ class TestNegativeCounterRepair:
         breached. ConcurrencyCounterNegativeAlarm watches this metric
         (``ConcurrencyCounterActive``, Minimum) going below zero;
         ConcurrencyCounterUnderflowAlarm watches a different one
-        (``ConcurrencyCounterUnderflow``, from the tracker's refused decrement)."""
+        (``ConcurrencyCounterUnderflow``, published by either function when its
+        own decrement is refused)."""
         index_module.concurrency_table.get_item.return_value = _counter(-3)
         index_module.sfn.list_executions.return_value = _running(7)
         cw = MagicMock()

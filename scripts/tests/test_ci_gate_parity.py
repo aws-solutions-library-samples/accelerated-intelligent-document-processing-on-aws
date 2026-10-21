@@ -147,7 +147,7 @@ GATE_SECTION_PREFIXES = (
 LIVE_STACK_SECTION_PREFIXES = ("Stack tests",)
 
 #: How many targets that wholesale exclusion covers today, audited when written.
-LIVE_STACK_SECTION_TARGET_COUNT = 19
+LIVE_STACK_SECTION_TARGET_COUNT = 21
 
 #: Name shapes that make a target a check wherever it lives. This is what stops
 #: :data:`GATE_SECTION_PREFIXES` from being a section-scoped hole: a ``check-*`` or
@@ -272,7 +272,7 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "tree's own tests fail, which the test gates already report -- so there is no "
         "verdict for CI to carry. What both CIs run is `coverage-all-cicd`, which is "
         "in SHARED_GATES: same producer, but with a concurrency budget and skipping "
-        "the tree an earlier CI step already measured. This unbudgeted nine-tree form "
+        "the tree an earlier CI step already measured. This unbudgeted form "
         "is the local one."
     ),
     "coverage-summary": (

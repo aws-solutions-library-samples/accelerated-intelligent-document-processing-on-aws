@@ -5,7 +5,6 @@
 Unit tests for the BdaService class.
 """
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +14,7 @@ from idp_common.bda.bda_service import BdaService
 
 @pytest.mark.unit
 @patch("idp_common.bda.bda_service.boto3")
-def test_bda_service_init_with_defaults(mock_boto3):
+def test_bda_service_init_with_defaults(mock_boto3, monkeypatch):
     """Test BdaService initialization with default values."""
     # Setup mock
     mock_session = MagicMock()
@@ -30,8 +29,8 @@ def test_bda_service_init_with_defaults(mock_boto3):
     mock_bda_client = MagicMock()
     mock_boto3.client.return_value = mock_bda_client
 
-    # Set environment variable for testing
-    os.environ["AWS_REGION"] = "us-west-2"
+    # Restored after the test, so later tests on this worker keep their region.
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
 
     # Call the constructor
     service = BdaService(output_s3_uri="s3://output-bucket/output-path")

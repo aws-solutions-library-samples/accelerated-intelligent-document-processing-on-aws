@@ -757,6 +757,12 @@ Resources:
               # and a check that could not be run is not a pass — it fails the
               # gate, which is the whole point of that rule.
               - 'cognito-idp:AdminUserGlobalSignOut'
+              # Reads each test user's group membership back out of the pool
+              # (`_verify_group_memberships`). `admin-add-user-to-group` is a
+              # separate call from `admin-create-user`, so "created" and "in the
+              # intended group" are two facts, and the matrix names a role in
+              # every row it prints. Without this the whole suite cannot start.
+              - 'cognito-idp:AdminListGroupsForUser'
               - 'cognito-idp:DescribeUserPoolClient'
               - 'cognito-idp:UpdateUserPoolClient'
             Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'

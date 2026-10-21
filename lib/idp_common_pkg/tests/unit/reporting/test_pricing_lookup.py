@@ -425,7 +425,7 @@ _TEMPLATES = (
 # A Bedrock model ID: an optional cross-region/geo prefix, a provider, then the
 # model name (which may carry ':0', ':1m', ':flex', ':priority' suffixes).
 _MODEL_ID_RE = re.compile(
-    r"^(?:(?:us|eu|us-gov|global)\.)?"
+    r"^(?:(?:us|eu|ca|us-gov|global)\.)?"
     r"(?:anthropic|amazon|openai|xai|meta|qwen|google|nvidia|deepseek|mistral"
     r"|cohere|ai21|writer|twelvelabs)"
     r"\.[A-Za-z0-9][A-Za-z0-9.:+_-]*$"

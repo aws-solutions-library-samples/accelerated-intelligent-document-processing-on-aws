@@ -116,7 +116,7 @@ KB_EMBED_TEMPLATE = "nested/bedrockkb/template.yaml"
 # `top_p` default) was picked up as a model id the moment the region prefix became
 # optional, and `v1.0`-style version strings would be too.
 MODEL_ID = re.compile(
-    r"^(?:(?:us|eu|apac|global|us-gov)\.)?"  # optional region / geo prefix
+    r"^(?:(?:us|eu|apac|ca|global|us-gov)\.)?"  # optional region / geo prefix
     r"[a-z][a-z0-9-]+\."  # provider, e.g. amazon / openai
     r"(?=[a-z0-9.:_-]*[a-z])[a-z0-9][a-z0-9.:_-]*$"  # model, must contain a letter
 )
@@ -1391,4 +1391,79 @@ def test_literal_exemptions_do_not_shield_more_than_when_they_were_written():
         "these counts are stale — the files shield FEWER retired literals than "
         "pinned, so the pin has stopped constraining the difference. Re-pin: "
         f"{json.dumps(shrunk, indent=2, sort_keys=True)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. "A Canada Region" is defined twice — the two must agree
+# ---------------------------------------------------------------------------
+
+
+_CA_CONDITION = "UseCanadaKnowledgeBaseModel"
+_UPDATE_CONFIG_HANDLER = "src/lambda/update_configuration/index.py"
+
+
+def _template_canada_regions() -> set:
+    """The Region literals the ``UseCanadaKnowledgeBaseModel`` condition names."""
+    text = (REPO_ROOT / "template.yaml").read_text(encoding="utf-8")
+    block = re.search(
+        rf"^  {_CA_CONDITION}:.*?(?=^  [A-Za-z]|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert block, f"{_CA_CONDITION} is not a Conditions entry in template.yaml"
+    return set(re.findall(r'AWS::Region",\s*"([a-z0-9-]+)"', block.group(0)))
+
+
+def _handler_canada_prefix() -> str:
+    """The Region prefix ``is_ca_region`` tests, read from the handler source."""
+    text = (REPO_ROOT / _UPDATE_CONFIG_HANDLER).read_text(encoding="utf-8")
+    rule = re.search(
+        r"def is_ca_region\(region: str\) -> bool:.*?"
+        r'return region\.startswith\("([a-z0-9-]+)"\)',
+        text,
+        re.DOTALL,
+    )
+    assert rule, (
+        "is_ca_region is no longer a single startswith() prefix test, so this "
+        f"check cannot compare the two. The {_CA_CONDITION} condition in "
+        "template.yaml enumerates Regions to match that rule, so a change of "
+        "shape there has to be reflected in the condition."
+    )
+    return rule.group(1)
+
+
+@pytest.mark.unit
+def test_the_template_canada_regions_match_the_handler_rule():
+    """Two definitions of "a Canada Region", held to each other.
+
+    The ``UpdateConfiguration`` custom resource resolves a stack to its own region
+    type with a prefix test (``is_ca_region``), the shape every region type here
+    uses — ``us-``, ``eu-``, and ``us-gov-`` in the CLI. CloudFormation
+    ``Conditions`` cannot do prefix matching, so ``UseCanadaKnowledgeBaseModel``
+    enumerates the Regions instead. That condition is the one Canada surface with
+    no fallback: a Canada stack it does not name keeps
+    ``us.amazon.nova-pro-v1:0`` for its Knowledge Base — a model with no inference
+    profile in Canada, so ``RetrieveAndGenerate`` fails at query time — while the
+    picklists and the default swaps adapt to the Region on their own.
+
+    Checked here is the drift an offline test can see: a Region named by the
+    condition that the handler would not call Canada, or a handler rule narrowed
+    away from the Regions the condition names. What no offline test can see is AWS
+    launching another ``ca-`` Region, since the handler's rule accepts an
+    open-ended prefix while the condition is a closed list — that case needs the
+    Region added to the condition by hand.
+    """
+    prefix = _handler_canada_prefix()
+    regions = _template_canada_regions()
+    assert regions, (
+        f"{_CA_CONDITION} names no Region literal, so the Canada Knowledge Base "
+        "default could never apply"
+    )
+    wrong = sorted(r for r in regions if not r.startswith(prefix))
+    assert not wrong, (
+        f"{_CA_CONDITION} names {wrong}, which is_ca_region does not treat as "
+        f"Canada (it tests startswith({prefix!r})). The condition would hand the "
+        "Canada Knowledge Base model to a stack whose picklists and default swaps "
+        "are not the Canada ones."
     )

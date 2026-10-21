@@ -125,9 +125,6 @@
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py": {
       "I001": 1
     },
-    "nested/api-resolvers/src/lambda/test_runner/index.py": {
-      "I001": 1
-    },
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
       "E722": 1
     },
@@ -239,9 +236,6 @@
     "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py": {
       "I001": 1
     },
-    "src/lambda/complete_section_review/index.py": {
-      "I001": 1
-    },
     "src/lambda/create_chat_session_resolver/index.py": {
       "F401": 1,
       "I001": 1
@@ -330,9 +324,6 @@
       "F401": 1,
       "I001": 1
     },
-    "src/lambda/test_set_file_copier/index.py": {
-      "I001": 1
-    },
     "src/lambda/test_set_zip_extractor/index.py": {
       "F541": 1,
       "I001": 1
@@ -351,20 +342,17 @@
     },
     "src/lambda/workflow_tracker/index.py": {
       "E402": 1,
-      "F401": 2,
-      "I001": 1
+      "F401": 2
     }
   },
   "formatDebt": [
     "lib/idp_common_pkg/idp_common/bedrock/client.py",
-    "lib/idp_common_pkg/idp_common/config/__init__.py",
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
     "lib/idp_common_pkg/idp_common/config/constants.py",
     "lib/idp_common_pkg/idp_common/image/__init__.py",
     "nested/api-resolvers/src/lambda/abort_test_runs/index.py",
     "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py",
     "nested/api-resolvers/src/lambda/agent_request_handler/index.py",
-    "nested/api-resolvers/src/lambda/configuration_resolver/index.py",
     "nested/api-resolvers/src/lambda/configuration_resolver/test_revision_ops.py",
     "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py",
     "nested/api-resolvers/src/lambda/create_document_resolver/index.py",
@@ -447,7 +435,6 @@
     "scripts/tests/test_contributing_doc.py",
     "scripts/tests/test_metric_namespace_alignment.py",
     "scripts/tests/test_repo_quality_review_skill.py",
-    "scripts/tests/test_repo_walk_guards_prune_local_work.py",
     "scripts/tests/test_scope_lookup_fail_closed.py",
     "scripts/tests/test_secure_transport_deny.py",
     "scripts/tests/test_state_machine_retry_policies.py",
@@ -509,7 +496,6 @@
     "src/lambda/ocr_benchmark_deployer/index.py",
     "src/lambda/ocr_benchmark_deployer/test_local.py",
     "src/lambda/post_processing_decompressor/index.py",
-    "src/lambda/queue_processor/index.py",
     "src/lambda/queue_processor/test_check_circuit_breaker.py",
     "src/lambda/queue_processor/test_config_version_pin.py",
     "src/lambda/queue_processor/test_reconcile_counter.py",
@@ -525,13 +511,12 @@
     "src/lambda/user_sync/index.py",
     "src/lambda/w2_dataset_deployer/index.py",
     "src/lambda/workflow_tracker/conftest.py",
-    "src/lambda/workflow_tracker/index.py",
     "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 82,
-    "lintFindings": 190,
-    "formatDebtFiles": 172
+    "lintDebtFiles": 79,
+    "lintFindings": 186,
+    "formatDebtFiles": 167
   }
 }

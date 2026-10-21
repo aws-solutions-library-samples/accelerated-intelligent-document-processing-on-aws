@@ -41,6 +41,7 @@ A scalable, serverless solution for automated document processing and informatio
 
 https://github.com/user-attachments/assets/fc2652b5-a9cc-42d7-9975-887c8320a2f5
 
+> **Hands-on workshop:** Learn the accelerator end to end in the [GenAI IDP Workshop on AWS Workshop Studio](https://catalog.workshops.aws/workshops/c384d63d-3090-44c9-a639-e06dd6d9164f). It is best taken at an AWS-hosted event, such as an enablement session or hands-on workshop for your team, where each participant gets a temporary AWS account with the solution pre-deployed. AWS customers can request a session through their AWS account team or Solutions Architect. A self-paced option in your own account is also available. See [Hands-on Workshops](./docs/workshops.md).
 
 Concierge support for customization, deployment, and integration of production use cases is available through [AWS Professional Services](https://aws.amazon.com/professional-services/).
 
@@ -94,6 +95,9 @@ To quickly deploy the GenAI-IDP solution in your AWS account:
 | US West (Oregon)      | us-west-2   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://us-west-2.console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/create/review?templateURL=https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | US East (N.Virginia)      | us-east-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | EU Central (Frankfurt)      | eu-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
+| Canada (Central)      | ca-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
+
+> ⚠️ The **Canada (Central)** button serves artifacts from v0.6.12 onward. Until that release is published it answers a CloudFormation "template not found" error; deploy an earlier release from source instead (see [Canada (Central) Region Model Support](./docs/canada-region-model-support.md)).
 
 3. When the stack deploys for the first time, you'll receive an email with a temporary password to access the web UI
 4. Use this temporary password for your first login to set up a permanent password
@@ -170,6 +174,7 @@ To update an existing GenAIIDP stack to a new version:
    - us-west-2: `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main.yaml`
    - us-east-1: `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml`
    - eu-central-1: `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml`
+   - ca-central-1: `https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml`
 6. Follow the prompts to update your stack, reviewing any parameter changes
 7. For detailed instructions, see the [Deployment Guide](./docs/deployment.md#updating-an-existing-stack)
 
@@ -187,6 +192,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 
 - [Architecture](./docs/architecture.md) - Detailed component architecture and data flow
 - [Demo Videos](./docs/demo-videos.md) - Comprehensive collection of feature demonstration videos
+- [Hands-on Workshops](./docs/workshops.md) - The instructor-led GenAI IDP Workshop on AWS Workshop Studio, and the self-guided Amazon Quick integration workshop
 - [Deployment](./docs/deployment.md) - Build, publish, deploy, and test instructions
 - [Headless Deployment](./docs/headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) for API-only use cases
 - [GovCloud Deployment](./docs/govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)

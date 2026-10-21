@@ -1,18 +1,34 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-import boto3
-import time
 import json
-import os
-from datetime import datetime, timedelta, timezone
 import logging
-from idp_common.models import Document, Status, Page, Section  # type: ignore[import-untyped]
-from idp_common.docs_service import create_document_service  # type: ignore[import-untyped]
-from idp_common.document_versions import build_run_id, snapshot_output_versions  # type: ignore[import-untyped]
-from idp_common.utils.log_sanitizer import sanitize_event_for_logging  # type: ignore[import-untyped]
+import os
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
+
+import boto3
 from botocore.exceptions import ClientError
-from typing import Dict, Any, Optional
+
+from idp_common.docs_service import (
+    create_document_service,  # type: ignore[import-untyped]
+)
+from idp_common.document_versions import (  # type: ignore[import-untyped]
+    build_run_id,
+    snapshot_output_versions,
+)
+from idp_common.models import (  # type: ignore[import-untyped]
+    Document,
+    Page,
+    Section,
+    Status,
+    document_wrapper_status,
+    terminal_document_status,
+)
+from idp_common.utils.log_sanitizer import (
+    sanitize_event_for_logging,  # type: ignore[import-untyped]
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -47,6 +63,33 @@ s3 = boto3.client("s3")
 lambda_client = boto3.client("lambda")
 sns = boto3.client("sns")
 document_service = create_document_service()
+
+# Review queues (idp_common.review_queues): no store when HITL_TABLE_NAME
+# is unset, in which case no run is treated as a review run. The store is built
+# on first use and creates no AWS client until it is queried.
+_REVIEW_STORE_CACHE: Dict[str, Any] = {}
+
+
+def review_store():
+    if "store" not in _REVIEW_STORE_CACHE:
+        if os.environ.get("HITL_TABLE_NAME"):
+            from idp_common.review_queues.store import (
+                create_review_store,  # type: ignore[import-untyped]
+            )
+
+            _REVIEW_STORE_CACHE["store"] = create_review_store()
+        else:
+            _REVIEW_STORE_CACHE["store"] = None
+    return _REVIEW_STORE_CACHE["store"]
+
+
+def review_tracker():
+    """``idp_common.review_queues.tracker``, imported on first use."""
+    from idp_common.review_queues import tracker  # type: ignore[import-untyped]
+
+    return tracker
+
+
 CONCURRENCY_TABLE = os.environ["CONCURRENCY_TABLE"]
 concurrency_table: Table = dynamodb.Table(CONCURRENCY_TABLE)
 COUNTER_ID = "workflow_counter"
@@ -137,7 +180,10 @@ def _record_workflow_timeout(object_key: str) -> None:
 
 
 def update_document_completion(
-    object_key: str, workflow_status: str, output_data: Dict[str, Any]
+    object_key: str,
+    workflow_status: str,
+    output_data: Dict[str, Any],
+    review_ctx: Any = None,
 ) -> Document:
     """
     Update document completion status via document service
@@ -146,18 +192,23 @@ def update_document_completion(
         object_key: The document object key (ID)
         workflow_status: The final workflow status (SUCCEEDED, FAILED, ABORTED, TIMED_OUT)
         output_data: The output data from the workflow execution
+        review_ctx: The review-queue context of this run (phase 1 or finalize),
+            or None for every other run
 
     Returns:
         The updated Document object
     """
-    # Map workflow status to document status
-    # ABORTED workflows should keep ABORTED status (set by abort_workflow_resolver)
-    if workflow_status == "SUCCEEDED":
+    # Map workflow status to document status. ABORTED keeps ABORTED (set by
+    # abort_workflow_resolver); a SUCCEEDED run keeps a terminal status the
+    # state machine put on the output wrapper (REDACTED_SUPERSEDED,
+    # HITL_IN_PROGRESS at a review hold, REJECTED after a review rejection).
+    doc_status = terminal_document_status(
+        workflow_status, document_wrapper_status(output_data)
+    )
+    if doc_status == Status.REDACTED_SUPERSEDED:
+        # Handled below once the document is loaded (the original is deleted).
         doc_status = Status.COMPLETED
-    elif workflow_status == "ABORTED":
-        doc_status = Status.ABORTED
-    else:
-        doc_status = Status.FAILED
+    reporting_document = None
 
     # Create a document with basic properties (fallback for failed workflows)
     document = Document(
@@ -242,11 +293,13 @@ def update_document_completion(
 
             # Use the processed document directly and update status. This is
             # safer than copying fields and ensures we don't miss any data.
-            processed_doc.status = (
-                Status.COMPLETED if workflow_status == "SUCCEEDED" else Status.FAILED
-            )
+            processed_doc.status = doc_status
             processed_doc.completion_time = datetime.now(timezone.utc).isoformat()
             document = processed_doc
+            if review_ctx is not None:
+                document, reporting_document = review_tracker().apply_overrides(
+                    review_ctx, processed_doc
+                )
 
         except Exception as e:
             logger.error(f"Could not extract document data: {e}", exc_info=True)
@@ -261,10 +314,22 @@ def update_document_completion(
     if workflow_status == "TIMED_OUT":
         _record_workflow_timeout(object_key)
 
+    # A finalize run reports only its own usage (the tracking row carries the
+    # phase-1 metering merged in), so reporting never counts phase 1 twice.
+    tracked_document = document
+    if reporting_document is not None:
+        document = reporting_document
+
     # Save reporting data to reporting bucket if available
     if REPORTING_BUCKET and SAVE_REPORTING_FUNCTION_NAME:
         # Determine what data to save based on what's available in the document
         data_to_save = []
+        review_payload = None
+        if review_ctx is not None and workflow_status == "SUCCEEDED":
+            data_to_save.append("document_reviews")
+            review_payload = (
+                review_tracker().reporting_info(review_ctx).model_dump(mode="json")
+            )
 
         if document.metering:
             data_to_save.append("metering")
@@ -301,6 +366,7 @@ def update_document_completion(
                             "document": document.to_dict(),
                             "reporting_bucket": REPORTING_BUCKET,
                             "data_to_save": data_to_save,
+                            **({"review": review_payload} if review_payload else {}),
                         }
                     ),
                 )
@@ -323,12 +389,17 @@ def update_document_completion(
                 "No reporting data available to save (no metering data or sections with extraction results)"
             )
 
+    if review_ctx is not None and updated_doc is not None:
+        # Keep the in-memory document the review writes read (metering merged).
+        updated_doc.metering = tracked_document.metering
     return updated_doc
 
 
 def record_document_run(
-    document: Document, run_timestamp: Optional[str] = None
-) -> None:
+    document: Document,
+    run_timestamp: Optional[str] = None,
+    run_kind: Optional[str] = None,
+) -> Any:
     """
     Record this successful execution as an immutable document version.
 
@@ -347,13 +418,16 @@ def record_document_run(
             run_id and is deduped, rather than minting a phantom duplicate
             version. Falls back to the document's completion_time.
 
+    Returns ``RunRef(run_id, manifest_uri)`` when a run was recorded, else None
+    (review-queue runs reference it from the status object).
+
     Never raises: version history is best-effort and must not fail tracking.
     """
     if not DOCUMENT_VERSIONING_ENABLED:
-        return
+        return None
     if not OUTPUT_BUCKET:
         logger.warning("OUTPUT_BUCKET not set - skipping document run record")
-        return
+        return None
     try:
         # Derive run_id from a STABLE timestamp + the execution name (also
         # stable) so retries collapse onto the same run_id. Using
@@ -387,12 +461,20 @@ def record_document_run(
             manifest_uri=manifest_uri,
             file_count=manifest.get("file_count", 0),
             expires_after=expires_after,
+            **({"run_kind": run_kind} if run_kind else {}),
         )
+        if run_kind:
+            from idp_common.review_queues.models import (
+                RunRef,  # type: ignore[import-untyped]
+            )
+
+            return RunRef(run_id=run_id, manifest_uri=manifest_uri)
     except Exception as e:
         logger.error(
             f"Failed to record document run for {document.input_key}: {e}",
             exc_info=True,
         )
+    return None
 
 
 def put_latency_metrics(document: Document) -> None:
@@ -500,9 +582,7 @@ def _apply_decrement(marker_id: Optional[str]) -> str:
         "Item": {
             "counter_id": {"S": marker_id},
             # ExpiresAfter is this stack's TTL attribute name on every table.
-            "ExpiresAfter": {
-                "N": str(int(time.time()) + DECREMENT_MARKER_TTL_SECONDS)
-            },
+            "ExpiresAfter": {"N": str(int(time.time()) + DECREMENT_MARKER_TTL_SECONDS)},
         },
         "ConditionExpression": "attribute_not_exists(counter_id)",
     }
@@ -825,6 +905,7 @@ def handler(event, context):
     if isinstance(event, dict) and isinstance(event.get("detail"), dict):
         execution_arn = event["detail"].get("executionArn")
 
+    run_ref = None
     try:
         # Extract data from event
         input_data = json.loads(event["detail"]["input"])
@@ -846,9 +927,44 @@ def handler(event, context):
 
         workflow_status = event["detail"]["status"]
 
+        # Review queues: is this phase 1 of a held document or a finalize run?
+        # The markers (wrapper HITL_IN_PROGRESS, $.review.finalizeToken) can't
+        # exist with the feature off, so every other run takes today's path.
+        review_ctx = None
+        if review_store() is not None:
+            review_kind = review_tracker().classify_run(
+                input_data, output_data, workflow_status
+            )
+            if review_kind != "none":
+                review_ctx = review_tracker().load_context(
+                    review_kind,
+                    review_tracker().finalize_token_of(input_data),
+                    object_key,
+                    execution_arn,
+                    review_store(),
+                )
+                if review_ctx is None:
+                    # A stale or redelivered event (D70): the item moved on, so
+                    # writing this run's status would overwrite a later outcome.
+                    logger.info(
+                        f"event=review_stale_event kind={review_kind}; only the "
+                        "concurrency slot is released"
+                    )
+                    decrement_attempted = True
+                    counter_value = decrement_counter(execution_arn)
+                    return {
+                        "statusCode": 200,
+                        "body": {
+                            "object_key": object_key,
+                            "workflow_status": workflow_status,
+                            "completion_time": None,
+                            "counter_value": counter_value,
+                        },
+                    }
+
         # Update document completion status
         updated_doc = update_document_completion(
-            object_key, workflow_status, output_data
+            object_key, workflow_status, output_data, review_ctx
         )
 
         # A REDACTED_SUPERSEDED original was deleted (redact-copy-and-stop): there
@@ -885,8 +1001,19 @@ def handler(event, context):
             # then what it protects is the REST of the terminal handling
             # (latency metrics, circuit-breaker notify) and the 200 response —
             # not the decrement, which the error path below performs anyway.
+            run_kind = None
+            record_run = True
+            if review_ctx is not None:
+                run_kind = (
+                    "review_phase1" if review_ctx.kind == "hold" else "review_final"
+                )
+                # A rejected document has no final output to pin.
+                record_run = review_ctx.outcome != "rejected"
             try:
-                record_document_run(updated_doc, run_timestamp=run_timestamp)
+                if record_run:
+                    run_ref = record_document_run(
+                        updated_doc, run_timestamp=run_timestamp, run_kind=run_kind
+                    )
             except Exception as run_error:
                 logger.error(
                     f"Failed to record document run: {run_error}", exc_info=True
@@ -910,9 +1037,34 @@ def handler(event, context):
                 "skipping latency metrics"
             )
 
-        # Always decrement counter
-        decrement_attempted = True
-        counter_value = decrement_counter(execution_arn)
+        # Review writes come before the decrement, which runs exactly once
+        # either way; a review failure is re-raised after it (the sweeper heals).
+        if review_ctx is not None:
+            try:
+                import idp_common.s3 as s3_module  # type: ignore[import-untyped]
+                from idp_common.review_queues import (
+                    notify as review_notify,  # type: ignore[import-untyped]
+                )
+
+                review_tracker().after_completion(
+                    review_ctx,
+                    workflow_status=workflow_status,
+                    run_ref=run_ref,
+                    document=updated_doc,
+                    store=review_store(),
+                    s3=s3_module,
+                    output_bucket=OUTPUT_BUCKET or "",
+                    notifier=review_notify,
+                    document_service=document_service,
+                    retention_days=DATA_RETENTION_IN_DAYS,
+                )
+            finally:
+                decrement_attempted = True
+                counter_value = decrement_counter(execution_arn)
+        else:
+            # Always decrement counter
+            decrement_attempted = True
+            counter_value = decrement_counter(execution_arn)
 
         return {
             "statusCode": 200,

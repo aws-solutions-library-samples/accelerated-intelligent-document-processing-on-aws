@@ -37,6 +37,18 @@ def index_module(monkeypatch):
     }
     fake_models = MagicMock()
     fake_models.Status = _Status
+    # The workflow-to-document status mapping lives in idp_common.models (its
+    # table, TIMED_OUT -> FAILED included, is pinned by
+    # lib/idp_common_pkg/tests/unit/test_models_terminal_status.py). This
+    # stand-in follows that contract for the non-SUCCEEDED rows, so the tests
+    # here check that the tracker asks it and uses its verdict.
+    fake_models.document_wrapper_status = MagicMock(return_value=None)
+    fake_models.terminal_document_status = MagicMock(
+        side_effect=lambda workflow, wrapper: {
+            "SUCCEEDED": _Status.COMPLETED,
+            "ABORTED": _Status.ABORTED,
+        }.get(workflow, _Status.FAILED)
+    )
     fake_docs_service = MagicMock()
     fake_docs_service.create_document_service = MagicMock(return_value=MagicMock())
 
@@ -74,6 +86,7 @@ def test_timed_out_marks_document_failed_and_records_timed_out_status(index_modu
     m = index_module
     m.update_document_completion("big.pdf", "TIMED_OUT", None)
 
+    m.terminal_document_status.assert_called_once_with("TIMED_OUT", None)
     # Normal update went through the document service with a FAILED document ...
     m.document_service.update_document.assert_called_once()
     doc = m.document_service.update_document.call_args.args[0]

@@ -38,7 +38,13 @@ logger = logging.getLogger(__name__)
 #: decides when to build the zip, that one decides what to report, and they are
 #: reached by different code paths.
 TERMINAL_FILE_STATUSES = frozenset(
-    {Status.COMPLETED.value, Status.FAILED.value, Status.ABORTED.value}
+    {
+        Status.COMPLETED.value,
+        Status.FAILED.value,
+        Status.ABORTED.value,
+        # A reviewer rejected the document in a review queue.
+        Status.REJECTED.value,
+    }
 )
 
 #: Key prefix identifying a document submitted through the /Jobs API.

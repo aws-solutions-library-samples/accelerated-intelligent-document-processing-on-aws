@@ -51,7 +51,11 @@ export default defineConfig(({ mode }) => ({
         // Manual chunking for better code splitting
         manualChunks: {
           'aws-amplify': ['aws-amplify', '@aws-amplify/ui-react'],
-          'aws-sdk': ['@aws-sdk/client-ssm', '@aws-sdk/client-cognito-identity', '@aws-sdk/s3-request-presigner'],
+          // `@aws-sdk/s3-request-presigner` used to be listed here. Nothing imports
+          // it any more — the browser no longer signs S3 URLs (issue #1033) — and a
+          // manualChunks entry pulls its target into the graph whether or not the
+          // app reaches it, so leaving it named would keep shipping the presigner.
+          'aws-sdk': ['@aws-sdk/client-ssm', '@aws-sdk/client-cognito-identity'],
           cloudscape: ['@cloudscape-design/components', '@cloudscape-design/global-styles'],
           chart: ['chart.js', 'react-chartjs-2'],
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],

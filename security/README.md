@@ -79,14 +79,14 @@ gate is not mistaken for full coverage:
 
 | Surface | Covered? | Threat |
 |---------|----------|--------|
-| UI API `POST /op/{field}` (118 ops × 5 groups) | **Yes** — RBAC static + dynamic | AUTH.T03, AUTH.T08 |
+| UI API `POST /op/{field}` (124 ops × 5 groups) | **Yes** — RBAC static + dynamic | AUTH.T03, AUTH.T08 |
 | A field the dispatcher can route but nothing behind it authorizes | **Partly** — the manifest + static scan is what stands in for a default deny; the dispatcher itself does not refuse an unrecorded field | AUTH.T16 |
 | Hook failure containment across the seven pipeline hook points | **No** — no test asserts that `onError: fail` halts the workflow at each point | HOOK.T07 |
 | Breadth of the shipped CloudFormation deployment service role | **Partly** — `scripts/sdlc/validate_service_role_permissions.py` checks the role has what the stack needs, not that it has no more | SDK.T05 |
 | Chat streaming **Lambda Function URL** (`/chat/*`) | **No** — the harness drives `/op` only | CHAT.T03, CHAT.T06 |
 | **Jobs API** (`/jobs`, M2M OAuth realm) | **No** scope-negative test in the gate | JOB.T02 |
-| Object-read key scoping — per-user axes (`getFileContents`, `getFilePresignedUrl`) | **Yes** — out-of-scope-key cases for both axes and both fields, offline (`get_file_contents_resolver/test_key_scope.py`) | UI.T06 |
-| Object-read key scoping — per **document** | **No** — document ownership is not modelled, so there is no out-of-scope case to write; the browser's direct-read reach is pinned instead (`scripts/tests/test_browser_s3_grants.py`) | UI.T06, #1033 |
+| Object-read key scoping — per-user axes (`getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls`) | **Yes** — out-of-scope-key cases for both axes and all three fields, offline (`get_file_contents_resolver/test_key_scope.py`) | UI.T06 |
+| Object-read key scoping — per **document** | **Partly** — the configuration-profile axis is covered offline (`get_file_contents_resolver/test_document_scope.py`: out-of-profile document, unidentifiable key, unstamped document, whole-batch refusal), and the absence of the browser's own S3 grant is pinned (`scripts/tests/test_browser_s3_grants.py`). Document *ownership* is not modelled at all, so for a caller with no `allowedConfigVersions` there is no out-of-scope case to write | UI.T06, #1033 |
 | CSP in `WebUIHosting=APIGateway` mode | ZAP scans the API, not that hosting mode's SPA responses | UI.T07 |
 | Feature UI bundle integrity | **No** — no SRI/digest check exists to test | FEAT.T01 |
 | Seller activation endpoint — auth, IAM, payload robustness | **Yes** — template-security + payload-fuzz suites, per commit | SELL.T02, T03, T05, T07, T09 |

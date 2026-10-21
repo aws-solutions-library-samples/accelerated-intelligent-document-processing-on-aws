@@ -603,6 +603,36 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
   
+  # Claude Sonnet 5.5. Rates are the US regional / geo-CRIS band, read from the AWS
+  # price list offer file for AmazonBedrockFoundationModels version 20261012084008
+  # (retrieved 2026-10-14): $2.20 input / $11.00 output / $0.11 cache read / $2.75
+  # 5-minute cache write per 1M tokens. A 1-hour-TTL cache write is a separate,
+  # higher rate ($4.40/MTok) that this file has no unit for on any model; IDP writes
+  # 5-minute cache points only. There is no ':1m' twin to add — the 1M window is
+  # this model's default and there is no such model id (see model_config_limits.yaml).
+  #
+  # ⚠️ DO NOT read a cost report as saying Sonnet 5.5 is cheaper than Sonnet 5 per
+  # token on input or output. The price list gives the two models the IDENTICAL
+  # $2.20/$11.00 band; the one real difference is cache read, where 5.5 is half the
+  # price ($0.11 against $0.22). The rows below are the measured rates and the six
+  # Sonnet 5 rows are knowingly 1.50x high (the ⚠️ block on
+  # us.anthropic.claude-sonnet-5 above explains why they are left alone), so a
+  # report comparing the two is reading that discrepancy, not a price difference.
+  # Correcting the Sonnet 5 rows removes the artefact; until then, compare the two
+  # from the price list rather than from a report generated out of this file.
+  # These rows are deliberately NOT inflated to match: a second known-wrong figure
+  # is not consistency, and it would have to be un-done by whoever fixes the first.
+  - name: bedrock/us.anthropic.claude-sonnet-5-5
+    units:
+      - name: inputTokens
+        price: "2.2E-6"
+      - name: outputTokens
+        price: "1.1E-5"
+      - name: cacheReadInputTokens
+        price: "1.1E-7"
+      - name: cacheWriteInputTokens
+        price: "2.75E-6"
+
   - name: bedrock/us.anthropic.claude-opus-4-20250514-v1:0
     units:
       - name: inputTokens
@@ -1137,6 +1167,22 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
   
+  # Claude Sonnet 5.5, EU regional / geo-CRIS band. Identical to the us. band in the
+  # price list (offer 20261012084008, retrieved 2026-10-14) — $2.20 / $11.00 / $0.11
+  # / $2.75 — which is the normal shape for this file: only the global. band differs.
+  # Read the ⚠️ note on the us.anthropic.claude-sonnet-5-5 block before comparing a
+  # cost report for this model against one for Sonnet 5.
+  - name: bedrock/eu.anthropic.claude-sonnet-5-5
+    units:
+      - name: inputTokens
+        price: "2.2E-6"
+      - name: outputTokens
+        price: "1.1E-5"
+      - name: cacheReadInputTokens
+        price: "1.1E-7"
+      - name: cacheWriteInputTokens
+        price: "2.75E-6"
+
   - name: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
     units:
       - name: inputTokens
@@ -1271,6 +1317,32 @@ pricing:
         price: "2.0E-7"
       - name: cacheWriteInputTokens
         price: "5.0E-6"
+
+  # ---------------------------------------------------------------------------
+  # Amazon Bedrock Models - Amazon Nova (Canada)
+  # ---------------------------------------------------------------------------
+  # Canada (Central) rates from the AWS Price List API (usagetype CAN1-NovaLite-*,
+  # retrieved 2026-10-11); cache writes billed at the input rate, as the US/EU
+  # Nova rows.
+  - name: bedrock/ca.amazon.nova-lite-v1:0
+    units:
+      - name: inputTokens
+        price: "6.4E-8"
+      - name: outputTokens
+        price: "2.56E-7"
+      - name: cacheReadInputTokens
+        price: "1.6E-8"
+      # "0.0" for the same reason every other Nova row carries it — see the ⚠️
+      # note on the Nova section above. This row shipped at the input rate
+      # (6.4E-8), which is the one value that is never right: not zero (the Nova
+      # rule) and not 1.25x input (the Claude rule), and `cacheWriteInputTokens`
+      # is DISJOINT from `inputTokens`, so it billed the whole cached prefix at
+      # full input price for a dimension AWS publishes at $0.0000000000. Canada
+      # matters more than most: this model is the confidence-assessment default
+      # for a ca-* stack and prompt caching is enabled on it, so the over-report
+      # was on the hottest path in the deployment.
+      - name: cacheWriteInputTokens
+        price: "0.0"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Global/Cross-Region
@@ -1424,6 +1496,22 @@ pricing:
       - name: cacheWriteInputTokens
         price: "3.75E-6"
   
+  # Claude Sonnet 5.5, global. band — the 1/1.1 of the us./eu. rates this file's
+  # header describes: $2.00 input / $10.00 output / $0.10 cache read / $2.50
+  # 5-minute cache write per 1M tokens (offer 20261012084008, retrieved
+  # 2026-10-14). Read the ⚠️ note on the us.anthropic.claude-sonnet-5-5 block before
+  # comparing a cost report for this model against one for Sonnet 5.
+  - name: bedrock/global.anthropic.claude-sonnet-5-5
+    units:
+      - name: inputTokens
+        price: "2.0E-6"
+      - name: outputTokens
+        price: "1.0E-5"
+      - name: cacheReadInputTokens
+        price: "1.0E-7"
+      - name: cacheWriteInputTokens
+        price: "2.5E-6"
+
   - name: bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0
     units:
       - name: inputTokens

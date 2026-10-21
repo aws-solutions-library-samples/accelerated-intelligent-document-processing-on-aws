@@ -233,6 +233,8 @@ class ProgressMonitor:
                 "duration": elapsed.get("total", 0) / 1000.0
                 if elapsed.get("total")
                 else 0,  # Convert ms to seconds
+                # Review-queue status (None when the document was never routed).
+                "review": doc_result.get("review"),
             }
 
             # Add error info for failed/aborted documents
@@ -362,6 +364,7 @@ class ProgressMonitor:
                 "start_time": result.get("StartTime", ""),
                 "end_time": result.get("EndTime", ""),
                 "duration": result.get("Duration", 0),
+                "review": result.get("review"),
             }
 
             # Add status-specific fields

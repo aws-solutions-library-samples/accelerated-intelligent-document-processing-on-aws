@@ -5,8 +5,9 @@
 
 What this is for
 ----------------
-``assessment_coverage_incomplete`` fires at 5% of extracted list rows unscored for a
-warning and at 25% plus 10 absolute unscored rows for an error. Those numbers were
+``assessment_coverage_incomplete`` fires at 5% of extracted list rows unscored **or**
+10 unscored rows in absolute terms for a warning, and at 25% plus 10 absolute unscored
+rows for an error. Those numbers were
 argued from the reconciliation code path — a run whose model scored every row should
 land at 0% shortfall — and for a while nothing recorded coverage on real output, so
 the rate at which the warning rung fires on a *healthy* document was unknown. It is
@@ -65,18 +66,27 @@ MIN_RUNS = 6000
 # 5% rung is firing on healthy documents after all.
 MIN_ZERO_SHORTFALL_SHARE = 0.95
 
-# The share of runs the warning rung fires on. Measured 0.66%. A rung that is noise
-# shows up here.
+# The share of runs the rung fires on, at either severity. Measured 0.70% over the
+# grids committed here and 0.64% over those plus the v0.6.12 grids of PR #1487, both
+# with the absolute ceiling of #1495 live. A rung that is noise shows up here.
 MAX_WARNING_FIRING_SHARE = 0.02
 
-# The largest number of unscored rows recorded on a run the warning rung said nothing
-# about: 24 of 800 (3.0%). This is the residual the purely multiplicative 5% rung
-# leaves, and it is pinned rather than fixed because the committed artifacts cannot
-# say whether the ladder had already reported those rows (see the module docstring).
-# If it grows, re-measure, record the new figure in the assessment README, and
-# reconsider whether the warning rung should carry an absolute ceiling the way the
-# error rung carries an absolute floor.
-MAX_SILENT_UNSCORED_ROWS = 24
+# The largest number of unscored rows recorded on a run the warning rung says nothing
+# about: 6 of 400 (1.5%). Re-measured for #1495, when the warning rung gained the
+# absolute ceiling the error rung's absolute floor always had. The figure it replaces
+# was 24 of 800 (3.0%) over the grids up to v0.6.11 and 115 of 3,200 (3.6%) once a
+# 3,200-row document was benchmarked — the count grew 4.8x on a 4x larger document at
+# a near-identical share, which is what a purely multiplicative rung does and why the
+# ceiling exists.
+#
+# This figure is now a measurement UNDER a structural bound rather than the only thing
+# standing between the band and the longest list anyone benchmarks: the ceiling caps it
+# at ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS - 1`` whatever the document's
+# size, which ``test_the_silent_band_residual_is_pinned`` asserts separately from this
+# pin. A grid that lands between 7 and 9 unscored rows therefore fails this pin while
+# the structural bound still holds; re-pin it in that case. A grid at or above the
+# ceiling means the ceiling is not being enforced, which is a defect in the guard.
+MAX_SILENT_UNSCORED_ROWS = 6
 
 
 def _rows():
@@ -106,6 +116,17 @@ def corpus():
         "mean anything."
     )
     return [row for _v, _s, row in rows]
+
+
+@pytest.fixture(scope="module")
+def corpus_located():
+    """The same corpus, but each row paired with the grid directory it came from.
+
+    `corpus` drops the location because every share it computes is corpus-wide. A
+    carve-out has to name the grid it applies to, or it would shield the same shape
+    anywhere — so that one check reads this instead.
+    """
+    return [(f"{suite}", row) for _v, suite, row in _rows()]
 
 
 def _defined(corpus):
@@ -141,13 +162,43 @@ def _severity_for(expected: int, unscored: int) -> str | None:
     return found[0].severity if found else None
 
 
+def _severity_without_the_ceiling(expected: int, unscored: int) -> str | None:
+    """The same, with the warning rung's absolute ceiling lifted.
+
+    "Reported by the ceiling alone" is a statement about the guard, so it is read off
+    the guard with that one instrument disabled rather than by restating the
+    fraction's comparand here — which would make the subset agree with the guard for
+    a reason unrelated to the guard, and stop meaning what it says the moment either
+    comparand moved. ``audit_explainability`` reads the constant from its module at
+    call time, so raising it out of reach is enough; it is restored unconditionally.
+    """
+    from idp_common.assessment import batching
+
+    name = "_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS"
+    saved = getattr(batching, name)
+    setattr(batching, name, 10**9)
+    try:
+        return _severity_for(expected, unscored)
+    finally:
+        setattr(batching, name, saved)
+
+
+def _pairs(corpus):
+    return {
+        (r["conf_rows_expected"], r["conf_rows_unscored"]) for r in _defined(corpus)
+    }
+
+
 @pytest.fixture(scope="module")
 def severities(corpus):
     """``(expected, unscored) -> severity|None`` for every shape in the corpus."""
-    pairs = {
-        (r["conf_rows_expected"], r["conf_rows_unscored"]) for r in _defined(corpus)
-    }
-    return {pair: _severity_for(*pair) for pair in pairs}
+    return {pair: _severity_for(*pair) for pair in _pairs(corpus)}
+
+
+@pytest.fixture(scope="module")
+def severities_without_the_ceiling(corpus):
+    """The same mapping as the fraction alone would produce (#1495)."""
+    return {pair: _severity_without_the_ceiling(*pair) for pair in _pairs(corpus)}
 
 
 def _share(rows, predicate):
@@ -192,7 +243,7 @@ def test_the_warning_rung_is_not_firing_at_a_rate_that_makes_it_noise(
     share = len(fired) / len(defined)
     assert share <= MAX_WARNING_FIRING_SHARE, (
         f"the coverage rung would fire on {share:.2%} of {len(defined)} runs "
-        f"(measured 0.66%). Past a couple of percent it is a document-level alarm on "
+        f"(measured 0.70%). Past a couple of percent it is a document-level alarm on "
         "the healthy path, which is the condition #997 asked about."
     )
 
@@ -283,15 +334,28 @@ def test_every_sub_floor_error_shortfall_is_a_total_one(corpus, severities):
 
 
 def test_the_silent_band_residual_is_pinned(corpus, severities):
-    """What the purely multiplicative warning fraction lets through, in absolute rows.
+    """What the warning rung lets through, in absolute rows — bound, then measurement.
 
-    The 5% rung scales its slack with the list, while one half of its justification
-    ("a 1-2 row gap on an 800-row table is ``assessment_incomplete``'s business") names
-    an absolute quantity. So the number of unscored rows that emits no coverage issue
-    grows with the section: 0 at 20 rows, 19 at 400, 39 at 800. This pins the largest
-    one actually observed, so the residual is a recorded figure rather than an
-    arithmetic possibility, and so growth in it is visible.
+    The 5% fraction scales its slack with the list, while one half of its
+    justification ("a 1-2 row gap on an 800-row table is ``assessment_incomplete``'s
+    business") names an absolute quantity. A fraction alone therefore leaves a silent
+    band that grows with the section — 19 rows at 400, 39 at 800, 159 at 3,200 — and
+    observing it grow is exactly what happened: 24 unscored rows of 800 over the grids
+    up to v0.6.11, then 115 of 3,200 at a near-identical share once a 4x larger
+    document was benchmarked (#1495).
+
+    Two assertions, in order of strength. The first is the **structural** bound the
+    absolute ceiling gives: no run can be silent at or above
+    ``_COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS`` unscored rows, whatever the list
+    length, and that is a property of the guard rather than of the corpus — it is read
+    off the shipped constant so re-tuning the constant moves it rather than breaking
+    it. The second is the **measurement** under that bound, which keeps the observed
+    residual a recorded figure rather than an arithmetic possibility.
     """
+    from idp_common.assessment.batching import (
+        _COVERAGE_SHORTFALL_WARNING_MIN_UNSCORED_ROWS as CEILING,
+    )
+
     silent = [
         r
         for r in _defined(corpus)
@@ -299,17 +363,69 @@ def test_the_silent_band_residual_is_pinned(corpus, severities):
         and severities[(r["conf_rows_expected"], r["conf_rows_unscored"])] is None
     ]
     assert silent, (
-        "no committed run sits between 0 and the warning fraction, so there is no "
+        "no committed run sits between 0 and the warning rung, so there is no "
         "observed residual to pin and this assertion shields nothing."
     )
     worst = max(silent, key=lambda r: r["conf_rows_unscored"])
+    assert worst["conf_rows_unscored"] < CEILING, (
+        f"{worst['conf_rows_unscored']} unscored rows of "
+        f"{worst['conf_rows_expected']} ({worst['doc']}, {worst['cell']}) emit no "
+        f"coverage issue, at or above the {CEILING}-row absolute ceiling the warning "
+        "rung carries. The ceiling is not being enforced — that is a defect in "
+        "``audit_explainability``, not a figure to re-pin."
+    )
     assert worst["conf_rows_unscored"] <= MAX_SILENT_UNSCORED_ROWS, (
         f"{worst['conf_rows_unscored']} unscored rows of "
         f"{worst['conf_rows_expected']} ({worst['doc']}, {worst['cell']}) emit no "
         f"coverage issue, above the {MAX_SILENT_UNSCORED_ROWS} rows recorded when "
-        "this was measured. The residual the multiplicative rung leaves has grown: "
-        "re-measure, update 'Coverage: measured' in the assessment README, and weigh "
-        "an absolute ceiling on the warning rung against the firing rate it would add."
+        "this was measured. The ceiling still holds (the assertion above passed), so "
+        "this is a new observation inside the band the fraction deliberately leaves "
+        "to ``assessment_incomplete``: re-measure, record the new figure in "
+        "'Coverage: measured' in the assessment README, and re-pin."
+    )
+
+
+def test_nothing_the_absolute_ceiling_newly_reports_is_an_error(
+    corpus, severities, severities_without_the_ceiling
+):
+    """The ceiling reports; it never escalates (#1495).
+
+    A run that crosses the absolute ceiling without crossing the 5% fraction is below
+    the 25% error fraction by arithmetic, so the ceiling cannot reach error severity —
+    and ``extraction.row_shortfall_action`` does not govern this code, so no
+    deployment can turn it into a failure either. Asserted over the corpus because it
+    is the property that decides whether this change can break a document that
+    completes today: every run the ceiling newly speaks about must be a warning.
+
+    The subset is "the guard speaks, and would not with the ceiling lifted" — read
+    from ``audit_explainability`` twice rather than from a restated comparand, so it
+    keeps meaning "reported by the ceiling alone" whatever the rungs are expressed in.
+    """
+    ceiling_only = [
+        r
+        for r in _defined(corpus)
+        if severities[(r["conf_rows_expected"], r["conf_rows_unscored"])] is not None
+        and severities_without_the_ceiling[
+            (r["conf_rows_expected"], r["conf_rows_unscored"])
+        ]
+        is None
+    ]
+    assert ceiling_only, (
+        "no committed run is reported by the absolute ceiling alone, so the ceiling "
+        "currently shields nothing on this corpus and this assertion is vacuous — "
+        "which would also mean the firing-rate figures in 'Coverage: measured' can no "
+        "longer be reproduced from these artifacts."
+    )
+    offenders = [
+        (r["doc"], r["cell"], r["conf_rows_unscored"], r["conf_rows_expected"])
+        for r in ceiling_only
+        if severities[(r["conf_rows_expected"], r["conf_rows_unscored"])] != "warning"
+    ]
+    assert offenders == [], (
+        f"{len(offenders)} of {len(ceiling_only)} runs reported by the absolute "
+        "ceiling alone are not at warning severity. The ceiling exists to make a "
+        "shortfall visible, not to fail a document that completes today. First few: "
+        f"{offenders[:5]}"
     )
 
 
@@ -341,24 +457,67 @@ def test_no_coverage_outlier_is_the_out_of_range_confidence_artefact(corpus):
     )
 
 
-def test_an_undefined_coverage_run_extracted_nothing(corpus):
+def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     """``expected_rows == 0`` is an extraction finding, not a coverage one.
 
     The guard declines to fire when the section extracted no list row, which would be
     a hole if those runs were producing rows the measurement could not see. They are
-    not: every such run with a synthetic row count recorded shows
-    ``rows_extracted == 0``, i.e. the model returned no list at all.
+    not: every such run with a synthetic row count recorded returned no list at all.
+
+    ``rows_extracted == 0`` is how that reads on all but four runs, and the exception
+    is this scorer rather than the walk — see the carve-out below, which is the one
+    place in this suite where a non-zero row count does not mean rows.
     """
-    undefined = [r for r in corpus if not r["conf_rows_expected"]]
+    undefined = [(g, r) for g, r in corpus_located if not r["conf_rows_expected"]]
     assert undefined, "no run records undefined coverage; this check shields nothing."
     with_rows = [
-        r
-        for r in undefined
+        (g, r)
+        for g, r in undefined
         if isinstance(r.get("rows_extracted"), (int, float)) and r["rows_extracted"]
     ]
-    assert with_rows == [], (
-        f"{len(with_rows)} runs record extracted rows while reporting no coverage "
-        "denominator, so the coverage walk is missing rows the extraction produced — "
-        "a list nested inside a group attribute is the shape that does this. First "
-        f"few: {[(r['doc'], r['cell'], r['rows_extracted']) for r in with_rows[:5]]}"
+
+    # ⚠️ Four runs record a non-zero `rows_extracted` here, and the defect is in
+    # THIS SCORER rather than in the coverage walk (#1505). On four
+    # `coresynth__extraction-model-sonnet55` runs over `med_narrow.pdf` the
+    # `Transactions` field came back as a prose refusal — "The statement contains 400
+    # transactions (SEQ00000 to SEQ00399). They are too many to list in full here
+    # ..." — so there was no array, and `expected_rows == 0` is the coverage walk
+    # answering CORRECTLY. What produced the 2 is
+    # `score_synthetic`'s identifier scan, which reads `json.dumps(inference_result)`
+    # whole: the refusal sentence names `SEQ00000` and `SEQ00399`, those are two of
+    # this document's truth ids, and the scan cannot tell a row from a model quoting
+    # a row. `test_row_identity_collapse.py::test_a_prose_refusal_inflates_the_row_count`
+    # executes that rather than leaving it stated here.
+    #
+    # So the carve-out stands but the premise it carves out of is intact: no rows were
+    # extracted on these runs, and the extraction-side signal for the shape is
+    # `extraction_list_field_not_a_list` (#1505), which postdates this grid.
+    # `rows_extracted` is deliberately NOT re-derived: the raw section objects these
+    # grids were scored from are not committed, so a changed scan cannot be
+    # re-measured over them and would leave two incomparable definitions in one
+    # corpus.
+    #
+    # Carved out BY NAME and COUNT-PINNED rather than filtered by shape, so a fifth
+    # instance — or the same shape on another model or document — fails here.
+    KNOWN_UNDEFINED_WITH_ROWS = {
+        ("coresynth__extraction-model-sonnet55", "med_narrow.pdf"),
+    }
+    EXPECTED_KNOWN = 4
+
+    known = [(g, r) for g, r in with_rows if (g, r["doc"]) in KNOWN_UNDEFINED_WITH_ROWS]
+    unknown = [pair for pair in with_rows if pair not in known]
+
+    assert unknown == [], (
+        f"{len(unknown)} runs record extracted rows while reporting no coverage "
+        "denominator. Either the coverage walk is missing rows the extraction "
+        "produced — a list nested inside a group attribute is the shape that does "
+        "that — or the row count is counting something that is not a row, as in the "
+        "#1505 carve-out above. Establish which before relaxing anything. First "
+        f"few: {[(g, r['doc'], r['cell'], r['rows_extracted']) for g, r in unknown[:5]]}"
+    )
+    assert len(known) == EXPECTED_KNOWN, (
+        f"the #1505 carve-out now shields {len(known)} runs, not {EXPECTED_KNOWN}. "
+        "If the count grew, a new instance has appeared and belongs on that issue; if "
+        "it shrank to 0 the grids carrying it are gone and this carve-out should be "
+        "deleted along with it."
     )

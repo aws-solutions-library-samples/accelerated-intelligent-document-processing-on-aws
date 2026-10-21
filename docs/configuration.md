@@ -127,15 +127,18 @@ The GenAI IDP Accelerator uses a **system defaults** architecture where configur
 
    Which of the two is used comes from the caller's explicit pattern argument. Where
    that is omitted, the tools that auto-detect it (the SDK's config download and
-   upload, and the `update_configuration` Lambda) select `pattern-1.yaml` only for a
-   configuration whose `classification.classificationMethod` is `bda`, and
-   `pattern-2.yaml` otherwise — they do not read the top-level `use_bda` flag, so a
-   BDA deployment configured only through `use_bda: true` resolves against
-   `pattern-2.yaml`. That is benign but not free: your own `use_bda: true` still wins
-   the merge, so the workflow routes to BDA as you asked, and the cost is a
-   configuration carrying the OCR, classification, chat, rule-validation and LLM
-   extraction defaults BDA mode does not use. `use_bda` is what routes the workflow at
-   run time; the pattern file only decides which defaults are merged underneath it.
+   upload, and the `update_configuration` Lambda) read the top-level **`use_bda`**
+   flag: `pattern-1.yaml` when it is set, `pattern-2.yaml` otherwise. That is the same
+   flag that routes the workflow at run time, so the defaults merged underneath a
+   configuration now match the branch it will actually take.
+
+   Until config format 0.8 these tools sniffed `classification.classificationMethod
+   == "bda"` instead and did **not** read `use_bda`, so a BDA deployment configured
+   only through `use_bda: true` resolved against `pattern-2.yaml` and carried the OCR,
+   classification, chat, rule-validation and LLM extraction defaults BDA mode does not
+   use. (`"bda"` was never one of that key's two documented values and nothing in the
+   product wrote it; the key itself is gone — see
+   [Classification Method → Granularity](migration-classification-granularity.md).)
 
 2. **User configurations** are merged on top, overriding only the specified values
 
@@ -193,11 +196,11 @@ recommendation, and states plainly where a setting was measured to buy nothing.
 To override specific settings while keeping others at defaults:
 
 ```yaml
-notes: "Configuration with custom classification method"
+notes: "Configuration that classifies a whole packet in one call"
 
-# Override just the classification method
+# Override just the classification granularity
 classification:
-  classificationMethod: textbasedHolisticClassification
+  granularity: packet
 
 # Override confidence to use integrated mode
 extraction:
@@ -439,7 +442,8 @@ extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
 `hitl.*` block. See [Extraction & Confidence](./extraction-and-confidence.md) for
-the full reference.
+the full reference. Production [review queues](./review-queues.md) are not part of
+the configuration: Admins manage them in HITL › Queue Management.
 
 ### Enable/Disable Confidence
 
@@ -536,6 +540,40 @@ score reaches the UI and what a `None` confidence means.
 See [Granular Assessment Retirement](./migration-granular-retirement.md) for details.
 
 For detailed information, see [Extraction & Confidence](extraction-and-confidence.md).
+
+## Inbox Message Retention
+
+The [Inbox](web-ui.md#inbox) keeps each user's messages for a limited time and up to
+a per-user cap. Both are configuration settings under `hitl.notifications`, shown in
+the Web UI configuration editor as **Inbox messages** inside the
+**Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  enabled: false            # does not affect the Inbox settings below
+  notifications:
+    retention_days: 30      # 1-365: days a message is kept before it is removed automatically
+    max_per_user: 50        # 1-200: messages kept per user
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.notifications.retention_days` | 30 | 1–365 | Days an Inbox message is kept. DynamoDB TTL removes it afterwards, and an expired message is never listed or counted, even before TTL deletes it. |
+| `hitl.notifications.max_per_user` | 50 | 1–200 | Messages kept per user. When a new message takes a user over the cap, expired messages are removed first, then the oldest read messages, and the oldest unread message only when every message is unread. |
+
+How the settings apply:
+
+- They are read from the **active** [configuration profile](configuration-profiles.md).
+- They are cached for about 60 seconds, so a change can take up to a minute to reach
+  every writer.
+- They apply to messages written after the change. Existing messages keep the
+  expiry they were written with, and the cap is enforced the next time a message is
+  written for that user.
+- They apply whether or not `hitl.enabled` is set.
+- If the configuration cannot be read, the defaults apply.
+
+For how platform components post messages, see the
+[notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
 ## Stack Parameters
 
@@ -1148,8 +1186,8 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5** | 512 tokens |
-| Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5**, **Sonnet 5.5** | 512 tokens |
+| Claude **Sonnet 5**, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
 | Amazon Nova | ≤ 355 tokens (below any shipped class) |
@@ -1162,6 +1200,14 @@ Note the two Haikus sit at opposite ends of this table, so "Haiku" is not a tier
 Haiku 5.5's minimum is 512 tokens — the lowest here, 8x below Haiku 4.5's — which
 makes it the one cheap model where caching is worth configuring rather than written
 off: a class that never cached on Haiku 4.5 may well cache on it.
+
+**Nor is a version number a tier.** The two Sonnets are in different rows above:
+Sonnet 5.5 caches from 512 tokens and Sonnet 5 from 1,024. So the 25% of shipped
+classes that never cache on the 1,024-token tier is a figure about Sonnet 5, not
+about Sonnet 5.5 — on which some of those same classes do cache. If you are
+switching between the two, re-run `idp-cli config-validate`: its per-class warning
+is computed against the configured model's own minimum, so the answer changes with
+the model and not only with the prompt.
 
 `idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up

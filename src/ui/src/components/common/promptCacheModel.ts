@@ -38,7 +38,12 @@ const MIN_PREFIX_TIERS: Array<[RegExp, number]> = [
   // 'haiku-5-5' is its own alternative here and must stay ahead of the 'haiku-4-5'
   // tier: the two Haikus sit at opposite ends of this table (512 vs 4096), so a
   // shared 'haiku-' stem would report an 8x-too-high minimum for Haiku 5.5.
-  [/claude-(opus-5|fable-5|haiku-5-5)/, 512],
+  // 'sonnet-5-5' must likewise stay ahead of the 1024 tier below, and here the
+  // shadowing is in the id rather than in a stem: 'claude-sonnet-5' is a substring
+  // of 'claude-sonnet-5-5', so without this alternative Sonnet 5.5 reports 1024 —
+  // double its real 512 — and the UI warns that a 512-1024 token class will not
+  // cache when it does. Mirrors _MIN_PREFIX_TIERS in idp_common/bedrock/prompt_cache.py.
+  [/claude-(opus-5|fable-5|haiku-5-5|sonnet-5-5)/, 512],
   [/claude-opus-4-7/, 2048],
   [/claude-(opus-4-6|opus-4-5|haiku-4-5)/, 4096],
   [/claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4|3-7-sonnet)/, 1024],

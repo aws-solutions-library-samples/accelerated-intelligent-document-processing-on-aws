@@ -278,6 +278,7 @@ agents:
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Default)
 - `us.anthropic.claude-sonnet-4-6` (recommended for complex reasoning)
 - `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-sonnet-5-5`
 - `us.anthropic.claude-haiku-5-5`
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (legacy; end of life 2027-04-08)
 - `us.amazon.nova-pro-v1:0`

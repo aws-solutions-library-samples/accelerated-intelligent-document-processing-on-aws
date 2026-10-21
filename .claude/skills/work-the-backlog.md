@@ -83,16 +83,30 @@ live child.** If you cannot name one, you are about to stop the run rather than
 pause it. The heartbeat child in section 0 is the standing answer — it is running
 from the first action of the run precisely so that the answer is never "none".
 
-⚠️ **A prompt typed into this session kills every background agent.** Twice in one
-run the harness recorded `agents_killed` — *"6 background agents were stopped by the
-user"*, then *"5"* — at the instant a typed prompt arrived, and each killed agent's
-own transcript ends at `[Request interrupted by user]`. `SendMessage` then refuses
-them permanently, so roughly eleven agent-hours, every measurement and every report
-were lost while their pushed commits survived. Say this once at the start of a run:
-mid-run instructions are safe as answers to an `AskUserQuestion` (measured — five
-agents survived one) or from a second session via `SendMessage`, and a typed prompt
-costs the batch. After **any** unexpected prompt, assume every agent is gone and run
-the sweep in section 0 before acting on anything you remember.
+**A typed prompt leaves background agents alive, so mid-run instructions may go
+straight into this session.** Measured on 2026-10-20, CLI 2.1.296.1183: a message typed
+**mid-turn, while the session was running a command**, displaced that command to the
+background and left the subagent alone — *"moved to the background so that a message that
+arrived while it was running can reach you; it was not interrupted"*. The command then
+exited 0 and the probe agent finished its full 587-second run and reported normally, nine
+minutes later. Cite the completion rather than the `ListAgents` snapshot: a snapshot can
+catch an agent in the instant before it is reaped, a finished run cannot. Test the busy
+case, because during a run the session is working rather than idle.
+
+`AskUserQuestion` answers are also safe (five agents survived one), and a peer session is
+worth keeping for the independent-reader value in the bounds file rather than as
+insurance against losing a batch.
+
+⚠️ **Three bounds, and the first is a live hazard.** **Esc is untested and treated as
+destructive** — never use it on a running session. On **CLI builds before 2.1.296** a
+typed prompt did kill every background agent: the harness logged `agents_killed` twice in
+one run, each victim's transcript ending at `[Request interrupted by user]`, `SendMessage`
+refusing them afterwards, and roughly eleven agent-hours of measurements lost while the
+pushed commits survived. Whether that was fixed or was always Esc rather than typing is
+unresolved. So **re-measure after a CLI upgrade** — arm a throwaway probe, type a word
+while the session is busy, call `ListAgents` — and if agents ever do vanish alongside an
+unexpected prompt, assume they are gone and run the sweep in section 0 before acting on
+anything you remember.
 
 **Write your state to disk every cycle, and treat your own context as
 unreliable.** This loop outlives a single context window: a long run will compact,
@@ -115,14 +129,45 @@ that has to be reverted and costs far more than parking it.
 
 ## 0. Resume or start
 
+### The `Stop` hook enforces the liveness invariant — you do not have to remember it
+
+`scripts/hooks/check_loop_liveness.py` is registered as a `Stop` hook in
+`.claude/settings.json`, and it **refuses to let the turn end** when a run is live
+and no child is recorded. That is the one control here that does not depend on the
+coordinator following a rule, which matters because the rule being followed is the
+thing that failed twice: 5 h 32 m once and 101 minutes again, with every gate green.
+
+It reads `scratch/backlog-run-state.json`, so the state file gains one key, and
+**writing it is now part of ending a turn**:
+
+```json
+"liveness": {"kind": "background-bash", "ref": "<pid>", "recordedAt": "<iso8601>"}
+```
+
+Three kinds, and only two are checkable from a hook. `background-bash` with a pid is
+verified with `os.kill(pid, 0)`, so a dead child blocks. `wakeup` with the ISO time it
+fires is verified against the clock, so a wakeup already past blocks. `subagent` with
+an agent id is **allowed without verification** — a hook subprocess cannot call
+`ListAgents` — and the hook says on stderr that it did not check, rather than implying
+it did. A record older than 35 minutes is treated as stale and blocks, because the
+child it names has already come back.
+
+So what the hook guarantees is "you recorded a live child, and if the record was
+checkable it checked out" — not "a child is alive". The recording is the part that was
+missing in both incidents. `ALLOW_IDLE_TURN=1` overrides it for a deliberate park, and
+an honoured override prints a line saying so. It is silent in every session that has
+no state file, which is every session that is not running this loop.
+
+A run that is genuinely finished says so by emptying `inFlight` and `ranked`, or by
+setting `halted`. Then the hook goes quiet — which is also how you end the run on
+purpose rather than by being refused.
+
 ### First action: start the heartbeat child
 
-**Before reading the state file, before anything else, background this.** It is the
-loop's dead-man's switch and it is deliberately structural rather than discretionary,
-because the failure it prevents is a coordinator not following a rule it had itself
-just written down — five and a half hours of silence with every gate green. One
-`run_in_background` Bash command, which re-invokes you when it exits, so the liveness
-invariant holds by construction from the first turn:
+**Before reading the state file, before anything else, background this.** The `Stop`
+hook above refuses a turn with nothing tracked; this is what gives you something to
+track from the first turn, so the two work together rather than one standing in for the
+other. One `run_in_background` Bash command, which re-invokes you when it exits:
 
 ```bash
 # exits after 30 minutes, or sooner if memory gets tight — either way it returns
@@ -150,18 +195,51 @@ figure that predicts whether an allocation will succeed, so the `awk` index abov
 load-bearing rather than incidental. The false-alarm direction is the one worth
 guarding, because nobody re-checks a number that says stop.
 
-Two properties make this the right shape rather than an external timer. It arrives as
-a **tool result**, not as a prompt, and a prompt arriving unbidden kills every
-background agent (see the ground rules); tool results demonstrably do not — ten-minute
-background waits returned here with five agents alive. And it always exits, so it
-cannot itself become the thing that looks tracked while doing nothing.
+Two properties make this the right shape. It arrives as a **tool result**, and tool
+results leave agents alive — ten-minute background waits returned here with five agents
+running. And it always exits, so it cannot itself become the thing that looks tracked
+while doing nothing.
 
 ⚠️ **It does not survive the session dying**, only the session going idle: the child
 and the session go together. Protection against the process itself dying has to come
-from outside — a `/loop` wrapper at an interval well past the 300-second prompt-cache
-window — and that is worth adding only once it has been established, on a throwaway
-session holding a throwaway agent, that a scheduled wakeup leaves background agents
-alive. Until that is measured, the heartbeat is the whole mechanism.
+from outside, and nothing in this tree provides it; recovery is a human noticing, and
+what makes that cheap is the state file plus the journals.
+
+### `ScheduleWakeup` is the better child, and it is safe with agents in flight
+
+Prefer `ScheduleWakeup` over the backgrounded `sleep` wherever the wait is time-based
+rather than event-based. It is a first-class mechanism rather than a process: it cannot
+be lost the way a child can, it carries a `reason` and a `noop` flag that surface to
+the user in the terminal, and it removes the "start a replacement each time it returns"
+step — which is itself a discipline requirement, and discipline is what this section
+exists to stop relying on. Record it as `{"kind": "wakeup", "ref": "<when it fires>"}`
+and the `Stop` hook verifies it against the clock.
+
+**Two facts about it, and the distinction between them is the whole point.** It is
+settled that `ScheduleWakeup` works outside `/loop`: it was called from an ordinary
+interactive session on 2026-09-24 with `delaySeconds: 270` and woke on schedule,
+verified from the transcript rather than from the session's own report. So a run that is
+stalling can adopt self-pacing **in place**, and the obvious alternative — stop,
+compact, restart under `/loop` — is the wrong move, because it risks uncommitted
+worktrees, discards pending output and kills live subagents.
+
+**A firing wakeup does not kill background agents**, so `ScheduleWakeup` is safe with
+fixer agents in flight. Measured 2026-10-20 on CLI 2.1.296.1183, twice: a wakeup was
+booked while a `general-purpose` subagent was left alive mid-`sleep`, the turn ended, and
+the wakeup fired; `ListAgents` immediately afterwards showed the agent `running`, and it
+went on to finish its full run. A wakeup's delivery behaves like a **tool result**.
+
+⚠️ **Two agents, two firings, one build — re-measure after a CLI upgrade**, since the
+kill this replaces was observed on an earlier one and the method is three steps. It says
+nothing about **Esc**, which remains untested and treated as destructive.
+
+⚠️ **One call can repeat.** Passing a carry-forward `prompt` arms a dynamic loop that
+fires again unprompted; `ScheduleWakeup` with `stop: true` ends it. For exactly one
+wakeup, expect to stop the loop afterwards.
+
+Interval: well past the 300-second prompt-cache window, so 1200s or more for an idle
+check. Under 300s keeps the cache warm and is for polling something external that
+genuinely changes that fast.
 
 ### Then read the state file
 
@@ -174,8 +252,16 @@ cat scratch/backlog-run-state.json 2>/dev/null || echo "NO STATE - fresh run"
 
 `scratch/` is gitignored, so the file never reaches a commit. Shape:
 
+⚠️ **Write `sessionId` on the first dispatch and keep it there**, or the `Stop` hook
+loses its precision. `scratch/` is gitignored but nothing cleans it up, so a state file
+outlives the run that wrote it — and a file claiming live work can otherwise refuse
+turns in unrelated sessions indefinitely. The hook therefore blocks only when the file
+says *this* session owns the run; without the key it falls back to mtime and disregards
+anything older than four hours, which is the blunter instrument.
+
 ```json
 {
+  "sessionId": "<this session's id>",
   "startedAt": "2026-09-23T14:02:00Z",
   "n": 4,
   "mergesSinceCheckIn": 2,
@@ -525,6 +611,49 @@ a cosmetic nit and a risky architectural change.
 - **Read the comments before ranking.** Issues here are often partly withdrawn or
   re-scoped in a comment, and the title can be stale. An issue whose premise was
   retracted should be retitled or closed, not worked.
+- ⚠️ **Ask what the fix shields *today*, and demote it if the answer is "nothing".**
+  See the next subsection — this is the adjustment most likely to be skipped, because
+  a prospective control reads as a defect in every other respect.
+
+### ⚠️ What does this shield today? — and how far is it from the product?
+
+**The most expensive item in one run was a real defect that protected nothing.** An
+exemption registry's discovery did not reach the Lambda handler trees, so a carve-out
+written there would never be registered. True, well argued, and the fix cost **1.4M
+tokens, five hours and three review rounds** before the agent stopped at a question
+nobody could answer without writing dataflow analysis. Its own measurements were the
+refutation, available before the first dispatch: widening discovery finds ~33 constants
+in those trees, of which the ones examined are **one false positive and a set of security
+controls**, and **not one genuine unregistered carve-out exists there**. The gate's new
+reach would have shielded **zero present findings**, at a price of 42 authored judgements
+mostly saying "this is not an exemption".
+
+So two questions go into ranking, and both are cheap:
+
+1. **What finding does this shield today?** Name one, in the tree, now. If the honest
+   answer is "none yet, but it would catch the next one", the item is **prospective**.
+   Prospective work ranks **below every defect**, and the registry's own non-vacuity rule
+   is the precedent: an exemption that shields nothing is dead, and so is a gate.
+2. **How many layers from the product is the subject?** The product is document
+   processing. A defect in it is layer 0; a gate over that code is layer 1; a gate over a
+   gate, or a registry policing our own prose, is layer 2 or more. **At layer 2 and
+   beyond, say the cost out loud before dispatching** and prefer the smallest version that
+   fixes a present finding.
+
+This is not an argument against gate work — three of the highest-value items in that same
+run were gates, because each one shielded a live finding (a suppression that pre-approved
+future findings; a ratchet that compared a single tree against a registry holding many
+and passed; a gate whose green run
+could not see the call site it was written for). The distinction is **present finding
+versus prospective reach**, not product code versus infrastructure.
+
+⚠️ **The failure this prevents is a coordinator one, and it has a signature: escalating a
+design question that should have been a value question.** When an agent hands back "option
+1 or option 2 on this gate's trust model", the first question is not which option — it is
+**whether the item is worth another round at all**. Asking the user to adjudicate the
+design implies the work is worth finishing, which is the thing that had stopped being
+true. Measured: the user's answer to a carefully-written two-option question was "is this
+worth the cycles?", and it was not.
 
 ### Classify the whole backlog, not just the top of it
 
@@ -580,8 +709,26 @@ are counted in, so the number only reaches zero when the work is actually done.
 ### ⚠️ Who may file, and why it has to be exactly one actor
 
 **Decide this before the first dispatch, and the workable answer is that agents file
-nothing.** Put it as the **first line** of every brief, fixer and reviewer alike, and
-require each fixer to copy it verbatim into its reviewer's brief:
+nothing.**
+
+⚠️ **This is now a hook, not only a brief.** `scripts/hooks/check_agent_filing.py` is a
+`PreToolUse` hook on `Bash` that refuses `gh issue create` when `cwd` sits under the
+run's worktree prefix (`$HOME/wt` by default, `BACKLOG_WORKTREE_PREFIX` to change it),
+and allows it from the main checkout — so agents are refused and the coordinator, which
+the rule says owns the decision, never is. The override is `ALLOW_AGENT_FILING=1`.
+
+The reason it had to become a hook is the reason everything else in this section is:
+the control in force was a paragraph each fixer had to transcribe into its reviewer's
+brief, which survives only as long as every agent in a chain both reads it and passes
+it on. **Two bounds, so nobody over-reads a green hook.** It is not a capability
+boundary — `python3 -c`, a wrapper script or a `cd` out of the worktree all reach `gh`
+without spelling it where the hook looks — and it does not cover an agent that files
+from outside its tree. It stops the accident that actually happened and leaves an audit
+trail.
+
+So the brief still carries the rule, because the hook only refuses the naive spelling.
+Put it as the **first line** of every brief, fixer and reviewer alike, and require each
+fixer to copy it verbatim into its reviewer's brief:
 
 > You may not open a GitHub issue, and neither may any subagent you spawn. Not one,
 > for any reason. Out-of-scope findings come to me as one line each in your final
@@ -663,8 +810,52 @@ the failures this repo keeps re-learning.
 - `CLAUDE.md` plus the relevant domain skill (`backend-lambda.md`,
   `infrastructure.md`, `frontend-ui.md`, `extraction-pipeline.md`), plus
   `testing-qa.md` and `code-review.md`.
+- ⚠️ **[work-the-backlog-hazards.md](work-the-backlog-hazards.md)**, which is not
+  optional reading for a fixer or a reviewer. It holds the measured hazards, and most of
+  them are shapes where a wrong result is indistinguishable from a right one — a test
+  that cannot fail, a mocked paginator that never terminates and takes the host with it,
+  a guard that enumerates spellings instead of implementing its rule.
 - **Work in your own git worktree**, never the main checkout — several agents run
-  concurrently. **Put it on real disk, not in `/tmp`**, and remove it when done:
+  concurrently.
+
+  ⚠️ **Dispatch reviewer agents with `isolation: "worktree"` and let the harness own
+  the tree.** The `Agent` tool takes that option, gives the agent its own worktree, and
+  **auto-cleans it when it is unchanged** — which is exactly a reviewer, since a
+  reviewer is told not to push or modify anything. That is the half of the leak that
+  cleans itself, and it is the first-party spelling of the fan-out this loop does by
+  hand (`/batch` uses `isolation: "worktree"` plus `run_in_background: true` for the
+  same reason).
+
+  **Measured on this host rather than assumed**, because an isolated worktree lands
+  somewhere you did not choose: the harness puts it at
+  `<repo>/.claude/worktrees/agent-<id>`, on **xfs** (so real disk, not the 32 GB tmpfs
+  that `/tmp` is here), and it really did auto-clean — the directory was empty and the
+  worktree deregistered as soon as an unchanged probe agent finished. Re-measure on a
+  different host; the filesystem is a property of the machine.
+
+  ⚠️ **Note it is *inside the checkout*, which is the thing to check before trusting
+  it.** This repository's gates discover inputs **by content**, and the skill's own
+  hazard list records a byte-identical `template.yaml` kept inside a worktree adding one
+  to the template count and reddening seven tests in suites the PR never touched. So
+  the obvious worry is a second full checkout doing that at scale — and **measured with
+  a live worktree there holding 1,585 `.py` files, nothing moved**: templates discovered
+  stayed at 31 and `basedpyright` stayed at 1,589 files and 0 errors.
+
+  Two different mechanisms produce that, and only one of them is robust.
+  `scripts/discover_templates.sh` uses `git ls-files --cached --others
+  **--exclude-standard**`, which honours `.gitignore`, and `.claude/worktrees/` is
+  ignored (`.gitignore:125`) — that one holds by construction. `basedpyright` is
+  protected only because `pyrightconfig.json`'s **`include`** names twelve top-level
+  paths and `.claude` is not one of them; it is *not* in `exclude`, and basedpyright has
+  no ignore-file support. So if `include` ever becomes whole-tree, a live agent worktree
+  puts a second copy of the library into the type gate and the
+  `filesAnalyzed == git ls-files '*.py'` identity breaks locally and nowhere else. If
+  you change `include`, add `**/.claude/worktrees` to `exclude`.
+
+  **Fixer agents still create their own**, because a fixer's tree is modified by
+  construction so nothing auto-cleans it, and because the "look for uncommitted work
+  before removing" rule in section 0 wants it to persist. **Put it on real disk, not in
+  `/tmp`**, and remove it when done:
 
   ```bash
   W=$HOME/wt/<runId>/<slug>-$$  # NOT /tmp, and under the run's prefix — see section 5
@@ -672,6 +863,9 @@ the failures this repo keeps re-learning.
   # ... work ...
   git worktree remove "$W"      # or it stays registered and keeps its 130 MB
   ```
+
+  Note the prefix is also what the filing hook reads to tell an agent from the
+  coordinator, so a tree outside it is not just untidy — it is outside that check.
 - One commit per issue, so a revert is per-issue.
 - **Journal to disk, not only into your report, and push at every milestone.**
   Append to `scratch/backlog/journal/<issue>.md` as you go — the command you ran, the
@@ -744,72 +938,34 @@ trying to prevent it, and it is invisible because the run succeeds. Measured on
 this loop: three agents told to cap took the host to load 10.74 and then 23.33 on
 16 cores while each believed itself bounded.
 
-**This is faster as well as lighter, which is not the intuitive result.** Measured,
-four concurrent runs of the same suite on the same 16-core host:
+**Bounded is faster as well as lighter, which is not the intuitive result:** unbounded
+is 30% slower in batch wall clock at 2.5x the load, because oversubscription spends the
+difference on context switching. Capped runs are also predictable, which matters when you
+are deciding whether a run has hung. Figures in section 5.
 
-| Configuration | per run | batch wall clock | peak load |
-|---|---|---|---|
-| 1 × `-n auto`, idle host | 77 s | 77 s | ~14 |
-| 4 × `-n auto` concurrently | 224–243 s | **243 s** | **36.9** |
-| 4 × `-n 4` concurrently | 170.6–171.3 s | **171 s** | **14.7** |
+⚠️ **`PYTEST_PARALLEL` and `PYTEST_XDIST` are the only correct places for `-n`.** Passing
+one through `PYTEST_ARGS` puts two `-n` flags on one command line; pytest then collects
+nothing and exits 5, which reads as a pass to anything checking only for absence of
+failures.
 
-Unbounded is **30% slower in batch wall clock at 2.5× the load** — the
-oversubscription spends the difference on context switching. Bounded runs are also
-predictable, a 0.7 s spread across four against 19 s, which matters when you are
-deciding whether a run has hung. (Serial is 584 s, so `-n 4` is still a 3.4×
-speed-up; the floor of 2 keeps that worthwhile at higher N.)
+**Why the tier split is the main efficiency lever.** The whole-repo suites take every
+core, so each run blocks every other agent. With N=4 and each agent running the battery
+two or three times across its review rounds, a cycle pays a dozen whole-repo runs to land
+four PRs; pushing the expensive tier to one run per merge and one per batch cuts that to
+about five. The `idp_common` unit suite stays with the fixer agent — but only because of
+the cap, and uncapped it would be the heaviest thing in the loop.
 
-`PYTEST_PARALLEL` (for `lib/idp_common_pkg`) and `PYTEST_XDIST` (for root targets)
-are the documented overrides and the only correct places for `-n` — passing one
-through `PYTEST_ARGS` puts two `-n` flags on one command line, and pytest then
-collects nothing and exits 5, which reads as a pass to anything checking only for
-absence of failures.
-
-**Why the split, since it is the main efficiency lever in this loop.** Those
-suites take every core, so each run blocks every other agent. With N=4 and each
-agent running the whole battery two or three times across its review rounds, a
-cycle pays a dozen whole-repo runs to land four PRs. Pushing the expensive tier to
-one run per merge and one per batch cuts that to about five, and because the runs
-serialise on cores anyway the saving is close to linear in wall clock.
-
-The `idp_common` unit suite stays with the fixer agent deliberately — but only
-*because* of the cap. At `-n 4` alongside three siblings it is ~171 s, it is where
-most of this repository's tests live, and catching a break there at authoring time
-is far cheaper than discovering it at merge. Uncapped it would be the single
-heaviest thing in the loop, which is why the cap is a requirement and not a tip.
-
-**Run the targeted tests first as a fast fail, then the whole suite.** The targeted
-set takes seconds, so a change that breaks its own area is caught almost
-immediately rather than 70–170 s later:
+**Run the targeted tests first as a fast fail, then the whole suite:**
 
 ```bash
 pytest -q -n 4 tests/unit/<the area you changed>     # ~6-8 s; stop here on failure
 make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1 PYTEST_PARALLEL="-n 4"
 ```
 
-⚠️ **Do not replace the whole suite with a targeted subset, however it is
-derived.** This was measured and the subset loses. At `-n 4` run alone: a leaf
-module's own directory is **5.9 s** (86 tests), `ocr` alone **7.6 s** (413), `ocr`
-plus the one directory that imports it **8.3 s** (809), the worst case — the 13
-directories exercising `models` — **33.3 s** (5,117), and the whole suite **70.7 s**
-(9,442). So the best case saves about a minute and the worst case saves a factor of
-two, against these two facts:
-
-- **The suite is heavily coupled.** 19 of 28 test directories import modules other
-  than their own; `models` is exercised by 13 outside directories, `config` by 11,
-  `utils` by 8. Only `synthesis`, `monitoring`, `metrics` and `discovery` have no
-  external test consumers, so for almost any change the "targeted" set is most of
-  the suite anyway.
-- **79 `test_*.py` files sit at `tests/unit/` top level, in no module directory**,
-  and between them they import nearly every module. Any *directory*-based
-  derivation misses all 79 — and they are exactly where a cross-module break would
-  show up. A sound derivation needs file-level import analysis, which is real
-  machinery to build, maintain and get wrong, in exchange for that minute.
-
-The saving also matters less than it looks, because the capped runs go in parallel:
-four agents each running the whole suite finish in **171 s of wall clock, not
-4 × 171**. The marginal cost of "everyone runs it" is one run's worth per round.
-
+⚠️ **Do not replace the whole suite with a targeted subset, however it is derived.**
+Measured, and the subset loses: the suite is heavily coupled, 79 top-level test files sit
+in no module directory at all, and the capped runs go in parallel anyway so "everyone runs
+it" costs one run's worth per round. The figures are in the hazards file.
 **Two exceptions, and they are not negotiable.** An agent whose change touches
 `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate **must**
 run `make test-packages-cicd` itself, because that is the suite most likely to
@@ -901,6 +1057,46 @@ Tell the agent, in its own brief:
 > second reviewer. Iterate until no finding survives, then report to me: what you
 > fixed, what you withdrew and why, what the reviewer measured, and the gate
 > numbers.
+>
+> **Also report, always: which part of your change would stand alone, and what it
+> costs.** One or two sentences naming the smallest subset that is independently
+> correct, independently useful, and already measured. You may well not need it —
+> but if the rest of the change turns out not to be worth finishing, that sentence
+> is the difference between landing the valuable part and throwing the whole branch
+> away, and you are the only one who can write it cheaply.
+>
+> **End your report with these four lines exactly, and nothing after them:**
+>
+> ```
+> PR: <url>                 # or: PR: none — <reason>
+> ISSUES: <n>[, <n>...]
+> GATES: <suite>=<p> passed/<f> failed[; ...] @ <merge-base-or-head sha>
+> PATHS: <every path the PR touches, space-separated>
+> ```
+
+⚠️ **Those four lines are parsed, not read, and that is the point.** One of the four
+recorded coordinator failures is repeating a subordinate's figure without a measurement
+behind it — "8 pre-existing failures" when the measured number at the base was 4 — and
+a coordinator reading prose is the actor most likely to launder one into the record. A
+fixed terminal block removes the interpretation step: `GATES` carries its **sha**, so a
+figure without a base commit is visibly malformed rather than plausible, and `PATHS`
+feeds the diff-scope check in section 0b directly instead of depending on the merge
+agent having thought to list them.
+
+This is `/batch`'s `PR: <url>` convention, widened. Keep the prose report above it —
+what was withdrawn and why is judgement and does not fit a field.
+
+⚠️ **A third round that defeats a third spelling of the same property is a stop
+signal, not a fourth round.** This is distinct from the same-finding-twice rule
+below: here each round's finding is *new* and *correct*, which is exactly why it
+reads as progress. Three different spellings defeating the same claim means the
+property cannot be verified at the cost being paid — the measured case was a check
+for "a refusal branches on this constant", beaten in turn by a helper function, two
+helpers, a comprehension and a lazily-initialised global, with **79 functions in the
+target trees already written in the defeating style**. The agent that stopped and
+said so produced the right outcome; a fourth hop of dataflow analysis would not
+have. Stop, report the cheap subset, and let the coordinator decide whether the
+remainder is wanted.
 
 Two things make this step earn its cost, both observed repeatedly:
 
@@ -1355,7 +1551,7 @@ brief:
 >    line did not run. ⚠️ **Do not edit anything in that worktree while the
 >    battery runs** — an interrupted run still writes a `coverage.xml`, and the
 >    ratchet will then report fabricated losses.
-> 5. **Never `make coverage-all`.** It measures all nine trees from scratch, is in
+> 5. **Never `make coverage-all`.** It measures every registry tree from scratch, is in
 >    **neither** CI configuration and in no tier of this skill, and it is not the
 >    coverage gate — `scripts/check_coverage_debt.py` is, it takes seconds, and it
 >    reads the report `make test-cicd` has already written. Measured: one merge agent
@@ -1434,7 +1630,31 @@ rather than briefly. Two questions, answered in your own words each time:
 An answer of "nothing" is acceptable only if you genuinely checked. The failure
 above would have been caught by the first question on its first asking.
 
-The check-in reports, briefly: what merged and the measured numbers; what reviews
+### Open the check-in with the status table
+
+Render this first, from the parsed terminal blocks and the sweep — never from
+recollection — and re-render it as completion notifications arrive rather than only at
+check-ins:
+
+```
+| # | Issues | Agent | Status     | PR   | Gates        |
+|---|--------|-------|------------|------|--------------|
+| 1 | 1146   | a1b2  | in-review  | 1197 | 9442 passed  |
+| 2 | 1150   | c3d4  | merged     | 1198 | 9442 passed  |
+| 3 | 1161   | —     | queued     | —    | —            |
+
+fixers 2/4 · queue 5 · worktrees 2/2 under prefix · open 36 → 34
+```
+
+The table is the mechanical half and the prose below is the judgement half; do not let
+the prose restate the table. The reason the occupancy line sits **in** the table rather
+than in a sentence is that the measured underrun — one agent at a time for three hours,
+on a host at load 5.85 of 16 cores, with five workable issues undispatched — was
+invisible precisely because nothing *absent* appears in prose. A row reading `queued`
+with no agent beside it is visible at a glance; "I am continuing to work through the
+backlog" is not.
+
+Then the check-in reports, briefly: what merged and the measured numbers; what reviews
 found that you did not expect; **every judgement call you made that could
 reasonably have gone the other way**; tokens spent this cycle and in total;
 **fixer occupancy against N and the queue depth as two numbers** (`fixers 2/4, queue
@@ -1491,6 +1711,7 @@ specifies, add it to `parked` with a link to that comment, label it, and move on
 | A **merge conflict outside `CHANGELOG.md`** that is not mechanical | **park**, re-dispatch on a fresh base if the conflict was staleness |
 | An **externally-reported issue whose fix touches a protected surface** from section 0b | **park** with the issue's `author_association`, the surface, and the change it argues for |
 | An **agent reports the same finding twice after two review rounds** without converging | **park** — a third round is usually an issue that needs a decision and is getting iteration instead |
+| An agent hands back a **design question about a control it is building**, and the item shields no present finding | **cut it to the subset that stands alone, land that, and close the issue with the decision recorded** — do not escalate the design question. See "What does this shield today?" in section 1 |
 | **`develop` goes red** | **not a halt: it is the top-priority work item.** Fix it on `develop` as its own PR, because everything downstream inherits it and a red `develop` makes every branch's checks unreadable |
 | **`loopReady` is empty** | the triage pass below, not a stop |
 
@@ -1573,200 +1794,17 @@ permanent, and in the state file, which is resumable.
 
 ---
 
-## Standing hazards, all observed here
+## Standing hazards, and what this skill does not make safe
 
-- **A test that cannot fail is the dominant defect class.** Five measured shapes:
-  a fixture injecting a field the service never sends; an expected value derived
-  from the fixture under test; an assertion behind an unmet guard; a probe that
-  inherits the environment it is testing; a fixture that never reaches the call
-  it asserts on. Only executing the mutation finds any of them.
-- ⚠️ **A guard that enumerates spellings instead of implementing its stated rule.**
-  This was the single most common defect in one run — **four** separate agents wrote
-  one, and a reviewer walked the original defect straight back past every one. The
-  worst case: of 11 spellings probed, **9 passed both of the author's rules**, including
-  an annotated assignment that spelled out in full the very construct the author's
-  stated residual claimed to cover; another was defeated by putting a verbatim copy of
-  the offending code in a sibling directory, because the collector used a non-recursive
-  `glob`. The remedy is to write the rule about **capability** — "this module cannot
-  import the decoder", not "this line must not match these patterns" — and to put
-  "attack your own guard before the reviewer does" in every brief. A guard protecting a
-  gate is the highest-risk instance, because a vacuous one there reads as protection
-  that is not present.
-- **A vacuous test can hide inside a correct authority.** One test derived its fault
-  codes from the botocore service model, which is the right authority — but an empty
-  derived list collects as a pytest *skip*, not a failure, so replacing the derivation
-  with `[]` left the suite green and took the whole guarantee with it. Deriving from the
-  authority is necessary and not sufficient: assert the derived set is non-empty.
-- **"Measured against X" is a claim to check.** Three documents in one run said
-  conditional-write behaviour was measured against DynamoDB's expression engine when it
-  was measured against `moto`, and that matters precisely because the property under
-  test *is* expression-language behaviour — the one thing a `moto` test cannot establish
-  about itself. Require every brief to name the engine, and treat a mismatch as a
-  finding rather than a wording nit.
-- **A conflict-marker probe can be silently broken by a missing trailing newline.**
-  `CHANGELOG.md` here ends without one, so a planted `<<<<<<<` appended directly
-  concatenates onto the final line and fails a `^` anchor — measured twice, matching
-  0 of 1 and 2 of 3. Plant with a leading newline, and prove the probe fires before
-  trusting a clean result. Use `^={7}( |$)` rather than `^={7}`, which excludes the
-  decorative 20-to-78-character `=` rules in six files structurally, with no exemption
-  list.
-- **Counting a log is not reading it.** Two measured ways to get a wrong number: ANSI
-  colour codes in summary lines break a naive tally (61 invocations and 7778 passes,
-  against a true 62 and 7997), and a `Makefile` recipe's apparent invocation count can
-  include `@#` prose comments that merely mention the variable. Strip ANSI, and
-  reconcile against the log's own per-target lines.
-- **A gate count that rises is as suspicious as one that falls.** When a merge result
-  reported 20 and 7 more passes than the author measured, the right response was to
-  attribute each delta exactly to the test files the merge brought in — which confirmed
-  both figures. An unexplained delta in either direction is a finding.
-- ⚠️ **A gate figure without its base commit is not a reference, and handing one to an
-  agent manufactures false evidence.** A coordinator here gave an agent "62 invocations,
-  8,800 passed, 0 failed" as the expected baseline. The figure had been measured seven
-  minutes before a large merge landed; the agent matched it exactly, and **the match is
-  what made a pre-merge measurement read as evidence about the post-merge tree**,
-  concealing four failures. Quote the commit with every number, and treat a figure that
-  arrives without one as unmeasured. This is the same self-consistent-and-false shape as
-  the stale-green CI mark and the truncated issue count — three instances of it in one
-  day, which is why it is stated as a rule rather than an anecdote.
-- **Ancestry is not identity.** `is_relative_to(root)` accepts a sibling
-  worktree nested under the root. This has bitten three separate controls here.
-  Compare roots by equality.
-- **A gate that measured nothing must not report success.** Two instances, both
-  fixed and worth reading as the template: the coverage ratchet exiting 0 with no
-  report, and on a report from a run that never finished (#1190), and `lint-cicd`
-  skipping the UI lint on an unchanged checksum (#1152).
-- **`[skip ci]` runs no gate on either platform.** It let three defects reach
-  `develop` in one session. Now refused by a hook — do not override it.
-- **Pydantic's default `extra="ignore"` silently drops an undeclared key.** Three
-  separate defects here trace to it, including one where a probe got a confident
-  wrong answer because it wrote a key at the wrong nesting level (#1134).
-- **A green CI mark can be stale.** GitHub never re-runs a PR's workflows when
-  the base moves, and the merge guard cannot see a run that never happened.
-- ⚠️ **A mocked paginator never terminates, and the cost lands on the host rather
-  than on the test.** `MagicMock` auto-creates any attribute, so a
-  `LastEvaluatedKey` read on one is truthy forever. A reviewer's probe built this
-  way reached **79 GB resident** and froze the whole host for 145 minutes. See the
-  memory note in section 5 and the `ulimit` rule in section 2.
-- ⚠️ **A hung agent and a frozen host are indistinguishable from inside the
-  session.** Under swap thrash a `sleep 240` returns `waited` with exit 0 after 145
-  minutes, five agents go quiet at once, and nothing in any transcript reports an
-  error. `free -g` and `dmesg | grep oom-kill` are the only place the cause exists,
-  which is why the memory watchdog is a standing child and not a diagnostic you
-  reach for afterwards.
-- ⚠️ **One agent can void every other agent's measurements at once**, and the
-  coordinator is the only actor positioned to notice. A single `pkill -f` on a suite
-  pattern reached five concurrent agents here. When it happens, the response is not to
-  re-read the logs — it is to name the window and tell every agent in it to void and
-  re-run, with a specific warning to any doing mutation work that a kill from outside
-  and an uncaught mutation produce the same evidence.
-- ⚠️ **A turn that ends with nothing tracked ends the run**, and it looks exactly
-  like a turn that ended because the work was done. Five and a half hours were lost
-  to one of these. Name the live child before ending a turn.
+Both are in **[work-the-backlog-hazards.md](work-the-backlog-hazards.md)**, which every
+fixer and reviewer brief must point at. Two reasons to go and read it rather than
+treating it as an appendix: the hazards are the measured ones and most are shapes where
+a wrong answer is self-consistent and plausible (a test that cannot fail, a gate figure
+without its base commit, a guard enumerating spellings instead of implementing its
+rule), and the bounds section is what stops the controls above being read as a guarantee
+of unattended operation — above all that **the coordinator's own errors are about
+process and reporting, so a green tree proves nothing about them.**
 
----
-
-## What this skill does not make safe
-
-Bounded on purpose, so nobody reads the sections above as a guarantee of
-unattended operation.
-
-**It does not make the coordinator's judgement reliable.** Every control here
-verifies *code*. None verifies the premises the coordinator is operating on, and a
-wrong premise is silent and self-consistent — see the check-in section for the
-worked example. The mandatory check-in is a mitigation, not a fix.
-
-Four further coordinator errors are recorded here because each survived every
-code-level control and was caught only by the user asking a plain question:
-
-- **Idling the loop during a promotion CI wait**, having read "wait for its checks" as
-  "stop". Nothing was wrong with any gate; the run simply stopped producing. The
-  mechanism is worth separating from the misreading, because the misreading is what a
-  rule can fix and the mechanism is not: the wait was expressed by **ending the turn**,
-  which in this harness is indistinguishable from finishing. The gate had gone green 28
-  minutes in and the session sat for 5 h 32 m.
-- **Reporting a policy as working from a quiet interval** rather than from an audit.
-  Filing had gone to zero for two hours and then produced eight issues in ninety
-  seconds; the audit that would have caught it costs one API call.
-- **Repeating a subordinate's figure without a measurement behind it** — "8
-  pre-existing failures" when the measured number at the base was 4, the difference
-  being that the agent had locally installed a tool the host lacked. Numbers arriving
-  in a report are claims until someone re-measures them, and the coordinator is the
-  actor most likely to launder one into the record.
-
-The pattern in all three is the same and it is worth naming: **the coordinator's
-errors are about process and reporting, not about code, so a green tree proves nothing
-about them.** Ask at every check-in what you are treating as established without having
-measured it.
-
-**What actually catches them is another reader, and the self-audit is the instrument
-least able to.** The self-audit shares, by construction, whatever error it is looking
-for. Measured across one day of this loop, four coordinator-level errors surfaced — the
-idled promotion wait; an open-issue count truncated by `gh`'s default limit and
-presented as a total; an issue comment whose recommendation would have deleted the only
-pointer to a working capability; and a gate figure quoted to an agent without its base
-commit — and **all four were caught by a second reader going over the first one's
-output.** None by a gate, none by the self-audit. One of them had already cost 5 h 32 m
-of run time before anyone looked.
-
-So if a second session is available during a long run, the highest-value thing it can do
-is read the coordinator's reports adversarially: recompute every count from a call with
-an explicit `--limit`, re-run one measurement per report rather than accepting the
-figure, and check any "X was dropped" or "X is broken" claim against the commit graph
-before a decision rests on it.
-
-⚠️ **Bound that second reader to reading and recomputing.** It must not merge, close,
-re-triage or dispatch. A second session that starts doing the loop's work is a second
-coordinator, and every sequencing guarantee here — merges serialise, one actor holds the
-order — assumes exactly one. Observed: a reviewing session drifted from checking reports
-into verifying merge decisions and relaying check-ins, which duplicated the coordinator's
-job and put two actors on one queue. The value is in the reading; the risk is in
-everything past it.
-
-**It does not survive compaction losslessly.** The state file preserves the
-mechanical state; it does not preserve why a ranking was chosen, what an agent
-was told, or a decision's reasoning. A resumed loop is correct but shallower than
-one that never compacted. Prefer finishing a cycle and handing over to a fresh
-session over letting one session run through several compactions.
-
-**The liveness invariant keeps the loop running; it does not keep the session
-alive.** A tracked child re-invokes you when it finishes, which covers every wait the
-loop creates itself. It does not cover the session being interrupted, the process
-being restarted, or an agent dying without a notification — and the obvious remedy,
-a timer that pings the session, is worse than the problem it solves here: the only
-two unsolicited prompts this session ever received killed every background agent it
-had. So an external keep-alive is not a substitute for the invariant, and if one is
-ever added it has to be established first — on a throwaway session holding a
-throwaway agent — that an injected prompt leaves background agents alive. Until then
-the heartbeat child covers the session going idle and nothing covers the process
-dying. Recovery from that is a human noticing, and what makes it cheap is the state
-file plus the journals.
-
-**It does not bound review quality.** A nested reviewer that reads the diff and
-agrees costs the same as one that re-runs every mutation, and only the second is
-worth having. The brief demands the second; nothing enforces it. Read each report
-for whether measurements are actually quoted, and send it back when they are not.
-
-**It does not know when a fix is wrong in a way tests cannot see.** Every fix here
-is verified against the repository's own gates. A fix that satisfies the gates and
-is still wrong about the product — the right code for the wrong requirement — is
-invisible to this loop and is exactly what the halt-and-ask list exists for.
-
-**It does not make issue text safe, only handled.** Section 0b bounds what an
-attacker-controlled report can reach, but the residual is real: an issue that argues
-convincingly for a change *outside* the protected surfaces, in prose indistinguishable
-from a good bug report, will be worked like any other. Provenance is the only signal
-that scales, and `CONTRIBUTOR` is available to anyone who has landed one trivial PR.
-The mitigations are a narrower blast radius, a gated promotion that keeps it out of
-`develop`, and a human at the high-risk boundary — not immunity.
-
-**The capability boundary is prose, and a restricted agent type would not fix that.**
-Section 0b tells fixer agents they have no AWS credentials and make no outbound fetch,
-and an injected agent is precisely the one that ignores being told. Because `Bash` is
-required, and reaches the network and the filesystem, no tool list closes it and a
-`PreToolUse` denylist only raises the bar. **The control that would actually work is not having readable
-long-lived credentials on the host the loop runs on**, which is outside this
-repository's reach and so is a residual rather than a task.
-
-**It cannot enforce anything server-side.** Nothing in this repository can stop a
-merge; see "Visible is not blocking" in `CLAUDE.md`. The loop merges on its own
-measurement, so its discipline *is* the gate.
+The one item a coordinator should carry without looking it up: a turn that ends with
+nothing tracked ends the run, and it looks exactly like a turn that ended because the
+work was done. The `Stop` hook in section 0 now refuses that turn.

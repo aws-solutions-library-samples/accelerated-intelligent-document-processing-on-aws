@@ -6,7 +6,6 @@ import os
 import sys
 import threading
 import time
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -72,8 +71,82 @@ def index_module(monkeypatch):
         sys.modules.pop(_MODULE_NAME, None)
 
 
+class _HandlerClock:
+    """The handler's own view of the clock, as a test parameter.
+
+    ``_probe_window`` is ``int(time.time() // HALF_OPEN_PROBE_WINDOW_SECONDS)``
+    — a tumbling bucket, so with the real clock in place *where a window
+    boundary falls inside a test* is decided by the minute the test happened to
+    run in. A test that makes several sequential claims then asserts one of two
+    verdict sequences depending on the wall clock: four calls against a budget
+    of 1 give ``[True, False, False, False]`` within one window and
+    ``[True, False, True, False]`` if a boundary lands between the second and
+    the third. Issue #1468 recorded the second sequence arriving once and then
+    not reproducing across six re-runs, which is the worst shape a red mark can
+    have — it gets re-run until green, and the next person to see it cannot
+    tell it apart from a real regression in the breaker.
+
+    The remedy is to make the window a parameter rather than widen the
+    assertion to accept both sequences: widening passes always, including when
+    the budget is genuinely broken, so the two sequences are instead pinned by
+    two tests — one that crosses no boundary and one that crosses exactly one
+    deliberately.
+
+    Only the handler's *reference* to ``time`` is replaced (see
+    ``handler_clock``), never the stdlib module, so ``moto`` and the thread
+    machinery the concurrency test relies on keep the real clock.
+    """
+
+    def __init__(self, now: float) -> None:
+        self._now = float(now)
+
+    #: The handler reaches the clock as ``time.time()``, and ``update_counter``'s
+    #: conflict-retry ladder reaches ``time.sleep``. Stand in for both rather
+    #: than substituting a one-attribute namespace: a stub without ``sleep``
+    #: turns a retried transaction conflict into an AttributeError. Defensive
+    #: rather than exercised -- measured: deleting ``sleep`` leaves this file
+    #: green, because the ladder lives in ``update_counter`` and nothing here
+    #: calls it. The two attributes are what ``index.py`` reads from the module,
+    #: so standing in for both is what makes the substitution total rather than
+    #: dependent on which paths today's tests happen to take.
+    def time(self) -> float:
+        return self._now
+
+    @staticmethod
+    def sleep(seconds: float) -> None:
+        time.sleep(seconds)
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+#: A fixed instant for ``handler_clock``, deliberately in the past so it can
+#: never coincide with the real clock's window, and deliberately not ON a
+#: window boundary: on a boundary, "advanced by nothing" and "advanced by one
+#: window" are no longer distinguishable in the window number, which is the one
+#: confusion a frozen clock exists to remove.
+_FROZEN_EPOCH = 1_700_000_000
+
+
 @pytest.fixture
-def ddb_module(index_module, monkeypatch):
+def handler_clock(index_module, monkeypatch):
+    """Freeze the handler's clock mid-window and hand back the dial.
+
+    Applied to every ``ddb_module`` test rather than only to the ones that
+    advance it, because the flake is not confined to the multi-call test: any
+    test that writes ``_probe_window()`` into the item and then calls the
+    handler reads the window twice, and a boundary between those two reads
+    makes the recorded window *older* than the handler's, which is precisely
+    the condition ``_open_probe_window`` replenishes on.
+    """
+    window = index_module.HALF_OPEN_PROBE_WINDOW_SECONDS
+    clock = _HandlerClock(_FROZEN_EPOCH - (_FROZEN_EPOCH % window) + window // 2)
+    monkeypatch.setattr(index_module, "time", clock, raising=True)
+    return clock
+
+
+@pytest.fixture
+def ddb_module(index_module, handler_clock, monkeypatch):
     """``index_module`` with a REAL DynamoDB table behind ``concurrency_table``.
 
     The probe budget is enforced entirely by DynamoDB's evaluation of a
@@ -254,7 +327,9 @@ class TestHalfOpenProbeBudget:
         )
         assert _probes_used(ddb_module) == budget
 
-    def test_the_budget_replenishes_in_the_next_window(self, ddb_module, monkeypatch):
+    def test_the_budget_replenishes_in_the_next_window(
+        self, ddb_module, monkeypatch, handler_clock
+    ):
         """Without this the fix would deadlock the breaker permanently.
 
         Nothing moves HALF_OPEN back to OPEN — the manager's health check only
@@ -272,14 +347,105 @@ class TestHalfOpenProbeBudget:
         # Advance only the handler's view of the clock. Patching the real
         # ``time`` module would also move it for moto and for the thread
         # machinery the concurrency test relies on.
-        later = time.time() + ddb_module.HALF_OPEN_PROBE_WINDOW_SECONDS
-        monkeypatch.setattr(
-            ddb_module, "time", SimpleNamespace(time=lambda: later), raising=True
+        before = ddb_module._probe_window()
+        handler_clock.advance(ddb_module.HALF_OPEN_PROBE_WINDOW_SECONDS)
+        assert ddb_module._probe_window() == before + 1, (
+            "this test is about the next window, so assert it really is the "
+            "next one rather than trusting the arithmetic"
         )
         assert ddb_module.check_circuit_breaker()[0] is True, (
             "a new window must hand out a fresh budget"
         )
         assert _probes_used(ddb_module) == 1, "the new window restarts the count"
+
+    def test_the_window_is_a_test_parameter_and_not_the_wall_clock(
+        self, ddb_module, handler_clock
+    ):
+        """The fixture that makes this class deterministic, asserted.
+
+        If ``handler_clock`` stops being in force — removed from
+        ``ddb_module``'s parameters, or overwritten by a test that patches
+        ``time`` itself — every window-dependent test in this class goes back
+        to deciding its verdict sequence by the minute it ran in (#1468), and
+        it does so silently, because the within-one-window sequence is the one
+        it asserts and the common case. So pin it here: the handler's window
+        must come from the dial, must not move on its own, and must not be the
+        real clock's.
+        """
+        window_seconds = ddb_module.HALF_OPEN_PROBE_WINDOW_SECONDS
+        assert ddb_module._probe_window() == int(
+            handler_clock.time() // window_seconds
+        ), "the handler is not reading the frozen clock"
+        assert ddb_module._probe_window() == ddb_module._probe_window(), (
+            "two reads in one test must agree"
+        )
+        assert ddb_module._probe_window() != int(time.time() // window_seconds), (
+            "the handler is still on the wall clock, so this class is only "
+            "deterministic until a minute boundary lands mid-test"
+        )
+        assert handler_clock.time() % window_seconds != 0, (
+            "the frozen instant sits ON a boundary, which makes 'advanced by "
+            "nothing' and 'advanced by one window' the same window number"
+        )
+
+    def test_the_window_of_an_explicit_instant_is_that_instant(self, ddb_module):
+        """``_probe_window(now=...)`` must use the argument it was given.
+
+        Nothing in production passes it — ``_claim_half_open_probe`` calls
+        ``_probe_window()`` — so the parameter has no caller but the tests, and
+        without this nothing exercises it in either direction: a version of the
+        function that ignores ``now`` and reads the clock regardless passes the
+        whole file (measured). The window arithmetic is what this class is
+        about, so pin the explicit form rather than leave it to the one caller
+        that does not use it.
+        """
+        window_seconds = ddb_module.HALF_OPEN_PROBE_WINDOW_SECONDS
+        assert ddb_module._probe_window(now=0) == 0
+        assert ddb_module._probe_window(now=window_seconds * 7 + 1) == 7
+        assert (
+            ddb_module._probe_window(now=ddb_module.time.time() + window_seconds)
+            == ddb_module._probe_window() + 1
+        ), "an explicit instant must not be ignored in favour of the clock"
+
+    @pytest.mark.parametrize("budget", [1, 2])
+    def test_one_deliberate_window_boundary_replenishes_exactly_one_budget(
+        self, ddb_module, monkeypatch, handler_clock, budget
+    ):
+        """The other half of the pair, and the reason the first can be strict.
+
+        ``test_exactly_the_budget_is_admitted_then_every_further_probe_refused``
+        crosses no boundary and so must see refusals all the way out; this one
+        crosses exactly one, between the call that exhausts the budget and the
+        next, and must see one further full budget and then refusals again. At
+        a budget of 1 that is ``[True, False, True, False]`` — the sequence
+        #1468 saw arrive out of nowhere, here as the asserted consequence of a
+        boundary the test placed itself.
+
+        Together the two pin the window's effect in both directions. A single
+        assertion widened to accept either sequence would pass on both, and
+        also on a budget that replenished on every call or never replenished at
+        all.
+        """
+        monkeypatch.setattr(ddb_module, "HALF_OPEN_PROBE_BUDGET", budget)
+        _put_breaker(ddb_module, state="HALF_OPEN")
+
+        verdicts = [ddb_module.check_circuit_breaker()[0] for _ in range(budget + 1)]
+        window_before = ddb_module._probe_window()
+        handler_clock.advance(ddb_module.HALF_OPEN_PROBE_WINDOW_SECONDS)
+        assert ddb_module._probe_window() == window_before + 1, (
+            "the boundary this test is about was not crossed, so what follows "
+            "would assert the no-boundary behaviour under another name"
+        )
+        verdicts += [ddb_module.check_circuit_breaker()[0] for _ in range(budget + 1)]
+
+        expected = ([True] * budget + [False]) * 2
+        assert verdicts == expected, (
+            f"one boundary must hand out exactly one further budget of "
+            f"{budget}; expected {expected}, got {verdicts}"
+        )
+        assert _probes_used(ddb_module) == budget, (
+            "the new window must restart the count rather than continue it"
+        )
 
     def test_a_lagging_clock_cannot_pull_the_window_backwards(
         self, ddb_module, monkeypatch

@@ -24,6 +24,112 @@ This module provides document classification capabilities for the IDP Accelerato
 - **DynamoDB caching for resilient page-level classification**
 - **Sequence segmentation using BIO-like approach for document boundary detection**
 
+## Granularity, modality and strategy
+
+Three independent settings decide how classification runs. They replaced
+`classificationMethod`, whose two values each bundled one granularity with one
+modality, leaving four of the six combinations unreachable.
+
+| Setting | Values | Decides |
+|---|---|---|
+| `classification.granularity` | `page` \| `packet` | How many calls are made |
+| `classification.modality.{text,images}` | `true` \| `false` \| empty | What each call sees |
+| `classification.strategy` | `single_pass` \| `two_stage` | Whether splitting and labeling are one call or two |
+
+`classificationMethod` was **removed** in config format 0.8, not deprecated in
+place. `migrations/v07_to_v08.py` converts it on every config read, so the
+service reads `granularity` only and has no derivation logic of its own. Two
+things that migration does are worth knowing before reading the prompt
+resolution below:
+
+- It does **not** write `modality`. An unset flag is inferred from the prompt's
+  placeholders, which is what the service already did — so writing
+  `images: true` to match `multimodalPageLevelClassification`'s *name* would
+  start sending images to a prompt edited not to ask for them.
+- For a holistic config it **copies the flat prompts into
+  `classification.packet`**, because `task_prompt` was shared by both methods
+  and no packet-shaped default ever shipped: such a config's flat prompt IS its
+  packet prompt, hand-written. Without the copy, `granularity: packet` would
+  read our shipped prompt instead of theirs. Only a prompt that actually asks
+  for `segments` is copied — one that does not is the page default, which means
+  that config was already broken under holistic.
+
+Resolution in `ClassificationService.__init__` is therefore just a read:
+
+- `modality` flags are tri-state. `None` — the default — means *infer from the
+  task prompt's placeholders*, which is exactly what the service did before the
+  setting existed. Setting one explicitly rewrites the prompt to match:
+  `_apply_modality_to_prompt` removes a placeholder together with its wrapping
+  element when that element held nothing else, or appends a wrapped placeholder
+  when the prompt has none. Both directions are logged.
+
+### Prompt resolution per stage and granularity
+
+`_stage_prompt(stage, field)` is the single resolver. Three things it encodes:
+
+- **Granularity is not orthogonal to the prompt**, even though modality is. A
+  page call is asked for one class plus a `start`/`continue` verdict; a packet
+  call is asked for a `segments` array. Different output schemas, so different
+  prompts and different parsers — hence `classification.packet.task_prompt`
+  rather than one shared key.
+- ⚠️ **A legacy holistic configuration keeps its own flat prompt.** `task_prompt`
+  was shared by both old methods and no packet-shaped default has ever existed
+  in this repository, so the only way holistic ever worked was a hand-written
+  one. `packet.task_prompt` is therefore preferred **only when `granularity` was
+  set explicitly**; with `granularity` empty and the method set to holistic, the
+  flat prompt wins. Preferring the shipped default there would silently replace
+  the operator's own prompt.
+- **Stage B is not granularity-dependent.** It is always one call about one
+  segment's pages, whichever way the boundaries were found.
+
+### Windowing and merging
+
+`_packet_windows` splits a packet above `packet.window_pages` with
+`packet.overlap_pages` repeated between neighbours; `window_pages: 0` never
+windows, which is the old behaviour. `_merge_window_segments` projects each
+window's segments onto per-page `(class, boundary)` verdicts and re-runs
+`_fold_page_verdicts_to_segments` — the same fold page-level classification
+uses, so the two granularities cannot disagree about how verdicts become
+segments. **The earlier window wins for an overlapping page**: it is the one
+that saw the pages before them, which is what a boundary decision mostly rests
+on. A single window is used directly rather than folded, so the common case is
+byte-identical to the unwindowed path.
+
+### The segments contract
+
+Every path produces `list[Segment]` and one builder reads it:
+
+```python
+@dataclass
+class Segment:
+    page_ids: List[str]
+    doc_class: Optional[str] = None   # None until a labeling stage fills it
+    confidence: Optional[float] = None
+```
+
+`_sections_from_segments(document, segments, page_results=None)` is the only
+place `document.sections` is built. Before it there were six implementations of
+three `sectionSplitting` strategies, one set per granularity, and they had
+drifted: `disabled` voted across pages on the page path and took the first
+segment's class on the packet path.
+
+`page_results` is passed explicitly rather than read back off `document.pages`
+because only **one** granularity has a per-page signal at all. A segment's score
+is the minimum across its pages, so building per-page sections from segments
+alone would report every page of a run as being as uncertain as its worst page —
+in the one strategy whose entire purpose is per-page granularity.
+
+### Two-stage
+
+`strategy: two_stage` runs `_segment_document` (Stage A, metered as
+`Segmentation`) then `_label_segments` (Stage B, metered as `Labeling`).
+Single-pass keeps `Classification` with unchanged units, so a cost comparison
+across this change is a straight read. `_stage_model` lets either stage name its
+own model. A forced class (document-name regex match) skips Stage B entirely. A
+segment whose labeling call fails keeps `doc_class = None` and is reported — its
+boundaries are still good, and an invented class would propagate into extraction
+as though it had been decided.
+
 ## Sequence Segmentation Approach
 
 The multimodal page-level classification method implements a sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
@@ -75,11 +181,11 @@ does not receive an updated default prompt on upgrade.
 
 ### Where the `document_boundary` signal lives
 
-The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_create_llm_determined_sections` / `_group_consecutive_pages`. It is also copied onto the declared `Page.document_boundary` field, which **is** persisted — it appears in the `document.json` page dict, in the DynamoDB page record as `Boundary`, in the `create_document_run` snapshot, and on the GraphQL `Page` type. So a merge decision can be inspected after the fact rather than re-derived from Lambda logs.
+The boundary indicator is carried in `PageClassification.classification.metadata["document_boundary"]` and is consumed by `_fold_page_verdicts_to_segments` / `_group_consecutive_pages`. It is also copied onto the declared `Page.document_boundary` field, which **is** persisted — it appears in the `document.json` page dict, in the DynamoDB page record as `Boundary`, in the `create_document_run` snapshot, and on the GraphQL `Page` type. So a merge decision can be inspected after the fact rather than re-derived from Lambda logs.
 
 (Note the older `setattr(page, "metadata", ...)` call next to it stashes the whole metadata dict on an attribute that is *not* a dataclass field, so that one does not survive serialization — `Page.document_boundary` is the durable one.)
 
-To keep merges auditable, `_create_llm_determined_sections` logs the complete page → boundary map on one line before building sections:
+To keep merges auditable, `_log_boundary_signals` logs the complete page → boundary map on one line before the fold builds segments:
 
 ```
 Page document_boundary signals: {'1': 'start', '2': 'continue', '3': '(absent)'}
@@ -451,8 +557,12 @@ classification:
   `classification_invalid_class_fallback` issue is recorded on the section (see
   below). The document is **not** failed.
 
-> Holistic (`textbasedHolisticClassification`) does not use this loop yet; it
-> still logs a warning and uses an unknown type as-is.
+> **Packet granularity single-pass** does not use this loop; it logs a warning
+> and uses an unknown type as-is. **Two-stage Stage B does** use it, via
+> `_invoke_with_class_validation`, with the same `enforceValidClasses` /
+> `maxValidationRetries` / `invalidClassFallback` contract — a class outside the
+> vocabulary is exactly as wrong whether a page or a segment produced it. The
+> fallback carries no confidence score, because it is not a prediction.
 
 See `notebooks/misc/classification-valid-class-enforcement.ipynb` for a
 deterministic, mock-driven walkthrough of all three scenarios (retry-then-valid,
@@ -466,12 +576,12 @@ turns each page classification that carries an `error` or a `validation_error` i
 a `ProcessingIssue` on the section holding that page.
 
 ⚠️ **It has one call site, in `_classify_pages_multimodal`.**
-`holistic_classify_document` does not call it and records none of these: it decides
+`packet_classify_document` does not call it and records none of these: it decides
 per *segment* rather than per page and never builds the `List[PageClassification]`
-this takes, so covering it is real work rather than an extra call. On that method a
-page falling outside every segment's `ordinal_start_page`–`ordinal_end_page` range
-is also appended to no section at all, producing neither data nor a record — both
-are follow-up work, not addressed here.
+this takes, so covering it is real work rather than an extra call. A page that
+falls inside no segment's range is appended to no section either, producing
+neither data nor a record; the range is now *logged* when it covers no page of
+the document, but the per-page issue is still follow-up work.
 
 **Why it exists.** Nothing in this service produced a `ProcessingIssue` before, and
 neither of the two places the reason was written reaches a user:
@@ -1131,10 +1241,10 @@ extra disambiguation signal in domains where multiple classes share
 similar names but have very different extraction schemas (e.g.
 `appraisal_report` vs `inspection_report`).
 
-- **Page-level** (`multimodalPageLevelClassification`) prompts get an
-  XML-tagged listing.
-- **Holistic** (`textbasedHolisticClassification`) prompts get a
-  three-column markdown table (`type | description | attributes`).
+- **Page-granularity** prompts get an XML-tagged listing.
+- **Packet-granularity** prompts get a three-column markdown table
+  (`type | description | attributes`). Two-stage Stage B uses the packet
+  builders, so it gets the table too.
 - The placeholder is fully **opt-in** — token usage and cost are
   unchanged for users who don't reference it. The library only
   substitutes placeholders that actually appear in the template.

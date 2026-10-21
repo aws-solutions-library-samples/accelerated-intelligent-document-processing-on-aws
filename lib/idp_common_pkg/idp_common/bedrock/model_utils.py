@@ -112,10 +112,12 @@ LONG_CONTEXT_SUFFIX = ":1m"
 #: which offer ``us.``/``eu.``/``global.`` only, but reachable through a custom
 #: configuration or the CLI, where a user copies the id off the model card.
 #:
-#: ``config.retired_models._REGION_PREFIX`` holds the same seven as a regex and
+#: ``ca`` is the Canada geo profile, introduced with ``ca.amazon.nova-lite-v1:0``.
+#:
+#: ``config.retired_models._REGION_PREFIX`` holds the same eight as a regex and
 #: cannot import this module (``config`` is imported BY ``bedrock``), so the two are
 #: asserted equal by ``tests/unit/bedrock/test_region_prefix_parity.py``.
-REGION_PREFIXES = ("us", "eu", "apac", "au", "jp", "global", "us-gov")
+REGION_PREFIXES = ("us", "eu", "apac", "au", "jp", "ca", "global", "us-gov")
 
 
 def metering_model_id(model_id: str) -> str:
@@ -532,6 +534,13 @@ _STANDARD_VISUAL_TOKEN_CAP = 1568
 # image (us-west-2, 2026-10-08). Getting this wrong understates an image-heavy
 # Haiku 5.5 request by ~3x, which is the direction that reads as "plenty of
 # context left" right up to the rejection.
+# Sonnet 5.5 is covered by the ``sonnet-5`` alternative below for the same reason
+# Opus 5.5 is covered by ``opus-5`` — substring — and that inheritance was CHECKED
+# rather than relied on, because this file is the one place a 5.5 model's answer has
+# differed from its 5.0 sibling four times over. Measured: one 2550x3301 page costs
+# 4,772 real input tokens on us.anthropic.claude-sonnet-5-5 (us-east-1,
+# 2026-10-14), against 4,768 for Sonnet 5 on the same image — the same
+# high-resolution tier, so no new alternative is needed here.
 # Deliberately a separate statement of the model set from
 # client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling
 # parameters" and "tokenizes images on the high-resolution tier" are different

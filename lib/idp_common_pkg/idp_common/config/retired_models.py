@@ -49,8 +49,9 @@ from typing import Any, Dict, Optional
 # be imported here (``config`` is imported BY ``bedrock``);
 # tests/unit/bedrock/test_region_prefix_parity.py asserts the two agree. ``au`` and
 # ``jp`` arrived with Claude Haiku 5.5, the first model offered here whose card
-# advertises those geo ids.
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|global|us-gov)\.")
+# advertises those geo ids; ``ca`` is the Canada geo profile
+# (``ca.amazon.nova-lite-v1:0``).
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|ca|global|us-gov)\.")
 
 
 #: Model id -> facts about its retirement.

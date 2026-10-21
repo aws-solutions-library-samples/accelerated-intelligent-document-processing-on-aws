@@ -60,7 +60,7 @@ index = _load_handler()
 #: handler's own helper. Reusing the implementation's definition of "same model"
 #: would make these assertions circular, and it would make them ERROR rather than
 #: FAIL against a revision that has no such helper — which is how the bug shipped.
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|global|us-gov)\.")
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|ca|global|us-gov)\.")
 
 MAPPINGS: dict[str, str] = index.MODEL_MAPPINGS
 TWINS = {
@@ -145,3 +145,112 @@ def test_an_unmapped_model_is_returned_unchanged():
     assert index.get_model_mapping(unknown, "eu") == unknown
     assert index.get_model_mapping(unknown, "us") == unknown
     assert index.get_model_mapping(unknown, "something-else") == unknown
+
+
+@pytest.mark.unit
+def test_a_canada_profile_is_offered_in_neither_us_nor_eu_picklists():
+    """A geo profile for one region type must not appear in another's picklist.
+
+    The US and EU filters keep ids with no geo prefix (``global.``, unprefixed),
+    so every geo-scoped prefix has to be excluded explicitly.
+    """
+    enum = [
+        "us.amazon.nova-2-lite-v1:0",
+        "eu.amazon.nova-2-lite-v1:0",
+        "ca.amazon.nova-lite-v1:0",
+        "global.anthropic.claude-sonnet-4-6",
+        "qwen.qwen3-vl-235b-a22b",
+        "LambdaHook",
+    ]
+    schema = {"properties": {"model": {"type": "string", "enum": list(enum)}}}
+
+    for region_type, other in (("us", "eu"), ("eu", "us")):
+        offered = index.filter_models_by_region(schema, region_type)
+        offered = offered["properties"]["model"]["enum"]
+        assert "ca.amazon.nova-lite-v1:0" not in offered, region_type
+        assert f"{other}.amazon.nova-2-lite-v1:0" not in offered, region_type
+        assert f"{region_type}.amazon.nova-2-lite-v1:0" in offered, region_type
+        assert "global.anthropic.claude-sonnet-4-6" in offered, region_type
+        assert "qwen.qwen3-vl-235b-a22b" in offered, region_type
+        assert "LambdaHook" in offered, region_type
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("region_type", ["us", "eu", "ca"])
+def test_a_geo_profile_outside_the_region_type_is_offered_nowhere(region_type: str):
+    """The filters read geo prefixes from the shared prefix rule, not a local list.
+
+    ``apac.``, ``jp.`` and ``au.`` profiles are callable from none of the US, EU
+    or Canada region types, so no picklist offers them. ``global.`` and
+    unprefixed ids stay offered in all three. ``us-gov.`` has its own rule, below.
+    """
+    geo_scoped = [
+        "apac.amazon.nova-lite-v1:0",
+        "jp.anthropic.claude-haiku-5-5",
+        "au.anthropic.claude-haiku-5-5",
+    ]
+    region_agnostic = [
+        "global.anthropic.claude-sonnet-4-6",
+        "example.unprefixed-model-v1:0",
+    ]
+    # The us. entry makes the filter treat this list as a model list.
+    enum = ["us.amazon.nova-2-lite-v1:0", *geo_scoped, *region_agnostic]
+    schema = {"properties": {"model": {"type": "string", "enum": enum}}}
+
+    offered = index.filter_models_by_region(schema, region_type)
+    offered = offered["properties"]["model"]["enum"]
+    for model_id in geo_scoped:
+        assert model_id not in offered, (region_type, model_id)
+    for model_id in region_agnostic:
+        assert model_id in offered, (region_type, model_id)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "region_type,expected", [("us", True), ("eu", False), ("ca", False)]
+)
+def test_a_govcloud_profile_is_offered_only_in_the_us_region_type(
+    region_type: str, expected: bool
+):
+    """GovCloud (``us-gov-*``) stacks resolve to the ``us`` region type, so the US
+    filter keeps ``us-gov.`` ids, as it did before Canada support. EU and Canada
+    stacks cannot call them. A commercial US stack is offered one too; no shipped
+    picklist carries a ``us-gov.`` id.
+    """
+    model_id = "us-gov.anthropic.claude-sonnet-4-6"
+    # The us. entry makes the filter treat this list as a model list.
+    enum = ["us.amazon.nova-2-lite-v1:0", model_id]
+    schema = {"properties": {"model": {"type": "string", "enum": enum}}}
+
+    offered = index.filter_models_by_region(schema, region_type)
+    assert (model_id in offered["properties"]["model"]["enum"]) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "region_type,ca_offered", [("us", False), ("eu", False), ("ca", True)]
+)
+def test_a_list_with_no_us_or_eu_id_is_still_a_model_picklist(
+    region_type: str, ca_offered: bool
+):
+    """A Canada-only picklist has to be recognised as a picklist.
+
+    ``filter_models_by_region`` decides a list is a model list by finding a geo id
+    in it. While that test named only ``us.`` and ``eu.``, a list whose geo ids
+    were all Canada ones fell through to the generic recursion untouched — so a US
+    or EU stack would be offered a ``ca.`` id it cannot call, with no filtering
+    applied to that list at all. Every shipped picklist carries ``us.`` entries,
+    which is why nothing is wrong today and why this case needs its own test.
+    """
+    ca_model = "ca.amazon.nova-lite-v1:0"
+    everywhere = "global.anthropic.claude-sonnet-4-6"
+    schema = {
+        "properties": {"model": {"type": "string", "enum": [ca_model, everywhere]}}
+    }
+
+    offered = index.filter_models_by_region(schema, region_type)
+    offered = offered["properties"]["model"]["enum"]
+    assert (ca_model in offered) is ca_offered, region_type
+    assert everywhere in offered, (
+        f"a global. id is callable from {region_type} and must survive the filter"
+    )

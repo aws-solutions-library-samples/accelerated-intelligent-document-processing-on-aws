@@ -10,9 +10,11 @@ from botocore.exceptions import ClientError
 
 from idp_common.bedrock.client import (
     _CACHEPOINT_BASE_MODELS,
+    CACHEPOINT_SUPPORTED_MODELS,
     BedrockClient,
     _inference_profile_cachepoint_cache,
 )
+from idp_common.bedrock.model_utils import REGION_PREFIXES
 
 
 @pytest.mark.unit
@@ -24,11 +26,12 @@ class TestCachepointBaseModelsSet:
         assert len(_CACHEPOINT_BASE_MODELS) > 0
 
     def test_base_models_strip_region_prefix(self):
-        """Base models should have region prefixes (us., eu., global.) stripped."""
+        """Base models should have every geo prefix stripped, not just us./eu./global."""
         for base_model in _CACHEPOINT_BASE_MODELS:
-            assert not base_model.startswith("us.")
-            assert not base_model.startswith("eu.")
-            assert not base_model.startswith("global.")
+            for prefix in REGION_PREFIXES:
+                assert not base_model.startswith(f"{prefix}."), (
+                    f"{base_model!r} still carries the {prefix!r} prefix"
+                )
 
     def test_base_models_contain_known_models(self):
         """Known foundation model names should be in the base models set."""
@@ -47,6 +50,37 @@ class TestCachepointBaseModelsSet:
         """Version suffixes (:0, :1m) should be preserved in base models."""
         assert "amazon.nova-pro-v1:0" in _CACHEPOINT_BASE_MODELS
         assert "anthropic.claude-sonnet-4-6:1m" in _CACHEPOINT_BASE_MODELS
+
+    def test_no_geo_prefix_is_silently_ignored(self):
+        """Every geo-prefixed entry must contribute its base name to the set.
+
+        The derivation loop tested a local ``("us", "eu", "global")`` tuple, so an
+        entry carrying any other geo — ``ca.``, ``apac.``, ``au.``, ``jp.``,
+        ``us-gov.`` — added nothing here. ``_is_model_cachepoint_supported``
+        resolves an inference-profile ARN to its foundation model and looks the
+        result up in this set, so such a model reads as cachePoint-unsupported
+        when it is named by ARN and quietly loses prompt caching.
+
+        This passes under both the old tuple and the shared ``REGION_PREFIXES``
+        today, because the one geo-only entry (``ca.amazon.nova-lite-v1:0``) has a
+        ``us.`` twin seeding the same base name. It is the first entry with NO
+        twin — a model offered only under ``ca.``, ``jp.`` or ``us-gov.`` — that
+        this exists to catch, and the loop now reads the shared list so that entry
+        needs no edit in ``client.py``.
+        """
+        for model_id in CACHEPOINT_SUPPORTED_MODELS:
+            prefix, _, rest = model_id.partition(".")
+            if not rest or prefix not in REGION_PREFIXES:
+                continue
+            base = rest
+            if base.endswith((":priority", ":flex")):
+                base = base.rsplit(":", 1)[0]
+            assert base in _CACHEPOINT_BASE_MODELS, (
+                f"{model_id} carries the geo prefix {prefix!r}, but its base name "
+                f"{base!r} is absent from _CACHEPOINT_BASE_MODELS, so an "
+                "inference-profile ARN resolving to it reads as "
+                "cachePoint-unsupported"
+            )
 
 
 @pytest.mark.unit

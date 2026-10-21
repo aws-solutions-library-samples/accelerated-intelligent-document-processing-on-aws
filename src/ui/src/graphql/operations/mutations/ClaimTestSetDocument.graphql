@@ -1,0 +1,8 @@
+mutation ClaimTestSetDocument($testSetId: String!, $objectKey: String!) {
+  claimTestSetDocument(testSetId: $testSetId, objectKey: $objectKey) {
+    testSetId
+    objectKey
+    assignedTo
+    assignedAt
+  }
+}
