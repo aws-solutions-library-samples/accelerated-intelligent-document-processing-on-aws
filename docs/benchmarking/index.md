@@ -325,11 +325,14 @@ escalation path acts on the number.
 The same driver crosses the models with named combinations of
 `classification.granularity`, `classification.modality` and
 `classification.strategy` via `--variants` (see `VARIANTS` in the script for the
-list). ⚠️ **No shipped guidance rests on this yet** — it has not been run, and
+list). ⚠️ **No shipped guidance rests on this yet.** It has been run once as an
+exploratory 8-document check — enough to confirm the axis works and to source
+the token figures quoted below, and far too few documents to separate one
+configuration's accuracy from another's — so
 [#1513](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1513)
-tracks doing so; the recommendations in
+tracks running it at a size that can carry a recommendation. The advice in
 [Classification](../classification.md#choosing-granularity-modality-and-strategy)
-are reasoned from token arithmetic rather than measured.
+is still reasoned from token arithmetic rather than measured.
 
 ```bash
 # Is packet granularity cheaper, and does it cost accuracy?
