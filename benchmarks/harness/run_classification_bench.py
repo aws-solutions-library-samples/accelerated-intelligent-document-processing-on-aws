@@ -249,9 +249,19 @@ def assert_variant_merged(cfg, variant, mode):
             problems.append("classification.labeling.task_prompt is empty after merge")
 
     if mode != "off":
-        block = (cls.get("confidence") or {}).get(
-            f"task_prompt_{'topk' if mode == 'topk' else 'verbalized'}", ""
-        )
+        conf = cls.get("confidence") or {}
+        suffix = "topk" if mode == "topk" else "verbalized"
+        # ⚠️ Mirror the service's own fallback rather than reading the page key
+        # alone: at packet granularity it resolves `task_prompt_<mode>_packet or
+        # task_prompt_<mode>`, so a config carrying only the packet-specific key
+        # is legitimate and would otherwise be reported as having no confidence
+        # prompt — a false problem, which is the one thing a guard like this must
+        # not produce. Today's shipped defaults carry both keys, so this is about
+        # a hand-written config rather than about the default.
+        candidates = [f"task_prompt_{suffix}"]
+        if cls.get("granularity") == "packet":
+            candidates.insert(0, f"task_prompt_{suffix}_packet")
+        block = next((conf.get(k) or "" for k in candidates if conf.get(k)), "")
         if "<class-confidence>" not in block:
             problems.append(
                 f"confidence.task_prompt_{mode} block is empty after merge — the "
@@ -462,7 +472,22 @@ def score_run(res, run_id):
                     boundary_matched += matched
                 else:
                     label_matched += matched
-        if isinstance(ds.get("total_splits"), int):
+        # ⚠️ `total_splits` predates the two halves (#1329), so a report from an
+        # older stack — or an older runmap replayed through `--score-only`, both
+        # supported, and comparing across releases is a stated purpose of this
+        # driver — carries the denominator and NOT the numerator. Adding to it
+        # unconditionally made the pooled figure read `boundary_accuracy: 0.0`
+        # alongside `sections_evaluated: 8`: "every boundary placed wrong", for a
+        # corpus where no boundary was judged at all. Measured, not supposed.
+        #
+        # That is the silent zero #1079/#1146 put off limits, and `label_total`
+        # below already avoided it by keying off a field only the new reports
+        # carry. The denominator therefore advances only for a document that also
+        # carries the numerator, so an old report pools nothing and the figure
+        # comes out `None` — not scored, which is the truth.
+        if isinstance(ds.get("total_splits"), int) and isinstance(
+            ds.get("boundary_matched_sections"), int
+        ):
             boundary_total += ds["total_splits"]
         # The label denominator is the sections whose BOUNDARIES matched — the
         # only ones where a label was judged at all.
@@ -483,9 +508,9 @@ def score_run(res, run_id):
             # ⚠️ NOT `bucket`: that name is bound at the top of this function to
             # the S3 OUTPUT BUCKET and is still read by `lib.read_json` on every
             # later iteration of the enclosing `for prefix in ...` loop. Rebinding
-            # it here passed a dict to botocore's `Bucket=` from the second
-            # document onward, so a run completed, printed read failures that
-            # looked environmental, and reported `n_docs: 1` — pooling every
+            # it here and botocore gets a dict as `Bucket=` from the second
+            # document onward — the run still completes, prints read failures
+            # that look environmental, and reports `n_docs: 1`, pooling every
             # accuracy and cost figure over one document instead of the corpus.
             for context, ctx_tokens in by_context.items():
                 acc = cls_by_context.setdefault(
@@ -654,8 +679,6 @@ def score_run(res, run_id):
                     totals["bedrock_calls"] / len(docs), 2
                 )
                 if docs and totals["bedrock_calls"] is not None
-                else None
-                if docs
                 else None,
             }
             for context, totals in sorted(cls_by_context.items())

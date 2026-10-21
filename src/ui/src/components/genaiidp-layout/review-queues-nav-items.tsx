@@ -1,0 +1,39 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
+import React from 'react';
+import { Badge } from '@cloudscape-design/components';
+import type { SideNavigationProps } from '@cloudscape-design/components';
+
+import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH } from '../../routes/constants';
+
+export const HITL_SECTION = 'HITL';
+export const MY_WORK_SECTION = 'My Work';
+
+/** Tasks, with a badge counting the items assigned to the caller. */
+export const buildMyTasksNavLink = (count: number | null): SideNavigationProps.Link => {
+  const link: SideNavigationProps.Link = { type: 'link', text: 'Tasks', href: `#${MY_TASKS_PATH}` };
+  const n = count ?? 0;
+  if (n > 0) {
+    link.info = (
+      <span>
+        <Badge color="blue">{n}</Badge>
+        <span className="idp-visually-hidden"> assigned</span>
+      </span>
+    );
+  }
+  return link;
+};
+
+/** The "My Work" section (Annotators): Inbox, Tasks and Queues (the queues that list the caller). */
+export const buildMyWorkNavSection = (inboxLink: SideNavigationProps.Link, taskCount: number | null): SideNavigationProps.Section => ({
+  type: 'section',
+  text: MY_WORK_SECTION,
+  items: [inboxLink, buildMyTasksNavLink(taskCount), { type: 'link', text: 'Queues', href: `#${MY_QUEUES_PATH}` }],
+});
+
+/** The "HITL" section (Admins): Queue Management, where queues are defined and work is assigned. */
+export const buildHitlNavSection = (): SideNavigationProps.Section => ({
+  type: 'section',
+  text: HITL_SECTION,
+  items: [{ type: 'link', text: 'Queue Management', href: `#${REVIEW_QUEUES_PATH}` }],
+});

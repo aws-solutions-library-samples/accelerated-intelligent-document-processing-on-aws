@@ -1,0 +1,19 @@
+query ListInboxMessages($read: Boolean, $types: [String!], $severities: [String!], $limit: Int, $nextToken: String) {
+  listInboxMessages(read: $read, types: $types, severities: $severities, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      type
+      title
+      body
+      severity
+      link
+      source
+      createdAt
+      read
+      readAt
+      metadata
+    }
+    nextToken
+    unreadCount
+  }
+}

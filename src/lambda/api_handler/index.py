@@ -68,7 +68,7 @@ def compute_job_status(files: dict[str, Status]) -> str:
         return "PENDING_UPLOAD"
 
     statuses = set(files.values())
-    terminal = {Status.COMPLETED, Status.FAILED, Status.ABORTED}
+    terminal = {Status.COMPLETED, Status.FAILED, Status.ABORTED, Status.REJECTED}
 
     if not all(s in terminal for s in statuses):
         return "IN_PROGRESS"

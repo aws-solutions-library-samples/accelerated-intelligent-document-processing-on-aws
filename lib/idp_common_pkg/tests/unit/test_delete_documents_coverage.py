@@ -49,6 +49,7 @@ No AWS call is made: the table and S3 client are `MagicMock`s throughout.
 
 from __future__ import annotations
 
+from datetime import datetime
 from functools import lru_cache
 from unittest.mock import MagicMock
 
@@ -1248,6 +1249,67 @@ class TestDeleteSingleDocument:
         result = delete_single_document(KEY, _table(), _s3(), "in", "out")
         assert result["errors"] == []
         assert result["success"] is True
+
+
+@pytest.mark.unit
+class TestReviewQueuePurge:
+    """delete_single_document's optional review_store: the review partition is purged.
+
+    A document routed to a review queue owns an item, drafts and history in the review
+    store. Without the purge they outlive the document and a reviewer can claim a
+    document that no longer exists.
+    """
+
+    def test_the_review_partition_is_purged_and_counted(self):
+        store = MagicMock()
+        store.purge_document.return_value = 3
+        result = delete_single_document(
+            KEY, _table(), _s3(), "in", "out", review_store=store
+        )
+        store.purge_document.assert_called_once()
+        args, kwargs = store.purge_document.call_args
+        assert args == (KEY,)
+        # The timestamp is a timezone-aware ISO string, since the store compares it
+        # against claim expiry times written the same way.
+        assert datetime.fromisoformat(kwargs["now_iso"]).tzinfo is not None
+        assert result["deleted"]["review_items"] == 3
+        assert result["success"] is True
+
+    def test_without_a_review_store_nothing_is_purged(self):
+        result = delete_single_document(KEY, _table(), _s3(), "in", "out")
+        assert result["deleted"]["review_items"] == 0
+        assert result["success"] is True
+
+    def test_a_dry_run_does_not_purge_the_review_partition(self):
+        store = MagicMock()
+        delete_single_document(
+            KEY, _table(), _s3(), "in", "out", dry_run=True, review_store=store
+        )
+        store.purge_document.assert_not_called()
+
+    def test_a_purge_failure_is_reported_and_the_rest_of_the_cleanup_continues(self):
+        table = _table()
+        table.get_item.return_value = {"Item": {"PK": f"doc#{KEY}"}}
+        store = MagicMock()
+        store.purge_document.side_effect = RuntimeError("store down")
+        result = delete_single_document(
+            KEY, table, _s3(), "in", "out", review_store=store
+        )
+        assert result["success"] is False
+        assert result["errors"] == ["Error purging review queue items: store down"]
+        assert result["deleted"]["review_items"] == 0
+        assert result["deleted"]["document_record"] is True, (
+            "a review-store failure abandoned the tracking-record delete"
+        )
+
+    def test_the_batch_wrapper_passes_the_store_to_every_document(self):
+        store = MagicMock()
+        store.purge_document.return_value = 1
+        result = delete_documents(
+            ["a", "b"], _table(), _s3(), "in", "out", review_store=store
+        )
+        assert [c.args[0] for c in store.purge_document.call_args_list] == ["a", "b"]
+        assert [r["deleted"]["review_items"] for r in result["results"]] == [1, 1]
 
 
 @pytest.mark.unit

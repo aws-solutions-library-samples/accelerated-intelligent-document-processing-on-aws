@@ -58,7 +58,7 @@ class TestCreateSampleCalculatorAgent:
         assert make_model.call_args.kwargs["session"] is session
 
     def test_the_calculator_tool_is_attached(self):
-        from strands_tools import calculator
+        from idp_common.agents.sample_calculator.calculator_tool import calculator
 
         _, _, agent_cls, _ = self._build()
         assert agent_cls.call_args.kwargs["tools"] == [calculator]

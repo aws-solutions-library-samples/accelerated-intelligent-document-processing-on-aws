@@ -199,6 +199,89 @@ def test_integrated_retry_splits_on_truncation():
     assert any(c <= 2 for c in fake.calls)
 
 
+class _ScoresWhateverItIsAsked:
+    """Confidence stand-in that answers about every field handed to it.
+
+    Unlike ``_TruncateOverN`` it does not assume the call carries a list field,
+    because the scalar rung asks about non-list fields only.
+    """
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def assess_results(self, *, class_label, extraction_results, **kw):
+        self.calls.append(list(extraction_results.keys()))
+        assessment = {}
+        for key, value in extraction_results.items():
+            if isinstance(value, list):
+                assessment[key] = [{"rate": {"confidence": 0.9}} for _ in value]
+            else:
+                assessment[key] = {"confidence": 0.93, "confidence_reason": "legible"}
+        return AssessmentCoreResult(
+            enhanced_assessment=assessment,
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=0.1,
+        )
+
+    def _resolve_confidence_escalation_model(self, class_label: str):
+        return None
+
+
+def test_integrated_recovers_a_scalar_only_class():
+    """#1474 on the integrated path. The early return here was taken whenever no
+    LIST field had missing rows, and its own comment named the consequence —
+    "scalar-only classes always land here" — so a populated scalar the inline
+    pass omitted reached no recovery rung at all. Integrated mode is the likelier
+    place to meet one: a single-shot call crams values and confidence together
+    and drops whatever does not fit."""
+    svc = _svc()
+    svc._document_text = "doc"
+    svc._page_images = []
+    section_info = SimpleNamespace(class_label="form")
+
+    extracted = {"FormId": "1046835", "Department": "Chicago Police Department"}
+    merged = {"FormId": {"confidence": 0.98}}
+
+    fake = _ScoresWhateverItIsAsked()
+    with patch("idp_common.assessment.service.AssessmentService", return_value=fake):
+        out, _alerts, split_stats = svc._retry_missing_integrated_rows(
+            merged_assessment=merged,
+            extracted_fields=extracted,
+            section_info=section_info,
+        )
+
+    assert fake.calls == [["Department"]], "the rung must ask about only the gap"
+    assert out["Department"]["confidence"] == 0.93
+    assert out["FormId"]["confidence"] == 0.98
+    assert split_stats is not None
+    assert split_stats["fields_recovered_by_retry"] == 1
+    assert split_stats["unrecoverable_fields"] == 0
+
+
+def test_integrated_makes_no_call_for_an_unpopulated_scalar():
+    """An absent value needs no confidence; demanding one would put a model call
+    on every sparsely-populated form."""
+    svc = _svc()
+    svc._document_text = "doc"
+    svc._page_images = []
+    section_info = SimpleNamespace(class_label="form")
+
+    extracted = {"FormId": "1046835", "SubmitterId": None, "Notes": ""}
+    merged = {"FormId": {"confidence": 0.98}}
+
+    fake = _ScoresWhateverItIsAsked()
+    with patch("idp_common.assessment.service.AssessmentService", return_value=fake):
+        _out, _alerts, split_stats = svc._retry_missing_integrated_rows(
+            merged_assessment=merged,
+            extracted_fields=extracted,
+            section_info=section_info,
+        )
+
+    assert fake.calls == []
+    assert split_stats is None
+
+
 def test_integrated_retry_noop_when_nothing_missing():
     """No unscored rows -> no assessment calls, no split_stats."""
     svc = _svc()

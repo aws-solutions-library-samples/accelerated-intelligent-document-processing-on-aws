@@ -42,12 +42,12 @@ const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
           hotspotId: 'nav-upload',
         },
         {
-          title: 'Document KB',
+          title: 'Knowledge Base',
           content: 'Ask natural-language questions about your processed documents using the document knowledge base.',
           hotspotId: 'nav-document-kb',
         },
         {
-          title: 'Agent Companion Chat',
+          title: 'Agent Chat',
           content: 'Chat with the IDP assistant for help with analytics, errors, and questions about your documents and the system.',
           hotspotId: 'nav-agent-chat',
         },

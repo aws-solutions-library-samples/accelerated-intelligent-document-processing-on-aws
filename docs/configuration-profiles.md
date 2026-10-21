@@ -854,18 +854,37 @@ Configuration data (ocr, classification, extraction, classes, assessment, summar
 - **Read path**: Compressed items are auto-detected via the `_config_storage: "compressed"` marker and transparently decompressed
 - **Backward compatibility**: Legacy uncompressed items (from older versions) are read as-is — no migration steps needed. On the next write, the config is automatically stored in compressed format.
 
-### Full Config Format
+### Every profile resolves against `default`
 
-New-format configuration versions include a `_config_format: "full"` marker. This distinguishes them from legacy sparse-delta configs. The detection logic (`_is_full_config()`) checks for:
-1. Explicit `_config_format: "full"` marker (new format), OR
-2. Presence of ≥4 top-level config sections (heuristic for pre-marker full configs)
+A profile is read by starting from the `default` profile and letting every key the
+profile itself holds override it. A key the profile **holds** always wins —
+including one deliberately set to an empty value, because absent is not the same
+as cleared. A key it **lacks** is taken from `default`.
 
-### Legacy Sparse Config Migration
+⚠️ **That is what makes a field added in a later release work on an older
+profile.** A profile stores a complete configuration *as of the schema it was
+saved under*, so it carries nothing for a field introduced afterwards; without
+resolving against `default`, such a field would arrive from the code's own default
+instead of your stack's. For a prompt the code default is empty, which is why
+switching an older profile to a newly added mode used to fail every document.
 
-If you have existing configurations from before this feature:
-- **Auto-detection**: Legacy sparse configs (only containing deltas from default) are automatically detected
-- **Auto-migration**: On first read, sparse configs are merged with the `default` version and the full result is saved back with the `_config_format: "full"` marker
-- **Transparent**: No manual intervention required — the migration happens seamlessly on first access
+The `_config_format: "full"` marker and the `_is_full_config()` heuristic (≥4
+top-level sections) still exist, but they no longer decide whether a profile is
+merged. They decide only whether a profile that *cannot* be resolved — because
+the two configurations contradict a cross-field rule — can be returned on its own
+rather than failing the read.
+
+- **Write-back**: the resolved configuration is saved back, so the next read is a
+  direct one and the configuration editor shows the real values rather than empty
+  boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
+  published revision predates the `storedHash` field**, because rewriting the head
+  would destroy the only integrity proof such a revision has.
+- **Transparent**: no manual intervention required.
+- ⚠️ **The backfill source is `default`,** which an administrator can overwrite
+  with *Save as Default*. A field your profile lacks therefore adopts whatever
+  `default` holds at that moment, which may be a customised value rather than the
+  shipped one, and the write-back then freezes it into the profile. Set the field
+  explicitly on the profile if you want it pinned.
 
 ## GraphQL API Reference
 

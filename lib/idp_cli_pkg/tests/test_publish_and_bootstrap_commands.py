@@ -453,8 +453,8 @@ def _square_bracket_text_rich_would_drop():
       they are rather than by being named.
     * **A string that arrives as a variable is invisible here**, because there is no
       literal to read. `idp_common.synthesis.engine.INSTALL_HINT` is exactly that
-      case: it names the `[synthesis-generator]` extra, reaches a `progress.print`
-      from another package, and no AST scan of this package can see inside it. It is
+      case: it is shared text that reaches a `progress.print` from another package,
+      and no AST scan of this package can see inside it. It is
       escaped at its call site and covered by a test that renders the real constant,
       which is the only thing that works for this shape.
     """
@@ -609,32 +609,26 @@ def _rich_printed_install_hint_interpolations():
 def test_a_rich_printed_install_hint_is_escaped_at_its_call_site():
     """`bootstrap` prints an install hint that names a pip extra, from elsewhere.
 
-    `idp_common.synthesis.engine.INSTALL_HINT` names `[synthesis-generator]`, and
-    unescaped Rich dropped it — telling the user to `pip install idp_common`, which
-    is already installed: the identical failure to the `[agents]` one above. It is
-    escaped at the call site rather than in the constant, because the constant is
+    `idp_common.synthesis.engine.INSTALL_HINT` is shared text, and unescaped Rich
+    drops any `[...]` in it — a pip extra is the case that bit the `[agents]` hint
+    above. It is escaped at the call site rather than in the constant, because the
+    constant is
     shared with consumers that do not render through Rich (the bootstrap module and
     the capability field), for which a backslash would be wrong.
 
     Asserted over the **call site**, because that is what is readable from this
     package — a test that rendered the constant through `escape` itself would pass
     with the call site unescaped, which is a test about `rich.markup.escape` rather
-    than about this code. Both halves are asserted: the constant really does carry
-    the extra, and Rich really does drop it unescaped, so neither the rule nor its
-    motivation rests on being read.
+    than about this code. The motivation is asserted too: Rich really does drop a
+    bracketed extra unescaped, so the rule does not rest on being read.
     """
     from rich.console import Console
 
-    from idp_common.synthesis import engine
-
-    assert "[synthesis-generator]" in engine.INSTALL_HINT, (
-        "the constant no longer names a pip extra, so the rule below is about nothing"
-    )
-
+    bracketed = "Install it with `pip install idp_common[agents]`."
     console = Console(force_terminal=False, width=400)
     with console.capture() as unescaped:
-        console.print(f"[yellow]{engine.INSTALL_HINT}[/yellow]")
-    assert "[synthesis-generator]" not in unescaped.get(), (
+        console.print(f"[yellow]{bracketed}[/yellow]")
+    assert "[agents]" not in unescaped.get(), (
         "Rich no longer drops this, so the escape may no longer be needed"
     )
 

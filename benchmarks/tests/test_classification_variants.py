@@ -411,19 +411,18 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
     """⚠️ Every `lib` stub in this suite must RESPECT its arguments.
 
     `score_run` binds `bucket` to the S3 output bucket once and reads it on every
-    iteration of its per-document loop. A per-context accumulation loop nested
-    inside that one rebound the same name to a token dict, so from the **second**
-    document onward `lib.read_json` received a dict as `Bucket=`. The run still
-    completed: the read failed, the harness printed `⚠ N read(s) FAILED …
-    excluded, not zeroed` — which reads as a transient S3 problem — and reported
+    iteration of its per-document loop, and a per-context accumulation loop runs
+    nested inside that one. Rebinding the same name there hands `lib.read_json` a
+    dict as `Bucket=` from the **second** document onward, and the run still
+    completes: the read fails, the harness prints `⚠ N read(s) FAILED … excluded,
+    not zeroed` — which reads as a transient S3 problem — and reports
     `n_docs: 1`, pooling every accuracy and cost figure over one document.
 
-    The reason no existing test caught it is worth stating, because it is the
-    cheap mistake: the one test that drives `score_run` stubs `read_json` as
-    `lambda *a, **k: ...`, which cannot fail on a corrupted argument, and its own
-    `n_docs == 2` assertion passed throughout. The stubs here assert on the
-    argument instead, which is what makes this a test of the defect rather than
-    of the happy path.
+    ⚠️ **The stubs here assert on their arguments, and that is the point.** A
+    `read_json` stubbed as `lambda *a, **k: ...` cannot fail on a corrupted
+    argument, so a suite written that way keeps a green `n_docs == 2` while the
+    real call is being handed a dict. That is the cheap mistake this class exists
+    to foreclose, not an incidental detail of how it is written.
     """
 
     def _metering(self, model):
@@ -432,9 +431,11 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
         return {
             f"Segmentation/{model}": {"inputTokens": 100, "outputTokens": 10},
             f"Labeling/{model}": {"inputTokens": 50, "outputTokens": 5},
-            # `calls` comes only from this key shape, which is what makes the
-            # N-calls-to-1 claim a measurement; a fixture without it reports 0
-            # and the per-document figure below would assert nothing.
+            # `lambda_invocations` comes only from this key shape, and
+            # `bedrock_calls` only from a `requests` unit under a `/bedrock/`
+            # key — the two counts the rest of this suite exists to keep
+            # distinct. A fixture without this reports 0 invocations and the
+            # per-document figure below would assert nothing.
             "Segmentation/lambda/requests": {"requests": 1},
             "Labeling/lambda/requests": {"requests": 1},
         }
@@ -613,3 +614,81 @@ def test_the_bedrock_count_separates_the_two_granularities():
     _c, _t, _w, packet_ctx = bench.classification_cost(packet_like)
     assert page_ctx["Classification"]["bedrock_calls"] == 6
     assert packet_ctx["Classification"]["bedrock_calls"] == 1
+
+
+@pytest.mark.unit
+class TestThePooledBoundaryFigureIsNotZeroWhenNothingWasJudged:
+    """⚠️ `total_splits` predates `boundary_matched_sections` (#1329).
+
+    An evaluation report from an older stack — or an older runmap replayed
+    through `--score-only`, both supported paths, and comparing across releases
+    is a stated purpose of this driver — carries the DENOMINATOR and not the
+    NUMERATOR. Pooling them independently printed `boundary_accuracy: 0.0`
+    beside `sections_evaluated: 8`, which reads as "every boundary was placed
+    wrong" for a corpus where no boundary was judged at all.
+
+    That is the silent zero #1079/#1146 put off limits. `label_accuracy` already
+    avoided it by keying its denominator off a field only the newer reports
+    carry; the asymmetry was the defect.
+    """
+
+    def _score(self, report, monkeypatch):
+        monkeypatch.setattr(
+            lib, "list_doc_prefixes", lambda *a, **k: ["r/d1/", "r/d2/"]
+        )
+        monkeypatch.setattr(lib, "read_json", lambda b, k: lib.Reading.present(report))
+        monkeypatch.setattr(
+            lib, "read_metering", lambda *a, **k: lib.Reading.absent("not needed")
+        )
+        monkeypatch.setattr(lib, "doc_row", lambda *a, **k: {"PageCount": 2})
+        return bench.score_run({"output_bucket": "b", "tracking_table": "t"}, "r")
+
+    PAGES = [{"correct": True, "predicted_confidence": 0.9}]
+
+    def test_an_older_report_pools_nothing_rather_than_zero(self, monkeypatch):
+        out = self._score(
+            {"doc_split_metrics": {"total_splits": 4, "page_details": self.PAGES}},
+            monkeypatch,
+        )
+        assert out["boundary_accuracy"] is None, (
+            "0.0 here reads as a catastrophic segmentation result for a corpus "
+            "that was never scored"
+        )
+        assert out["label_accuracy"] is None
+        assert out["sections_evaluated"] is None
+
+    def test_a_current_report_still_scores_both_halves(self, monkeypatch):
+        """The other direction: the guard must not suppress a real measurement."""
+        out = self._score(
+            {
+                "doc_split_metrics": {
+                    "total_splits": 4,
+                    "boundary_matched_sections": 3,
+                    "label_matched_sections": 2,
+                    "page_details": self.PAGES,
+                }
+            },
+            monkeypatch,
+        )
+        assert out["sections_evaluated"] == 8
+        assert out["boundary_accuracy"] == pytest.approx(0.75)
+        assert out["label_accuracy"] == pytest.approx(2 / 3, abs=1e-4)
+
+    def test_a_genuine_zero_is_still_reported_as_zero(self, monkeypatch):
+        """⚠️ The case the fix must NOT swallow. A report that carries the
+        numerator and it really is 0 means every boundary was placed wrong, and
+        that is a measurement worth printing."""
+        out = self._score(
+            {
+                "doc_split_metrics": {
+                    "total_splits": 4,
+                    "boundary_matched_sections": 0,
+                    "label_matched_sections": 0,
+                    "page_details": self.PAGES,
+                }
+            },
+            monkeypatch,
+        )
+        assert out["boundary_accuracy"] == 0.0
+        # No boundary matched, so no label was judged: not scored, not zero.
+        assert out["label_accuracy"] is None

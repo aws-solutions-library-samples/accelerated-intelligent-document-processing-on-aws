@@ -477,6 +477,20 @@ _UNASSESSED_DEADLINE_REASON = (
     "function time, or reduce the work per section)."
 )
 
+#: ``confidence_reason`` for a POPULATED non-list field the confidence response
+#: omitted outright. Distinct from both reasons above because the shortfall is not a
+#: count mismatch and not an undispatched batch: the model returned well-formed JSON
+#: that simply did not carry the key, so "returned fewer items than were extracted"
+#: is the wrong sentence — nothing was enumerated short. Measured cause (#1474): a
+#: small confidence model (``nova-lite``) answering about a 10-field form returned a
+#: valid object holding only the first three keys, while the same model on the same
+#: class in the same run answered about all ten for the next section.
+_UNASSESSED_OMITTED_FIELD_REASON = (
+    "Not assessed (the confidence response omitted this field). The extracted value "
+    "is unaffected, but it carries no confidence, so threshold-based review does not "
+    "cover it — treat it as unverified."
+)
+
 
 def _row_placeholder(
     data_row: Any, reason: str = _UNASSESSED_SHORT_RESPONSE_REASON
@@ -502,7 +516,10 @@ def _row_placeholder(
 
 
 def reconcile_assessment_to_data(
-    assessment: dict[str, Any], extraction_results: dict[str, Any]
+    assessment: dict[str, Any],
+    extraction_results: dict[str, Any],
+    *,
+    pad_missing_scalars: bool = True,
 ) -> dict[str, Any]:
     """Force per-field assessment to index-align with the extracted data.
 
@@ -528,7 +545,28 @@ def reconcile_assessment_to_data(
     extracted values; only the LLM ``confidence`` is null. A scalar/non-dict
     row element falls back to a single neutral leaf.
 
-    Scalar/group fields are left untouched. Mutates and returns ``assessment``.
+    A populated **non-list** field the response omitted entirely gets the same
+    treatment at leaf granularity: a null-confidence placeholder mirroring its
+    extracted value, so it is groundable and visible rather than absent (#1474).
+    One that already carries a leaf is left alone, null confidence included. A
+    field whose extracted value is absent (``None``, blank, empty container) is
+    not padded — there is nothing to be confident about.
+
+    ⚠️ ``pad_missing_scalars=False`` is for the INTERMEDIATE reconciles only —
+    :func:`_assess_slice_adaptive` per chunk and :func:`_splice_missing_rows` per
+    recovery slice, both of which reach it through :func:`_reconcile_rows_only`.
+    Those callers index-align one slice's rows and then hand the non-big fields on
+    as that slice's ``scalars``, and the batched path picks the FIRST slice whose
+    ``scalars`` is non-empty (``left["scalars"] or right["scalars"]`` in the
+    bisection merge, ``if not merged_assessment`` in the chunk loop). Padding
+    there makes every slice's ``scalars`` non-empty by construction, so a first
+    chunk that omitted a scalar would shadow a later chunk's REAL score with a
+    null placeholder — data the pipeline already had, lost to the fix for data it
+    did not. Scalar padding therefore belongs only to the FINAL assembly, which is
+    where the gap was; ``True`` stays the default so a new final-assembly caller
+    gets it without opting in.
+
+    Mutates and returns ``assessment``.
     """
     if not isinstance(assessment, dict):
         return assessment
@@ -578,7 +616,50 @@ def reconcile_assessment_to_data(
         assessment[field] = [
             _expand_row_to_per_column(assessed[i], data_val[i]) for i in range(target)
         ]
+
+    # A POPULATED non-list field the response omitted gets the same
+    # null-confidence placeholder a short list row does (#1474). Until this, the
+    # loop above skipped it on the first `continue` and the field was left with no
+    # assessment entry at all — and because that one object carries confidence,
+    # threshold AND geometry together, all three went missing at once: the UI shows
+    # a value with no score and no bounding box, since grounding attaches a box per
+    # confidence leaf and there was no leaf to attach one to.
+    #
+    # Only an ABSENT entry is filled — nothing already present is replaced. The
+    # test is emptiness, deliberately not "carries no ``confidence`` leaf": the
+    # latter also fires on an entry of some other shape (a leaf under a different
+    # key), and padding would then DESTROY a real assessment to report it as
+    # missing, turning a reporting gap into data loss. A null confidence the model
+    # chose to emit is likewise its statement about the field, not an absence to
+    # paper over, so it stays. Whether such an entry still leaves the field
+    # effectively unscored is a question for the audit, which reports without
+    # overwriting (``_missing_scalar_fields``).
+    if pad_missing_scalars:
+        for field, data_val in extraction_results.items():
+            if isinstance(data_val, list) or not _is_populated_value(data_val):
+                continue
+            existing = assessment.get(field)
+            if existing is not None and existing != {} and existing != []:
+                continue
+            assessment[field] = _row_placeholder(
+                data_val, _UNASSESSED_OMITTED_FIELD_REASON
+            )
     return assessment
+
+
+def _reconcile_rows_only(
+    assessment: dict[str, Any], extraction_results: dict[str, Any]
+) -> dict[str, Any]:
+    """:func:`reconcile_assessment_to_data` with scalar padding suppressed.
+
+    The two-positional-argument shape the ``reconcile=`` parameter of
+    :func:`_assess_slice_adaptive` and :func:`_splice_missing_rows` expects. Named
+    rather than a ``partial`` so the call sites say which reconciliation they mean;
+    see that function's docstring for why an intermediate slice must not pad.
+    """
+    return reconcile_assessment_to_data(
+        assessment, extraction_results, pad_missing_scalars=False
+    )
 
 
 def _iter_confidence_leaves(node: Any) -> Iterator[dict[str, Any]]:
@@ -647,6 +728,57 @@ def _missing_row_indices(assessment_list: Any, data_list: Any) -> list[int]:
         return []
     n = min(len(assessment_list), len(data_list))
     return [i for i in range(n) if _row_confidence_missing(assessment_list[i])]
+
+
+def _is_populated_value(value: Any) -> bool:
+    """True when an extracted value is something a confidence score can be *about*.
+
+    An absent value needs no assessment, and demanding one would make every
+    sparsely-populated form report a shortfall: the measured section in #1474
+    defines ten fields and populates six, and the four empty ones are correctly
+    unscored. Empty strings and empty containers count as absent for the same
+    reason — extraction emits them for "field not found on the page".
+    """
+    if value is None:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    if isinstance(value, (dict, list)) and not value:
+        return False
+    return True
+
+
+def _missing_scalar_fields(assessment: Any, extraction_results: Any) -> list[str]:
+    """Populated NON-LIST fields carrying no real confidence, in extraction order.
+
+    The scalar counterpart of :func:`_missing_row_indices`, and deliberately the
+    same predicate as :func:`_row_confidence_missing` applies per row: a field is
+    missing when it carries no confidence leaf at all, or when a leaf it does carry
+    has ``confidence is None``. Both halves are needed — the first is the model
+    omitting the key (#1474), the second is the null placeholder
+    :func:`reconcile_assessment_to_data` leaves in its place, which a recovery pass
+    must still treat as work to do.
+
+    One function so the recovery rung, the completeness gate and any test assert
+    the same rule. A measurement that restates "is this field scored?" measures a
+    different predicate from the one that ships, which is the trap
+    :func:`confidence_coverage` documents for rows.
+
+    **Residual:** a group (dict) field that is PARTLY scored is not reported, since
+    one scored sub-field yields a leaf. Scalars are what #1474 measured and what
+    the omission affects; partial groups want a per-sub-field walk and are left to
+    the audit's range checks for now.
+    """
+    if not isinstance(assessment, dict) or not isinstance(extraction_results, dict):
+        return []
+    missing: list[str] = []
+    for field, value in extraction_results.items():
+        if isinstance(value, list) or not _is_populated_value(value):
+            continue
+        leaves = list(_iter_confidence_leaves(assessment.get(field)))
+        if not leaves or any(leaf.get("confidence") is None for leaf in leaves):
+            missing.append(field)
+    return missing
 
 
 def _schema_field_mismatch_reason(
@@ -880,6 +1012,13 @@ def _new_split_stats() -> dict[str, Any]:
         "min_batch_size_used": None,  # smallest row-slice actually assessed
         "rows_recovered_by_retry": 0,  # unscored rows rescued in the retry phase
         "unrecoverable_rows": 0,  # rows still unscored after all recovery
+        # #1474 scalar rung. The row counters above cannot carry these: a section
+        # with no list attribute has no rows, which is exactly the shape whose
+        # omitted fields went unreported, so a shared counter would read 0 for the
+        # only case this rung exists to cover.
+        "scalar_retry_calls": 0,  # calls made to re-ask for omitted non-list fields
+        "fields_recovered_by_retry": 0,  # omitted non-list fields rescued
+        "unrecoverable_fields": 0,  # populated non-list fields still unscored
         "derived_batch_size": None,  # token-aware first-pass batch size (1.1)
         "configured_batch_size": None,  # the static list_batch_size for contrast
         "escalation_model": None,  # model the ladder escalated to (1.2), if any
@@ -1022,6 +1161,14 @@ def split_stats_are_notable(stats: dict[str, Any] | None) -> bool:
     A clean run (no truncation, no splits, no leftover unscored rows) is not
     notable — callers omit the metadata block entirely in that case to avoid
     noise.
+
+    The scalar rung's counters are included (#1474): the section that prompted it
+    had no list attribute, so every row-shaped term here was 0 and the metadata
+    block was omitted — which is how a run that silently dropped three of six
+    populated fields left no trace in its own artifact beyond the missing keys
+    themselves. ``fields_recovered_by_retry`` counts as notable even though the
+    outcome was good, for the same reason ``rows_recovered_by_escalation`` does:
+    recovery happening at all says the first pass came back short.
     """
     if not stats:
         return False
@@ -1033,6 +1180,9 @@ def split_stats_are_notable(stats: dict[str, Any] | None) -> bool:
         or stats.get("rows_recovered_by_escalation")
         or stats.get("schema_mismatch_fields")
         or stats.get("oversized_row_fields")
+        or stats.get("scalar_retry_calls")
+        or stats.get("fields_recovered_by_retry")
+        or stats.get("unrecoverable_fields")
     )
 
 
@@ -1054,6 +1204,12 @@ def merge_split_stats(
         "unrecoverable_rows",
         "rows_recovered_by_escalation",
         "escalation_rounds",
+        # #1474 scalar rung. Summed like every other counter here — a sharded
+        # section asks each shard about its own fields, so the omissions and the
+        # recoveries are disjoint across shards and add up.
+        "scalar_retry_calls",
+        "fields_recovered_by_retry",
+        "unrecoverable_fields",
     ):
         merged[key] = a.get(key, 0) + b.get(key, 0)
     mins = [
@@ -1247,6 +1403,9 @@ def build_assessment_issues(
     recovered_by_retry = int(stats.get("rows_recovered_by_retry", 0) or 0)
     recovered_by_escalation = int(stats.get("rows_recovered_by_escalation", 0) or 0)
     total_recovered = recovered_by_retry + recovered_by_escalation
+    # #1474 scalar rung, counted separately from the row totals above because the
+    # units differ — see the recovery rung below.
+    fields_recovered = int(stats.get("fields_recovered_by_retry", 0) or 0)
     schema_mismatch_fields = list(stats.get("schema_mismatch_fields") or [])
 
     # Compose a technical root-cause string shared by all severities.
@@ -1422,24 +1581,59 @@ def build_assessment_issues(
             )
         ]
 
-    if total_recovered > 0:
-        # Genuinely self-healed — rows that were unscored are now scored.
+    if total_recovered > 0 or fields_recovered > 0:
+        # Genuinely self-healed — what was unscored is now scored. Rows and fields
+        # are counted in DIFFERENT units and are not summed: a row is one item of a
+        # list attribute, a field is a whole non-list attribute the response omitted
+        # (#1474). Adding them would produce a number that is true of neither.
+        healed: list[str] = []
+        if total_recovered > 0:
+            healed.append(
+                f"{total_recovered} row(s) after batch shrinking"
+                + (" and model escalation" if recovered_by_escalation else "")
+            )
+        if fields_recovered > 0:
+            healed.append(f"{fields_recovered} omitted field(s) after re-asking")
+        # The batch-shrinking remedy is advice about ROW recovery — a smaller
+        # per-row output budget is what shrinking responds to. It does not apply to
+        # an omitted field, where the response was well within budget and the model
+        # simply did not carry the key, so it is only appended when rows were the
+        # thing recovered.
+        advice = (
+            " (token-inefficient — consider geometry.mode ocr_only or a "
+            "larger-output confidence model)."
+            if total_recovered > 0
+            else ". The extracted values and their confidence are complete."
+        )
         return [
             ProcessingIssue(
                 stage="assessment",
                 severity="info",
                 code="assessment_recovered_with_retries",
-                message=(
-                    f"{total_recovered} row(s) were recovered after batch shrinking"
-                    + (" and model escalation" if recovered_by_escalation else "")
-                    + " (token-inefficient — consider geometry.mode ocr_only or a "
-                    "larger-output confidence model)."
-                ),
+                message="Confidence recovered: " + "; ".join(healed) + advice,
                 root_cause=root_cause,
                 section_id=section_id,
                 details=dict(stats),
             )
         ]
+
+    # ⚠️ This is the ladder's TERMINAL branch, and it asserts a specific cause, so
+    # it must require the evidence for it. It used to be reached unconditionally,
+    # which was safe only while every way of being "notable" implied truncation or
+    # row trouble. Adding the #1474 scalar counters to ``split_stats_are_notable``
+    # broke that premise: a section whose ONLY notable activity was a successful
+    # field recovery passed the gate, matched no row-shaped rung above (its
+    # ``unrecoverable_rows`` is 0 and ``total_recovered`` counts rows only), and
+    # landed here — reporting "the confidence model truncated its output" with
+    # ``truncated_calls: 0`` in its own details, which rendered a healthy section as
+    # Degraded and pointed the operator at a remedy for a problem it did not have.
+    # Measured on a 464-section run: `packet_0024` section 1, 9 fields recovered,
+    # nothing truncated.
+    #
+    # So: no truncation, nothing unscored, nothing recovered — there is nothing to
+    # report, and saying so is the honest answer rather than inventing a cause.
+    if not stats.get("truncated_calls"):
+        return []
 
     # A call truncated but NOTHING was recovered and nothing is left unscored.
     # Do NOT claim recovery. This is a degraded (warning) outcome — the confidence
@@ -1593,6 +1787,14 @@ def audit_explainability(
     Checks, per config:
 
     - Every list row / scalar leaf has a real (non-null) ``confidence``.
+    - **Populated non-list fields are present at all (#1474):** one with a value
+      and no confidence leaf — or a null one — emits
+      ``assessment_fields_unscored``, ``error`` when NO populated field in the
+      section is scored and ``warning`` otherwise. This is the check the scalar
+      branch's comment claimed and did not perform: it range-checked the leaves it
+      found, and an omitted field yields none, so absence was silent. It is kept out
+      of ``gaps`` on purpose — see the comment at the emission site for why putting
+      it there corrupts the coverage arithmetic.
     - When ``geometry_mode not in (None, "off")``, a confidence leaf carries a
       geometry block (``bbox``/``geometry``) — flagged as a *warning*, not an
       error, since geometry is advisory enrichment.
@@ -1673,6 +1875,13 @@ def audit_explainability(
                         missing_geometry_rows += 1
         else:
             # Scalar/group: verify a confidence leaf exists and is in range.
+            #
+            # The range half only ever examined leaves it FOUND, so the comment's
+            # first clause was not implemented: for an omitted field ``assessed``
+            # is None, ``_leaf_confidences`` returns [], and the loop body never
+            # ran — absence produced nothing to check and the audit stayed silent
+            # on the one thing it was looking at (#1474). Presence is now its own
+            # question, asked below over every populated non-list field at once.
             for leaf in _leaf_confidences(assessed):
                 conf = leaf.get("confidence")
                 if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
@@ -1707,6 +1916,90 @@ def audit_explainability(
                 ),
                 section_id=section_id,
                 details={"missing_geometry_leaves": missing_geometry_rows},
+            )
+        )
+
+    # Unscored POPULATED non-list fields (#1474). Reported separately from the
+    # coverage rung below, for two reasons that both matter:
+    #
+    # 1. These findings must NOT go into ``gaps``. That dict is keyed field -> row
+    #    INDEX and its lengths are the numerator ``coverage_from_gaps`` divides by a
+    #    denominator counting list rows only, so a scalar entry there makes
+    #    ``unscored_rows`` exceed ``expected_rows`` and drives ``scored_rows``
+    #    negative — a corrupted measurement reported as a fixed bug.
+    # 2. The coverage rung cannot reach this section at all: its denominator is
+    #    ``expected_rows``, which counts list rows, and the rung is gated on that
+    #    being non-zero. A form with ten scalar attributes and no list has a zero
+    #    denominator, so no share of it is ever unscored enough to report. That is
+    #    why the measured section showed ``Status: SUCCESS`` with a tick beside
+    #    Confidence while three of its six populated fields carried none.
+    #
+    # Whether the coverage DENOMINATOR should also count scalar leaves is a separate
+    # question with a published-metric consequence (``confidence_coverage`` feeds the
+    # benchmark ``conf_coverage`` column, defined over list rows, and the committed
+    # grids were measured that way), so it is not answered here. This issue makes the
+    # shortfall visible without redefining that number.
+    #
+    # Deliberately NOT suppressed by ``ladder_issues``, unlike the coverage rung: a
+    # ladder error is about list rows, these are different values, and reporting both
+    # is two findings rather than one counted twice.
+    unscored_fields = _missing_scalar_fields(assessment, extraction_results)
+    if unscored_fields:
+        populated_fields = [
+            f
+            for f, v in extraction_results.items()
+            if not isinstance(v, list) and _is_populated_value(v)
+        ]
+        scored_fields = len(populated_fields) - len(unscored_fields)
+        named = ", ".join(f"'{f}'" for f in unscored_fields[:5])
+        if len(unscored_fields) > 5:
+            named += f", +{len(unscored_fields) - 5} more"
+        # ``scored_fields == 0`` is the limit case rather than a partial shortfall,
+        # the same distinction the coverage rung draws: there is no confidence
+        # surface over this section's fields at all, so no threshold applies to any
+        # of them. A partial shortfall stays a warning at any count — no fraction is
+        # imposed here, because the thresholds in this module are measured rather
+        # than argued and there is no distribution for scalar omission yet.
+        # ``unrecoverable_fields`` in split_stats is what will supply one.
+        severity = "error" if scored_fields <= 0 else "warning"
+        if scored_fields <= 0:
+            message = (
+                f"None of the {len(populated_fields)} populated field(s) in this "
+                f"section carry a confidence score ({named}), so it has no "
+                "confidence surface at all and threshold-based review (HITL) does "
+                "not apply to any of it. The extracted values themselves were "
+                "kept; treat every field as unverified."
+            )
+        else:
+            message = (
+                f"{len(unscored_fields)} of {len(populated_fields)} populated "
+                f"field(s) carry no confidence score ({named}). The extracted "
+                "values themselves are unaffected, but confidence-based review "
+                "(HITL thresholds) does not cover these fields, and neither does "
+                "the bounding-box overlay — treat them as unverified."
+            )
+        issues.append(
+            ProcessingIssue(
+                stage="assessment",
+                severity=severity,
+                code="assessment_fields_unscored",
+                message=message,
+                # Says what is true of the data, not what the recovery rung did.
+                # "re-asking did not recover them" would be false whenever the
+                # rung did not run — the wall-clock guard refuses a round, and a
+                # direct caller of this gate has no rung at all — and this gate
+                # is a symptom report computed from the final assessment, which
+                # cannot see which rungs were spent.
+                root_cause=(
+                    "the confidence response did not score these fields and "
+                    "recovery did not fill them in"
+                ),
+                section_id=section_id,
+                details={
+                    "unscored_fields": unscored_fields,
+                    "populated_fields": len(populated_fields),
+                    "scored_fields": max(scored_fields, 0),
+                },
             )
         )
 
@@ -2175,6 +2468,26 @@ def assess_results_batched(
                     merged_assessment.get(big), extraction_results.get(big)
                 )
             )
+        # #1474: the scalar rung, OUTSIDE the ``if all_list_fields`` above. That
+        # gate is what left a scalar-only section with no recovery path, so this
+        # one is deliberately unconditional — the fields it rescues exist whether
+        # or not the section also has a list.
+        merged_assessment, merged_alerts, merged_metering, scalar_dur = (
+            _retry_missing_scalars(
+                _one_call,
+                extraction_results=extraction_results,
+                merged_assessment=merged_assessment,
+                merged_alerts=merged_alerts,
+                merged_metering=merged_metering,
+                max_retries=max_retries,
+                split_stats=split_stats,
+                deadline_epoch=deadline_epoch,
+            )
+        )
+        duration_seconds += scalar_dur
+        split_stats["unrecoverable_fields"] = len(
+            _missing_scalar_fields(merged_assessment, extraction_results)
+        )
         # #894: name the class in the oversized-row report/issue (the ladder itself
         # only knows the field), so the operator can find the offending class in
         # config without cross-referencing the section id.
@@ -2249,7 +2562,7 @@ def assess_results_batched(
             base_results=extraction_results,
             big_field=big_field,
             rows=chunk,
-            reconcile=reconcile_assessment_to_data,
+            reconcile=_reconcile_rows_only,
             stats=stats,
             deadline_epoch=deadline_epoch,
             model_id=confidence_model_id,
@@ -2539,9 +2852,30 @@ def assess_results_batched(
     )
     duration_seconds += dur
 
+    # #1474 scalar rung — see the single-call branch above. A batched section
+    # reaches here too: batching slices the big LIST, and the scalars ride every
+    # batch, so a response that omits a scalar key omits it on the batch the
+    # merged scalars came from.
+    merged_assessment, merged_alerts, merged_metering, scalar_dur = (
+        _retry_missing_scalars(
+            _one_call,
+            extraction_results=extraction_results,
+            merged_assessment=merged_assessment,
+            merged_alerts=merged_alerts,
+            merged_metering=merged_metering,
+            max_retries=max_retries,
+            split_stats=split_stats,
+            deadline_epoch=deadline_epoch,
+        )
+    )
+    duration_seconds += scalar_dur
+
     # Count rows still unscored after all recovery, for visibility.
     split_stats["unrecoverable_rows"] = len(
         _missing_row_indices(merged_assessment.get(big_field), rows)
+    )
+    split_stats["unrecoverable_fields"] = len(
+        _missing_scalar_fields(merged_assessment, extraction_results)
     )
 
     # #894: name the class in the oversized-row report/issue (see the single-call
@@ -2652,7 +2986,7 @@ def _splice_missing_rows(
                 base_results=base_results,
                 big_field=big_field,
                 rows=[rows[i] for i in idx_chunk],
-                reconcile=reconcile_assessment_to_data,
+                reconcile=_reconcile_rows_only,
                 stats=stats,
                 deadline_epoch=deadline_epoch,
                 model_id=model_id,
@@ -2673,6 +3007,115 @@ def _splice_missing_rows(
                 recovered_any = True
                 stats[recovery_counter] += 1
     return merged_metering, added_duration, recovered_any, stopped_early
+
+
+def _retry_missing_scalars(
+    one_call,
+    *,
+    extraction_results: dict[str, Any],
+    merged_assessment: dict[str, Any],
+    merged_alerts: list[dict[str, Any]],
+    merged_metering: dict[str, Any],
+    max_retries: int,
+    split_stats: dict[str, Any] | None = None,
+    deadline_epoch: float | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], float]:
+    """Re-ask for ONLY the populated non-list fields the response left unscored.
+
+    The scalar counterpart of :func:`_retry_missing_rows`, and the gap that made
+    #1474 unrecoverable rather than merely unreported. Both of this module's
+    recovery call sites gate the row ladder on ``if all_list_fields:``, so a
+    section whose attributes are all scalars reached **no** recovery rung at all:
+    the ladder that exists to rescue unscored data could not be offered the one
+    shape of loss it was not written for. The measured case is a 10-field form
+    where the confidence model returned a valid object holding the first three
+    keys; re-asking about the remaining three is a cheap call that the same model
+    answers, which is not a hypothesis — the next section of the same packet, same
+    class and same model, returned all ten in one pass.
+
+    One rung only, same model, bounded by ``max_retries``, stopping early on a
+    round that recovers nothing. **Escalation is deliberately not wired in here.**
+    The row ladder escalates because small-cap truncation is a budget problem a
+    bigger output cap actually fixes; the measured cause here is a short answer
+    from a model that demonstrably can produce the long one, and
+    ``split_stats['escalation_rounds']`` is a shared bound that this rung spending
+    would silently take away from the rows. If a run shows fields surviving this
+    rung, that is the evidence for adding the escalation step, and
+    ``unrecoverable_fields`` is where it will show up.
+
+    Each round asks about the still-missing fields **only** — the same narrowing
+    :func:`_splice_missing_rows` applies to rows — so the prompt shrinks as fields
+    are recovered and a model that omitted keys under a long field list is not
+    handed the same long list again.
+
+    Wall-clock guarded on the same terms as every other rung (#958): one call is
+    priced at the larger of ``_ESTIMATED_MODEL_CALL_SECONDS`` and the last measured
+    duration, and a round that will not fit is not started. Best-effort — a failed
+    call keeps the placeholders.
+
+    Returns updated ``(assessment, alerts, metering, added_duration)``.
+    """
+    stats = split_stats if split_stats is not None else _new_split_stats()
+    added_duration = 0.0
+    measured_call_seconds: float | None = None
+
+    for _round in range(max(0, max_retries)):
+        missing = _missing_scalar_fields(merged_assessment, extraction_results)
+        if not missing:
+            break
+        est_call_seconds = max(
+            measured_call_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
+        )
+        if not _deadline_allows(deadline_epoch, est_call_seconds):
+            stats["deadline_reached"] = True
+            logger.warning(
+                "assess_results_batched: stopping field recovery with %d "
+                "populated field(s) still unscored (%s) — the next call, estimated "
+                "at %.0fs, would exceed the Lambda time budget. Fields already "
+                "recovered are kept.",
+                len(missing),
+                ", ".join(f"'{f}'" for f in missing),
+                est_call_seconds,
+            )
+            break
+        try:
+            core = one_call({f: extraction_results[f] for f in missing})
+        except Exception as e:  # noqa: BLE001 - recovery is best-effort
+            logger.warning("Missing-field recovery call failed: %s", e)
+            break
+        stats["scalar_retry_calls"] += 1
+        if core.truncated:
+            stats["truncated_calls"] += 1
+        merged_metering = utils.merge_metering_data(
+            merged_metering, core.metering or {}
+        )
+        merged_alerts.extend(core.confidence_threshold_alerts or [])
+        added_duration += core.duration_seconds or 0.0
+        measured_call_seconds = float(core.duration_seconds or 0.0)
+
+        retry_assessment = core.enhanced_assessment or {}
+        recovered_any = False
+        for field in missing:
+            candidate = retry_assessment.get(field)
+            leaves = list(_iter_confidence_leaves(candidate))
+            # Accept only a REAL score. A retry that omits the field again, or
+            # answers with a null leaf, must leave the placeholder in place —
+            # overwriting it would replace a placeholder that says why the field is
+            # unscored with one that says nothing, and would count as a recovery.
+            if not leaves or any(leaf.get("confidence") is None for leaf in leaves):
+                continue
+            merged_assessment[field] = candidate
+            stats["fields_recovered_by_retry"] += 1
+            recovered_any = True
+        if not recovered_any:
+            logger.warning(
+                "assess_results_batched: field recovery round recovered nothing "
+                "for %s; stopping this rung.",
+                ", ".join(f"'{f}'" for f in missing),
+            )
+            break
+
+    return merged_assessment, merged_alerts, merged_metering, added_duration
 
 
 def _retry_missing_rows(

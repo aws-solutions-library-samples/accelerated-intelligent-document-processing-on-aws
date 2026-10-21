@@ -1,0 +1,7 @@
+mutation ClearReadInboxMessages {
+  clearReadInboxMessages {
+    updated
+    notFoundIds
+    unreadCount
+  }
+}

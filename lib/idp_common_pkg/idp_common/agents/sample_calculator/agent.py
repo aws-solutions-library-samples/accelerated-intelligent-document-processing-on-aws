@@ -7,10 +7,10 @@ import logging
 
 import boto3
 import strands
-from strands_tools import calculator
 
 from ..common.config import DEFAULT_AGENT_MODEL_ID
 from ..common.strands_bedrock_model import create_strands_bedrock_model
+from .calculator_tool import calculator
 
 logger = logging.getLogger(__name__)
 

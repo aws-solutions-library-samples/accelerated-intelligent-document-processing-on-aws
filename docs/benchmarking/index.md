@@ -365,7 +365,10 @@ Three things about reading the result:
   **`classification_output_tokens_per_page`** separates the granularities too,
   and independently of metering coverage: page granularity emits a verdict per
   page, measured at 216.7 against 45.7 for `packet-text` on the same 8-document
-  `docsplit` corpus.
+  `docsplit` corpus. ⚠️ A token count from a corpus that small is a reliable
+  signal — it is a mechanical consequence of how many answers the model emits —
+  in a way the accuracy figures from the same run are not. Do not read the one as
+  licensing the other.
 
 ⚠️ **The matrix is multiplicative and cells drain one at a time** — deliberately,
 since a page cell and a packet cell issue very different call volumes for the
