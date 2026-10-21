@@ -384,7 +384,17 @@ def classification_cost(metering):
             if unit == "requests":
                 if key.endswith("/lambda/requests"):
                     bucket["lambda_invocations"] += n
-                elif "/bedrock/" in key:
+                elif "/bedrock/" in key or "/lambda_hook/" in key:
+                    # ⚠️ THREE key shapes carry a `requests` unit, not two.
+                    # `<ctx>/lambda_hook/<name>` is what a configured
+                    # `classification.model_lambda_hook_arn` emits (see
+                    # `bedrock/client.py`), and it is a MODEL call made through a
+                    # hook rather than an invocation of this pipeline's own
+                    # Lambda. Counting it as an invocation would overstate those;
+                    # counting it nowhere left `bedrock_calls_per_document`
+                    # silent about every call such a configuration made — and
+                    # silent as `None`, which reads as "not metered" rather than
+                    # as a gap.
                     bucket["bedrock_calls"] = (bucket["bedrock_calls"] or 0) + n
     for context in CLASSIFICATION_CONTEXTS:
         name = context.rstrip("/")
@@ -509,13 +519,12 @@ def score_run(res, run_id):
             cost, tokens, why, by_context = classification_cost(metering_read.value)
             for k in cls_tokens:
                 cls_tokens[k] += tokens[k]
-            # ⚠️ NOT `bucket`: that name is bound at the top of this function to
-            # the S3 OUTPUT BUCKET and is still read by `lib.read_json` on every
-            # later iteration of the enclosing `for prefix in ...` loop. Rebinding
-            # it here and botocore gets a dict as `Bucket=` from the second
-            # document onward — the run still completes, prints read failures
-            # that look environmental, and reports `n_docs: 1`, pooling every
-            # accuracy and cost figure over one document instead of the corpus.
+            # ⚠️ Do not name anything in this loop `bucket`. That name holds the
+            # S3 output bucket for the whole of `score_run`, and `lib.read_json`
+            # reads it on every later iteration of the enclosing `for prefix in
+            # ...` loop. Shadowing it hands botocore a dict as `Bucket=`, and the
+            # run still completes: the reads fail, the failures look
+            # environmental, and the summary reports one document.
             for context, ctx_tokens in by_context.items():
                 acc = cls_by_context.setdefault(
                     context,
@@ -679,10 +688,9 @@ def score_run(res, run_id):
         # tokens went — Segmentation or Labeling — rather than only their sum.
         # See the note on `lambda_invocations` above for what that count does and
         # does not evidence.
-        # The loop variable is `totals` rather than `bucket`, which in this
-        # function is the S3 output bucket. A comprehension scopes its own name,
-        # so this one could not leak even if it were called `bucket` — the naming
-        # is for whoever copies the block somewhere it would.
+        # `totals`, not `bucket` — see the loop above. A comprehension scopes its
+        # own name, so this one cannot leak; the naming is for whoever copies the
+        # block somewhere it would.
         "classification_by_context": {
             context: {
                 # Named rather than spread: `**totals` carried the internal

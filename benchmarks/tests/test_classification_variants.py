@@ -430,8 +430,13 @@ class TestScoreRunPassesTheBucketNotAnAccumulator:
         # Two contexts, so the accumulation loop that caused this runs at least
         # once per document. One context alone would not exercise it.
         return {
-            f"Segmentation/{model}": {"inputTokens": 100, "outputTokens": 10},
-            f"Labeling/{model}": {"inputTokens": 50, "outputTokens": 5},
+            # ⚠️ `<ctx>/bedrock/<model>`, which is the shape the emitter really
+            # writes (`bedrock/client.py`) and the shape `pricing.yaml` keys on.
+            # A bare `<ctx>/<model>` exercises the context bucketing and NOTHING
+            # ELSE — not pricing, not the `/bedrock/` call-count branch — while
+            # looking like it covers both.
+            f"Segmentation/bedrock/{model}": {"inputTokens": 100, "outputTokens": 10},
+            f"Labeling/bedrock/{model}": {"inputTokens": 50, "outputTokens": 5},
             # `lambda_invocations` comes only from this key shape, and
             # `bedrock_calls` only from a `requests` unit under a `/bedrock/`
             # key — the two counts the rest of this suite exists to keep
@@ -812,3 +817,36 @@ class TestMeteringFiguresDivideByMeteredDocumentsOnly:
         out = self._score(monkeypatch, {"d1"})
         assert out["n_docs"] == 8
         assert out["pages_processed"] == 16
+
+
+def test_a_lambda_hook_model_call_is_counted_as_a_model_call():
+    """⚠️ Three key shapes carry a `requests` unit, not two.
+
+    A configured `classification.model_lambda_hook_arn` makes the model call
+    through a Lambda hook, and `bedrock/client.py` meters it as
+    `<ctx>/lambda_hook/<name>` with `requests: 1`. Matched by neither test, both
+    counters stayed empty for that context and `bedrock_calls_per_document` came
+    out `None` — "not metered" rather than "this configuration made calls we did
+    not count", which is the harder error to notice.
+
+    It counts as a model call rather than as a Lambda invocation: the invocation
+    counter is about this pipeline's own functions, and conflating them would
+    overstate those.
+    """
+    metering = {
+        "Classification/lambda_hook/GENAIIDP-hook": {"requests": 4},
+        "Classification/lambda/requests": {"requests": 1},
+    }
+    _c, _t, _w, by_context = bench.classification_cost(metering)
+    assert by_context["Classification"]["bedrock_calls"] == 4
+    assert by_context["Classification"]["lambda_invocations"] == 1
+
+
+def test_bedrock_and_lambda_hook_calls_sum_in_one_context():
+    """A context can hold both — a hook-routed call and a direct one."""
+    metering = {
+        "Classification/bedrock/m": {"requests": 2},
+        "Classification/lambda_hook/GENAIIDP-hook": {"requests": 3},
+    }
+    _c, _t, _w, by_context = bench.classification_cost(metering)
+    assert by_context["Classification"]["bedrock_calls"] == 5
