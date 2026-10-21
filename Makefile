@@ -1695,20 +1695,24 @@ ai-ux-test-stories-search: ## What a first-time user finds in the published docs
 
 # First-time-user stories in the Docker runner (scripts/ux_runner/run_in_docker.py
 # stories). ai-ux-test-stories-local is a dry run: STORY=<id> [AS=<persona>].
-# ai-ux-test-stories-pair starts the confined browser and prints the command
+# INTERACTIVE=1 watches one flow live from a terminal of your own
+# (PORT= when 9222 is taken), and REPLAY=<dir> re-runs a run from its own harness
+# commit. ai-ux-test-stories-pair starts the confined browser and prints the command
 # for a Claude session you start; PAIR=full opts into your whole session and
 # PAIR=keychain keeps a keychain sign-in. ai-ux-test-stories-judge re-judges a run
 # on the host with no Docker, rewriting results.json and section.md: CHECK=1 writes
-# nothing, SUMMARY=1 prints the table. RUN reaches its recipe through the
-# environment, as Q does for the search target, so a path holding a quote or a
+# nothing, SUMMARY=1 prints the table. RUN and REPLAY reach their recipes through
+# the environment, as Q does for the search target, so a path holding a quote or a
 # space arrives whole. AS is one of make's own variables (the assembler, `as` by
 # default), so it is read only when it is set on the command line.
 .PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge
 
-ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run (STORY=<id> [AS=])
+ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run (STORY=<id> [AS=]; INTERACTIVE=1 [PORT=]; REPLAY=<dir>)
 	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories \
 		$(if $(STORY),--story $(STORY)) $(if $(filter command line,$(origin AS)),--as $(AS)) \
 		$(if $(VIDEO),--video $(VIDEO)) \
+		$(if $(filter 1 true yes y on,$(INTERACTIVE)),--interactive) \
+		$(if $(PORT),--port $(PORT)) $(if $(REPLAY),--replay "$$REPLAY") \
 		$(if $(STACK),--stack $(STACK)) $(if $(WEB_URL),--web-url $(WEB_URL)) \
 		$(if $(DOCS),--docs $(DOCS)) $(if $(RUN_USD),--run-usd $(RUN_USD)) \
 		$(if $(RERUNS),--reruns $(RERUNS)) $(EXTRA_ARGS)

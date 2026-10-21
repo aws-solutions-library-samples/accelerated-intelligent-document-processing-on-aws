@@ -16,6 +16,13 @@ Modes
 -----
 ``--story ID [--as PERSONA]``
     One story's flows. ``make ai-ux-test-stories-local`` runs this in Docker.
+``--replay RUN_DIR``
+    The stories, personas, model, effort, budgets, docs and UI source an earlier
+    run's ``story-run.json`` records, run again.
+``--interactive --story ID --as PERSONA``
+    Watch mode, run inside the browser container that ``run_in_docker.py``
+    started and signed in: the pinned Claude TUI plays the user through the same
+    server, a person reads along, and the host stops the container and judges.
 ``--judge RUN_DIR [--check] [--summary] [--audit FILE]``
     Re-judge a run from ``story-run.json`` and its journals: ``results.json`` and
     ``section.md``, byte for byte what the run wrote. Standard library only, so it
@@ -37,7 +44,9 @@ Properties it is built around
    its one server starts the pinned chrome-devtools-mcp itself and serves twelve
    of its tools behind the step budget, the image cap and the commit guard
    (``ux_runner.story_relay``). Every server runs under ``env -i``, the prompt
-   goes on stdin, and the stories come from the catalogue in the harness.
+   goes on stdin (a watched run's goes in a private file the TUI appends to its
+   system prompt, ``agent.interactive_argv``), and the stories come from the
+   catalogue in the harness.
 3. **The verdict is a function of the journal.** The server is the journal's one
    writer; this process copies it into the artifacts through the redactor and
    judges that copy, so ``--judge --check`` on the artifacts reproduces
@@ -82,6 +91,8 @@ namespace, and root's children share root's ``/proc``. Beside those:
   against the page as it is when the call arrives, and cannot see drag autosave,
   an unnamed control that is not beside a text box, or a full-page form's final
   button.
+* **A watched run can be driven from ``chrome://inspect``**, which nothing
+  detects, so a watched run is labelled ``watch`` and never compared.
 
 Usage
 -----
@@ -118,7 +129,9 @@ import math
 import os
 import re
 import shutil
+import signal
 import stat
+import subprocess  # nosec B404 - the watched TUI only, a fixed argv and no shell
 import sys
 import tempfile
 import time
@@ -161,6 +174,7 @@ from ux_runner import (  # noqa: E402
     story_section,
     story_verdict,
     tool_profiles,
+    transcript,
     ui_change,
 )
 
@@ -335,6 +349,7 @@ class Runtime:
     kill_recorder: Callable[..., None]
     recorder_status: Callable[[Path], dict[str, Any] | None]
     run_agent: Callable[..., tuple[agent.AgentResult | None, processes.Completed]]
+    run_tui: Callable[..., processes.Completed]
     render_video: Callable[..., tuple[Path | None, str]]
     chapters: Callable[..., list[tuple[str, str]]]
     index_docs: Callable[..., DocsCorpus]
@@ -625,6 +640,50 @@ def compose_prompt(
         raise StoryRunError(f"the story prompt cannot be built: {error}") from None
 
 
+def run_tui(
+    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str], timeout: float
+) -> processes.Completed:
+    """Run the Claude TUI on this process's terminal until it exits or ``timeout``.
+
+    The TUI must own the terminal, so it is started in this process's own process
+    group with the inherited standard streams, and this process's SIGINT is set to
+    a handler that does nothing while it waits: the person's Ctrl-C belongs to the
+    TUI, and a handler, unlike an ignored signal, is not inherited across
+    ``exec``. Past ``timeout`` the TUI is sent SIGTERM and, ten seconds later,
+    SIGKILL, and the result says it timed out.
+    """
+    started = time.monotonic()
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: None)
+    try:
+        popen = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            list(argv), cwd=cwd, env=dict(env)
+        )
+        timed_out = False
+        try:
+            popen.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            popen.terminate()
+            try:
+                popen.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                popen.kill()
+                popen.wait()
+        except BaseException:
+            popen.kill()
+            popen.wait()
+            raise
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    return processes.Completed(
+        returncode=popen.returncode if popen.returncode is not None else -9,
+        stdout="",
+        stderr="",
+        timed_out=timed_out,
+        elapsed=time.monotonic() - started,
+    )
+
+
 def default_runtime() -> Runtime:
     """The runtime a run uses: every collaborator is the real one."""
     return Runtime(
@@ -647,6 +706,7 @@ def default_runtime() -> Runtime:
         kill_recorder=recording.kill,
         recorder_status=recording.status,
         run_agent=agent.run_agent,
+        run_tui=run_tui,
         render_video=recording.render_video,
         chapters=recording.chapters,
         index_docs=index_docs,
@@ -676,6 +736,7 @@ class Plan:
     src_ui_tree: str | None
     docs_ref: str | None
     head_sha: str
+    replayed: str | None = None
 
 
 @dataclass
@@ -752,6 +813,7 @@ def settings_problem(
     stack: str,
     web_url: str | None,
     groups: Iterable[str],
+    sign_in: bool = True,
 ) -> str:
     """Why the CI variables cannot drive the planned flows, or ``""`` when they can.
 
@@ -759,7 +821,8 @@ def settings_problem(
     the web URL with the egress rules it joins, and no message carries a value.
     ``groups`` are the Cognito groups the planned flows sign in as; at least one
     must have an entry in ``UX_TEST_PERSONAS`` (a flow whose group has none is
-    ``not_run (persona)``).
+    ``not_run (persona)``). Without ``sign_in`` (a watched run, whose browser the
+    container has signed in) the personas are not needed.
     """
     ui_text = environ.get("UX_TEST_UI_ENV", "")
     if not ui_text.strip():
@@ -770,19 +833,20 @@ def settings_problem(
         )
     except ux_test_proxy.EgressConfigError as error:
         return f"UX_TEST_UI_ENV cannot be used: {error}"
-    persona_text = environ.get("UX_TEST_PERSONAS", "")
-    if not persona_text.strip():
-        return "UX_TEST_PERSONAS is not set, so no persona can be signed in"
-    try:
-        personas = signin.personas_from_env(persona_text)
-    except signin.SignInError as error:
-        return str(error)
-    wanted = sorted(set(groups))
-    if wanted and not any(group in personas for group in wanted):
-        return (
-            "UX_TEST_PERSONAS holds none of the groups these flows sign in as: "
-            + ", ".join(wanted)
-        )
+    if sign_in:
+        persona_text = environ.get("UX_TEST_PERSONAS", "")
+        if not persona_text.strip():
+            return "UX_TEST_PERSONAS is not set, so no persona can be signed in"
+        try:
+            personas = signin.personas_from_env(persona_text)
+        except signin.SignInError as error:
+            return str(error)
+        wanted = sorted(set(groups))
+        if wanted and not any(group in personas for group in wanted):
+            return (
+                "UX_TEST_PERSONAS holds none of the groups these flows sign in as: "
+                + ", ".join(wanted)
+            )
     expected = environ.get("UX_TEST_AWS_ACCOUNT_ID", "").strip()
     if not expected:
         return (
@@ -853,6 +917,8 @@ def _local_head(runtime: Runtime) -> str:
 
 
 def _mode(args: argparse.Namespace, environ: Mapping[str, str]) -> str:
+    if args.interactive:
+        return "watch"
     return "local"
 
 
@@ -887,7 +953,7 @@ def _ui_source(
 def precheck_flows(
     args: argparse.Namespace, runtime: Runtime, catalogue: stories.Catalogue
 ) -> Decision:
-    """The decision for ``--story`` runs.
+    """The decision for ``--story`` and ``--interactive`` runs.
 
     In order: the flows, the UI source and the CI variables.
     """
@@ -897,7 +963,7 @@ def precheck_flows(
     if not keys:
         return Decision(False, "skipped", "no flow to run")
     kind, build, url, problem = _ui_source(args, environ)
-    if problem:
+    if problem and mode != "watch":
         return Decision(False, "skipped", problem)
     groups = [catalogue.persona(key.persona).group for key in keys]
     problem = settings_problem(
@@ -906,6 +972,7 @@ def precheck_flows(
         stack=args.stack,
         web_url=url,
         groups=groups,
+        sign_in=mode != "watch",
     )
     if problem:
         return Decision(False, "skipped", problem)
@@ -924,6 +991,127 @@ def precheck_flows(
         head_sha=_local_head(runtime),
     )
     return Decision(True, "proceed", f"{len(keys)} flow(s)", plan=plan)
+
+
+def precheck_replay(
+    args: argparse.Namespace, runtime: Runtime, catalogue: stories.Catalogue
+) -> Decision:
+    """The decision for ``--replay``: the earlier run's flows, model, docs and UI.
+
+    The stories and personas must still be in this harness's catalogue, which is
+    why the Docker runner mounts the run's own harness commit; one that differs
+    from the run's is said in a ``WARNING:`` line, and so is docs read from a
+    working tree, which cannot be read again as they were. The stack is
+    ``--stack`` when it is given, which is what the Docker runner's warning about
+    a replay against another stack says will happen, and else the run's own.
+    """
+    environ = runtime.environ
+    folder = Path(args.replay)
+    record = _read_json(folder / story_verdict.RUN_FILE, "the replayed story-run.json")
+    if isinstance(record, dict) and record.get("mode") == "pair":
+        raise StoryRunError(
+            "a pair run was played by a session its developer started, so it has no "
+            "model or effort to replay; run its story unattended instead"
+        )
+    try:
+        contexts = story_verdict.run_record(record)
+    except story_verdict.RunRecordError as error:
+        raise StoryRunError(f"the replayed run cannot be read: {error}") from None
+    keys = sorted({stories.FlowKey.parse(c.key) for c in contexts if c.attempt == 1})
+    for key in keys:
+        try:
+            story = catalogue.story(key.story)
+        except KeyError:
+            raise StoryRunError(
+                f"this harness's catalogue has no story {key.story!r}; replay a run "
+                "with the harness it ran on"
+            ) from None
+        if key.persona not in story.personas:
+            raise StoryRunError(
+                f"this harness's {key.story} does not run as {key.persona}"
+            )
+    if not keys:
+        return Decision(False, "skipped", "the replayed run planned no flow")
+    model = record.get("model") if isinstance(record.get("model"), str) else None
+    effort = record.get("effort") if isinstance(record.get("effort"), str) else None
+    if effort not in agent.EFFORT_LEVELS:
+        effort = None
+    stack_record = record.get("stack") if isinstance(record.get("stack"), dict) else {}
+    stack = (
+        stack_record.get("name") if isinstance(stack_record.get("name"), str) else None
+    )
+    docs = record.get("docs") if isinstance(record.get("docs"), dict) else {}
+    ref = docs.get("ref")
+    docs_ref = ref if isinstance(ref, str) and _SHA_RE.fullmatch(ref) else None
+    warnings: list[str] = []
+    if docs_ref is None:
+        warnings.append(
+            "the replayed run read the docs of a working tree, which cannot be read "
+            "again as they were; this replay reads the working tree as it is now"
+        )
+    harness = record.get("harness_sha")
+    here, _ = runtime.harness(environ)
+    if isinstance(harness, str) and harness != here:
+        warnings.append(
+            f"this harness is {here[:12]}, the replayed run's was {harness[:12]}; "
+            "mount the run's own harness to replay it exactly"
+        )
+    source = (
+        record.get("ui_source") if isinstance(record.get("ui_source"), dict) else {}
+    )
+    kind = "build" if source.get("kind") == "build" else "deployed"
+    build: Path | None = None
+    url: str | None = None
+    if kind == "build":
+        if (
+            args.build_dir is None
+            or not (Path(args.build_dir) / "index.html").is_file()
+        ):
+            return Decision(
+                False,
+                "skipped",
+                "the replayed run tested an MR's UI build; pass --build-dir with that "
+                "build",
+            )
+        build = Path(args.build_dir)
+    else:
+        url = _web_url(args, environ)
+        if url is None:
+            return Decision(
+                False,
+                "skipped",
+                "the replayed run tested the deployed UI, whose web URL is not known: "
+                "pass --web-url",
+            )
+    run_stack = args.stack or stack or session.REVIEW_STACK
+    groups = [catalogue.persona(key.persona).group for key in keys]
+    problem = settings_problem(
+        args, environ, stack=run_stack, web_url=url, groups=groups
+    )
+    if problem:
+        return Decision(False, "skipped", problem)
+    tree = source.get("src_ui_tree")
+    plan = Plan(
+        mode="local",
+        keys=tuple(keys),
+        stack=run_stack,
+        model=model or args.model,
+        effort=effort or args.effort,
+        ui_kind=kind,
+        build_dir=build,
+        web_url=url,
+        src_ui_tree=tree if isinstance(tree, str) and _SHA_RE.fullmatch(tree) else None,
+        docs_ref=docs_ref,
+        head_sha=_local_head(runtime),
+        replayed=str(folder),
+    )
+    return Decision(
+        True,
+        "proceed",
+        f"{len(keys)} flow(s) replayed",
+        plan=plan,
+        extra={"warnings": warnings},
+    )
 
 
 def plan_series(
@@ -968,7 +1156,10 @@ def precheck(args: argparse.Namespace, runtime: Runtime) -> Decision:
     ``StoryRunError`` means the catalogue, a file or git could not answer.
     """
     catalogue = load_catalogue()
-    decision = precheck_flows(args, runtime, catalogue)
+    if args.replay is not None:
+        decision = precheck_replay(args, runtime, catalogue)
+    else:
+        decision = precheck_flows(args, runtime, catalogue)
     plan = decision.plan
     if decision.proceed and plan is not None and plan.model not in MODEL_RATES:
         return Decision(
@@ -1810,7 +2001,8 @@ class StoryRun:
         self.refused_groups: set[str] = set()
         self.facts_seen: list[signin.PageFacts] = []
         self.reruns_not_run: list[dict[str, str]] = []
-        self.current: FlowSession | None = None
+        self.current: FlowSession | WatchSession | None = None
+        self.interactive: dict[str, Any] | None = None
         self.kept: list[Path] = []
         self.work_dir: Path | None = None
         self.scopes: dict[str, str | None] = {"claude": None, "render": None}
@@ -1919,7 +2111,10 @@ class StoryRun:
         plan = self.planned
         self.say(f"PROCEED: {decision.detail} at {plan.head_sha[:8]}")
         self._prepare()
-        self._run_flows()
+        if plan.mode == "watch":
+            self._watch()
+        else:
+            self._run_flows()
         return self._conclude()
 
     def _prepare(self) -> None:
@@ -1977,7 +2172,9 @@ class StoryRun:
             f"{identity.account[-4:]}"
         )
         ui_env = egress.ui_env_from_b64(environ.get("UX_TEST_UI_ENV", ""))
-        personas = signin.personas_from_env(environ.get("UX_TEST_PERSONAS", ""))
+        personas: dict[str, signin.Persona] = {}
+        if plan.mode != "watch":
+            personas = signin.personas_from_env(environ.get("UX_TEST_PERSONAS", ""))
         if plan.web_url:
             self._keep_host_secret(plan.web_url)
         harness_sha, harness_dirty = rt.harness(environ)
@@ -2697,6 +2894,8 @@ class StoryRun:
     def _chosen_by(self) -> dict[str, Any]:
         """How the run's flows were chosen, for the reply's first lines."""
         plan = self.planned
+        if plan.replayed is not None:
+            return {"kind": "replay"}
         return {"kind": "story", "flows": [str(key) for key in plan.keys]}
 
     def _review_stack(self) -> bool | None:
@@ -2773,6 +2972,10 @@ class StoryRun:
             "reruns_not_run": list(self.reruns_not_run),
             "reply": self._reply(),
         }
+        if plan.replayed is not None:
+            record["replayed"] = plan.replayed
+        if self.interactive is not None:
+            record["interactive"] = dict(self.interactive)
         return record
 
     def _first_read_facts(self) -> signin.PageFacts | None:
@@ -2796,7 +2999,9 @@ class StoryRun:
         )
         self.recorded = True
         judged = judge_run_dir(self.artifacts, self.runtime.environ)
-        self.cost = story_verdict.cost_text(story_verdict.cost_totals(judged.results))
+        self.cost = story_verdict.cost_text(
+            story_verdict.cost_totals(judged.results, judged.record.get("interactive"))
+        )
         return judged
 
     def _record_after_failure(self) -> None:
@@ -2810,7 +3015,8 @@ class StoryRun:
 
     def _conclude(self) -> int:
         """Videos, the record, results and section, then the audits."""
-        self._render_videos()
+        if self.planned.mode != "watch":
+            self._render_videos()
         judged = self._write_record()
         for line in flow_lines(judged.results):
             self.say(line)
@@ -2823,6 +3029,12 @@ class StoryRun:
             raise StoryRunError(
                 "a flow's browser had a socket or a process it must not have: "
                 + ", ".join(attempt.context.key for attempt in dirty[:5])
+            )
+        if self.planned.mode == "watch":
+            return self._finish(
+                "watched",
+                f"judged without the socket audit, which the host folds in; see "
+                f"{self.artifacts}",
             )
         return self._finish(
             "dry_run", f"nothing posted; section.md is in {self.artifacts}"
@@ -2837,6 +3049,193 @@ class StoryRun:
         work, self.work_dir = self.work_dir, None
         if work is not None:
             shutil.rmtree(work, ignore_errors=True)
+
+    def _watch(self) -> None:
+        """The one watched flow, in the browser container the host started.
+
+        Watch has no dollar cap of its own (``--max-budget-usd`` applies only with
+        ``--print``), so only the persona, the version and the time gates apply;
+        the relay's caps and the wall clock bound the session. At exit the session
+        file is read through ``ux_runner.transcript``, and the cost counted is the
+        larger of the CLI's own total and its usage at the pinned rates. A session
+        file that cannot be read records ``assisted`` as null, because whether
+        anyone typed is then unknown rather than no.
+        """
+        if len(self.flows) != 1:
+            raise StoryRunError("watch mode runs one flow: name the story and --as")
+        attempt = self._new_attempt(self.flows[0], 1, 1)
+        self.attempts.append(attempt)
+        watch = WatchSession(self, attempt)
+        self.current = watch
+        try:
+            watch.run_attempt()
+        finally:
+            self.current = None
+            watch.cleanup()
+            attempt.context = watch.context()
+        attempt.result = judge_attempt(self.artifacts, attempt.context)
+        self.say(f"flow {attempt.flow.key}: {_attempt_label(attempt.result)}")
+
+
+class WatchSession:
+    """One watched attempt: the browser is the container's, the TUI is this run's.
+
+    The container's ``browser.py`` started the proxy and Chrome and signed the
+    persona in, and its own socket audit covers that Chrome's whole life, which the
+    host folds into this run's record (``--judge --audit``) once it has stopped the
+    container. This reads the signed-in page's facts over DevTools, closes that
+    session, and runs the pinned Claude TUI with the same story server and tools
+    as an unattended flow, under the catalogue's wall clock. The flow's prompt is
+    the session's appended system prompt (``agent.interactive_argv``), and the
+    person watching types ``agent.OPENING_MESSAGE`` once the server is up, which
+    the transcript counts as the session's one message. No recording is made,
+    because a watched run renders no video.
+    """
+
+    def __init__(self, run: StoryRun, attempt: Attempt) -> None:
+        self.run = run
+        self.attempt = attempt
+        self.work: Path | None = None
+        self.journal_copied: str | None = None
+        self.not_run_reason: str | None = None
+        self.harness_error: str | None = None
+
+    def run_attempt(self) -> None:
+        run, attempt = self.run, self.attempt
+        flow, rt = attempt.flow, run.runtime
+        try:
+            rt.wait_for_cdp()
+            target = rt.first_page_target()
+            devtools = rt.open_session(target["webSocketDebuggerUrl"])
+            try:
+                facts = rt.page_facts(devtools)
+            finally:
+                devtools.close()
+        except (chrome.ChromeError, OSError, KeyError) as error:
+            self.harness_error = "launch"
+            run.say(f"flow {flow.key}: harness error (launch): {error}")
+            return
+        attempt.facts = facts
+        run.note_facts(facts)
+        if stories.since_reached(flow.story.since, facts.version) is False:
+            self.not_run_reason = "since"
+            run.say(
+                f"flow {flow.key}: not run, the stack is older than {flow.story.since}"
+            )
+            return
+        base = "/tmp" if os.path.isdir("/tmp") else None  # nosec B108 - private dir
+        work = Path(tempfile.mkdtemp(prefix="ux-test-stories-watch-", dir=base))
+        self.work = work
+        os.chmod(work, 0o700)
+        try:
+            argv, cwd, env, home = self._session(work)
+        except (agent.AgentError, StoryRunError, OSError) as error:
+            self.harness_error = "session"
+            run.say(f"flow {flow.key}: harness error (session): {error}")
+            return
+        minutes = run.catalogue.limits.flow_minutes
+        run.say(
+            f"watch: {flow.key}, {attempt.budget} steps, at most {minutes} min. The "
+            "brief and the task are the session's system prompt: once the session "
+            "shows its prompt, give it a few seconds to start its ux-story server, "
+            f"then type: {agent.OPENING_MESSAGE}"
+        )
+        began = rt.wall()
+        completed = rt.run_tui(argv, cwd=cwd, env=env, timeout=minutes * 60)
+        ended = rt.wall()
+        session_file = transcript.read_transcript(home)
+        pinned = pinned_cost(run.model, session_file.usage)
+        known = [
+            cost for cost in (session_file.cli_cost_usd, pinned) if cost is not None
+        ]
+        spent = round(max(known), 6) if known else None
+        run.interactive = {
+            **session_file.to_json(),
+            "assisted": session_file.assisted if session_file.found else None,
+            "cost_usd_pinned": pinned,
+            "counted_usd": spent,
+            "returncode": completed.returncode,
+            "timed_out": completed.timed_out,
+            "started_epoch": round(began, 3),
+            "ended_epoch": round(ended, 3),
+        }
+        run.spent = round(run.spent + (spent or 0.0), 6)
+        shown = f"${spent:.2f}" if spent is not None else "unknown"
+        if not session_file.found:
+            label = (
+                "the transcript could not be read, so whether anyone typed is unknown"
+            )
+        else:
+            label = "assisted" if session_file.assisted else "unassisted"
+        run.say(f"watch: ended ({label}); cost {shown}")
+
+    def _session(self, work: Path) -> tuple[list[str], Path, dict[str, str], Path]:
+        run, attempt = self.run, self.attempt
+        aws = run.claude_credentials(attempt)
+        cwd = artifacts.private_dir(work / "cwd")
+        home = artifacts.private_dir(work / "home")
+        tmp = artifacts.private_dir(work / "tmp")
+        start = run.write_start(work / "start.json", attempt, mode="watch")
+        config = agent.write_mcp_config(
+            work / "mcp.json",
+            agent.story_server(
+                toolchain=run.toolchain,
+                story_adapter=paths.HARNESS_ROOT / STORY_SERVER_SCRIPT,
+                index=run.index_file,
+                out=work / "story",
+                start=start,
+                budget=attempt.budget,
+                python=sys.executable,
+                home=home,
+                search_path=_search_path(),
+            ),
+        )
+        prompt_file = work / "prompt.md"
+        descriptor = os.open(
+            prompt_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(run.prompt_for(attempt.flow, attempt.budget))
+        argv = agent.interactive_argv(
+            run.toolchain.claude,
+            config,
+            prompt_file=prompt_file,
+            profile=tool_profiles.STORY,
+            effort=run.effort,
+        )
+        env = agent.child_env(
+            home=home,
+            tmpdir=tmp,
+            model=run.model,
+            region=run.args.region,
+            aws=aws,
+            source=run.runtime.environ,
+        )
+        term = run.runtime.environ.get("TERM", "")
+        if term:
+            env["TERM"] = term
+        return argv, cwd, env, home
+
+    def cleanup(self) -> None:
+        """Copy the journal and screens out, then remove the attempt's directory."""
+        work, self.work = self.work, None
+        if work is None:
+            return
+        try:
+            folder = artifacts.artifact_dir(self.run.artifacts / self.attempt.folder)
+            story_dir = work / "story"
+            self.journal_copied = self.run.copy_journal(story_dir, folder, self.attempt)
+            self.run.copy_screens(story_dir, folder, self.attempt)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def context(self) -> story_verdict.FlowContext:
+        return dataclasses.replace(
+            self.attempt.context,
+            journal=self.journal_copied,
+            not_run_reason=self.not_run_reason,
+            harness_error=self.harness_error if self.not_run_reason is None else None,
+        )
 
 
 _CARD_ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")
@@ -2855,11 +3254,11 @@ def _card(text: object, limit: int) -> str:
 
 
 _AUDIT_STATES = ("clean", "violations", "unavailable")
-_AUDITED_MODES = ("pair",)
+_AUDITED_MODES = ("watch", "pair")
 
 
 def fold_audit(record: dict[str, Any], audit_path: Path) -> dict[str, Any]:
-    """A paired run's record with its browser container's socket audit.
+    """A watched or paired run's record with its browser container's socket audit.
 
     The container's audit covered its Chrome from launch until after exit, which
     is every moment the flow's page existed, so it is every flow's audit. A state
@@ -2868,8 +3267,8 @@ def fold_audit(record: dict[str, Any], audit_path: Path) -> dict[str, Any]:
     """
     if record.get("mode") not in _AUDITED_MODES:
         raise StoryRunError(
-            f"--audit folds a paired run's browser audit, and this run is "
-            f"{record.get('mode')!r}"
+            f"--audit folds a watched or paired run's browser audit, and this run "
+            f"is {record.get('mode')!r}"
         )
     audit = _read_json(audit_path, "the browser audit", limit=_SUMMARY_MAX_BYTES)
     if not isinstance(audit, dict):
@@ -2957,12 +3356,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--story", metavar="ID", help="run this story's flows")
+    modes.add_argument("--replay", metavar="RUN_DIR", help="run an earlier run's flows")
     modes.add_argument("--judge", metavar="RUN_DIR", help="re-judge a run directory")
     parser.add_argument(
         "--as",
         dest="as_persona",
         metavar="PERSONA",
         help="with --story, only this persona",
+    )
+    steps = parser.add_mutually_exclusive_group()
+    steps.add_argument(
+        "--interactive",
+        action="store_true",
+        help="with --story and --as, watch the flow in the browser container's TUI",
     )
     parser.add_argument(
         "--artifact-dir",
@@ -2979,7 +3385,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--audit",
         type=Path,
-        help="with --judge, a paired run's browser-audit.json",
+        help="with --judge, a watched or paired run's browser-audit.json",
     )
     parser.add_argument(
         "--rejudge",
@@ -3007,7 +3413,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--stack",
         help=f"the stack (default: {session.REVIEW_STACK}, the one whose video is "
-        "made)",
+        "made; with --replay, the replayed run's)",
     )
     parser.add_argument(
         "--model",
@@ -3036,13 +3442,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--run-usd",
         type=_positive_float,
-        help="the run's dollar cap (default: flows times flow_usd)",
+        help="the run's dollar cap (default: flows times flow_usd); not read by "
+        "--interactive",
     )
     parser.add_argument(
         "--reruns",
         type=int,
         choices=(0, 1),
-        help="re-run a bad verdict once (1, the default) or never (0)",
+        help="re-run a bad verdict once (1, the default) or never (0); not read by "
+        "--interactive",
     )
     parser.add_argument(
         "--video",
@@ -3070,10 +3478,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--keep-run-dir", action="store_true", help="keep each flow's run directory"
     )
     args = parser.parse_args(argv)
-    if args.stack is None:
+    if args.stack is None and args.replay is None:
         args.stack = session.REVIEW_STACK
     if args.as_persona is not None and args.story is None:
         parser.error("--as needs --story")
+    if args.interactive and (args.story is None or args.as_persona is None):
+        parser.error("--interactive runs one flow: give --story and --as")
+    if args.interactive and (args.run_usd is not None or args.reruns is not None):
+        parser.error(
+            "--interactive reads neither --run-usd nor --reruns: a watched flow is "
+            "bounded by its step budget and wall clock, and is never re-run"
+        )
     if args.reruns is None:
         args.reruns = 1
     if args.audit is not None and args.judge is None:

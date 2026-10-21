@@ -988,7 +988,9 @@ def test_what_the_docker_runner_holds_by_value_is_what_the_container_side_holds(
     assert (
         rid.STORY_ARTIFACTS == orchestrator.DEFAULT_RUN_DIR_NAME == story_pair.ARTIFACTS
     )
+    assert rid.STORY_RUN_FILE == story_verdict.RUN_FILE
     assert rid.STORY_RESULTS_FILE == story_verdict.RESULTS_FILE
+    assert rid.STORY_RUN_SCHEMA == story_verdict.RUN_SCHEMA
     assert rid.CI_ENV_NAMES == orchestrator.CI_VARIABLES
     assert rid.DEFAULT_STACK == session.REVIEW_STACK
     assert rid.OPENING_MESSAGE == agent.OPENING_MESSAGE
@@ -1120,6 +1122,7 @@ GRAPH: dict[str, set[str]] = {
         "ux_runner.stories",
         "ux_runner.tool_profiles",
     },
+    "ux_runner.transcript": set(),
     "ux_runner.run_in_docker": set(),
     "ux_runner.story_pair": {
         "check_markdown_links",

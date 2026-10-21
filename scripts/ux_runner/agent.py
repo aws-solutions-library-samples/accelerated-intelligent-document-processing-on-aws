@@ -50,7 +50,12 @@ The argv is fixed and carries no payload
 skips hooks, plugins, auto-memory and ``CLAUDE.md`` discovery (``--bare``), writes
 no session transcript (``--no-session-persistence``) and caps turns and spend. The
 model is chosen by ``ANTHROPIC_MODEL`` in the environment, and the prompt goes on
-stdin (:func:`run_agent`), never in argv: see ``processes``.
+stdin (:func:`run_agent`), never in argv: see ``processes``. A first-time-user
+story watched live runs the TUI instead (:func:`interactive_argv`), which has no
+stdin to read a prompt from. Its prompt is a file the TUI appends to its system
+prompt, and the person watching types :data:`OPENING_MESSAGE` once the session
+has started its server, because at the pinned release a message given as the
+TUI's argument is answered before the server's tools are offered.
 
 The result is parsed, not trusted
 ---------------------------------
@@ -129,9 +134,9 @@ USAGE_KEYS: tuple[str, ...] = (
     "cache_creation_input_tokens",
 )
 
-#: What the person types to open a paired story session, once its ``ux-story``
-#: server has started; the brief and the task are already in the session's system
-#: prompt.
+#: What the person types to open a watched or paired story session, once its
+#: ``ux-story`` server has started; the brief and the task are already in the
+#: session's system prompt.
 OPENING_MESSAGE = "Begin the task described in your instructions."
 
 #: The only names the AWS session handed to :func:`child_env` may use.
@@ -404,6 +409,56 @@ def claude_argv(
         "--max-budget-usd",
         f"{max_budget_usd:.2f}",
         *_effort_flag(effort),
+    ]
+
+
+def interactive_argv(
+    claude: Path,
+    mcp_config: Path,
+    *,
+    prompt_file: Path,
+    profile: tool_profiles.ToolProfile,
+    effort: str | None = None,
+) -> list[str]:
+    """The pinned Claude TUI's command line; ``prompt_file`` extends its system prompt.
+
+    The flags of :func:`claude_argv` without the four that the pinned CLI applies
+    only with ``--print`` (``-p`` itself, ``--output-format``,
+    ``--no-session-persistence`` and ``--max-budget-usd``) and without
+    ``--max-turns``, which 2.1.281's help does not list and which is not shown
+    to bound an interactive session; a watched session's bounds are the relay's
+    and a wall clock instead. The session keeps its transcript in its own
+    ``HOME``, which is where its usage is read back from.
+
+    The prompt reaches the session as ``--append-system-prompt-file``, which the
+    TUI reads when it starts, and no message is given on the command line: at
+    2.1.281 an opening message passed as the TUI's argument is answered before
+    the MCP servers' tools are offered, so that first turn could not act
+    (``scripts/tests/fixtures/ux_story_transcript/probe.json``). The person
+    watching types :data:`OPENING_MESSAGE` instead, once the server is up, which
+    the transcript then counts as the session's one message. A relative
+    ``prompt_file`` raises :class:`AgentError`, because the TUI would read it
+    from its own working directory.
+    """
+    if not prompt_file.is_absolute():
+        raise AgentError(f"the prompt file {prompt_file} is not an absolute path")
+    return [
+        str(claude),
+        "--bare",
+        "--strict-mcp-config",
+        "--mcp-config",
+        str(mcp_config),
+        "--permission-mode",
+        PERMISSION_MODE,
+        "--tools",
+        "",
+        "--allowedTools",
+        *profile.allowed,
+        "--disallowedTools",
+        *profile.disallowed,
+        *_effort_flag(effort),
+        "--append-system-prompt-file",
+        str(prompt_file),
     ]
 
 

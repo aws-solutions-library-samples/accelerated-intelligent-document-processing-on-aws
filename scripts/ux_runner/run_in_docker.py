@@ -34,9 +34,12 @@ managed policy and users as CI does. It has three modes.
     ``flows/<story@persona>/`` and ``section.md``, and the terminal ends with one
     line per flow: its verdict, the steps used of its budget and its
     hesitations. By default a run is unattended and a **dry run**: one flow
-    (``--story --as``) or every persona of a story (``--story``). ``--pair``
-    starts the browser and prints the command for a session of your own (below).
-    ``--list`` and ``--search`` are the
+    (``--story --as``) or every persona of a story (``--story``). ``--interactive``
+    starts a fresh browser container, runs the pinned Claude TUI in it for you to
+    watch and type to, stops the container when the session ends or
+    ``flow_minutes`` pass, and judges the run. ``--pair`` starts the browser and
+    prints the command for a session of your own (below). ``--replay`` re-runs a
+    run from its own harness commit. ``--list`` and ``--search`` are the
     authoring helpers; ``--search`` runs in the image, because the docs index runs
     ``docs-site/setup.sh``.
 
@@ -89,7 +92,7 @@ orchestrator gets ``safe.directory`` as command-line configuration
 (``GIT_CONFIG_COUNT``), and a worktree checkout, whose ``.git`` file names its
 shared git directory by host path, gets that directory mounted read-only at the
 same path. ``UX_HARNESS_SHA`` carries the host's harness label, which the
-orchestrator reads where its harness has no git of its own.
+orchestrator reads where its harness has no git of its own, as a replay's does.
 
 What this is NOT
 ----------------
@@ -171,11 +174,13 @@ Usage
 
     # first-time-user stories (`make ai-ux-test-stories-local ...`)
     python3 scripts/ux_runner/run_in_docker.py stories --story find-where-to-start --as new-analyst
+    python3 scripts/ux_runner/run_in_docker.py stories --story find-where-to-start --interactive
     python3 scripts/ux_runner/run_in_docker.py stories --pair --story route-folder-to-profile --as platform-admin
+    python3 scripts/ux_runner/run_in_docker.py stories --replay <a run's ux-test-stories/>
 
 Unrecognised ``review`` options pass through to ``scripts/sdlc/ai_ux_test.py``,
 for example ``--max-turns 40`` or ``--persona Admin``, and unrecognised options of
-an unattended ``stories`` run to
+an unattended, watched or replayed ``stories`` run to
 ``scripts/sdlc/ai_ux_test_stories.py``, for example ``--docs <sha>``.
 
 Environment
@@ -186,8 +191,8 @@ AWS credentials
     ``AWS_DEFAULT_REGION``) names the stack's region.
 ``UX_TEST_PERSONAS``, ``UX_TEST_AWS_ACCOUNT_ID``
     As the CI variables hold them: base64 of the persona JSON, and the account's
-    twelve digits. Required by ``review`` and by an unattended ``stories``
-    run; ``browser`` needs the personas only for
+    twelve digits. Required by ``review`` and by an unattended, watched or
+    replayed ``stories`` run; ``browser`` needs the personas only for
     ``--sign-in``, and ``stories --pair`` needs only the personas.
 ``UX_TEST_UI_ENV``
     Optional. Without it, the stack's ``WebUITestEnvFile`` output and the names
@@ -197,8 +202,9 @@ AWS credentials
 ``CI``, ``GITLAB_CI``
     Forwarded to the review container wherever the host sets them, so that
     ``ai_ux_test.py`` refuses ``--dev-video-any-stack`` on a CI host, and to every
-    story container, so that a developer-only option the story orchestrator
-    refuses under CI is refused there too.
+    story container, the watched run's browser container included, so that a
+    developer-only option the story orchestrator refuses under CI is refused there
+    too.
 """
 
 from __future__ import annotations
@@ -986,7 +992,9 @@ STORY_SEARCH_ENTRY = "scripts/ux_runner/docs_index.py"
 STORY_CATALOGUE = REPO_ROOT / "scripts" / "ux_stories.toml"
 STORIES_OUT = REPO_ROOT / "scratch" / "ux-docker" / "stories"
 STORY_ARTIFACTS = "ux-test-stories"
+STORY_RUN_FILE = "story-run.json"
 STORY_RESULTS_FILE = "results.json"
+STORY_RUN_SCHEMA = "ux-test-stories/run"
 STORY_VERDICTS = (
     "not_refused",
     "stuck",
@@ -1022,6 +1030,7 @@ OWNER_RE = re.compile(r"^[0-9]{1,10}:[0-9]{1,10}$")
 POSIX_BARE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 POWERSHELL_BARE_RE = re.compile(r"[A-Za-z0-9_./=-]+")
 SEARCH_QUERY_CHARS = 200
+WATCH_GRACE_SECONDS = 180
 DEFAULT_FLOW_MINUTES = 12
 PAIR_HOME = "/tmp/ux-pair"  # nosec B108 - a directory inside the browser container
 PAIR_CONFIG = "pair-mcp.json"
@@ -1117,7 +1126,7 @@ def story_facts(story: str, catalogue: Path | None = None) -> StoryFacts:
 
 
 def choose_persona(facts: StoryFacts, persona: str | None) -> tuple[str, str]:
-    """The persona a paired flow runs as, and its group.
+    """The persona a watched or paired flow runs as, and its group.
 
     A story with one persona needs no ``--as``; one with several names them.
     """
@@ -1140,14 +1149,16 @@ def choose_persona(facts: StoryFacts, persona: str | None) -> tuple[str, str]:
 def story_mode(args: argparse.Namespace) -> str:
     """Which stories mode the options ask for, refusing a combination that clashes.
 
-    One of ``list``, ``search``, ``pair`` and ``run`` (the unattended default),
-    with every option the chosen mode does not read refused by name rather than
-    ignored.
+    One of ``list``, ``search``, ``pair``, ``watch``, ``replay`` and ``run`` (the
+    unattended default), with every option the chosen mode does not read refused
+    by name rather than ignored.
     """
     modes = (
         ("list", "--list", bool(args.list)),
         ("search", "--search", args.search is not None),
         ("pair", "--pair", bool(args.pair)),
+        ("watch", "--interactive", bool(args.interactive)),
+        ("replay", "--replay", args.replay is not None),
     )
     chosen = [(name, flag) for name, flag, on in modes if on]
     if len(chosen) > 1:
@@ -1173,6 +1184,8 @@ def story_mode(args: argparse.Namespace) -> str:
         "search": set(),
         "pair": {"--story", "--port", "--name", "--build-dir"}
         | {"--pair-full", "--pair-keychain"},
+        "watch": {"--story", "--port", "--name", "--build-dir", "passthrough"},
+        "replay": {"--video", "passthrough"},
         "run": {"--story", "--video", "--build-dir", "passthrough"},
     }[mode]
     given = {
@@ -1193,7 +1206,17 @@ def story_mode(args: argparse.Namespace) -> str:
     if unread:
         raise DockerRunError(f"{unread[0]} does not apply to {mode_flag}")
     _check_passthrough(args.passthrough)
-    if mode == "pair" and selection != ["--story"]:
+    if mode == "watch":
+        named = sorted(
+            {token.split("=", 1)[0] for token in args.passthrough}
+            & {"--run-usd", "--reruns"}
+        )
+        if named:
+            raise DockerRunError(
+                f"{named[0]} does not apply to --interactive: a watched flow is "
+                "bounded by its step budget and wall clock, and is never re-run"
+            )
+    if mode in ("pair", "watch") and selection != ["--story"]:
         raise DockerRunError(f"{mode_flag} needs --story, and --as when it has several")
     if mode == "run" and len(selection) != 1:
         raise DockerRunError("an unattended run takes --story, with or without --as")
@@ -1667,6 +1690,42 @@ def _web_url(
     )
 
 
+def _build_mr_ui(
+    *,
+    docker: str,
+    platform_name: str,
+    tag: str,
+    out: Path,
+    head: str,
+    ui_env: str,
+    env: Mapping[str, str],
+    run: Callable[..., Any],
+) -> Path:
+    """The MR's ``src/ui`` exported on the host and built where nothing is to take."""
+    print(f"-> exporting src/ui at {head[:8]}", flush=True)
+    ui_dir = export_ui_source(REPO_ROOT, head, out / "source", run=run)
+    (ui_dir / ".env.production.local").write_text(ui_env, encoding="utf-8")
+    build_dir = out / "build"
+    build_dir.mkdir(exist_ok=True)
+    print("-> building the MR's UI in a container with no credentials", flush=True)
+    built = run(  # noqa: S603 - fixed argv, no shell
+        [docker, "run", "--rm", "--init", "--platform", platform_name]
+        + bind(out / "source", "/work/source", readonly=True)
+        + bind(build_dir, "/work/build", readonly=False)
+        + ["--mount", f"type=volume,source={NPM_CACHE_VOLUME},target=/root/.npm"]
+        + [tag, "bash", "-c", UI_BUILD_COMMAND],
+        env=_build_env(env),
+        check=False,
+    )
+    if built.returncode != 0:
+        raise DockerRunError(
+            f"the MR's UI did not build (exit {built.returncode}); its output is above"
+        )
+    if not (build_dir / "index.html").is_file():
+        raise DockerRunError(f"the UI build wrote no {build_dir / 'index.html'}")
+    return build_dir
+
+
 def _local_build(args: argparse.Namespace) -> Path | None:
     if args.build_dir is None:
         return None
@@ -1775,7 +1834,7 @@ def _story_browser(
     names: Sequence[str],
     mounts: Sequence[str] = (),
 ) -> list[str]:
-    """``docker run -d`` of the browser container a paired flow uses.
+    """``docker run -d`` of the browser container a watched or paired flow uses.
 
     Browser mode's container, signed in as the persona's group, keeping the welcome
     page for a ``first_visit`` story, with the run directory at ``/out``.
@@ -1860,6 +1919,174 @@ def _browser_env(
     child["UX_BROWSER_HOST_PORT"] = str(port)
     child["UX_BROWSER_CONTAINER"] = name
     return child
+
+
+def _judge_on_host(
+    artifacts: Path,
+    audit: Path,
+    env: Mapping[str, str],
+    ui_env: str,
+    *,
+    run: Callable[..., Any],
+) -> int:
+    """``--judge --audit`` on the host, with the UI environment for the redactor.
+
+    The orchestrator ran inside the browser container and exited before the
+    container's stop wrote ``browser-audit.json``, so the judge folds that audit
+    into the run before it judges, as an unattended run's own audit is.
+    """
+    judged = dict(env)
+    judged.setdefault(
+        "UX_TEST_UI_ENV", base64.b64encode(ui_env.encode("utf-8")).decode("ascii")
+    )
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-B", str(REPO_ROOT / STORIES_ENTRY), "--judge"]
+        + [str(artifacts), "--audit", str(audit)],
+        env=judged,
+        check=False,
+    )
+    return completed.returncode
+
+
+def _stories_watch(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any],
+    popen: Callable[..., subprocess.Popen[str]],
+    environ: Mapping[str, str],
+    follow: Callable[[Sequence[str]], str | None],
+    terminal: Callable[[], bool],
+) -> int:
+    """Watch a confined flow live; this host starts and stops its browser container.
+
+    The pinned Claude TUI runs in the browser container through ``docker exec -it``.
+    When it exits, or ``flow_minutes`` and :data:`WATCH_GRACE_SECONDS` pass, the
+    container is stopped, which writes the socket audit, the audit is folded into
+    ``story-run.json`` and the run is judged on the host.
+    """
+    env = dict(environ)
+    stack = args.stack or DEFAULT_STACK
+    _check_stack(stack)
+    _require(env, "UX_TEST_PERSONAS", "UX_TEST_AWS_ACCOUNT_ID")
+    if not CONTAINER_NAME_RE.match(args.name):
+        raise DockerRunError(f"{args.name!r} is not a docker container name")
+    if not terminal():
+        raise DockerRunError(
+            "--interactive runs a terminal session, so run it from your own terminal "
+            "(under mintty, put winpty in front of it); a tool without a TTY cannot"
+        )
+    facts = story_facts(args.story)
+    persona, group = choose_persona(facts, args.persona)
+    local_build = _local_build(args)
+    port = args.port or DEFAULT_HOST_CDP_PORT
+    docker = resolve_tool(args.docker)
+    out = story_run_dir(f"watch-{facts.story}@{persona}", out=args.out)
+    print(f"-> run directory: {out}", flush=True)
+    platform_name = host_platform()
+    tag = image_tag(PACKAGE_DIR)
+    ensure_image(
+        tag,
+        platform_name,
+        PACKAGE_DIR,
+        docker=docker,
+        rebuild=args.rebuild_image,
+        run=run,
+    )
+    credentials = export_credentials(profile=args.profile, run=run)
+    region = _region(env)
+    ui_env = ui_env_text(env, stack=stack, profile=args.profile, region=region, run=run)
+    web_url = (
+        None if local_build else _web_url(args, ui_env, stack, region=region, run=run)
+    )
+    harness, _ = harness_facts(REPO_ROOT, run=run)
+    variables = git_variables(harness)
+    names = _story_names() + tuple(variables) + BROWSER_ENV_NAMES
+    browser_env = _browser_env(env, credentials, ui_env, port=port, name=args.name)
+    browser_env.update(variables)
+    print(f"-> starting {args.name}; DevTools on 127.0.0.1:{port}", flush=True)
+    _start_browser(
+        _story_browser(
+            docker=docker,
+            name=args.name,
+            platform_name=platform_name,
+            port=port,
+            tag=tag,
+            out=out,
+            audit_out=(out, "/out"),
+            stack=stack,
+            web_url=web_url,
+            build_dir=local_build,
+            group=group,
+            keep_welcome=facts.first_visit,
+            names=names,
+            mounts=checkout_git_mounts(REPO_ROOT, run=run),
+        ),
+        name=args.name,
+        docker=docker,
+        env=browser_env,
+        run=run,
+        follow=follow,
+    )
+    deadline = facts.flow_minutes * 60 + WATCH_GRACE_SECONDS
+    exit_code = 1
+    stopped = False
+    try:
+        print(
+            f"-> to watch, open chrome://inspect, Configure, add localhost:{port}, "
+            "then inspect the page",
+            flush=True,
+        )
+        print(
+            "-> the session's system prompt holds the brief and the task: once it "
+            "shows its prompt, give it a few seconds to start its ux-story server, "
+            f"then type: {OPENING_MESSAGE}",
+            flush=True,
+        )
+        command = _orchestrator(
+            ["--interactive", "--story", facts.story, "--as", persona],
+            artifact_dir=f"/out/{STORY_ARTIFACTS}",
+            stack=stack,
+            web_url=web_url,
+            build_dir="/ui-build" if local_build else None,
+            extra=args.passthrough,
+            isolated=True,
+        )
+        process = popen(  # noqa: S603 - fixed argv, no shell
+            [docker, "exec", "-it", "-e", "TERM", args.name, *command],
+            env=_build_env(env),
+        )
+        try:
+            exit_code = process.wait(timeout=deadline)
+        except subprocess.TimeoutExpired:
+            print(
+                f"WARNING: {facts.flow_minutes} minutes (flow_minutes) and "
+                f"{WATCH_GRACE_SECONDS} s more have passed; stopping {args.name}",
+                flush=True,
+            )
+            _stop_container(docker, args.name, run=run)
+            stopped = True
+            try:
+                exit_code = process.wait(timeout=90)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                exit_code = process.wait()
+    finally:
+        if not stopped:
+            _stop_container(docker, args.name, run=run)
+    return_ownership(out, docker=docker, tag=tag, platform_name=platform_name, run=run)
+    artifacts = out / STORY_ARTIFACTS
+    if not (artifacts / STORY_RUN_FILE).is_file():
+        print(
+            f"FAILED: the session wrote no {STORY_RUN_FILE} (exit {exit_code}); its "
+            "output is above",
+            flush=True,
+        )
+        return exit_code or 1
+    judged = _judge_on_host(
+        artifacts, out / "browser" / "browser-audit.json", env, ui_env, run=run
+    )
+    report_story_run(artifacts)
+    return exit_code or judged
 
 
 def _pair_reply(text: str, out: Path) -> dict[str, Any]:
@@ -2010,7 +2237,7 @@ def pair_after_commands(
     Both run with this script's own interpreter, which passed its version check.
     The first stops the browser container named ``name``, which writes the socket
     audit into the run directory and prints its state; the second judges the run
-    with that audit folded in.
+    with that audit folded in, as a watched run is judged.
     """
     quote = _powershell_quote if shell == "powershell" else _posix_quote
     call = "& " if shell == "powershell" else ""
@@ -2240,6 +2467,233 @@ def _stories_pair(
     return 0
 
 
+def export_tree(
+    repo: Path,
+    ref: str,
+    pathspecs: Sequence[str],
+    destination: Path,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+) -> Path:
+    """``pathspecs`` at ``ref``, extracted into ``destination``, as for ``src/ui``.
+
+    ``git archive`` rather than a checkout, and extracted with ``filter='data'``.
+    """
+    if not HEAD_SHA_RE.match(ref):
+        raise DockerRunError(f"{ref!r} is not a 40-hex commit")
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        [resolve_tool("git"), "-C", str(repo), "archive", "--format=tar", ref]
+        + ["--", *pathspecs],
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr or b""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        raise DockerRunError(
+            f"`git archive {ref[:8]}` failed (exit {completed.returncode}): "
+            f"{_bounded(stderr)}"
+        )
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r|") as archive:
+            archive.extractall(destination, filter="data")  # nosec B202 - filter='data'
+    except tarfile.TarError as exc:
+        raise DockerRunError(f"the archive of {ref[:8]} was refused: {exc}") from exc
+    return destination
+
+
+def replayable_harness(
+    repo: Path,
+    sha: str,
+    *,
+    remote: str,
+    target: str,
+    run: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+) -> str:
+    """The ref that holds ``sha``: ``<remote>/<target>`` or this checkout's ``HEAD``.
+
+    A replay builds and runs the harness at ``sha`` with the host's credentials and
+    every persona's password, and ``sha`` comes from a ``story-run.json``, which a
+    merge request's own pipeline can write naming any commit. So it runs only a
+    commit already merged to the target branch or already in the checkout this
+    script runs from; anything else is refused before it is extracted.
+    """
+    for ref in (f"refs/remotes/{remote}/{target}", "HEAD"):
+        completed = run(  # noqa: S603 - fixed argv, no shell
+            [resolve_tool("git"), "-C", str(repo), "merge-base", "--is-ancestor"]
+            + [sha, ref],
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            return ref
+    raise DockerRunError(
+        f"the run names harness commit {sha[:8]}, which is on neither "
+        f"{remote}/{target} nor this checkout's history, so it is not run with "
+        f"your credentials. A run's story-run.json can name any commit; if this "
+        f"one is merged, `git fetch {remote} {target}` and replay again"
+    )
+
+
+def replay_plan(record: Mapping[str, Any]) -> dict[str, Any]:
+    """What the host needs to replay a run's ``story-run.json``, each field checked.
+
+    The harness commit (required), whether it was dirty, the stack, and the UI
+    source: a build at a commit, made again here, or the deployed UI. The flows,
+    model, effort, budgets and docs commit are the orchestrator's to read.
+    """
+    if record.get("schema") != STORY_RUN_SCHEMA or record.get("version") != 1:
+        raise DockerRunError(f"the run's {STORY_RUN_FILE} is not {STORY_RUN_SCHEMA} v1")
+    if record.get("mode") == "pair":
+        raise DockerRunError(
+            "a pair run was played by a session you started, so it has no model or "
+            "effort to replay; run its story unattended instead"
+        )
+    harness = record.get("harness_sha")
+    if not isinstance(harness, str) or not HEAD_SHA_RE.match(harness):
+        raise DockerRunError(
+            f"the run's {STORY_RUN_FILE} names no 40-hex harness_sha to replay"
+        )
+    stack = record.get("stack")
+    name = stack.get("name") if isinstance(stack, dict) else None
+    source = record.get("ui_source")
+    kind = source.get("kind") if isinstance(source, dict) else None
+    head = source.get("head_sha") if isinstance(source, dict) else None
+    if kind == "build" and not (isinstance(head, str) and HEAD_SHA_RE.match(head)):
+        raise DockerRunError(
+            "the run's UI was a build, but it names no 40-hex head_sha"
+        )
+    if kind not in ("build", "deployed"):
+        raise DockerRunError(f"the run's ui_source kind {kind!r} cannot be replayed")
+    return {
+        "harness": harness,
+        "dirty": record.get("harness_dirty") is True,
+        "stack": name if isinstance(name, str) and STACK_NAME_RE.match(name) else None,
+        "build_head": head if kind == "build" else None,
+    }
+
+
+def _stories_replay(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any],
+    environ: Mapping[str, str],
+) -> int:
+    """Re-run a run from its own harness commit, docs and UI source, as a dry run.
+
+    The harness commit must be on the target branch or in the checkout's history
+    (:func:`replayable_harness`). Its harness paths are extracted into the run
+    directory and mounted as ``/repo``, and the toolchain image is the one that
+    commit's ``install.sh`` defines. The original run is mounted read-only at ``/replay``,
+    where the orchestrator's ``--replay`` reads its flows, model, effort, budgets
+    and docs commit, and the checkout read-only at ``/source``, the ``--repo-dir``
+    that commit's docs are read from with git. A run that tested a build has that
+    build made again from its head, in the credential-free container.
+    """
+    env = dict(environ)
+    source = Path(args.replay).expanduser().resolve()
+    plan = replay_plan(_story_record(source))
+    stack = args.stack or plan["stack"] or DEFAULT_STACK
+    _check_stack(stack)
+    if plan["stack"] and stack != plan["stack"]:
+        print(
+            f"WARNING: the run was against {plan['stack']}; this replays it against {stack}",
+            flush=True,
+        )
+    _require(env, "UX_TEST_PERSONAS", "UX_TEST_AWS_ACCOUNT_ID")
+    if plan["dirty"]:
+        print(
+            f"WARNING: the run's harness had local changes; this replays commit "
+            f"{plan['harness'][:8]} without them",
+            flush=True,
+        )
+    holder = replayable_harness(
+        REPO_ROOT,
+        plan["harness"],
+        remote=args.remote,
+        target=args.target_branch,
+        run=run,
+    )
+    docker = resolve_tool(args.docker)
+    out = story_run_dir("replay", out=args.out)
+    print(f"-> run directory: {out}", flush=True)
+    harness = out / "harness"
+    print(
+        f"-> extracting the harness at {plan['harness'][:8]}, which {holder} holds",
+        flush=True,
+    )
+    export_tree(REPO_ROOT, plan["harness"], STORY_HARNESS_TREE, harness, run=run)
+    package = harness / "scripts" / "ux_runner"
+    platform_name = host_platform()
+    tag = image_tag(package)
+    ensure_image(
+        tag, platform_name, package, docker=docker, rebuild=args.rebuild_image, run=run
+    )
+    credentials = export_credentials(profile=args.profile, run=run)
+    region = _region(env)
+    ui_env = ui_env_text(env, stack=stack, profile=args.profile, region=region, run=run)
+    web_url = (
+        None
+        if plan["build_head"]
+        else _web_url(args, ui_env, stack, region=region, run=run)
+    )
+    build_dir: str | None = None
+    if plan["build_head"]:
+        _build_mr_ui(
+            docker=docker,
+            platform_name=platform_name,
+            tag=tag,
+            out=out,
+            head=plan["build_head"],
+            ui_env=ui_env,
+            env=env,
+            run=run,
+        )
+        build_dir = "/out/build"
+    extra = ["--video", args.video] if args.video else []
+    variables = git_variables(plan["harness"])
+    child_env = _container_env(env, credentials, ui_env)
+    child_env.update(variables)
+    print("-> replaying the run as a dry run; nothing is posted", flush=True)
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        _review_container(
+            docker=docker,
+            platform_name=platform_name,
+            tag=tag,
+            harness=harness,
+            out=out,
+            names=_story_names() + tuple(variables),
+            mounts=bind(source, "/replay", readonly=True)
+            + bind(REPO_ROOT, "/source", readonly=True)
+            + checkout_git_mounts(REPO_ROOT, run=run),
+            command=_orchestrator(
+                ["--replay", "/replay"],
+                artifact_dir=f"/out/{STORY_ARTIFACTS}",
+                stack=stack,
+                web_url=web_url,
+                build_dir=build_dir,
+                extra=[*extra, *args.passthrough],
+                repo_dir="/source",
+            ),
+        ),
+        env=child_env,
+        check=False,
+    )
+    return_ownership(out, docker=docker, tag=tag, platform_name=platform_name, run=run)
+    report_story_run(out / STORY_ARTIFACTS)
+    return completed.returncode
+
+
+def _story_record(source: Path) -> Mapping[str, Any]:
+    path = source / STORY_RUN_FILE
+    record = _read_json(path, STORY_RECORD_BYTES, str(path))
+    if not isinstance(record, dict):
+        raise DockerRunError(f"{path} is not a JSON object")
+    return record
+
+
 def _stories_list(*, run: Callable[..., Any]) -> int:
     """Validate the catalogue, list its flows, then the leads no story covers.
 
@@ -2298,12 +2752,18 @@ def _stories_search(
     return completed.returncode
 
 
+def _is_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def stories(
     args: argparse.Namespace,
     *,
     run: Callable[..., Any] = subprocess.run,
+    popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     environ: Mapping[str, str] | None = None,
     follow: Callable[[Sequence[str]], str | None] | None = None,
+    terminal: Callable[[], bool] | None = None,
     scratch: Callable[[], Path] | None = None,
 ) -> int:
     """First-time-user stories in the Docker runner; the mode's exit code."""
@@ -2317,6 +2777,17 @@ def stories(
         return _stories_pair(
             args, run=run, environ=env, follow=follow or follow_logs, scratch=scratch
         )
+    if mode == "watch":
+        return _stories_watch(
+            args,
+            run=run,
+            popen=popen,
+            environ=env,
+            follow=follow or follow_logs,
+            terminal=terminal or _is_terminal,
+        )
+    if mode == "replay":
+        return _stories_replay(args, run=run, environ=env)
     return _stories_run(args, run=run, environ=env)
 
 
@@ -2426,7 +2897,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     stories_parser = modes.add_parser(
         "stories",
         allow_abbrev=False,
-        help="first-time-user stories: unattended (a dry run) or paired",
+        help="first-time-user stories: unattended (a dry run), watched, paired or "
+        "replayed",
     )
     stories_parser.add_argument(
         "--story", metavar="ID", help="a story of scripts/ux_stories.toml"
@@ -2444,9 +2916,20 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     )
     story_modes = stories_parser.add_mutually_exclusive_group()
     story_modes.add_argument(
+        "--interactive",
+        action="store_true",
+        help="watch the pinned Claude TUI attempt the flow in a browser container "
+        "this script starts and stops",
+    )
+    story_modes.add_argument(
         "--pair",
         action="store_true",
         help="start the browser and print the command for a session you start",
+    )
+    story_modes.add_argument(
+        "--replay",
+        metavar="DIR",
+        help="re-run the run in DIR from its own harness commit, docs and UI",
     )
     story_modes.add_argument(
         "--list",
@@ -2471,7 +2954,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     stories_parser.add_argument(
         "--port",
         type=int,
-        help="--pair: host port for DevTools, on 127.0.0.1 only "
+        help="--interactive and --pair: host port for DevTools, on 127.0.0.1 only "
         f"(default: {DEFAULT_HOST_CDP_PORT})",
     )
     stories_parser.add_argument(
@@ -2480,12 +2963,23 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     )
     stories_parser.add_argument(
         "--stack",
-        help=f"the stack (default: {DEFAULT_STACK})",
+        help=f"the stack (default: {DEFAULT_STACK}, or the replayed run's)",
     )
     stories_parser.add_argument(
         "--web-url",
         help="deployed UI to open, by host name (default: UX_TEST_UI_ENV's "
         "UX_TEST_WEB_URL line, else the stack's ApplicationWebURL output)",
+    )
+    stories_parser.add_argument(
+        "--target-branch",
+        default=DEFAULT_TARGET_BRANCH,
+        help="--replay: the branch a replayed harness commit must be on, unless "
+        "this checkout holds it (default: %(default)s)",
+    )
+    stories_parser.add_argument(
+        "--remote",
+        default=DEFAULT_REMOTE,
+        help="--replay: the remote of --target-branch (default: %(default)s)",
     )
     stories_parser.add_argument(
         "--out",
@@ -2497,7 +2991,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     stories_parser.add_argument(
         "--name",
         default=DEFAULT_BROWSER_NAME,
-        help="--pair: the browser container (default: %(default)s)",
+        help="--interactive and --pair: the browser container (default: %(default)s)",
     )
     stories_parser.add_argument(
         "--rebuild-image",

@@ -63,6 +63,7 @@ SESSION_HEADING = "## When you are asked to run one"
 BOUNDS_HEADING = "## Privacy and bounds"
 RUN_MODE_HEADINGS: tuple[str, ...] = (
     "## Unattended runs in Docker",
+    "## Watch a confined run live",
     "## Pair: a session you start plays the user",
 )
 TWELVE_DIGITS = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")

@@ -18,7 +18,7 @@ its `make` target and the skill that documents how to run it.
 | API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test.md` |
 | ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
 | UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test.md` |
-| First-time-user stories in a confined browser (one intent-only story as one persona, judged from the journal of its tool calls; unattended or paired) | `make ai-ux-test-stories-local STORY=…` · `make ai-ux-test-stories-pair STORY=… AS=…` | `.claude/skills/ux-test-stories.md` |
+| First-time-user stories in a confined browser (one intent-only story as one persona, judged from the journal of its tool calls; unattended, watched or paired) | `make ai-ux-test-stories-local STORY=…` · `make ai-ux-test-stories-pair STORY=… AS=…` | `.claude/skills/ux-test-stories.md` |
 | APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests.md` |
 | WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |

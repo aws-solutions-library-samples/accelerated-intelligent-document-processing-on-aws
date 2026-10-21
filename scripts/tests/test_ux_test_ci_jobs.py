@@ -1551,6 +1551,9 @@ _STORY_MAKE_VARIABLES = (
     "STORY",
     "AS",
     "VIDEO",
+    "INTERACTIVE",
+    "PORT",
+    "REPLAY",
     "STACK",
     "WEB_URL",
     "DOCS",
@@ -1595,11 +1598,15 @@ def _recipe(
 def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() -> None:
     """``make ai-ux-test-stories-local`` is the Windows form's options spelled as make
     variables, so each variable the operator skill names reaches its option."""
+    path = '/tmp/a run\'s "dir" with spaces'  # nosec B108 - a string, never opened
     code, argv, err = _recipe(
         "ai-ux-test-stories-local",
         "STORY=find-where-to-start",
         "AS=new-analyst",
         "VIDEO=never",
+        "INTERACTIVE=1",
+        "PORT=9333",
+        f"REPLAY={path}",
         "STACK=idp-dev-stack4",
         "WEB_URL=https://ui.example/",
         "DOCS=abc123",
@@ -1616,6 +1623,11 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "new-analyst",
         "--video",
         "never",
+        "--interactive",
+        "--port",
+        "9333",
+        "--replay",
+        path,
         "--stack",
         "idp-dev-stack4",
         "--web-url",

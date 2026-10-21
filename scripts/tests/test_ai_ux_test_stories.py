@@ -23,6 +23,7 @@ What is pinned, by the claim each test names:
   CLI's figure and the usage at pinned rates equal to ``pricing.yaml``;
 * ``story-run.json`` and ``results.json`` v1, and ``--judge`` reproducing both
   outputs byte for byte, ``--check`` included;
+* the watched run's transcript;
 * the harness list is closed over its imports, and ``--help`` and ``--judge``
   import nothing outside the standard library.
 """
@@ -36,6 +37,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Callable
@@ -290,7 +292,10 @@ class StoryHarness:
         ]
         self.chrome_alive = 0
         self.alive_at_render: list[int] = []
+        self.transcript: list[dict[str, Any]] | None = None
         self.harness_sha = "feedface" * 5
+        self.tui_kwargs: dict[str, Any] = {}
+        self.tui_prompts: list[tuple[str, int]] = []
         self.artifacts = tmp_path / "out" / "ux-test-stories"
         self.repo = tmp_path / "repo"
         self.repo.mkdir()
@@ -352,6 +357,7 @@ class StoryHarness:
             kill_recorder=self._kill_recorder,
             recorder_status=self._step("recorder_status", {"marks": 2}),
             run_agent=self._run_agent,
+            run_tui=self._run_tui,
             render_video=self._render_video,
             chapters=self._step("chapters", [("0:00", "Opened the application")]),
             index_docs=self._index_docs,
@@ -582,6 +588,25 @@ class StoryHarness:
             usage=self.usage,
         )
         return result, processes.Completed(0, "{}", "", False, 300.0)
+
+    def _run_tui(self, argv: list[str], **kwargs: Any) -> processes.Completed:
+        self.calls.append("run_tui")
+        self.argvs.append(list(argv))
+        self.tui_kwargs = kwargs
+        prompt = Path(argv[argv.index("--append-system-prompt-file") + 1])
+        self.tui_prompts.append(
+            (prompt.read_text(encoding="utf-8"), stat.S_IMODE(prompt.stat().st_mode))
+        )
+        self._journal(self._server(argv))
+        env = kwargs["env"]
+        if self.transcript is not None:
+            folder = Path(env["HOME"]) / ".claude" / "projects" / "-tmp-cwd"
+            folder.mkdir(parents=True)
+            (folder / "session.jsonl").write_text(
+                "".join(json.dumps(line) + "\n" for line in self.transcript),
+                encoding="utf-8",
+            )
+        return processes.Completed(0, "", "", False, 200.0)
 
     def record(self) -> dict[str, Any]:
         return json.loads((self.artifacts / "story-run.json").read_text("utf-8"))
@@ -1615,8 +1640,302 @@ def test_a_run_records_its_whole_confinement(harness: StoryHarness) -> None:
     assert "verify_policy" in harness.calls and "verify_viewport" in harness.calls
 
 
+# --- replay -----------------------------------------------------------------------
+
+
 @pytest.mark.unit
-def test_an_audit_is_folded_only_into_a_paired_run(
+def test_a_replay_runs_the_recorded_flows_model_effort_and_docs_again(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert harness.main(*ONE_FLOW, "--effort", "max", "--docs", HEAD) == 0
+    first = harness.artifacts
+    harness.artifacts = harness.tmp / "replayed" / "ux-test-stories"
+    harness.harness_sha = "c0ffee00" * 5
+    capsys.readouterr()
+    argv = harness.argv("--replay", str(first), story="")
+    argv[argv.index("--model") + 1] = "us.anthropic.claude-opus-5"
+    assert runner.main(argv, harness.runtime()) == 0
+    lines = _lines(capsys)
+    assert any(
+        line.startswith("WARNING: this harness is c0ffee00c0ff, the replayed run's was")
+        for line in lines
+    )
+    record = harness.record()
+    assert [flow["key"] for flow in record["flows"]] == [
+        "route-folder-to-profile@platform-admin"
+    ]
+    assert (record["model"], record["effort"]) == (MODEL, "max")
+    assert record["docs"]["ref"] == HEAD
+    assert record["replayed"] == str(first)
+
+
+@pytest.mark.unit
+def test_a_replay_runs_against_the_stack_it_is_given_and_else_the_runs_own(
+    harness: StoryHarness,
+) -> None:
+    """The Docker runner always passes the stack it replays against and warns when
+    it is not the run's, so a ``--stack`` given here is the one the replay uses."""
+    assert harness.main(*ONE_FLOW) == 0
+    first = harness.artifacts
+    assert runner.parse_args(["--replay", str(first)]).stack is None
+    harness.artifacts = harness.tmp / "again" / "ux-test-stories"
+    assert (
+        runner.main(harness.argv("--replay", str(first), story=""), harness.runtime())
+        == 0
+    )
+    assert harness.record()["stack"]["name"] == REVIEW
+    harness.environ["UX_TEST_UI_ENV"] = _b64(
+        _ui_env_text(f"{OTHER_STACK}-Settings").replace(
+            "idp-ux-nightly-inputbucket", f"{OTHER_STACK}-inputbucket"
+        )
+    )
+    harness.artifacts = harness.tmp / "other" / "ux-test-stories"
+    argv = harness.argv("--replay", str(first), "--stack", OTHER_STACK, story="")
+    assert runner.main(argv, harness.runtime()) == 0
+    record = harness.record()
+    assert record["stack"]["name"] == OTHER_STACK
+    assert record["stack"]["review_stack"] is False
+
+
+@pytest.mark.unit
+def test_a_pair_run_is_not_replayed(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert harness.main(*ONE_FLOW) == 0
+    first = harness.artifacts
+    path = first / story_verdict.RUN_FILE
+    record = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(
+        json.dumps({**record, "mode": "pair", "model": "unknown", "effort": "unknown"}),
+        encoding="utf-8",
+    )
+    harness.artifacts = harness.tmp / "replayed" / "ux-test-stories"
+    harness.calls.clear()
+    capsys.readouterr()
+    argv = harness.argv("--replay", str(first), story="")
+    assert runner.main(argv, harness.runtime()) == 1
+    assert any("a pair run was played by a session" in line for line in _lines(capsys))
+    assert "launch_proxy" not in harness.calls
+
+
+@pytest.mark.unit
+def test_a_replay_of_a_build_run_needs_that_build(harness: StoryHarness) -> None:
+    build = harness.tmp / "build"
+    build.mkdir()
+    (build / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    assert harness.main(*ONE_FLOW, "--build-dir", str(build)) == 0
+    first = harness.artifacts
+    harness.artifacts = harness.tmp / "replayed" / "ux-test-stories"
+    harness.calls.clear()
+    argv = harness.argv("--replay", str(first), story="")
+    assert runner.main(argv, harness.runtime()) == 0
+    assert "launch_proxy" not in harness.calls
+    assert not harness.artifacts.joinpath("story-run.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("option", [["--run-usd", "0.01"], ["--reruns", "0"]])
+def test_a_watched_flow_refuses_the_options_it_does_not_read(
+    option: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = ["--interactive", "--story", "find-where-to-start", "--as", "new-analyst"]
+    with pytest.raises(SystemExit):
+        runner.parse_args([*base, *option])
+    assert "reads neither --run-usd nor --reruns" in capsys.readouterr().err
+    assert runner.parse_args(base).reruns == 1
+    assert runner.parse_args(["--story", "x", "--reruns", "0"]).reruns == 0
+
+
+# --- watch mode -------------------------------------------------------------------
+
+
+TRANSCRIPT = [
+    {"type": "user", "message": {"role": "user", "content": "Begin the task."}},
+    {
+        "type": "assistant",
+        "message": {
+            "id": "msg_1",
+            "role": "assistant",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    },
+    {
+        "type": "assistant",
+        "message": {
+            "id": "msg_1",
+            "role": "assistant",
+            "usage": {"input_tokens": 10, "output_tokens": 50},
+        },
+    },
+    {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
+        },
+    },
+    {
+        "type": "assistant",
+        "message": {
+            "id": "msg_2",
+            "role": "assistant",
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 100,
+                "cache_read_input_tokens": 1000,
+                "cache_creation_input_tokens": 300,
+            },
+        },
+    },
+    {"type": "user", "isMeta": True, "message": {"role": "user", "content": "caveat"}},
+]
+
+
+def _watch(harness: StoryHarness) -> list[str]:
+    harness.environ.pop("UX_TEST_PERSONAS")
+    harness.environ["TERM"] = "xterm-256color"
+    return harness.argv(
+        "--as", "new-analyst", "--interactive", story="find-where-to-start"
+    )
+
+
+@pytest.mark.unit
+def test_a_watched_flow_runs_the_tui_with_the_story_prompt_as_its_system_prompt(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """At the pin a message given as the TUI's argument reaches the model before
+    the story tools, so the prompt is a private file the TUI appends to its system
+    prompt, and the person is told the one message to type once the server is up."""
+    harness.transcript = TRANSCRIPT
+    assert runner.main(_watch(harness), harness.runtime()) == 0
+    for step in ("launch_proxy", "launch_chrome", "sign_in", "start_recorder"):
+        assert step not in harness.calls
+    assert harness.calls.count("page_facts") == 1
+    (argv,) = harness.argvs
+    assert "-p" not in argv and "--max-turns" not in argv
+    assert "--" not in argv
+    assert harness.prompts[0] not in argv
+    assert harness.tui_prompts == [(harness.prompts[0], 0o600)]
+    printed = _lines(capsys)
+    told = [line for line in printed if line.startswith("watch: find-")]
+    assert told and told[0].endswith(f"then type: {agent.OPENING_MESSAGE}")
+    assert harness.tui_kwargs["env"]["TERM"] == "xterm-256color"
+    assert harness.tui_kwargs["timeout"] == 12 * 60
+    record = harness.record()
+    assert record["mode"] == "watch"
+    (flow,) = record["flows"]
+    assert (flow["session"], flow["audit_state"]) == (None, "not_run")
+    interactive = record["interactive"]
+    assert interactive["assisted"] is False and interactive["found"] is True
+    assert interactive["usage"] == {
+        "input_tokens": 30,
+        "output_tokens": 150,
+        "cache_read_input_tokens": 1000,
+        "cache_creation_input_tokens": 300,
+    }
+    assert interactive["cost_usd_pinned"] == runner.pinned_cost(
+        MODEL, interactive["usage"]
+    )
+    assert interactive["counted_usd"] == record["spend_usd"]
+    assert interactive["cost_usd_pinned"] == record["spend_usd"]
+    results = harness.results()
+    assert results["flows"][0]["verdict"] == "done"
+    assert results["flows"][0]["claude"] is None
+    assert results["summary"]["counted_usd"] == record["spend_usd"] > 0
+    assert results["summary"]["pinned_usd"] == interactive["cost_usd_pinned"]
+    assert results["summary"]["sessions_without_usage"] == 0
+    assert printed[-1].startswith("WATCHED: judged without the socket audit")
+    assert printed[-1].endswith(
+        story_verdict.cost_text(story_verdict.cost_totals((), interactive))
+    )
+
+
+@pytest.mark.unit
+def test_a_person_typing_after_the_opening_message_labels_the_watched_run_assisted(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness.transcript = [
+        *TRANSCRIPT,
+        {"type": "user", "message": {"role": "user", "content": "Try the menu."}},
+    ]
+    assert runner.main(_watch(harness), harness.runtime()) == 0
+    interactive = harness.record()["interactive"]
+    assert (interactive["assisted"], interactive["user_messages"]) == (True, 2)
+    assert any(line.startswith("watch: ended (assisted)") for line in _lines(capsys))
+
+
+@pytest.mark.unit
+def test_a_watched_run_counts_the_cli_total_when_it_exceeds_the_pinned_price(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness.transcript = [*TRANSCRIPT, {"type": "cost-state", "totalCostUSD": 3.25}]
+    assert runner.main(_watch(harness), harness.runtime()) == 0
+    record = harness.record()
+    interactive = record["interactive"]
+    assert interactive["cli_cost_usd"] == 3.25
+    assert interactive["cost_usd_pinned"] < 3.25
+    assert interactive["counted_usd"] == record["spend_usd"] == 3.25
+    printed = _lines(capsys)
+    assert any(
+        line.startswith("watch: ended (unassisted); cost $3.25") for line in printed
+    )
+    summary = harness.results()["summary"]
+    assert (summary["counted_usd"], summary["sessions_without_usage"]) == (3.25, 0)
+    assert summary["pinned_usd"] == interactive["cost_usd_pinned"]
+    assert printed[-1].endswith(
+        f"; $3.25 counted, ${interactive['cost_usd_pinned']:.2f} at the pinned rates"
+    )
+    assert (
+        runner.main(["--judge", str(harness.artifacts), "--check"], harness.runtime())
+        == 0
+    )
+    assert story_verdict.main(["judge", str(harness.artifacts), "--check"]) == 0
+
+
+@pytest.mark.unit
+def test_a_watched_run_without_a_readable_transcript_says_typing_is_unknown(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert runner.main(_watch(harness), harness.runtime()) == 0
+    interactive = harness.record()["interactive"]
+    assert interactive["found"] is False and interactive["counted_usd"] is None
+    assert interactive["assisted"] is None
+    assert harness.record()["spend_usd"] == 0.0
+    printed = _lines(capsys)
+    assert any("whether anyone typed is unknown" in line for line in printed)
+    summary = harness.results()["summary"]
+    assert (
+        summary["counted_usd"],
+        summary["pinned_usd"],
+        summary["sessions_without_usage"],
+    ) == (0.0, 0.0, 1)
+    assert printed[-1].endswith(
+        "; $0.00 counted, $0.00 at the pinned rates (1 session reported no usage)"
+    )
+
+
+@pytest.mark.unit
+def test_the_host_folds_the_browsers_audit_into_a_watched_run_and_judges_it(
+    harness: StoryHarness,
+) -> None:
+    assert runner.main(_watch(harness), harness.runtime()) == 0
+    audit = harness.tmp / "browser-audit.json"
+    audit.write_text(
+        json.dumps({"state": "clean", "violations": [], "sockets": 3, "strays": []}),
+        encoding="utf-8",
+    )
+    argv = ["--judge", str(harness.artifacts), "--audit", str(audit)]
+    assert runner.main(argv, harness.runtime()) == 0
+    (flow,) = harness.record()["flows"]
+    assert flow["audit_state"] == "clean"
+    assert harness.results()["flows"][0]["audit"] == "clean"
+    audit.write_text(json.dumps({"state": "violations", "strays": ["p"]}), "utf-8")
+    assert runner.main(argv, harness.runtime()) == 0
+    assert harness.results()["flows"][0]["verdict"] == "error"
+
+
+@pytest.mark.unit
+def test_an_audit_is_folded_only_into_a_watched_or_paired_run(
     harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert harness.main(*ONE_FLOW) == 0
@@ -1625,7 +1944,9 @@ def test_an_audit_is_folded_only_into_a_paired_run(
     capsys.readouterr()
     argv = ["--judge", str(harness.artifacts), "--audit", str(audit)]
     assert runner.main(argv, harness.runtime()) == 1
-    assert _lines(capsys)[0].startswith("FAILED: --audit folds a paired run's")
+    assert _lines(capsys)[0].startswith(
+        "FAILED: --audit folds a watched or paired run's"
+    )
     path = harness.artifacts / story_verdict.RUN_FILE
     record = json.loads(path.read_text(encoding="utf-8"))
     path.write_text(json.dumps({**record, "mode": "pair"}), encoding="utf-8")
@@ -1787,6 +2108,7 @@ def test_the_script_imports_on_a_python_without_sigkill_as_on_windows() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
+        ["--story", "x", "--interactive"],
         ["--story", "x", "--audit", "a.json"],
         ["--story", "x", "--check"],
         ["--story", "x", "--dev-video-any-stack"],
@@ -2072,6 +2394,27 @@ def test_a_prompt_the_builder_refuses_is_a_story_run_error() -> None:
         )
 
 
+@pytest.mark.unit
+def test_the_tui_runs_on_this_terminal_and_is_stopped_at_its_wall_clock(
+    tmp_path: Path,
+) -> None:
+    import signal
+
+    before = signal.getsignal(signal.SIGINT)
+    done = runner.run_tui(
+        [sys.executable, "-c", "pass"], cwd=tmp_path, env=dict(os.environ), timeout=30
+    )
+    assert (done.returncode, done.timed_out) == (0, False)
+    slow = runner.run_tui(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=0.5,
+    )
+    assert slow.timed_out is True and slow.returncode != 0
+    assert signal.getsignal(signal.SIGINT) == before
+
+
 # --- the run's edges --------------------------------------------------------------
 
 
@@ -2145,6 +2488,31 @@ def test_a_cleanup_step_that_fails_is_named_and_the_others_still_run(
     assert harness.main(*ONE_FLOW) == 0
     assert "cleanup: close_session: RuntimeError" in _lines(capsys)
     assert "proxy_stopped" in harness.calls
+
+
+@pytest.mark.unit
+def test_a_watched_flow_whose_page_cannot_be_read_is_a_harness_error(
+    harness: StoryHarness,
+) -> None:
+    def failing(*args: Any, **kwargs: Any) -> Any:
+        raise chrome.ChromeError("DevTools did not answer")
+
+    runtime = harness.runtime()
+    runtime.wait_for_cdp = failing
+    assert runner.main(_watch(harness), runtime) == 0
+    (flow,) = harness.record()["flows"]
+    assert flow["harness_error"] == "launch"
+    assert "run_tui" not in harness.calls
+
+
+@pytest.mark.unit
+def test_a_watched_flow_on_a_stack_older_than_its_story_is_not_run(
+    harness: StoryHarness,
+) -> None:
+    harness.default_facts = dataclasses.replace(harness.default_facts, version="0.5.0")
+    assert runner.main(_watch(harness), harness.runtime()) == 0
+    (flow,) = harness.record()["flows"]
+    assert flow["not_run_reason"] == "since"
 
 
 @pytest.mark.unit

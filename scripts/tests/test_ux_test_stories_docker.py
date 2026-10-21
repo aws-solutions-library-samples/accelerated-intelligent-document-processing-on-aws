@@ -10,9 +10,9 @@ test can say where a value went and what each container was told:
    container receives only the names its mode needs: a model's container the
    review container's names, CI's two and the git view; the pair browser no AWS
    session at all.
-2. **Each mode calls the orchestrator as its parser reads it**: the selection and
-   the artifact directory, every one of them read by the orchestrator's own
-   ``parse_args``; and no option the runner
+2. **Each mode calls the orchestrator as its parser reads it**: the selection, the
+   artifact directory and ``--judge --audit`` on the host, every one of them read
+   by the orchestrator's own ``parse_args``; and no option the runner
    sets itself, nor ``--dev-unconfined``, is ever passed through.
 3. **The pair session is confined and starts outside the checkout**: its MCP
    configuration holds one server reached through ``docker exec -i ... env -i``,
@@ -29,12 +29,14 @@ from __future__ import annotations
 import ast
 import base64
 import importlib.util
+import io
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -51,6 +53,7 @@ from ux_runner import run_in_docker as rid  # noqa: E402
 from ux_runner import stories, story_verdict, tool_profiles  # noqa: E402
 
 HEAD = "b2" * 20
+MR_HEAD = "c3" * 20
 WORKTREE_GIT = "/srv/main-checkout/.git"
 CREDENTIALS_TEXT = (
     "AWS_ACCESS_KEY_ID=fake-key-id-4a1c\n"
@@ -112,6 +115,17 @@ def _hidden(environ: dict[str, str]) -> list[str]:
         environ["UX_TEST_AWS_ACCOUNT_ID"],
         environ["GITLAB_REVIEW_TOKEN"],
     ]
+
+
+def _tar(files: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, body in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(body))
+    return buffer.getvalue()
 
 
 def _result(
@@ -187,6 +201,7 @@ class FakeHost:
     worktree: bool = False
     dirty: bool = False
     pair_reply: dict[str, Any] | None = None
+    holders: tuple[str, ...] = ("refs/remotes/origin/develop",)
     results: dict[str, Any] = field(
         default_factory=lambda: _results(
             _result("find-where-to-start@new-analyst", "done")
@@ -228,6 +243,12 @@ class FakeHost:
 
     def _python(self, argv: list[str]) -> subprocess.CompletedProcess[Any]:
         script = argv[2]
+        if script.endswith(rid.STORIES_ENTRY):
+            if "--judge" in argv:
+                (Path(_after(argv, "--judge")) / rid.STORY_RESULTS_FILE).write_text(
+                    json.dumps(self.results)
+                )
+            return self._done(argv)
         if script.endswith((rid.STORY_LIST_ENTRY, rid.STORY_NUDGE_ENTRY)):
             return self._done(argv)
         raise AssertionError(f"the host ran an unexpected script: {argv}")
@@ -240,6 +261,23 @@ class FakeHost:
             return self._done(argv, 0, " M scripts/x.py\n" if self.dirty else "")
         if verb[:2] == ["rev-parse", "--git-common-dir"]:
             return self._done(argv, 0, WORKTREE_GIT + "\n")
+        if verb[:2] == ["merge-base", "--is-ancestor"]:
+            return self._done(argv, 0 if verb[3] in self.holders else 1)
+        if verb[:1] == ["archive"]:
+            if "src/ui" in argv:
+                body = {"src/ui/package.json": b"{}", "src/ui/index.html": b"<html/>"}
+            else:
+                body = {
+                    "scripts/ux_runner/Dockerfile": b"FROM x\n",
+                    "scripts/ux_runner/install.sh": b"#!/bin/sh\n",
+                    "scripts/ux_runner/package.json": b"{}\n",
+                    "scripts/ux_runner/package-lock.json": b"{}\n",
+                    "scripts/ux_runner/requirements.txt": b"\n",
+                    "scripts/ux_runner/chrome_policy.json": b"{}\n",
+                    ".claude/skills/ux-test-stories.md": b"# skill\n",
+                    "docs-site/setup.sh": b"#!/bin/bash\n",
+                }
+            return self._done(argv, 0, _tar(body), b"")
         raise AssertionError(f"unexpected git call: {argv}")
 
     def _docker(self, argv: list[str]) -> subprocess.CompletedProcess[Any]:
@@ -261,6 +299,9 @@ class FakeHost:
         if verb == "run" and "-d" in argv:
             self._browser_out = _source(_mounts(argv)["/out"])
             return self._done(argv, 0, "c0ffee\n")
+        if verb == "run" and "bash" in argv:
+            (_source(_mounts(argv)["/work/build"]) / "index.html").write_text("ok")
+            return self._done(argv, 0)
         if verb == "run" and "chown" in argv:
             return self._done(argv, 0)
         if verb == "run" and any(p.endswith(rid.STORY_SEARCH_ENTRY) for p in argv):
@@ -319,6 +360,54 @@ class FakeHost:
         ]
 
 
+class FakeProcess:
+    """A ``subprocess.Popen`` stand-in that prints its lines and exits with ``code``."""
+
+    def __init__(
+        self, argv: list[str], lines: list[str], code: int, hang: bool
+    ) -> None:
+        self.argv = argv
+        self.stdout = io.StringIO("".join(f"{line}\n" for line in lines))
+        self.code = code
+        self.hang = hang
+        self.returncode: int | None = None
+        self.waited: list[float | None] = []
+        self.killed = False
+        self.terminated = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waited.append(timeout)
+        if self.hang and len(self.waited) == 1:
+            raise subprocess.TimeoutExpired(self.argv, timeout or 0)
+        self.returncode = self.code
+        return self.code
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+
+@dataclass
+class FakePopen:
+    hang: bool = False
+    started: list[tuple[list[str], dict[str, Any]]] = field(default_factory=list)
+    processes: list[FakeProcess] = field(default_factory=list)
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
+        argv = [str(part) for part in argv]
+        self.started.append((argv, kwargs))
+        process = FakeProcess(argv, [], 0, self.hang)
+        self.processes.append(process)
+        return process
+
+
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     package = tmp_path / "package"
@@ -337,6 +426,8 @@ def _stories(
     host: FakeHost,
     *argv: str,
     environ: dict[str, str] | None = None,
+    popen: Any = None,
+    terminal: bool = True,
     scratch: Path | None = None,
     follow: Any = None,
 ) -> int:
@@ -344,8 +435,10 @@ def _stories(
     return rid.stories(
         args,
         run=host,
+        popen=popen or FakePopen(),
         environ=_environ() if environ is None else environ,
         follow=follow or (lambda command: '{"cdp": "http://127.0.0.1:9222"}'),
+        terminal=lambda: terminal,
         scratch=(lambda: scratch) if scratch is not None else None,
     )
 
@@ -399,7 +492,9 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
         "--story",
         "--as",
         "--video",
+        "--interactive",
         "--port",
+        "--replay",
         "--pair",
         "--list",
         "--search",
@@ -421,6 +516,14 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
         (["--story", "Not A Story"], "is not a story id"),
         ([], "takes --story"),
         (["--pair-keychain", "--story", "a"], "does not apply"),
+        (
+            ["--story", "a", "--interactive", "--run-usd", "0.01"],
+            "--run-usd does not apply to --interactive",
+        ),
+        (
+            ["--story", "a", "--interactive", "--reruns=0"],
+            "--reruns does not apply to --interactive",
+        ),
     ],
 )
 def test_story_mode_refuses_options_the_chosen_mode_does_not_read(
@@ -437,7 +540,9 @@ def test_story_mode_refuses_options_the_chosen_mode_does_not_read(
     [
         (["--story", "a"], "run"),
         (["--story", "a", "--as", "b", "--docs", "abc"], "run"),
+        (["--story", "a", "--interactive", "--port", "9333"], "watch"),
         (["--pair", "--story", "a", "--pair-full"], "pair"),
+        (["--replay", "/x", "--reruns", "0"], "replay"),
         (["--list"], "list"),
         (["--search", "prefix mapping"], "search"),
     ],
@@ -465,6 +570,8 @@ def test_story_mode_names_the_mode_and_passes_unknown_options_through(
     "selection",
     [
         ["--story", "find-where-to-start"],
+        ["--story", "find-where-to-start", "--interactive"],
+        ["--replay", "/x"],
     ],
 )
 def test_no_story_mode_passes_an_option_the_runner_sets_or_must_never_pass(
@@ -507,7 +614,7 @@ def test_two_modes_at_once_are_refused_by_the_parser(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit):
-        rid.parse_args(["stories", "--pair", "--list", "--story", "a"])
+        rid.parse_args(["stories", "--pair", "--interactive", "--story", "a"])
     assert "not allowed with" in capsys.readouterr().err
 
 
@@ -822,6 +929,135 @@ def test_a_run_with_no_results_says_where_to_look(
 
 
 # --------------------------------------------------------------------------- #
+# watch
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def watched_record(host: FakeHost, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = host._docker
+
+    def docker(argv: list[str]) -> Any:
+        answer = real(argv)
+        if argv[1] == "run" and "-d" in argv:
+            folder = _source(_mounts(argv)["/out"]) / rid.STORY_ARTIFACTS
+            folder.mkdir()
+            (folder / rid.STORY_RUN_FILE).write_text("{}")
+        return answer
+
+    monkeypatch.setattr(host, "_docker", docker)
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("watched_record")
+def test_watch_starts_and_stops_its_own_browser_and_judges_with_its_audit(
+    host: FakeHost, capsys: pytest.CaptureFixture[str]
+) -> None:
+    environ = _environ()
+    popen = FakePopen()
+    assert (
+        _stories(
+            host,
+            "--story",
+            "find-where-to-start",
+            "--interactive",
+            popen=popen,
+            environ=environ,
+        )
+        == 0
+    )
+    (browser,) = [c for c in host.docker_calls("run") if "-d" in c.argv]
+    command = browser.argv[browser.argv.index("python3") :]
+    assert command[1] == "/repo/scripts/ux_runner/browser.py"
+    assert _after(command, "--sign-in") == "Author"
+    assert "--keep-welcome" in command
+    assert _after(browser.argv, "-p") == "127.0.0.1:9222:9223"
+    assert _names(browser.argv) == list(
+        rid.CONTAINER_ENV_NAMES
+        + rid.CI_ENV_NAMES
+        + tuple(rid.git_variables(HEAD))
+        + rid.BROWSER_ENV_NAMES
+    )
+    ((execute, kwargs),) = popen.started
+    assert execute[:6] == [
+        "/fake/bin/docker",
+        "exec",
+        "-it",
+        "-e",
+        "TERM",
+        "ux-browser",
+    ]
+    session = execute[6:]
+    assert session[:4] == ["python3", "-I", "-B", f"/repo/{rid.STORIES_ENTRY}"]
+    assert session[4:9] == [
+        "--interactive",
+        "--story",
+        "find-where-to-start",
+        "--as",
+        "new-analyst",
+    ]
+    flow_minutes = stories.load_catalogue().limits.flow_minutes
+    assert popen.processes[0].waited[0] == flow_minutes * 60 + rid.WATCH_GRACE_SECONDS
+    told = capsys.readouterr().out.splitlines()
+    assert any(line.endswith(f"then type: {rid.OPENING_MESSAGE}") for line in told)
+    assert len(host.docker_calls("stop")) == 1
+    (judge,) = host.host_scripts(rid.STORIES_ENTRY)
+    out = _run_dir(host)
+    assert judge.argv[3:] == [
+        "--judge",
+        str(out / rid.STORY_ARTIFACTS),
+        "--audit",
+        str(out / "browser" / "browser-audit.json"),
+    ]
+    assert judge.env is not None and judge.env["UX_TEST_UI_ENV"]
+    assert not any(
+        "UX_TEST_PERSONAS" in part or "AWS_SECRET" in part for part in execute
+    )
+    assert not _leaks(host, environ)
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("watched_record")
+def test_watch_stops_the_container_once_when_the_wall_clock_runs_out(
+    host: FakeHost, capsys: pytest.CaptureFixture[str]
+) -> None:
+    popen = FakePopen(hang=True)
+    _stories(host, "--story", "find-where-to-start", "--interactive", popen=popen)
+    assert len(host.docker_calls("stop")) == 1
+    printed = capsys.readouterr().out
+    assert "WARNING:" in printed and "flow_minutes" in printed
+
+
+@pytest.mark.unit
+def test_watch_needs_a_terminal_and_says_how_to_get_one(host: FakeHost) -> None:
+    with pytest.raises(rid.DockerRunError, match="winpty"):
+        _stories(
+            host, "--story", "find-where-to-start", "--interactive", terminal=False
+        )
+    assert host.calls == []
+
+
+@pytest.mark.unit
+def test_watch_without_a_run_record_fails_and_judges_nothing(host: FakeHost) -> None:
+    host.results = {}
+    original = host._python
+
+    def no_record(argv: list[str]) -> Any:
+        raise AssertionError(f"judged a run with no record: {argv}")
+
+    host._python = no_record  # type: ignore[method-assign]
+    assert _stories(host, "--story", "find-where-to-start", "--interactive") == 1
+    host._python = original  # type: ignore[method-assign]
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("watched_record")
+def test_watch_with_a_run_record_is_judged_on_the_host(host: FakeHost) -> None:
+    assert _stories(host, "--story", "find-where-to-start", "--interactive") == 0
+    assert host.host_scripts(rid.STORIES_ENTRY)
+
+
+# --------------------------------------------------------------------------- #
 # pair
 # --------------------------------------------------------------------------- #
 
@@ -1007,6 +1243,7 @@ def _interrupted(command: Any) -> str:
 @pytest.mark.parametrize(
     "mode",
     [
+        ("--interactive", "--story", "find-where-to-start"),
         ("--pair", "--story", "route-folder-to-profile", "--as", "platform-admin"),
     ],
 )
@@ -1169,8 +1406,116 @@ def test_the_pair_server_runs_as_the_developer_where_roots_files_are_foreign(
 
 
 # --------------------------------------------------------------------------- #
-# list, search, ownership
+# replay, list, search, ownership
 # --------------------------------------------------------------------------- #
+
+
+def _run_record(**overrides: Any) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "schema": rid.STORY_RUN_SCHEMA,
+        "version": 1,
+        "harness_sha": "d4" * 20,
+        "harness_dirty": False,
+        "stack": {"name": "idp-ux-nightly"},
+        "docs": {"ref": "e5" * 20},
+        "ui_source": {"kind": "deployed"},
+    }
+    record.update(overrides)
+    return record
+
+
+@pytest.mark.unit
+def test_replay_runs_the_runs_own_harness_from_its_commit_against_the_checkouts_git(
+    host: FakeHost, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "ci-run"
+    source.mkdir()
+    (source / rid.STORY_RUN_FILE).write_text(
+        json.dumps(_run_record(harness_dirty=True))
+    )
+    assert _stories(host, "--replay", str(source), "--reruns", "0") == 0
+    archive = next(
+        c
+        for c in host.calls
+        if PurePosixPath(c.argv[0]).name == "git" and "archive" in c.argv
+    )
+    assert archive.argv[5:] == ["d4" * 20, "--", *rid.STORY_HARNESS_TREE]
+    out = _run_dir(host)
+    (review,) = host.review_containers()
+    mounts = _mounts(review.argv)
+    assert _source(mounts["/repo"]) == out / "harness"
+    assert _source(mounts["/replay"]) == source and mounts["/replay"].endswith(
+        ",readonly"
+    )
+    assert _source(mounts["/source"]) == rid.REPO_ROOT and mounts["/source"].endswith(
+        ",readonly"
+    )
+    command = review.argv[review.argv.index("python3") :]
+    assert command[3:5] == ["--replay", "/replay"]
+    assert _after(command, "--repo-dir") == "/source"
+    assert command[-2:] == ["--reruns", "0"]
+    assert review.env is not None and review.env["UX_HARNESS_SHA"] == "d4" * 20
+    assert review.argv[review.argv.index("--tmpfs") - 1] != "-d"
+    assert "WARNING: the run's harness had local changes" in capsys.readouterr().out
+    assert rid.image_tag(out / "harness" / "scripts" / "ux_runner") in review.argv
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("holders", "holder"),
+    [
+        (("refs/remotes/origin/develop",), "refs/remotes/origin/develop"),
+        (("HEAD",), "HEAD"),
+    ],
+)
+def test_a_replayed_harness_must_be_merged_or_in_the_checkout(
+    host: FakeHost,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    holders: tuple[str, ...],
+    holder: str,
+) -> None:
+    source = tmp_path / "ci-run"
+    source.mkdir()
+    (source / rid.STORY_RUN_FILE).write_text(json.dumps(_run_record()))
+    host.holders = holders
+    assert _stories(host, "--replay", str(source)) == 0
+    assert f"which {holder} holds" in capsys.readouterr().out
+    checks = [c.argv[3:] for c in host.calls if "merge-base" in c.argv]
+    assert checks[0] == [
+        "merge-base",
+        "--is-ancestor",
+        "d4" * 20,
+        "refs/remotes/origin/develop",
+    ]
+
+
+@pytest.mark.unit
+def test_a_replay_naming_a_commit_off_the_target_branch_runs_nothing(
+    host: FakeHost, tmp_path: Path
+) -> None:
+    source = tmp_path / "ci-run"
+    source.mkdir()
+    (source / rid.STORY_RUN_FILE).write_text(json.dumps(_run_record()))
+    host.holders = ()
+    with pytest.raises(rid.DockerRunError, match="on neither origin/develop nor"):
+        _stories(host, "--replay", str(source))
+    assert not [c for c in host.calls if "archive" in c.argv]
+    assert not [c for c in host.calls if PurePosixPath(c.argv[0]).name == "docker"]
+    assert not [c for c in host.calls if PurePosixPath(c.argv[0]).name == "aws"]
+    host.holders = ("refs/remotes/upstream/main",)
+    assert (
+        _stories(
+            host,
+            "--replay",
+            str(source),
+            "--remote",
+            "upstream",
+            "--target-branch",
+            "main",
+        )
+        == 0
+    )
 
 
 def _orchestrator_parser() -> Any:
@@ -1183,10 +1528,10 @@ def _orchestrator_parser() -> Any:
     return ai_ux_test_stories.parse_args
 
 
-def _orchestrator_calls(host: FakeHost) -> list[list[str]]:
+def _orchestrator_calls(host: FakeHost, popen: FakePopen) -> list[list[str]]:
     """Every orchestrator command line a mode ran, from its first option on."""
     found = []
-    for argv in [call.argv for call in host.calls]:
+    for argv in [call.argv for call in host.calls] + [a for a, _ in popen.started]:
         at = next(
             (i for i, part in enumerate(argv) if part.endswith(rid.STORIES_ENTRY)), None
         )
@@ -1196,33 +1541,88 @@ def _orchestrator_calls(host: FakeHost) -> list[list[str]]:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ["one-flow"])
+@pytest.mark.parametrize("mode", ["one-flow", "watch", "replay"])
 def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
-    mode: str, host: FakeHost
+    mode: str, host: FakeHost, tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
     """The runner writes each orchestrator command line and the orchestrator's own
     parser reads it, so this reads every one a mode runs with that parser: a
     renamed or newly refused option fails here, and each lands in the mode, run
     directory, checkout and stack the runner meant."""
     parse = _orchestrator_parser()
+    popen = FakePopen()
+    source = tmp_path / "ci-run"
     argv = {
         "one-flow": ["--story", "find-where-to-start", "--as", "new-analyst"]
         + ["--docs", "e5" * 20, "--reruns", "0"],
+        "watch": ["--story", "find-where-to-start", "--interactive"],
+        "replay": ["--replay", str(source), "--reruns", "0"],
     }[mode]
-    assert _stories(host, *argv) == 0
-    parsed = [parse(line) for line in _orchestrator_calls(host)]
+    if mode == "watch":
+        request.getfixturevalue("watched_record")
+    if mode == "replay":
+        source.mkdir()
+        (source / rid.STORY_RUN_FILE).write_text(json.dumps(_run_record()))
+    assert _stories(host, *argv, popen=popen) == 0
+    parsed = [parse(line) for line in _orchestrator_calls(host, popen)]
     inside = [args for args in parsed if str(args.artifact_dir).startswith("/out/")]
+    on_host = [args for args in parsed if args not in inside]
     assert inside
     for args in inside:
         assert args.stack == rid.DEFAULT_STACK
-        assert str(args.repo_dir) == "/repo"
+        assert str(args.repo_dir) == ("/source" if mode == "replay" else "/repo")
         assert not args.dev_unconfined and args.judge is None
     if mode == "one-flow":
         (args,) = inside
         assert (args.story, args.as_persona) == ("find-where-to-start", "new-analyst")
-        assert (args.docs, args.reruns) == ("e5" * 20, 0)
+        assert (args.docs, args.reruns, args.interactive) == ("e5" * 20, 0, False)
         assert str(args.artifact_dir) == f"/out/{rid.STORY_ARTIFACTS}"
         assert args.web_url == WEB_URL and args.build_dir is None
+    elif mode == "watch":
+        (args,) = inside
+        assert args.interactive and args.story == "find-where-to-start"
+        assert args.as_persona == "new-analyst"
+        (judge,) = on_host
+        out = _run_dir(host)
+        assert Path(judge.judge) == out / rid.STORY_ARTIFACTS
+        assert Path(judge.audit) == out / "browser" / "browser-audit.json"
+    else:
+        (args,) = inside
+        assert (args.replay, args.reruns) == ("/replay", 0)
+        assert not on_host
+
+
+@pytest.mark.unit
+def test_replaying_a_build_builds_that_head_again(
+    host: FakeHost, tmp_path: Path
+) -> None:
+    source = tmp_path / "ci-run"
+    source.mkdir()
+    record = _run_record(ui_source={"kind": "build", "head_sha": MR_HEAD})
+    (source / rid.STORY_RUN_FILE).write_text(json.dumps(record))
+    _stories(host, "--replay", str(source))
+    assert [c for c in host.docker_calls("run") if "bash" in c.argv]
+    (review,) = host.review_containers()
+    assert _after(review.argv, "--build-dir") == "/out/build"
+    assert "--web-url" not in review.argv
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("record", "reason"),
+    [
+        (_run_record(harness_sha="unknown"), "harness_sha"),
+        (_run_record(schema="other"), "is not ux-test-stories/run v1"),
+        (_run_record(ui_source={"kind": "build"}), "head_sha"),
+        (_run_record(ui_source={"kind": "elsewhere"}), "cannot be replayed"),
+        (_run_record(mode="pair"), "a pair run"),
+    ],
+)
+def test_replay_refuses_a_record_it_cannot_reproduce(
+    record: dict[str, Any], reason: str
+) -> None:
+    with pytest.raises(rid.DockerRunError, match=re.escape(reason)):
+        rid.replay_plan(record)
 
 
 @pytest.mark.unit
@@ -1515,13 +1915,50 @@ def test_a_browser_that_will_not_start_is_reported_and_one_that_dies_is_stopped(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ["--pair"])
+@pytest.mark.parametrize("mode", ["--interactive", "--pair"])
 def test_watch_and_pair_refuse_a_container_name_docker_would_misread(
     host: FakeHost, mode: str
 ) -> None:
     with pytest.raises(rid.DockerRunError, match="not a docker container name"):
         _stories(host, "--story", "find-where-to-start", mode, "--name=-t")
     assert host.calls == []
+
+
+@pytest.mark.unit
+def test_watch_serves_a_local_build_and_kills_a_session_that_outlives_its_stop(
+    host: FakeHost, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = tmp_path / "ui-build"
+    build.mkdir()
+    (build / "index.html").write_text("<html/>")
+
+    class Endless(FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            self.waited.append(timeout)
+            if not self.killed:
+                raise subprocess.TimeoutExpired(self.argv, timeout or 0)
+            return -9
+
+    made: list[Endless] = []
+
+    def popen(argv: list[str], **kwargs: Any) -> Endless:
+        made.append(Endless(argv, [], 0, False))
+        return made[-1]
+
+    code = _stories(
+        host,
+        "--story",
+        "find-where-to-start",
+        "--interactive",
+        "--build-dir",
+        str(build),
+        popen=popen,
+    )
+    assert code == -9 and made[0].killed
+    (browser,) = [c for c in host.docker_calls("run") if "-d" in c.argv]
+    assert _mounts(browser.argv)["/ui-build"].endswith(",readonly")
+    assert "--web-url" not in browser.argv
+    assert _after(made[0].argv, "--build-dir") == "/ui-build"
 
 
 @pytest.mark.unit
@@ -1571,6 +2008,46 @@ def test_pair_needs_only_the_personas(host: FakeHost, tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_export_tree_refuses_a_ref_git_cannot_archive_and_an_escaping_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rid, "resolve_tool", lambda name: f"/fake/bin/{name}")
+    with pytest.raises(rid.DockerRunError, match="40-hex"):
+        rid.export_tree(tmp_path, "HEAD", ("scripts",), tmp_path / "x")
+
+    def missing(argv: list[str], **kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(
+            argv, 128, b"", b"fatal: not a valid object name"
+        )
+
+    with pytest.raises(rid.DockerRunError, match="not a valid object name"):
+        rid.export_tree(tmp_path, HEAD, ("scripts",), tmp_path / "x", run=missing)
+
+    def escaping(argv: list[str], **kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(argv, 0, _tar({"../outside.txt": b"x"}), b"")
+
+    with pytest.raises(rid.DockerRunError, match="was refused"):
+        rid.export_tree(tmp_path, HEAD, ("scripts",), tmp_path / "x", run=escaping)
+    assert not (tmp_path / "outside.txt").exists()
+
+
+@pytest.mark.unit
+def test_replay_against_another_stack_says_so(
+    host: FakeHost, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "ci-run"
+    source.mkdir()
+    (source / rid.STORY_RUN_FILE).write_text(json.dumps(_run_record()))
+    _stories(host, "--replay", str(source), "--stack", "my-stack")
+    assert "WARNING: the run was against idp-ux-nightly" in capsys.readouterr().out
+    (review,) = host.review_containers()
+    assert _after(review.argv, "--stack") == "my-stack"
+    (source / rid.STORY_RUN_FILE).write_text("[]")
+    with pytest.raises(rid.DockerRunError, match="not a JSON object"):
+        _stories(host, "--replay", str(source))
+
+
+@pytest.mark.unit
 def test_a_catalogue_that_fails_to_list_skips_the_nudge(host: FakeHost) -> None:
     def failing(argv: list[str]) -> Any:
         return subprocess.CompletedProcess(argv, 1)
@@ -1578,3 +2055,19 @@ def test_a_catalogue_that_fails_to_list_skips_the_nudge(host: FakeHost) -> None:
     host._python = failing  # type: ignore[method-assign]
     assert _stories(host, "--list") == 1
     assert len(host.calls) == 1
+
+
+@pytest.mark.unit
+def test_the_terminal_check_reads_both_streams(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Stream:
+        def __init__(self, tty: bool) -> None:
+            self.tty = tty
+
+        def isatty(self) -> bool:
+            return self.tty
+
+    monkeypatch.setattr(rid.sys, "stdin", Stream(True))
+    monkeypatch.setattr(rid.sys, "stdout", Stream(False))
+    assert rid._is_terminal() is False
+    monkeypatch.setattr(rid.sys, "stdout", Stream(True))
+    assert rid._is_terminal() is True

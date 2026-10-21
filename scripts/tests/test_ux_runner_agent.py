@@ -928,3 +928,105 @@ def test_an_effort_the_pinned_cli_does_not_take_is_refused(effort: str) -> None:
             max_budget_usd=1,
             effort=effort,
         )
+
+
+PROMPT_FILE = Path("/run/ux-story/agent/prompt.md")
+
+
+def _interactive(**changes: Any) -> list[str]:
+    options: dict[str, Any] = {
+        "prompt_file": PROMPT_FILE,
+        "profile": tool_profiles.STORY,
+        "effort": "high",
+    }
+    options.update(changes)
+    return agent.interactive_argv(
+        Path("/opt/ux-runner/node_modules/.bin/claude"),
+        Path("/run/ux-story/agent/mcp.json"),
+        **options,
+    )
+
+
+@pytest.mark.unit
+def test_the_interactive_argv_is_exactly_the_pinned_command_line() -> None:
+    assert _interactive() == [
+        "/opt/ux-runner/node_modules/.bin/claude",
+        "--bare",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "/run/ux-story/agent/mcp.json",
+        "--permission-mode",
+        "manual",
+        "--tools",
+        "",
+        "--allowedTools",
+        *tool_profiles.STORY_ALLOWED_TOOLS,
+        "--disallowedTools",
+        *tool_profiles.STORY_DISALLOWED_TOOLS,
+        "--effort",
+        "high",
+        "--append-system-prompt-file",
+        str(PROMPT_FILE),
+    ]
+
+
+@pytest.mark.unit
+def test_the_interactive_argv_drops_every_flag_only_print_mode_applies() -> None:
+    """2.1.281 applies these only with ``--print``, and ``--max-turns`` is not in
+    its help, so none of them is passed to the TUI as if it bounded anything."""
+    argv = _interactive()
+    for flag in (
+        "-p",
+        "--print",
+        "--output-format",
+        "--no-session-persistence",
+        "--max-budget-usd",
+        "--max-turns",
+    ):
+        assert flag not in argv, flag
+    unattended = agent.claude_argv(
+        Path("/opt/ux-runner/node_modules/.bin/claude"),
+        Path("/run/ux-story/agent/mcp.json"),
+        max_turns=50,
+        max_budget_usd=4.0,
+        profile=tool_profiles.STORY,
+        effort="high",
+    )
+    kept = [part for part in unattended if part in argv]
+    assert "--bare" in kept and "--strict-mcp-config" in kept
+    assert argv[argv.index("--tools") + 1] == ""
+    assert _interactive(effort=None)[-2:] == [
+        "--append-system-prompt-file",
+        str(PROMPT_FILE),
+    ]
+
+
+@pytest.mark.unit
+def test_no_message_is_given_on_the_command_line_and_the_prompt_is_a_file() -> None:
+    """At 2.1.281 a message given as the TUI's argument is answered before the
+    story server's tools are offered, as the recorded probe shows, so the prompt
+    is the appended system prompt and the person types the opening message."""
+    probe = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "ux_story_transcript"
+            / "probe.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert probe["positional_opening"]["first_turn_story_tools"] == []
+    assert probe["pair_command"]["system_has_marker"] is True
+    argv = _interactive()
+    assert "--" not in argv
+    assert argv.count("--append-system-prompt-file") == 1
+    assert agent.OPENING_MESSAGE.strip() == agent.OPENING_MESSAGE
+    assert agent.OPENING_MESSAGE not in argv
+    parameters = inspect.signature(agent.interactive_argv).parameters
+    assert "prompt" not in parameters
+    assert parameters["prompt_file"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.unit
+def test_a_relative_prompt_file_is_refused() -> None:
+    with pytest.raises(agent.AgentError, match="not an absolute path"):
+        _interactive(prompt_file=Path("prompt.md"))

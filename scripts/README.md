@@ -144,12 +144,13 @@ package as the MR UX test, with these modules of their own:
 - `scripts/ux_runner/story_prompt.py` — the deterministic story prompt: a header, the brief from `.claude/skills/ux-test-stories.md`, `ux-test-stories-ci.md` whole, the untrusted-input paragraph, the persona's group and background, the task with its kind's rule, and the action and look bounds; no MR text, page text or stack identifier, and every catalogue value quoted as a JSON string. `python3 -B scripts/ux_runner/story_prompt.py show STORY@PERSONA [--scale 2]` prints one flow's prompt.
 - `scripts/sdlc/ai_ux_test_stories.py` — the orchestrator: precheck, run and judge, each flow in a confined browser of its own and judged from the journal its server wrote, locally in Docker.
 - `scripts/ux_runner/story_pair.py` — a pair session's files, written inside the browser container: the docs index, the server's start record, a one-flow run record and the flow's prompt, which the printed command passes with `--append-system-prompt-file`.
+- `scripts/ux_runner/transcript.py` — what a watched session's Claude Code session file says: the person's messages (so `assisted`) and the priced token counts per assistant message, pinned to sessions recorded offline at the pinned release in `scripts/tests/fixtures/ux_story_transcript/` (`record.py` re-records them).
 - `scripts/ux_runner/python_floor.py` — the Python the host-side story tools need, checked before an import can fail, so an older `python3` (macOS's own) ends with one `FAILED:` line naming the remedy rather than a traceback.
 
 ```bash
 make ai-ux-test-stories-list                       # validate the catalogue, list its flows and the uncovered [Unreleased] leads
 make ai-ux-test-stories-search Q="prefix mapping"  # what a first-time user would find in the published docs
-make ai-ux-test-stories-local STORY=<id> AS=<persona>     # one flow in Docker, as a dry run
+make ai-ux-test-stories-local STORY=<id> AS=<persona>     # one flow in Docker, as a dry run (INTERACTIVE=1, REPLAY=<dir>)
 make ai-ux-test-stories-pair STORY=<id> AS=<persona>      # a confined session you start plays the user
 make ai-ux-test-stories-judge RUN=<dir> SUMMARY=1         # re-judge a run from its journals; CHECK=1 writes nothing
 py scripts\ux_runner\run_in_docker.py stories --story <id> --as <persona>   # Windows, without make

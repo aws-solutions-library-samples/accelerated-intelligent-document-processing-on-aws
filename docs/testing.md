@@ -543,10 +543,10 @@ compared with the next. Each story is told to change nothing on the shared revie
 stack, and a best-effort guard in front of the browser refuses the saves it
 recognises: a story whose task ends in a save stops at that step and says so.
 
-`make ai-ux-test-stories-local STORY=<id>` runs a story in Docker as a dry run,
-`make ai-ux-test-stories-pair` starts the confined browser and prints the command
-for a Claude session you start to play the user, and `make ai-ux-test-stories-list`
-and
+`make ai-ux-test-stories-local STORY=<id>` runs a story in Docker as a dry run
+(`INTERACTIVE=1` lets you watch it live), `make ai-ux-test-stories-pair` starts
+the confined browser and prints the command for a Claude session you start to play
+the user, and `make ai-ux-test-stories-list` and
 `make ai-ux-test-stories-search Q="…"` are the authoring loop. Procedure:
 [`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md);
 unattended contract:
