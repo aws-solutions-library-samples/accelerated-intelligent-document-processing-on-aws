@@ -1013,6 +1013,12 @@ GRAPH: dict[str, set[str]] = {
         "ux_runner.stories",
         "ux_runner.ui_change",
     },
+    "ux_runner.story_relay": {
+        "ux_runner.agent",
+        "ux_runner.paths",
+        "ux_runner.processes",
+        "ux_runner.tool_profiles",
+    },
     "ux_story_mcp": {"ux_recorder_mcp"},
 }
 FIRST_PARTY_PREFIXES = ("ux_", "check_", "codebuild", "ai_mr_review", "ai_ux_test")

@@ -44,7 +44,7 @@ See [sdlc/cfn/README.md](sdlc/cfn/README.md) for CloudFormation templates.
 | `ux_test_session.py` | Web URL and throwaway Cognito user for a browser UX review (see `.claude/skills/ux-test.md`) | `python scripts/ux_test_session.py url <stack> --region <region>` |
 | `ux_recorder.py` | Record a UX review or a product demo as a narrated, captioned mp4 (sidecar to the ux-test and product-demo skills; see below) | `python scripts/ux_recorder.py start --stack <stack> --persona Admin --url-contains cloudfront` |
 | `ux_recorder_mcp.py` | The recorder's mark, note, pause and resume as a stdio MCP server, the only recorder control the unattended MR UX test's model holds (see `ux_runner/` below) | `python3 -I -B scripts/ux_recorder_mcp.py --out <recorder out dir>` |
-| `ux_story_mcp.py` | The `ux-story` stdio MCP server for first-time-user stories: documentation search and read, three notes, two one-shot reports, and the flow's append-only journal, the only record the verdict is judged from | `python3 -I -B scripts/ux_story_mcp.py --index <index.json> --out <dir> --start <start.json> [--recorder-out <recorder out dir>]` |
+| `ux_story_mcp.py` | The `ux-story` stdio MCP server for first-time-user stories: documentation search and read, three notes, two one-shot reports, and the flow's append-only journal, the only record the verdict is judged from. With `--devtools PATH --budget N` it is the flow's only browser server, relaying twelve chrome-devtools-mcp tools behind the action budget, the commit guard and the other caps (see below) | `python3 -I -B scripts/ux_story_mcp.py --index <index.json> --out <dir> --start <start.json> [--recorder-out <recorder out dir>] [--devtools <chrome-devtools-mcp> --budget <N>]` |
 | `ux_test_proxy.py` | The MR UX test browser's egress proxy: serves the MR's UI build and tunnels only to the review stack's own hosts (see `ux_runner/` below) | `python3 -I -B scripts/ux_test_proxy.py --rules <rules.json> --build-dir src/ui/build` |
 | `demo_storyboards.yaml` | Confirmed product-demo storyboards, so a demo can be re-recorded on a later release (see `.claude/skills/product-demo.md`) | — |
 | `generate_govcloud_template.py` | Generate GovCloud-compatible template (**deprecated** — use `idp-cli publish --headless`) | `idp-cli publish --source-dir . --region <region> --headless` |
@@ -132,6 +132,7 @@ own in the `ux_runner/` package:
 
 - `scripts/ux_runner/stories.py` — the catalogue's strict loader: closed keys, the intent-only lint on every title and intent, the story and series hashes that decide which runs are comparable, the step budget, flow keys and shards. `list [--tier p0|p1|all] [--json]` prints one line per flow.
 - `scripts/ux_runner/docs_index.py` — the documentation a first-time-user story reads: a standard-library BM25 index over exactly the pages `docs-site/setup.sh` publishes, split at H1–H3 outside code fences, addressed by the site's own paths (a slug in the wrong case is a miss, as on the site). `search QUERY [--json]` from a checkout or an `--index` file; `build --out FILE` indexes the checkout, and with `--git-ref REF` reads that commit's `docs/**.md` blobs from git objects instead.
+- `scripts/ux_runner/story_relay.py` — the story relay: an MCP client of the pinned chrome-devtools-mcp (no roots, file and full-page arguments stripped, screenshots forced to JPEG) that serves twelve of its tools behind an action budget, a post-action screenshot up to an image cap, a look cap, a 220-element snapshot cut, a best-effort commit guard and signed-out detection. Fixtures are re-recorded with `scripts/tests/fixtures/ux_story_relay/record.py` inside the runner image.
 - `scripts/ux_runner/story_verdict.py` — a flow's verdict, computed from its journal and the persona's expectation alone, never from the model's prose, with the findings, the re-run confirmation and `results.json`. `judge RUN_DIR [--check] [--summary]` re-judges a run from `story-run.json` and its journals; `--summary` prints a fixed-shape table holding no free text.
 - `scripts/ux_runner/changelog_select.py` — which stories an MR's added CHANGELOG entries select, by integer scores against each story's `match` block; MR text selects stories and never reaches a prompt. `nudge` prints the `[Unreleased]` leads no story covers.
 - `scripts/ux_runner/python_floor.py` — the Python the host-side story tools need, checked before an import can fail, so an older `python3` (macOS's own) ends with one `FAILED:` line naming the remedy rather than a traceback.
@@ -141,7 +142,8 @@ make ai-ux-test-stories-list                       # validate the catalogue, lis
 make ai-ux-test-stories-search Q="prefix mapping"  # what a first-time user would find in the published docs
 ```
 
-Unit tests: `scripts/tests/test_ux_test_stories_*.py` and `test_ux_story_mcp.py`.
+Unit tests: `scripts/tests/test_ux_test_stories_*.py`, `test_ux_story_mcp.py`
+and `test_ux_story_relay.py`.
 
 ### Model Limit Discovery (`discover_model_limits.py`)
 

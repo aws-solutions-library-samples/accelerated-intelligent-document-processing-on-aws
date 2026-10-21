@@ -5,12 +5,19 @@
 
 It serves seven tools of its own over newline JSON-RPC on stdio, through
 ``ux_recorder_mcp.serve``, and writes the flow's journal, which is the only record
-the verdict is judged from. Relay mode (``--devtools``) is not in this server yet.
+the verdict is judged from.
+
+In relay mode (``--devtools`` and ``--budget``) it is also the flow's only browser
+server: it starts the pinned chrome-devtools-mcp itself and serves twelve of its
+tools through ``ux_runner.story_relay``, behind the action budget, the commit guard
+and the other guard rails, with every line of the journal counting the actions and
+images so far. That mode reads the client on a thread of its own, so a
+cancellation that arrives while a browser call is running reaches the browser.
 
 Usage
 -----
     python3 -I -B scripts/ux_story_mcp.py --index INDEX.json --out DIR \\
-        --start START.json [--recorder-out DIR]
+        --start START.json [--recorder-out DIR] [--devtools PATH --budget N]
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import argparse
 import io
 import json
 import os
+import queue
 import re
 import signal
 import stat
@@ -381,10 +389,11 @@ _INJECTION_NOTED = (
 _RECORDED = "Recorded. Now write a short factual summary of what you saw, then stop."
 _ALREADY_REPORTED = "A report was already made; write your short summary and stop."
 _JOURNAL_FULL = "This flow's record is full; write your short summary and stop."
-_RELAY_LATER = (
-    "relay mode (--devtools, --budget) is not in this server yet; it serves its own "
-    "tools only"
-)
+_RELAY_NEEDS_BOTH = "relay mode needs both --devtools PATH and --budget N"
+_BUDGET_MAX = 1000
+_RELAY_POLL_SECONDS = 0.25
+_READ_BYTES = 64 * 1024
+_CANCELLED_IDS_MAX = 1000
 
 
 class PartError(Exception):
@@ -944,8 +953,69 @@ class _SignalGate:
 _Handler = Callable[[Mapping[str, Any]], tuple[dict[str, Any], bool]]
 
 
+class JournalLike(Protocol):
+    """The journal as the adapter writes it: a JournalWriter, or the relay's ledger."""
+
+    @property
+    def seq(self) -> int: ...
+
+    def call(
+        self,
+        *,
+        tool: str,
+        cls: str,
+        ok: bool,
+        refused: str | None = None,
+        label: str | None = None,
+        args: Mapping[str, Any] | None = None,
+        ids: Sequence[str] = (),
+        screen: str | None = None,
+        counted: bool = False,
+        actions_used: int | None = None,
+        images_sent: int | None = None,
+        terminal: str | None = None,
+        after_budget: bool | None = None,
+    ) -> int: ...
+
+    def end(self, reason: str) -> None: ...
+
+
+class RelayedReply(Protocol):
+    @property
+    def mark(self) -> Mapping[str, str] | None: ...
+
+    def result(self) -> dict[str, Any]: ...
+
+
+class BrowserRelay(Protocol):
+    """What the adapter asks of ``ux_runner.story_relay.Relay`` in relay mode."""
+
+    def tools(self) -> list[dict[str, Any]]: ...
+
+    def serves(self, name: str) -> bool: ...
+
+    def call(self, name: str, arguments: Mapping[str, Any]) -> RelayedReply: ...
+
+    def refuse_invalid(self, name: str) -> None: ...
+
+    def seen_on_screen(self, ref: str) -> bool: ...
+
+    def begin(self) -> None: ...
+
+    def cancel(self) -> None: ...
+
+    def end_actions(self) -> None: ...
+
+
 class StoryAdapter(ux_recorder_mcp.Adapter):
-    """The ux-story server: seven tools of its own, each call journalled once."""
+    """The ux-story server: seven tools of its own, each call journalled once.
+
+    With a ``relay`` it also serves the relay's browser tools, after its own in
+    ``tools/list``, and hands each call to one of them to the relay, which journals
+    it through the same ledger; ``seen_on_screen`` then defaults to the relay's.
+    Once a terminal report is accepted the relay refuses every browser action and
+    keeps serving the looks.
+    """
 
     terminal: str | None
 
@@ -954,14 +1024,18 @@ class StoryAdapter(ux_recorder_mcp.Adapter):
         link: ux_recorder_mcp.RecorderLink,
         *,
         docs: DocsLookup,
-        journal: JournalWriter,
+        journal: JournalLike,
         seen_on_screen: Callable[[str], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         timer: Callable[[float, Callable[[], None]], Any] = ux_recorder_mcp.start_timer,
+        relay: BrowserRelay | None = None,
     ) -> None:
         super().__init__(link, clock=clock, timer=timer)
         self.docs = docs
         self.journal = journal
+        self.relay = relay
+        if seen_on_screen is None and relay is not None:
+            seen_on_screen = relay.seen_on_screen
         self.seen_on_screen = seen_on_screen
         self.terminal = None
         self.searches = 0
@@ -993,7 +1067,8 @@ class StoryAdapter(ux_recorder_mcp.Adapter):
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {"tools": list(TOOLS)}
+            relayed = self.relay.tools() if self.relay is not None else []
+            return {"tools": [*TOOLS, *relayed]}
         if method == "tools/call":
             return self.call_tool(params.get("name"), params.get("arguments"))
         raise ux_recorder_mcp.MethodNotFound(method)
@@ -1001,6 +1076,9 @@ class StoryAdapter(ux_recorder_mcp.Adapter):
     def call_tool(self, name: object, arguments: Any) -> dict[str, Any]:
         """Run one tool, journal it once, and wrap the reply as an MCP tool result."""
         with self.signals, self._lock:
+            relay = self.relay
+            if relay is not None and isinstance(name, str) and relay.serves(name):
+                return self._relayed(relay, name, arguments)
             reply, is_error = self._run(name, arguments)
         return {
             "content": [
@@ -1008,6 +1086,27 @@ class StoryAdapter(ux_recorder_mcp.Adapter):
             ],
             "isError": is_error,
         }
+
+    def _relayed(
+        self, relay: BrowserRelay, name: str, arguments: Any
+    ) -> dict[str, Any]:
+        """One browser tool, through the relay; its recorder mark is forwarded here."""
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            try:
+                relay.refuse_invalid(name)
+            except JournalClosed:
+                pass
+            raise ux_recorder_mcp.InvalidParams("arguments must be an object")
+        try:
+            reply = relay.call(name, arguments)
+        except JournalClosed:
+            full = json.dumps({"ok": False, "error": _JOURNAL_FULL})
+            return {"content": [{"type": "text", "text": full}], "isError": True}
+        if reply.mark is not None:
+            self._forward(self._mark, dict(reply.mark))
+        return reply.result()
 
     def _run(self, name: object, arguments: Any) -> tuple[dict[str, Any], bool]:
         if not isinstance(name, str):
@@ -1194,6 +1293,8 @@ class StoryAdapter(ux_recorder_mcp.Adapter):
             return {"ok": False, "error": _ALREADY_REPORTED}, True
         self._log(tool, True, args=args, terminal=terminal)
         self.terminal = terminal
+        if self.relay is not None:
+            self.relay.end_actions()
         if terminal == "done":
             mark = {"label": "Reported done", "say": args["evidence"]}
         else:
@@ -1238,8 +1339,16 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="the recorder's --out directory, where it keeps current.json",
     )
-    parser.add_argument("--devtools", metavar="PATH", help="relay mode: not here yet")
-    parser.add_argument("--budget", metavar="N", help="relay mode: not here yet")
+    parser.add_argument(
+        "--devtools",
+        metavar="PATH",
+        help="relay mode: the pinned chrome-devtools-mcp, which this server starts",
+    )
+    parser.add_argument(
+        "--budget",
+        metavar="N",
+        help="relay mode: the flow's action budget, a whole number from 1",
+    )
     return parser
 
 
@@ -1309,11 +1418,296 @@ def _serve(adapter: StoryAdapter, journal: JournalWriter) -> int:
     return 0
 
 
+def _rpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": code, "message": message},
+    }
+
+
+def _id_key(value: Any) -> tuple[str, Any] | None:
+    if value is None or isinstance(value, str):
+        return type(value).__name__, value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "int", value
+    return None
+
+
+class _Replies:
+    """Replies to the client, one line each, from the main thread and the reader alike."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._lock = threading.Lock()
+        self.closed = False
+        self.broken = False
+
+    def send(self, reply: Mapping[str, Any]) -> None:
+        with self._lock:
+            if self.closed:
+                return
+            try:
+                self._stream.write(json.dumps(reply) + "\n")
+                self._stream.flush()
+            except (BrokenPipeError, ConnectionResetError, ValueError):
+                self.closed = True
+                self.broken = True
+
+    def close(self) -> None:
+        with self._lock:
+            self.closed = True
+
+
+class _Inbox:
+    """The client's messages in relay mode, read on a thread of their own.
+
+    Reading here rather than between calls is what lets a cancellation reach a
+    browser call that is still running: ``notifications/cancelled`` for the request
+    being handled tells the relay to stop waiting, and one for a request still
+    queued drops it unanswered. A ``ping`` and a line that is not JSON are answered
+    at once; every other notification is dropped. A line longer than ``limit``
+    bytes is never parsed: the main thread journals it as a ``size`` refusal.
+    """
+
+    def __init__(
+        self,
+        read: Callable[[int], bytes],
+        adapter: StoryAdapter,
+        replies: _Replies,
+        relay: BrowserRelay,
+        *,
+        limit: int,
+    ) -> None:
+        self.messages: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._read = read
+        self._adapter = adapter
+        self._replies = replies
+        self._relay = relay
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._current: tuple[str, Any] | None = None
+        self._current_cancelled = False
+        self._cancelled: set[tuple[str, Any]] = set()
+        self._thread = threading.Thread(
+            target=self._run, name="client-reader", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def begin(self, request_id: Any) -> bool:
+        """Mark ``request_id`` as the one being handled; False when it was cancelled."""
+        key = _id_key(request_id)
+        with self._lock:
+            if key is not None and key in self._cancelled:
+                self._cancelled.discard(key)
+                return False
+            self._current = key
+            self._current_cancelled = False
+            self._relay.begin()
+        return True
+
+    def finish(self) -> bool:
+        """The request being handled is done; whether the client cancelled it."""
+        with self._lock:
+            cancelled = self._current_cancelled
+            self._current = None
+            self._current_cancelled = False
+        return cancelled
+
+    def _cancel(self, request_id: Any) -> None:
+        key = _id_key(request_id)
+        if key is None:
+            return
+        with self._lock:
+            if self._current is not None and key == self._current:
+                self._current_cancelled = True
+                self._relay.cancel()
+            elif len(self._cancelled) < _CANCELLED_IDS_MAX:
+                self._cancelled.add(key)
+
+    def _run(self) -> None:
+        buffer = bytearray()
+        discarding = False
+        while True:
+            try:
+                chunk = self._read(_READ_BYTES)
+            except (OSError, ValueError):
+                chunk = b""
+            if not chunk:
+                break
+            buffer += chunk
+            while True:
+                newline = buffer.find(b"\n")
+                if newline < 0:
+                    if len(buffer) > self._limit:
+                        buffer.clear()
+                        if not discarding:
+                            discarding = True
+                            self.messages.put(("size", None))
+                    break
+                line = bytes(buffer[:newline])
+                del buffer[: newline + 1]
+                if discarding or len(line) > self._limit:
+                    if not discarding:
+                        self.messages.put(("size", None))
+                    discarding = False
+                    continue
+                self._take(line)
+        if buffer.strip() and not discarding:
+            self._take(bytes(buffer))
+        self.messages.put(("eof", None))
+
+    def _take(self, line: bytes) -> None:
+        if not line.strip():
+            return
+        try:
+            message = json.loads(line.decode("utf-8", errors="replace"))
+        except (ValueError, RecursionError):
+            self._replies.send(
+                _rpc_error(None, ux_recorder_mcp.PARSE_ERROR, "Parse error")
+            )
+            return
+        if isinstance(message, dict) and isinstance(message.get("method"), str):
+            method = message["method"]
+            if "id" not in message:
+                if method == "notifications/cancelled":
+                    params = message.get("params")
+                    if isinstance(params, dict):
+                        self._cancel(params.get("requestId"))
+                return
+            if method == "ping":
+                reply = self._adapter.handle(message)
+                if reply is not None:
+                    self._replies.send(reply)
+                return
+        self.messages.put(("message", message))
+
+
+def _ending(reply: dict[str, Any], text: str) -> dict[str, Any]:
+    result = reply.get("result")
+    if isinstance(result, dict) and isinstance(result.get("content"), list):
+        result["content"].append({"type": "text", "text": text})
+    return reply
+
+
+def _relay_loop(
+    adapter: StoryAdapter,
+    journal: Any,
+    inbox: _Inbox,
+    replies: _Replies,
+    ending: str,
+) -> str:
+    """Handle the client's requests one at a time until EOF or the refusal limit."""
+    while True:
+        try:
+            kind, message = inbox.messages.get(timeout=_RELAY_POLL_SECONDS)
+        except queue.Empty:
+            if replies.broken:
+                return "terminal" if adapter.terminal else "eof"
+            continue
+        if kind == "eof":
+            return "terminal" if adapter.terminal else "eof"
+        if kind == "size":
+            adapter._journal_refusal("", "harness", "size")
+            replies.send(
+                _rpc_error(
+                    None,
+                    ux_recorder_mcp.INVALID_REQUEST,
+                    "Invalid Request: the request is too large",
+                )
+            )
+        else:
+            request_id = message.get("id") if isinstance(message, dict) else None
+            if not inbox.begin(request_id):
+                continue
+            try:
+                reply = adapter.handle(message)
+            finally:
+                cancelled = inbox.finish()
+            if reply is not None and not cancelled:
+                replies.send(_ending(reply, ending) if journal.spent else reply)
+        if replies.broken:
+            return "terminal" if adapter.terminal else "eof"
+        if journal.spent:
+            return "refusal_limit"
+
+
+def _serve_relay(
+    adapter: StoryAdapter,
+    journal: Any,
+    relay: Any,
+    *,
+    read: Callable[[int], bytes],
+    stdout: Any,
+) -> int:
+    """Serve the client in relay mode until EOF, a stop signal or the refusal limit.
+
+    The client is read on a thread of its own (:class:`_Inbox`), and requests are
+    handled on this one, so a stop signal still never interrupts a call: one that
+    arrives during a browser call makes the relay stop waiting on the browser, and
+    the signal takes effect once the call returns. The journal's end line comes
+    after any ``child_died`` line the relay still owes, and the browser server is
+    stopped last.
+    """
+    from ux_runner import story_relay
+
+    replies = _Replies(stdout)
+    inbox = _Inbox(read, adapter, replies, relay, limit=story_relay.REQUEST_BYTES)
+    gate = adapter.signals
+    relay.stop_when(lambda: gate.pending)
+    previous = _catch_signals(gate.handler)
+    try:
+        inbox.start()
+        try:
+            try:
+                gate.arm()
+                reason = _relay_loop(
+                    adapter, journal, inbox, replies, story_relay.REFUSAL_LIMIT_TEXT
+                )
+            finally:
+                gate.disarm()
+        except _Stopped:
+            reason = "signal"
+        try:
+            relay.settle()
+        except JournalClosed:
+            pass
+        journal.end(reason)
+    finally:
+        replies.close()
+        relay.close()
+        _restore_signals(previous)
+    if replies.broken:
+        _discard_stdout()
+    return 0
+
+
+def _relay_budget(devtools: str | None, budget: str | None) -> int | None:
+    """The action budget relay mode was given, or None after saying what is wrong."""
+    if devtools is None or budget is None:
+        _say(_RELAY_NEEDS_BOTH)
+        return None
+    text = budget.strip()
+    if not (text.isascii() and text.isdigit()) or not 1 <= int(text) <= _BUDGET_MAX:
+        _say(f"relay mode: --budget must be a whole number from 1 to {_BUDGET_MAX}")
+        return None
+    return int(text)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    budget: int | None = None
     if args.devtools is not None or args.budget is not None:
-        _say(_RELAY_LATER)
-        return 2
+        budget = _relay_budget(args.devtools, args.budget)
+        if budget is None:
+            return 2
+        try:
+            from ux_runner import story_relay
+        except ImportError as exc:
+            _say(f"relay mode: the relay cannot be imported ({type(exc).__name__})")
+            return 1
     try:
         start = start_record(args.start)
     except ValueError as exc:
@@ -1329,7 +1723,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     path = args.out / JOURNAL_FILE
     try:
-        journal = JournalWriter(path, start, relay=False, budget=None)
+        journal = JournalWriter(path, start, relay=budget is not None, budget=budget)
     except FileExistsError:
         _say(f"--out: {path} already exists, and a journal is never appended to")
         return 1
@@ -1337,12 +1731,28 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"--out: cannot create {path}: {exc.strerror or type(exc).__name__}")
         return 1
     recorder = args.recorder_out if args.recorder_out is not None else path / "recorder"
-    adapter = StoryAdapter(
-        ux_recorder_mcp.RecorderLink(recorder),
-        docs=IndexLookup(index),
-        journal=journal,
+    link = ux_recorder_mcp.RecorderLink(recorder)
+    if budget is None:
+        adapter = StoryAdapter(link, docs=IndexLookup(index), journal=journal)
+        return _serve(adapter, journal)
+    ledger = story_relay.Ledger(journal, budget=budget)
+    relay = story_relay.start(
+        Path(args.devtools),
+        ledger=ledger,
+        budget=budget,
+        out=args.out,
+        environ=os.environ,
+        say=_say,
     )
-    return _serve(adapter, journal)
+    adapter = StoryAdapter(link, docs=IndexLookup(index), journal=ledger, relay=relay)
+    descriptor = sys.stdin.fileno()
+    return _serve_relay(
+        adapter,
+        ledger,
+        relay,
+        read=lambda size: os.read(descriptor, size),
+        stdout=sys.stdout,
+    )
 
 
 if __name__ == "__main__":

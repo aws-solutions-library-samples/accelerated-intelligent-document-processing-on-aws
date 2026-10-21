@@ -255,6 +255,64 @@ def mcp_servers(
     }
 
 
+def story_server(
+    *,
+    toolchain: paths.Toolchain,
+    story_adapter: Path,
+    index: Path,
+    out: Path,
+    start: Path,
+    budget: int,
+    python: str,
+    home: Path,
+    recorder_out: Path | None = None,
+    search_path: str = DEFAULT_SEARCH_PATH,
+) -> dict[str, Any]:
+    """The one MCP server a story flow's ``claude`` sees: ``ux-story`` in relay mode.
+
+    Keyed by ``tool_profiles.STORY_SERVER``, the name the STORY profile's tool ids
+    use. It runs ``python -I -B`` under ``/usr/bin/env -i`` with the same explicit
+    environment :func:`mcp_servers` gives both of its servers and an empty ``env``
+    map, so it inherits nothing of ``claude``'s. It starts the pinned
+    chrome-devtools-mcp itself with this ``PATH`` and ``HOME``, and writes only
+    under ``out``, where it creates the journal, and ``recorder_out``. ``budget``
+    is the flow's action budget, a whole number of at least 1, or
+    :class:`AgentError` is raised.
+    """
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise AgentError("the story server's action budget is a whole number from 1")
+    args = [
+        "-i",
+        f"PATH={search_path}",
+        f"HOME={home}",
+        "LANG=C.UTF-8",
+        python,
+        "-I",
+        "-B",
+        str(story_adapter),
+        "--index",
+        str(index),
+        "--out",
+        str(out),
+        "--start",
+        str(start),
+        "--budget",
+        str(budget),
+        "--devtools",
+        str(toolchain.devtools_mcp),
+    ]
+    if recorder_out is not None:
+        args += ["--recorder-out", str(recorder_out)]
+    return {
+        tool_profiles.STORY_SERVER: {
+            "type": "stdio",
+            "command": "/usr/bin/env",
+            "args": args,
+            "env": {},
+        }
+    }
+
+
 def write_mcp_config(path: Path, servers: Mapping[str, Any]) -> Path:
     """Write ``{"mcpServers": servers}`` to ``path``, readable by its owner only.
 

@@ -26,7 +26,7 @@ VERDICT_PY = SCRIPTS / "ux_runner" / "story_verdict.py"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from ux_runner import section, story_verdict  # noqa: E402
+from ux_runner import section, story_relay, story_verdict  # noqa: E402
 from ux_runner.story_verdict import (  # noqa: E402
     Confirmation,
     FlowContext,
@@ -1577,6 +1577,11 @@ def test_a_rerun_that_measured_nothing_leaves_the_first_attempt_alone(
         "single",
         1,
     )
+
+
+@pytest.mark.unit
+def test_a_session_quiet_through_one_relayed_call_is_not_hung() -> None:
+    assert story_verdict.HANG_SECONDS > story_relay.CALL_SECONDS + 60
 
 
 @pytest.mark.unit
