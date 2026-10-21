@@ -1618,6 +1618,20 @@ class ClassificationService:
             node = node.get(key)
         return node if isinstance(node, str) else ""
 
+    # ── Class validation, one source for every class-assigning path ─────────
+    # Single-pass page, single-pass packet and Stage B all decide a class, and
+    # all three read validation through these, so the settings cannot mean
+    # different things on different paths again.
+
+    def _class_validation_enforced(self) -> bool:
+        return bool(self.config.classification.enforceValidClasses)
+
+    def _class_validation_retries(self) -> int:
+        return int(self.config.classification.maxValidationRetries or 0)
+
+    def _fallback_class(self) -> str:
+        return self.config.classification.invalidClassFallback
+
     def _stage_prompt(self, stage: str, field: str) -> str:
         """Resolve one prompt field for a stage and the active granularity.
 
@@ -2454,10 +2468,8 @@ class ClassificationService:
             # that is not in the configured vocabulary. When enforcement is
             # disabled, the loop runs exactly once and preserves legacy
             # "warn and use anyway" behavior.
-            enforce = self.config.classification.enforceValidClasses
-            max_retries = (
-                self.config.classification.maxValidationRetries if enforce else 0
-            )
+            enforce = self._class_validation_enforced()
+            max_retries = self._class_validation_retries() if enforce else 0
             attempt_content = content
             metering: Dict[str, Any] = {}
             doc_type = ""
@@ -2585,7 +2597,7 @@ class ClassificationService:
                     )
                 else:
                     # Retries exhausted - assign configured fallback class.
-                    fallback = self.config.classification.invalidClassFallback
+                    fallback = self._fallback_class()
                     validation_error = (
                         f"Model returned invalid class '{invalid_value}' after "
                         f"{max_retries + 1} attempt(s); assigned fallback "
@@ -5111,6 +5123,89 @@ class ClassificationService:
             window_page_ids[-1],
             len(page_images),
         )
+        # ⚠️ The class-validation settings apply here exactly as on the page and
+        # Stage B paths. They used not to: an out-of-vocabulary segment class was
+        # logged ("using anyway") and kept, so enforceValidClasses,
+        # maxValidationRetries and the fallback class were silently inert on one
+        # of the class-assigning paths while the panel showed them as in force.
+        # Stage A is excluded because it returns no class; a regex-forced class
+        # is excluded because the operator's match already decided it.
+        validates = (
+            config.get("stage") != self.STAGE_SEGMENTATION
+            and not forced_class
+            and self._class_validation_enforced()
+        )
+        max_retries = self._class_validation_retries() if validates else 0
+
+        attempt_content = content
+        window_metering: Dict[str, Any] = {}
+        segments: List[Segment] = []
+        invalid: List[Segment] = []
+        for attempt in range(max_retries + 1):
+            segments, attempt_metering = self._run_packet_window_call(
+                attempt_content,
+                config,
+                document,
+                window_page_ids,
+                forced_class,
+            )
+            window_metering = (
+                attempt_metering
+                if not window_metering
+                else utils.merge_metering_data(window_metering, attempt_metering)
+            )
+            if not validates:
+                return segments, window_metering
+            invalid = [s for s in segments if s.doc_class not in self.valid_doc_types]
+            if not invalid:
+                return segments, window_metering
+            bad = sorted({s.doc_class or "(empty)" for s in invalid})
+            if attempt < max_retries:
+                logger.warning(
+                    "Packet window %s returned invalid class(es) %s (attempt %d/%d); "
+                    "re-prompting with valid classes.",
+                    window_label,
+                    bad,
+                    attempt + 1,
+                    max_retries + 1,
+                )
+                attempt_content = content + [
+                    {
+                        "text": (
+                            f"Your previous answer used the type(s) "
+                            f"{', '.join(repr(b) for b in bad)}, which are not "
+                            f"valid types. Every segment's type must be exactly "
+                            f"one of: {', '.join(sorted(self.valid_doc_types))}. "
+                            f"Reply with the same JSON format."
+                        )
+                    }
+                ]
+
+        fallback = self._fallback_class()
+        logger.error(
+            "Packet window %s still returned invalid class(es) after %d attempt(s); "
+            "assigned fallback '%s' to %d segment(s).",
+            window_label,
+            max_retries + 1,
+            fallback,
+            len(invalid),
+        )
+        for seg in invalid:
+            # The fallback is not a prediction, so it carries no score.
+            seg.doc_class = fallback
+            seg.confidence = None
+            seg.candidates = []
+        return segments, window_metering
+
+    def _run_packet_window_call(
+        self,
+        content: List[Dict[str, Any]],
+        config: Dict[str, Any],
+        document: Document,
+        window_page_ids: List[str],
+        forced_class: Optional[str],
+    ) -> tuple[List[Segment], Dict[str, Any]]:
+        """One packet request and its parse. Split out so validation can retry."""
         response_with_metering = self._invoke_bedrock_model(
             content=content, config=config
         )
@@ -5592,8 +5687,8 @@ class ClassificationService:
         a class outside the vocabulary is exactly as wrong whether a page or a
         segment produced it.
         """
-        enforce = self.config.classification.enforceValidClasses
-        max_retries = self.config.classification.maxValidationRetries if enforce else 0
+        enforce = self._class_validation_enforced()
+        max_retries = self._class_validation_retries() if enforce else 0
 
         attempt_content = content
         metering: Dict[str, Any] = {}
@@ -5667,7 +5762,7 @@ class ClassificationService:
                     }
                 ]
 
-        fallback = self.config.classification.invalidClassFallback
+        fallback = self._fallback_class()
         logger.error(
             "%s after %d attempt(s); assigned fallback '%s'.",
             validation_error,
