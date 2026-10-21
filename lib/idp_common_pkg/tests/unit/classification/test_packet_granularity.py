@@ -968,3 +968,162 @@ class TestPacketConfidence:
             _document(2),
         )
         assert [c["class"] for c in segments[0].candidates] == ["invoice"]
+
+
+@pytest.mark.unit
+class TestAModelRefusingImagesNamesTheSetting:
+    """⚠️ A model that does not accept images refuses the request, and its own
+    message does not mention the setting that caused it.
+
+    Issue #1328 asked for the combination to be refused when a configuration is
+    saved. It is annotated at the call instead: deciding it up front needs a
+    per-model vision list this repository does not have —
+    `model_config_limits.yaml` carries token limits only — which would go stale
+    every time a model is added, and a stale entry refuses a configuration for a
+    model that **does** accept images. Bedrock already knows the answer; the only
+    thing missing was the pointer to `modality.images`.
+
+    ⚠️ **These drive `_invoke_bedrock_model` with `bedrock.invoke_model` patched,
+    not the other way round**, because that is where the annotation lives — and it
+    lives there because it is the one choke point every classification request
+    goes through: page-level, packet, Stage A and Stage B. An earlier version
+    annotated only the packet call site, which would have missed page
+    granularity, the default. Stubbing `_invoke_bedrock_model` instead, as these
+    tests first did, bypasses the code under test entirely.
+    """
+
+    CONFIG = {
+        "model_id": "us.amazon.nova-micro-v1:0",
+        "system_prompt": "s",
+        "temperature": 0.0,
+        "top_k": 5,
+        "top_p": 0.1,
+        "max_tokens": 100,
+    }
+    REFUSAL = "This model does not support image input"
+
+    def _invoke(self, monkeypatch, exc, content):
+        from idp_common import bedrock as bedrock_mod
+
+        service = _service(granularity="packet", modality={"images": True})
+        monkeypatch.setattr(
+            bedrock_mod,
+            "invoke_model",
+            lambda *a, **k: (_ for _ in ()).throw(exc),
+        )
+        with pytest.raises(type(exc)) as excinfo:
+            service._invoke_bedrock_model(content=content, config=dict(self.CONFIG))
+        return excinfo.value
+
+    def test_the_matcher_accepts_the_real_refusal_wordings(self):
+        from idp_common.classification.service import _looks_like_an_image_refusal
+
+        for message in (
+            "ValidationException: This model does not support image input",
+            "ValidationException: does not support multimodal content",
+            "ValidationException: vision is not supported for this model",
+            "ValidationException: unsupported modality: image",
+        ):
+            assert _looks_like_an_image_refusal(Exception(message)), message
+
+    def test_the_matcher_rejects_a_throttle_a_timeout_or_a_sizing_error(self):
+        """⚠️ These can mention an image and are not capability refusals. "Turn
+        images off" is the wrong remedy for an image that was too large on a model
+        that does accept them."""
+        from idp_common.classification.service import _looks_like_an_image_refusal
+
+        for message in (
+            "ThrottlingException: Too many requests",
+            "ThrottlingException: image request throttled, retry later",
+            "Read timeout on endpoint URL",
+            "ValidationException: image exceeds maximum size of 5 MB",
+            "ValidationException: invalid base64 image data",
+            "ValidationException: malformed image",
+        ):
+            assert not _looks_like_an_image_refusal(Exception(message)), message
+
+    def test_image_blocks_are_counted_at_any_nesting(self):
+        from idp_common.classification.service import _count_image_blocks
+
+        assert _count_image_blocks([{"text": "x"}]) == 0
+        assert _count_image_blocks([{"image": {}}, {"image": {"format": "png"}}]) == 2
+        # The builders nest image blocks inside a few-shot example's content.
+        assert _count_image_blocks([{"content": [{"image": {}}, {"text": "t"}]}]) == 1
+
+    def test_it_survives_the_real_botocore_exception_shape(self, monkeypatch):
+        """⚠️ The shape production raises, and the one a naive implementation
+        fails on. The non-retryable Bedrock branch re-raises the original
+        `ClientError`, whose `__init__` takes `(error_response, operation_name)`,
+        so `raise type(exc)(message)` throws `TypeError` inside the handler and
+        the operator ends up with LESS information than before. A test raising
+        `ValueError` cannot see that, because `ValueError` takes one argument."""
+        from botocore.exceptions import ClientError
+
+        err = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": self.REFUSAL}},
+            "Converse",
+        )
+        raised = self._invoke(monkeypatch, err, [{"image": {}}])
+        message = str(raised)
+        assert self.REFUSAL in message, "the original error must survive"
+        assert "classification.modality.images" in message
+        assert "nova-micro" in message
+        assert isinstance(raised, ClientError), "the class must be preserved"
+
+    def test_the_model_name_comes_from_the_key_production_sets(self, monkeypatch):
+        """`model_id`, not `model`: `_get_classification_config` builds
+        `model_id` and `_invoke_bedrock_model` reads it, so reading `model` always
+        fell through to a placeholder — invisible to a test that passed `model`."""
+        service = _service(granularity="packet", modality={"images": True})
+        assert "model_id" in service._get_classification_config()
+        raised = self._invoke(
+            monkeypatch,
+            ValueError(f"ValidationException: {self.REFUSAL}"),
+            [{"image": {}}],
+        )
+        assert "nova-micro" in str(raised)
+        assert "this model" not in str(raised)
+
+    def test_an_unrelated_failure_is_re_raised_untouched(self, monkeypatch):
+        raised = self._invoke(
+            monkeypatch, ValueError("ThrottlingException"), [{"image": {}}]
+        )
+        assert "modality.images" not in str(raised)
+
+    def test_a_sizing_error_gets_no_capability_hint(self, monkeypatch):
+        raised = self._invoke(
+            monkeypatch,
+            ValueError("ValidationException: image exceeds maximum size of 5 MB"),
+            [{"image": {}}],
+        )
+        assert "modality.images" not in str(raised)
+
+    def test_no_hint_when_the_request_carried_no_images(self, monkeypatch):
+        """A text-only request cannot have been refused for images it did not
+        send, so attributing it to `modality.images` would be wrong."""
+        raised = self._invoke(
+            monkeypatch,
+            ValueError(f"ValidationException: {self.REFUSAL}"),
+            [{"text": "page text"}],
+        )
+        assert "modality.images" not in str(raised)
+
+    def test_the_hint_covers_the_page_path_not_only_packet(self, monkeypatch):
+        """⚠️ The reason this lives in `_invoke_bedrock_model`. Page granularity
+        is the DEFAULT, so a hint on the packet call site alone would miss the
+        common case — fixing the instance and not the class."""
+        service = _service(granularity="page", modality={"images": True})
+        from idp_common import bedrock as bedrock_mod
+
+        monkeypatch.setattr(
+            bedrock_mod,
+            "invoke_model",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ValueError(f"ValidationException: {self.REFUSAL}")
+            ),
+        )
+        with pytest.raises(ValueError) as excinfo:
+            service._invoke_bedrock_model(
+                content=[{"image": {}}], config=dict(self.CONFIG)
+            )
+        assert "classification.modality.images" in str(excinfo.value)
