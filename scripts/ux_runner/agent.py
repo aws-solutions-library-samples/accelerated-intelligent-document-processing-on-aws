@@ -274,9 +274,18 @@ def write_mcp_config(path: Path, servers: Mapping[str, Any]) -> Path:
 
 
 def claude_argv(
-    claude: Path, mcp_config: Path, *, max_turns: int, max_budget_usd: float
+    claude: Path,
+    mcp_config: Path,
+    *,
+    max_turns: int,
+    max_budget_usd: float,
+    profile: tool_profiles.ToolProfile = tool_profiles.EXPERT,
 ) -> list[str]:
-    """The exact command line of the UX session. The prompt is not part of it."""
+    """The exact command line of the UX session. The prompt is not part of it.
+
+    ``profile`` supplies the granted and the denied tools. The default,
+    ``tool_profiles.EXPERT``, is the MR UX test's own pair of lists.
+    """
     return [
         str(claude),
         "-p",
@@ -292,9 +301,9 @@ def claude_argv(
         "--tools",
         "",
         "--allowedTools",
-        *tool_profiles.EXPERT_ALLOWED_TOOLS,
+        *profile.allowed,
         "--disallowedTools",
-        *tool_profiles.EXPERT_DISALLOWED_TOOLS,
+        *profile.disallowed,
         "--max-turns",
         str(max_turns),
         "--max-budget-usd",

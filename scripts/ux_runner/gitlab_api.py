@@ -113,6 +113,9 @@ REFUSAL_BYTES = 4096
 #: How the token is shown when an answer quoted into a message carries it.
 CREDENTIAL_SHOWN_AS = "[redacted]"
 
+#: Seconds between two looks for the code-review note.
+POLL_SECONDS = 30.0
+
 _CHUNK_BYTES = 64 * 1024
 _DETAIL_CHARS = 400
 _EXCERPT_CHARS = 200
@@ -612,6 +615,63 @@ def review_note_for(
         if found is not None and found.group("sha") == head_sha:
             return note
     return None
+
+
+@dataclass(frozen=True)
+class ReviewWait:
+    """How :func:`wait_for_review_note` ended, and what it had read by then.
+
+    ``outcome`` is ``found`` (the code-review note for the head), ``timeout`` (the
+    poll reached its end without one), ``moved`` (the MR's head is ``moved_to``,
+    not the head waited for) or ``posted`` (``already_posted`` held for the token's
+    own notes). ``mine`` is the token's notes from the last listing, newest first,
+    and ``me`` the token's user id; both are empty for ``moved``.
+    """
+
+    outcome: str
+    review_note: dict[str, Any] | None
+    mine: list[dict[str, Any]]
+    me: int | None
+    moved_to: str | None
+
+
+def wait_for_review_note(
+    forge: UxGitlab,
+    iid: int,
+    head_sha: str,
+    *,
+    already_posted: Callable[[list[dict[str, Any]]], bool],
+    poll_minutes: float,
+    deadline: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    poll_seconds: float = POLL_SECONDS,
+) -> ReviewWait:
+    """Wait for the token's code-review note for ``head_sha``, as a post must.
+
+    First the MR itself, so a head that moved on is never posted for, then the
+    token's user. Then the notes are listed until the review note for exactly
+    this head appears, every ``poll_seconds``, for at most ``poll_minutes`` and
+    never past ``deadline`` (both read on ``clock``). Each listing first asks
+    ``already_posted`` of the token's own notes, so a section another run posted
+    for this head while this one waited stops it before anything is uploaded.
+    """
+    current = forge.merge_request(iid)
+    if current.head_sha and current.head_sha != head_sha:
+        return ReviewWait("moved", None, [], None, current.head_sha)
+    me = forge.current_user()["id"]
+    poll_until = min(clock() + poll_minutes * 60, deadline)
+    while True:
+        notes = forge.notes(iid)
+        mine = my_notes(notes, me)
+        if already_posted(mine):
+            return ReviewWait("posted", None, mine, me, None)
+        review_note = review_note_for(notes, head_sha, me)
+        if review_note is not None:
+            return ReviewWait("found", review_note, mine, me, None)
+        if clock() >= poll_until:
+            return ReviewWait("timeout", None, mine, me, None)
+        sleep(poll_seconds)
 
 
 def safe_upload_url(

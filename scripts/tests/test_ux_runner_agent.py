@@ -24,6 +24,7 @@ runners: nothing here starts ``claude``, node or a browser.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import json
 import os
@@ -273,6 +274,71 @@ def test_the_argv_names_its_flags_in_place_and_carries_no_payload() -> None:
     assert "--model" not in argv, "the model travels in ANTHROPIC_MODEL"
     for part in argv:
         assert len(part) <= 4096 and "\n" not in part, part[:80]
+
+
+@pytest.mark.unit
+def test_the_expert_profile_is_the_two_expert_lists_themselves() -> None:
+    """The profile carries the audited lists by identity, so the pins above on
+    ``EXPERT_ALLOWED_TOOLS`` and ``EXPERT_DISALLOWED_TOOLS`` are pins on it."""
+    expert = tool_profiles.EXPERT
+    assert [f.name for f in dataclasses.fields(tool_profiles.ToolProfile)] == [
+        "name",
+        "allowed",
+        "disallowed",
+    ]
+    assert expert.name == "expert"
+    assert expert.allowed is tool_profiles.EXPERT_ALLOWED_TOOLS
+    assert expert.disallowed is tool_profiles.EXPERT_DISALLOWED_TOOLS
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        expert.allowed = ()
+
+
+@pytest.mark.unit
+def test_the_argv_takes_the_expert_profile_unless_told_otherwise() -> None:
+    """Every existing caller passes no profile and gets the pinned command line."""
+    claude = Path("/opt/ux-runner/node_modules/.bin/claude")
+    config = Path("/run/ux/agent/mcp.json")
+    parameter = inspect.signature(agent.claude_argv).parameters["profile"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is tool_profiles.EXPERT
+    assert agent.claude_argv(
+        claude, config, max_turns=150, max_budget_usd=10.0
+    ) == agent.claude_argv(
+        claude,
+        config,
+        max_turns=150,
+        max_budget_usd=10.0,
+        profile=tool_profiles.EXPERT,
+    )
+
+
+@pytest.mark.unit
+def test_another_profile_changes_the_two_tool_lists_and_nothing_else() -> None:
+    claude, config = Path("/opt/claude"), Path("/run/ux/agent/mcp.json")
+    probe = tool_profiles.ToolProfile(
+        name="probe", allowed=("mcp__probe__look",), disallowed=("Bash", "Read")
+    )
+
+    def parts(argv: list[str]) -> tuple[list[str], ...]:
+        granted = argv.index("--allowedTools") + 1
+        denied = argv.index("--disallowedTools")
+        tail = argv.index("--max-turns")
+        return (
+            argv[:granted],
+            argv[granted:denied],
+            argv[denied + 1 : tail],
+            argv[tail:],
+        )
+
+    expert = parts(agent.claude_argv(claude, config, max_turns=7, max_budget_usd=2.5))
+    other = parts(
+        agent.claude_argv(
+            claude, config, max_turns=7, max_budget_usd=2.5, profile=probe
+        )
+    )
+    assert (other[0], other[3]) == (expert[0], expert[3])
+    assert tuple(other[1]) == probe.allowed
+    assert tuple(other[2]) == probe.disallowed
 
 
 @pytest.mark.unit

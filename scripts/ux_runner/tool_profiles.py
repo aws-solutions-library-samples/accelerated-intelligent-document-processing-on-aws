@@ -55,6 +55,8 @@ denied here by name either way.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 CHROME_DEVTOOLS_SERVER = "chrome-devtools"
 RECORDER_SERVER = "ux-recorder"
 
@@ -174,3 +176,18 @@ EXPERT_DISALLOWED_TOOLS: tuple[str, ...] = (
 def is_granted(tool: str) -> bool:
     """Whether the UX session may call ``tool``: granted and not denied."""
     return tool in EXPERT_ALLOWED_TOOLS and tool not in EXPERT_DISALLOWED_TOOLS
+
+
+@dataclass(frozen=True)
+class ToolProfile:
+    """One session's two tool lists, as ``agent.claude_argv`` passes them."""
+
+    name: str
+    allowed: tuple[str, ...]
+    disallowed: tuple[str, ...]
+
+
+#: The MR UX test's profile: the two EXPERT lists above, as they are.
+EXPERT = ToolProfile(
+    name="expert", allowed=EXPERT_ALLOWED_TOOLS, disallowed=EXPERT_DISALLOWED_TOOLS
+)

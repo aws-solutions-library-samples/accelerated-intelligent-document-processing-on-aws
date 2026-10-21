@@ -120,9 +120,10 @@ Properties it is built around
    example data. So a video is rendered, attached and uploaded only when three
    statements of which stack the run used all name it: ``--stack``, the settings
    parameter ``UX_TEST_UI_ENV`` names, and the stack the signed-in page reports
-   (:func:`review_stack_problem`). That is decided as soon as the page is signed
-   in, before anything is recorded (``_Run._video_withheld``), and applied before
-   anything is rendered (``_Run._video``). Against any other stack nothing is
+   (:func:`review_stack_problem`, which is ``scripts/ux_runner/session.py``'s).
+   That is decided as soon as the page is signed in, before anything is recorded
+   (``_Run._video_withheld``), and applied before anything is rendered
+   (``_Run._video``). Against any other stack nothing is
    rendered, so no mp4 reaches the note or the job's artifacts, and the section
    says the video was withheld. :data:`DEV_VIDEO_FLAG` renders one all the same,
    for a developer's local dry run only: it forces ``--dry-run``, :func:`main`
@@ -198,12 +199,11 @@ What it does NOT protect, stated rather than implied
 Usage
 -----
     # CI: the precheck (a bare python3, before the toolchain is installed) ...
-    python3 -B "$UX_HARNESS_DIR/scripts/sdlc/ai_ux_test.py" \\
-        --mr "$CI_MERGE_REQUEST_IID" --precheck --artifact-dir ux-tests
-    # ... then, only when it wrote ux-tests/proceed, the full run
-    python3 -B "$UX_HARNESS_DIR/scripts/sdlc/ai_ux_test.py" \\
-        --mr "$CI_MERGE_REQUEST_IID" --inputs ux-tests/inputs.json \\
-        --artifact-dir ux-tests
+    python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --precheck \\
+        --artifact-dir "$UX_ARTIFACTS"
+    # ... then, only when it wrote proceed in the artifact directory, the full run
+    python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS \\
+        --inputs "$UX_ARTIFACTS/inputs.json" --artifact-dir "$UX_ARTIFACTS"
 
     # locally, in Docker, as a dry run (section.md and the mp4 land in scratch/)
     make ai-ux-test-local MR=812
@@ -243,6 +243,18 @@ every pipeline.
     ``CI_SERVER_HOST``, is redacted wherever it appears.
 ``ANTHROPIC_MODEL``, ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
     The Bedrock model id and the region of Bedrock, STS and Polly.
+``UX_HARNESS``, ``UX_ENTRY``
+    The paths the CI job extracted from the target branch, and the one of them it
+    runs, as the job's variables give them: ``scripts/sdlc/ai_ux_test.py`` with
+    ``--mr "$CI_MERGE_REQUEST_IID"`` in ``UX_MODE_ARGS`` and ``ux-tests`` in
+    ``UX_ARTIFACTS``. ``--precheck`` fails unless they are exactly
+    :data:`HARNESS_PATHS`, in order, and :data:`ENTRY`, because a project or
+    pipeline variable overrides a job variable and the pin must not depend on it.
+    The one exception is a job that sets neither, both absent rather than empty:
+    one defined before these variables, which names its harness and this file in
+    its own script where no variable reaches them, and which a merge request whose
+    ``.gitlab-ci.yml`` predates them still runs. Its precheck goes on, as a
+    variable cannot have changed what it extracts or runs.
 ``CI_JOB_STARTED_AT``
     When the job started, so ``--deadline-minutes`` counts the install as well.
 ``CI_COMMIT_SHA``, ``CI_MERGE_REQUEST_SOURCE_BRANCH_SHA``
@@ -267,12 +279,11 @@ import sys
 import tempfile
 import time
 import traceback
-import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parents[1])
 if _SCRIPTS_DIR not in sys.path:
@@ -282,6 +293,7 @@ import ux_test_proxy  # noqa: E402
 from ux_runner import (  # noqa: E402
     account,
     agent,
+    artifacts,
     chrome,
     egress,
     flows,
@@ -291,8 +303,8 @@ from ux_runner import (  # noqa: E402
     processes,
     prompt,
     recording,
-    redact,
     section,
+    session,
     signin,
     tool_profiles,
     ui_change,
@@ -319,6 +331,8 @@ HARNESS_PATHS = (
     ".claude/skills/ux-test.md",
     ".claude/skills/ux-test-ci.md",
 )
+#: This file, as the CI job's ``UX_ENTRY`` must name it, relative to the tree.
+ENTRY = "scripts/sdlc/ai_ux_test.py"
 #: The two skills the prompt inlines, in that order. Read from the harness, so the
 #: MR under test cannot rewrite its own instructions.
 SKILL_FILES = (".claude/skills/ux-test-ci.md", ".claude/skills/ux-test.md")
@@ -326,9 +340,10 @@ SKILL_FILES = (".claude/skills/ux-test-ci.md", ".claude/skills/ux-test.md")
 FLOWS_FILE = "scripts/ux_flows.yaml"
 #: The long-lived review stack, and the one stack whose screens this job turns into
 #: a video, because it holds only shipped example data and the frames are not
-#: redacted (property 6). ``--stack`` defaults to it. A test pins it equal to
-#: ``codebuild_deployment.UX_NIGHTLY_STACK_NAME``, the stack the nightly updates.
-REVIEW_STACK = "idp-ux-nightly"
+#: redacted (property 6). ``--stack`` defaults to it. It is ``session.REVIEW_STACK``
+#: itself, which a test pins equal to ``codebuild_deployment.UX_NIGHTLY_STACK_NAME``,
+#: the stack the nightly updates.
+REVIEW_STACK = session.REVIEW_STACK
 #: A developer's opt-in to a video of another stack, in a local dry run. It forces
 #: ``--dry-run``, :func:`main` refuses it under CI, and a test pins that neither CI
 #: job carries it.
@@ -353,7 +368,7 @@ _EVENT_TEXT_FIELDS = ("label", "say", "text", "target", "under", "interactive")
 #: reads in preference to them.
 _NARRATION_OVERRIDE = "narration.md"
 #: Seconds between two looks for the code-review note.
-_POLL_SECONDS = 30.0
+_POLL_SECONDS = gitlab_api.POLL_SECONDS
 #: How many older notes of this job's a post marks superseded, newest first.
 _SUPERSEDE_LIMIT = 10
 _STDERR_CHARS = 400
@@ -373,34 +388,10 @@ _OVER_LIMIT = (
     "_The video ({size} MB) is over the upload limit; it is in the job artifacts._"
 )
 _UPLOAD_FAILED = "_The video could not be uploaded; it is in the job artifacts._"
-#: Environment values that are credentials or identify the account, redacted
-#: wherever they appear.
-_CREDENTIAL_ENV_NAMES = (
-    review.GITLAB.credential_env,
-    "CI_JOB_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_SECURITY_TOKEN",
-    "UX_TEST_AWS_ACCOUNT_ID",
-)
-#: Environment values naming the GitLab instance, whose host may resolve only on
-#: an internal network: host names as they are, URLs by their host.
-_FORGE_HOST_ENV_NAMES = ("CI_SERVER_HOST", "CI_SERVER_FQDN")
-_FORGE_URL_ENV_NAMES = ("CI_API_V4_URL", "CI_SERVER_URL")
 #: The inputs.json fields that are MR-written prose, redacted when the record is
 #: written. The SHAs, the target branch and the changed paths stay exact, because
 #: the full run classifies and labels from them.
 _INPUTS_PROSE_FIELDS = ("title", "author", "web_url", "source_branch", "ui_diff")
-#: ``os.open`` flags for an artifact: truncate, never through a symlink, and
-#: binary where the platform distinguishes it.
-_ARTIFACT_OPEN_FLAGS = (
-    os.O_WRONLY
-    | os.O_CREAT
-    | os.O_TRUNC
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_BINARY", 0)
-)
 _TOOLCHAIN_KEYS = ("chrome", "node", "chrome_devtools_mcp", "claude_code")
 _EGRESS_KEYS = ("refused", "served", "connect_allowed", "upstream_failed", "by_reason")
 
@@ -487,125 +478,7 @@ def default_runtime() -> Runtime:
     )
 
 
-class _Scrub:
-    """The one redactor every printed line and every artifact goes through.
-
-    ``redact.Redactor`` replaces any run of exactly twelve digits with
-    ``[account]``, and a 40-character hex SHA, an upload's secret or an upload id
-    can hold such a run: measured over random SHAs, about one in sixty does.
-    Redacting the marker ``<!-- ux-test: sha=... -->`` in that case would break the
-    idempotency it keys, and redacting the video line would break the video. So
-    :meth:`keep` names exact strings the harness itself computed (the SHAs, the
-    marker line and the video line), which pass through unchanged while everything
-    around them is redacted. The code review's own body, which a post appends to,
-    is never passed through here: it is the review's text, not this job's.
-    """
-
-    def __init__(self, redactor: redact.Redactor) -> None:
-        self.redactor = redactor
-        self._exact: list[str] = []
-        self._split: re.Pattern[str] | None = None
-
-    def keep(self, *values: str) -> None:
-        """Pass ``values`` through unredacted wherever they occur."""
-        for value in values:
-            if value and value not in self._exact:
-                self._exact.append(value)
-        ordered = sorted(self._exact, key=len, reverse=True)
-        alternation = "|".join(re.escape(value) for value in ordered)
-        self._split = re.compile(f"({alternation})") if ordered else None
-
-    def __call__(self, text: object) -> str:
-        """``text`` redacted, apart from the kept strings."""
-        return self._apply(text, self.redactor)
-
-    def note(self, text: object) -> str:
-        """``text`` redacted for a GitLab note, where no placeholder becomes markup.
-
-        A placeholder brings brackets in, and redacting text that was sanitised
-        first can put one right before the ``(`` of a link: ``Bearer [token](...)``.
-        So each redacted piece also goes through ``section.inert_markup``, which
-        breaks those brackets as ``sanitize`` breaks the model's own. The kept
-        strings, the marker and the video line among them, pass unchanged.
-        """
-        return self._apply(
-            text, lambda piece: section.inert_markup(self.redactor(piece))
-        )
-
-    def field(self, value: str) -> str:
-        """One model-written field, redacted as ``sanitize`` will read it.
-
-        ``sanitize`` first turns control and bidi characters into spaces, which
-        can make a shape such as ``Bearer`` and its token appear only then. So the
-        field is flattened the same way (``section.flatten``) before it is
-        redacted, and the redaction happens before the field is cut to its bound.
-        """
-        return self(section.flatten(value))
-
-    def tree(self, value: object, *, fields: bool = False) -> object:
-        """A JSON-like value with every string leaf redacted; keys are left alone.
-
-        With ``fields``, each leaf is redacted as a model-written field
-        (:meth:`field`).
-        """
-        if isinstance(value, str):
-            return self.field(value) if fields else self(value)
-        if isinstance(value, dict):
-            return {key: self.tree(item, fields=fields) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [self.tree(item, fields=fields) for item in value]
-        return value
-
-    def _apply(self, text: object, scrub: Callable[[str], str]) -> str:
-        shown = text if isinstance(text, str) else str(text)
-        if self._split is None:
-            return scrub(shown)
-        pieces = self._split.split(shown)
-        return "".join(
-            piece if index % 2 else scrub(piece) for index, piece in enumerate(pieces)
-        )
-
-
-def _forge_hosts(environ: Mapping[str, str]) -> list[str]:
-    """The GitLab instance's host names, from GitLab CI's own variables."""
-    hosts = [environ.get(name, "") for name in _FORGE_HOST_ENV_NAMES]
-    for name in _FORGE_URL_ENV_NAMES:
-        with contextlib.suppress(ValueError):
-            hosts.append(urllib.parse.urlsplit(environ.get(name, "")).hostname or "")
-    return [host for host in hosts if host.strip()]
-
-
-def _redactor_for(environ: Mapping[str, str]) -> redact.Redactor:
-    """A redactor holding every secret and stack identifier this job can see.
-
-    The token and the AWS key material, the expected account id, the UI
-    environment's identifying values and every persona's username and password,
-    plus the raw base64 of both variables, and the GitLab instance's host, which
-    ``inputs.json``'s web URL and an API error would otherwise carry. A variable
-    that does not decode adds only its raw value: the precheck reports it, and the
-    redactor must not fail first.
-    """
-    redactor = redact.Redactor()
-    for name in _CREDENTIAL_ENV_NAMES:
-        value = environ.get(name, "")
-        if value.strip():
-            redactor.add(value)
-    redactor.add(*_forge_hosts(environ))
-    ui_text = environ.get("UX_TEST_UI_ENV", "")
-    if ui_text.strip():
-        redactor.add(ui_text)
-        with contextlib.suppress(ux_test_proxy.EgressConfigError):
-            redactor.add(*redact.values_from_ui_env(egress.ui_env_from_b64(ui_text)))
-    persona_text = environ.get("UX_TEST_PERSONAS", "")
-    if persona_text.strip():
-        redactor.add(persona_text)
-        with contextlib.suppress(signin.SignInError):
-            for persona in signin.personas_from_env(persona_text).values():
-                redactor.add(persona.username, persona.password)
-    return redactor
-
-
-def _scrubbed_report(text: str, scrub: _Scrub) -> str:
+def _scrubbed_report(text: str, scrub: artifacts.Scrub) -> str:
     """The model's final message, redacted, with its report block redacted by value.
 
     ``section.parse_report`` sanitises every field, and sanitising changes how a
@@ -616,7 +489,7 @@ def _scrubbed_report(text: str, scrub: _Scrub) -> str:
     composed. So the block ``parse_report`` reads (the last fenced ``json`` block,
     found by its own two patterns) is decoded, its strings are redacted as decoded
     values, each flattened first as ``sanitize`` will flatten it
-    (:meth:`_Scrub.field`), and it is written back in place. Both ``report.md``
+    (:meth:`artifacts.Scrub.field`), and it is written back in place. Both ``report.md``
     and ``parse_report`` read the result. A block that does not decode is left as
     redacted text, for ``parse_report`` to refuse.
     """
@@ -769,48 +642,9 @@ def _settings_problem(args: argparse.Namespace, environ: Mapping[str, str]) -> s
     return ""
 
 
-def review_stack_problem(
-    stack: str, ui_env: Mapping[str, str], shown: str | None
-) -> str:
-    """Why the run's stack is not established as :data:`REVIEW_STACK`, or ``""``.
-
-    Three statements of which stack the run used, and each must name the review
-    stack, because no one of them settles it alone:
-
-    * ``stack``, the ``--stack`` the note is headed with, which is a default and
-      not a constraint.
-    * ``ui_env``, the decoded ``UX_TEST_UI_ENV`` the egress rules come from. Its
-      settings parameter must be the review stack's own, which ``template.yaml``
-      names ``<stack name>-Settings``, so a lookalike such as
-      ``idp-ux-nightly-2`` does not match. Its bucket names are held to
-      ``stack`` already (``ux_test_proxy.stack_rules``), but by a prefix, which
-      that lookalike's buckets pass; its pool ids and API and stream URLs carry no
-      stack name at all.
-    * ``shown``, the stack the signed-in page reports. The UI reads it from the
-      parameter its build names, with the persona's own Cognito credentials,
-      whose role may read no other stack's parameter, so an environment that
-      pairs the review stack's parameter with another stack's pools leaves the
-      page with no stack to show.
-
-    The page is the MR's own code, so its answer can withhold a video but never
-    stands in for the other two. The review stack's own page can fail to report
-    it too, when an MR changes the sidebar's stack item or the settings arrive
-    after ``signin.page_facts`` stops waiting, so that reason says the stack
-    could not be confirmed rather than that it is another. A reason names the
-    review stack, never a value from the environment or the page.
-    """
-    if stack != REVIEW_STACK:
-        return f"`--stack` is not the review stack `{REVIEW_STACK}`"
-    if ui_env.get("VITE_SETTINGS_PARAMETER") != f"{REVIEW_STACK}-Settings":
-        return (
-            f"`UX_TEST_UI_ENV` does not name the settings parameter of `{REVIEW_STACK}`"
-        )
-    if shown != REVIEW_STACK:
-        return (
-            f"the signed-in page did not report `{REVIEW_STACK}` as its stack, so "
-            "the run's stack could not be confirmed as the review stack"
-        )
-    return ""
+#: Why the run's stack is not established as :data:`REVIEW_STACK`, or ``""``: the
+#: one check of which stack a run used, ``session.review_stack_problem`` itself.
+review_stack_problem = session.review_stack_problem
 
 
 def precheck(args: argparse.Namespace, runtime: Runtime) -> Decision:
@@ -895,13 +729,17 @@ def precheck(args: argparse.Namespace, runtime: Runtime) -> Decision:
     return Decision(True, "proceed", f"{count} user-visible file(s)", inputs, change)
 
 
-def _write_inputs(inputs: mr_inputs.MrInputs, path: Path, scrub: _Scrub) -> Path:
+def _write_inputs(
+    inputs: mr_inputs.MrInputs, path: Path, scrub: artifacts.Scrub
+) -> Path:
     """Write ``inputs.json`` with its prose fields redacted and the rest exact."""
     record = inputs.to_json()
     for name in _INPUTS_PROSE_FIELDS:
         record[name] = scrub(record[name])
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_artifact(path, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+    artifacts.write_artifact(
+        path, json.dumps(record, indent=2, ensure_ascii=False) + "\n"
+    )
     return path
 
 
@@ -969,68 +807,17 @@ def _new_summary(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _artifact_dir(path: Path) -> Path:
-    """The artifact directory, made when absent; a symlink in its place is refused.
-
-    In CI it sits in the MR's checkout and the harness writes into it as root, so
-    a directory the MR committed as a symlink would decide where those writes
-    land, and the job reads its gating marker back from it. The job replaces
-    whatever the checkout holds there with a fresh directory first; this is the
-    harness's own check, for every caller, and :func:`_open_artifact` refuses a
-    symlink inside it.
-    """
-    if path.is_symlink():
-        raise review.Failure(
-            f"the artifact directory {path} is a symlink; nothing is written through it"
-        )
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        reason = error.strerror or type(error).__name__
-        raise review.Failure(
-            f"the artifact directory {path} cannot be made: {reason}"
-        ) from None
-    if path.is_symlink() or not path.is_dir():
-        raise review.Failure(f"the artifact directory {path} is not a directory")
-    return path
-
-
-def _open_artifact(path: Path) -> IO[bytes]:
-    """Open one artifact for writing, refusing a symlink in its place.
-
-    ``O_NOFOLLOW`` makes the open itself refuse, so there is no window between a
-    check and the write. Neither flag exists on Windows, where ``--collect-only``
-    runs on the host; there the file is simply opened.
-    """
-    try:
-        descriptor = os.open(path, _ARTIFACT_OPEN_FLAGS, 0o644)
-    except OSError as error:
-        reason = error.strerror or type(error).__name__
-        raise review.Failure(f"{path.name} could not be written: {reason}") from None
-    return os.fdopen(descriptor, "wb")
-
-
-def _write_artifact(path: Path, text: str) -> None:
-    with _open_artifact(path) as handle:
-        handle.write(text.encode("utf-8"))
-
-
-def _write_json(path: Path, value: object, scrub: _Scrub) -> None:
-    text = json.dumps(scrub.tree(value), indent=2, ensure_ascii=False)
-    _write_artifact(path, text + "\n")
-
-
 def _exit_code(status: str, args: argparse.Namespace) -> int:
     if status == "failed":
         return 1
     return 1 if status == "skipped" and args.fail_on_skip else 0
 
 
-def _say(scrub: _Scrub, text: str) -> None:
+def _say(scrub: artifacts.Scrub, text: str) -> None:
     print(scrub(text), flush=True)
 
 
-def _unexpected(scrub: _Scrub, error: Exception) -> str:
+def _unexpected(scrub: artifacts.Scrub, error: Exception) -> str:
     """Print a redacted traceback to stderr, and return the one-line reason.
 
     Python's own handler would print the traceback unredacted, and an exception's
@@ -1049,29 +836,43 @@ def _precheck_main(args: argparse.Namespace, runtime: Runtime) -> int:
     decision can leave one. The first line printed is ``PROCEED:``, ``SKIPPED:`` or
     ``UNCHANGED:``. When the decision is final, ``summary.json`` is written too. An
     artifact directory that is a symlink fails the precheck before anything is
-    removed from it or written to it (:func:`_artifact_dir`).
+    removed from it or written to it (``artifacts.artifact_dir``).
+
+    Before any of that, the job's ``UX_HARNESS`` and ``UX_ENTRY`` must name exactly
+    :data:`HARNESS_PATHS` and :data:`ENTRY` (``paths.harness_pin_problem``): the job
+    extracts and runs what those variables say, and a project or pipeline variable
+    overrides the job's own, so anything else fails here, before the artifact
+    directory is touched. A job that sets neither is one defined before them, which
+    names its harness and this file in its own script, so it runs: a merge request
+    whose ``.gitlab-ci.yml`` is older than its target branch's harness still has it.
     """
-    scrub = _Scrub(_redactor_for(runtime.environ))
+    scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
+    problem = paths.harness_pin_problem(
+        runtime.environ, harness_paths=HARNESS_PATHS, entry=ENTRY, script_named=True
+    )
+    if problem:
+        _say(scrub, f"FAILED: {problem}")
+        return 1
     began = runtime.clock()
     summary = _new_summary(args)
     try:
-        artifacts = _artifact_dir(Path(args.artifact_dir))
+        out = artifacts.artifact_dir(Path(args.artifact_dir))
     except review.Failure as refused:
         _say(scrub, f"FAILED: {refused}")
         return 1
     try:
-        (artifacts / "proceed").unlink(missing_ok=True)
+        (out / "proceed").unlink(missing_ok=True)
         decision = precheck(args, runtime)
         elapsed = runtime.clock() - began
         return _record_decision(args, decision, summary, scrub, elapsed)
     except Exception as error:
         with contextlib.suppress(OSError):
-            (artifacts / "proceed").unlink(missing_ok=True)
+            (out / "proceed").unlink(missing_ok=True)
         reason = str(error) if isinstance(error, review.Failure) else ""
         summary["detail"] = reason or _unexpected(scrub, error)
         _say(scrub, f"FAILED: {summary['detail']}")
         with contextlib.suppress(OSError, review.Failure):
-            _write_json(artifacts / "summary.json", summary, scrub)
+            artifacts.write_json(out / "summary.json", summary, scrub)
         return 1
 
 
@@ -1079,17 +880,17 @@ def _record_decision(
     args: argparse.Namespace,
     decision: Decision,
     summary: dict[str, Any],
-    scrub: _Scrub,
+    scrub: artifacts.Scrub,
     elapsed: float,
 ) -> int:
     """Write the precheck's files and print its one decision line."""
-    artifacts = Path(args.artifact_dir)
+    out = Path(args.artifact_dir)
     head = decision.inputs.head_sha if decision.inputs is not None else ""
     if decision.inputs is not None:
         scrub.keep(decision.inputs.head_sha, decision.inputs.base_sha)
-        _write_inputs(decision.inputs, artifacts / "inputs.json", scrub)
-    _write_json(
-        artifacts / "precheck.json",
+        _write_inputs(decision.inputs, out / "inputs.json", scrub)
+    artifacts.write_json(
+        out / "precheck.json",
         {
             "version": 1,
             "proceed": decision.proceed,
@@ -1100,13 +901,13 @@ def _record_decision(
         scrub,
     )
     if decision.proceed:
-        _write_artifact(artifacts / "proceed", "")
+        artifacts.write_artifact(out / "proceed", "")
         _say(scrub, f"PROCEED: {decision.detail} at {head[:8]}")
         return 0
     _say(scrub, f"{decision.status.upper()}: {decision.detail}")
     summary.update(head_sha=head, status=decision.status, detail=decision.detail)
     summary["timings_s"] = {"precheck": round(elapsed, 1)}
-    _write_json(artifacts / "summary.json", summary, scrub)
+    artifacts.write_json(out / "summary.json", summary, scrub)
     return _exit_code(decision.status, args)
 
 
@@ -1119,7 +920,7 @@ def _collect_main(args: argparse.Namespace, runtime: Runtime) -> int:
     federated sign-in gateway) only costs the title, which then comes from the head
     commit.
     """
-    scrub = _Scrub(_redactor_for(runtime.environ))
+    scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
     target = (
         Path(args.inputs) if args.inputs else Path(args.artifact_dir) / "inputs.json"
     )
@@ -1159,12 +960,6 @@ class _Video:
     attachable: bool
     note: str | None
     chapters: list[tuple[str, str]] = field(default_factory=list)
-
-
-def _private(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
-    return path
 
 
 def _search_path(tool: str = "node", base: str = agent.DEFAULT_SEARCH_PATH) -> str:
@@ -1211,24 +1006,6 @@ def _count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _not_the_page(target: str) -> bool:
-    """Whether a refused target is Chrome's own request or the proxy self-test.
-
-    ``section.refusal_caveat`` asks this of each record's target, and
-    ``chrome.refusal_origin`` is what classifies a record.
-    """
-    return chrome.refusal_origin({"target": target}) != "page"
-
-
-def _refusal_origins(records: list[dict[str, Any]]) -> dict[str, int]:
-    """How many refusals were the page's, Chrome's own, and the self-test's."""
-    counts = {"page": 0, "browser": 0, "selftest": 0}
-    for record in records:
-        origin = chrome.refusal_origin(record)
-        counts[origin] = counts.get(origin, 0) + 1
-    return counts
-
-
 #: Exceptions that mean a step of the run could not be done, reported as FAILED
 #: with their own message, which names the step.
 _STEP_FAILURES: tuple[type[Exception], ...] = (
@@ -1241,6 +1018,7 @@ _STEP_FAILURES: tuple[type[Exception], ...] = (
     flows.FlowsError,
     ux_test_proxy.EgressConfigError,
     section.ReportError,
+    session.SessionError,
 )
 
 
@@ -1251,13 +1029,14 @@ class _Run:
     because Chrome and the proxy run as two other users who must be able to
     traverse into it, and a per-user ``$TMPDIR`` (macOS) is closed to them. It is
     ``0o711``: traversable, not listable, and each tool's own subdirectory is
-    private to its user.
+    private to its user. The browser itself, the proxy and the socket watch are
+    :attr:`browser`'s (``session.ConfinedBrowser``).
     """
 
     def __init__(self, args: argparse.Namespace, runtime: Runtime) -> None:
         self.args = args
         self.runtime = runtime
-        self.scrub = _Scrub(_redactor_for(runtime.environ))
+        self.scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
         self.started = runtime.clock()
         self.deadline = (
             self.started + args.deadline_minutes * 60 - _job_elapsed(runtime.environ)
@@ -1268,14 +1047,7 @@ class _Run:
         self.cancelled = False
         self.inputs: mr_inputs.MrInputs | None = None
         self.run_dir: Path | None = None
-        self.proxy: egress.ProxyRun | None = None
-        self.proxy_stopped = False
-        self.refusals: list[dict[str, Any]] = []
-        self.chrome_proc: processes.ManagedProcess | None = None
-        self.browser_uid: int | None = None
-        self.strays: list[str] = []
-        self.session: Any = None
-        self.watch: Any = None
+        self.browser = session.ConfinedBrowser(runtime, say=self._say)
         self.audit: chrome.SocketAudit | None = None
         self.rec_out: Path | None = None
 
@@ -1286,7 +1058,7 @@ class _Run:
         before anything starts, and nothing at all is written through it.
         """
         try:
-            _artifact_dir(self.artifacts)
+            artifacts.artifact_dir(self.artifacts)
         except review.Failure as refused:
             self._say(f"FAILED: {refused}")
             return 1
@@ -1294,7 +1066,9 @@ class _Run:
         self.timings["total"] = self.runtime.clock() - self.started
         self.summary["timings_s"] = {k: round(v, 1) for k, v in self.timings.items()}
         try:
-            _write_json(self.artifacts / "summary.json", self.summary, self.scrub)
+            artifacts.write_json(
+                self.artifacts / "summary.json", self.summary, self.scrub
+            )
         except review.Failure as refused:
             self._say(f"FAILED: {refused}")
             return 1
@@ -1333,7 +1107,7 @@ class _Run:
 
     def _write(self, name: str, text: str) -> Path:
         path = self.artifacts / name
-        _write_artifact(path, self.scrub(text))
+        artifacts.write_artifact(path, self.scrub(text))
         return path
 
     def _run(self) -> int:
@@ -1427,7 +1201,9 @@ class _Run:
         the page asked for or caused becomes a caveat, which is what a reader
         weighs a broken-looking screen against.
         """
-        refused = section.refusal_caveat(self.refusals, background=_not_the_page)
+        refused = section.refusal_caveat(
+            self.browser.refusals, background=chrome.not_the_page
+        )
         return [*caveats, refused] if refused else list(caveats)
 
     def _toolchain(self) -> paths.Toolchain:
@@ -1520,51 +1296,34 @@ class _Run:
         persona: signin.Persona,
         run_dir: Path,
     ) -> tuple[dict[str, Any], signin.PageFacts]:
-        """The proxy, Chrome and its socket watch, both self-tests, the sign-in.
+        """The confined browser, signed in as the persona (``ConfinedBrowser.open``).
 
-        The watch starts the moment Chrome exists, before DevTools is even waited
-        for, so the MR's own login page, which receives the persona's password, is
-        inside the audit. The policy and proxy self-tests run before the sign-in, so
-        a browser that is not confined never holds the persona's session.
-
-        Then the signed-in page's viewport is measured where the page's script
-        cannot redefine it and must be :data:`paths.VIEWPORT`, the size the prompt
-        states and the recording's click bounds assume; the measurement goes into
-        ``summary.json``. ``--dev-unconfined`` measures without requiring it,
-        because a development host's Chrome draws a window frame of its own size.
+        The proxy, Chrome and its socket watch, both self-tests and the sign-in, in
+        that order. ``browser_uid_switched`` and the viewport go into
+        ``summary.json`` whether or not opening finishes, once each is known. The
+        viewport must be :data:`paths.VIEWPORT` as the signed-in page measures it,
+        the size the prompt states and the recording's click bounds assume, and
+        ``--dev-unconfined`` measures it without requiring it, because a
+        development host's Chrome draws a window frame of its own size.
         """
-        args, rt = self.args, self.runtime
-        site = egress.prepare_site(Path(args.build_dir))
-        rules = ux_test_proxy.stack_rules(ui_env, args.stack)
-        proxy = rt.launch_proxy(
-            run_dir=run_dir, rules=rules, build_dir=site, user=paths.PROXY_USER
+        args = self.args
+        plan = session.BrowserPlan(
+            toolchain=tc,
+            run_dir=run_dir,
+            ui_env=ui_env,
+            stack=args.stack,
+            persona=persona,
+            persona_label=args.persona,
+            build_dir=Path(args.build_dir),
+            dev_unconfined=args.dev_unconfined,
         )
-        self.proxy = proxy
-        self._say(
-            f"egress proxy: {paths.PROXY_HOST}:{paths.PROXY_PORT}, "
-            f"{len(rules.hosts)} host(s) reachable"
-        )
-        browser_user = paths.BROWSER_USER
-        self.chrome_proc = rt.launch_chrome(
-            tc, run_dir=run_dir, user=browser_user, log=run_dir / "chrome.log"
-        )
-        switched = browser_user is not None and processes.can_switch_user()
-        self.summary["browser_uid_switched"] = switched
-        self.browser_uid = paths.BROWSER_UID if switched else None
-        self.watch = rt.socket_watch(self.browser_uid).start()
-        rt.wait_for_cdp()
-        target = rt.first_page_target()
-        self.session = rt.open_session(target["webSocketDebuggerUrl"])
-        if not args.dev_unconfined:
-            rt.verify_policy(self.session)
-        rt.verify_proxy_path(self.session, proxy.refusal_log, owner=proxy.owner)
-        rt.sign_in(self.session, persona)
-        facts = rt.page_facts(self.session)
-        measure = rt.measure_viewport if args.dev_unconfined else rt.verify_viewport
-        self.summary["viewport"] = measure(self.session)
-        self._close_session()
-        self._say(f"chrome: confined, and signed in as {args.persona}")
-        return target, facts
+        try:
+            opened = self.browser.open(plan)
+        finally:
+            self.summary["browser_uid_switched"] = self.browser.browser_uid_switched
+            if self.browser.viewport is not None:
+                self.summary["viewport"] = self.browser.viewport
+        return opened.target, opened.facts
 
     def _video_withheld(
         self, ui_env: Mapping[str, str], facts: signin.PageFacts
@@ -1608,7 +1367,9 @@ class _Run:
         args, rt = self.args, self.runtime
         rec_out = run_dir / "recordings"
         self.rec_out = rec_out
-        recorder_env = recording.recorder_env(_private(run_dir / "recorder-home"))
+        recorder_env = recording.recorder_env(
+            artifacts.private_dir(run_dir / "recorder-home")
+        )
         where = "the review" if self.summary["stack"]["review_stack"] else "another"
         started = rt.start_recorder(
             harness_root=paths.HARNESS_ROOT,
@@ -1647,12 +1408,7 @@ class _Run:
         args, rt = self.args, self.runtime
         if self.rec_out is None:
             raise review.Failure("the session has no recorder to mark")
-        bedrock = account.scoped_credentials(
-            sts,
-            account.role_arn_for(identity),
-            account.BEDROCK_ACTIONS,
-            f"ux-test-{args.mr}",
-        )
+        bedrock = session.mint_bedrock(sts, identity, f"ux-test-{args.mr}")
         self._credential_scope("claude", bedrock, fallback="ambient")
         if bedrock is None:
             self._say(
@@ -1660,11 +1416,11 @@ class _Run:
                 "the job's own AWS credentials (credential_scope.claude: ambient)"
             )
         aws_env = bedrock if bedrock is not None else agent.aws_env_from(rt.environ)
-        agent_root = _private(run_dir / "agent")
-        agent_cwd = _private(agent_root / "cwd")
-        agent_home = _private(agent_root / "home")
-        agent_tmp = _private(agent_root / "tmp")
-        mcp_files = _private(agent_root / "mcp-files")
+        agent_root = artifacts.private_dir(run_dir / "agent")
+        agent_cwd = artifacts.private_dir(agent_root / "cwd")
+        agent_home = artifacts.private_dir(agent_root / "home")
+        agent_tmp = artifacts.private_dir(agent_root / "tmp")
+        mcp_files = artifacts.private_dir(agent_root / "mcp-files")
         mcp_path = agent.write_mcp_config(
             agent_root / "mcp.json",
             agent.mcp_servers(
@@ -1743,29 +1499,11 @@ class _Run:
 
         Render needs only the session directory and the post only the GitLab API,
         so nothing after this runs beside a live page of the MR's signed in as the
-        persona, nor beside any other process of the browser's uid
-        (:meth:`_stop_chrome`). The audit's last pass runs after Chrome has
-        exited, so it sees whatever Chrome had open at the end, and the proxy is
-        stopped once nothing can use it, which makes its refusal log final
-        (:attr:`refusals`).
+        persona, nor beside any other process of the browser's uid. The verdict is
+        noted (:meth:`_note_audit`) before the proxy stops, and the proxy's
+        refusal log is final once it has (``ConfinedBrowser.close``).
         """
-        self._stop_chrome()
-        audit = self._end_audit()
-        self._stop_proxy()
-        if self.proxy is not None:
-            self.refusals = egress.read_refusals(
-                self.proxy.refusal_log, owner=self.proxy.owner
-            )
-        return audit
-
-    def _end_audit(self) -> chrome.SocketAudit:
-        """Stop the socket watch and keep its merged verdict."""
-        watch, self.watch = self.watch, None
-        if watch is None:
-            raise review.Failure("the socket audit was never started")
-        audit = watch.stop()
-        self._note_audit(audit)
-        return audit
+        return self.browser.close(on_audit=self._note_audit)
 
     def _deliver(
         self,
@@ -1805,10 +1543,11 @@ class _Run:
                 "the browser had a non-loopback socket: "
                 + ", ".join(audit.violations[:5])
             )
-        if self.strays:
+        strays = self.browser.strays
+        if strays:
             raise review.Failure(
                 f"a process of {paths.BROWSER_USER} outlived Chrome's process group "
-                "and was killed, so the run is not clean: " + ", ".join(self.strays[:5])
+                "and was killed, so the run is not clean: " + ", ".join(strays[:5])
             )
         if args.dry_run:
             self.summary["recording"]["video_attached"] = shown is not None
@@ -1871,13 +1610,14 @@ class _Run:
 
     def _note_audit(self, audit: chrome.SocketAudit) -> None:
         self.audit = audit
+        found = self.browser.strays
         self.summary["socket_audit"] = {
             "state": audit.state,
             "violations": list(audit.violations),
             "sockets": audit.sockets,
-            "strays": list(self.strays),
+            "strays": list(found),
         }
-        strays = f", {len(self.strays)} stray process(es) killed" if self.strays else ""
+        strays = f", {len(found)} stray process(es) killed" if found else ""
         self._say(f"socket audit: {audit.state}{strays}")
 
     def _video(
@@ -1940,7 +1680,7 @@ class _Run:
         )
         self._scrub_session(session_dir)
         polly = None if args.no_narration else self._polly_session(sts, identity)
-        render_home = _private(self.run_dir / "render-home")
+        render_home = artifacts.private_dir(self.run_dir / "render-home")
         began = rt.clock()
         mp4, narration = rt.render_video(
             session_dir,
@@ -1969,7 +1709,7 @@ class _Run:
             else recording.copy_output(
                 session_dir,
                 recording.VIDEO_FILE,
-                lambda: _open_artifact(artifact),
+                lambda: artifacts.open_artifact(artifact),
                 owner=owner,
                 limit=recording.MAX_VIDEO_BYTES,
             )
@@ -1998,12 +1738,7 @@ class _Run:
         ``unavailable`` and ``recording.narration`` is
         :data:`_NARRATION_UNSCOPED`.
         """
-        polly = account.scoped_credentials(
-            sts,
-            account.role_arn_for(identity),
-            account.POLLY_ACTIONS,
-            f"ux-test-{self.args.mr}-render",
-        )
+        polly = session.mint_polly(sts, identity, f"ux-test-{self.args.mr}-render")
         self._credential_scope("render", polly, fallback="unavailable")
         if polly is None:
             self._say(
@@ -2061,7 +1796,7 @@ class _Run:
         MR-written paths) are redacted as fields before ``compose_section``
         sanitises them, as the report's were, because sanitising respells a value
         the redactor would otherwise match. The whole section is redacted again
-        after, in the form that cannot write markup (:meth:`_Scrub.note`).
+        after, in the form that cannot write markup (``artifacts.Scrub.note``).
         """
         if self.inputs is None:
             raise review.Failure("the section has no head to name")
@@ -2105,7 +1840,7 @@ class _Run:
         uploads nothing; a section that lands between the last look and the edit
         still costs one upload, which is kept like every other (D9). An upload
         GitLab refuses or fails costs the section its video and nothing else
-        (:meth:`_upload`).
+        (:meth:`_upload`). The wait is ``gitlab_api.wait_for_review_note``.
         """
         args, rt = self.args, self.runtime
         if self.inputs is None:
@@ -2114,25 +1849,30 @@ class _Run:
         credential = rt.environ.get(review.GITLAB.credential_env, "").strip()
         forge = _forge(args, rt, credential)
         began = rt.clock()
-        current = forge.merge_request(args.mr)
-        if current.head_sha and current.head_sha != head:
+        waited = gitlab_api.wait_for_review_note(
+            forge,
+            args.mr,
+            head,
+            already_posted=lambda mine: any(
+                section.has_section(_body(n), head) for n in mine
+            ),
+            poll_minutes=args.review_poll_minutes,
+            deadline=self.deadline,
+            clock=rt.clock,
+            sleep=rt.sleep,
+            poll_seconds=_POLL_SECONDS,
+        )
+        if waited.outcome == "moved":
+            moved = waited.moved_to or ""
             return self._finish(
                 "superseded",
-                f"the MR head moved to {current.head_sha[:8]} before posting, so "
+                f"the MR head moved to {moved[:8]} before posting, so "
                 f"nothing is posted for {head[:8]}",
             )
-        me = forge.current_user()["id"]
-        poll_until = min(rt.clock() + args.review_poll_minutes * 60, self.deadline)
-        while True:
-            notes = forge.notes(args.mr)
-            mine = gitlab_api.my_notes(notes, me)
-            if any(section.has_section(_body(note), head) for note in mine):
-                self.summary["note"]["action"] = "unchanged"
-                return self._finish("unchanged", "already tested")
-            review_note = gitlab_api.review_note_for(notes, head, me)
-            if review_note is not None or rt.clock() >= poll_until:
-                break
-            rt.sleep(_POLL_SECONDS)
+        if waited.outcome == "posted":
+            self.summary["note"]["action"] = "unchanged"
+            return self._finish("unchanged", "already tested")
+        review_note, mine = waited.review_note, waited.mine
         line, upload_id, video_note = self._upload(forge, video)
         text = self._section(
             report,
@@ -2268,7 +2008,9 @@ class _Run:
         :meth:`_run` sees the result. The recorder goes before Chrome, which it is
         attached to, and the socket watch after it, so that on this path too the
         audit's last pass comes after Chrome has exited. A cancel that arrives
-        during the cleanup is recorded and the remaining steps still run.
+        during the cleanup is recorded and the remaining steps still run. The four
+        browser steps are :attr:`browser`'s, and each is a method here so that the
+        line a failed step prints keeps naming it.
         """
         steps = (
             self._close_session,
@@ -2290,40 +2032,21 @@ class _Run:
                 )
 
     def _close_session(self) -> None:
-        session, self.session = self.session, None
-        if session is not None:
-            session.close()
+        self.browser.close_session()
 
     def _stop_watch(self) -> None:
-        watch, self.watch = self.watch, None
-        if watch is not None:
-            self._note_audit(watch.stop())
+        self.browser.stop_watch(on_audit=self._note_audit)
 
     def _stop_recorder(self) -> None:
         if self.rec_out is not None and (self.rec_out / _RECORDER_CURRENT).exists():
             self.runtime.kill_recorder(self.rec_out)
 
     def _stop_chrome(self) -> None:
-        """Kill Chrome's process group, then whatever the browser's uid still runs.
-
-        A process that called ``setsid`` is outside the group the first kill
-        reaches, and once the socket audit stops nothing would watch it, so the
-        second kill takes every process of the uid, and each one that had left the
-        group is kept in :attr:`strays`, which fails the run. That second kill
-        comes only once ``chrome.kill_strays`` has given the uid's processes a few
-        seconds to exit by themselves, because Chrome's own crashpad handlers are
-        outside the group as well and need a moment to go on a busy runner.
-        """
-        process, self.chrome_proc = self.chrome_proc, None
-        if process is None:
-            return
-        process.terminate()
-        self.strays.extend(self.runtime.kill_strays(self.browser_uid, process.pid))
+        """Kill Chrome's group, then the browser uid's strays (``ConfinedBrowser``)."""
+        self.browser.stop_chrome()
 
     def _stop_proxy(self) -> None:
-        if self.proxy is not None and not self.proxy_stopped:
-            self.proxy_stopped = True
-            self.proxy.process.terminate()
+        self.browser.stop_proxy()
 
     def _copy_egress(self) -> None:
         """The proxy's totals into the summary, its refusals into the artifacts.
@@ -2339,7 +2062,7 @@ class _Run:
         the same. So refused stats never cost the note's caveat the
         ``refusals.jsonl`` it points at.
         """
-        proxy = self.proxy
+        proxy = self.browser.proxy
         if proxy is None:
             return
         copied: dict[str, Any] = {}
@@ -2354,12 +2077,9 @@ class _Run:
         except egress.ProxyError as refused:
             self._say(f"egress: not copied: {refused}")
         else:
-            copied["by_origin"] = _refusal_origins(records)
+            copied["by_origin"] = chrome.refusals_by_origin(records)
             lines = [
-                json.dumps(
-                    self.scrub.tree({**r, "origin": chrome.refusal_origin(r)}),
-                    ensure_ascii=False,
-                )
+                json.dumps(self.scrub.tree(chrome.with_origin(r)), ensure_ascii=False)
                 for r in records
             ]
             self._write("refusals.jsonl", "".join(line + "\n" for line in lines))

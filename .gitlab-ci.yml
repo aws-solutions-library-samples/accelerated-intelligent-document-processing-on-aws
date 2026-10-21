@@ -1384,7 +1384,18 @@ ai_ux_test:
     AWS_REGION: "us-east-1"
     GIT_DEPTH: 0
     UX_HARNESS_DIR: "/tmp/ux-harness"
-  before_script:
+    # What the setup anchored below (&ux_confined_setup) extracts, runs, passes and
+    # writes into. A project or pipeline variable of the same name overrides a job
+    # variable, so the precheck refuses to start unless UX_HARNESS and UX_ENTRY
+    # are exactly the entry's own HARNESS_PATHS and path: the pin fails closed
+    # whatever the variables say. A merge request whose .gitlab-ci.yml predates
+    # this setup runs this job as it was then, naming the harness in its own script
+    # where no variable reaches it and setting neither; ai_ux_test.py runs for it.
+    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+    UX_ENTRY: "scripts/sdlc/ai_ux_test.py"
+    UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID"
+    UX_ARTIFACTS: "ux-tests"
+  before_script: &ux_confined_setup
     # ⚠️ SET THE MODES, DO NOT INHERIT THEM. A GitLab Docker executor runs a job
     # at umask 0000 by default, and Chrome runs as uxbrowser with --no-sandbox,
     # so one renderer bug is code running as that uid. Under 0000 the harness,
@@ -1427,7 +1438,6 @@ ai_ux_test:
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
       git fetch -q origin "refs/heads/$TARGET"
-      UX_HARNESS="scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
       rm -rf "$UX_HARNESS_DIR" && mkdir -p "$UX_HARNESS_DIR"
       if git archive --format=tar -o /tmp/ux-harness.tar FETCH_HEAD -- $UX_HARNESS && tar -xf /tmp/ux-harness.tar -C "$UX_HARNESS_DIR" && chmod -R go-w "$UX_HARNESS_DIR"; then
         echo "UX harness pinned to origin/$TARGET in $UX_HARNESS_DIR: $UX_HARNESS"
@@ -1446,20 +1456,21 @@ ai_ux_test:
     - chmod -R go-w "$CI_PROJECT_DIR"
     # The artifact directory sits in the checkout, which could hold `ux-tests` as
     # a symlink, and the harness writes into it as root, so it starts fresh:
-    # `rm -rf` removes a symlink itself, not what it points at.
-    - rm -rf ux-tests && mkdir ux-tests
+    # `rm -rf` removes a symlink itself, not what it points at. It removes the
+    # path's first component, so `mkdir -p` then makes every level afresh.
+    - rm -rf "${UX_ARTIFACTS%%/*}" && mkdir -p "$UX_ARTIFACTS"
     # About a minute: test-only, already-tested, Draft and missing-precondition
     # heads stop here, before the toolchain install.
-    - python3 -B "$UX_HARNESS_DIR/scripts/sdlc/ai_ux_test.py" --mr "$CI_MERGE_REQUEST_IID" --precheck --artifact-dir ux-tests
-    - if [ -f ux-tests/proceed ]; then (cd "$UX_HARNESS_DIR" && without_job_secrets bash "$UX_HARNESS_DIR/scripts/ux_runner/install.sh"); fi
+    - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --precheck --artifact-dir "$UX_ARTIFACTS"
+    - if [ -f "$UX_ARTIFACTS/proceed" ]; then (cd "$UX_HARNESS_DIR" && without_job_secrets bash "$UX_HARNESS_DIR/scripts/ux_runner/install.sh"); fi
   script:
     - |
-      if [ ! -f ux-tests/proceed ]; then
+      if [ ! -f "$UX_ARTIFACTS/proceed" ]; then
         echo "Nothing to UX-test for this head; see the precheck line above."
         exit 0
       fi
-      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" ux-tests "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
-      python3 -B "$UX_HARNESS_DIR/scripts/sdlc/ai_ux_test.py" --mr "$CI_MERGE_REQUEST_IID" --inputs ux-tests/inputs.json --artifact-dir ux-tests
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" "$UX_ARTIFACTS" "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --inputs "$UX_ARTIFACTS/inputs.json" --artifact-dir "$UX_ARTIFACTS"
   artifacts:
     when: always
     paths:

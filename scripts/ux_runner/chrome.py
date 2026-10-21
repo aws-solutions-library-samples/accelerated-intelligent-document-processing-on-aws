@@ -146,7 +146,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -704,6 +704,38 @@ def refusal_origin(record: Mapping[str, Any]) -> str:
     if host in BROWSER_BACKGROUND_HOSTS:
         return "browser"
     return "page"
+
+
+def not_the_page(target: str) -> bool:
+    """Whether a refused target is Chrome's own request or the proxy self-test.
+
+    It is the ``background`` test ``section.refusal_caveat`` is handed where the
+    MR UX test's note counts what the page asked for. :func:`refusal_origin`
+    classifies the target.
+    """
+    return refusal_origin({"target": target}) != "page"
+
+
+def refusals_by_origin(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """How many refusals were the page's, Chrome's own, and the self-test's.
+
+    Each of the three origins is counted, a zero included, so a run's summary
+    says that nothing of the page's was refused rather than leaving it out.
+    """
+    counts = {"page": 0, "browser": 0, "selftest": 0}
+    for record in records:
+        origin = refusal_origin(record)
+        counts[origin] = counts.get(origin, 0) + 1
+    return counts
+
+
+def with_origin(record: Mapping[str, Any]) -> dict[str, Any]:
+    """One refusal-log record with its :func:`refusal_origin` as ``origin``.
+
+    The proxy's own fields are kept as they are, so a run's ``refusals.jsonl``
+    lists every record, Chrome's and the self-test's included, each labelled.
+    """
+    return {**record, "origin": refusal_origin(record)}
 
 
 def decode_proc_address(hex_addr: str) -> tuple[str, int]:

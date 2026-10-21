@@ -894,3 +894,220 @@ def test_the_review_footer_section_reads_from_is_the_one_ai_mr_review_writes() -
     found = gitlab_api.review_note_for([note], HEAD, 7)
     assert found is not None and found["id"] == 30
     assert gitlab_api.review_note_for([note], OTHER_HEAD, 7) is None
+
+
+# --- waiting for the code-review note ----------------------------------------------
+
+ME = 7
+STRANGER = 8
+REVIEW_BODY = f"<!-- ai-review: sha={HEAD} rev=1 -->\n## PR/MR Review: !812\n"
+
+
+class _WaitForge:
+    """The three calls the wait makes, answered in turn, each one recorded.
+
+    ``listings`` are the successive answers to ``notes``; the last one repeats.
+    """
+
+    def __init__(
+        self, listings: list[list[dict[str, Any]]], *, head: str = HEAD
+    ) -> None:
+        self.listings = listings
+        self.head = head
+        self.calls: list[str] = []
+
+    def merge_request(self, iid: int) -> Any:
+        self.calls.append(f"merge_request {iid}")
+        return review.MergeRequest(
+            iid=iid,
+            title="t",
+            author="a",
+            source_branch="s",
+            target_branch="develop",
+            web_url="",
+            head_sha=self.head,
+            draft=False,
+        )
+
+    def current_user(self) -> dict[str, Any]:
+        self.calls.append("current_user")
+        return {"id": ME, "username": "ux-review-bot"}
+
+    def notes(self, iid: int) -> list[dict[str, Any]]:
+        listed = sum(1 for call in self.calls if call.startswith("notes"))
+        self.calls.append(f"notes {iid}")
+        return self.listings[min(listed, len(self.listings) - 1)]
+
+
+class _Clock:
+    """Monotonic time that moves only when the wait sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _wait(
+    forge: _WaitForge,
+    clock: _Clock,
+    *,
+    poll_minutes: float = 10,
+    deadline: float = 1e9,
+    posted: Callable[[list[dict[str, Any]]], bool] = lambda mine: False,
+    **extra: Any,
+) -> gitlab_api.ReviewWait:
+    return gitlab_api.wait_for_review_note(
+        forge,
+        812,
+        HEAD,
+        already_posted=posted,
+        poll_minutes=poll_minutes,
+        deadline=deadline,
+        clock=clock.clock,
+        sleep=clock.sleep,
+        **extra,
+    )
+
+
+@pytest.mark.unit
+def test_the_wait_reports_what_it_ended_on_in_five_frozen_fields() -> None:
+    names = [f.name for f in dataclasses.fields(gitlab_api.ReviewWait)]
+    assert names == ["outcome", "review_note", "mine", "me", "moved_to"]
+    assert gitlab_api.POLL_SECONDS == 30.0
+    default = inspect.signature(gitlab_api.wait_for_review_note).parameters
+    assert default["poll_seconds"].default == gitlab_api.POLL_SECONDS
+
+
+@pytest.mark.unit
+def test_the_wait_finds_the_review_note_for_the_head_when_it_appears() -> None:
+    """The MR, then the token's user, then a listing every 30 s until it is there."""
+    review_note = _note(41, ME, REVIEW_BODY)
+    forge = _WaitForge([[], [], [_note(40, STRANGER, "hi"), review_note]])
+    clock = _Clock()
+    waited = _wait(forge, clock)
+    assert waited.outcome == "found"
+    assert waited.review_note == review_note
+    assert waited.mine == [review_note]
+    assert (waited.me, waited.moved_to) == (ME, None)
+    assert clock.sleeps == [30.0, 30.0]
+    assert forge.calls == [
+        "merge_request 812",
+        "current_user",
+        "notes 812",
+        "notes 812",
+        "notes 812",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("poll_minutes", "deadline", "sleeps"),
+    [(10, 1e9, 20), (1, 1e9, 2), (10, 1095.0, 4), (0, 1e9, 0)],
+    ids=["ten-minutes", "one-minute", "deadline-first", "no-wait"],
+)
+def test_the_wait_ends_at_the_earlier_of_its_minutes_and_the_deadline(
+    poll_minutes: float, deadline: float, sleeps: int
+) -> None:
+    """Ten minutes of 30 s sleeps is twenty, and the run's deadline cuts it short."""
+    forge = _WaitForge([[_note(50, STRANGER, REVIEW_BODY)]])
+    clock = _Clock()
+    waited = _wait(forge, clock, poll_minutes=poll_minutes, deadline=deadline)
+    assert waited.outcome == "timeout"
+    assert waited.review_note is None and waited.mine == []
+    assert clock.sleeps == [30.0] * sleeps
+    assert forge.calls.count("notes 812") == sleeps + 1
+
+
+@pytest.mark.unit
+def test_a_head_that_moved_returns_before_the_user_or_the_notes_are_read() -> None:
+    forge = _WaitForge([[_note(41, ME, REVIEW_BODY)]], head=OTHER_HEAD)
+    clock = _Clock()
+    waited = _wait(forge, clock)
+    assert waited == gitlab_api.ReviewWait("moved", None, [], None, OTHER_HEAD)
+    assert forge.calls == ["merge_request 812"]
+    assert clock.sleeps == []
+
+
+@pytest.mark.unit
+def test_a_merge_request_that_names_no_head_is_not_a_move() -> None:
+    forge = _WaitForge([[_note(41, ME, REVIEW_BODY)]], head="")
+    assert _wait(forge, _Clock()).outcome == "found"
+
+
+@pytest.mark.unit
+def test_my_own_post_for_the_head_ends_the_wait_before_the_review_is_looked_for() -> (
+    None
+):
+    """``already_posted`` is asked of the token's own notes alone, newest first, on
+    every listing, and is asked before the review note is: a section another run
+    posted for this head stops this one even with the review note right there."""
+    review_note = _note(41, ME, REVIEW_BODY)
+    posted = _note(42, ME, "<!-- ux-test: posted -->")
+    forge = _WaitForge([[_note(43, STRANGER, "x")], [review_note, posted]])
+    asked: list[list[int]] = []
+
+    def already(mine: list[dict[str, Any]]) -> bool:
+        asked.append([note["id"] for note in mine])
+        return any(note["id"] == 42 for note in mine)
+
+    clock = _Clock()
+    waited = _wait(forge, clock, posted=already)
+    assert waited.outcome == "posted"
+    assert waited.review_note is None
+    assert [note["id"] for note in waited.mine] == [42, 41]
+    assert asked == [[], [42, 41]]
+    assert clock.sleeps == [30.0]
+
+
+@pytest.mark.unit
+def test_a_review_note_another_author_posted_is_never_the_one_found() -> None:
+    forge = _WaitForge([[_note(41, STRANGER, REVIEW_BODY)]])
+    waited = _wait(forge, _Clock(), poll_minutes=1)
+    assert waited.outcome == "timeout"
+    assert waited.mine == []
+
+
+@pytest.mark.unit
+def test_the_wait_sleeps_poll_seconds_between_listings() -> None:
+    forge = _WaitForge([[]])
+    clock = _Clock()
+    _wait(forge, clock, poll_minutes=1, poll_seconds=20.0)
+    assert clock.sleeps == [20.0, 20.0, 20.0]
+
+
+@pytest.mark.unit
+def test_the_wait_drives_the_real_client_over_the_wire(gitlab: _FakeGitlab) -> None:
+    """The three requests the real client sends, in order, and nothing written."""
+    notes = f"{PROJECT_PATH}/merge_requests/812/notes?sort=asc&order_by=created_at"
+    gitlab.answer(
+        "GET",
+        f"{PROJECT_PATH}/merge_requests/812",
+        {"iid": 812, "title": "t", "draft": False, "sha": HEAD},
+    )
+    gitlab.answer("GET", "/api/v4/user", {"id": ME, "username": "ux-review-bot"})
+    gitlab.answer("GET", f"{notes}&per_page=100&page=1", [_note(41, ME, REVIEW_BODY)])
+    clock = _Clock()
+    waited = gitlab_api.wait_for_review_note(
+        _forge(gitlab),
+        812,
+        HEAD,
+        already_posted=lambda mine: False,
+        poll_minutes=10,
+        deadline=1e9,
+        clock=clock.clock,
+        sleep=clock.sleep,
+    )
+    assert waited.outcome == "found" and waited.review_note is not None
+    assert waited.review_note["id"] == 41
+    assert [(r["method"], r["path"]) for r in gitlab.requests] == [
+        ("GET", f"{PROJECT_PATH}/merge_requests/812"),
+        ("GET", "/api/v4/user"),
+        ("GET", f"{notes}&per_page=100&page=1"),
+    ]

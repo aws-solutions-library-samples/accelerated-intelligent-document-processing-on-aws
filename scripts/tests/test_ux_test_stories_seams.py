@@ -964,6 +964,41 @@ def test_the_vocabularies_held_twice_are_equal() -> None:
         assert writes == reads, name
 
 
+@pytest.mark.unit
+def test_a_kept_hash_or_sha_survives_the_job_s_redactor_and_still_reads(
+    tmp_path: Path,
+) -> None:
+    """The redactor rewrites any 12-digit run, which an all-digit hash and about one
+    commit in sixty hold. The start line names five such values; the judge refuses
+    the line once any is rewritten, and reads it whole when all are kept."""
+    from ux_runner import artifacts, redact
+
+    hashes = {
+        "story_hash": "123456789012",
+        "series": "210987654321",
+        "corpus_hash": "555555555555",
+    }
+    shas = {
+        "docs_ref": "abcdef" + "123456789012" + "ab" * 11,
+        "harness": "fedcba" + "210987654321" + "cd" * 11,
+    }
+    start = {**synthetic_start(), **hashes, **shas}
+    path = tmp_path / story.JOURNAL_FILE
+    writer(path, start).end("eof")
+    text = path.read_text(encoding="utf-8")
+    plain = artifacts.Scrub(artifacts.redactor_for({}))
+    assert isinstance(plain.redactor, redact.Redactor)
+    with pytest.raises(story_verdict.JournalError):
+        story_verdict.parse_journal(plain(text))
+    kept = artifacts.Scrub(artifacts.redactor_for({}))
+    kept.keep(*hashes.values(), *shas.values())
+    read = story_verdict.parse_journal(kept(text))
+    assert {name: getattr(read.start, name) for name in [*hashes, *shas]} == {
+        **hashes,
+        **shas,
+    }
+
+
 GRAPH: dict[str, set[str]] = {
     "ux_runner.python_floor": set(),
     "ux_runner.stories": {"ux_runner.python_floor"},
