@@ -37,6 +37,17 @@ from config_scope import (  # noqa: E402
     scope_allows,
 )
 
+# Vendored verbatim from idp_common/review_queues/statuses.py, for the same
+# reason; test_review_modules_vendored.py fails if the copies drift.
+from review_statuses import LegacyHitlStatus  # noqa: E402
+
+#: Legacy HITL statuses that make a document part of a Reviewer's working set.
+_REVIEWER_ACTIVE_STATUSES = (
+    LegacyHitlStatus.PENDING_REVIEW.value,
+    LegacyHitlStatus.IN_PROGRESS.value,
+    LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
 # Same story for the log redactor: byte-identical copy of
 # idp_common/utils/log_sanitizer.py, kept in step by
 # scripts/sync_resolver_log_sanitizer.sh and asserted by
@@ -411,7 +422,7 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
 
         hitl_active = (
             hitl_triggered is True
-            or hitl_status in ("PendingReview", "InProgress", "ReviewInProgress")
+            or hitl_status in _REVIEWER_ACTIVE_STATUSES
         )
         # Only non-empty identifiers can match an owner. `reviewer_email` comes
         # from the `email` claim alone and may legitimately be absent, and an

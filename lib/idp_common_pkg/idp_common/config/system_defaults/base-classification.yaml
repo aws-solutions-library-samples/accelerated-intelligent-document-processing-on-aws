@@ -6,11 +6,6 @@
 # =============================================================================
 
 classification:
-  # DEPRECATED, read only when `granularity` below is empty. It tied two
-  # independent choices together — how many calls are made, and what each call
-  # sees — so there was no setting for "one call per packet, with images" or
-  # "one call per page, text only". `granularity` + `modality` replace it.
-  classificationMethod: multimodalPageLevelClassification
   # How many calls classification makes.
   #   page   - one call per page; each returns that page's class and whether it
   #            starts a new document. N calls, each repeating the whole prefix
@@ -24,9 +19,10 @@ classification:
   # on is mainly an ACCURACY change — it is the only way the model ever sees the
   # whole packet when deciding where documents start.
   #
-  # Empty is derived from classificationMethod above, so an existing
-  # configuration keeps its exact behaviour without an edit.
-  granularity: ""
+  # Replaced `classificationMethod` in config format 0.8, which bundled this
+  # choice with the modality one below. A stored config carrying the old key is
+  # converted on read by migrations/v07_to_v08.py.
+  granularity: page
   packet:
     # Maximum pages per packet call; a larger packet is split into overlapping
     # windows and the results merged. 0 means never window (one call for the

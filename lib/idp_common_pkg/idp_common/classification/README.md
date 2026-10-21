@@ -32,21 +32,30 @@ modality, leaving four of the six combinations unreachable.
 
 | Setting | Values | Decides |
 |---|---|---|
-| `classification.granularity` | `page` \| `packet` \| empty | How many calls are made |
+| `classification.granularity` | `page` \| `packet` | How many calls are made |
 | `classification.modality.{text,images}` | `true` \| `false` \| empty | What each call sees |
 | `classification.strategy` | `single_pass` \| `two_stage` | Whether splitting and labeling are one call or two |
 
-Resolution happens once, in `ClassificationService.__init__`:
+`classificationMethod` was **removed** in config format 0.8, not deprecated in
+place. `migrations/v07_to_v08.py` converts it on every config read, so the
+service reads `granularity` only and has no derivation logic of its own. Two
+things that migration does are worth knowing before reading the prompt
+resolution below:
 
-- `granularity` is authoritative when set. When empty it is **derived** from
-  `classificationMethod` (`textbasedHolisticClassification` → `packet`,
-  anything else → `page`), so an existing configuration keeps its behaviour.
-  `ClassificationService.granularity_is_explicit` records which happened, and
-  the distinction is load-bearing for prompt resolution — see below.
-- `classification_method` is a **property** whose setter keeps `granularity` in
-  sync. Assigning it after construction is an established way to switch methods
-  (the shipped notebooks do it), and dispatch now reads `granularity`, so a
-  plain attribute would have left every such assignment silently inert.
+- It does **not** write `modality`. An unset flag is inferred from the prompt's
+  placeholders, which is what the service already did — so writing
+  `images: true` to match `multimodalPageLevelClassification`'s *name* would
+  start sending images to a prompt edited not to ask for them.
+- For a holistic config it **copies the flat prompts into
+  `classification.packet`**, because `task_prompt` was shared by both methods
+  and no packet-shaped default ever shipped: such a config's flat prompt IS its
+  packet prompt, hand-written. Without the copy, `granularity: packet` would
+  read our shipped prompt instead of theirs. Only a prompt that actually asks
+  for `segments` is copied — one that does not is the page default, which means
+  that config was already broken under holistic.
+
+Resolution in `ClassificationService.__init__` is therefore just a read:
+
 - `modality` flags are tri-state. `None` — the default — means *infer from the
   task prompt's placeholders*, which is exactly what the service did before the
   setting existed. Setting one explicitly rewrites the prompt to match:

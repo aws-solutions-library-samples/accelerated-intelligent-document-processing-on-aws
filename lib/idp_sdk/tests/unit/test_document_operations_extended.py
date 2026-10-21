@@ -39,6 +39,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
+from idp_common.review_queues.statuses import ReviewStatus
 from idp_sdk import IDPClient
 from idp_sdk.exceptions import (
     IDPProcessingError,
@@ -51,6 +52,7 @@ from idp_sdk.models import (
     DocumentStatus,
     DocumentUploadResult,
     RerunStep,
+    ReviewInfo,
 )
 
 pytestmark = pytest.mark.unit
@@ -328,6 +330,76 @@ class TestGetStatus:
 
         assert status.status == "FAILED"
         assert status.error == "Textract threw InvalidDocumentException"
+
+    def test_a_routed_document_carries_its_review_block(
+        self, aws_credentials, monkeypatch
+    ):
+        """The lookup function's camelCase ``review`` block becomes a typed
+        ``ReviewInfo`` with snake_case fields, and ``review_status`` mirrors it.
+        A field-name mismatch here would silently drop who reviewed the document
+        and why it was rejected."""
+        _patch_monitor(
+            monkeypatch,
+            _status_summary(
+                completed=[
+                    {
+                        "document_id": "batch-1/claim.pdf",
+                        "status": "COMPLETED",
+                        "start_time": "",
+                        "end_time": "",
+                        "duration": 0,
+                        "review": {
+                            "status": "rejected",
+                            "queue": "claims",
+                            "cycleId": "cycle-7",
+                            "statusUri": "s3://out/batch-1/claim.pdf/review/status.json",
+                            "reviewedBy": "reviewer@example.com",
+                            "disposedAt": "2024-01-15T11:00:00Z",
+                            "rejectReason": "illegible",
+                        },
+                    }
+                ]
+            ),
+        )
+
+        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
+        status = client.document.get_status("batch-1/claim.pdf")
+
+        assert isinstance(status.review, ReviewInfo)
+        assert status.review.status == ReviewStatus.REJECTED
+        assert status.review.queue == "claims"
+        assert status.review.cycle_id == "cycle-7"
+        assert (
+            status.review.status_uri == "s3://out/batch-1/claim.pdf/review/status.json"
+        )
+        assert status.review.reviewed_by == "reviewer@example.com"
+        assert status.review.disposed_at == "2024-01-15T11:00:00Z"
+        assert status.review.reject_reason == "illegible"
+        assert status.review_status == ReviewStatus.REJECTED
+
+    @pytest.mark.parametrize("review", [None, {}, {"queue": "claims"}])
+    def test_a_document_without_a_review_status_has_no_review(
+        self, aws_credentials, monkeypatch, review
+    ):
+        """No block, an empty block, or a block with no ``status`` all mean the
+        document was never routed: ``review`` is None rather than a half-filled
+        ``ReviewInfo`` that would fail validation."""
+        doc = {
+            "document_id": "batch-1/plain.pdf",
+            "status": "COMPLETED",
+            "start_time": "",
+            "end_time": "",
+            "duration": 0,
+        }
+        if review is not None:
+            doc["review"] = review
+        _patch_monitor(monkeypatch, _status_summary(completed=[doc]))
+
+        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
+        status = client.document.get_status("batch-1/plain.pdf")
+
+        assert status.review is None
+        assert status.review_status is None
 
     def test_a_document_in_no_category_is_not_found(self, aws_credentials, monkeypatch):
         """An id the monitor does not know about must raise, not return a
@@ -761,6 +833,68 @@ class TestDelete:
             )["Count"]
             == 0
         )
+
+    def test_a_stack_with_a_review_queue_table_purges_the_review_partition(
+        self, aws_credentials, aws_region
+    ):
+        """When the stack publishes ``HITLTableName``, delete hands
+        ``delete_documents`` a real ``ReviewStore`` for that table, so the
+        document's review-queue partition goes with it — and a sibling
+        document's partition is left alone."""
+        hitl_table = "idp-doc-test-hitl"
+        with mock_aws():
+            template = json.loads(json.dumps(STACK_TEMPLATE))
+            template["Outputs"]["HITLTableName"] = {"Value": hitl_table}
+            cfn = boto3.client("cloudformation", region_name=aws_region)
+            cfn.create_stack(StackName=STACK_NAME, TemplateBody=json.dumps(template))
+            s3 = _s3(aws_region)
+            s3.create_bucket(Bucket=INPUT_BUCKET)
+            s3.create_bucket(Bucket=OUTPUT_BUCKET)
+            s3.put_object(Bucket=INPUT_BUCKET, Key="claim.pdf", Body=b"%PDF")
+            ddb = boto3.resource("dynamodb", region_name=aws_region)
+            table = ddb.create_table(
+                TableName=hitl_table,
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            for sk in ("DRAFT#1", "HIST#2024-01-15T10:00:00Z"):
+                table.put_item(Item={"PK": "DOC#claim.pdf", "SK": sk})
+            table.put_item(Item={"PK": "DOC#other.pdf", "SK": "DRAFT#1"})
+            client = IDPClient(stack_name=STACK_NAME, region=aws_region)
+
+            result = client.document.delete("claim.pdf")
+
+            assert result.success is True, result.errors
+            assert result.deleted["review_items"] == 2
+            remaining = {(i["PK"], i["SK"]) for i in table.scan()["Items"]}
+            assert remaining == {("DOC#other.pdf", "DRAFT#1")}
+
+    def test_a_stack_without_a_review_queue_table_passes_no_store(
+        self, idp_stack, monkeypatch
+    ):
+        """A headless stack publishes no ``HITLTableName``; delete must pass
+        ``review_store=None`` rather than a store bound to an empty table name."""
+        seen = {}
+
+        def fake_delete_documents(**kwargs):
+            seen.update(kwargs)
+            return {"results": [{"success": True, "object_key": "x", "deleted": {}}]}
+
+        monkeypatch.setattr(
+            "idp_common.delete_documents.delete_documents", fake_delete_documents
+        )
+
+        idp_stack.document.delete("invoice.pdf")
+
+        assert "review_store" in seen
+        assert seen["review_store"] is None
 
     def test_a_dry_run_deletes_nothing(self, with_document, aws_region):
         client, table = with_document

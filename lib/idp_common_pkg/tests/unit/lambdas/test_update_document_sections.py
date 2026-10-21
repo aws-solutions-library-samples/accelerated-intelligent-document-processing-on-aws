@@ -788,3 +788,17 @@ class TestAnnotatorObjectScope:
                 tracking=tracking,
                 users=users,
             )
+
+
+@pytest.mark.unit
+class TestUnknownGroupRefused:
+    """A caller in none of the operation's groups is refused before any write."""
+
+    def test_update_document_sections_refuses_an_unknown_group(self, resolver):
+        document = _document(resolver, [_section(resolver, "1", [1], "Invoice")])
+        event = _event(
+            sections=[{"sectionId": "1", "pageIds": ["1"]}], groups=("SomeOtherGroup",)
+        )
+
+        with pytest.raises(PermissionError, match="updateDocumentSections"):
+            _call(resolver, document, event)

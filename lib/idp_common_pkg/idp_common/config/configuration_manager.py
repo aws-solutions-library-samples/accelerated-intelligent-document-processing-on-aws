@@ -9,7 +9,7 @@ import gzip
 import hashlib
 import json
 import os
-from typing import Dict, Any, Optional, Union, List
+from typing import Callable, Dict, Any, Optional, Union, List
 from botocore.exceptions import ClientError
 import logging
 from boto3.dynamodb.types import Binary
@@ -43,6 +43,21 @@ from .constants import (
 from .revisions import ConfigRevisionStore
 
 logger = logging.getLogger(__name__)
+
+
+class ConfigurationValidationError(ValueError):
+    """A configuration write breaks a rule checked at the write boundary.
+
+    Raised for cross-field rules that are deliberately not model validators, so a
+    stored configuration that breaks them still loads.
+    """
+
+
+#: Called before every configuration-profile save with
+#: ``(config before the write or None, config about to be saved, profile)``.
+#: It raises to refuse the write. ``handle_update_custom_configuration`` and
+#: ``restore_revision`` accept one.
+WriteGuard = Callable[[Optional[IDPConfig], IDPConfig, str], None]
 
 # Marker field added to full-format config versions in DynamoDB
 _FULL_CONFIG_MARKER = "_config_format"
@@ -898,7 +913,12 @@ class ConfigurationManager:
         return int(published) if published is not None else None
 
     def restore_revision(
-        self, profile: str, revision: int, created_by: Optional[str] = None
+        self,
+        profile: str,
+        revision: int,
+        created_by: Optional[str] = None,
+        *,
+        write_guard: Optional[WriteGuard] = None,
     ) -> int:
         """
         Restore an earlier revision by saving it as the profile's newest revision.
@@ -914,6 +934,9 @@ class ConfigurationManager:
         unrestorable with no way to edit it first. The dispatcher's runtime audit
         still reports an inert hook on every document.
 
+        ``write_guard`` (see :data:`WriteGuard`) is called with the profile's current
+        configuration and the restored one before anything is saved.
+
         Raises:
             ValueError: If the revision is not retained or is unreadable
         """
@@ -923,9 +946,12 @@ class ConfigurationManager:
                 f"Revision r{revision} of profile '{profile}' is no longer available"
             )
         config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
+        restored = IDPConfig(**config_dict)
+        if write_guard is not None:
+            write_guard(self._get_full_config_for_version(profile), restored, profile)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
-            IDPConfig(**config_dict),
+            restored,
             version=profile,
             created_by=created_by,
             revision_notes=f"Restored from r{revision}",
@@ -1107,7 +1133,7 @@ class ConfigurationManager:
         logger.info(f"No active config version is set; using '{DEFAULT_VERSION}'")
         return DEFAULT_VERSION
 
-    def list_config_versions(self) -> List[Dict[str, Any]]:
+    def list_config_versions(self, raise_errors: bool = False) -> List[Dict[str, Any]]:
         """
         List all Configuration Profiles.
 
@@ -1173,6 +1199,10 @@ class ConfigurationManager:
 
         except ClientError as e:
             logger.error(f"Error listing config versions: {e}")
+            # Callers that must tell "no profiles" from "could not read" (the review
+            # queue directory fails closed) ask for the error instead of [].
+            if raise_errors:
+                raise
             return []
 
     # ===== BDA Project Tracking Methods =====
@@ -1462,6 +1492,8 @@ class ConfigurationManager:
         description: Optional[str] = None,
         created_by: Optional[str] = None,
         revision_notes: Optional[str] = None,
+        *,
+        write_guard: Optional[WriteGuard] = None,
     ) -> bool:
         """
         Handle the updateConfiguration GraphQL mutation.
@@ -1491,6 +1523,12 @@ class ConfigurationManager:
                 profile-created paths; the operation-specific notes ("Reset to
                 default", "Saved as default", "Promoted from profile ...") are
                 left as they are, since those describe what the operation WAS.
+            write_guard: Called before EVERY save this operation makes, with the
+                configuration before the write (``None`` when there is none), the
+                configuration about to be saved and the profile it is saved to.
+                It raises to refuse the write (see :data:`WriteGuard`). Without one
+                the write is not role-checked, which is the case for IAM callers
+                (CLI, SDK); the cross-field checks run either way.
 
         Returns:
             True on success
@@ -1555,6 +1593,9 @@ class ConfigurationManager:
             logger.info(f"Resetting version {version} to default")
             default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
             if default_config and isinstance(default_config, IDPConfig):
+                if write_guard is not None:
+                    before = self._get_full_config_for_version(version) or default_config
+                    write_guard(before, default_config, version)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     default_config,
@@ -1575,6 +1616,13 @@ class ConfigurationManager:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
             self._reject_inert_gating_hooks(config, config_dict)
+            if write_guard is not None:
+                write_guard(
+                    self._get_full_config_for_version(DEFAULT_VERSION),
+                    config,
+                    DEFAULT_VERSION,
+                )
+                write_guard(self._get_full_config_for_version(version), config, version)
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
                 config,
@@ -1609,6 +1657,12 @@ class ConfigurationManager:
                 # Validate
                 full_config = IDPConfig(**full_dict)
                 self._reject_inert_gating_hooks(full_config, config_dict)
+                if write_guard is not None:
+                    write_guard(
+                        self._get_full_config_for_version(version) or default_config,
+                        full_config,
+                        version,
+                    )
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     full_config,
@@ -1622,6 +1676,8 @@ class ConfigurationManager:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
                 self._reject_inert_gating_hooks(config, config_dict)
+                if write_guard is not None:
+                    write_guard(self._get_full_config_for_version(version), config, version)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     config,
@@ -1662,12 +1718,22 @@ class ConfigurationManager:
         else:
             current_dict = current_config.model_dump(mode="python")
 
+        # The state before this write, for the write guard. With no stored config
+        # the version starts from the default, so that is what it is compared to.
+        before_config = (
+            current_config
+            if current_config is not None or write_guard is None
+            else IDPConfig(**deepcopy(current_dict))
+        )
+
         # Apply deltas: handle null values as "restore to default"
         self._apply_deltas_with_default_restore(current_dict, config_dict, version)
 
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
         self._reject_inert_gating_hooks(updated_config, config_dict)
+        if write_guard is not None:
+            write_guard(before_config, updated_config, version)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
             updated_config,

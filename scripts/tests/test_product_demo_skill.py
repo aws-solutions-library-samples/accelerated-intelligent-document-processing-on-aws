@@ -12,6 +12,7 @@ the skill is findable from both assistants.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL = REPO_ROOT / ".claude" / "skills" / "product-demo.md"
 CLINE_SKILL = REPO_ROOT / ".cline" / "skills" / "product-demo.md"
 STORYBOARDS = REPO_ROOT / "scripts" / "demo_storyboards.yaml"
-VALID_PERSONAS = {"Admin", "Author", "Reviewer", "Annotator", "Viewer"}
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from rbac_common import template_group_names  # noqa: E402
+
+#: Every Cognito group the stack creates, read from template.yaml.
+VALID_PERSONAS = set(template_group_names())
 REQUIRED_FIELDS = {
     "id",
     "title",

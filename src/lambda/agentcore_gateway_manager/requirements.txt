@@ -2,3 +2,6 @@ cfnresponse
 bedrock_agentcore_starter_toolkit
 # Prevent C extension that requires compilation
 ruamel-yaml>=0.17.0,<0.19.0
+# lazy-object-proxy 1.13.0 (via bedrock_agentcore_starter_toolkit -> openapi-spec-validator)
+# shipped with no Linux wheels, and sam build cannot compile it; 1.12.x has them.
+lazy-object-proxy>=1.7.1,<1.13.0

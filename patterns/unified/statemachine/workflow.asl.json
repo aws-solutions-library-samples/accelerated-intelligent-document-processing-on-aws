@@ -1157,6 +1157,40 @@
       "Type": "Choice",
       "Choices": [
         {
+          "And": [
+            {
+              "Variable": "$.Result.review_hold",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.Result.review_hold",
+              "IsBoolean": true
+            },
+            {
+              "Variable": "$.Result.review_hold",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "MarkReviewHold"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.Result.review_outcome",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.Result.review_outcome",
+              "IsString": true
+            },
+            {
+              "Variable": "$.Result.review_outcome",
+              "StringEquals": "rejected"
+            }
+          ],
+          "Next": "MarkReviewRejected"
+        },
+        {
           "Variable": "$.Result.hitl_triggered",
           "BooleanEquals": true,
           "Next": "MarkHITLPending"
@@ -1168,6 +1202,36 @@
       "Type": "Pass",
       "Comment": "Document marked for async HITL review, workflow continues without waiting",
       "Next": "CheckRuleValidationEnabled"
+    },
+    "MarkReviewHold": {
+      "Type": "Pass",
+      "Comment": "Review queues (idp_common.review_queues): phase 1 ends here for a document ProcessResults put in a review queue. Nothing that produces final output runs on unreviewed data (rule validation, summarization, evaluation, the postprocessing hook, the post-processing Lambda); the execution ends and frees its concurrency slot. Sets status HITL_IN_PROGRESS, which the workflow tracker preserves rather than forcing COMPLETED. A Complete or Reject later starts a separate finalize execution that continues the document. The IsPresent and type guards on the CheckHITLRequired rule keep the feature-off path identical: ProcessResults adds review_hold only in queue mode.",
+      "Parameters": {
+        "document.$": "$.Result.document"
+      },
+      "ResultPath": "$",
+      "Next": "SetReviewHoldStatus"
+    },
+    "SetReviewHoldStatus": {
+      "Type": "Pass",
+      "Result": "HITL_IN_PROGRESS",
+      "ResultPath": "$.document.status",
+      "Next": "WorkflowComplete"
+    },
+    "MarkReviewRejected": {
+      "Type": "Pass",
+      "Comment": "Review queues: terminal state of the finalize execution of a document a reviewer rejected. Rejected output is not a usable result, so nothing after the review point runs. Sets status REJECTED, which the workflow tracker preserves rather than forcing COMPLETED; the tracker then writes review/status.json = rejected last. The IsPresent and type guards on the CheckHITLRequired rule keep the feature-off path identical: ProcessResults adds review_outcome only in queue mode.",
+      "Parameters": {
+        "document.$": "$.Result.document"
+      },
+      "ResultPath": "$",
+      "Next": "SetRejectedStatus"
+    },
+    "SetRejectedStatus": {
+      "Type": "Pass",
+      "Result": "REJECTED",
+      "ResultPath": "$.document.status",
+      "Next": "WorkflowComplete"
     },
     "SummarizationStep": {
       "Type": "Task",

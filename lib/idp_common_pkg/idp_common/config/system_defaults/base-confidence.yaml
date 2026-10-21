@@ -120,3 +120,8 @@ extraction:
 hitl:
   enabled: false
   confidence_threshold: "0.8"
+  # Inbox messages (idp_common.notifications). Read from the ACTIVE configuration
+  # profile and cached for about 60 seconds; a change applies to messages written after it.
+  notifications:
+    retention_days: 30  # Days an Inbox message is kept before DynamoDB TTL removes it (1-365)
+    max_per_user: 50    # Messages kept per user; the oldest read message is removed first (1-200)

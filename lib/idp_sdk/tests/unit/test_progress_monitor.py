@@ -926,8 +926,16 @@ class TestGetDocumentStatus:
             "start_time": "2026-01-01T00:00:00Z",
             "end_time": "2026-01-01T00:01:00Z",
             "duration": 60,
+            # Always present: None when the document never entered a review queue.
+            "review": None,
             "num_sections": 4,
         }
+
+    def test_a_routed_document_carries_its_review_status(self, monitor, stubber):
+        review = {"status": "IN_REVIEW", "queue": "default"}
+        _expect_single(stubber, "a.pdf", {"status": "COMPLETED", "review": review})
+
+        assert monitor.get_document_status("a.pdf")["review"] == review
 
     def test_aborted_and_failed_carry_error_detail(self, monitor, stubber):
         _expect_single(

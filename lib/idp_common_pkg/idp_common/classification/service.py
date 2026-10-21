@@ -135,6 +135,15 @@ def aggregate_page_confidence(values: List[Optional[float]]) -> Optional[float]:
     return min(v for v in values if v is not None)
 
 
+_CLASSIFICATION_METHOD_REMOVED = (
+    "ClassificationService.classification_method was removed in config format "
+    "0.8. Set `classification.granularity` ('page' or 'packet') and, if you want "
+    "it explicit, `classification.modality.text` / `.images` in the config "
+    "instead; a stored config carrying the old key is converted on read. The "
+    "resolved value is readable as `service.granularity`."
+)
+
+
 class ClassificationService:
     """Service for classifying documents using various backends."""
 
@@ -143,15 +152,28 @@ class ClassificationService:
     INITIAL_BACKOFF = 2  # seconds
     MAX_BACKOFF = 300  # 5 minutes
 
-    # Classification method options (deprecated; see GRANULARITY_* below)
-    MULTIMODAL_PAGE_LEVEL = "multimodalPageLevelClassification"
-    TEXTBASED_HOLISTIC = "textbasedHolisticClassification"
-
     # Granularity: how many calls classification makes. Orthogonal to modality
     # (what each call sees) — which is the whole point of replacing the two
     # `classificationMethod` values, each of which bundled one of each.
     GRANULARITY_PAGE = "page"
     GRANULARITY_PACKET = "packet"
+
+    # ⚠️ `classification_method` is removed, and it refuses rather than
+    # disappearing. Reading a removed attribute raises on its own; **assigning
+    # one does not** — Python creates an instance attribute and nothing reads it,
+    # so `service.classification_method = "textbasedHolisticClassification"`
+    # would look like it switched the service to packet granularity and silently
+    # do nothing. That assignment was a documented way to switch methods and the
+    # shipped notebooks used it, so out-of-tree code doing it is the expected
+    # case rather than a hypothetical one. A failure that names the replacement
+    # is the only useful answer here.
+    @property
+    def classification_method(self):
+        raise AttributeError(_CLASSIFICATION_METHOD_REMOVED)
+
+    @classification_method.setter
+    def classification_method(self, _value):
+        raise AttributeError(_CLASSIFICATION_METHOD_REMOVED)
 
     # Strategy: whether boundaries and classes come from one call or two.
     # The identifier deliberately does not echo its value — see the note on
@@ -276,34 +298,10 @@ class ClassificationService:
             self.config.classification.maxPagesForClassification
         )
 
-        # Resolve granularity. `granularity` is authoritative when set; when
-        # empty it is derived from the deprecated `classificationMethod`, so an
-        # existing configuration keeps its behaviour with no edit.
-        configured_granularity = self.config.classification.granularity
-        self.granularity_is_explicit = bool(configured_granularity)
-        self.granularity = configured_granularity or self.GRANULARITY_PAGE
-
-        if self.granularity_is_explicit:
-            # Keep the deprecated field consistent with the resolved
-            # granularity, so the several places that still branch on it (the
-            # extraction and assessment services read it to decide whether a
-            # per-page signal exists) agree with what actually ran.
-            self._classification_method = (
-                self.TEXTBASED_HOLISTIC
-                if self.granularity == self.GRANULARITY_PACKET
-                else self.MULTIMODAL_PAGE_LEVEL
-            )
-        else:
-            # Assigning through the property derives granularity from it.
-            method = self.config.classification.classificationMethod
-            if method not in (self.MULTIMODAL_PAGE_LEVEL, self.TEXTBASED_HOLISTIC):
-                logger.warning(
-                    f"Invalid classification method '{method}', falling back to "
-                    f"'{self.MULTIMODAL_PAGE_LEVEL}'"
-                )
-                method = self.MULTIMODAL_PAGE_LEVEL
-            self.classification_method = method
-
+        # `granularity` is the setting; the deprecated `classificationMethod` it
+        # replaced is converted on every config read by
+        # `migrations.v07_to_v08`, so nothing here derives one from the other.
+        self.granularity = self.config.classification.granularity
         self.strategy = self.config.classification.strategy
 
         send_text, send_images = self._resolve_modality()
@@ -324,14 +322,11 @@ class ClassificationService:
             packet_cfg = self.config.classification.packet
             logger.info(
                 "Using PACKET classification granularity (text=%s, images=%s, "
-                "window_pages=%s, overlap_pages=%s)%s",
+                "window_pages=%s, overlap_pages=%s)",
                 send_text,
                 send_images,
                 packet_cfg.window_pages or "unwindowed",
                 packet_cfg.overlap_pages,
-                ""
-                if self.granularity_is_explicit
-                else " derived from classificationMethod",
             )
         else:
             logger.info(
@@ -340,34 +335,6 @@ class ClassificationService:
                 send_text,
                 send_images,
             )
-
-    @property
-    def classification_method(self) -> str:
-        """The deprecated ``classificationMethod`` value, kept in sync with granularity.
-
-        A property rather than a plain attribute because assigning it after
-        construction is an established way to switch methods — the shipped
-        notebooks do it, and so does the test suite. Dispatch now reads
-        ``granularity``, so a plain attribute would have left every such
-        assignment silently inert: the caller sets holistic, the service runs
-        page-level, and nothing says so.
-
-        Assignment is ignored for granularity purposes when ``granularity`` was
-        set explicitly in the configuration, since that is the authoritative
-        setting and the deprecated one must not override it.
-        """
-        return self._classification_method
-
-    @classification_method.setter
-    def classification_method(self, value: str) -> None:
-        self._classification_method = value
-        if getattr(self, "granularity_is_explicit", False):
-            return
-        self.granularity = (
-            self.GRANULARITY_PACKET
-            if value == self.TEXTBASED_HOLISTIC
-            else self.GRANULARITY_PAGE
-        )
 
     def _load_document_types(self) -> List[DocumentType]:
         """Load document types from configuration with regex patterns."""
@@ -1074,8 +1041,10 @@ class ClassificationService:
         Returns:
             Matched class name if found, None otherwise
         """
-        # Only apply page content regex for multi-modal page-level classification
-        if self.classification_method != self.MULTIMODAL_PAGE_LEVEL:
+        # Page-content regex is a per-PAGE shortcut: it decides one page's
+        # class from that page's own text. A packet call classifies the packet,
+        # so there is no per-page decision for it to pre-empt.
+        if self.granularity != self.GRANULARITY_PAGE:
             return None
 
         if not text_content:
@@ -1429,24 +1398,6 @@ class ClassificationService:
             self.granularity == self.GRANULARITY_PACKET and stage != self.STAGE_LABELING
         )
 
-        if packet and not self.granularity_is_explicit:
-            # A LEGACY holistic configuration (classificationMethod with no
-            # granularity) runs a hand-written packet prompt — the shipped
-            # default has always been the page prompt — so there is nothing here
-            # whose output shape we can describe. Its per-segment `confidence`
-            # IS parsed, so such a deployment can still be scored by asking for
-            # it in its own prompt.
-            logger.warning(
-                "classification.confidence.mode=%s is not composed for a legacy "
-                "%s configuration, whose task_prompt is hand-written; request "
-                "confidence in that prompt instead (a per-segment 'confidence' "
-                "key is parsed if present). Set classification.granularity: "
-                "packet to use the composed per-segment block.",
-                mode,
-                self.TEXTBASED_HOLISTIC,
-            )
-            return task_prompt
-
         if mode == "topk":
             top_k = resolve_top_k(
                 confidence_cfg.top_k_candidates, len(self.valid_doc_types)
@@ -1496,16 +1447,12 @@ class ClassificationService:
         class-confidence splice — this is the template whose placeholders the
         modality *inference* reads, so it has to be the operator's own text.
 
-        ⚠️ **The packet prompt is only preferred when granularity was set
-        explicitly.** A configuration carrying
-        ``classificationMethod: textbasedHolisticClassification`` and no
-        ``granularity`` is a pre-existing holistic deployment, and the only way
-        that ever worked was a hand-written packet-shaped ``task_prompt`` — the
-        shipped default has always been the page prompt, and no preset set that
-        method. Preferring the new packet default there would silently replace
-        the operator's own prompt with ours. So: legacy holistic keeps the flat
-        prompt, and ``granularity: packet`` uses ``packet.task_prompt``, which is
-        also the field the configuration panel shows for that granularity.
+        Packet granularity reads ``classification.packet.task_prompt``, and the
+        flat key is the page prompt. A pre-0.8 holistic configuration had only
+        the flat key — ``task_prompt`` was shared by both old methods and no
+        packet-shaped default ever shipped, so such a config's flat prompt IS
+        its hand-written packet prompt. ``migrations.v07_to_v08`` copies it into
+        ``packet`` on read, which is why nothing here has to special-case it.
         """
         return self._stage_prompt(stage, "task_prompt")
 
@@ -1562,7 +1509,7 @@ class ClassificationService:
             # Fall through to the single-pass resolution below.
 
         flat = getattr(self.config.classification, field)
-        if self.granularity == self.GRANULARITY_PACKET and self.granularity_is_explicit:
+        if self.granularity == self.GRANULARITY_PACKET:
             packet_prompt = getattr(self.config.classification.packet, field)
             if packet_prompt:
                 return packet_prompt
@@ -3190,18 +3137,21 @@ class ClassificationService:
     def classify_document(self, document: Document) -> Document:
         """
         Classify a document's pages and update the Document object with sections.
-        Uses the configured backend (Bedrock or SageMaker) and classification method.
+        Uses the configured backend (Bedrock or SageMaker).
 
-        The classification method is determined by the 'classificationMethod' setting:
-        - multimodalPageLevelClassification (default): Uses page-by-page classification
-          with sequence segmentation similar to BIO (Begin-Inside-Outside) tagging.
-          Each page receives both a document type and a boundary indicator:
-          * "start": Marks the beginning of a new document segment
-          * "continue": Indicates continuation of the current segment
-          This enables accurate segmentation of multi-document packets where multiple
-          documents of the same or different types may be combined in a single file.
-        - textbasedHolisticClassification: Processes the entire document as a packet
-          to identify document segments across pages using a holistic approach.
+        Dispatch reads ``strategy`` first, then ``granularity``:
+        - ``strategy: two_stage`` — boundaries first with no class vocabulary in
+          the prompt, then one labeling call per segment. Honours ``granularity``
+          inside Stage A, so the two settings compose rather than nest.
+        - ``granularity: page`` (the default) — one call per page, with sequence
+          segmentation similar to BIO (Begin-Inside-Outside) tagging. Each page
+          receives a document type and a boundary indicator, ``"start"`` for the
+          first page of a document instance or ``"continue"`` for a later one,
+          which is what segments a packet holding several documents of the same
+          type.
+        - ``granularity: packet`` — one call per packet (or per window), which
+          returns the segments directly rather than having them pieced together
+          from per-page verdicts.
 
         Single-class configurations short-circuit the class decision (no backend
         call) but still honor ``sectionSplitting``: ``disabled`` yields one
@@ -3328,10 +3278,9 @@ class ClassificationService:
                 )
                 return document
 
-        # Dispatch on strategy first, then on the resolved granularity (see
-        # __init__: `granularity` when set, otherwise derived from the
-        # deprecated classificationMethod). Two-stage honours granularity
-        # inside Stage A, so the two settings compose rather than nest.
+        # Dispatch on strategy first, then on granularity. Two-stage honours
+        # granularity inside Stage A, so the two settings compose rather than
+        # nest.
         if self.strategy == self.STRATEGY_TWO_STAGE:
             return self.two_stage_classify_document(document, forced_class=forced_class)
 

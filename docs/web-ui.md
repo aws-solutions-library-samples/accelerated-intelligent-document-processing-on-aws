@@ -25,12 +25,14 @@ _The GenAIIDP Web Interface showing the document tracking dashboard with status 
 - View and edit pattern configuration, including document classes, prompt engineering, and model settings
 - Manage multiple configuration profiles — create, compare, activate, and delete profiles, and view/compare/restore each profile's revision history (see [configuration-profiles.md](configuration-profiles.md))
 - Retain, view, compare, and delete **document versions** — every processing run of a document is kept and viewable read-only (see [document-versions.md](document-versions.md))
-- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the Assessment & HITL Configuration section
+- **Confidence threshold configuration** for HITL (Human-in-the-Loop) triggering through the **Human-in-the-Loop (HITL) Review (Optional)** configuration section
 - Document upload from your local computer, or from the **bundled sample documents** shipped with the deployment (no local download needed)
 - Knowledge base querying for document collections
 - "Chat with document" from the detailed view of the document
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
+- **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
+- **My Work** and **HITL** — Annotators get My Work (Inbox, assigned Tasks, Queues) and one annotation screen; Admins create review queues and assign their items in HITL › Queue Management (see [HITL](#hitl))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -631,6 +633,105 @@ https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
 
 1. Navigate to a document's detail page and scroll to the bottom
 2. In the text area, type in your question and you'll see an answer pop up after the document is analyzed with the Nova Pro model
+
+## HITL
+
+**HITL** (human-in-the-loop) brings every kind of human review work into one place:
+production documents held in review queues, and test sets that need ground truth.
+The pages are described in [review-queues.md](review-queues.md). In outline:
+
+- **Navigation.** A user whose only role is Annotator sees exactly **My Work**
+  (**Inbox**, **Tasks**, **Queues**). Other users have no My Work and no Inbox.
+  They see the usual sections their roles
+  allow: **Documents**, **Assistants**, **Test Studio**, **Configuration**,
+  **Extensions** and **Resources**. Admins also see **HITL › Queue Management**.
+- **Queue Management** (Admins) has two tables, **Production Queues** and **Test Studio
+  Queues** (one per test set), each listing Queue, Items, Pending, Assigned and
+  Annotators with an actions menu. Admins create, edit and delete
+  Production queues here, setting each one's name, priority, time limit, eligible
+  Annotators (who works the queue), **Enabled** switch and **Confidence threshold**
+  in its **Settings**. Low-confidence production documents go to the Default
+  queue when it is enabled, judged against its threshold. Deleting a queue moves its
+  items to Default; Default itself can't be deleted. On each queue's page, Admins
+  select items and **Assign** them to an Annotator, **Unassign** them, **Move** them
+  to another queue, or **Remove from queue** (the document completes with
+  its machine output).
+- **My Work › Queues** lists the queues you're listed on. On a queue's page you can
+  open any item read-only and **Claim** one nobody holds, which assigns it to you.
+- **My Work › Tasks** lists everything assigned to you, both Production review items
+  and Test Studio documents, with their document, source, queue and age. Selecting
+  one opens it. The **Tasks** badge counts them; completing or skipping an item
+  removes it from the list and the count straight away (**Skip** gives the item back
+  to its queue, unassigned and not finished), and work assigned to you by an Admin
+  appears within about 30 seconds.
+- **The annotation screen** is the same for every item, whether you open it from
+  Tasks, an Inbox message or Queue Management. Production documents are at
+  `#/review-queues/items/<document>` and test-set documents at
+  `#/review-queues/test-sets/<id>/items/<document>`, and the breadcrumbs name the
+  item's queue or test set, linking to its page. The actions are **Complete** and,
+  for the assignee, **Skip**. An Admin edits an unassigned Production item directly
+  (the first saved edit, or Complete, assigns it to them) and uses **Take over** on
+  one assigned to someone else.
+- The Document List shows queue-held documents as **In review**. The legacy Reviewer
+  flow (**Start Review**) is unchanged.
+
+## Inbox
+
+Annotators have an **Inbox**, in **My Work**: messages that platform components post to you,
+either by name or to a Cognito group you belong to. Messages are private to you;
+marking, deleting or muting them does not affect anyone else's copy. There are three
+entry points:
+
+- **Bell (top navigation).** The bell shows a badge while you have unread messages and
+  opens a menu with your five most recent messages, read and unread, with unread ones
+  flagged. Choosing a message opens the page it links to (or the Inbox page when it has
+  no link) and marks it read. The menu also offers **Mark all as read** and
+  **View all in Inbox**.
+- **Inbox (left navigation).** **Inbox** is the first entry of **My Work**, with a badge
+  showing the unread count. Users who aren't Annotators have no Inbox: no navigation
+  entry, no bell and no Inbox page.
+- **Inbox page.** The Inbox page lists your messages with when they were received,
+  their title (bold while unread; long titles are shortened, with the full title on
+  hover), type and severity. Find messages by text, or filter by read
+  state (**All** or **Unread**), type and severity, and sort by any column (severity
+  sorts from success to error). Select messages to **Mark as read**, **Mark as unread**
+  or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
+  (which deletes every read message) without a selection. Each row's actions menu
+  (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
+  and marks it read; **Open related page** follows its link.
+
+**Settings.** The settings button (gear icon) at the top right of the Inbox page opens
+**Inbox settings**, which lists the message types and lets you turn off the ones you
+don't want. A muted type isn't delivered to you at all:
+it is not stored and not counted. Turning a type back on affects new messages only.
+
+**How quickly messages appear.** The bell, the navigation badge and the Inbox page
+share one check for new messages, about every 60 seconds while the browser tab is
+visible. Checking pauses while the tab is hidden and resumes when you return to it.
+New messages update the badges and never raise a pop-up notification. Your own
+actions (marking messages read or unread, deleting them) update the unread count
+on the bell and the navigation badge straight away.
+
+**Retention.** Messages are kept for a limited time and up to a per-user cap; when
+the cap is reached, the oldest read messages are removed first. Administrators set
+both in the configuration — see
+[Inbox message retention](configuration.md#inbox-message-retention).
+
+**What arrives in the Inbox.** HITL review queues post three kinds of message to the
+Annotator concerned, for production items and Test Studio documents alike:
+
+| Type (Inbox settings) | Sent when |
+|---|---|
+| **Review item assigned to you** | An Admin assigns an item or document to you. |
+| **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
+| **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+
+Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
+**Review claim expired**. This release does not send them: arrivals in a queue are
+announced to nobody (Admins see waiting work in Queue Management), and assignments do
+not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+posting messages should read the
+[notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
 ## Feedback & Issue Reporting
 

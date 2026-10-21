@@ -1,28 +1,27 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
-import { Routes, Route, useParams } from 'react-router-dom';
+import { Navigate, Routes, Route, useParams, useSearchParams } from 'react-router-dom';
 
 import TestStudioLayout from '../components/test-studio/TestStudioLayout';
 import TestSetDetail from '../components/test-studio/TestSetDetail';
 import TestSetDocumentDetail from '../components/test-studio/TestSetDocumentDetail';
-import AnnotationWorkspace from '../components/test-studio/AnnotationWorkspace';
-import AnnotationQueueLanding from '../components/test-studio/AnnotationQueueLanding';
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
+import { REVIEW_QUEUES_PATH, testSetItemPath, testSetQueuePath } from './constants';
 
 /**
- * Keyed on the set id so moving between sets remounts the workspace instead of
- * reusing it. Its per-set state would otherwise carry over — above all the opened
- * version transition: starting one on set A and navigating in-app to set B showed
- * B with A's `v1 → v2` badge, a `?v=2` link and an unlocked editor, while B had no
- * draft and no snapshot. That is the silent commitment the transition exists to
- * prevent, reachable through the ordinary path of an annotator working two sets.
- * A remount also drops A's queue, so B's load failure cannot leave A's documents
- * on screen under B's heading.
+ * Annotation moved to Human Review: an old `sets/<id>/annotate[?doc=...]` link opens
+ * the test set's queue page, or the document's workspace when it names one.
  */
-const AnnotationWorkspaceForSet = (): React.JSX.Element => {
-  const { testSetId } = useParams<{ testSetId: string }>();
-  return <AnnotationWorkspace key={testSetId} />;
+const AnnotateRedirect = (): React.JSX.Element => {
+  const { testSetId = '' } = useParams<{ testSetId: string }>();
+  const [searchParams] = useSearchParams();
+  const doc = searchParams.get('doc');
+  const rest = new URLSearchParams(searchParams);
+  rest.delete('doc');
+  const query = rest.toString();
+  const target = doc ? testSetItemPath(testSetId, doc) : testSetQueuePath(testSetId);
+  return <Navigate to={`${target}${query ? `?${query}` : ''}`} replace />;
 };
 
 const TestStudioRoutes = (): React.JSX.Element => {
@@ -38,27 +37,11 @@ const TestStudioRoutes = (): React.JSX.Element => {
           </div>
         }
       />
-      {/* The scoped annotation queue — the landing page for an Annotator, and
-          reachable by an owner from the test set's detail page. Declared before
-          the bare sets/:testSetId route so "annotate" isn't swallowed as an id. */}
-      <Route
-        path="sets/:testSetId/annotate"
-        element={
-          <div>
-            <GenAIIDPTopNavigation />
-            <AnnotationWorkspaceForSet />
-          </div>
-        }
-      />
-      <Route
-        path="annotate"
-        element={
-          <div>
-            <GenAIIDPTopNavigation />
-            <AnnotationQueueLanding />
-          </div>
-        }
-      />
+      {/* Annotation lives under Human Review; these keep old links working.
+          Declared before the bare sets/:testSetId route so "annotate" isn't
+          swallowed as an id. */}
+      <Route path="sets/:testSetId/annotate" element={<AnnotateRedirect />} />
+      <Route path="annotate" element={<Navigate to={REVIEW_QUEUES_PATH} replace />} />
       <Route
         path="sets/:testSetId"
         element={

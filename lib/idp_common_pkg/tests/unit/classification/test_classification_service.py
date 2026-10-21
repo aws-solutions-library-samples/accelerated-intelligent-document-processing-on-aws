@@ -77,7 +77,7 @@ class TestClassificationService:
                     
                     Respond with a JSON object with a single field "class" containing the document type.
                 """),
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
             },
         }
 
@@ -112,7 +112,7 @@ class TestClassificationService:
                     
                     Respond with a JSON object with a single field "class" containing the document type.
                 """),
-                "classificationMethod": "multimodalPageLevelClassification",
+                "granularity": "page",
             },
         }
 
@@ -133,7 +133,7 @@ class TestClassificationService:
 
             assert service.backend == "bedrock"
             assert service.bedrock_model == "anthropic.claude-3-sonnet-20240229-v1:0"
-            assert service.classification_method == "multimodalPageLevelClassification"
+            assert service.granularity == service.GRANULARITY_PAGE
             assert len(service.document_types) == 3
             assert service.valid_doc_types == {"invoice", "receipt", "letter"}
 
@@ -991,7 +991,7 @@ class TestClassificationService:
         mock_merge_metering.return_value = {"tokens": 250}
 
         # Set classification method to holistic
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
 
         # Call the method
         result = service.holistic_classify_document(doc)
@@ -1033,7 +1033,7 @@ class TestClassificationService:
             )
 
             # Set classification method to holistic
-            service.classification_method = service.TEXTBASED_HOLISTIC
+            service.granularity = service.GRANULARITY_PACKET
 
             # Create a test document
             doc = Document(
@@ -1225,7 +1225,7 @@ class TestClassificationService:
     def test_holistic_single_class_section_splitting_page(self, single_class_config):
         """The holistic short-circuit honors `page` too."""
         service = self._single_class_service(single_class_config, "page")
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
         doc = self._three_page_document()
 
         with patch.object(service, "_invoke_bedrock_model") as spy_invoke:
@@ -1442,7 +1442,7 @@ class TestClassificationService:
     ):
         """Holistic segment RANGES are the boundary detection; the class is pinned."""
         service = self._regex_service(mock_config, "llm_determined")
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
         doc = self._regex_named_document()
         mock_get_text.side_effect = ["Page 1", "Page 2", "Page 3"]
 
@@ -1568,7 +1568,7 @@ class TestClassificationService:
         }
 
         # Set classification method to holistic
-        service.classification_method = service.TEXTBASED_HOLISTIC
+        service.granularity = service.GRANULARITY_PACKET
 
         # Call the method
         result = service.holistic_classify_document(doc)
@@ -2051,7 +2051,7 @@ class TestClassificationService:
             service = ClassificationService(
                 region="us-west-2", config=mock_config, backend="bedrock"
             )
-            service.classification_method = service.TEXTBASED_HOLISTIC
+            service.granularity = service.GRANULARITY_PACKET
 
             # Create test document
             doc = Document(id="test-doc", status=Status.CLASSIFYING)

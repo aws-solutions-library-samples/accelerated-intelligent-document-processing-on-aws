@@ -1,0 +1,13 @@
+mutation UpdateInboxPreferences($mutedTypes: [String!]!) {
+  updateInboxPreferences(mutedTypes: $mutedTypes) {
+    types {
+      id
+      displayName
+      description
+      defaultSeverity
+      muted
+    }
+    mutedTypes
+    updatedAt
+  }
+}

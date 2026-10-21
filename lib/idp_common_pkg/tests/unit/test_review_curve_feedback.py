@@ -578,7 +578,8 @@ class TestAnnotatorReviewScope:
 
     Group membership gets them to the operation; these tests cover the second gate,
     which stops an annotator onboarded for one labeling effort from reviewing
-    production documents or another test set.
+    production documents or another test set. Refusals are ``PermissionError``,
+    which the API dispatcher maps to 403 rather than a 400 validation error.
     """
 
     @pytest.fixture
@@ -652,7 +653,7 @@ class TestAnnotatorReviewScope:
         module, table, s3 = scoped_env
         _seed_review_doc(table, s3, object_key="run2/b.pdf", test_set_id="ts-other")
 
-        with pytest.raises(ValueError, match="Unauthorized"):
+        with pytest.raises(PermissionError, match="Unauthorized"):
             module.handler(self._annotator_event("claimReview", "run2/b.pdf"), None)
 
     def test_annotator_cannot_review_a_production_document(self, scoped_env):
@@ -660,7 +661,7 @@ class TestAnnotatorReviewScope:
         module, table, s3 = scoped_env
         table.put_item(Item={"PK": "doc#prod/x.pdf", "SK": "none"})
 
-        with pytest.raises(ValueError, match="only review test-set documents"):
+        with pytest.raises(PermissionError, match="only review test-set documents"):
             module.handler(self._annotator_event("claimReview", "prod/x.pdf"), None)
 
     def test_annotator_cannot_skip_all_sections(self, scoped_env):
@@ -668,7 +669,7 @@ class TestAnnotatorReviewScope:
         module, table, s3 = scoped_env
         _seed_review_doc(table, s3, object_key="run1/a.pdf", test_set_id="ts1")
 
-        with pytest.raises(ValueError, match="administrators and reviewers"):
+        with pytest.raises(PermissionError, match="administrators and reviewers"):
             module.handler(
                 self._annotator_event("skipAllSectionsReview", "run1/a.pdf"), None
             )
@@ -678,7 +679,7 @@ class TestAnnotatorReviewScope:
         event = self._annotator_event("claimReview", "run1/a.pdf")
         event["identity"]["claims"]["cognito:groups"] = ["Viewer"]
 
-        with pytest.raises(ValueError, match="Unauthorized"):
+        with pytest.raises(PermissionError, match="Unauthorized"):
             module.handler(event, None)
 
     def test_reviewer_is_unaffected_by_test_set_scope(self, scoped_env):
@@ -706,7 +707,7 @@ class TestAnnotatorReviewScope:
         event = self._annotator_event("claimReview", "run2/b.pdf")
         event["identity"]["claims"]["cognito:groups"] = ["Annotator", "Reviewer"]
 
-        with pytest.raises(ValueError, match="Unauthorized"):
+        with pytest.raises(PermissionError, match="Unauthorized"):
             module.handler(event, None)
 
     def test_annotator_who_is_also_an_author_is_unscoped(self, scoped_env):

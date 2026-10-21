@@ -15,7 +15,6 @@ summarization:
 
 classification:
   model: us.amazon.nova-2-lite-v1:0
-  classificationMethod: multimodalPageLevelClassification
 
 classes:
   - $schema: https://json-schema.org/draft/2020-12/schema

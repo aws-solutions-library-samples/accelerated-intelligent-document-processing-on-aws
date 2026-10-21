@@ -127,15 +127,18 @@ The GenAI IDP Accelerator uses a **system defaults** architecture where configur
 
    Which of the two is used comes from the caller's explicit pattern argument. Where
    that is omitted, the tools that auto-detect it (the SDK's config download and
-   upload, and the `update_configuration` Lambda) select `pattern-1.yaml` only for a
-   configuration whose `classification.classificationMethod` is `bda`, and
-   `pattern-2.yaml` otherwise — they do not read the top-level `use_bda` flag, so a
-   BDA deployment configured only through `use_bda: true` resolves against
-   `pattern-2.yaml`. That is benign but not free: your own `use_bda: true` still wins
-   the merge, so the workflow routes to BDA as you asked, and the cost is a
-   configuration carrying the OCR, classification, chat, rule-validation and LLM
-   extraction defaults BDA mode does not use. `use_bda` is what routes the workflow at
-   run time; the pattern file only decides which defaults are merged underneath it.
+   upload, and the `update_configuration` Lambda) read the top-level **`use_bda`**
+   flag: `pattern-1.yaml` when it is set, `pattern-2.yaml` otherwise. That is the same
+   flag that routes the workflow at run time, so the defaults merged underneath a
+   configuration now match the branch it will actually take.
+
+   Until config format 0.8 these tools sniffed `classification.classificationMethod
+   == "bda"` instead and did **not** read `use_bda`, so a BDA deployment configured
+   only through `use_bda: true` resolved against `pattern-2.yaml` and carried the OCR,
+   classification, chat, rule-validation and LLM extraction defaults BDA mode does not
+   use. (`"bda"` was never one of that key's two documented values and nothing in the
+   product wrote it; the key itself is gone — see
+   [Classification Method → Granularity](migration-classification-granularity.md).)
 
 2. **User configurations** are merged on top, overriding only the specified values
 
@@ -193,11 +196,11 @@ recommendation, and states plainly where a setting was measured to buy nothing.
 To override specific settings while keeping others at defaults:
 
 ```yaml
-notes: "Configuration with custom classification method"
+notes: "Configuration that classifies a whole packet in one call"
 
-# Override just the classification method
+# Override just the classification granularity
 classification:
-  classificationMethod: textbasedHolisticClassification
+  granularity: packet
 
 # Override confidence to use integrated mode
 extraction:
@@ -439,7 +442,8 @@ extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
 `hitl.*` block. See [Extraction & Confidence](./extraction-and-confidence.md) for
-the full reference.
+the full reference. Production [review queues](./review-queues.md) are not part of
+the configuration: Admins manage them in HITL › Queue Management.
 
 ### Enable/Disable Confidence
 
@@ -536,6 +540,40 @@ score reaches the UI and what a `None` confidence means.
 See [Granular Assessment Retirement](./migration-granular-retirement.md) for details.
 
 For detailed information, see [Extraction & Confidence](extraction-and-confidence.md).
+
+## Inbox Message Retention
+
+The [Inbox](web-ui.md#inbox) keeps each user's messages for a limited time and up to
+a per-user cap. Both are configuration settings under `hitl.notifications`, shown in
+the Web UI configuration editor as **Inbox messages** inside the
+**Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  enabled: false            # does not affect the Inbox settings below
+  notifications:
+    retention_days: 30      # 1-365: days a message is kept before it is removed automatically
+    max_per_user: 50        # 1-200: messages kept per user
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.notifications.retention_days` | 30 | 1–365 | Days an Inbox message is kept. DynamoDB TTL removes it afterwards, and an expired message is never listed or counted, even before TTL deletes it. |
+| `hitl.notifications.max_per_user` | 50 | 1–200 | Messages kept per user. When a new message takes a user over the cap, expired messages are removed first, then the oldest read messages, and the oldest unread message only when every message is unread. |
+
+How the settings apply:
+
+- They are read from the **active** [configuration profile](configuration-profiles.md).
+- They are cached for about 60 seconds, so a change can take up to a minute to reach
+  every writer.
+- They apply to messages written after the change. Existing messages keep the
+  expiry they were written with, and the cap is enforced the next time a message is
+  written for that user.
+- They apply whether or not `hitl.enabled` is set.
+- If the configuration cannot be read, the defaults apply.
+
+For how platform components post messages, see the
+[notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
 ## Stack Parameters
 
