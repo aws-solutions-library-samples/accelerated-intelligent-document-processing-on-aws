@@ -968,3 +968,118 @@ class TestPacketConfidence:
             _document(2),
         )
         assert [c["class"] for c in segments[0].candidates] == ["invoice"]
+
+
+@pytest.mark.unit
+class TestAModelRefusingImagesNamesTheSetting:
+    """⚠️ A model that does not accept images refuses a packet call, and its own
+    message does not mention the setting that caused it.
+
+    Issue #1328 asked for this combination to be refused at save time. It is
+    caught here instead, deliberately: deciding it up front needs a per-model
+    vision list, which this repository does not have — `model_config_limits.yaml`
+    carries token limits only — and which would go stale every time a model is
+    added. A stale entry refuses a configuration for a model that **does** support
+    images, which is worse than the error it replaces. Bedrock already knows the
+    answer; the only thing missing was the pointer to `modality.images`.
+
+    The original exception is re-raised with the hint APPENDED, never replaced, so
+    a validation error with another cause is not mis-attributed. Issue #1524.
+    """
+
+    def test_the_matcher_accepts_the_real_refusal_wordings(self):
+        from idp_common.classification.service import _looks_like_an_image_refusal
+
+        for message in (
+            "ValidationException: This model does not support image input",
+            "ValidationException: The provided model does not support multimodal content",
+            "ValidationException: vision is not supported for this model",
+            "ValidationException: unsupported modality: image",
+        ):
+            assert _looks_like_an_image_refusal(Exception(message)), message
+
+    def test_the_matcher_rejects_a_throttle_or_a_timeout(self):
+        """⚠️ These can mention an image and are not refusals. Appending an
+        image hint to a throttle sends the operator to the wrong setting."""
+        from idp_common.classification.service import _looks_like_an_image_refusal
+
+        for message in (
+            "ThrottlingException: Too many requests",
+            "ThrottlingException: image request throttled, retry later",
+            "Read timeout on endpoint URL",
+            "ValidationException: malformed input request",
+        ):
+            assert not _looks_like_an_image_refusal(Exception(message)), message
+
+    def test_the_hint_names_the_setting_and_keeps_the_original_message(
+        self, monkeypatch
+    ):
+        service = _service(granularity="packet", modality={"images": True})
+        original = "ValidationException: This model does not support image input"
+
+        def refuse(*_args, **_kwargs):
+            raise ValueError(original)
+
+        monkeypatch.setattr(service, "_invoke_bedrock_model", refuse)
+        monkeypatch.setattr(
+            service, "_load_packet_page_images", lambda *a, **k: [("1", _png())]
+        )
+        with pytest.raises(ValueError) as excinfo:
+            service._classify_one_packet_window(
+                document=Document(id="d", input_key="d.pdf"),
+                config={"task_prompt": "p", "model": "us.amazon.nova-micro-v1:0"},
+                pages_content={"1": "text"},
+                window_page_ids=["1"],
+                window_label="1/1",
+                send_images=True,
+                forced_class=None,
+            )
+        message = str(excinfo.value)
+        assert original in message, "the original error must survive"
+        assert "classification.modality.images" in message
+        assert "nova-micro" in message
+
+    def test_an_unrelated_failure_is_re_raised_untouched(self, monkeypatch):
+        service = _service(granularity="packet", modality={"images": True})
+        monkeypatch.setattr(
+            service,
+            "_invoke_bedrock_model",
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("ThrottlingException")),
+        )
+        monkeypatch.setattr(
+            service, "_load_packet_page_images", lambda *a, **k: [("1", _png())]
+        )
+        with pytest.raises(ValueError) as excinfo:
+            service._classify_one_packet_window(
+                document=Document(id="d", input_key="d.pdf"),
+                config={"task_prompt": "p", "model": "m"},
+                pages_content={"1": "text"},
+                window_page_ids=["1"],
+                window_label="1/1",
+                send_images=True,
+                forced_class=None,
+            )
+        assert "modality.images" not in str(excinfo.value)
+
+    def test_no_hint_when_the_request_carried_no_images(self, monkeypatch):
+        """Text-only packet call: an image-shaped error cannot be about images
+        this request sent, so attributing it to `modality.images` would be wrong."""
+        service = _service(granularity="packet", modality={"images": False})
+        monkeypatch.setattr(
+            service,
+            "_invoke_bedrock_model",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ValueError("ValidationException: image decode failed")
+            ),
+        )
+        with pytest.raises(ValueError) as excinfo:
+            service._classify_one_packet_window(
+                document=Document(id="d", input_key="d.pdf"),
+                config={"task_prompt": "p", "model": "m"},
+                pages_content={"1": "text"},
+                window_page_ids=["1"],
+                window_label="1/1",
+                send_images=False,
+                forced_class=None,
+            )
+        assert "modality.images" not in str(excinfo.value)

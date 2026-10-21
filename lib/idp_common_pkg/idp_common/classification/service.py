@@ -145,6 +145,34 @@ _CLASSIFICATION_METHOD_REMOVED = (
 )
 
 
+#: Bedrock's own wording when a request carries images a model cannot take. Matched
+#: loosely and used only to APPEND a hint to the original error, never to replace
+#: it, so a false match costs one unhelpful sentence rather than a wrong diagnosis.
+_IMAGE_REFUSAL_MARKERS = (
+    "image",
+    "multimodal",
+    "vision",
+    "modality",
+)
+
+
+def _looks_like_an_image_refusal(exc: Exception) -> bool:
+    """Whether ``exc`` reads like a model refusing image content.
+
+    Deliberately permissive on the message and strict on the caller: the caller
+    only consults this when the request actually carried images, so the worst case
+    is appending an image hint to an image-shaped error that had another cause.
+    """
+    text = str(exc).lower()
+    if not any(marker in text for marker in _IMAGE_REFUSAL_MARKERS):
+        return False
+    # A throttle or a timeout that happens to mention an image is not a refusal.
+    return not any(
+        benign in text
+        for benign in ("throttl", "timed out", "timeout", "too many requests")
+    )
+
+
 class ClassificationService:
     """Service for classifying documents using various backends."""
 
@@ -5000,9 +5028,37 @@ class ClassificationService:
             window_page_ids[-1],
             len(page_images),
         )
-        response_with_metering = self._invoke_bedrock_model(
-            content=content, config=config
-        )
+        try:
+            response_with_metering = self._invoke_bedrock_model(
+                content=content, config=config
+            )
+        except Exception as exc:
+            # ⚠️ A model that does not accept images refuses this request, and its
+            # own message does not mention the setting that caused it — so the
+            # operator sees a Bedrock validation error and no reason to look at
+            # `classification.modality.images`.
+            #
+            # This is caught here rather than refused at save time ON PURPOSE.
+            # Deciding it up front needs a per-model vision list, which this
+            # repository does not have (`model_config_limits.yaml` carries token
+            # limits only) and which would go stale every time a model is added —
+            # and a stale entry refuses a configuration for a model that does
+            # support images, which is worse than the error it replaces. Bedrock
+            # already knows the answer; the only thing missing was the pointer.
+            #
+            # The original exception is re-raised with the hint appended, never
+            # replaced, so a validation error with some other cause is not
+            # mis-attributed. Issue #1524.
+            if page_images and _looks_like_an_image_refusal(exc):
+                raise type(exc)(
+                    f"{exc}\n\nThis packet classification request carried "
+                    f"{len(page_images)} page image(s) because "
+                    f"classification.modality.images is on. If "
+                    f"{config.get('model', 'this model')} does not accept images, "
+                    f"set classification.modality.images to false — packet "
+                    f"granularity works text-only — or choose a model that does."
+                ) from exc
+            raise
 
         response = response_with_metering["response"]
         window_metering = response_with_metering.get("metering", {})

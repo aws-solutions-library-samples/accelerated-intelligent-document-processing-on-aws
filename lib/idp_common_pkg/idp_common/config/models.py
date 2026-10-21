@@ -4749,6 +4749,56 @@ class IDPConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def show_the_max_pages_override_in_the_resolved_config(self) -> "IDPConfig":
+        """``maxPagesForClassification`` overrides ``sectionSplitting``; say so.
+
+        ⚠️ **This is a normalisation, deliberately not a refusal.** With
+        ``maxPagesForClassification`` set to anything but ``ALL``,
+        ``ClassificationService._apply_limited_classification_to_all_pages``
+        collapses the result into one all-pages section **for every
+        configuration** — so a stored ``sectionSplitting`` of ``llm_determined``
+        or ``page`` is a value the runtime ignores. Issue #1328 called that
+        override out as silent; resolving the key to what actually happens is what
+        stops it being silent, and it leaves the field visible rather than hiding a
+        control that is still in force.
+
+        It does not raise, for the reason #1522 exists: a validator that raises on
+        read runs on every configuration read in the system, so refusing a
+        combination here would fail documents on a configuration that loaded
+        cleanly before. Normalising cannot.
+
+        Measured before choosing this: no shipped preset uses a non-``ALL`` value
+        and no profile on the stack this was developed against used the overriding
+        combination, so this changes the resolved configuration of nothing that
+        exists today.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        limit = self.classification.maxPagesForClassification
+        if limit is None or str(limit).strip().upper() in ("ALL", ""):
+            return self
+        try:
+            # A non-numeric value is already warned about and treated as ALL by
+            # the service, so it overrides nothing.
+            if int(str(limit).strip()) <= 0:
+                return self
+        except (TypeError, ValueError):
+            return self
+        if self.classification.sectionSplitting != "disabled":
+            logger.warning(
+                "classification.maxPagesForClassification is %r, which classifies "
+                "only the first pages and applies their class to the whole file — "
+                "so classification.sectionSplitting %r cannot take effect. "
+                "Resolved to 'disabled' to match what will happen. Set "
+                "maxPagesForClassification to ALL if you want sectioning.",
+                limit,
+                self.classification.sectionSplitting,
+            )
+            self.classification.sectionSplitting = "disabled"
+        return self
+
     def to_dict(self, **extra_fields: Any) -> Dict[str, Any]:
         """
         Convert to a mutable dictionary with optional extra fields.

@@ -1436,7 +1436,7 @@ Resources:
               sectionSplitting:
                 type: string
                 title: Section splitting
-                description: "How the documents found become sections. 'llm_determined': one section each. 'page': one per page, which stops two adjacent documents of the same class being joined. 'disabled': the whole file as one section, class by majority vote. ⚠️ 'disabled' does not skip classification — use Pages to classify for that."
+                description: "How the documents found become sections, at either granularity and either strategy. 'llm_determined': one section each. 'page': one per page, which stops two adjacent documents of the same class being joined. 'disabled': the whole file as one section, class by majority vote. ⚠️ 'disabled' does not skip classification — use Pages to classify for that. ⚠️ Setting Pages to classify to a number resolves this to 'disabled' on save, because that path collapses the file to one section whatever this says. Not the same as Stage A — Segmentation above, which finds the documents in the first place and applies to two-stage only."
                 enum: ["disabled", "page", "llm_determined"]
                 default: "llm_determined"
                 order: 5
