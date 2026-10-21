@@ -299,15 +299,12 @@ def test_the_invocation_count_does_not_measure_bedrock_calls():
 
     A 6-page document at `page` granularity makes six Bedrock calls inside ONE
     Lambda invocation, so this counter reads 1 — identical to `packet`, which
-    makes one Bedrock call. The runtime emits no per-request count under the
-    Bedrock key, so **packet granularity's N-calls-to-one saving cannot be
-    evidenced from metering at all**; what discriminates the two is
-    `classification_output_tokens_per_page`, because page granularity emits a
-    verdict per page (216.7 against 45.7 on the same 8-document corpus).
+    makes one Bedrock call. Two granularities with a 6x difference in call count
+    are INDISTINGUISHABLE in it, which is the opposite of what the name `calls`
+    invited.
 
-    This test exists so a future reader does not reinstate the claim: it pins
-    that the two granularities are INDISTINGUISHABLE here, which is the opposite
-    of what the name `calls` invited.
+    The Bedrock call count is metered separately, under the `bedrock` key, and is
+    reported as `bedrock_calls` — see the test below.
     """
     page_like = {
         # Six Bedrock calls, one Lambda invocation.
@@ -575,3 +572,44 @@ def test_main_does_not_warn_when_the_baseline_is_requested(monkeypatch, capsys):
     with pytest.raises(BaseException):
         main()
     assert "no baseline" not in capsys.readouterr().out
+
+
+def test_the_bedrock_call_count_is_captured_per_context():
+    """⚠️ The count packet granularity's N-calls-to-one claim is about.
+
+    Measured on IDP1: a two-stage, page-granularity run over a 6-page document
+    reported `requests: 6` under BOTH `Segmentation/bedrock/<model>` and
+    `Labeling/bedrock/<model>` — one Stage A call per page and one Stage B call
+    per segment. So the runtime does meter per-call counts, and they are per
+    stage.
+    """
+    metering = {
+        "Segmentation/bedrock/m": {"inputTokens": 100, "requests": 6},
+        "Labeling/bedrock/m": {"inputTokens": 50, "requests": 6},
+        "Classification/lambda/requests": {"requests": 1},
+    }
+    _c, _t, _w, by_context = bench.classification_cost(metering)
+    assert by_context["Segmentation"]["bedrock_calls"] == 6
+    assert by_context["Labeling"]["bedrock_calls"] == 6
+    # And the Lambda invocation is where the runtime puts it, not with the spend.
+    assert by_context["Classification"]["lambda_invocations"] == 1
+
+
+def test_an_unmetered_bedrock_call_count_is_none_not_zero():
+    """⚠️ Not every entry carries `requests`: the same stack emitted a
+    `Classification/bedrock/...` without it on one document and with
+    `requests: 6` on another. `0` would read as "made no calls", which is a
+    different and wrong claim — the figure has to say "not metered" instead."""
+    metering = {"Classification/bedrock/m": {"inputTokens": 100}}
+    _c, _t, _w, by_context = bench.classification_cost(metering)
+    assert by_context["Classification"]["bedrock_calls"] is None
+
+
+def test_the_bedrock_count_separates_the_two_granularities():
+    """The pair the Lambda counter cannot tell apart."""
+    page_like = {"Classification/bedrock/m": {"inputTokens": 600, "requests": 6}}
+    packet_like = {"Classification/bedrock/m": {"inputTokens": 500, "requests": 1}}
+    _c, _t, _w, page_ctx = bench.classification_cost(page_like)
+    _c, _t, _w, packet_ctx = bench.classification_cost(packet_like)
+    assert page_ctx["Classification"]["bedrock_calls"] == 6
+    assert packet_ctx["Classification"]["bedrock_calls"] == 1

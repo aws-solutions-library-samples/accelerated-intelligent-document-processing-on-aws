@@ -340,6 +340,8 @@ def classification_cost(metering):
                 "outputTokens": 0,
                 "cacheReadInputTokens": 0,
                 "lambda_invocations": 0,
+                # None, not 0: see the note below on "not metered" vs "zero".
+                "bedrock_calls": None,
             },
         )
         for unit, n in (units or {}).items():
@@ -348,23 +350,32 @@ def classification_cost(metering):
             if unit in tokens:
                 tokens[unit] += n
                 bucket[unit] += n
-            # ⚠️ This counts LAMBDA INVOCATIONS, not Bedrock calls, and the
-            # distinction is the whole value of the figure. Measured on IDP1: a
-            # 6-page document at `page` granularity makes six Bedrock calls
-            # inside ONE Lambda invocation, so this reads 1.0 — identical to
-            # `packet`, which makes one Bedrock call. It therefore cannot
-            # evidence packet granularity's N-calls-to-one saving; the metering
-            # the runtime emits carries no per-request count under the Bedrock
-            # key at all. What does discriminate the two is
-            # `classification_output_tokens_per_page`, because page granularity
-            # emits a verdict per page: 216.7 against 45.7 on the same corpus.
+            # ⚠️ TWO different counts, and conflating them is the mistake this
+            # comment exists to stop. Measured on IDP1:
             #
-            # It is kept because it is still the only per-context invocation
-            # count, and a two-stage run putting its single invocation under
-            # `Classification` while the Bedrock spend lands under
-            # `Segmentation`/`Labeling` is itself worth seeing.
-            if unit == "requests" and key.endswith("/lambda/requests"):
-                bucket["lambda_invocations"] += n
+            #   `<ctx>/lambda/requests`  -> Lambda INVOCATIONS. A 6-page document
+            #       at `page` granularity makes six Bedrock calls inside ONE
+            #       invocation, so this reads 1 for `page` and `packet` alike and
+            #       cannot tell them apart. In a two-stage run the single
+            #       invocation lands under `Classification` while the spend lands
+            #       under `Segmentation`/`Labeling`, so those two read 0.
+            #
+            #   `<ctx>/bedrock/<model>` `requests` -> BEDROCK CALLS. This is the
+            #       count packet granularity's N-calls-to-one claim is about, and
+            #       it is per stage: a two-stage page-granularity run on a 6-page
+            #       document measured 6 under `Segmentation` and 6 under
+            #       `Labeling`.
+            #
+            # ⚠️ The Bedrock count is NOT always present — the same stack emitted
+            # a `Classification/bedrock/...` entry without a `requests` key on one
+            # document and with `requests: 6` on another — so it is reported as
+            # `None` rather than `0` when no entry carried it. Zero calls and "not
+            # metered" are different facts, and a 0 here would read as the former.
+            if unit == "requests":
+                if key.endswith("/lambda/requests"):
+                    bucket["lambda_invocations"] += n
+                elif "/bedrock/" in key:
+                    bucket["bedrock_calls"] = (bucket["bedrock_calls"] or 0) + n
     for context in CLASSIFICATION_CONTEXTS:
         name = context.rstrip("/")
         if name in by_context:
@@ -484,6 +495,7 @@ def score_run(res, run_id):
                         "outputTokens": 0,
                         "cacheReadInputTokens": 0,
                         "lambda_invocations": 0,
+                        "bedrock_calls": None,
                         "cost": 0.0,
                         "cost_unpriced_docs": 0,
                     },
@@ -495,6 +507,9 @@ def score_run(res, run_id):
                     "lambda_invocations",
                 ):
                     acc[k] += ctx_tokens.get(k, 0)
+                calls = ctx_tokens.get("bedrock_calls")
+                if calls is not None:
+                    acc["bedrock_calls"] = (acc["bedrock_calls"] or 0) + calls
                 if ctx_tokens.get("cost") is None:
                     acc["cost_unpriced_docs"] += 1
                 else:
@@ -631,6 +646,15 @@ def score_run(res, run_id):
                 "lambda_invocations_per_document": round(
                     totals["lambda_invocations"] / len(docs), 2
                 )
+                if docs
+                else None,
+                # The figure the N-calls-to-one claim is actually about. `None`
+                # when nothing carried a Bedrock request count, never 0.
+                "bedrock_calls_per_document": round(
+                    totals["bedrock_calls"] / len(docs), 2
+                )
+                if docs and totals["bedrock_calls"] is not None
+                else None
                 if docs
                 else None,
             }
