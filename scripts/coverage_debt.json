@@ -387,6 +387,7 @@
         "scripts/ux_runner/session.py": 100.0,
         "scripts/ux_runner/signin.py": 100.0,
         "scripts/ux_runner/stories.py": 99.38,
+        "scripts/ux_runner/story_inputs.py": 100.0,
         "scripts/ux_runner/story_pair.py": 97.4,
         "scripts/ux_runner/story_prompt.py": 99.55,
         "scripts/ux_runner/story_relay.py": 97.71,

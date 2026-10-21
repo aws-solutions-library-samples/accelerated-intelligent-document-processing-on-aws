@@ -16,6 +16,11 @@ Modes
 -----
 ``--story ID [--as PERSONA]``
     One story's flows. ``make ai-ux-test-stories-local`` runs this in Docker.
+``--mr IID``
+    The flows the merge request's added CHANGELOG entries select
+    (``ux_runner.changelog_select``), against the MR's UI build when it changes
+    ``src/ui`` and otherwise against the deployed UI with the MR head's docs.
+    ``--collect-only`` writes the MR's ``inputs.json`` (StoryInputs v1) from git.
 ``--replay RUN_DIR``
     The stories, personas, model, effort, budgets, docs and UI source an earlier
     run's ``story-run.json`` records, run again.
@@ -27,6 +32,9 @@ Modes
     Re-judge a run from ``story-run.json`` and its journals: ``results.json`` and
     ``section.md``, byte for byte what the run wrote. Standard library only, so it
     runs on any host.
+``--precheck``
+    The CI job's decision on a bare ``python3``, before the toolchain is
+    installed: ``precheck.json`` and, when the run should go ahead, ``proceed``.
 
 Properties it is built around
 -----------------------------
@@ -38,14 +46,15 @@ Properties it is built around
    browser is closed, its audit taken and its proxy stopped before the next
    flow starts, and nothing is rendered until every Chrome is gone. A socket the
    browser must not have opened, or a process of its uid that outlived it, fails
-   the whole run in every mode.
+   the whole run in every mode, and posting needs every audit clean.
 2. **The model holds the story server and nothing else.** ``claude`` runs with
    ``--tools ''``, ``--strict-mcp-config`` and the ``tool_profiles.STORY`` lists;
    its one server starts the pinned chrome-devtools-mcp itself and serves twelve
    of its tools behind the step budget, the image cap and the commit guard
    (``ux_runner.story_relay``). Every server runs under ``env -i``, the prompt
    goes on stdin (a watched run's goes in a private file the TUI appends to its
-   system prompt, ``agent.interactive_argv``), and the stories come from the
+   system prompt, ``agent.interactive_argv``), and no MR text reaches the prompt:
+   the CHANGELOG delta only selects stories, and the stories come from the
    catalogue in the harness.
 3. **The verdict is a function of the journal.** The server is the journal's one
    writer; this process copies it into the artifacts through the redactor and
@@ -70,7 +79,12 @@ Properties it is built around
    anything records. A flow it refuses runs and is judged like any other,
    records nothing and renders nothing, and the reply names that flow and the
    reason. No option renders a video of another stack.
-6. **A sign-in is never retried.** The first refused sign-in for a Cognito group
+6. **Nothing is posted without ``--post``.** Posting is a merge request run's
+   alone, against the review stack, with every flow's audit clean; the reply
+   goes in the code-review note's thread and that note is never edited. Every
+   other mode, and every run without ``--post``, is a dry run whose
+   ``section.md`` is what would have been posted.
+7. **A sign-in is never retried.** The first refused sign-in for a Cognito group
    marks the remaining flows of that group ``not_run (sign_in_refused)``, because
    every flow signs in afresh and repeated failures lock the account out.
 
@@ -96,6 +110,12 @@ namespace, and root's children share root's ``/proc``. Beside those:
 
 Usage
 -----
+    # CI: the precheck on a bare python3, then the run when it wrote proceed
+    python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --precheck \\
+        --artifact-dir "$UX_ARTIFACTS"
+    python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS \\
+        --inputs "$UX_ARTIFACTS/inputs.json" --artifact-dir "$UX_ARTIFACTS"
+
     # locally, in Docker (the make target builds this)
     make ai-ux-test-stories-local STORY=route-folder-to-profile AS=platform-admin
 
@@ -107,15 +127,22 @@ Environment
 ``UX_TEST_UI_ENV``, ``UX_TEST_PERSONAS``, ``UX_TEST_AWS_ACCOUNT_ID``
     As the MR UX test reads them. A ``UX_TEST_WEB_URL=`` line in ``UX_TEST_UI_ENV``
     names the deployed stack's web URL when ``--web-url`` does not.
+``GITLAB_REVIEW_TOKEN``, ``CI_API_V4_URL``, ``CI_PROJECT_ID``
+    A merge request run's API access: to read the MR and its notes, and with
+    ``--post`` to reply.
 ``ANTHROPIC_MODEL``, ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
     The Bedrock model id and the region of Bedrock, STS and Polly.
+``UX_HARNESS``, ``UX_ENTRY``
+    ``--precheck`` fails unless they name exactly :data:`HARNESS_PATHS`, in order,
+    and :data:`ENTRY`.
 ``UX_HARNESS_SHA``
     The harness commit, for a harness tree with no git of its own (a CI job's
     ``git archive`` extraction); 40 hex digits, optionally ``+dirty``.
-``CI_JOB_STARTED_AT``, ``CI_COMMIT_SHA``, ``CI``, ``GITLAB_CI``
-    Supplied by GitLab CI: the deadline counts from the job's start, the commit
-    heads the reply, and ``--dev-unconfined`` is refused where ``CI`` or
-    ``GITLAB_CI`` is set.
+``CI_JOB_STARTED_AT``, ``CI_COMMIT_SHA``, ``CI_MERGE_REQUEST_SOURCE_BRANCH_SHA``,
+``CI_PIPELINE_ID``, ``CI``, ``GITLAB_CI``
+    Supplied by GitLab CI: the deadline counts from the job's start, a newer MR
+    head stands this pipeline down, and ``--dev-unconfined`` is refused where
+    ``CI`` or ``GITLAB_CI`` is set.
 """
 
 from __future__ import annotations
@@ -161,6 +188,7 @@ from ux_runner import (  # noqa: E402
     docs_index,
     egress,
     gitlab_api,
+    mr_inputs,
     paths,
     processes,
     readback,
@@ -169,6 +197,7 @@ from ux_runner import (  # noqa: E402
     session,
     signin,
     stories,
+    story_inputs,
     story_prompt,
     story_relay,
     story_section,
@@ -180,10 +209,11 @@ from ux_runner import (  # noqa: E402
 
 review = gitlab_api.review
 
-#: Every path the harness runs from: this file, its imports, the server and the
-#: recorder the flows run, the catalogue, what builds the docs index, and the two
-#: skills the prompt inlines. A test closes it over the imports of every module it
-#: names.
+#: Every path the CI jobs extract from the target branch with ``git archive`` and
+#: run from: this file, its imports, the server and the recorder the flows run,
+#: the catalogue, what builds the docs index, and the two skills the prompt
+#: inlines. A test closes it over the imports of every module it names, and each
+#: story job's ``UX_HARNESS`` must equal it.
 HARNESS_PATHS = (
     "scripts/sdlc/ai_ux_test_stories.py",
     "scripts/sdlc/ai_mr_review.py",
@@ -200,7 +230,7 @@ HARNESS_PATHS = (
     ".claude/skills/ux-test-stories.md",
     ".claude/skills/ux-test-stories-ci.md",
 )
-#: This file, relative to the tree.
+#: This file, as a story job's ``UX_ENTRY`` must name it, relative to the tree.
 ENTRY = "scripts/sdlc/ai_ux_test_stories.py"
 #: The operator skill, whose brief the prompt inlines.
 OPERATOR_SKILL = ".claude/skills/ux-test-stories.md"
@@ -245,22 +275,32 @@ CI_VARIABLES = ("CI", "GITLAB_CI")
 #: The ``UX_TEST_UI_ENV`` line that names the deployed stack's web URL, which the
 #: stack's ``WebUITestEnvFile`` output does not carry.
 WEB_URL_KEY = "UX_TEST_WEB_URL"
+INPUTS_SCHEMA = story_inputs.INPUTS_SCHEMA
+INPUTS_VERSION = story_inputs.INPUTS_VERSION
 #: Which flows a run renders a video of: those with a finding, every flow, or
 #: none. The review-stack check applies to each whatever this says.
 VIDEO_POLICIES = ("findings", "all", "never")
 #: The most videos one run renders and one reply carries.
 MAX_VIDEOS = 2
 DEFAULT_RUN_DIR_NAME = "ux-test-stories"
+#: The merge request job, whose earlier runs on an MR count toward ``mr_runs``
+#: whether they posted or not, and how long counting them may take.
+MR_JOB = "ai_ux_test_stories"
+RUNS_COUNT_SECONDS = 60.0
 
 _DEFAULT_REGION = "us-east-1"
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 _HARNESS_SHA_RE = re.compile(r"[0-9a-f]{40}(?:\+dirty)?")
 _ACCOUNT_ID_RE = re.compile(r"[0-9]{12}")
+_PIPELINE_ID_RE = re.compile(r"[0-9]{1,18}")
+_PROCEEDED_RE = re.compile(rb"PROCEED: [0-9]+ flow\(s\) of [0-9]+ stor")
 _CFT_PIN_RE = re.compile(r'^CFT_VERSION="([0-9]+(?:\.[0-9]+){3})"$', re.M)
 _SCREEN_NAME_RE = re.compile(r"[0-9]{3,6}\.jpg")
 _SCREENS_DIR = "screens"
 _RENDER_MIN_SECONDS = 300.0
 _RENDER_MAX_SECONDS = 1800.0
+_POLL_SECONDS = gitlab_api.POLL_SECONDS
+_SUPERSEDE_LIMIT = 10
 _MIB = 1024 * 1024
 _RECORD_MAX_BYTES = 8 * _MIB
 _SUMMARY_MAX_BYTES = 1 * _MIB
@@ -276,6 +316,7 @@ _NO_UI_ENV = (
 _EVENT_TEXT_FIELDS = ("label", "say", "text", "target", "under", "interactive")
 _TOOLCHAIN_KEYS = ("claude_code", "chrome_devtools_mcp", "chrome")
 _UNKNOWN_VERSION = "unknown"
+_INPUTS_PROSE_FIELDS = ("title", "author", "web_url", "source_branch", "ui_diff")
 _FOOTER_PREFIX = "🤖 Automated first-time-user stories of "
 _WITHHELD_LINE = "_The video of `{key}` was withheld, because {reason}._"
 _WITHHELD_WHY = (
@@ -283,7 +324,15 @@ _WITHHELD_WHY = (
     "frames are not redacted._"
 )
 _LOCAL_VIDEO_LINE = "_Video of `{key}`, not uploaded in a dry run: `{name}`._"
+_UPLOAD_FAILED_LINE = (
+    "_The video of `{key}` could not be uploaded; it is in the job artifacts._"
+)
+_OVER_LIMIT_LINE = (
+    "_The video of `{key}` ({size} MB) is over the upload limit; it is in the job "
+    "artifacts._"
+)
 _NOT_RENDERED_LINE = "_The video of `{key}` could not be rendered._"
+_DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {group} persona"
 _SINCE_CAVEAT = (
     "the stack's version could not be read, so no story's `since` was checked"
 )
@@ -330,6 +379,8 @@ class Runtime:
     subprocess, network or AWS call.
     """
 
+    forge: Callable[[argparse.Namespace, str], gitlab_api.UxGitlab]
+    collect_story: Callable[..., Mapping[str, Any]]
     sts: Callable[[str], Any]
     launch_proxy: Callable[..., egress.ProxyRun]
     launch_chrome: Callable[..., processes.ManagedProcess]
@@ -385,6 +436,11 @@ class DocsCorpus:
         return "worktree+dirty" if self.index.source.dirty else "worktree"
 
 
+#: A merge request's StoryInputs v1, as ``inputs.json`` holds it: the record
+#: ``ux_runner.story_inputs`` collects from git and reads back.
+StoryInputs = story_inputs.StoryInputs
+
+
 class StoryRunError(review.Failure):
     """A story run cannot go on; the text names the step and why."""
 
@@ -418,6 +474,21 @@ def _job_elapsed(environ: Mapping[str, str]) -> float:
     return max(0.0, (datetime.now(timezone.utc) - when).total_seconds())
 
 
+def _pipeline_id(environ: Mapping[str, str]) -> int | None:
+    """This pipeline's id (``CI_PIPELINE_ID``), or None outside CI."""
+    pipeline = environ.get("CI_PIPELINE_ID", "").strip()
+    return int(pipeline) if _PIPELINE_ID_RE.fullmatch(pipeline) else None
+
+
+def _pipeline_head(environ: Mapping[str, str]) -> str | None:
+    """The MR head this pipeline, and so its UI build, is of; None outside CI."""
+    for name in ("CI_MERGE_REQUEST_SOURCE_BRANCH_SHA", "CI_COMMIT_SHA"):
+        value = environ.get(name, "").strip()
+        if value:
+            return value if _SHA_RE.fullmatch(value) else None
+    return None
+
+
 def _ci_variable(environ: Mapping[str, str]) -> str:
     """Whichever of :data:`CI_VARIABLES` is set, or ``""`` outside CI."""
     names = [name for name in CI_VARIABLES if environ.get(name, "").strip()]
@@ -437,6 +508,11 @@ def _search_path(tool: str = "node", base: str = agent.DEFAULT_SEARCH_PATH) -> s
     if tool_dir in base.split(os.pathsep):
         return base
     return f"{tool_dir}{os.pathsep}{base}"
+
+
+def _body(note: Mapping[str, Any]) -> str:
+    body = note.get("body")
+    return body if isinstance(body, str) else ""
 
 
 def _git(repo_dir: Path, *args: str) -> str:
@@ -640,6 +716,17 @@ def compose_prompt(
         raise StoryRunError(f"the story prompt cannot be built: {error}") from None
 
 
+def collect_story(
+    repo_dir: Path, iid: int, target_branch: str, *, remote: str
+) -> Mapping[str, Any]:
+    """A merge request's StoryInputs v1 from git, as ``story_inputs.collect`` writes it.
+
+    The record, not the object, so a collected MR is read back through
+    :meth:`StoryInputs.from_json` exactly as an ``inputs.json`` from elsewhere is.
+    """
+    return story_inputs.collect(repo_dir, iid, target_branch, remote=remote).to_json()
+
+
 def run_tui(
     argv: Sequence[str], *, cwd: Path, env: Mapping[str, str], timeout: float
 ) -> processes.Completed:
@@ -684,9 +771,16 @@ def run_tui(
     )
 
 
+def _default_forge(args: argparse.Namespace, credential: str) -> gitlab_api.UxGitlab:
+    """The real GitLab client for ``--api-url`` and ``--project``."""
+    return gitlab_api.UxGitlab(args.api_url, args.project, credential)
+
+
 def default_runtime() -> Runtime:
     """The runtime a run uses: every collaborator is the real one."""
     return Runtime(
+        forge=_default_forge,
+        collect_story=collect_story,
         sts=account.sts_client,
         launch_proxy=egress.launch_proxy,
         launch_chrome=chrome.launch,
@@ -721,8 +815,8 @@ class Plan:
 
     ``ui_kind`` is ``build`` (``build_dir`` served by the proxy) or ``deployed``
     (the stack's own ``web_url``). ``docs_ref`` is the commit the docs are read
-    from, or None for the working tree. ``head_sha`` heads the reply: the harness
-    commit.
+    from, or None for the working tree. ``head_sha`` heads the reply: the MR head
+    or the harness commit.
     """
 
     mode: str
@@ -736,21 +830,26 @@ class Plan:
     src_ui_tree: str | None
     docs_ref: str | None
     head_sha: str
+    inputs: StoryInputs | None = None
+    selection: changelog_select.Selection | None = None
+    change: ui_change.UiChange | None = None
     replayed: str | None = None
 
 
 @dataclass
 class Decision:
-    """What the precheck concluded. ``status`` is proceed or skipped.
+    """What the precheck concluded. ``status`` is proceed, skipped or unchanged.
 
-    ``extra`` is what the precheck records beside the decision, such as its
-    warnings.
+    ``reply`` is the one-line story reply a merge request gets for an unchanged
+    head or a used-up run allowance, posted only with ``--post``; ``extra`` is
+    what ``precheck.json`` adds, such as the CHANGELOG leads no story covers.
     """
 
     proceed: bool
     status: str
     detail: str
     plan: Plan | None = None
+    reply: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -773,6 +872,27 @@ def catalogue_sha256() -> str:
         return hashlib.sha256(catalogue_path().read_bytes()).hexdigest()
     except OSError as error:
         raise StoryRunError(f"the story catalogue cannot be read: {error}") from None
+
+
+def _no_token_message() -> str:
+    return (
+        f"{review.GITLAB.credential_env} is not set, so the stories can be neither "
+        "checked against the MR's notes nor posted; run without --post for a dry "
+        "run"
+    )
+
+
+def _forge(
+    args: argparse.Namespace, runtime: Runtime, credential: str
+) -> gitlab_api.UxGitlab:
+    """The GitLab client, or a skip naming whichever of its two settings is missing."""
+    if not args.api_url:
+        raise review.Skip(
+            "no GitLab API URL: pass --api-url or set CI_API_V4_URL, as GitLab CI does"
+        )
+    if not args.project:
+        raise review.Skip("no project: pass --project or run inside GitLab CI")
+    return runtime.forge(args, credential)
 
 
 def _ui_env(environ: Mapping[str, str]) -> dict[str, str]:
@@ -804,6 +924,14 @@ def _web_url(args: argparse.Namespace, environ: Mapping[str, str]) -> str | None
         return named
     line = _ui_env(environ).get(WEB_URL_KEY, "").strip()
     return line or None
+
+
+def _groups(environ: Mapping[str, str]) -> frozenset[str]:
+    """The Cognito groups ``UX_TEST_PERSONAS`` can sign in as; empty when unreadable."""
+    try:
+        return frozenset(signin.personas_from_env(environ.get("UX_TEST_PERSONAS", "")))
+    except signin.SignInError:
+        return frozenset()
 
 
 def settings_problem(
@@ -917,6 +1045,8 @@ def _local_head(runtime: Runtime) -> str:
 
 
 def _mode(args: argparse.Namespace, environ: Mapping[str, str]) -> str:
+    if args.mr is not None:
+        return "mr"
     if args.interactive:
         return "watch"
     return "local"
@@ -1114,6 +1244,116 @@ def precheck_replay(
     )
 
 
+def _with_metadata(
+    inputs: StoryInputs, merge_request: review.MergeRequest
+) -> StoryInputs:
+    """``inputs`` with the API's title, author, URL and source branch, when given."""
+    record = inputs.mr
+    title = merge_request.title[: mr_inputs.TITLE_CHARS]
+    return dataclasses.replace(
+        inputs,
+        mr=dataclasses.replace(
+            record,
+            title=title or record.title,
+            author=merge_request.author or record.author,
+            web_url=merge_request.web_url or record.web_url,
+            source_branch=merge_request.source_branch or record.source_branch,
+            title_from_git=record.title_from_git and not title,
+        ),
+    )
+
+
+def written_inputs(inputs: StoryInputs, scrub: artifacts.Scrub) -> StoryInputs:
+    """``inputs`` as ``inputs.json`` holds them: prose and CHANGELOG redacted, the rest exact.
+
+    The precheck selects from this form as the run reads it back, so the two
+    cannot select differently. The SHAs, the trees and the changed paths stay
+    exact, because the run classifies and labels from them.
+    """
+    record = inputs.mr.to_json()
+    for name in _INPUTS_PROSE_FIELDS:
+        record[name] = scrub(record[name])
+    return dataclasses.replace(
+        inputs,
+        mr=mr_inputs.MrInputs.from_json(record),
+        changelog_base=scrub(inputs.changelog_base),
+        changelog_head=scrub(inputs.changelog_head),
+    )
+
+
+def write_inputs(inputs: StoryInputs, path: Path, scrub: artifacts.Scrub) -> Path:
+    """Write ``inputs.json`` in its written form (:func:`written_inputs`).
+
+    A record larger than ``story_inputs.INPUTS_MAX_BYTES``, the most a run reads
+    back, is refused rather than written, so a precheck fails before the install
+    instead of leaving the run a file it cannot read.
+    """
+    shown = written_inputs(inputs, scrub)
+    scrub.keep(shown.mr.head_sha, shown.mr.base_sha)
+    scrub.keep(*(tree for tree in (shown.docs_tree, shown.src_ui_tree) if tree))
+    text = json.dumps(shown.to_json(), indent=2, ensure_ascii=False) + "\n"
+    size = len(text.encode("utf-8"))
+    if size > story_inputs.INPUTS_MAX_BYTES:
+        raise StoryRunError(
+            f"inputs.json would be {size} bytes, more than the "
+            f"{story_inputs.INPUTS_MAX_BYTES} a run reads back"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    artifacts.write_artifact(path, text)
+    return path
+
+
+def story_inputs_for(
+    args: argparse.Namespace, runtime: Runtime, scrub: artifacts.Scrub
+) -> StoryInputs:
+    """The MR's StoryInputs, read from ``--inputs`` or collected from git.
+
+    A record for another MR than ``--mr`` is refused: it would label one MR's
+    stories with another's head.
+    """
+    try:
+        if args.inputs is not None:
+            data = _read_json(
+                Path(args.inputs), "inputs.json", story_inputs.INPUTS_MAX_BYTES
+            )
+        else:
+            data = runtime.collect_story(
+                Path(args.repo_dir), args.mr, args.target_branch, remote=args.remote
+            )
+        inputs = written_inputs(StoryInputs.from_json(data), scrub)
+    except mr_inputs.InputsError as error:
+        raise StoryRunError(f"the MR's story inputs cannot be read: {error}") from None
+    if inputs.mr.iid != args.mr:
+        raise StoryRunError(f"the inputs describe MR !{inputs.mr.iid}, not !{args.mr}")
+    return inputs
+
+
+def _selection_summary(selection: changelog_select.Selection) -> dict[str, Any]:
+    return {
+        "stories": list(selection.stories),
+        "flows": [str(key) for key in selection.flows],
+        "dropped_personas": list(selection.dropped_personas),
+        "warnings": list(selection.warnings),
+        "scores": [
+            {
+                "story": score.story,
+                "changelog_points": score.changelog_points,
+                "secondary_points": score.secondary_points,
+                "reasons": list(score.reasons),
+            }
+            for score in selection.scores
+        ],
+    }
+
+
+def _docs_changed(inputs: StoryInputs) -> bool:
+    return any(
+        docs_index.DOC_PATH_RE.fullmatch(path)
+        for changed in inputs.mr.changed
+        for path in (changed.path, changed.old_path or "")
+    )
+
+
 def plan_series(
     catalogue: stories.Catalogue,
     keys: Iterable[stories.FlowKey],
@@ -1150,13 +1390,261 @@ def sel_sources(
     return ui_source, tree
 
 
-def precheck(args: argparse.Namespace, runtime: Runtime) -> Decision:
+def selection_sel(
+    pairs: Sequence[tuple[stories.FlowKey, str]],
+    *,
+    ui_kind: str,
+    src_ui_tree: str | None,
+    docs_tree: str | None,
+) -> str:
+    """The reply's ``sel``: the flows and their series, the UI and the docs."""
+    ui_source, tree = sel_sources(
+        ui_kind=ui_kind, src_ui_tree=src_ui_tree, docs_tree=docs_tree
+    )
+    return changelog_select.selection_hash(pairs, ui_source=ui_source, docs_tree=tree)
+
+
+def precheck_mr(
+    args: argparse.Namespace,
+    runtime: Runtime,
+    catalogue: stories.Catalogue,
+    scrub: artifacts.Scrub,
+) -> Decision:
+    """The decision for ``--mr``, from git, the catalogue and the API alone.
+
+    In order: the inputs; with a token, the MR itself (a draft is not run, and a
+    head that has moved on is left to the newer head's pipeline); the stories the
+    added CHANGELOG entries select, where most MRs stop; which UI the run tests
+    (the MR's build when it changes ``src/ui``, else the deployed UI when it
+    changes ``docs/``, else nothing); the CI variables; and, with a token, the
+    token's own story replies: a head already replied to is unchanged, an MR that
+    has used ``mr_runs`` gets one limit reply, and a head whose stories, UI and
+    docs are those of the latest run gets the unchanged reply. An MR's runs are
+    its posted run replies or, when more, its earlier story jobs whose precheck
+    went ahead (``gitlab_api.runs_started``), so a run cancelled by a newer push,
+    stopped at the job's timeout or never posted still counts. ``sel`` is
+    computed with the harness's pinned versions, which are the ones the install
+    records.
+    """
+    environ = runtime.environ
+    credential = environ.get(review.GITLAB.credential_env, "").strip()
+    inputs = story_inputs_for(args, runtime, scrub)
+    forge: gitlab_api.UxGitlab | None = None
+    if credential:
+        try:
+            forge = _forge(args, runtime, credential)
+            merge_request = forge.merge_request(args.mr)
+        except review.Skip as skip:
+            return Decision(False, "skipped", str(skip))
+        if merge_request.draft or merge_request.title.startswith("Draft:"):
+            return Decision(False, "skipped", "a draft; drafts are not run")
+        moved = merge_request.head_sha
+        if moved and moved != inputs.mr.head_sha:
+            return Decision(
+                False,
+                "skipped",
+                f"the MR head moved to {moved[:8]} after {inputs.mr.head_sha[:8]} was "
+                "collected; a pipeline for the new head runs it",
+            )
+        inputs = written_inputs(_with_metadata(inputs, merge_request), scrub)
+    head = inputs.mr.head_sha
+    change = ui_change.classify(inputs.mr.changed)
+    added = changelog_select.added_entries(inputs.changelog_base, inputs.changelog_head)
+    groups = _groups(environ)
+    selection = changelog_select.select(
+        catalogue,
+        added,
+        edited_sections=inputs.docs_sections_edited,
+        changed_files=[changed.path for changed in inputs.mr.changed],
+        available_groups=groups or stories.SIGN_IN_GROUPS,
+    )
+    extra: dict[str, Any] = {
+        "selection": _selection_summary(selection),
+        "uncovered": list(selection.uncovered),
+    }
+    if not selection.stories:
+        return Decision(
+            False,
+            "skipped",
+            "no story covers this MR's CHANGELOG entries",
+            extra=extra,
+        )
+    if not selection.flows:
+        return Decision(
+            False,
+            "skipped",
+            "UX_TEST_PERSONAS holds no group the selected stories sign in as",
+            extra=extra,
+        )
+    if change.user_visible:
+        kind, build, url = "build", Path(args.build_dir), None
+        if not (build / "index.html").is_file():
+            return Decision(
+                False,
+                "skipped",
+                "no UI build: ux_test_build was skipped or failed",
+                extra=extra,
+            )
+        built = _pipeline_head(environ)
+        if built is not None and built != head:
+            return Decision(
+                False,
+                "skipped",
+                f"this pipeline built {built[:8]}, but the MR head is now {head[:8]}; "
+                "the newer head's own pipeline runs it",
+                extra=extra,
+            )
+    elif _docs_changed(inputs):
+        kind, build, url = "deployed", None, _web_url(args, environ)
+        if url is None:
+            return Decision(
+                False,
+                "skipped",
+                _no_web_url(
+                    environ,
+                    "the MR changes the docs only, and the deployed UI's web URL is "
+                    f"not known: add a {WEB_URL_KEY}=<the stack's ApplicationWebURL> "
+                    "line to UX_TEST_UI_ENV",
+                ),
+                extra=extra,
+            )
+    elif change.backend or change.api_contract:
+        return Decision(
+            False,
+            "skipped",
+            "only the backend or the API contract changes besides the CHANGELOG; it "
+            "selects " + ", ".join(selection.stories),
+            extra=extra,
+        )
+    else:
+        return Decision(False, "skipped", "nothing user-visible changed", extra=extra)
+    problem = settings_problem(
+        args,
+        environ,
+        stack=args.stack,
+        web_url=url,
+        groups=[catalogue.persona(key.persona).group for key in selection.flows],
+    )
+    if problem:
+        return Decision(False, "skipped", problem, extra=extra)
+    pairs = plan_series(
+        catalogue,
+        selection.flows,
+        series_inputs(
+            model=args.model,
+            effort=args.effort,
+            prompt_revision=story_prompt.STORY_PROMPT_REVISION,
+            versions=pinned_versions(),
+            texts=read_texts(),
+        ),
+    )
+    sel = selection_sel(
+        pairs, ui_kind=kind, src_ui_tree=inputs.src_ui_tree, docs_tree=inputs.docs_tree
+    )
+    extra["sel"] = sel
+    plan = Plan(
+        mode="mr",
+        keys=selection.flows,
+        stack=args.stack,
+        model=args.model,
+        effort=args.effort,
+        ui_kind=kind,
+        build_dir=build,
+        web_url=url,
+        src_ui_tree=inputs.src_ui_tree,
+        docs_ref=head,
+        head_sha=head,
+        inputs=inputs,
+        selection=selection,
+        change=change,
+    )
+    if forge is None:
+        if args.post:
+            return Decision(False, "skipped", _no_token_message(), extra=extra)
+    else:
+        try:
+            me = forge.current_user()["id"]
+            mine = gitlab_api.my_notes(forge.notes(args.mr), me)
+        except review.Skip as skip:
+            return Decision(False, "skipped", str(skip), extra=extra)
+        if story_section.has_story_reply(mine, head):
+            return Decision(
+                False, "unchanged", "already run for this head", plan=plan, extra=extra
+            )
+        try:
+            started = gitlab_api.runs_started(
+                forge,
+                args.mr,
+                job=MR_JOB,
+                marker=_PROCEEDED_RE,
+                own_pipeline=_pipeline_id(environ),
+                enough=catalogue.runs.mr_runs,
+                deadline=runtime.clock() + RUNS_COUNT_SECONDS,
+                clock=runtime.clock,
+            )
+        except (review.Skip, review.Failure) as unread:
+            return Decision(
+                False,
+                "skipped",
+                f"this MR's earlier story runs cannot be counted: {unread}",
+                plan=plan,
+                extra=extra,
+            )
+        used = max(story_section.runs_used(mine), started)
+        if used >= catalogue.runs.mr_runs:
+            limited = any(
+                marker.kind == "limit" for marker in story_section.story_markers(mine)
+            )
+            reply = (
+                None
+                if limited
+                else story_section.compose_limit(
+                    head_sha=head, sel=sel, iid=args.mr, runs=used
+                )
+            )
+            return Decision(
+                False,
+                "skipped",
+                f"this MR has used its {used} story runs",
+                plan=plan,
+                reply=reply,
+                extra=extra,
+            )
+        latest = story_section.latest_run(mine)
+        if latest is not None and latest.sel == sel:
+            return Decision(
+                False,
+                "unchanged",
+                f"the same stories, UI and docs as {latest.sha[:8]}",
+                plan=plan,
+                reply=story_section.compose_unchanged(
+                    head_sha=head, sel=sel, since_sha=latest.sha
+                ),
+                extra=extra,
+            )
+    flows = len(selection.flows)
+    return Decision(
+        True,
+        "proceed",
+        f"{flows} flow(s) of {len(selection.stories)} story(ies)",
+        plan=plan,
+        extra=extra,
+    )
+
+
+def precheck(
+    args: argparse.Namespace, runtime: Runtime, scrub: artifacts.Scrub
+) -> Decision:
     """Whether the run is worth a browser, and what it is to run.
 
-    ``StoryRunError`` means the catalogue, a file or git could not answer.
+    It runs on a bare ``python3`` before the toolchain is installed, so a skip
+    costs the CI job about a minute. ``StoryRunError`` means the catalogue, a
+    file or git could not answer.
     """
     catalogue = load_catalogue()
-    if args.replay is not None:
+    if args.mr is not None:
+        decision = precheck_mr(args, runtime, catalogue, scrub)
+    elif args.replay is not None:
         decision = precheck_replay(args, runtime, catalogue)
     else:
         decision = precheck_flows(args, runtime, catalogue)
@@ -1718,8 +2206,8 @@ def video_note_lines(record: Mapping[str, Any]) -> list[str]:
 
     One line per flow whose video was withheld, with that flow's reason, then
     one saying why only the review stack's flows get a video; then one line per
-    other note (a dry run's local file, a render that failed). A reason is
-    sanitised, and a key is shown only
+    other note (a dry run's local file, a failed upload, a video over the upload
+    limit, a render that failed). A reason is sanitised, and a key is shown only
     in its closed shape, so a record from elsewhere cannot write markup here.
     """
     lines: list[str] = []
@@ -1744,6 +2232,10 @@ def video_note_lines(record: Mapping[str, Any]) -> list[str]:
         detail = section.sanitize(item.get("detail"), 120).replace("`", "'")
         if kind == "local" and detail:
             lines.append(_LOCAL_VIDEO_LINE.format(key=key, name=detail))
+        elif kind == "upload_failed":
+            lines.append(_UPLOAD_FAILED_LINE.format(key=key))
+        elif kind == "over_limit" and detail:
+            lines.append(_OVER_LIMIT_LINE.format(key=key, size=detail))
         elif kind == "not_rendered":
             lines.append(_NOT_RENDERED_LINE.format(key=key))
     return lines
@@ -2102,11 +2594,13 @@ class StoryRun:
         return 1 if status == "skipped" and self.args.fail_on_skip else 0
 
     def _run(self) -> int:
-        decision = precheck(self.args, self.runtime)
+        decision = precheck(self.args, self.runtime, self.scrub)
         self.plan = decision.plan
         for warning in decision.extra.get("warnings", []):
             self.say(f"WARNING: {warning}")
         if not decision.proceed:
+            if decision.reply is not None and self.args.post:
+                post_line(self.args, self.runtime, self.scrub, decision.reply)
             return self._finish(decision.status, decision.detail)
         plan = self.planned
         self.say(f"PROCEED: {decision.detail} at {plan.head_sha[:8]}")
@@ -2242,26 +2736,34 @@ class StoryRun:
             kept.append(ready.docs.ref)
         if plan.src_ui_tree:
             kept.append(plan.src_ui_tree)
+        if plan.inputs is not None:
+            kept += [plan.inputs.mr.head_sha, plan.inputs.mr.base_sha]
         self.scrub.keep(*(value for value in kept if value))
 
     def _job_usd(self, catalogue: stories.Catalogue) -> float:
-        """The run's dollar cap: ``--run-usd``, else per flow.
+        """The job's dollar cap: ``--run-usd``; a CI job's ``job_usd``; else per flow.
 
-        A local container's cap is its flow count times ``flow_usd``.
+        A local container's cap is its flow count times ``flow_usd``, so a local
+        run is not cut short by CI's per-job cap.
         """
         if self.args.run_usd is not None:
             return float(self.args.run_usd)
+        if self.planned.mode == "mr":
+            return float(catalogue.runs.job_usd)
         return float(len(self.planned.keys)) * float(catalogue.limits.flow_usd)
 
     def _deadline(self, catalogue: stories.Catalogue) -> float | None:
         """When the run must be done, on :attr:`Runtime.clock`; None for no deadline.
 
-        A run has a deadline only when ``--deadline-minutes`` gives one, counted
-        from ``CI_JOB_STARTED_AT`` where that is set. The clock and the job's
-        elapsed time are read together, so the time this run took to get here is
-        counted once.
+        A CI job counts from ``CI_JOB_STARTED_AT`` with the catalogue's
+        ``deadline_minutes`` unless ``--deadline-minutes`` says otherwise; a local
+        run has a deadline only when given one. The clock and the job's elapsed
+        time are read together, so the time this run took to get here is counted
+        once.
         """
         minutes = self.args.deadline_minutes
+        if minutes is None and self.planned.mode == "mr":
+            minutes = catalogue.runs.deadline_minutes
         if minutes is None:
             return None
         return self.runtime.clock() + minutes * 60 - _job_elapsed(self.runtime.environ)
@@ -2668,6 +3170,9 @@ class StoryRun:
         return chosen[:cap]
 
     def _video_name(self, attempt: Attempt, number: int) -> str:
+        plan = self.planned
+        if plan.mode == "mr" and self.args.mr is not None:
+            return f"ux-story-mr{self.args.mr}-{plan.head_sha[:8]}-{number}.mp4"
         flow = attempt.flow
         return f"ux-story-{flow.key.story}--{flow.key.persona}-{attempt.number}.mp4"
 
@@ -2843,22 +3348,29 @@ class StoryRun:
         else:
             ui_source = "deployed"
         refusals = [record for attempt in self.attempts for record in attempt.refusals]
+        backend = bool(
+            plan.change and (plan.change.backend or plan.change.api_contract)
+        )
         docs = self.prepared.docs
         caveats = story_section.standard_caveats(
             ui_source=ui_source,
-            docs_sha=None,
-            backend_changed=False,
+            docs_sha=docs.ref if plan.mode == "mr" else None,
+            backend_changed=backend,
             stack=stack,
             refusals=refusals,
-            mr=False,
+            mr=plan.mode == "mr",
         )
-        if docs.ref:
+        if plan.mode != "mr" and docs.ref:
             caveats = [
                 f"docs at `{docs.ref[:8]}`"
                 if caveat == "docs from the working tree"
                 else caveat
                 for caveat in caveats
             ]
+        if plan.selection is not None:
+            for persona in plan.selection.dropped_personas:
+                group = self.catalogue.persona(persona).group
+                caveats.append(_DROPPED_CAVEAT.format(persona=persona, group=group))
         if self.facts_seen and self._stack_version() is None:
             caveats.append(_SINCE_CAVEAT)
         return caveats
@@ -2877,6 +3389,19 @@ class StoryRun:
             pairs, ui_source=ui_source, docs_tree=docs_tree
         )
         self.scrub.keep(sel, ui_source, docs_tree)
+        chosen: list[dict[str, Any]] = []
+        nudges: list[str] = []
+        if plan.selection is not None:
+            chosen = [
+                {
+                    "kind": self.scrub.field(line.kind),
+                    "lead": self.scrub.field(line.lead),
+                    "story": line.story,
+                    "covered_by": line.covered_by,
+                }
+                for line in plan.selection.chosen
+            ]
+            nudges = [self.scrub.field(lead) for lead in plan.selection.uncovered]
         return {
             "head_sha": plan.head_sha,
             "sel": sel,
@@ -2885,8 +3410,8 @@ class StoryRun:
             "uploads": list(self.uploads),
             "videos": list(self.video_lines),
             "chosen_by": self._chosen_by(),
-            "chosen": [],
-            "uncovered": [],
+            "chosen": chosen,
+            "uncovered": nudges,
             "caveats": [self.scrub.field(caveat) for caveat in self._caveats()],
             "video_notes": list(self.video_notes),
         }
@@ -2894,6 +3419,8 @@ class StoryRun:
     def _chosen_by(self) -> dict[str, Any]:
         """How the run's flows were chosen, for the reply's first lines."""
         plan = self.planned
+        if plan.mode == "mr":
+            return {"kind": "mr"}
         if plan.replayed is not None:
             return {"kind": "replay"}
         return {"kind": "story", "flows": [str(key) for key in plan.keys]}
@@ -3014,7 +3541,7 @@ class StoryRun:
             self.say(f"the run's record could not be written: {type(error).__name__}")
 
     def _conclude(self) -> int:
-        """Videos, the record, results and section, then the audits."""
+        """Videos, the record, results and section, then the audits and the post."""
         if self.planned.mode != "watch":
             self._render_videos()
         judged = self._write_record()
@@ -3036,9 +3563,22 @@ class StoryRun:
                 f"judged without the socket audit, which the host folds in; see "
                 f"{self.artifacts}",
             )
-        return self._finish(
-            "dry_run", f"nothing posted; section.md is in {self.artifacts}"
-        )
+        if not self.args.post:
+            return self._finish(
+                "dry_run", f"nothing posted; section.md is in {self.artifacts}"
+            )
+        unclean = [
+            attempt
+            for attempt in self.attempts
+            if attempt.opened and attempt.context.audit_state != "clean"
+        ]
+        if unclean or not any(attempt.opened for attempt in self.attempts):
+            raise StoryRunError(
+                "nothing is posted: a clean socket audit of every flow's browser is "
+                f"the condition for posting, which needs Chrome to run as "
+                f"{paths.BROWSER_USER} in a job running as root"
+            )
+        return self._post(judged)
 
     def _cleanup(self) -> None:
         """Stop what is still running: an attempt cut short, then kept recordings."""
@@ -3075,6 +3615,186 @@ class StoryRun:
             attempt.context = watch.context()
         attempt.result = judge_attempt(self.artifacts, attempt.context)
         self.say(f"flow {attempt.flow.key}: {_attempt_label(attempt.result)}")
+
+    def _post(self, judged: Judged) -> int:
+        """Reply once in this head's code-review thread, or post on its own.
+
+        Only after the MR's head is confirmed unmoved and the token's notes hold no
+        story reply for it (``gitlab_api.wait_for_review_note``), so a run that
+        finds the head already replied to while it waited uploads nothing. The
+        review note itself is never edited. Older story replies of the token's
+        have their video lines marked superseded.
+        """
+        args, rt, plan = self.args, self.runtime, self.planned
+        head = plan.head_sha
+        credential = rt.environ.get(review.GITLAB.credential_env, "").strip()
+        if not credential:
+            raise review.Skip(_no_token_message())
+        forge = _forge(args, rt, credential)
+        deadline = (
+            self.deadline
+            if self.deadline is not None
+            else rt.clock() + args.review_poll_minutes * 60
+        )
+        waited = gitlab_api.wait_for_review_note(
+            forge,
+            args.mr,
+            head,
+            already_posted=lambda mine: story_section.has_story_reply(mine, head),
+            poll_minutes=args.review_poll_minutes,
+            deadline=deadline,
+            clock=rt.clock,
+            sleep=rt.sleep,
+            poll_seconds=_POLL_SECONDS,
+        )
+        if waited.outcome == "moved":
+            moved = waited.moved_to or ""
+            return self._finish(
+                "superseded",
+                f"the MR head moved to {moved[:8]} before posting, so nothing is "
+                f"posted for {head[:8]}",
+            )
+        if waited.outcome == "posted":
+            return self._finish("unchanged", "already run for this head")
+        self._upload_videos(forge)
+        judged = self._write_record()
+        text = section_text(
+            judged.record, judged.results, judged.found, _judge_scrub(rt.environ)
+        )
+        if text is None:
+            raise StoryRunError("the run has no reply to post")
+        where = "posted on its own"
+        review_note = waited.review_note
+        note_id = review_note.get("id") if review_note is not None else None
+        thread = (
+            forge.discussion_id_for(args.mr, note_id)
+            if isinstance(note_id, int)
+            else None
+        )
+        if thread is not None:
+            forge.reply(args.mr, thread, text)
+            where = "replied in the code review's thread"
+        else:
+            forge.create_note(args.mr, story_section.compose_standalone(text))
+        self._supersede(forge, waited.mine, head)
+        return self._finish("posted", f"first-time-user stories of {head[:8]} {where}")
+
+    def _upload_videos(self, forge: gitlab_api.UxGitlab) -> None:
+        """Upload each rendered video: its line and upload id, or a note saying why not.
+
+        A refused or failed upload costs the reply that video and nothing else;
+        the mp4 is in the job's artifacts either way.
+        """
+        limit = self.args.max_upload_mb * _MIB
+        self.video_notes = [
+            note for note in self.video_notes if note.get("kind") != "local"
+        ]
+        for attempt in sorted(
+            self.attempts, key=lambda item: (item.context.key, item.number)
+        ):
+            name = attempt.context.video
+            if name is None:
+                continue
+            key = attempt.context.key
+            path = self.artifacts / name
+            try:
+                size = path.stat().st_size
+            except OSError:
+                self.video_notes.append(
+                    {"key": key, "kind": "upload_failed", "detail": ""}
+                )
+                continue
+            if size > limit:
+                shown = f"{size / _MIB:.0f}"
+                self.video_notes.append(
+                    {"key": key, "kind": "over_limit", "detail": shown}
+                )
+                continue
+            try:
+                payload = forge.upload(path, filename=name)
+                url = forge.checked_upload_url(payload)
+            except (review.Skip, review.Failure) as error:
+                self.say(f"upload: the video of {key} was not uploaded: {error}")
+                self.video_notes.append(
+                    {"key": key, "kind": "upload_failed", "detail": ""}
+                )
+                continue
+            line = f"![UX story]({url})"
+            ident = payload.get("id")
+            if not story_section.STORY_VIDEO_LINE_RE.fullmatch(line) or not (
+                isinstance(ident, int) and not isinstance(ident, bool)
+            ):
+                self.video_notes.append(
+                    {"key": key, "kind": "upload_failed", "detail": ""}
+                )
+                continue
+            self.video_lines.append(line)
+            self.uploads.append(ident)
+
+    def _supersede(
+        self, forge: gitlab_api.UxGitlab, mine: list[dict[str, Any]], head: str
+    ) -> list[int]:
+        """Mark the video lines of up to ten older story replies of the token's superseded."""
+        done: list[int] = []
+        considered = 0
+        for note in mine:
+            if considered >= _SUPERSEDE_LIMIT:
+                break
+            ident = note.get("id")
+            if not isinstance(ident, int) or isinstance(ident, bool):
+                continue
+            markers = story_section.story_markers([note])
+            if not markers or markers[0].sha == head:
+                continue
+            considered += 1
+            replaced = story_section.supersede_story_videos(_body(note), head[:8])
+            if replaced is None:
+                continue
+            try:
+                forge.update_note(self.args.mr, ident, replaced)
+            except (review.Skip, review.Failure) as error:
+                self.say(f"supersede: note {ident} not updated: {error}")
+                continue
+            done.append(ident)
+        return done
+
+
+def post_line(
+    args: argparse.Namespace, runtime: Runtime, scrub: artifacts.Scrub, reply: str
+) -> None:
+    """Post a one-line story reply (unchanged, or the run allowance used up).
+
+    In the head's code-review thread when that note exists now, else on its own;
+    nothing is waited for, since nothing was run. A reply GitLab refuses is
+    reported and changes no outcome.
+    """
+    marker = story_section.STORY_MARKER_RE.match(reply)
+    credential = runtime.environ.get(review.GITLAB.credential_env, "").strip()
+    if marker is None or not credential:
+        return
+    scrub.keep(reply.split("\n", 1)[0])
+    text = scrub.note(reply)
+    try:
+        forge = _forge(args, runtime, credential)
+        me = forge.current_user()["id"]
+        notes = forge.notes(args.mr)
+        if story_section.has_story_reply(
+            gitlab_api.my_notes(notes, me), marker.group("sha")
+        ):
+            return
+        review_note = gitlab_api.review_note_for(notes, marker.group("sha"), me)
+        note_id = review_note.get("id") if review_note is not None else None
+        thread = (
+            forge.discussion_id_for(args.mr, note_id)
+            if isinstance(note_id, int)
+            else None
+        )
+        if thread is not None:
+            forge.reply(args.mr, thread, text)
+        else:
+            forge.create_note(args.mr, story_section.compose_standalone(text))
+    except (review.Skip, review.Failure) as error:
+        _say(scrub, f"reply: not posted: {error}")
 
 
 class WatchSession:
@@ -3253,6 +3973,114 @@ def _card(text: object, limit: int) -> str:
     return _CARD_LT_RE.sub("<", _CARD_ESCAPE_RE.sub(r"\1", plain))
 
 
+def _precheck_record(decision: Decision) -> dict[str, Any]:
+    plan = decision.plan
+    return {
+        "version": 1,
+        "proceed": decision.proceed,
+        "status": decision.status,
+        "detail": decision.detail,
+        "mode": plan.mode if plan is not None else None,
+        "head_sha": plan.head_sha if plan is not None else "",
+        "flows": [str(key) for key in plan.keys] if plan is not None else [],
+        **decision.extra,
+    }
+
+
+def _exit_code(status: str, args: argparse.Namespace) -> int:
+    if status == "failed":
+        return 1
+    return 1 if status == "skipped" and args.fail_on_skip else 0
+
+
+def precheck_main(args: argparse.Namespace, runtime: Runtime) -> int:
+    """``--precheck``: decide, write the decision files, print one decision line.
+
+    Before anything else the job's ``UX_HARNESS`` and ``UX_ENTRY`` must name
+    exactly :data:`HARNESS_PATHS` and :data:`ENTRY` (``paths.harness_pin_problem``),
+    because a project or pipeline variable overrides the job's own and the job
+    extracts and runs what they say. Then a stale ``proceed`` is removed, so only
+    this decision can leave one; ``inputs.json`` is written for a merge request,
+    ``precheck.json`` always, and ``proceed`` only when the run should go ahead.
+    The first line printed is ``PROCEED:``, ``SKIPPED:``, ``UNCHANGED:`` or
+    ``FAILED:``.
+    """
+    scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
+    problem = paths.harness_pin_problem(
+        runtime.environ, harness_paths=HARNESS_PATHS, entry=ENTRY
+    )
+    if problem:
+        _say(scrub, f"FAILED: {problem}")
+        return 1
+    try:
+        out = artifacts.artifact_dir(Path(args.artifact_dir))
+    except review.Failure as refused:
+        _say(scrub, f"FAILED: {refused}")
+        return 1
+    try:
+        (out / "proceed").unlink(missing_ok=True)
+        decision = precheck(args, runtime, scrub)
+        plan = decision.plan
+        if plan is not None:
+            scrub.keep(plan.head_sha)
+            if plan.inputs is not None:
+                write_inputs(plan.inputs, out / "inputs.json", scrub)
+        artifacts.write_json(out / "precheck.json", _precheck_record(decision), scrub)
+        for warning in decision.extra.get("warnings", []):
+            _say(scrub, f"WARNING: {warning}")
+        if decision.reply is not None and args.post:
+            post_line(args, runtime, scrub, decision.reply)
+        if decision.proceed and plan is not None:
+            artifacts.write_artifact(out / "proceed", "")
+            _say(scrub, f"PROCEED: {decision.detail} at {plan.head_sha[:8]}")
+            return 0
+        _say(scrub, f"{decision.status.upper()}: {decision.detail}")
+        return _exit_code(decision.status, args)
+    except Exception as error:
+        with contextlib.suppress(OSError):
+            (out / "proceed").unlink(missing_ok=True)
+        reason = str(error) if isinstance(error, review.Failure) else ""
+        _say(scrub, f"FAILED: {reason or _unexpected(scrub, error)}")
+        return 1
+
+
+def collect_main(args: argparse.Namespace, runtime: Runtime) -> int:
+    """``--collect-only``: write the MR's StoryInputs for a run elsewhere, from git.
+
+    The Docker runner runs this on the host, where git and SSH work, and hands the
+    file to a container that mounts the repository read-only. API metadata is used
+    when a token is set; an API that cannot be reached only costs the title.
+    """
+    scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
+    target = (
+        Path(args.inputs) if args.inputs else Path(args.artifact_dir) / "inputs.json"
+    )
+    credential = runtime.environ.get(review.GITLAB.credential_env, "").strip()
+    merge_request: review.MergeRequest | None = None
+    try:
+        if credential:
+            try:
+                merge_request = _forge(args, runtime, credential).merge_request(args.mr)
+            except review.Skip as skip:
+                _say(scrub, f"no API metadata ({skip}); the title is the head commit's")
+        inputs = StoryInputs.from_json(
+            runtime.collect_story(
+                Path(args.repo_dir), args.mr, args.target_branch, remote=args.remote
+            )
+        )
+        if merge_request is not None:
+            inputs = _with_metadata(inputs, merge_request)
+        write_inputs(inputs, target, scrub)
+    except (mr_inputs.InputsError, review.Failure) as error:
+        _say(scrub, f"FAILED: the MR could not be collected: {error}")
+        return 1
+    except Exception as error:
+        _say(scrub, f"FAILED: {_unexpected(scrub, error)}")
+        return 1
+    _say(scrub, f"collected: {target}")
+    return 0
+
+
 _AUDIT_STATES = ("clean", "violations", "unavailable")
 _AUDITED_MODES = ("watch", "pair")
 
@@ -3356,6 +4184,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--story", metavar="ID", help="run this story's flows")
+    modes.add_argument("--mr", type=int, metavar="IID", help="run what this MR selects")
     modes.add_argument("--replay", metavar="RUN_DIR", help="run an earlier run's flows")
     modes.add_argument("--judge", metavar="RUN_DIR", help="re-judge a run directory")
     parser.add_argument(
@@ -3366,10 +4195,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     steps = parser.add_mutually_exclusive_group()
     steps.add_argument(
+        "--precheck",
+        action="store_true",
+        help="decide on a bare python3, write precheck.json and proceed, then stop",
+    )
+    steps.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="with --mr, write the MR's inputs.json from git, then stop",
+    )
+    steps.add_argument(
         "--interactive",
         action="store_true",
         help="with --story and --as, watch the flow in the browser container's TUI",
     )
+    parser.add_argument("--inputs", type=Path, help="the MR's inputs.json")
     parser.add_argument(
         "--artifact-dir",
         type=Path,
@@ -3402,7 +4242,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--build-dir",
         type=Path,
-        help="a UI build to test",
+        help="a UI build to test (an MR run's default: <repo-dir>/src/ui/build)",
     )
     parser.add_argument("--web-url", help="the deployed stack's web URL")
     parser.add_argument(
@@ -3434,16 +4274,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"region of Bedrock, STS and Polly (default: $AWS_REGION or {_DEFAULT_REGION})",
     )
     parser.add_argument(
+        "--target-branch",
+        default=review.DEFAULT_TARGET_BRANCH,
+        help=f"the MR's target branch (default: {review.DEFAULT_TARGET_BRANCH})",
+    )
+    parser.add_argument(
+        "--remote", default="origin", help="git remote (default: origin)"
+    )
+    parser.add_argument(
+        "--project",
+        default=os.environ.get("CI_PROJECT_ID")
+        or os.environ.get("CI_PROJECT_PATH")
+        or "",
+        help="numeric project id or full path (default: $CI_PROJECT_ID)",
+    )
+    parser.add_argument(
+        "--api-url",
+        default=os.environ.get("CI_API_V4_URL") or "",
+        help="GitLab API base URL (default: $CI_API_V4_URL)",
+    )
+    parser.add_argument(
         "--deadline-minutes",
         type=int,
         help="minutes after the job started by which the run must be done "
-        "(default: none)",
+        "(default: the catalogue's in CI, none locally)",
     )
     parser.add_argument(
         "--run-usd",
         type=_positive_float,
-        help="the run's dollar cap (default: flows times flow_usd); not read by "
-        "--interactive",
+        help="the run's dollar cap (default: the catalogue's job_usd in CI, else "
+        "flows times flow_usd); not read by --interactive",
     )
     parser.add_argument(
         "--reruns",
@@ -3461,6 +4321,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--voice", default="Ruth", help="Amazon Polly voice")
     parser.add_argument(
         "--no-narration", action="store_true", help="render videos without a voice"
+    )
+    parser.add_argument(
+        "--max-upload-mb",
+        type=int,
+        default=95,
+        help="the largest video uploaded, in MiB (default: 95)",
+    )
+    parser.add_argument(
+        "--review-poll-minutes",
+        type=int,
+        default=10,
+        help="how long to wait for the code-review note before posting on its own",
+    )
+    posting = parser.add_mutually_exclusive_group()
+    posting.add_argument(
+        "--post",
+        action="store_true",
+        help="with --mr, reply on the MR (only against the review stack)",
+    )
+    posting.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write section.md and post nothing, which is the default",
     )
     parser.add_argument(
         "--fail-on-skip", action="store_true", help="exit 1 instead of 0 on a skip"
@@ -3491,14 +4374,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if args.reruns is None:
         args.reruns = 1
+    if args.collect_only and args.mr is None:
+        parser.error("--collect-only needs --mr")
+    if args.post and args.mr is None:
+        parser.error("--post replies on a merge request: it needs --mr")
+    if args.post and args.dev_unconfined:
+        parser.error("--dev-unconfined never posts")
     if args.audit is not None and args.judge is None:
         parser.error("--audit needs --judge")
     if (args.check or args.summary or args.rejudge) and args.judge is None:
         parser.error("--check, --summary and --rejudge need --judge")
     if args.check and args.rejudge:
         parser.error("--check writes nothing, so --rejudge has nothing to rewrite")
+    if args.max_upload_mb < 1 or args.review_poll_minutes < 0:
+        parser.error(
+            "--max-upload-mb is at least 1 and --review-poll-minutes at least 0"
+        )
     if args.deadline_minutes is not None and args.deadline_minutes < 1:
         parser.error("--deadline-minutes must be at least 1")
+    if args.mr is not None:
+        if args.mr < 1:
+            parser.error("--mr must be a positive iid")
+        if args.build_dir is None:
+            args.build_dir = Path(args.repo_dir) / "src" / "ui" / "build"
     return args
 
 
@@ -3513,7 +4411,8 @@ def main(argv: list[str] | None = None, runtime: Runtime | None = None) -> int:
     Under the umask a GitLab Docker executor leaves a job, every directory a run
     makes would be writable by the browser's and the proxy's uids. Both are put
     back on the way out, so a caller that imports this module keeps its own.
-    ``--dev-unconfined`` is refused wherever GitLab CI's own ``CI`` or
+    ``--post`` is refused against any stack but the review stack before anything
+    runs, and ``--dev-unconfined`` wherever GitLab CI's own ``CI`` or
     ``GITLAB_CI`` is set, read from the runtime's environment, so a pipeline's
     flows always run under the whole confinement.
     """
@@ -3530,8 +4429,19 @@ def main(argv: list[str] | None = None, runtime: Runtime | None = None) -> int:
                 flush=True,
             )
             return 1
+        if args.post and args.stack != session.REVIEW_STACK:
+            print(
+                f"FAILED: --post replies only for runs against the review stack "
+                f"{session.REVIEW_STACK}",
+                flush=True,
+            )
+            return 1
         if args.judge is not None:
             return judge_main(args, chosen)
+        if args.collect_only:
+            return collect_main(args, chosen)
+        if args.precheck:
+            return precheck_main(args, chosen)
         return run(args, chosen)
     except (processes.Terminated, KeyboardInterrupt):
         print("FAILED: cancelled", flush=True)

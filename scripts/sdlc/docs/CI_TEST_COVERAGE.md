@@ -97,14 +97,15 @@ payload-robustness corpus covers that goal directly. See
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **nightly plus a manual button**, and the
-advisory `ux_review` stage runs only on a merge request that changes `src/ui/`.
+advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
+`CHANGELOG.md`.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
 | **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
-| **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only |
+| **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
 
 ⚠️ **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
@@ -285,13 +286,13 @@ GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
-| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests | ux_test_build / ai_ux_test³ |
-|-------|:---:|:---:|:---:|:---:|:---:|
-| Push to any branch, **no MR** | ✅ | — | — | — | — |
-| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) | — |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) | ✅ auto if `src/ui/` changed |
-| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** | — |
-| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — |
+| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests | ux_test_build / ai_ux_test³ | ai_ux_test_stories⁴ |
+|-------|:---:|:---:|:---:|:---:|:---:|:---:|
+| Push to any branch, **no MR** | ✅ | — | — | — | — | — |
+| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) | — | — |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) | ✅ auto if `src/ui/` changed | ✅ auto if `CHANGELOG.md` changed |
+| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** | — | — |
+| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied
@@ -714,12 +715,14 @@ it by hand. The section's marker records `upload=<id>` for a later, separately
 authorised deletion change.
 
 **CI variables.** All four are masked and **not** protected, because a protected
-variable is absent from MR pipelines. Each variable only the UX test reads is scoped
-to the environments of the jobs that read it, so the persona's password reaches
-`ai_ux_test` alone, and `ux_test_build`, which runs the MR's `npm ci`, holds only the
-UI environment. Each of the two jobs declares an environment of its own with
-`action: prepare`: `ai_ux_test` declares `ux-review`, `ux_test_build` declares
-`ux-review-build`, and no other job declares either. GitLab gives a job
+variable is absent from MR pipelines. Each variable only the UX jobs read is scoped
+to the environments of the jobs that read it, so the persona's password reaches only
+the jobs that drive the browser, `ai_ux_test` and the first-time-user story job⁴,
+and `ux_test_build`, which runs the MR's `npm ci`, holds only the UI environment.
+Each of the two jobs declares an environment of its own with `action: prepare`:
+`ai_ux_test` declares `ux-review`, `ux_test_build` declares `ux-review-build`. The
+story job that drives the browser, `ai_ux_test_stories`, reads what `ai_ux_test`
+reads and declares `ux-review` too, and no other job declares either. GitLab gives a job
 the variables whose scope matches its environment, creates the environment by name
 the first time a pipeline holds such a job, and creates no deployment for a
 `prepare` job. Without the variables both jobs print `SKIPPED:` and exit 0.
@@ -774,8 +777,9 @@ evaluates `rules` at pipeline creation.
    `ai_ux_test`'s precheck names no unset `UX_TEST_*` variable, and **Operate →
    Environments** shows no deployment to either environment.
 
-⚠️ **The residual.** The scopes keep the persona's password in `ai_ux_test` alone,
-and so out of `ux_test_build`, the UX job that runs the MR's code. They do nothing
+⚠️ **The residual.** The scopes keep the persona's password in the jobs that drive
+the browser, and so out of `ux_test_build`, the UX job that runs the MR's code. They
+do nothing
 for what reaches every job: `GITLAB_REVIEW_TOKEN`, at the default scope, and the
 job's AWS role session, which the runner fleet's credential vendor mints for a job
 before it starts, with nothing in `.gitlab-ci.yml` asking for it, so that nothing
@@ -838,6 +842,66 @@ run, and `make ai-ux-browser` starts only the confined browser, with DevTools on
 the section and no video, unless you add `EXTRA_ARGS=--dev-video-any-stack`, whose
 video shows that stack's screens unredacted under the gitignored `scratch/`; see
 [docs/testing.md](../../../docs/testing.md#the-ux-review-and-recording-it).
+
+⁴ **`ai_ux_test_stories` is advisory and is not a gate.** It runs the
+first-time-user stories of `scripts/ux_stories.toml`: a model that knows the product
+only through its published documentation attempts one intent-only story as one
+persona, in the same confined headless browser, egress proxy and socket audit as
+`ai_ux_test`, and the verdict is computed from the journal of its tool calls against
+the persona's expectation, never from its prose. It is `allow_failure: true` and
+absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
+`scripts/sdlc/ai_ux_test_stories.py`, the unattended contract is
+`.claude/skills/ux-test-stories-ci.md`, the operator procedure is
+`.claude/skills/ux-test-stories.md`, and
+`scripts/tests/test_ux_test_stories_ci_jobs.py` pins the job's shape.
+
+- **On a merge request.** `ai_ux_test_stories` runs in `ux_review` on a non-Draft MR
+  to `develop` that changes `CHANGELOG.md`. Its precheck, on a bare `python3` before
+  any install, scores every story against the CHANGELOG entries the MR adds, and stops
+  when none is selected or nothing user-visible changed, which is where most such MRs
+  end. Otherwise it runs at most `mr_stories` stories and `mr_flows` flows (`[runs]`
+  in the catalogue), against the MR's UI build from `ux_test_build` when the MR
+  changes `src/ui`, or else against the deployed UI with the MR head's docs, read from
+  git objects. It replies once in the `ai_mr_review` note's thread and never edits that
+  note, so it needs no `resource_group` and runs alongside `ai_ux_test`. An MR gets at
+  most `mr_runs` story runs, then one reply saying so. A run counts once its precheck
+  goes ahead, posted or not: the precheck reads the start of each earlier story job's
+  log on the MR, which is kept when a newer push cancels a job or it times out.
+- **Switch.** `UX_TEST_STORIES` unset, empty or set to `mr` runs the job; `off`, or
+  any other value, stops it, so a mistyped `off` still stops it.
+
+**What the story job adds to `ai_ux_test`'s security design**, which it shares
+through the `&ux_confined_setup` anchor:
+- the story server, `scripts/ux_story_mcp.py`, is the only MCP server the model sees:
+  it starts the pinned `chrome-devtools-mcp` itself, serves only the browser tools the
+  STORY profile grants, strips every file-writing argument, reports no roots to it,
+  and counts actions against a step budget;
+- no MR-authored text reaches the prompt: the CHANGELOG delta only selects stories,
+  and the stories come from the catalogue in the pinned harness;
+- the precheck refuses to run when the job's `UX_HARNESS` or `UX_ENTRY` differs from
+  the entry's own `HARNESS_PATHS` and path, so a project or pipeline variable cannot
+  change what the harness pins;
+- verdicts come only from the journal, whose structure the harness writes and whose
+  strings are bounded and untrusted, and every reply is composed from structured
+  fields.
+
+**CI variables.** The story job reads `ai_ux_test`'s four and one of its own. It
+declares `ai_ux_test`'s environment, `ux-review`, with `action: prepare`, which is
+what hands it the copies of `UX_TEST_UI_ENV`, `UX_TEST_PERSONAS` and
+`UX_TEST_AWS_ACCOUNT_ID` stored at that scope³. Without one it needs, its precheck
+stops with `SKIPPED:` and the job exits 0.
+
+| Variable | Read by | What it holds |
+|---|---|---|
+| `UX_TEST_STORIES` | the job's rules | unset, empty or `mr` runs the job; any other value, `off` among them, does not. Keep it at environment scope All (`*`): GitLab can leave an environment-scoped variable undefined while it evaluates `rules`, so a scoped `off` can read as unset and stop nothing |
+| `UX_TEST_UI_ENV` | the job | `ai_ux_test`'s, plus a `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line, which every run against the deployed UI needs (an MR that changes the docs but not `src/ui`), because nothing else in the variable names the web host |
+| `UX_TEST_PERSONAS` | the job | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as; a flow whose group has none is not run |
+| `UX_TEST_AWS_ACCOUNT_ID` | the job | `ai_ux_test`'s |
+| `GITLAB_REVIEW_TOKEN` | the job | `ai_ux_test`'s: the job reads the MR and its notes and replies |
+
+**Local runs.** `make ai-ux-test-stories-local MR=<iid>` runs what the MR job would
+run, in Docker, as a dry run; see
+[docs/testing.md](../../../docs/testing.md#first-time-user-stories).
 
 Notes:
 - **Every push runs fast_checks** (all seven jobs), so lint/typecheck/unit and

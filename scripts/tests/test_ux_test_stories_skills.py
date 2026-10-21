@@ -451,13 +451,15 @@ def test_every_run_mode_has_a_make_form_and_a_windows_form(heading: str) -> None
 def test_the_operator_skills_numbers_are_the_catalogues_and_the_selectors() -> None:
     skill = _flat(_text(OPERATOR_SKILL))
     catalogue = stories.load_catalogue()
-    limits = catalogue.limits
+    limits, runs = catalogue.limits, catalogue.runs
     assert f"`documented_steps_max` ({limits.documented_steps_max})" in skill
     assert limits.step_budget_multiple == 10
     assert "ten actions a documented step" in skill
     assert f"never fewer than {limits.step_budget_floor}" in skill
     assert story_relay.LOOKS_PER_ACTION == 2
     assert "free up to twice the budget" in skill
+    assert (runs.mr_stories, runs.mr_flows) == (2, 3)
+    assert "at most two stories and three flows" in skill
     assert f"({changelog_select.TERM_POINTS_MAX} at most)" in skill
     assert f"selected at {changelog_select.SELECT_THRESHOLD} CHANGELOG points" in skill
 

@@ -1111,3 +1111,86 @@ def test_the_wait_drives_the_real_client_over_the_wire(gitlab: _FakeGitlab) -> N
         ("GET", "/api/v4/user"),
         ("GET", f"{notes}&per_page=100&page=1"),
     ]
+
+
+def _jobs(pipeline: int) -> str:
+    return f"{PROJECT_PATH}/pipelines/{pipeline}/jobs?per_page=100&page=1"
+
+
+def _job(ident: object, name: str, status: str = "success") -> object:
+    return {"id": ident, "name": name, "status": status}
+
+
+MR_PIPELINES = f"{PROJECT_PATH}/merge_requests/812/pipelines?per_page=100"
+MR = "ai_ux_test_stories"
+PROCEEDED = re.compile(rb"PROCEED: [0-9]+ flow")
+
+
+def _trace(job: int) -> str:
+    return f"{PROJECT_PATH}/jobs/{job}/trace"
+
+
+@pytest.mark.unit
+def test_a_jobs_log_is_read_only_as_far_as_its_head(gitlab: _FakeGitlab) -> None:
+    gitlab.answer(
+        "GET",
+        _trace(7),
+        headers={"Content-Type": "text/plain"},
+        raw=b"PROCEED: 3 flow(s)" + b" " * 4096,
+    )
+    head = _forge(gitlab).job_trace_head(7, limit=64)
+    assert head == (b"PROCEED: 3 flow(s)" + b" " * 4096)[:64]
+    unmeasured = JSON_HEAD + b"Connection: close\r\n\r\n" + b"x" * 4096
+    with _raw_server(_sender(unmeasured)) as api_url:
+        forge = gitlab_api.UxGitlab(api_url, "group/proj", CREDENTIAL)
+        assert forge.job_trace_head(7, limit=100) == b"x" * 100
+
+
+@pytest.mark.unit
+def test_runs_started_counts_the_mrs_story_jobs_whose_log_says_they_went_ahead(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", MR_PIPELINES, [{"id": n} for n in (40, 39, 38, 37, 36)])
+    gitlab.answer("GET", _jobs(39), [_job(391, MR, "canceled"), _job(392, "lint")])
+    gitlab.answer("GET", _jobs(38), [_job(381, MR, "skipped"), _job(382, MR, "failed")])
+    gitlab.answer("GET", _jobs(37), {"message": "boom"}, status=500)
+    gitlab.answer("GET", _jobs(36), [_job(361, MR, "success")])
+    for job, text in ((391, b"PROCEED: 2 flow(s)"), (382, b"SKIPPED: a draft")):
+        gitlab.answer("GET", _trace(job), raw=text)
+    gitlab.answer("GET", _trace(361), {"message": "gone"}, status=404)
+    counted = gitlab_api.runs_started(
+        _forge(gitlab),
+        812,
+        job=MR,
+        marker=PROCEEDED,
+        own_pipeline=40,
+        enough=4,
+        deadline=1e9,
+    )
+    assert counted == 1
+    asked = [r["path"] for r in gitlab.requests]
+    assert _jobs(40) not in asked and _trace(381) not in asked
+    assert _trace(392) not in asked
+
+
+@pytest.mark.unit
+def test_runs_started_stops_at_enough_and_at_the_deadline(gitlab: _FakeGitlab) -> None:
+    gitlab.answer("GET", MR_PIPELINES, [{"id": n} for n in (3, 2, 1)])
+    for pipeline in (3, 2, 1):
+        gitlab.answer("GET", _jobs(pipeline), [_job(pipeline * 10, MR, "success")])
+        gitlab.answer("GET", _trace(pipeline * 10), raw=b"PROCEED: 1 flow(s)")
+    values: dict[str, Any] = {
+        "job": MR,
+        "marker": PROCEEDED,
+        "own_pipeline": None,
+        "deadline": 1e9,
+    }
+    assert gitlab_api.runs_started(_forge(gitlab), 812, enough=2, **values) == 2
+    assert _jobs(1) not in [r["path"] for r in gitlab.requests]
+    gitlab.requests.clear()
+    times = iter([0.0, 10.0])
+    late = {**values, "deadline": 10.0, "clock": lambda: next(times)}
+    assert gitlab_api.runs_started(_forge(gitlab), 812, enough=4, **late) == 1
+    gitlab.answer("GET", MR_PIPELINES, {"message": "403 Forbidden"}, status=403)
+    with pytest.raises(review.Skip, match="403"):
+        gitlab_api.runs_started(_forge(gitlab), 812, enough=4, **values)

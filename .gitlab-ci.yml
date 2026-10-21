@@ -60,11 +60,11 @@ stages:
   - fast_checks
   - deployment_validation
   - integration_tests
-  # Advisory UX test of a merge request's web UI (ux_test_build, ai_ux_test).
-  # After the deploy stages so nothing in them waits on it; both jobs set
-  # `needs`, so they start as soon as the pipeline is created whatever stage
-  # they are in. Not a gate, and not in fast_checks, whose jobs are the
-  # no-AWS gates and all carry `needs: []`.
+  # Advisory UX tests of a merge request (ux_test_build, ai_ux_test and
+  # ai_ux_test_stories). After the deploy stages so nothing in them waits on
+  # them; every job here sets `needs`, so none waits for an earlier stage. Not
+  # gates, and not in fast_checks, whose jobs are the no-AWS gates and all
+  # carry `needs: []`.
   - ux_review
   # Runs on a scheduled pipeline whatever happened upstream, so that a nightly
   # which never reached the deploy stage is still reported. See
@@ -1237,7 +1237,9 @@ ai_mr_review:
 # from MR pipelines). Each UX job declares an environment of its own with
 # `action: prepare`, which gives a job the variables scoped to that environment
 # and creates no deployment: ai_ux_test declares `ux-review` and ux_test_build
-# declares `ux-review-build`, and no other job declares either.
+# declares `ux-review-build`. The first-time-user story job that drives the
+# browser, ai_ux_test_stories, reads what ai_ux_test reads and declares
+# `ux-review` as well; no other job declares either.
 # UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID have environment scope `ux-review`
 # alone, so the job that runs the MR's `npm ci` never holds the persona's
 # password. UX_TEST_UI_ENV, which both jobs read, is stored twice with the same
@@ -1475,6 +1477,104 @@ ai_ux_test:
     when: always
     paths:
       - ux-tests/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# Advisory first-time-user stories (scripts/ux_stories.toml), run by
+# scripts/sdlc/ai_ux_test_stories.py: a model that knows the product only from
+# its published documentation attempts one story as one persona, in the confined
+# browser of ai_ux_test, and the verdict comes from the journal of its tool
+# calls. NOT A GATE: ai_ux_test_stories is `allow_failure: true`, GitLab-only,
+# and absent from test_ci_gate_parity.py's SHARED_GATES. See footnote ⁴ in
+# scripts/sdlc/docs/CI_TEST_COVERAGE.md and .claude/skills/ux-test-stories-ci.md;
+# test_ux_test_stories_ci_jobs.py pins the job's shape.
+#
+# UX_TEST_STORIES switches it: unset, empty or `mr` runs it, and any other value,
+# `off` among them, does not, so a mistyped `off` still stops it.
+#
+# This job takes &ux_confined_setup from ai_ux_test, so it pins the harness to
+# the target branch the same way and fails closed, and its precheck refuses a
+# UX_HARNESS or UX_ENTRY other than the entry's own HARNESS_PATHS and path. It
+# reads ai_ux_test's masked, unprotected CI variables UX_TEST_UI_ENV,
+# UX_TEST_PERSONAS, UX_TEST_AWS_ACCOUNT_ID and GITLAB_REVIEW_TOKEN; a run against
+# the deployed UI also needs a UX_TEST_WEB_URL=<the stack's ApplicationWebURL>
+# line in UX_TEST_UI_ENV. Without them the precheck prints SKIPPED: and the job
+# exits 0. The three UX_TEST_* variables are set at environment scope
+# `ux-review`, and a variable set at an environment's scope reaches only a job
+# that declares that environment, so this job declares exactly the environment
+# ai_ux_test declares, `ux-review` with `action: prepare`, as
+# test_ux_test_stories_ci_jobs.py pins.
+# ---------------------------------------------------------------------------
+ai_ux_test_stories:
+  stage: ux_review
+  interruptible: true
+  # About 6 min of install and docs index, then flows only while one can finish
+  # inside the catalogue's deadline_minutes (55), counted from the job's start.
+  # Most CHANGELOG MRs stop at the precheck in about a minute.
+  timeout: 60m
+  allow_failure: true
+  # No resource_group: the job replies in the code-review thread, never edits the
+  # review note, and only reads the review stack (its flows are told to change
+  # nothing, and a best-effort guard refuses the saves it recognises), so it runs
+  # alongside ai_ux_test.
+  tags:
+    - size:large
+  rules:
+    - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "mr"
+      when: never
+    # The code review's own trigger, narrowed by `changes`: the reply goes into
+    # that review's thread, and the CHANGELOG entries an MR adds are what select
+    # its stories.
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
+      changes:
+        paths:
+          - CHANGELOG.md
+        compare_to: refs/heads/develop
+      when: on_success
+    - when: never
+  # The MR's UI build, when the MR changes src/ui. An optional need on a job the
+  # pipeline does not hold is dropped, so on any other MR this job starts at once
+  # and tests the deployed UI with the MR head's docs.
+  needs:
+    - job: ux_test_build
+      artifacts: true
+      optional: true
+  # ai_ux_test's environment, which UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID
+  # are scoped to, with its copy of UX_TEST_UI_ENV; see the note above.
+  environment:
+    name: ux-review
+    action: prepare
+  variables:
+    # Bedrock inference-profile id, inside the Opus family the GitLab role grants.
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
+    AWS_REGION: "us-east-1"
+    # The MR's story inputs diff against its merge base with develop.
+    GIT_DEPTH: 0
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
+    UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
+    # Posting is opt-in: this flag is what lets the precheck's one-line replies
+    # and the run's reply reach the MR.
+    UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID --post"
+    UX_ARTIFACTS: "ux-test-stories"
+  before_script: *ux_confined_setup
+  # UX_HARNESS_SHA labels the run with the harness commit, read from the archive
+  # the setup extracted: the extracted tree has no git of its own, and the
+  # precheck's own fetches of the MR head and the target branch rewrite
+  # FETCH_HEAD.
+  script:
+    - |
+      if [ ! -f "$UX_ARTIFACTS/proceed" ]; then
+        echo "No first-time-user story to run for this head; see the precheck line above."
+        exit 0
+      fi
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" "$UX_ARTIFACTS" "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      export UX_HARNESS_SHA="$(git get-tar-commit-id < /tmp/ux-harness.tar)"
+      python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --inputs "$UX_ARTIFACTS/inputs.json" --artifact-dir "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-test-stories/
     expire_in: 1 week
 
 # ---------------------------------------------------------------------------

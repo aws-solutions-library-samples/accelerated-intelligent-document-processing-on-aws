@@ -33,8 +33,11 @@ managed policy and users as CI does. It has three modes.
     ``ux-test-stories/`` holds ``story-run.json``, ``results.json``,
     ``flows/<story@persona>/`` and ``section.md``, and the terminal ends with one
     line per flow: its verdict, the steps used of its budget and its
-    hesitations. By default a run is unattended and a **dry run**: one flow
-    (``--story --as``) or every persona of a story (``--story``). ``--interactive``
+    hesitations. By default a run is unattended and a **dry run** unless
+    ``--post``: one flow (``--story --as``), every persona of a story
+    (``--story``) or what an MR's job would select (``--mr``, collected on the
+    host, its ``src/ui`` built in the credential-free container when the MR
+    changes it). ``--interactive``
     starts a fresh browser container, runs the pinned Claude TUI in it for you to
     watch and type to, stops the container when the session ends or
     ``flow_minutes`` pass, and judges the run. ``--pair`` starts the browser and
@@ -85,8 +88,8 @@ foreign, because nothing of this script runs when that session ends.
 
 Git inside a story container
 ----------------------------
-The orchestrator reads a commit's docs, ``--docs``', from git objects in its
-``--repo-dir``. Git refuses a repository another user owns, which a
+The orchestrator reads a commit's docs, an MR head's or ``--docs``', from git
+objects in its ``--repo-dir``. Git refuses a repository another user owns, which a
 bind-mounted checkout is to root on Linux, so each container that runs the
 orchestrator gets ``safe.directory`` as command-line configuration
 (``GIT_CONFIG_COUNT``), and a worktree checkout, whose ``.git`` file names its
@@ -154,8 +157,8 @@ Properties it is built around
    ``git`` and ``aws`` from ``PATH``, so it runs as
    ``py scripts\\ux_runner\\run_in_docker.py`` on Windows. ``review`` also runs
    ``ai_ux_test.py --collect-only`` on the host, and ``stories`` runs
-   ``ai_ux_test_stories.py --judge``, ``stories.py list`` and
-   ``changelog_select.py nudge`` there, so those
+   ``ai_ux_test_stories.py --collect-only`` and ``--judge``,
+   ``stories.py list`` and ``changelog_select.py nudge`` there, so those
    scripts' imports have to hold there too. 3.11.4 is the first release whose
    ``tarfile`` has the ``filter='data'`` extraction the source export relies on.
 
@@ -995,6 +998,7 @@ STORY_ARTIFACTS = "ux-test-stories"
 STORY_RUN_FILE = "story-run.json"
 STORY_RESULTS_FILE = "results.json"
 STORY_RUN_SCHEMA = "ux-test-stories/run"
+STORY_INPUTS_SCHEMA = "ux-test-stories/inputs"
 STORY_VERDICTS = (
     "not_refused",
     "stuck",
@@ -1040,13 +1044,17 @@ STORY_OPTIONS_SET_HERE = (
     "--artifact-dir",
     "--audit",
     "--check",
+    "--collect-only",
     "--dev-unconfined",
+    "--inputs",
     "--judge",
+    "--precheck",
     "--repo-dir",
     "--summary",
 )
 OWNER_PROBE = ".ux-owner-probe"
 STORY_RECORD_BYTES = 16 * 1024 * 1024
+STORY_INPUTS_BYTES = 32 * 1024 * 1024
 PAIR_REPLY_BYTES = 256 * 1024
 AUDIT_BYTES = 1024 * 1024
 
@@ -1166,7 +1174,14 @@ def story_mode(args: argparse.Namespace) -> str:
             f"{chosen[0][1]} and {chosen[1][1]} are different modes; choose one"
         )
     mode, mode_flag = chosen[0] if chosen else ("run", "an unattended run")
-    selection = [flag for flag, on in (("--story", args.story is not None),) if on]
+    selection = [
+        flag
+        for flag, on in (
+            ("--story", args.story is not None),
+            ("--mr", args.mr is not None),
+        )
+        if on
+    ]
     if args.story is not None and not STORY_ID_RE.match(args.story):
         raise DockerRunError(f"--story {args.story!r} is not a story id")
     if args.persona is not None and not STORY_ID_RE.match(args.persona):
@@ -1175,6 +1190,8 @@ def story_mode(args: argparse.Namespace) -> str:
         raise DockerRunError(
             "--as needs --story: it names one of that story's personas"
         )
+    if args.mr is not None and args.mr <= 0:
+        raise DockerRunError("--mr must be a merge request iid, such as 812")
     if args.video is not None and not VIDEO_POLICY_RE.match(args.video):
         raise DockerRunError(f"--video {args.video!r} is not a video policy word")
     if args.port is not None and not 0 < args.port < 65536:
@@ -1186,11 +1203,14 @@ def story_mode(args: argparse.Namespace) -> str:
         | {"--pair-full", "--pair-keychain"},
         "watch": {"--story", "--port", "--name", "--build-dir", "passthrough"},
         "replay": {"--video", "passthrough"},
-        "run": {"--story", "--video", "--build-dir", "passthrough"},
+        "run": {"--story", "--mr", "--video", "--post"}
+        | {"--build-dir", "passthrough"},
     }[mode]
     given = {
         "--story": args.story is not None,
+        "--mr": args.mr is not None,
         "--video": args.video is not None,
+        "--post": bool(args.post),
         "--port": args.port is not None,
         "--name": args.name != DEFAULT_BROWSER_NAME,
         "--build-dir": args.build_dir is not None,
@@ -1218,8 +1238,15 @@ def story_mode(args: argparse.Namespace) -> str:
             )
     if mode in ("pair", "watch") and selection != ["--story"]:
         raise DockerRunError(f"{mode_flag} needs --story, and --as when it has several")
-    if mode == "run" and len(selection) != 1:
-        raise DockerRunError("an unattended run takes --story, with or without --as")
+    if mode == "run":
+        if len(selection) != 1:
+            raise DockerRunError(
+                "an unattended run takes one of --story (with or without --as) or --mr"
+            )
+        if args.post and args.mr is None:
+            raise DockerRunError("--post posts an MR's run, so it needs --mr")
+        if args.build_dir is not None and args.mr is not None:
+            raise DockerRunError("--mr builds the MR's own UI; --build-dir is not read")
     if args.pair_full and args.pair_keychain:
         raise DockerRunError("--pair-full already drops --bare; choose one")
     return mode
@@ -1228,8 +1255,8 @@ def story_mode(args: argparse.Namespace) -> str:
 def _check_passthrough(passthrough: Sequence[str]) -> None:
     """Refuse an orchestrator option this script sets or must never pass in.
 
-    The orchestrator reads the last of a repeated option, so a run directory or
-    checkout passed through would replace this script's
+    The orchestrator reads the last of a repeated option, so a run directory,
+    checkout or inputs file passed through would replace this script's
     and write outside the run's ``ux-test-stories/``, and a mode of the
     orchestrator's own (:data:`STORY_OPTIONS_SET_HERE`) would run something other
     than the mode chosen here. ``--dev-unconfined`` drops the managed policy and
@@ -1364,6 +1391,37 @@ def git_variables(harness: str) -> dict[str, str]:
     if harness != "unknown":
         variables["UX_HARNESS_SHA"] = harness
     return variables
+
+
+def read_story_inputs(path: Path) -> tuple[str, bool]:
+    """The MR head the host collected, and whether the MR changes ``src/ui``.
+
+    Reads the story job's ``inputs.json`` (``ux-test-stories/inputs`` v1, whose
+    ``mr`` member is the MR UX test's record), or that record on its own.
+    """
+    data = _read_json(path, STORY_INPUTS_BYTES, str(path))
+    if not isinstance(data, dict):
+        raise DockerRunError(f"{path} is not a JSON object")
+    record = data.get("mr") if data.get("schema") == STORY_INPUTS_SCHEMA else data
+    if not isinstance(record, dict):
+        raise DockerRunError(f"{path} carries no MR record")
+    head = record.get("head_sha")
+    if not isinstance(head, str) or not HEAD_SHA_RE.match(head):
+        raise DockerRunError(f"{path} carries no 40-hex head_sha")
+    changed = record.get("changed")
+    if not isinstance(changed, list):
+        raise DockerRunError(f"{path} carries no list of changed files")
+    paths = [
+        entry.get(key)
+        for entry in changed
+        if isinstance(entry, dict)
+        for key in ("path", "old_path")
+    ]
+    ui = any(
+        isinstance(value, str) and (value == "src/ui" or value.startswith("src/ui/"))
+        for value in paths
+    )
+    return head, ui
 
 
 def _foreign_entries(root: Path, uid: int) -> bool:
@@ -1591,10 +1649,10 @@ def report_story_run(artifacts: Path, *, echo: Callable[[str], None] = print) ->
         echo(cost)
 
 
-def _story_names() -> tuple[str, ...]:
+def _story_names(*, post: bool) -> tuple[str, ...]:
     """What a container a model runs in receives by name: the review container's
-    names and CI's two."""
-    return CONTAINER_ENV_NAMES + CI_ENV_NAMES
+    names, CI's two, and the review token's names only to post."""
+    return CONTAINER_ENV_NAMES + CI_ENV_NAMES + (POST_ENV_NAMES if post else ())
 
 
 def _orchestrator(
@@ -1746,6 +1804,12 @@ def _stories_run(
     stack = args.stack or DEFAULT_STACK
     _check_stack(stack)
     _require(env, "UX_TEST_PERSONAS", "UX_TEST_AWS_ACCOUNT_ID")
+    if args.post:
+        if stack != DEFAULT_STACK:
+            raise DockerRunError(
+                f"--post posts only a run against the review stack {DEFAULT_STACK}"
+            )
+        _require(env, *POST_ENV_NAMES)
     story = str(args.story or "")
     if story:
         facts = story_facts(story)
@@ -1753,12 +1817,37 @@ def _stories_run(
             choose_persona(facts, args.persona)
     local_build = _local_build(args)
     docker = resolve_tool(args.docker)
-    label = story + (f"@{args.persona}" if args.persona else "")
+    if args.mr is not None:
+        label = f"mr{args.mr}"
+    else:
+        label = story + (f"@{args.persona}" if args.persona else "")
     out = story_run_dir(label, out=args.out)
     print(f"-> run directory: {out}", flush=True)
-    selection = ["--story", story]
-    if args.persona:
-        selection += ["--as", str(args.persona)]
+    selection: list[str]
+    mr_ui = False
+    head = ""
+    if args.mr is not None:
+        inputs = out / "inputs.json"
+        print(f"-> collecting MR {args.mr} on the host", flush=True)
+        collected = run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-B", str(REPO_ROOT / STORIES_ENTRY)]
+            + ["--mr", str(args.mr), "--collect-only", "--inputs", str(inputs)]
+            + ["--repo-dir", str(REPO_ROOT), "--target-branch", args.target_branch]
+            + ["--remote", args.remote],
+            env=env,
+            check=False,
+        )
+        if collected.returncode != 0:
+            raise DockerRunError(
+                f"collecting MR {args.mr} failed (exit {collected.returncode}); its "
+                "output is above"
+            )
+        head, mr_ui = read_story_inputs(inputs)
+        selection = ["--mr", str(args.mr), "--inputs", "/out/inputs.json"]
+    else:
+        selection = ["--story", story]
+        if args.persona:
+            selection += ["--as", str(args.persona)]
     platform_name = host_platform()
     tag = image_tag(PACKAGE_DIR)
     ensure_image(
@@ -1779,18 +1868,39 @@ def _stories_run(
     )
     mounts: list[str] = []
     build_dir: str | None = None
-    if local_build is not None:
+    if mr_ui:
+        _build_mr_ui(
+            docker=docker,
+            platform_name=platform_name,
+            tag=tag,
+            out=out,
+            head=head,
+            ui_env=ui_env,
+            env=env,
+            run=run,
+        )
+        build_dir = "/out/build"
+    elif local_build is not None:
         mounts = bind(local_build, "/ui-build", readonly=True)
         build_dir = "/ui-build"
-    extra = ["--video", args.video] if args.video else []
+    extra = (["--video", args.video] if args.video else []) + (
+        ["--post"] if args.post else []
+    )
     extra += list(args.passthrough)
     harness, _ = harness_facts(REPO_ROOT, run=run)
     variables = git_variables(harness)
     mounts += checkout_git_mounts(REPO_ROOT, run=run)
-    names = _story_names() + tuple(variables)
+    names = _story_names(post=args.post) + tuple(variables)
     child_env = _container_env(env, credentials, ui_env)
     child_env.update(variables)
-    print("-> running the stories as a dry run; nothing is posted", flush=True)
+    if args.post:
+        print(
+            f"-> running the stories; they post to MR {args.mr} unless an option "
+            "passed through makes the run a dry run",
+            flush=True,
+        )
+    else:
+        print("-> running the stories as a dry run; nothing is posted", flush=True)
     completed = run(  # noqa: S603 - fixed argv, no shell
         _review_container(
             docker=docker,
@@ -2000,7 +2110,7 @@ def _stories_watch(
     )
     harness, _ = harness_facts(REPO_ROOT, run=run)
     variables = git_variables(harness)
-    names = _story_names() + tuple(variables) + BROWSER_ENV_NAMES
+    names = _story_names(post=False) + tuple(variables) + BROWSER_ENV_NAMES
     browser_env = _browser_env(env, credentials, ui_env, port=port, name=args.name)
     browser_env.update(variables)
     print(f"-> starting {args.name}; DevTools on 127.0.0.1:{port}", flush=True)
@@ -2664,7 +2774,7 @@ def _stories_replay(
             tag=tag,
             harness=harness,
             out=out,
-            names=_story_names() + tuple(variables),
+            names=_story_names(post=False) + tuple(variables),
             mounts=bind(source, "/replay", readonly=True)
             + bind(REPO_ROOT, "/source", readonly=True)
             + checkout_git_mounts(REPO_ROOT, run=run),
@@ -2897,8 +3007,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     stories_parser = modes.add_parser(
         "stories",
         allow_abbrev=False,
-        help="first-time-user stories: unattended (a dry run), watched, paired or "
-        "replayed",
+        help="first-time-user stories: unattended (a dry run unless --post), "
+        "watched, paired or replayed",
     )
     stories_parser.add_argument(
         "--story", metavar="ID", help="a story of scripts/ux_stories.toml"
@@ -2910,9 +3020,20 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         help="one persona of the story's `as` (default: each of them, or its one)",
     )
     stories_parser.add_argument(
+        "--mr",
+        type=int,
+        metavar="IID",
+        help="run what that MR's job would select, collected on the host",
+    )
+    stories_parser.add_argument(
         "--video",
         metavar="POLICY",
         help="the orchestrator's video policy, for example never",
+    )
+    stories_parser.add_argument(
+        "--post",
+        action="store_true",
+        help=f"post an --mr run's reply (default: a dry run); only on {DEFAULT_STACK}",
     )
     story_modes = stories_parser.add_mutually_exclusive_group()
     story_modes.add_argument(
@@ -2973,13 +3094,15 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
     stories_parser.add_argument(
         "--target-branch",
         default=DEFAULT_TARGET_BRANCH,
-        help="--replay: the branch a replayed harness commit must be on, unless "
-        "this checkout holds it (default: %(default)s)",
+        help="--mr: the MR's target branch; --replay: the branch a replayed "
+        "harness commit must be on, unless this checkout holds it "
+        "(default: %(default)s)",
     )
     stories_parser.add_argument(
         "--remote",
         default=DEFAULT_REMOTE,
-        help="--replay: the remote of --target-branch (default: %(default)s)",
+        help="--mr: git remote to fetch the MR from; --replay: the remote of "
+        "--target-branch (default: %(default)s)",
     )
     stories_parser.add_argument(
         "--out",

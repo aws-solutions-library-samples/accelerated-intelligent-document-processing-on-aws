@@ -455,12 +455,13 @@ are in [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solution
 
 Each of these needs a deployed stack (or deploys its own) and has a written
 procedure, and each but the first-time-user stories is mandatory for a release.
-Two also run in CI in some form, on GitLab only, so a GitHub pull request covers
-neither of them: the dynamic API RBAC matrix is step 12 of the GitLab
+Three also run in CI in some form, on GitLab only, so a GitHub pull request covers
+none of them: the dynamic API RBAC matrix is step 12 of the GitLab
 `integration_tests` deployment (`scripts/sdlc/codebuild_deployment.py` shells out to
-`make api-test` against the stack that job deploys); and the UX review runs
-unattended as the advisory `ai_ux_test` job on merge requests that change
-`src/ui/`. Note when
+`make api-test` against the stack that job deploys); the UX review runs unattended
+as the advisory `ai_ux_test` job on merge requests that change `src/ui/`; and the
+first-time-user stories run as an advisory job on merge requests that change
+`CHANGELOG.md`. Note when
 `integration_tests` runs: automatically only in the scheduled nightly pipeline; on a
 merge request to `develop` and on `develop` itself it is a manual button, and on any
 other branch it does not run, so nothing exercises a change before it merges unless
@@ -471,7 +472,7 @@ someone presses that button. The rest of the rows run only when a person asks.
 | API RBAC — dynamic (also runs in the GitLab `integration_tests` job) | that the **deployed** resolver enforces authorization per Cognito group and configuration-profile scope, not just that the code looks right | `make api-test STACK_NAME=…` | [`api-rbac-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/api-rbac-test.md) |
 | Cognito authorization behaviour | that the pre-token group-mapping trigger and client attribute permissions behave as the docs claim — they do not always | `make live-auth-checks` · `make verify-idp-federation` | [`live-auth-checks`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/live-auth-checks.md) |
 | **UX review (browser)** | that a person can actually complete each flow in the web UI, and how it feels doing so — functional pass/fail **plus** usability findings. One of the two tiers here that open a browser, beside the first-time-user stories below | `make ux-test STACK_NAME=…` | [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md) |
-| **First-time-user stories (browser)** | that a person new to the product can do what the published documentation says they can, by following it literally — each story is one intent attempted as one persona and judged against what that persona's role should be able to do, with every hesitation, dead end and gap between the docs and the screens recorded as it goes. Not a release tier | `make ai-ux-test-stories-local STORY=…` | [`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md) |
+| **First-time-user stories (browser)** | that a person new to the product can do what the published documentation says they can, by following it literally — each story is one intent attempted as one persona and judged against what that persona's role should be able to do, with every hesitation, dead end and gap between the docs and the screens recorded as it goes. Advisory in GitLab CI on merge requests; not a release tier | `make ai-ux-test-stories-local STORY=…` | [`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md) |
 | Inbox end to end | that a message posted through `idp_common.notifications` (direct, Cognito group fan-out, idempotency key, dedupe key) is the one the **deployed** API lists, counts and marks read for its recipient, and that another user cannot reach it. Creates and removes a temporary Cognito group, two users and their Inbox items | `make stacktest-inbox STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Review queues end to end | that a document routed under a profile with review queues on reaches the **deployed** queue, can be claimed, edited and completed through the API with a real Annotator token, and finishes with the final status object, an unchanged machine manifest and a final manifest. Creates and removes a temporary profile, user and document (`CHECK_EVENTS=1` adds a temporary EventBridge rule and SQS queue) | `make stacktest-review-queues STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | ZAP DAST | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
@@ -544,10 +545,13 @@ stack, and a best-effort guard in front of the browser refuses the saves it
 recognises: a story whose task ends in a save stops at that step and says so.
 
 `make ai-ux-test-stories-local STORY=<id>` runs a story in Docker as a dry run
-(`INTERACTIVE=1` lets you watch it live), `make ai-ux-test-stories-pair` starts
-the confined browser and prints the command for a Claude session you start to play
-the user, and `make ai-ux-test-stories-list` and
-`make ai-ux-test-stories-search Q="…"` are the authoring loop. Procedure:
+(`MR=<iid>` runs the stories that MR's added CHANGELOG entries select, and
+`INTERACTIVE=1` lets you watch it live), `make ai-ux-test-stories-pair` starts the
+confined browser and prints the command for a Claude session you start to play the
+user, and `make ai-ux-test-stories-list` and
+`make ai-ux-test-stories-search Q="…"` are the authoring loop. In CI, the advisory
+`ai_ux_test_stories` job runs the stories a non-Draft MR's added CHANGELOG entries
+select and replies in the code-review thread; it gates nothing. Procedure:
 [`ux-test-stories`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories.md);
 unattended contract:
 [`ux-test-stories-ci`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test-stories-ci.md).

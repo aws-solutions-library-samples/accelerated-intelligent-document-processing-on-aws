@@ -24,9 +24,11 @@ one. Most of them are security properties rather than tidiness.
   job declares an environment of its own with ``action: prepare``, which hands a
   job the variables scoped to it and creates no deployment, so the persona's
   password, scoped to ``ai_ux_test``'s alone, never reaches the job that runs the
-  MR's ``npm ci``. No other job declares or inherits either environment, no rule
-  reads a scoped variable, and the docs tell the operator each variable's exact
-  scopes and name the other jobs a variable left at the default one reaches
+  MR's ``npm ci``. The only other job that declares either environment is the
+  first-time-user story job that drives the browser, which reads what
+  ``ai_ux_test`` reads and declares exactly its environment. No job inherits one,
+  no rule reads a scoped variable, and the docs tell the operator each variable's
+  exact scopes and name the other jobs a variable left at the default one reaches
   through ``npm ci``.
 * **No CI configuration passes the developer's video opt-in.** It renders another
   stack's unredacted screens into the artifact directory, and a pipeline's
@@ -71,6 +73,11 @@ UX_LOCKFILE = "scripts/ux_runner/package-lock.json"
 BUILD_JOB = "ux_test_build"
 TEST_JOB = "ai_ux_test"
 UX_JOBS = (BUILD_JOB, TEST_JOB)
+#: The first-time-user story jobs that drive the browser. They read the variables
+#: ``ai_ux_test`` reads, so they declare its environment, and nothing else.
+STORY_RUN_JOBS = ("ai_ux_test_stories",)
+#: Every job that may declare an environment a UX variable is scoped to.
+UX_ENVIRONMENT_JOBS = (*UX_JOBS, *STORY_RUN_JOBS)
 WRAPPER_KEY = ".without_job_secrets"
 
 #: What each UX job declares: an environment of its own, whose scoped variables
@@ -84,9 +91,9 @@ UX_ENVIRONMENTS = {
 #: it to exactly those jobs' environments, so the job that runs the MR's ``npm ci``
 #: never holds the persona's password.
 SCOPED_VARIABLES = {
-    "UX_TEST_UI_ENV": UX_JOBS,
-    "UX_TEST_PERSONAS": (TEST_JOB,),
-    "UX_TEST_AWS_ACCOUNT_ID": (TEST_JOB,),
+    "UX_TEST_UI_ENV": (*UX_JOBS, *STORY_RUN_JOBS),
+    "UX_TEST_PERSONAS": (TEST_JOB, *STORY_RUN_JOBS),
+    "UX_TEST_AWS_ACCOUNT_ID": (TEST_JOB, *STORY_RUN_JOBS),
 }
 
 #: Every secret a UX job's environment can hold, each with a value a leak would show.
@@ -908,7 +915,7 @@ def _ux_scope_prefix() -> str:
 
 
 def _jobs_reaching_a_ux_environment(
-    config: dict[str, Any], exempt: tuple[str, ...] = UX_JOBS
+    config: dict[str, Any], exempt: tuple[str, ...] = UX_ENVIRONMENT_JOBS
 ) -> dict[str, list[str]]:
     """``{job: environments}`` for each job outside ``exempt`` that declares or
     inherits an environment a UX scope could match: a name beginning as the UX
@@ -973,12 +980,14 @@ def test_the_build_jobs_skip_line_names_the_scope_its_copy_belongs_at(
 @pytest.mark.unit
 def test_no_other_job_declares_or_inherits_a_ux_environment(ci_config) -> None:
     """Declaring an environment is what hands a job the variables scoped to it, the
-    persona's password among them, so no job but the UX jobs reaches one a UX
-    scope could match: either UX environment, another name beginning as both do,
-    which a wildcard scope would also match, or a name built from a variable. A job
-    reaches one through ``extends`` as well as by declaring it, and a hidden
-    template counts, since another job can extend it. Read over this one file,
-    which therefore includes no other and starts no child pipeline."""
+    persona's password among them, so no job but the three in
+    :data:`UX_ENVIRONMENT_JOBS` reaches one a UX scope could match: either UX
+    environment, another name beginning as both do, which a wildcard scope would
+    also match, or a name built from a variable. The story job among them
+    reaches exactly ``ai_ux_test``'s, by declaring it. A job reaches one through
+    ``extends`` as well as by declaring it, and a hidden template counts, since
+    another job can extend it. Read over this one file, which therefore includes
+    no other and starts no child pipeline."""
     assert "include" not in ci_config, (
         ".gitlab-ci.yml now includes other files, whose jobs this test cannot see"
     )
@@ -989,6 +998,14 @@ def test_no_other_job_declares_or_inherits_a_ux_environment(ci_config) -> None:
     )
     for job in ("static_checks", "unit_tests", "package_tests", "ui_tests"):
         assert job in jobs, f"{job} is gone, so this test may be reading nothing"
+    for job in STORY_RUN_JOBS:
+        assert job in jobs, f"{job} is gone; take it out of STORY_RUN_JOBS"
+        assert not _parents(jobs[job]), f"{job} extends {_parents(jobs[job])}"
+        assert jobs[job].get("environment") == UX_ENVIRONMENTS[TEST_JOB], (
+            f"{job} declares {jobs[job].get('environment')!r}, not "
+            f"{TEST_JOB}'s {UX_ENVIRONMENTS[TEST_JOB]}, the one environment it is "
+            "exempt here for"
+        )
     reaching = _jobs_reaching_a_ux_environment(ci_config)
     assert not reaching, (
         f"{reaching} reach an environment a UX variable's scope could match, which "
@@ -1550,7 +1567,9 @@ def test_ai_ux_test_local_posts_only_for_an_affirmative_post(
 _STORY_MAKE_VARIABLES = (
     "STORY",
     "AS",
+    "MR",
     "VIDEO",
+    "POST",
     "INTERACTIVE",
     "PORT",
     "REPLAY",
@@ -1639,6 +1658,22 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "--reruns",
         "0",
     ]
+    code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812")
+    assert code == 0, err[-400:]
+    assert argv[2:] == ["--mr", "812"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "posts"),
+    [("", False), ("0", False), ("no", False), ("1", True), ("true", True)],
+)
+def test_the_stories_target_posts_only_for_an_affirmative_post(
+    value: str, posts: bool
+) -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812", f"POST={value}")
+    assert code == 0, err[-400:]
+    assert ("--post" in argv) is posts
 
 
 @pytest.mark.unit
@@ -1732,7 +1767,12 @@ def test_the_gitignore_keeps_the_jobs_output_and_the_run_options_out_of_the_tree
         line.strip()
         for line in (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     }
-    for entry in ("ux-tests/", "ui-change.json", "ci_run_options.json"):
+    for entry in (
+        "ux-tests/",
+        "ui-change.json",
+        "ci_run_options.json",
+        "ux-test-stories/",
+    ):
         assert entry in lines, f".gitignore does not list {entry}"
 
 

@@ -991,6 +991,8 @@ def test_what_the_docker_runner_holds_by_value_is_what_the_container_side_holds(
     assert rid.STORY_RUN_FILE == story_verdict.RUN_FILE
     assert rid.STORY_RESULTS_FILE == story_verdict.RESULTS_FILE
     assert rid.STORY_RUN_SCHEMA == story_verdict.RUN_SCHEMA
+    assert rid.STORY_INPUTS_SCHEMA == orchestrator.INPUTS_SCHEMA
+    assert rid.STORY_INPUTS_BYTES == orchestrator.story_inputs.INPUTS_MAX_BYTES
     assert rid.CI_ENV_NAMES == orchestrator.CI_VARIABLES
     assert rid.DEFAULT_STACK == session.REVIEW_STACK
     assert rid.OPENING_MESSAGE == agent.OPENING_MESSAGE
@@ -1121,6 +1123,12 @@ GRAPH: dict[str, set[str]] = {
         "ux_runner.python_floor",
         "ux_runner.stories",
         "ux_runner.tool_profiles",
+    },
+    "ux_runner.story_inputs": {
+        "check_markdown_links",
+        "ux_runner.docs_index",
+        "ux_runner.mr_inputs",
+        "ux_runner.ui_change",
     },
     "ux_runner.transcript": set(),
     "ux_runner.run_in_docker": set(),

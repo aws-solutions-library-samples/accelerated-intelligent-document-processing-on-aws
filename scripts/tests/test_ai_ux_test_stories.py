@@ -5,7 +5,8 @@
 The orchestrator is driven end to end through :func:`ai_ux_test_stories.main` with a
 fully fake :class:`ai_ux_test_stories.Runtime`: no subprocess, browser, network or
 AWS call. The fake ``claude`` writes each flow's journal with the story server's own
-``JournalWriter``, so every verdict here is the real judge's over a real v1 journal.
+``JournalWriter``, so every verdict here is the real judge's over a real v1 journal,
+and the GitLab side is the real ``gitlab_api.UxGitlab`` over an in-memory GitLab.
 
 What is pinned, by the claim each test names:
 
@@ -23,7 +24,10 @@ What is pinned, by the claim each test names:
   CLI's figure and the usage at pinned rates equal to ``pricing.yaml``;
 * ``story-run.json`` and ``results.json`` v1, and ``--judge`` reproducing both
   outputs byte for byte, ``--check`` included;
-* the watched run's transcript;
+* nothing is posted without ``--post``, ``--post`` needs a merge request and the
+  review stack and every audit clean, and the reply goes in the review's thread;
+* the precheck's harness pin, its merge request decisions and the watched run's
+  transcript;
 * the harness list is closed over its imports, and ``--help`` and ``--judge``
   import nothing outside the standard library.
 """
@@ -44,6 +48,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -62,6 +67,7 @@ from ux_runner import (  # noqa: E402
     docs_index,
     egress,
     gitlab_api,
+    mr_inputs,
     paths,
     processes,
     recording,
@@ -70,14 +76,21 @@ from ux_runner import (  # noqa: E402
     stories,
     story_prompt,
     story_relay,
+    story_section,
     story_verdict,
     tool_profiles,
 )
+from ux_runner.ui_change import ChangedFile  # noqa: E402
 
 review = gitlab_api.review
 
+IID = 812
+ME = 4242
 HEAD = "0123456789abcdef" * 2 + "01234567"
+BASE = "fedcba9876543210" * 2 + "fedcba98"
+NEWER = "89abcdef" * 5
 DOCS_TREE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+UI_TREE = "1234abcd" * 5
 ACCOUNT = "123456789012"
 PARTITION = "aws"
 MODEL = "us.anthropic.claude-opus-5-5"
@@ -89,6 +102,7 @@ SCOPED = ("ASIAIOSFODNN7SCOPED1", "scopedSecretKeyValue01", "scopedSessionValue0
 POLLY = ("ASIAIOSFODNN7POLLY01", "pollySecretKeyValue001", "pollySessionValue00001")
 WEB_HOST = "d111111abcdef8.cloudfront.net"
 WEB_URL = f"https://{WEB_HOST}/"
+UPLOAD_HASH = "0123456789abcdef0123456789abcdef"
 REVIEW = session.REVIEW_STACK
 OTHER_STACK = "idp-dev-stack4"
 LOOKALIKE_STACK = "idp-ux-nightly-2"
@@ -242,6 +256,115 @@ class FakeSts:
         ]
 
 
+class FakeGitlab(gitlab_api.UxGitlab):
+    """The real client over an in-memory GitLab: only the transport is replaced."""
+
+    def __init__(self, *, head: str = HEAD, draft: bool = False) -> None:
+        super().__init__("https://gitlab.test/api/v4", "group/proj", CREDENTIAL)
+        self.head = head
+        self.draft = draft
+        self.store: dict[int, dict[str, Any]] = {}
+        self.threads: dict[str, list[int]] = {}
+        self.requests: list[tuple[str, str, Any]] = []
+        self.log: list[str] | None = None
+        self.pipelines: list[int] = []
+        self.jobs: dict[int, list[dict[str, Any]]] = {}
+        self.traces: dict[int, bytes] = {}
+        self._next = 1000
+
+    def add_note(
+        self, body: str, *, author: int = ME, thread: str | None = None
+    ) -> int:
+        self._next += 1
+        ident = self._next
+        self.store[ident] = {
+            "id": ident,
+            "body": body,
+            "author": {"id": author},
+            "system": False,
+            "created_at": f"2026-10-20T00:{ident % 60:02d}:00Z",
+        }
+        self.threads.setdefault(thread or f"thread-{ident}", []).append(ident)
+        return ident
+
+    def writes(self) -> list[tuple[str, str, Any]]:
+        return [r for r in self.requests if r[0] in ("POST", "PUT", "DELETE")]
+
+    def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        body: dict | None = None,
+        data: bytes | None = None,
+        content_type: str | None = None,
+        timeout: int = 60,
+        empty_ok: bool = False,
+        as_bytes: bool = False,
+        limit: int | None = None,
+        head: bool = False,
+    ) -> tuple[object, dict[str, str]]:
+        path = urlsplit(url).path.removeprefix("/api/v4")
+        self.requests.append((method, path, body if body is not None else data))
+        if self.log is not None and method in ("POST", "PUT", "DELETE"):
+            self.log.append("forge_write")
+        project = "/projects/group%2Fproj"
+        mr = f"{project}/merge_requests/{IID}"
+        if method == "GET" and path == "/user":
+            return {"id": ME, "username": "ux-review-bot"}, {}
+        if method == "GET" and path == mr:
+            return {
+                "iid": IID,
+                "title": ("Draft: " if self.draft else "") + "Route by prefix",
+                "author": {"username": "jdoe"},
+                "source_branch": "feature/prefix",
+                "target_branch": "develop",
+                "web_url": f"https://gitlab.test/group/proj/-/merge_requests/{IID}",
+                "sha": self.head,
+                "diff_refs": {"head_sha": self.head},
+                "draft": self.draft,
+            }, {}
+        if method == "GET" and path == f"{mr}/notes":
+            return [dict(self.store[i]) for i in sorted(self.store)], {}
+        if method == "GET" and path == f"{mr}/pipelines":
+            return [{"id": ident} for ident in self.pipelines], {}
+        found = re.fullmatch(re.escape(project) + r"/pipelines/(\d+)/jobs", path)
+        if found and method == "GET":
+            return list(self.jobs.get(int(found.group(1)), [])), {}
+        found = re.fullmatch(re.escape(project) + r"/jobs/(\d+)/trace", path)
+        if found and method == "GET":
+            return self.traces.get(int(found.group(1)), b"")[: limit or None], {}
+        found = re.fullmatch(re.escape(mr) + r"/notes/(\d+)", path)
+        if found and method in ("GET", "PUT"):
+            note = self.store[int(found.group(1))]
+            if method == "PUT" and body is not None:
+                note["body"] = body["body"]
+            return dict(note), {}
+        if method == "POST" and path == f"{mr}/notes" and body is not None:
+            return dict(self.store[self.add_note(body["body"])]), {}
+        if method == "GET" and path == f"{mr}/discussions":
+            listed = [
+                {"id": thread, "notes": [{"id": i} for i in ids]}
+                for thread, ids in self.threads.items()
+            ]
+            return listed, {}
+        found = re.fullmatch(re.escape(mr) + r"/discussions/([^/]+)/notes", path)
+        if found and method == "POST" and body is not None:
+            return dict(self.store[self.add_note(body["body"], thread=found[1])]), {}
+        if method == "POST" and path == f"{project}/uploads" and data is not None:
+            name = re.search(rb'filename="([^"]+)"', data)
+            filename = name.group(1).decode() if name else "upload"
+            return {"id": 456, "url": f"/uploads/{UPLOAD_HASH}/{filename}"}, {}
+        raise review.Failure(f"the fake GitLab has no route for {method} {path}")
+
+
+def _review_body(head: str) -> str:
+    return (
+        f"<!-- ai-review: sha={head} rev=1 -->\n## PR/MR Review: !{IID}\n\n"
+        f"🤖 Automated review of `{head[:8]}` by `{MODEL}` over the full diff.\n"
+    )
+
+
 #: What the fake ``claude`` does in one attempt, by name (``StoryHarness.script``).
 OUTCOMES = ("done", "blocked", "offered", "refused", "help", "silent")
 
@@ -254,6 +377,8 @@ class StoryHarness:
         self.calls: list[str] = []
         self.environ = _environ()
         self.sts = FakeSts()
+        self.forge = FakeGitlab()
+        self.forge.log = self.calls
         self.script: dict[str, list[str]] = {}
         self.facts: dict[str, signin.PageFacts] = {}
         self.default_facts = signin.PageFacts(
@@ -335,6 +460,8 @@ class StoryHarness:
 
     def runtime(self) -> runner.Runtime:
         return runner.Runtime(
+            forge=self._forge,
+            collect_story=self._collect_story,
             sts=self._sts,
             launch_proxy=self._launch_proxy,
             launch_chrome=self._launch_chrome,
@@ -375,6 +502,13 @@ class StoryHarness:
             return answer
 
         return call
+
+    def _forge(self, args: Any, credential: str) -> FakeGitlab:
+        return self.forge
+
+    def _collect_story(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append("collect_story")
+        return _story_inputs().to_json()
 
     def _sts(self, region: str) -> FakeSts:
         return self.sts
@@ -616,6 +750,46 @@ class StoryHarness:
 
     def section(self) -> str:
         return (self.artifacts / "section.md").read_text(encoding="utf-8")
+
+
+def _story_inputs(
+    *,
+    changed: tuple[ChangedFile, ...] = (ChangedFile("M", "src/ui/src/App.tsx"),),
+    head: str = HEAD,
+    changelog: str | None = None,
+) -> runner.StoryInputs:
+    lead = (
+        "Configuration Profiles can be assigned by S3 prefix, so the destination "
+        "decides the configuration."
+    )
+    added = changelog or (
+        f"- **{lead}** See [it](docs/configuration-profiles.md"
+        "#prefix-mappings-assigning-a-profile-by-where-a-document-lands) and [how "
+        "a document records it](docs/configuration-profiles.md"
+        "#profile-tracking-in-document-processing).\n"
+    )
+    return runner.StoryInputs(
+        mr=mr_inputs.MrInputs(
+            iid=IID,
+            title="Route by prefix",
+            author="jdoe",
+            web_url=f"https://gitlab.test/group/proj/-/merge_requests/{IID}",
+            source_branch="feature/prefix",
+            target_branch="develop",
+            head_sha=head,
+            base_sha=BASE,
+            changed=changed,
+            ui_diff="",
+            ui_diff_truncated=False,
+            ui_diff_bytes=0,
+            title_from_git=True,
+        ),
+        changelog_base="## [Unreleased]\n\n### Added\n\n",
+        changelog_head=f"## [Unreleased]\n\n### Added\n\n{added}",
+        docs_tree=DOCS_TREE,
+        src_ui_tree=UI_TREE,
+        docs_sections_edited=(),
+    )
 
 
 @pytest.fixture
@@ -1382,10 +1556,14 @@ def test_a_session_the_run_is_cancelled_in_counts_at_its_whole_cap(
 def test_a_model_with_no_pinned_rates_is_refused_at_the_precheck(
     harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    _pinned(harness)
     argv = harness.argv(*ONE_FLOW)
     argv[argv.index("--model") + 1] = "us.anthropic.claude-opus-4-8"
+    assert runner.main([*argv, "--precheck"], harness.runtime()) == 1
+    record = json.loads((harness.artifacts / "precheck.json").read_text("utf-8"))
+    assert record["status"] == "failed"
+    assert "has no pinned rates in MODEL_RATES" in record["detail"]
     assert runner.main(argv, harness.runtime()) == 1
-    assert "has no pinned rates in MODEL_RATES" in _lines(capsys)[-1]
     assert "launch_chrome" not in harness.calls
 
 
@@ -1608,6 +1786,150 @@ def test_no_secret_reaches_a_printed_line_or_an_artifact(
             assert secret not in text, secret
 
 
+# --- merge requests ---------------------------------------------------------------
+
+
+def _mr(harness: StoryHarness, inputs: runner.StoryInputs | None = None) -> list[str]:
+    """Arguments of an MR run whose inputs.json and UI build are in place."""
+    path = harness.tmp / "inputs.json"
+    path.write_text(json.dumps((inputs or _story_inputs()).to_json()), "utf-8")
+    build = harness.repo / "src" / "ui" / "build"
+    build.mkdir(parents=True, exist_ok=True)
+    (build / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    harness.environ.update(GITLAB_REVIEW_TOKEN=CREDENTIAL)
+    return [
+        "--mr",
+        str(IID),
+        "--inputs",
+        str(path),
+        "--project",
+        "group/proj",
+        "--api-url",
+        "https://gitlab.test/api/v4",
+    ]
+
+
+def _pinned(harness: StoryHarness) -> None:
+    harness.environ.update(
+        UX_HARNESS=" ".join(runner.HARNESS_PATHS), UX_ENTRY=runner.ENTRY
+    )
+
+
+def _precheck(harness: StoryHarness, *extra: str) -> tuple[int, dict[str, Any]]:
+    _pinned(harness)
+    code = runner.main(harness.argv(*extra, "--precheck", story=""), harness.runtime())
+    record = json.loads((harness.artifacts / "precheck.json").read_text("utf-8"))
+    return code, record
+
+
+@pytest.mark.unit
+def test_an_mr_run_tests_its_build_with_the_flows_its_changelog_selects(
+    harness: StoryHarness,
+) -> None:
+    assert runner.main(harness.argv(*_mr(harness), story=""), harness.runtime()) == 0
+    record = harness.record()
+    assert record["mode"] == "mr"
+    assert [flow["key"] for flow in record["flows"]][0] == (
+        "route-folder-to-profile@new-analyst"
+    )
+    assert record["ui_source"] == {
+        "kind": "build",
+        "head_sha": HEAD,
+        "src_ui_tree": UI_TREE,
+    }
+    assert record["docs"]["ref"] == HEAD
+    assert harness.index_kwargs["ref"] == HEAD
+    assert harness.sign_ins[0] == ("Admin", {})
+    section = harness.section()
+    assert section.startswith(
+        f"<!-- ux-story: sha={HEAD} rev={story_section.STORY_REPLY_REVISION} sel="
+    )
+    assert "kind=run upload=none -->" in section.split("\n", 1)[0]
+    assert "- Added: `Configuration Profiles can be assigned by S3 prefix" in section
+    assert "docs from this MR's head (`01234567`)" in section
+    assert "the UI is this MR's build" in section
+    assert not harness.forge.writes()
+
+
+@pytest.mark.unit
+def test_nothing_is_posted_without_post_even_with_a_token_and_a_review_note(
+    harness: StoryHarness,
+) -> None:
+    harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    assert runner.main(harness.argv(*_mr(harness), story=""), harness.runtime()) == 0
+    assert not harness.forge.writes()
+
+
+def _cost(run_dir: Path) -> str:
+    """The cost a run's final line ends with, from its own results.json."""
+    results = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
+    return runner.story_verdict.cost_text(results["summary"])
+
+
+@pytest.mark.unit
+def test_with_post_one_reply_goes_in_the_review_thread_and_the_review_is_untouched(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    review_id = harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    harness.script = {"route-folder-to-profile@new-analyst": ["help", "help"]}
+    code = runner.main(
+        harness.argv(*_mr(harness), "--post", story=""), harness.runtime()
+    )
+    assert code == 0
+    assert _lines(capsys)[-1] == (
+        "POSTED: first-time-user stories of 01234567 replied in the code review's "
+        f"thread; {_cost(harness.artifacts)}"
+    )
+    assert harness.forge.store[review_id]["body"] == _review_body(HEAD)
+    replies = [i for i in harness.forge.threads["review-thread"] if i != review_id]
+    (reply_id,) = replies
+    body = harness.forge.store[reply_id]["body"]
+    marker = story_section.STORY_MARKER_RE.match(body)
+    assert marker is not None and marker.group("upload") == "456"
+    video = f"![UX story](/uploads/{UPLOAD_HASH}/ux-story-mr{IID}-01234567-1.mp4)"
+    assert video in body.splitlines()
+    assert "not uploaded in a dry run" not in body
+    assert body == harness.section()
+    record = harness.record()
+    assert record["reply"]["uploads"] == [456]
+
+
+@pytest.mark.unit
+def test_without_a_review_note_the_reply_is_posted_on_its_own(
+    harness: StoryHarness,
+) -> None:
+    code = runner.main(
+        harness.argv(*_mr(harness), "--post", "--review-poll-minutes", "0", story=""),
+        harness.runtime(),
+    )
+    assert code == 0
+    (note,) = harness.forge.store.values()
+    assert story_section.STANDALONE_LINE in note["body"].split("\n")[1]
+
+
+@pytest.mark.unit
+def test_post_refuses_any_stack_but_the_review_stack(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = harness.argv(*_mr(harness), "--post", "--stack", OTHER_STACK, story="")
+    assert runner.main(argv, harness.runtime()) == 1
+    assert _lines(capsys) == [
+        f"FAILED: --post replies only for runs against the review stack {REVIEW}"
+    ]
+    assert harness.calls == []
+
+
+@pytest.mark.unit
+def test_post_needs_every_flows_audit_clean(harness: StoryHarness) -> None:
+    harness.audit_state = "unavailable"
+    harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    code = runner.main(
+        harness.argv(*_mr(harness), "--post", story=""), harness.runtime()
+    )
+    assert code == 1
+    assert not [w for w in harness.forge.writes() if w[0] == "POST"]
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("variable", ["CI", "GITLAB_CI"])
 def test_dev_unconfined_is_refused_wherever_ci_is_set(
@@ -1638,6 +1960,352 @@ def test_a_run_records_its_whole_confinement(harness: StoryHarness) -> None:
     assert harness.main() == 0
     assert harness.record()["confinement"] == "full"
     assert "verify_policy" in harness.calls and "verify_viewport" in harness.calls
+
+
+@pytest.mark.unit
+def test_post_is_refused_outside_a_merge_request_run() -> None:
+    with pytest.raises(SystemExit):
+        runner.parse_args(["--story", "find-where-to-start", "--post"])
+
+
+@pytest.mark.unit
+def test_a_draft_or_a_moved_head_stops_at_the_precheck(harness: StoryHarness) -> None:
+    harness.forge.draft = True
+    code, record = _precheck(harness, *_mr(harness))
+    assert (code, record["status"], record["detail"]) == (
+        0,
+        "skipped",
+        "a draft; drafts are not run",
+    )
+    harness.forge.draft = False
+    harness.forge.head = NEWER
+    code, record = _precheck(harness, *_mr(harness))
+    assert record["detail"].startswith("the MR head moved to 89abcdef")
+    assert not (harness.artifacts / "proceed").exists()
+    assert "launch_proxy" not in harness.calls
+
+
+@pytest.mark.unit
+def test_an_mr_no_story_covers_stops_with_its_uncovered_leads_listed(
+    harness: StoryHarness,
+) -> None:
+    inputs = _story_inputs(changelog="- **aiohttp is updated to 3.14.5.**\n")
+    code, record = _precheck(harness, *_mr(harness, inputs))
+    assert (code, record["status"]) == (0, "skipped")
+    assert record["detail"] == "no story covers this MR's CHANGELOG entries"
+    assert record["uncovered"] == ["aiohttp is updated to 3.14.5."]
+
+
+@pytest.mark.unit
+def test_which_ui_an_mr_tests_follows_what_it_changes(harness: StoryHarness) -> None:
+    docs_only = _story_inputs(changed=(ChangedFile("M", "docs/web-ui.md"),))
+    code, record = _precheck(harness, *_mr(harness, docs_only))
+    assert (code, record["status"]) == (0, "proceed")
+    backend = _story_inputs(
+        changed=(ChangedFile("M", "lib/idp_common_pkg/idp_common/x.py"),)
+    )
+    code, record = _precheck(harness, *_mr(harness, backend))
+    assert record["detail"].startswith(
+        "only the backend or the API contract changes besides the CHANGELOG; it "
+        "selects route-folder-to-profile, "
+        "tell-why-a-document-used-its-configuration"
+    )
+    tests_only = _story_inputs(changed=(ChangedFile("M", "CHANGELOG.md"),))
+    code, record = _precheck(harness, *_mr(harness, tests_only))
+    assert record["detail"] == "nothing user-visible changed"
+
+
+@pytest.mark.unit
+def test_a_docs_only_mr_without_the_web_url_line_is_skipped_naming_it(
+    harness: StoryHarness,
+) -> None:
+    harness.environ["UX_TEST_UI_ENV"] = _b64(_ui_env_text(web=False))
+    docs_only = _story_inputs(changed=(ChangedFile("M", "docs/web-ui.md"),))
+    code, record = _precheck(harness, *_mr(harness, docs_only))
+    assert "UX_TEST_WEB_URL=<the stack's ApplicationWebURL>" in record["detail"]
+
+
+@pytest.mark.unit
+def test_a_deployed_ui_run_without_any_ui_env_is_skipped_naming_the_variable(
+    harness: StoryHarness,
+) -> None:
+    """The web URL is a line of ``UX_TEST_UI_ENV``, so with the variable gone the
+    skip names the variable rather than asking for a line in it."""
+    del harness.environ["UX_TEST_UI_ENV"]
+    docs_only = _story_inputs(changed=(ChangedFile("M", "docs/web-ui.md"),))
+    code, record = _precheck(harness, *_mr(harness, docs_only))
+    assert (code, record["status"]) == (0, "skipped")
+    assert record["detail"].startswith("UX_TEST_UI_ENV is not set")
+
+
+@pytest.mark.unit
+def test_an_mr_ui_change_without_its_build_is_skipped(harness: StoryHarness) -> None:
+    args = _mr(harness)
+    (harness.repo / "src" / "ui" / "build" / "index.html").unlink()
+    code, record = _precheck(harness, *args)
+    assert record["detail"] == "no UI build: ux_test_build was skipped or failed"
+
+
+@pytest.mark.unit
+def test_a_proceeding_precheck_writes_inputs_precheck_and_proceed(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, record = _precheck(harness, *_mr(harness))
+    assert code == 0
+    assert _lines(capsys)[-1] == "PROCEED: 3 flow(s) of 2 story(ies) at 01234567"
+    assert (harness.artifacts / "proceed").is_file()
+    written = json.loads((harness.artifacts / "inputs.json").read_text("utf-8"))
+    assert runner.StoryInputs.from_json(written).mr.head_sha == HEAD
+    assert record["flows"] == [
+        "route-folder-to-profile@platform-admin",
+        "tell-why-a-document-used-its-configuration@new-analyst",
+        "route-folder-to-profile@new-analyst",
+    ]
+    assert record["selection"]["stories"] == [
+        "route-folder-to-profile",
+        "tell-why-a-document-used-its-configuration",
+    ]
+    assert re.fullmatch(r"[0-9a-f]{12}", record["sel"])
+    assert "launch_proxy" not in harness.calls and "index_docs" not in harness.calls
+
+
+@pytest.mark.unit
+def test_inputs_json_is_held_to_the_records_own_bound_when_written_and_read(
+    harness: StoryHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The precheck writes ``inputs.json`` and the run reads it back, so both sides
+    keep to ``story_inputs.INPUTS_MAX_BYTES``: a record the run would refuse is
+    never written, and the precheck fails before the install rather than the run
+    after it."""
+    precheck = harness.argv(*_mr(harness), "--precheck", story="")
+    given = (harness.tmp / "inputs.json").stat().st_size
+    _pinned(harness)
+    monkeypatch.setattr(runner.story_inputs, "INPUTS_MAX_BYTES", given - 1)
+    assert runner.main(precheck, harness.runtime()) == 1
+    assert _lines(capsys)[-1] == f"FAILED: inputs.json is larger than {given - 1} bytes"
+    monkeypatch.setattr(runner.story_inputs, "INPUTS_MAX_BYTES", given)
+    assert runner.main(precheck, harness.runtime()) == 1
+    last = _lines(capsys)[-1]
+    assert re.fullmatch(
+        rf"FAILED: inputs\.json would be [0-9]+ bytes, more than the {given} a run "
+        "reads back",
+        last,
+    ), last
+    assert not (harness.artifacts / "inputs.json").exists()
+    assert not (harness.artifacts / "proceed").exists()
+    assert "launch_proxy" not in harness.calls
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("variable", ["UX_HARNESS", "UX_ENTRY"])
+def test_the_precheck_fails_when_the_jobs_pin_is_not_this_entrys(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str], variable: str
+) -> None:
+    args = _mr(harness)
+    _pinned(harness)
+    harness.environ[variable] = (
+        "scripts/sdlc/ai_ux_test.py" if variable == "UX_ENTRY" else "scripts"
+    )
+    code = runner.main(harness.argv(*args, "--precheck", story=""), harness.runtime())
+    assert code == 1
+    assert _lines(capsys)[0].startswith(f"FAILED: {variable} ")
+    assert not harness.artifacts.exists()
+
+
+@pytest.mark.unit
+def test_the_precheck_fails_when_the_job_sets_neither_pin_variable(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every story job has set both since the jobs began, so a job without them is
+    not one this entry was written for."""
+    args = _mr(harness)
+    harness.environ.pop("UX_HARNESS", None)
+    harness.environ.pop("UX_ENTRY", None)
+    code = runner.main(harness.argv(*args, "--precheck", story=""), harness.runtime())
+    assert code == 1
+    assert _lines(capsys)[0].startswith("FAILED: UX_HARNESS is not set")
+    assert not harness.artifacts.exists()
+
+
+@pytest.mark.unit
+def test_a_head_already_replied_to_is_unchanged(harness: StoryHarness) -> None:
+    args = _mr(harness)
+    _code, first = _precheck(harness, *args)
+    marker = story_section.marker_line(head_sha=HEAD, sel=first["sel"], kind="run")
+    harness.forge.add_note(marker + "\nan earlier reply\n")
+    code, record = _precheck(harness, *args)
+    assert (code, record["status"], record["detail"]) == (
+        0,
+        "unchanged",
+        "already run for this head",
+    )
+
+
+@pytest.mark.unit
+def test_an_unchanged_selection_gets_one_unchanged_reply_with_post(
+    harness: StoryHarness,
+) -> None:
+    older = "a1b2c3d4" * 5
+    args = _mr(harness)
+    _code, first = _precheck(harness, *args)
+    marker = story_section.marker_line(head_sha=older, sel=first["sel"], kind="run")
+    harness.forge.add_note(marker + "\nthe older head's reply\n")
+    code, record = _precheck(harness, *args, "--post")
+    assert (code, record["status"]) == (0, "unchanged")
+    posted = [
+        n["body"] for n in harness.forge.store.values() if f"sha={HEAD}" in n["body"]
+    ]
+    assert len(posted) == 1
+    assert "unchanged since `a1b2c3d4`" in posted[0]
+    _precheck(harness, *args, "--post")
+    again = [
+        n["body"] for n in harness.forge.store.values() if f"sha={HEAD}" in n["body"]
+    ]
+    assert len(again) == 1
+
+
+@pytest.mark.unit
+def test_an_mr_past_its_run_allowance_gets_one_limit_reply_then_none(
+    harness: StoryHarness,
+) -> None:
+    args = _mr(harness)
+    _code, first = _precheck(harness, *args)
+    for number in range(stories.load_catalogue().runs.mr_runs):
+        head = f"{number:x}" * 40
+        marker = story_section.marker_line(head_sha=head[:40], sel="0" * 12, kind="run")
+        harness.forge.add_note(marker + "\n")
+    code, record = _precheck(harness, *args, "--post")
+    assert record["detail"] == "this MR has used its 4 story runs"
+    limits = [
+        n["body"] for n in harness.forge.store.values() if "kind=limit" in n["body"]
+    ]
+    assert len(limits) == 1
+    assert f"make ai-ux-test-stories-local MR={IID}" in limits[0]
+    harness.forge.head = HEAD
+    _precheck(harness, *args, "--post")
+    limits = [
+        n["body"] for n in harness.forge.store.values() if "kind=limit" in n["body"]
+    ]
+    assert len(limits) == 1
+
+
+@pytest.mark.unit
+def test_runs_that_went_ahead_and_posted_nothing_count_toward_the_allowance(
+    harness: StoryHarness,
+) -> None:
+    """A run a newer push cancelled, or one stopped at the job's timeout, was paid
+    for, so its job's log, which says its precheck went ahead, counts it."""
+    args = _mr(harness)
+    proceeded = (
+        b"\x1b[0Ksection_start\nPROCEED: 3 flow(s) of 2 story(ies) at 1a2b3c4d\n"
+    )
+    forge = harness.forge
+    forge.pipelines = [905, 904, 903, 902, 901, 900]
+    harness.environ["CI_PIPELINE_ID"] = "905"
+    forge.jobs = {
+        905: [{"id": 50, "name": runner.MR_JOB, "status": "running"}],
+        904: [{"id": 40, "name": runner.MR_JOB, "status": "canceled"}],
+        903: [{"id": 30, "name": runner.MR_JOB, "status": "failed"}],
+        902: [
+            {"id": 20, "name": runner.MR_JOB, "status": "success"},
+            {"id": 21, "name": "ai_ux_test", "status": "success"},
+        ],
+        901: [{"id": 10, "name": runner.MR_JOB, "status": "success"}],
+        900: [{"id": 5, "name": runner.MR_JOB, "status": "skipped"}],
+    }
+    forge.traces = {
+        50: proceeded,
+        40: proceeded,
+        30: proceeded,
+        20: b"SKIPPED: no story covers this MR's CHANGELOG entries\n",
+        21: proceeded,
+        10: proceeded,
+        5: proceeded,
+    }
+    code, record = _precheck(harness, *args)
+    assert record["status"] == "proceed"
+    forge.traces[20] = proceeded
+    code, record = _precheck(harness, *args, "--post")
+    assert record["detail"] == "this MR has used its 4 story runs"
+    read = [path for method, path, _ in forge.requests if path.endswith("/trace")]
+    assert not [path for path in read if "/jobs/50/" in path or "/jobs/5/" in path]
+
+
+@pytest.mark.unit
+def test_an_mr_whose_runs_cannot_be_counted_is_skipped(harness: StoryHarness) -> None:
+    args = _mr(harness)
+
+    def refuse(iid: int, *, limit: int = 100) -> list[int]:
+        raise review.Skip("GitLab refused GET /merge_requests/812/pipelines (403)")
+
+    harness.forge.merge_request_pipelines = refuse  # type: ignore[method-assign]
+    code, record = _precheck(harness, *args)
+    assert (code, record["status"]) == (0, "skipped")
+    assert record["detail"].startswith(
+        "this MR's earlier story runs cannot be counted: GitLab refused"
+    )
+
+
+@pytest.mark.unit
+def test_collect_only_writes_story_inputs_v1_from_the_collector(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = harness.tmp / "collected.json"
+    argv = [
+        "--mr",
+        str(IID),
+        "--collect-only",
+        "--inputs",
+        str(target),
+        "--repo-dir",
+        str(harness.repo),
+    ]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert harness.calls == ["collect_story"]
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["schema"] == runner.INPUTS_SCHEMA and data["version"] == 1
+    assert runner.StoryInputs.from_json(data) == runner.written_inputs(
+        _story_inputs(), runner.artifacts.Scrub(runner.artifacts.redactor_for({}))
+    )
+    assert _lines(capsys) == [f"collected: {target}"]
+
+
+@pytest.mark.unit
+def test_inputs_for_another_mr_are_refused(harness: StoryHarness) -> None:
+    inputs = _story_inputs()
+    other = dataclasses.replace(inputs, mr=dataclasses.replace(inputs.mr, iid=IID + 1))
+    code, record = _precheck_failure(harness, *_mr(harness, other))
+    assert code == 1
+
+
+def _precheck_failure(harness: StoryHarness, *extra: str) -> tuple[int, None]:
+    _pinned(harness)
+    return runner.main(
+        harness.argv(*extra, "--precheck", story=""), harness.runtime()
+    ), None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d.update(schema="ux-test-stories/other"),
+        lambda d: d.update(extra=1),
+        lambda d: d["trees"].update(docs="not-a-sha"),
+        lambda d: d["changelog"].pop("base"),
+        lambda d: d.update(docs_sections_edited=[""]),
+    ],
+    ids=["schema", "extra-key", "tree", "changelog", "sections"],
+)
+def test_story_inputs_refuse_any_other_shape(
+    mutate: Callable[[dict[str, Any]], Any],
+) -> None:
+    data = _story_inputs().to_json()
+    mutate(data)
+    with pytest.raises(mr_inputs.InputsError):
+        runner.StoryInputs.from_json(data)
 
 
 # --- replay -----------------------------------------------------------------------
@@ -2066,7 +2734,7 @@ def _heavy_imports(*argv: str) -> tuple[int, list[str], str]:
 @pytest.mark.unit
 def test_help_runs_on_a_bare_python_without_the_pinned_packages() -> None:
     code, heavy, out = _heavy_imports("--help")
-    assert code == 0 and "--judge" in out
+    assert code == 0 and "--precheck" in out
     assert not heavy, f"--help imported {heavy}"
 
 
@@ -2082,8 +2750,8 @@ def test_judge_runs_on_a_bare_python_on_any_host(harness: StoryHarness) -> None:
 
 @pytest.mark.unit
 def test_the_script_imports_on_a_python_without_sigkill_as_on_windows() -> None:
-    """``--judge`` runs on the host, a Windows host included, where
-    ``signal.SIGKILL`` does not exist."""
+    """``--judge`` and ``--collect-only`` run on the host, a Windows host included,
+    where ``signal.SIGKILL`` does not exist."""
     program = "\n".join(
         (
             "import runpy, signal, sys",
@@ -2108,9 +2776,12 @@ def test_the_script_imports_on_a_python_without_sigkill_as_on_windows() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
+        ["--story", "x", "--post"],
         ["--story", "x", "--interactive"],
+        ["--judge", "a", "--post"],
         ["--story", "x", "--audit", "a.json"],
         ["--story", "x", "--check"],
+        ["--story", "x", "--dev-unconfined", "--post"],
         ["--story", "x", "--dev-video-any-stack"],
         ["--story", "x", "--dev-video"],
         ["--sto", "x"],
@@ -2212,6 +2883,7 @@ def test_the_default_runtime_binds_the_real_collaborators() -> None:
     assert runtime.index_docs is runner.index_docs
     assert runtime.compose_prompt is runner.compose_prompt
     assert runtime.harness is runner.harness_revision
+    assert runtime.collect_story is runner.collect_story
     members = dict(session.BrowserRuntime.__annotations__)
     fields = {f.name for f in dataclasses.fields(runner.Runtime)}
     assert set(members) <= fields
@@ -2238,10 +2910,12 @@ def _develop_backend_re() -> re.Pattern[str]:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("mr", [False, True], ids=["local", "mr"])
 def test_the_reply_names_the_backend_as_the_ui_reports_it_never_as_develops(
-    harness: StoryHarness,
+    harness: StoryHarness, mr: bool
 ) -> None:
-    assert harness.main(*ONE_FLOW) == 0
+    argv = harness.argv(*_mr(harness), story="") if mr else harness.argv(*ONE_FLOW)
+    assert runner.main(argv, harness.runtime()) == 0
     section = harness.section()
     claim = _develop_backend_re().search(section)
     assert claim is None, claim
@@ -2395,6 +3069,30 @@ def test_a_prompt_the_builder_refuses_is_a_story_run_error() -> None:
 
 
 @pytest.mark.unit
+def test_a_collected_mr_is_the_collectors_record_read_back_as_any_inputs_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ux_runner import story_inputs
+
+    assert runner.StoryInputs is story_inputs.StoryInputs
+    assert (runner.INPUTS_SCHEMA, runner.INPUTS_VERSION) == (
+        story_inputs.INPUTS_SCHEMA,
+        story_inputs.INPUTS_VERSION,
+    )
+    asked: list[tuple[Any, ...]] = []
+
+    def collect(*args: Any, **kwargs: Any) -> story_inputs.StoryInputs:
+        asked.append((*args, kwargs))
+        return _story_inputs()
+
+    monkeypatch.setattr(story_inputs, "collect", collect)
+    record = runner.collect_story(tmp_path, IID, "develop", remote="upstream")
+    assert asked == [(tmp_path, IID, "develop", {"remote": "upstream"})]
+    assert record == _story_inputs().to_json()
+    assert runner.StoryInputs.from_json(record) == _story_inputs()
+
+
+@pytest.mark.unit
 def test_the_tui_runs_on_this_terminal_and_is_stopped_at_its_wall_clock(
     tmp_path: Path,
 ) -> None:
@@ -2491,6 +3189,90 @@ def test_a_cleanup_step_that_fails_is_named_and_the_others_still_run(
 
 
 @pytest.mark.unit
+def test_a_video_over_the_upload_limit_is_kept_in_the_artifacts_and_said_so(
+    harness: StoryHarness,
+) -> None:
+    harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    harness.script = {"route-folder-to-profile@new-analyst": ["help", "help"]}
+    argv = harness.argv(*_mr(harness), "--post", "--max-upload-mb", "1", story="")
+    original = harness._render_video
+
+    def big(session_dir: Path, **kwargs: Any) -> tuple[Path, str]:
+        mp4, narration = original(session_dir, **kwargs)
+        mp4.write_bytes(b"\0" * (2 * 1024 * 1024))
+        return mp4, narration
+
+    harness._render_video = big  # type: ignore[method-assign]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert not [p for _, p, _ in harness.forge.writes() if p.endswith("/uploads")]
+    reply = harness.section()
+    assert (
+        "_The video of `route-folder-to-profile@new-analyst` (2 MB) is over the "
+        "upload limit; it is in the job artifacts._"
+    ) in reply.splitlines()
+    assert list(harness.artifacts.glob("*.mp4"))
+
+
+@pytest.mark.unit
+def test_older_story_replies_have_their_video_lines_superseded(
+    harness: StoryHarness,
+) -> None:
+    older = "a1b2c3d4" * 5
+    harness.forge.add_note(_review_body(HEAD), thread="review-thread")
+    old_marker = story_section.marker_line(head_sha=older, sel="0" * 12, kind="run")
+    old_video = f"![UX story](/uploads/{UPLOAD_HASH}/ux-story-mr{IID}-a1b2c3d4-1.mp4)"
+    old_id = harness.forge.add_note(f"{old_marker}\n{old_video}\n")
+    assert (
+        runner.main(harness.argv(*_mr(harness), "--post", story=""), harness.runtime())
+        == 0
+    )
+    body = harness.forge.store[old_id]["body"]
+    assert old_video not in body
+    assert "_Video superseded by `01234567`._" in body
+
+
+@pytest.mark.unit
+def test_a_head_that_moves_while_the_run_waits_posts_nothing(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _mr(harness)
+    runtime = harness.runtime()
+    original = runtime.render_video
+
+    def moved(*a: Any, **k: Any) -> Any:
+        harness.forge.head = NEWER
+        return original(*a, **k)
+
+    runtime.render_video = moved
+    harness.script = {"route-folder-to-profile@new-analyst": ["help", "help"]}
+    assert runner.main(harness.argv(*args, "--post", story=""), runtime) == 0
+    assert _lines(capsys)[-1].startswith("SUPERSEDED: the MR head moved to 89abcdef")
+    assert not harness.forge.writes()
+
+
+@pytest.mark.unit
+def test_collect_only_takes_the_title_from_the_api_when_it_answers(
+    harness: StoryHarness,
+) -> None:
+    harness.environ.update(GITLAB_REVIEW_TOKEN=CREDENTIAL)
+    target = harness.tmp / "collected.json"
+    argv = [
+        "--mr",
+        str(IID),
+        "--collect-only",
+        "--inputs",
+        str(target),
+        "--project",
+        "group/proj",
+        "--api-url",
+        "https://gitlab.test/api/v4",
+    ]
+    assert runner.main(argv, harness.runtime()) == 0
+    record = json.loads(target.read_text(encoding="utf-8"))["mr"]
+    assert record["title"] == "Route by prefix" and record["title_from_git"] is False
+
+
+@pytest.mark.unit
 def test_a_watched_flow_whose_page_cannot_be_read_is_a_harness_error(
     harness: StoryHarness,
 ) -> None:
@@ -2543,6 +3325,7 @@ def test_video_notes_show_only_closed_shapes_from_a_record() -> None:
         "reply": {
             "video_notes": [
                 {"key": "a-story@x", "kind": "local", "detail": "a`b.mp4"},
+                {"key": "a-story@x", "kind": "upload_failed", "detail": ""},
                 {"key": "a-story@x", "kind": "unknown", "detail": "z"},
             ]
         },
@@ -2556,4 +3339,4 @@ def test_video_notes_show_only_closed_shapes_from_a_record() -> None:
     assert "](http" not in lines[1]
     assert lines[2].startswith("_A story's video is made only of the review stack")
     assert lines[3] == "_Video of `a-story@x`, not uploaded in a dry run: `a'b.mp4`._"
-    assert len(lines) == 4
+    assert len(lines) == 5

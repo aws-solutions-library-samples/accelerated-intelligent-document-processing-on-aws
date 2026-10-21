@@ -9,10 +9,11 @@ test can say where a value went and what each container was told:
 1. **No credential value is ever an argv element**, in any mode, and each
    container receives only the names its mode needs: a model's container the
    review container's names, CI's two and the git view; the pair browser no AWS
-   session at all.
+   session at all; posting's names only with ``--post``.
 2. **Each mode calls the orchestrator as its parser reads it**: the selection, the
-   artifact directory and ``--judge --audit`` on the host, every one of them read
-   by the orchestrator's own ``parse_args``; and no option the runner
+   artifact directory, ``--post`` only to post, ``--judge --audit`` and
+   ``--collect-only`` on the host, every one of them read by the orchestrator's
+   own ``parse_args``; and no option the runner
    sets itself, nor ``--dev-unconfined``, is ever passed through.
 3. **The pair session is confined and starts outside the checkout**: its MCP
    configuration holds one server reached through ``docker exec -i ... env -i``,
@@ -197,6 +198,7 @@ class Call:
 class FakeHost:
     """git, aws, docker and the host's Python, answering as each would, recording all."""
 
+    mr_ui: bool = True
     review_exit: int = 0
     worktree: bool = False
     dirty: bool = False
@@ -244,7 +246,20 @@ class FakeHost:
     def _python(self, argv: list[str]) -> subprocess.CompletedProcess[Any]:
         script = argv[2]
         if script.endswith(rid.STORIES_ENTRY):
-            if "--judge" in argv:
+            if "--collect-only" in argv:
+                changed = [
+                    {"status": "M", "path": "src/ui/src/App.tsx", "old_path": None}
+                ]
+                record = {
+                    "schema": rid.STORY_INPUTS_SCHEMA,
+                    "version": 1,
+                    "mr": {
+                        "head_sha": MR_HEAD,
+                        "changed": changed if self.mr_ui else [],
+                    },
+                }
+                Path(_after(argv, "--inputs")).write_text(json.dumps(record))
+            elif "--judge" in argv:
                 (Path(_after(argv, "--judge")) / rid.STORY_RESULTS_FILE).write_text(
                     json.dumps(self.results)
                 )
@@ -491,7 +506,9 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
     for flag in (
         "--story",
         "--as",
+        "--mr",
         "--video",
+        "--post",
         "--interactive",
         "--port",
         "--replay",
@@ -508,13 +525,16 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
     ("argv", "reason"),
     [
         (["--as", "new-analyst"], "--as needs --story"),
+        (["--story", "find-where-to-start", "--post"], "needs --mr"),
+        (["--mr", "812", "--build-dir", "/x"], "builds the MR's own UI"),
         (["--story", "find-where-to-start", "--port", "9333"], "does not apply"),
         (["--pair"], "needs --story"),
+        (["--interactive", "--mr", "812"], "does not apply"),
         (["--pair", "--story", "x", "--pair-full", "--pair-keychain"], "choose one"),
         (["--pair", "--story", "x", "--docs", "y"], "unrecognized arguments"),
         (["--list", "--story", "x"], "does not apply"),
         (["--story", "Not A Story"], "is not a story id"),
-        ([], "takes --story"),
+        ([], "takes one of --story"),
         (["--pair-keychain", "--story", "a"], "does not apply"),
         (
             ["--story", "a", "--interactive", "--run-usd", "0.01"],
@@ -540,6 +560,7 @@ def test_story_mode_refuses_options_the_chosen_mode_does_not_read(
     [
         (["--story", "a"], "run"),
         (["--story", "a", "--as", "b", "--docs", "abc"], "run"),
+        (["--mr", "812", "--post"], "run"),
         (["--story", "a", "--interactive", "--port", "9333"], "watch"),
         (["--pair", "--story", "a", "--pair-full"], "pair"),
         (["--replay", "/x", "--reruns", "0"], "replay"),
@@ -563,6 +584,8 @@ def test_story_mode_names_the_mode_and_passes_unknown_options_through(
         ["--artifact-dir", "/run/elsewhere"],
         ["--artifact-dir=/run/elsewhere"],
         ["--repo-dir", "/"],
+        ["--inputs", "/out/other.json"],
+        ["--precheck"],
         ["--judge", "/out"],
     ],
 )
@@ -689,6 +712,7 @@ def test_one_flow_runs_in_one_review_container_with_the_orchestrators_options(
     assert _after(command, "--repo-dir") == "/repo"
     assert _after(command, "--stack") == "idp-ux-nightly"
     assert _after(command, "--web-url") == WEB_URL
+    assert "--post" not in command and "--dry-run" not in command
     mounts = _mounts(review.argv)
     assert mounts["/repo"].endswith(",readonly")
     assert "readonly" not in mounts["/out"]
@@ -746,6 +770,72 @@ def test_a_worktree_checkouts_shared_git_directory_is_mounted_where_it_points(
     (checkout / ".git").unlink()
     (checkout / ".git").mkdir()
     assert rid.checkout_git_mounts(checkout, run=run) == []
+
+
+@pytest.mark.unit
+def test_post_is_an_mr_runs_against_the_review_stack_with_the_token(
+    host: FakeHost,
+) -> None:
+    environ = _environ()
+    assert _stories(host, "--mr", "812", "--post", environ=environ) == 0
+    (review,) = host.review_containers()
+    command = review.argv[review.argv.index("python3") :]
+    assert "--post" in command
+    assert set(rid.POST_ENV_NAMES) <= set(_names(review.argv))
+    assert not _leaks(host, environ)
+    with pytest.raises(rid.DockerRunError, match="only a run against the review stack"):
+        _stories(host, "--mr", "812", "--post", "--stack", "my-stack")
+    for name in rid.POST_ENV_NAMES:
+        missing = {key: value for key, value in environ.items() if key != name}
+        host.calls.clear()
+        with pytest.raises(rid.DockerRunError, match=name):
+            _stories(host, "--mr", "812", "--post", environ=missing)
+        assert not host.calls
+
+
+@pytest.mark.unit
+def test_a_dry_run_hands_the_container_no_review_token(host: FakeHost) -> None:
+    _stories(host, "--mr", "812")
+    (review,) = host.review_containers()
+    assert not set(rid.POST_ENV_NAMES) & set(_names(review.argv))
+
+
+@pytest.mark.unit
+def test_an_mr_is_collected_on_the_host_and_its_ui_built_with_no_credentials(
+    host: FakeHost,
+) -> None:
+    environ = _environ()
+    assert _stories(host, "--mr", "812", environ=environ) == 0
+    (collect,) = host.host_scripts(rid.STORIES_ENTRY)
+    assert collect.argv[:3] == [
+        sys.executable,
+        "-B",
+        str(REPO_ROOT / rid.STORIES_ENTRY),
+    ]
+    assert ["--mr", "812", "--collect-only"] == collect.argv[3:6]
+    assert _after(collect.argv, "--repo-dir") == str(rid.REPO_ROOT)
+    archive = next(
+        c
+        for c in host.calls
+        if PurePosixPath(c.argv[0]).name == "git" and "archive" in c.argv
+    )
+    assert MR_HEAD in archive.argv
+    build = next(c for c in host.docker_calls("run") if "bash" in c.argv)
+    assert "-e" not in build.argv
+    (review,) = host.review_containers()
+    command = review.argv[review.argv.index("python3") :]
+    assert command[3:7] == ["--mr", "812", "--inputs", "/out/inputs.json"]
+    assert _after(command, "--build-dir") == "/out/build"
+    assert not _leaks(host, environ)
+
+
+@pytest.mark.unit
+def test_an_mr_that_leaves_src_ui_alone_builds_nothing(host: FakeHost) -> None:
+    host.mr_ui = False
+    _stories(host, "--mr", "812")
+    assert not [c for c in host.docker_calls("run") if "bash" in c.argv]
+    (review,) = host.review_containers()
+    assert "--build-dir" not in review.argv
 
 
 # --------------------------------------------------------------------------- #
@@ -1541,7 +1631,7 @@ def _orchestrator_calls(host: FakeHost, popen: FakePopen) -> list[list[str]]:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ["one-flow", "watch", "replay"])
+@pytest.mark.parametrize("mode", ["one-flow", "mr", "mr-post", "watch", "replay"])
 def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
     mode: str, host: FakeHost, tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
@@ -1555,6 +1645,8 @@ def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
     argv = {
         "one-flow": ["--story", "find-where-to-start", "--as", "new-analyst"]
         + ["--docs", "e5" * 20, "--reruns", "0"],
+        "mr": ["--mr", "812"],
+        "mr-post": ["--mr", "812", "--post"],
         "watch": ["--story", "find-where-to-start", "--interactive"],
         "replay": ["--replay", str(source), "--reruns", "0"],
     }[mode]
@@ -1572,12 +1664,23 @@ def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
         assert args.stack == rid.DEFAULT_STACK
         assert str(args.repo_dir) == ("/source" if mode == "replay" else "/repo")
         assert not args.dev_unconfined and args.judge is None
+        assert args.post is (mode == "mr-post")
     if mode == "one-flow":
         (args,) = inside
         assert (args.story, args.as_persona) == ("find-where-to-start", "new-analyst")
         assert (args.docs, args.reruns, args.interactive) == ("e5" * 20, 0, False)
         assert str(args.artifact_dir) == f"/out/{rid.STORY_ARTIFACTS}"
         assert args.web_url == WEB_URL and args.build_dir is None
+    elif mode in ("mr", "mr-post"):
+        (collect,) = on_host
+        assert collect.collect_only and collect.mr == 812
+        assert Path(collect.repo_dir) == rid.REPO_ROOT
+        (args,) = inside
+        assert args.mr == 812 and not args.collect_only
+        assert (str(args.inputs), str(args.build_dir)) == (
+            "/out/inputs.json",
+            "/out/build",
+        )
     elif mode == "watch":
         (args,) = inside
         assert args.interactive and args.story == "find-where-to-start"
@@ -1809,6 +1912,35 @@ def test_harness_facts_say_unknown_when_git_cannot_answer(tmp_path: Path) -> Non
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("record", "reason"),
+    [
+        ([], "not a JSON object"),
+        ({"schema": rid.STORY_INPUTS_SCHEMA, "mr": "x"}, "no MR record"),
+        ({"head_sha": "abc", "changed": []}, "40-hex head_sha"),
+        ({"head_sha": MR_HEAD}, "no list of changed files"),
+    ],
+)
+def test_story_inputs_of_another_shape_are_refused(
+    tmp_path: Path, record: Any, reason: str
+) -> None:
+    path = tmp_path / "inputs.json"
+    path.write_text(json.dumps(record))
+    with pytest.raises(rid.DockerRunError, match=re.escape(reason)):
+        rid.read_story_inputs(path)
+
+
+@pytest.mark.unit
+def test_a_ui_file_moved_out_of_src_ui_still_counts_as_a_ui_change(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "inputs.json"
+    moved = {"status": "R", "path": "docs/x.md", "old_path": "src/ui/x.md"}
+    path.write_text(json.dumps({"head_sha": MR_HEAD, "changed": [moved, "noise"]}))
+    assert rid.read_story_inputs(path) == (MR_HEAD, True)
+
+
+@pytest.mark.unit
 def test_a_host_with_no_uid_hands_nothing_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1876,6 +2008,20 @@ def test_a_local_build_is_served_read_only(host: FakeHost, tmp_path: Path) -> No
     assert _after(review.argv, "--build-dir") == "/ui-build"
     assert "--web-url" not in review.argv
     assert not [c for c in host.calls if "ApplicationWebURL" in " ".join(c.argv)]
+
+
+@pytest.mark.unit
+def test_a_failed_collection_stops_the_run(host: FakeHost) -> None:
+    real = host._python
+
+    def failing(argv: list[str]) -> Any:
+        if "--collect-only" in argv:
+            return subprocess.CompletedProcess(argv, 1)
+        return real(argv)
+
+    host._python = failing  # type: ignore[method-assign]
+    with pytest.raises(rid.DockerRunError, match="collecting MR 812 failed"):
+        _stories(host, "--mr", "812")
 
 
 @pytest.mark.unit

@@ -41,8 +41,8 @@ missing one.
 
 Bounded answers
 ---------------
-An answer is read in pieces, up to :data:`MAX_ANSWER_BYTES` and for no longer in
-total than the request's timeout. The socket timeout bounds each read alone, so
+An answer is read in pieces, up to :data:`MAX_ANSWER_BYTES` or the smaller bound
+a request names, and for no longer in total than the request's timeout. The socket timeout bounds each read alone, so
 without the total a peer could trickle a body a byte at a time; and the notes
 and discussions listings carry note bodies that anyone who can comment on the MR
 writes, at up to a million characters each. An answer over the size, by its
@@ -73,6 +73,14 @@ suppresses a run nor gets edited. The token's own notes include
 counts only where it is written: a review's as the note's first line
 (:func:`review_note_for`), and a UX section's where ``section.sections_in``
 reads it.
+
+What it reads of earlier pipelines
+----------------------------------
+:func:`runs_started` is how the MR story job counts the runs an MR has had,
+posted or not: one listing of the MR's pipelines, each pipeline's jobs, and the
+first bytes of each story job's log, which says whether its precheck went ahead.
+A log is kept when a job is cancelled or times out, which its artifacts are not,
+so a run cancelled by a newer push counts as the run it was.
 """
 
 from __future__ import annotations
@@ -116,6 +124,12 @@ CREDENTIAL_SHOWN_AS = "[redacted]"
 #: Seconds between two looks for the code-review note.
 POLL_SECONDS = 30.0
 
+#: The most of an MR's pipelines :func:`runs_started` reads, newest first.
+MR_PIPELINES = 100
+#: How much of a job's log :func:`runs_started` reads; a story job's precheck
+#: prints its decision before anything is installed, so it is near the start.
+TRACE_HEAD_BYTES = 512 * 1024
+
 _CHUNK_BYTES = 64 * 1024
 _DETAIL_CHARS = 400
 _EXCERPT_CHARS = 200
@@ -124,6 +138,7 @@ _BOUNDARY_RE = re.compile(r"[0-9A-Za-z'()+_,./:=?-]{1,70}")
 _UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 _LENGTH_RE = re.compile(r"[0-9]{1,18}")
 _PAGE_RE = re.compile(r"[0-9]{1,9}")
+_STARTED_JOB_STATES = frozenset({"running", "success", "failed", "canceled"})
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:
@@ -256,13 +271,20 @@ class UxGitlab(review.Gitlab):
         content_type: str | None = None,
         timeout: int = 60,
         empty_ok: bool = False,
+        as_bytes: bool = False,
+        limit: int | None = None,
+        head: bool = False,
     ) -> tuple[object, dict[str, str]]:
         """One request: JSON ``body`` or raw ``data``, the token as a header.
 
         Returns the parsed JSON and the response headers. With ``empty_ok``, a 204
-        or an empty body returns ``(None, headers)``. Everything else that can go
-        wrong is a ``review.Skip`` or a ``review.Failure``, as the module docstring
-        maps them.
+        or an empty body returns ``(None, headers)``. With ``as_bytes``, the body
+        is returned as it arrived, whatever its type, which is how a file of a
+        job's artifacts is read. ``limit`` bounds the answer below
+        :data:`MAX_ANSWER_BYTES`, and with ``head`` an answer past it is cut there
+        rather than refused, which is how the start of a job's log is read.
+        Everything else that can go wrong is a ``review.Skip`` or a
+        ``review.Failure``, as the module docstring maps them.
         """
         if body is not None and data is not None:
             raise ValueError("send either a JSON body or raw data, not both")
@@ -284,7 +306,7 @@ class UxGitlab(review.Gitlab):
                 status = response.status
                 headers = dict(response.headers)
                 kind = response.headers.get("Content-Type", "")
-                raw = self._answer(response, method, path, timeout)
+                raw = self._answer(response, method, path, timeout, limit, head=head)
         except urllib.error.HTTPError as error:
             raise self._refusal(error, method, path, timeout) from error
         except urllib.error.URLError as error:
@@ -315,6 +337,8 @@ class UxGitlab(review.Gitlab):
             ) from None
         if empty_ok and (status == 204 or not raw):
             return None, headers
+        if as_bytes:
+            return raw, headers
         if "json" not in kind.lower():
             raise review.Skip(
                 self._scrubbed(
@@ -332,22 +356,48 @@ class UxGitlab(review.Gitlab):
                 )
             ) from None
 
-    def _answer(self, response: Any, method: str, path: str, timeout: int) -> bytes:
+    def _answer(
+        self,
+        response: Any,
+        method: str,
+        path: str,
+        timeout: int,
+        limit: int | None = None,
+        *,
+        head: bool = False,
+    ) -> bytes:
         """The body of a 2xx answer, bounded in size and in time.
 
-        A read error is mapped here, whatever ``http.client`` calls it, because
-        here it can only be the answer's fault: the ``ValueError`` that
-        :meth:`_send` maps to an unsendable request must not catch one from a
-        body, such as a chunk size that is not a number.
+        The size is :data:`MAX_ANSWER_BYTES`, or ``limit`` when that is smaller;
+        with ``head`` the answer's first ``cap`` bytes are its body. A read error
+        is mapped here, whatever ``http.client`` calls it, because here it can
+        only be the answer's fault: the ``ValueError`` that :meth:`_send` maps to
+        an unsendable request must not catch one from a body, such as a chunk
+        size that is not a number.
         """
+        cap = MAX_ANSWER_BYTES if limit is None else min(limit, MAX_ANSWER_BYTES)
         declared = _declared_length(response.headers)
-        if declared is not None and declared > MAX_ANSWER_BYTES:
+        if head:
+            try:
+                raw, ended = _read_capped(response, cap, timeout)
+            except (ValueError, http.client.HTTPException) as error:
+                raise review.Skip(
+                    f"cannot reach {self.api_url}: the answer to {method} {path} "
+                    f"broke off ({type(error).__name__})"
+                ) from None
+            if ended == "slow":
+                raise review.Failure(
+                    f"GitLab's answer to {method} {path} was still arriving, so it "
+                    f"did not finish within {timeout}s"
+                )
+            return raw
+        if declared is not None and declared > cap:
             raise review.Failure(
                 f"GitLab's answer to {method} {path} is {declared} bytes, more than "
-                f"the {MAX_ANSWER_BYTES} this client reads"
+                f"the {cap} this client reads"
             )
         try:
-            raw, ended = _read_capped(response, MAX_ANSWER_BYTES, timeout)
+            raw, ended = _read_capped(response, cap, timeout)
         except (ValueError, http.client.HTTPException) as error:
             raise review.Skip(
                 f"cannot reach {self.api_url}: the answer to {method} {path} broke "
@@ -356,7 +406,7 @@ class UxGitlab(review.Gitlab):
         if ended == "over":
             raise review.Failure(
                 f"GitLab's answer to {method} {path} runs past the "
-                f"{MAX_ANSWER_BYTES} bytes this client reads"
+                f"{cap} bytes this client reads"
             )
         if ended == "slow":
             raise review.Failure(
@@ -551,6 +601,37 @@ class UxGitlab(review.Gitlab):
         )
         return _object(payload, "POST /uploads")
 
+    def pipeline_jobs(self, pipeline_id: int) -> list[dict[str, Any]]:
+        """Every job of one pipeline, the latest attempt of each, as GitLab lists them."""
+        return self._pages(f"/pipelines/{int(pipeline_id)}/jobs")
+
+    def merge_request_pipelines(
+        self, iid: int, *, limit: int = MR_PIPELINES
+    ) -> list[int]:
+        """The ids of one MR's newest pipelines, newest first, one page of ``limit``."""
+        if not 1 <= limit <= 100:
+            raise ValueError("a pipeline listing reads 1 to 100 pipelines")
+        query = urllib.parse.urlencode({"per_page": limit})
+        url = self._project_url(f"/merge_requests/{int(iid)}/pipelines?{query}")
+        payload, _ = self._send("GET", url)
+        if not isinstance(payload, list):
+            raise review.Failure(
+                "GitLab answered GET /merge_requests/:iid/pipelines with no list"
+            )
+        ids: list[int] = []
+        for item in payload[:limit]:
+            ident = item.get("id") if isinstance(item, dict) else None
+            if isinstance(ident, int) and not isinstance(ident, bool) and ident > 0:
+                if ident not in ids:
+                    ids.append(ident)
+        return sorted(ids, reverse=True)
+
+    def job_trace_head(self, job_id: int, *, limit: int = TRACE_HEAD_BYTES) -> bytes:
+        """The first ``limit`` bytes of one job's log, as GitLab stores it."""
+        url = self._project_url(f"/jobs/{int(job_id)}/trace")
+        payload, _ = self._send("GET", url, as_bytes=True, limit=limit, head=True)
+        return payload if isinstance(payload, bytes) else b""
+
 
 def multipart(
     field: str,
@@ -672,6 +753,55 @@ def wait_for_review_note(
         if clock() >= poll_until:
             return ReviewWait("timeout", None, mine, me, None)
         sleep(poll_seconds)
+
+
+def runs_started(
+    forge: UxGitlab,
+    iid: int,
+    *,
+    job: str,
+    marker: re.Pattern[bytes],
+    own_pipeline: int | None,
+    enough: int,
+    deadline: float,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """How many of an MR's earlier ``job`` jobs went ahead, counting to ``enough``.
+
+    A job went ahead when the first :data:`TRACE_HEAD_BYTES` of its log hold
+    ``marker``, whether it then posted, failed, was cancelled or is still
+    running. ``own_pipeline`` is left out. A pipeline whose jobs, or a job whose
+    log, cannot be read counts nothing, and so does every pipeline not reached at
+    ``deadline`` on ``clock``; a listing that cannot be read raises, as any other
+    request here does.
+    """
+    count = 0
+    for pipeline_id in forge.merge_request_pipelines(iid):
+        if count >= enough or clock() >= deadline:
+            break
+        if pipeline_id == own_pipeline:
+            continue
+        try:
+            jobs = forge.pipeline_jobs(pipeline_id)
+        except (review.Skip, review.Failure):
+            continue
+        for item in jobs:
+            ident = item.get("id")
+            if (
+                item.get("name") != job
+                or item.get("status") not in _STARTED_JOB_STATES
+                or not isinstance(ident, int)
+                or isinstance(ident, bool)
+                or ident < 1
+            ):
+                continue
+            try:
+                head = forge.job_trace_head(ident)
+            except (review.Skip, review.Failure):
+                continue
+            if marker.search(head):
+                count += 1
+    return min(count, enough)
 
 
 def safe_upload_url(
