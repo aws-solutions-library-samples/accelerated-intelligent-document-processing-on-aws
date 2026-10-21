@@ -2975,3 +2975,101 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
                 merged = manager.get_merged_configuration("p")
         assert merged is not None, "the read must still succeed"
         spy.assert_not_called()
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAnUnmergeableProfileIsReturnedUnresolved:
+    """⚠️ A merge of two individually VALID configurations can be invalid.
+
+    ``IDPConfig`` has cross-field validators, and each side of the merge supplies
+    a field the other leaves at a default. A profile holding
+    ``packet.overlap_pages: 15`` validates alone, against the model's
+    ``window_pages`` default of 20; a default holding ``window_pages: 10``
+    validates alone, against the ``overlap_pages`` default of 2. Merged, they trip
+    ``overlap_pages >= window_pages``.
+
+    ``ConfigurationReader.get_merged_configuration`` re-raises, so letting that
+    propagate would fail documents on a configuration that read cleanly before —
+    "upgrade, then everything stops", on the path every configuration read now
+    takes. **Backfilling is a convenience; never being worse than not backfilling
+    is the requirement.**
+    """
+
+    @staticmethod
+    def _put_full(table, version: str, classification: dict):
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}",
+                "ocr": {"backend": "textract"},
+                "classification": classification,
+                "extraction": {"model": "us.amazon.nova-2-lite-v1:0"},
+                "classes": [],
+            }
+        )
+
+    def _seed_default_with(self, manager, classification: dict):
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(notes="seeded", classification=classification),
+            version=DEFAULT_VERSION,
+        )
+
+    def test_each_side_is_valid_alone(self):
+        """The premise. If either side were invalid on its own this would be
+        testing a different thing."""
+        IDPConfig(classification={"packet": {"overlap_pages": 15}})
+        IDPConfig(classification={"packet": {"window_pages": 10}})
+        with pytest.raises(Exception):
+            IDPConfig(
+                classification={"packet": {"window_pages": 10, "overlap_pages": 15}}
+            )
+
+    def test_the_profile_is_returned_unresolved_rather_than_raising(
+        self, monkeypatch, caplog
+    ):
+        import logging
+
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._seed_default_with(manager, {"packet": {"window_pages": 10}})
+        self._put_full(
+            table,
+            "clash",
+            {"model": "us.amazon.nova-2-lite-v1:0", "packet": {"overlap_pages": 15}},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            merged = manager.get_merged_configuration("clash")
+
+        assert merged is not None, "the read must not fail the document"
+        assert merged.classification.packet.overlap_pages == 15
+        assert "returning it unresolved" in caplog.text
+
+    def test_a_sparse_profile_that_cannot_merge_still_raises(self, monkeypatch):
+        """A sparse profile has never been usable unmerged, so there is no better
+        answer than the error the caller already handles — and swallowing it
+        would return a configuration with no models in it."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        self._seed_default_with(manager, {"packet": {"window_pages": 10}})
+        table.put_item(
+            Item={
+                "Configuration": f"{CONFIG_TYPE_CONFIG}#sparse",
+                "classification": {"packet": {"overlap_pages": 15}},
+            }
+        )
+        with pytest.raises(Exception):
+            manager.get_merged_configuration("sparse")
+
+    def test_a_profile_that_merges_cleanly_is_still_resolved(self, monkeypatch):
+        """The guard must not swallow the ordinary case."""
+        table = _make_table()
+        manager = _manager(monkeypatch)
+        _seed_default(manager)
+        self._put_full(table, "fine", {"model": "us.amazon.nova-2-lite-v1:0"})
+
+        merged = manager.get_merged_configuration("fine")
+
+        assert merged is not None
+        assert merged.summarization.model == SEEDED_MODEL

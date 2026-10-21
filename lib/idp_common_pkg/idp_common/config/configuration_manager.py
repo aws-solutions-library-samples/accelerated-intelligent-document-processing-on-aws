@@ -169,13 +169,17 @@ class ConfigurationManager:
     Manages IDP configurations stored in DynamoDB.
 
     Configuration versions store FULL configurations (not sparse deltas).
-    Each version is a complete, self-contained configuration snapshot.
+    Each version is a complete, self-contained configuration snapshot *as of the
+    schema it was saved under*.
 
     The UI can compute diffs between a version and the default for display purposes,
     but storage is always the complete configuration.
 
-    Legacy sparse delta configs (from older versions) are auto-detected and
-    migrated to full format on first read.
+    ⚠️ Being stored in full does not make a profile complete against the CURRENT
+    schema, so every profile is resolved against `default` on read: keys it holds
+    win, keys it lacks are backfilled. That is what gives a field added in a later
+    release its shipped value on an older profile. See
+    `get_merged_configuration`.
 
     Example:
         manager = ConfigurationManager()
@@ -354,13 +358,20 @@ class ConfigurationManager:
         """
         Get the full configuration for a profile, ready for runtime processing.
 
-        NEW BEHAVIOR (full config format):
-        - Each profile stores a complete configuration
-        - Simply read and return the profile's config
+        EVERY profile is resolved against the `default` profile: start from
+        `default`, then let every key the profile HAS override it. A key it holds
+        wins even when empty (absent is not cleared); a key it LACKS is
+        backfilled. The resolved configuration is saved back so the next read is a
+        direct one — see `_backfill_may_be_persisted` for when that is skipped.
 
-        LEGACY SUPPORT (sparse delta format):
-        - If a profile is detected as sparse (missing key sections), merge with default
-        - Auto-migrate the sparse config to full format for future reads
+        ⚠️ Resolving applies to a "full" profile too, and that is the point rather
+        than an accident: "full" means it carried every section AT THE TIME IT WAS
+        SAVED, which says nothing about fields added since. Returned unresolved,
+        every such field arrives from its Pydantic default — empty, for a prompt.
+
+        The full/sparse distinction survives only as a fallback: a full profile
+        validates on its own, so if the resolved configuration fails a cross-field
+        validator the profile is returned unresolved rather than failing the read.
 
         Args:
             version: Configuration Profile to load. If None/empty, uses the active one.
@@ -496,7 +507,40 @@ class ConfigurationManager:
         merged_dict = deepcopy(default_dict)
         deep_update(merged_dict, version_dict)
 
-        merged_config = IDPConfig(**merged_dict)
+        # ⚠️ A merge of two individually VALID configurations can be invalid, so
+        # this validation is guarded. `IDPConfig` has cross-field validators, and
+        # one side of the merge supplies a field the other does not: a profile
+        # holding `packet.overlap_pages: 15` validates alone (against the model's
+        # `window_pages` default of 20) and so does a default holding
+        # `window_pages: 10` (against the `overlap_pages` default of 2), but
+        # merged they trip `overlap_pages >= window_pages`. Measured, not
+        # supposed.
+        #
+        # `ConfigurationReader.get_merged_configuration` re-raises, so an
+        # unguarded failure here would fail documents on a configuration that
+        # read cleanly before this change — "upgrade, then everything stops", on
+        # a path EVERY configuration read now takes. Backfilling is a
+        # convenience; never being worse than not backfilling is the requirement.
+        # So a profile that validates on its own is returned on its own, and the
+        # refusal is logged loudly enough to act on.
+        try:
+            merged_config = IDPConfig(**merged_dict)
+        except Exception as exc:
+            if full_config_fallback is not None:
+                logger.warning(
+                    "Version %s does not validate when resolved against the "
+                    "default profile (%s); returning it unresolved. Fields it "
+                    "does not carry will fall back to their code defaults, which "
+                    "for a prompt is empty — reconcile the two configurations.",
+                    version,
+                    exc,
+                    exc_info=True,
+                )
+                return full_config_fallback
+            # A sparse profile has never been usable unmerged, so there is no
+            # better answer than the error the caller already handles.
+            raise
+
         # ⚠️ Top-level SECTIONS only. In the case that motivates this — a nested
         # key such as `classification.packet.task_prompt` appearing while
         # `classification` itself is present — this list is empty, so an empty
