@@ -223,17 +223,20 @@ def test_the_printed_entry_is_what_ux_test_personas_holds(monkeypatch, capsys):
 @pytest.mark.unit
 def test_the_printed_hint_names_the_scope_the_ux_jobs_declare(monkeypatch, capsys):
     """The hint is read at the one moment the operator stores the password, so it
-    names the environment scope, as the CI jobs declare it, and says that a copy
-    left at the default scope reaches every job."""
+    names the environment scope, as the job that signs in declares it, by its exact
+    name, says that a wildcard would also reach the job that builds the MR's UI,
+    and that a copy left at the default scope reaches every job."""
     ci = yaml.safe_load((_SCRIPTS.parent / ".gitlab-ci.yml").read_text("utf-8"))
     scope = ci["ai_ux_test"]["environment"]["name"]
+    build_scope = ci["ux_test_build"]["environment"]["name"]
     pool = _Pool()
     module = _module_with(pool, monkeypatch)
 
     module.cmd_setup(_setup_args())
 
     hint = json.loads(capsys.readouterr().out)["next"]
-    assert f"environment scope {scope}" in hint, hint
+    assert f"environment scope {scope} by its exact name" in hint, hint
+    assert f"not a wildcard, which would also match {build_scope}" in hint, hint
     assert "masked, not protected" in hint, hint
     assert "default scope, which reaches every job" in hint, hint
 

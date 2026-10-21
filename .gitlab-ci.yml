@@ -1227,24 +1227,30 @@ ai_mr_review:
 # bounds a push burst. ai_ux_test is idempotent per head SHA, and
 # `resource_group: ux_test_stack` serialises runs against the shared review stack.
 #
-# ⚠️ THE UX VARIABLES ARE SCOPED TO AN ENVIRONMENT, OR EVERY JOB GETS THEM.
+# ⚠️ EACH UX VARIABLE IS SCOPED TO THE JOBS THAT READ IT, OR EVERY JOB GETS IT.
 # Requires masked, NOT protected CI variables (a protected variable is absent
-# from MR pipelines): UX_TEST_UI_ENV, UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID,
-# each with environment scope `ux-review`, plus GITLAB_REVIEW_TOKEN, which is
-# shared with ai_mr_review, a job with no environment, and so keeps the default
-# scope. Without them the jobs print SKIPPED: and exit 0. These two jobs, and no
-# other, declare `environment: ux-review` with `action: prepare`, which gives a
-# job the variables scoped to that environment and creates no deployment. A
+# from MR pipelines). Each UX job declares an environment of its own with
+# `action: prepare`, which gives a job the variables scoped to that environment
+# and creates no deployment: ai_ux_test declares `ux-review` and ux_test_build
+# declares `ux-review-build`, and no other job declares either.
+# UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID have environment scope `ux-review`
+# alone, so the job that runs the MR's `npm ci` never holds the persona's
+# password. UX_TEST_UI_ENV, which both jobs read, is stored twice with the same
+# value, at environment scope `ux-review` and at `ux-review-build`. Each scope is
+# an exact name, never a wildcard: `ux-review*` would match both.
+# GITLAB_REVIEW_TOKEN is shared with ai_mr_review, a job with no environment, and
+# so keeps the default scope. Without them the jobs print SKIPPED: and exit 0. A
 # variable left at the default scope, All (`*`), reaches every job of every
 # pipeline: static_checks, unit_tests, package_tests and ui_tests each run
 # `npm ci` in src/ui, and so every lifecycle script of every UI dependency, with
-# the persona's password in the environment. A job's own `variables:` cannot take
-# a project variable away, because project variables outrank this file, so the
-# scope is the only thing that keeps it out of those jobs. No rule may read a
-# scoped variable: GitLab can leave it undefined while it evaluates `rules` at
-# pipeline creation. The setup steps are under footnote ³ in CI_TEST_COVERAGE.md.
+# it in the environment. A job's own `variables:` cannot take a project variable
+# away, because project variables outrank this file, so the scope is the only
+# thing that keeps it out of those jobs. No rule may read a scoped variable:
+# GitLab can leave it undefined while it evaluates `rules` at pipeline creation.
+# The setup steps are under footnote ³ in CI_TEST_COVERAGE.md.
 # ---------------------------------------------------------------------------
-# ⚠️ THE STEPS THAT RUN THIRD-PARTY CODE INHERIT NONE OF THE JOB'S SECRETS.
+# ⚠️ EVERY STEP THAT RUNS THIRD-PARTY CODE BUT ONE INHERITS NONE OF THE JOB'S
+# SECRETS.
 #
 # Both UX jobs run them under this function, which hands on an environment built
 # from nothing: the search path, the home directory, npm's cache location when
@@ -1259,8 +1265,12 @@ ai_mr_review:
 # project variable its environment's scope admits. It keeps the secrets out of a
 # package script's environment and its logs; it does not stop a hostile package,
 # which runs as root beside the job's shell and could read its /proc/<pid>/environ
-# and the checkout's .git/config. before_script and script share one shell, so a
-# job includes the definition once, ahead of its first use.
+# and the checkout's .git/config. The one step outside it is ux_test_build's
+# .node_setup, the anchor every job that builds the UI shares: it unpacks the
+# Node.js release from nodejs.org, which nothing checks against a digest, and has
+# that release's npm upgrade itself, both with the job's environment.
+# before_script and script share one shell, so a job includes the definition
+# once, ahead of its first use.
 .without_job_secrets: &without_job_secrets
   - |
     without_job_secrets() {
@@ -1296,10 +1306,12 @@ ux_test_build:
       when: on_success
     - when: never
   needs: []
-  # The variables the two UX jobs read are scoped to this environment; see the
-  # note above the section. ai_ux_test declares the same mapping by its anchor.
-  environment: &ux_review_environment
-    name: ux-review
+  # An environment of this job's own, not ai_ux_test's: the one UX variable this
+  # job reads, UX_TEST_UI_ENV, is stored at this scope too, and the persona's
+  # password is not, so the job that runs the MR's `npm ci` never holds it. See
+  # the note above the section.
+  environment:
+    name: ux-review-build
     action: prepare
   variables:
     # The merge base with develop, which ui_change.py diffs against.
@@ -1317,24 +1329,26 @@ ux_test_build:
     - *node_setup
   script:
     - python3 scripts/ux_runner/ui_change.py --target-branch "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}" --out ui-change.json
-    # The env file is written first, from the one variable this job needs. It
-    # holds no credential: the review stack's UI configuration, which the build
+    # The env file is written before npm ci and the build, from the one variable
+    # this job needs. It holds no credential: the review stack's UI configuration, which the build
     # inlines into the bundle anyway, and its bucket names. npm ci then runs every
     # src/ui dependency's lifecycle scripts, a malicious version the lockfile
     # already resolves included, since its integrity hashes check only that a
     # package is the one recorded; and the build runs vite with the MR's config.
-    # Both run under without_job_secrets, which keeps UX_TEST_PERSONAS out of
-    # their environment and logs. This job holds the persona only because it
-    # shares ai_ux_test's scope, so a package that goes looking can still read it
-    # from this shell's /proc/<pid>/environ. Node and npm themselves come from
-    # .node_setup, which runs with the job's environment, as in every job using it.
+    # Both run under without_job_secrets, which keeps the job's secrets out of
+    # their environment and logs. This job holds no persona password to keep out,
+    # since its environment is not ai_ux_test's; what it does hold,
+    # GITLAB_REVIEW_TOKEN and any AWS session the runner gave the job among them,
+    # a package that goes looking can still read from this shell's
+    # /proc/<pid>/environ. Node and npm themselves come from .node_setup, which
+    # runs with the job's environment, as in every job using it.
     - |
       if python3 -c 'import json, sys; sys.exit(0 if json.load(open("ui-change.json"))["skip"] else 1)'; then
         echo "Only tests changed under src/ui; nothing to build."
         exit 0
       fi
       if [ -z "${UX_TEST_UI_ENV:-}" ]; then
-        echo "SKIPPED: UX_TEST_UI_ENV is not set in this job, so the MR's UI cannot be built against the review stack. It belongs at environment scope ux-review."
+        echo "SKIPPED: UX_TEST_UI_ENV is not set in this job, so the MR's UI cannot be built against the review stack. This job's copy belongs at environment scope ux-review-build."
         exit 0
       fi
       printf '%s' "$UX_TEST_UI_ENV" | base64 -d > src/ui/.env.production.local
@@ -1360,7 +1374,11 @@ ai_ux_test:
   needs:
     - job: ux_test_build
       artifacts: true
-  environment: *ux_review_environment
+  # The environment UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID are scoped to,
+  # with this job's copy of UX_TEST_UI_ENV; see the note above the section.
+  environment:
+    name: ux-review
+    action: prepare
   variables:
     # Bedrock inference-profile id; the GitLab role grants the Opus family only.
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"

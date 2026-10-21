@@ -293,8 +293,9 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
         "next": (
             "merge this entry into the JSON object of every persona, base64 it, and "
             "store it as the CI variable UX_TEST_PERSONAS: masked, not protected, "
-            "environment scope ux-review, and no copy left at the default scope, "
-            "which reaches every job"
+            "environment scope ux-review by its exact name, not a wildcard, which "
+            "would also match ux-review-build, where the MR's npm ci runs; and no "
+            "copy left at the default scope, which reaches every job"
         ),
     }
     print(json.dumps(session, indent=2))
