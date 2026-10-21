@@ -1430,13 +1430,13 @@ Resources:
               maxPagesForClassification:
                 type: string
                 title: Pages to classify
-                description: "Classify only the first N pages and give the whole file their majority class. ⚠️ A number here overrides Section splitting: the file becomes one section, so a multi-document packet is collapsed. Right for a known single-document file, wrong for a packet."
+                description: "Classify only the first N pages and give the whole file their majority class. ⚠️ A number here overrides Section splitting **for a file longer than N**: that file becomes one section, so a multi-document packet is collapsed. A file of N pages or fewer is classified and sectioned normally, so the same setting behaves differently on different files in one run. Right for a known single-document file, wrong for a packet."
                 enum: ["ALL", "1", "2", "3", "5", "10"]
                 order: 4
               sectionSplitting:
                 type: string
                 title: Section splitting
-                description: "How the documents found become sections. 'llm_determined': one section each. 'page': one per page, which stops two adjacent documents of the same class being joined. 'disabled': the whole file as one section, class by majority vote. ⚠️ 'disabled' does not skip classification — use Pages to classify for that."
+                description: "How the documents found become sections, at either granularity and either strategy. 'llm_determined': one section each. 'page': one per page, which stops two adjacent documents of the same class being joined. 'disabled': the whole file as one section, class by majority vote. ⚠️ 'disabled' does not skip classification — use Pages to classify for that. ⚠️ Ignored for any file longer than Pages to classify, which collapses that file to one section whatever this says — so check both settings together. Not the same as Stage A — Segmentation above, which finds the documents in the first place and applies to two-stage only."
                 enum: ["disabled", "page", "llm_determined"]
                 default: "llm_determined"
                 order: 5

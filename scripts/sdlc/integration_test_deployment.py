@@ -5,6 +5,7 @@ Integration Test Deployment Script
 Handles code packaging, S3 upload, and pipeline monitoring for integration tests.
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -358,6 +359,47 @@ AFTER_SCRIPT_CREDS_FILE = "aws_after_script_creds.env"
 # the suite's result is unknown, and those must not look the same in Slack.
 MONITOR_HANDOFF_MARKER = "monitor_handoff.txt"
 
+#: Written at the root of the deployment zip and read by codebuild_deployment.py,
+#: which has no other way to tell the nightly schedule from a button press. A
+#: correctness guard, not a security control: an MR-button run executes the MR's
+#: own harness, which can write or ignore this file however it likes.
+CI_RUN_OPTIONS_FILE = "ci_run_options.json"
+
+
+def write_ci_run_options(
+    path: str = CI_RUN_OPTIONS_FILE, environ: dict | None = None
+) -> dict:
+    """Record which GitLab pipeline source and ref started this run, for CodeBuild.
+
+    codebuild_deployment.py updates the long-lived UX review stack in place only on
+    the nightly schedule of develop, and CodeBuild sees only the zip, not the GitLab
+    job's environment, so the two facts travel inside it. This is a correctness
+    guard, not a security control: an MR-button run executes the MR's own
+    codebuild_deployment.py, which reads or ignores this file however its author
+    wrote it. What it does prevent is the ordinary mistake, a button press moving
+    the shared review stack onto an unmerged template.
+
+    Written with pathlib rather than through run_command, so the zip stays
+    create_deployment_package's first command. Best effort: a write that fails
+    leaves no file, because main() removes any previous one first, and the reader
+    takes no file to mean no update. Returns the options whether or not they were
+    written.
+    """
+    env = os.environ if environ is None else environ
+    options = {
+        "version": 1,
+        "pipeline_source": env.get("CI_PIPELINE_SOURCE", ""),
+        "ref": env.get("CI_COMMIT_REF_NAME", ""),
+        "pipeline_id": env.get("CI_PIPELINE_ID", ""),
+    }
+    try:
+        pathlib.Path(path).write_text(
+            json.dumps(options, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as e:
+        print(f"⚠️ Could not write {path}, so the review stack is left as it is: {e}")
+    return options
+
 
 class _CredentialRefresher:
     """Keep the monitor's AWS creds alive past the 1h role-chaining cap.
@@ -690,16 +732,24 @@ def monitor_pipeline(pipeline_name, version_id, max_wait=8100):
 
 
 def main():
-    """Main execution function"""
+    """Main execution function.
+
+    This run's state files are cleared before anything else. A GitLab runner can
+    reuse a workspace between jobs, and each of these is read later: a stale
+    pipeline_execution_id.txt makes after_script fetch and publish the PREVIOUS
+    run's CodeBuild logs as if they were this one's, a stale handoff marker
+    makes Slack report a verified pass as UNVERIFIED, and a stale run-options
+    file would ship a previous run's pipeline source if this run's could not be
+    written. Each produces a confident wrong answer, which is worse than a
+    missing one.
+    """
     print("Starting integration test deployment...")
 
-    # Clear this run's state files before anything else. A GitLab runner can
-    # reuse a workspace between jobs, and after_script reads all of these: a
-    # stale pipeline_execution_id.txt makes it fetch and publish the PREVIOUS
-    # run's CodeBuild logs as if they were this one's, and a stale handoff
-    # marker makes Slack report a verified pass as UNVERIFIED. Both produce a
-    # confident wrong answer, which is worse than a missing one.
-    for stale in (MONITOR_HANDOFF_MARKER, "pipeline_execution_id.txt"):
+    for stale in (
+        MONITOR_HANDOFF_MARKER,
+        "pipeline_execution_id.txt",
+        CI_RUN_OPTIONS_FILE,
+    ):
         pathlib.Path(stale).unlink(missing_ok=True)
 
     # Get configuration from environment
@@ -714,6 +764,7 @@ def main():
     print(f"Pipeline: {pipeline_name}")
 
     # Execute deployment steps
+    write_ci_run_options()
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 

@@ -319,6 +319,18 @@ route work on it.
 | `page` | One section per page — no same-type joining is ever possible |
 | `disabled` | One section spanning the whole document (class chosen by majority vote across pages) |
 
+⚠️ **`maxPagesForClassification` overrides this, per document rather than per
+configuration.** With a numeric limit, `_limit_pages_for_classification` returns
+the *same* document when `len(pages) <= max_pages`, and the single-section
+collapse in `classify_document` is gated on `limited_document.id !=
+document.id` — so a file at or under the limit is classified and sectioned
+normally by the value above, and only a longer file collapses to one section
+whatever that value says. One setting, two behaviours, decided by the file.
+
+That is why the setting is not expressible as a configuration-level rule: a
+validator that resolved `sectionSplitting` to `disabled` whenever a limit was set
+would be wrong for every file at or under it.
+
 ### Single-class configurations
 
 When the configuration defines exactly **one** document class, the *class* decision is predetermined — there is nothing for the model to choose. But section **boundaries** are a separate question, and the backend is only skipped when the configured strategy genuinely needs no model output (GitHub issue [#686](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/686) — previously the short-circuit hard-coded one all-pages section and `sectionSplitting` was silently ignored):
