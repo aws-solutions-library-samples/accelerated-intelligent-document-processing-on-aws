@@ -62,7 +62,10 @@ vi.mock('../../../hooks/use-configuration-library', () => ({
 }));
 
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
-vi.mock('../../../contexts/app', () => ({ default: () => ({ setSuccessMessage: vi.fn() }) }));
+vi.mock('../../../contexts/app', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../contexts/app')>()),
+  default: () => ({ setSuccessMessage: vi.fn() }),
+}));
 
 vi.mock('../ConfigBuilder', () => ({
   default: ({ currentVersionName, mergedConfig }: { currentVersionName: string; mergedConfig: unknown }) => {

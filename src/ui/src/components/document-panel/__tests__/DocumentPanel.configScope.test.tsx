@@ -40,7 +40,10 @@ vi.mock('../../../hooks/use-user-role', () => ({ default: () => state.role }));
 vi.mock('../../../hooks/use-pricing', () => ({ default: () => ({ pricing: null, nonChargeableUnits: [], loading: false }) }));
 vi.mock('../../../hooks/use-polling', () => ({ default: () => undefined }));
 vi.mock('../../../hooks/use-classification-comparison', () => ({ default: () => null }));
-vi.mock('../../../contexts/app', () => ({ default: () => ({ currentCredentials: null }) }));
+vi.mock('../../../contexts/app', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../contexts/app')>()),
+  default: () => ({ currentCredentials: null }),
+}));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 
 vi.mock('../../document-viewers/DocumentViewers', () => ({ default: () => null }));

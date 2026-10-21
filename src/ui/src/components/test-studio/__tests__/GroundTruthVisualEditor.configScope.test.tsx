@@ -45,7 +45,10 @@ vi.mock('../../../hooks/use-configuration-versions', () => ({
   default: () => ({ ...state.list, loading: !state.list.loaded, error: null }),
 }));
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => state.role }));
-vi.mock('../../../contexts/app', () => ({ default: () => ({ user: { username: 'tester' } }) }));
+vi.mock('../../../contexts/app', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../contexts/app')>()),
+  default: () => ({ user: { username: 'tester' } }),
+}));
 
 import GroundTruthVisualEditor from '../GroundTruthVisualEditor';
 
