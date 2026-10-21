@@ -70,6 +70,10 @@ stages:
   # which never reached the deploy stage is still reported. See
   # nightly_notification.
   - notify
+  # The nightly first-time-user stories (ai_ux_test_stories_nightly, then
+  # ai_ux_test_stories_digest). Last, so nightly_notification neither waits for
+  # them nor downloads what they write. Not gates.
+  - ux_nightly
 
 # ---------------------------------------------------------------------------
 # Shared setup fragments.
@@ -1237,9 +1241,9 @@ ai_mr_review:
 # from MR pipelines). Each UX job declares an environment of its own with
 # `action: prepare`, which gives a job the variables scoped to that environment
 # and creates no deployment: ai_ux_test declares `ux-review` and ux_test_build
-# declares `ux-review-build`. The first-time-user story job that drives the
-# browser, ai_ux_test_stories, reads what ai_ux_test reads and declares
-# `ux-review` as well; no other job declares either.
+# declares `ux-review-build`. The two first-time-user story jobs that drive the
+# browser, ai_ux_test_stories and ai_ux_test_stories_nightly, read what
+# ai_ux_test reads and declare `ux-review` as well; no other job declares either.
 # UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID have environment scope `ux-review`
 # alone, so the job that runs the MR's `npm ci` never holds the persona's
 # password. UX_TEST_UI_ENV, which both jobs read, is stored twice with the same
@@ -1484,26 +1488,30 @@ ai_ux_test:
 # scripts/sdlc/ai_ux_test_stories.py: a model that knows the product only from
 # its published documentation attempts one story as one persona, in the confined
 # browser of ai_ux_test, and the verdict comes from the journal of its tool
-# calls. NOT A GATE: ai_ux_test_stories is `allow_failure: true`, GitLab-only,
-# and absent from test_ci_gate_parity.py's SHARED_GATES. See footnote ⁴ in
-# scripts/sdlc/docs/CI_TEST_COVERAGE.md and .claude/skills/ux-test-stories-ci.md;
-# test_ux_test_stories_ci_jobs.py pins the job's shape.
+# calls. NOT A GATE: ai_ux_test_stories here, and ai_ux_test_stories_nightly and
+# ai_ux_test_stories_digest at the end of this file, are all
+# `allow_failure: true`, GitLab-only, and absent from test_ci_gate_parity.py's
+# SHARED_GATES. See footnote ⁴ in scripts/sdlc/docs/CI_TEST_COVERAGE.md and
+# .claude/skills/ux-test-stories-ci.md; test_ux_test_stories_ci_jobs.py pins
+# the three jobs' shape.
 #
-# UX_TEST_STORIES switches it: unset, empty or `mr` runs it, and any other value,
-# `off` among them, does not, so a mistyped `off` still stops it.
+# UX_TEST_STORIES switches them: unset or empty runs all three, `mr` keeps only
+# this job, `nightly` keeps only the nightly pair, and any other value, `off`
+# among them, runs none, so a mistyped `off` still stops them.
 #
-# This job takes &ux_confined_setup from ai_ux_test, so it pins the harness to
-# the target branch the same way and fails closed, and its precheck refuses a
-# UX_HARNESS or UX_ENTRY other than the entry's own HARNESS_PATHS and path. It
-# reads ai_ux_test's masked, unprotected CI variables UX_TEST_UI_ENV,
-# UX_TEST_PERSONAS, UX_TEST_AWS_ACCOUNT_ID and GITLAB_REVIEW_TOKEN; a run against
-# the deployed UI also needs a UX_TEST_WEB_URL=<the stack's ApplicationWebURL>
-# line in UX_TEST_UI_ENV. Without them the precheck prints SKIPPED: and the job
-# exits 0. The three UX_TEST_* variables are set at environment scope
-# `ux-review`, and a variable set at an environment's scope reaches only a job
-# that declares that environment, so this job declares exactly the environment
-# ai_ux_test declares, `ux-review` with `action: prepare`, as
-# test_ux_test_stories_ci_jobs.py pins.
+# This job and the nightly shards take &ux_confined_setup from ai_ux_test, so
+# each pins the harness to the target branch the same way and fails closed, and
+# its precheck refuses a UX_HARNESS or UX_ENTRY other than the entry's own
+# HARNESS_PATHS and path. Both read ai_ux_test's masked, unprotected CI
+# variables UX_TEST_UI_ENV, UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID, and
+# this job GITLAB_REVIEW_TOKEN as well; a run against the deployed UI also needs
+# a UX_TEST_WEB_URL=<the stack's ApplicationWebURL> line in UX_TEST_UI_ENV.
+# Without them the precheck prints SKIPPED: and the job exits 0. The three
+# UX_TEST_* variables are set at environment scope `ux-review`, and a variable
+# set at an environment's scope reaches only a job that declares that
+# environment, so both declare exactly the environment ai_ux_test declares,
+# `ux-review` with `action: prepare`, as test_ux_test_stories_ci_jobs.py pins.
+# The digest declares only its own, so it never holds the persona's password.
 # ---------------------------------------------------------------------------
 ai_ux_test_stories:
   stage: ux_review
@@ -1554,7 +1562,7 @@ ai_ux_test_stories:
     UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
     # Posting is opt-in: this flag is what lets the precheck's one-line replies
-    # and the run's reply reach the MR.
+    # and the run's reply reach the MR, and no other story job carries it.
     UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID --post"
     UX_ARTIFACTS: "ux-test-stories"
   before_script: *ux_confined_setup
@@ -1705,3 +1713,163 @@ nightly_notification:
           # obscure which one matters.
           print(f"⚠️ Fallback Slack post failed: {exc}")
       PY
+
+# ---------------------------------------------------------------------------
+# The nightly first-time-user stories: the nightly story set against the review
+# stack after the deploy, in parallel shards, then the digest that merges them
+# and, on the schedule, compares the night with earlier scheduled nights.
+# Advisory, as the note above ai_ux_test_stories says, and in ux_nightly, after
+# notify.
+#
+# The two jobs share their rules by anchor, so the digest's `needs` never names
+# a job absent from the pipeline:
+#   - the scheduled develop pipeline, automatically, and `when: always`, so a
+#     night whose deploy failed or never ran is still run and records the
+#     stack's state, which keeps it out of the comparison;
+#   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
+#   - a push to develop, as a manual button.
+# integration_tests is in every pipeline those rules admit (scheduled, or a
+# manual job on develop), so `dependencies: [integration_tests]` is always
+# valid.
+#
+# Neither job is interruptible: a merge to develop during the night must not
+# cancel it. The shards read UX_TEST_UI_ENV, UX_TEST_PERSONAS and
+# UX_TEST_AWS_ACCOUNT_ID, from the environment ux-review they declare as
+# ai_ux_test_stories does, and post nothing. On the schedule the digest reads
+# earlier nights' digests with GITLAB_REVIEW_TOKEN, read-only, and posts to Slack
+# with UX_TEST_STORIES_SLACK_WEBHOOK_URL. The digest alone declares the
+# environment ux-stories-digest, so that webhook is set at that environment
+# scope and reaches no other job; UX_TEST_STORIES and UX_TEST_STORIES_RUN stay at
+# All scope, because GitLab can leave a scoped variable undefined while it
+# evaluates rules.
+# ---------------------------------------------------------------------------
+ai_ux_test_stories_nightly:
+  stage: ux_nightly
+  interruptible: false
+  # About 6 min of install and docs index, then flows only while one can finish
+  # inside the catalogue's deadline_minutes (55), counted from the job's start.
+  timeout: 60m
+  allow_failure: true
+  tags:
+    - size:large
+  # ceil(nightly flows / k), where k = floor((deadline_minutes - setup_minutes
+  # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
+  # gate: 13 p0 flows at 3 a shard. The CI-jobs test recomputes it from the
+  # catalogue.
+  parallel: 5
+  rules: &ux_story_nightly_rules
+    - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "develop" && $UX_TEST_STORIES_RUN == "all"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"
+      when: manual
+    - when: never
+  # deployment_summary.txt, which records the review stack's state for the night.
+  dependencies:
+    - integration_tests
+  # ai_ux_test's environment, as on ai_ux_test_stories.
+  environment:
+    name: ux-review
+    action: prepare
+  variables:
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
+    AWS_REGION: "us-east-1"
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    UX_HARNESS: *ux_story_harness
+    UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
+    # Under CI, --all is the nightly shard: a flow that gave up or ran out of
+    # steps runs once more at twice its step budget, inside the catalogue's
+    # job_usd and deadline.
+    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary deployment_summary.txt"
+    UX_ARTIFACTS: "ux-test-stories/shard-$CI_NODE_INDEX"
+  before_script: *ux_confined_setup
+  # UX_HARNESS_SHA as in ai_ux_test_stories.
+  script:
+    - |
+      if [ ! -f "$UX_ARTIFACTS/proceed" ]; then
+        echo "Nothing for this shard to run; see the precheck line above."
+        exit 0
+      fi
+      echo "umask $(umask); modes:" && stat -c '%a %U %n' "$CI_PROJECT_DIR" "$UX_ARTIFACTS" "$UX_HARNESS_DIR" "$UX_HARNESS_DIR/scripts" /opt/ux-runner
+      export UX_HARNESS_SHA="$(git get-tar-commit-id < /tmp/ux-harness.tar)"
+      python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" $UX_MODE_ARGS --artifact-dir "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-test-stories/
+    expire_in: 30 days
+
+ai_ux_test_stories_digest:
+  stage: ux_nightly
+  interruptible: false
+  timeout: 20m
+  allow_failure: true
+  rules: *ux_story_nightly_rules
+  # The one job UX_TEST_STORIES_SLACK_WEBHOOK_URL is scoped to. `prepare` records
+  # no deployment: the environment exists only to scope that variable.
+  environment:
+    name: ux-stories-digest
+    action: prepare
+  # Every shard, whatever it ended with: on the schedule the rule is
+  # `when: always`.
+  needs:
+    - job: ai_ux_test_stories_nightly
+      artifacts: true
+  variables:
+    UX_HARNESS_DIR: "/tmp/ux-harness"
+    UX_HARNESS: *ux_story_harness
+    UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
+    UX_ARTIFACTS: "ux-test-stories-digest"
+  # The digest runs no model and no browser and installs nothing, so it takes
+  # three of &ux_confined_setup's steps, as written there, rather than the
+  # anchor, whose last two are the story precheck and the toolchain install: the
+  # umask, the extraction from the target branch that fails closed, and a fresh
+  # output directory. git is in the job image. Between them runs the half of the
+  # pin the precheck gives the other two jobs: the entry's own check, from the
+  # extracted harness, that UX_HARNESS and UX_ENTRY name exactly its
+  # HARNESS_PATHS and path.
+  before_script:
+    - umask 022
+    - |
+      TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
+      git fetch -q origin "refs/heads/$TARGET"
+      rm -rf "$UX_HARNESS_DIR" && mkdir -p "$UX_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/ux-harness.tar FETCH_HEAD -- $UX_HARNESS && tar -xf /tmp/ux-harness.tar -C "$UX_HARNESS_DIR" && chmod -R go-w "$UX_HARNESS_DIR"; then
+        echo "UX harness pinned to origin/$TARGET in $UX_HARNESS_DIR: $UX_HARNESS"
+      else
+        echo "❌ Could not pin the UX harness to origin/$TARGET — it does not carry"
+        echo "   all of: $UX_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the harness, its tool lists and its egress allowlist the MR's own."
+        echo "   Expected only on the MR that adds the UX test."
+        exit 1
+      fi
+    - |
+      python3 -I -B - "$UX_HARNESS_DIR" <<'PY'
+      import os
+      import sys
+
+      sys.path.insert(0, os.path.join(sys.argv[1], "scripts", "sdlc"))
+      import ai_ux_test_stories as entry
+
+      problem = entry.paths.harness_pin_problem(
+          os.environ, harness_paths=entry.HARNESS_PATHS, entry=entry.ENTRY
+      )
+      print(f"FAILED: {problem}" if problem else f"UX harness pin checked for {entry.ENTRY}")
+      sys.exit(1 if problem else 0)
+      PY
+    - rm -rf "${UX_ARTIFACTS%%/*}" && mkdir -p "$UX_ARTIFACTS"
+  script:
+    # The shards merged; on the schedule, compared with the earlier scheduled
+    # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and,
+    # with UX_TEST_STORIES_SLACK_WEBHOOK_URL set, the one-line summary posted to
+    # Slack. digest.md says when no earlier night was read.
+    - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" --digest ux-test-stories --out "$UX_ARTIFACTS"
+  artifacts:
+    when: always
+    paths:
+      - ux-test-stories-digest/
+    expire_in: 30 days

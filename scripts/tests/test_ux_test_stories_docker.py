@@ -11,9 +11,9 @@ test can say where a value went and what each container was told:
    review container's names, CI's two and the git view; the pair browser no AWS
    session at all; posting's names only with ``--post``.
 2. **Each mode calls the orchestrator as its parser reads it**: the selection, the
-   artifact directory, ``--post`` only to post, ``--judge --audit`` and
-   ``--collect-only`` on the host, every one of them read by the orchestrator's
-   own ``parse_args``; and no option the runner
+   artifact directory, ``--post`` only to post, ``--shard i/n`` per container and
+   ``--merge``, ``--judge --audit`` and ``--collect-only`` on the host, every one
+   of them read by the orchestrator's own ``parse_args``; and no option the runner
    sets itself, nor ``--dev-unconfined``, is ever passed through.
 3. **The pair session is confined and starts outside the checkout**: its MCP
    configuration holds one server reached through ``docker exec -i ... env -i``,
@@ -38,6 +38,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -202,6 +203,7 @@ class FakeHost:
     review_exit: int = 0
     worktree: bool = False
     dirty: bool = False
+    memory: int = 16 * 1024**3
     pair_reply: dict[str, Any] | None = None
     holders: tuple[str, ...] = ("refs/remotes/origin/develop",)
     results: dict[str, Any] = field(
@@ -259,6 +261,10 @@ class FakeHost:
                     },
                 }
                 Path(_after(argv, "--inputs")).write_text(json.dumps(record))
+            elif "--merge" in argv:
+                out = Path(_after(argv, "--out"))
+                out.mkdir(parents=True)
+                (out / rid.STORY_RESULTS_FILE).write_text(json.dumps(self.results))
             elif "--judge" in argv:
                 (Path(_after(argv, "--judge")) / rid.STORY_RESULTS_FILE).write_text(
                     json.dumps(self.results)
@@ -299,6 +305,8 @@ class FakeHost:
         verb = argv[1]
         if verb == "image":
             return self._done(argv, 0)
+        if verb == "info":
+            return self._done(argv, 0, f"{self.memory}\n")
         if verb in ("build", "stop"):
             return self._done(argv, 0)
         if verb == "exec":
@@ -411,6 +419,8 @@ class FakeProcess:
 
 @dataclass
 class FakePopen:
+    lines: dict[str, list[str]] = field(default_factory=dict)
+    codes: dict[str, int] = field(default_factory=dict)
     hang: bool = False
     started: list[tuple[list[str], dict[str, Any]]] = field(default_factory=list)
     processes: list[FakeProcess] = field(default_factory=list)
@@ -418,7 +428,10 @@ class FakePopen:
     def __call__(self, argv: list[str], **kwargs: Any) -> FakeProcess:
         argv = [str(part) for part in argv]
         self.started.append((argv, kwargs))
-        process = FakeProcess(argv, [], 0, self.hang)
+        shard = next((a for a in argv if re.fullmatch(r"\d+/\d+", a)), "")
+        process = FakeProcess(
+            argv, self.lines.get(shard, []), self.codes.get(shard, 0), self.hang
+        )
         self.processes.append(process)
         return process
 
@@ -507,6 +520,8 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
         "--story",
         "--as",
         "--mr",
+        "--all",
+        "--jobs",
         "--video",
         "--post",
         "--interactive",
@@ -525,6 +540,7 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
     ("argv", "reason"),
     [
         (["--as", "new-analyst"], "--as needs --story"),
+        (["--mr", "812", "--jobs", "2"], "never an MR's"),
         (["--story", "find-where-to-start", "--post"], "needs --mr"),
         (["--mr", "812", "--build-dir", "/x"], "builds the MR's own UI"),
         (["--story", "find-where-to-start", "--port", "9333"], "does not apply"),
@@ -534,8 +550,12 @@ def test_every_option_the_skills_give_a_windows_form_for_is_a_stories_option() -
         (["--pair", "--story", "x", "--docs", "y"], "unrecognized arguments"),
         (["--list", "--story", "x"], "does not apply"),
         (["--story", "Not A Story"], "is not a story id"),
+        (["--all", "--jobs", "0"], "container count"),
+        (["--all", "--video", "every frame"], "video policy"),
         ([], "takes one of --story"),
+        (["--story", "a", "--all"], "takes one of --story"),
         (["--pair-keychain", "--story", "a"], "does not apply"),
+        (["--all", "--name", "my-browser"], "--name does not apply"),
         (
             ["--story", "a", "--interactive", "--run-usd", "0.01"],
             "--run-usd does not apply to --interactive",
@@ -560,6 +580,7 @@ def test_story_mode_refuses_options_the_chosen_mode_does_not_read(
     [
         (["--story", "a"], "run"),
         (["--story", "a", "--as", "b", "--docs", "abc"], "run"),
+        (["--all", "--jobs", "3", "--video", "never"], "run"),
         (["--mr", "812", "--post"], "run"),
         (["--story", "a", "--interactive", "--port", "9333"], "watch"),
         (["--pair", "--story", "a", "--pair-full"], "pair"),
@@ -585,6 +606,7 @@ def test_story_mode_names_the_mode_and_passes_unknown_options_through(
         ["--artifact-dir=/run/elsewhere"],
         ["--repo-dir", "/"],
         ["--inputs", "/out/other.json"],
+        ["--shard", "1/2"],
         ["--precheck"],
         ["--judge", "/out"],
     ],
@@ -600,8 +622,8 @@ def test_story_mode_names_the_mode_and_passes_unknown_options_through(
 def test_no_story_mode_passes_an_option_the_runner_sets_or_must_never_pass(
     selection: list[str], passed: list[str]
 ) -> None:
-    """The orchestrator reads the last of a repeated option, so a run directory or
-    checkout passed through would replace the runner's; and
+    """The orchestrator reads the last of a repeated option, so a run directory,
+    checkout or shard passed through would replace the runner's; and
     ``--dev-unconfined`` drops the confinement a story container is, CI or not."""
     args, _ = rid.parse_args(["stories", *selection, *passed])
     with pytest.raises(rid.DockerRunError) as refused:
@@ -723,7 +745,7 @@ def test_one_flow_runs_in_one_review_container_with_the_orchestrators_options(
 @pytest.mark.unit
 def test_a_story_container_receives_every_value_by_name_only(host: FakeHost) -> None:
     environ = _environ(CI="true", GITLAB_CI="true")
-    _stories(host, "--story", "find-where-to-start", environ=environ)
+    _stories(host, "--all", environ=environ)
     (review,) = host.review_containers()
     names = _names(review.argv)
     variables = rid.git_variables(HEAD)
@@ -743,7 +765,7 @@ def test_a_story_container_receives_every_value_by_name_only(host: FakeHost) -> 
 @pytest.mark.unit
 def test_a_dirty_harness_is_labelled_dirty_for_the_orchestrator(host: FakeHost) -> None:
     host.dirty = True
-    _stories(host, "--story", "find-where-to-start")
+    _stories(host, "--all")
     (review,) = host.review_containers()
     assert review.env is not None
     assert review.env["UX_HARNESS_SHA"] == f"{HEAD}+dirty"
@@ -836,6 +858,64 @@ def test_an_mr_that_leaves_src_ui_alone_builds_nothing(host: FakeHost) -> None:
     assert not [c for c in host.docker_calls("run") if "bash" in c.argv]
     (review,) = host.review_containers()
     assert "--build-dir" not in review.argv
+
+
+@pytest.mark.unit
+def test_jobs_shard_the_run_across_containers_and_merge_them_on_the_host(
+    host: FakeHost, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host.memory = 4 * 1024**3
+    popen = FakePopen(
+        lines={
+            "1/3": ["starting", "FAILED: a flow could not sign in"],
+            "2/3": ["SKIPPED: no flow in this shard"],
+            "3/3": ["WARNING: claude runs on the ambient session"],
+        },
+        codes={"2/3": 3},
+    )
+    assert _stories(host, "--all", "--jobs", "3", popen=popen) == 3
+    commands = [argv for argv, _ in popen.started]
+    assert [_after(c, "--shard") for c in commands] == ["1/3", "2/3", "3/3"]
+    assert [_after(c, "--artifact-dir") for c in commands] == [
+        f"/out/{rid.STORY_SHARDS}/shard-{index}" for index in (1, 2, 3)
+    ]
+    printed = capsys.readouterr().out.splitlines()
+    assert "FAILED: shard 1/3: a flow could not sign in" in printed
+    assert "SKIPPED: shard 2/3: no flow in this shard" in printed
+    assert "WARNING: shard 3/3: claude runs on the ambient session" in printed
+    assert "[shard 1/3] starting" in printed
+    assert any(line.startswith("WARNING: --jobs 3 is more than") for line in printed)
+    (merge,) = host.host_scripts(rid.STORIES_ENTRY)
+    out = _run_dir(host)
+    assert merge.argv[3:] == [
+        "--merge",
+        *[str(out / rid.STORY_SHARDS / f"shard-{i}") for i in (1, 2, 3)],
+        "--out",
+        str(out / rid.STORY_ARTIFACTS),
+    ]
+    assert printed[-1].startswith("flow find-where-to-start@new-analyst: done")
+
+
+@pytest.mark.unit
+def test_run_shards_stops_every_container_when_one_is_interrupted() -> None:
+    class Interrupted(FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is None:
+                raise KeyboardInterrupt
+            return super().wait(timeout)
+
+    started: list[FakeProcess] = []
+
+    def popen(argv: list[str], **kwargs: Any) -> FakeProcess:
+        process = Interrupted(argv, [], 0, False)
+        started.append(process)
+        return process
+
+    with pytest.raises(KeyboardInterrupt):
+        rid.run_shards(
+            [("a", ["x"]), ("b", ["y"])], env={}, popen=popen, echo=lambda s: None
+        )
+    assert [process.terminated for process in started] == [True, True]
 
 
 # --------------------------------------------------------------------------- #
@@ -1631,7 +1711,9 @@ def _orchestrator_calls(host: FakeHost, popen: FakePopen) -> list[list[str]]:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mode", ["one-flow", "mr", "mr-post", "watch", "replay"])
+@pytest.mark.parametrize(
+    "mode", ["one-flow", "mr", "mr-post", "shards", "watch", "replay"]
+)
 def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
     mode: str, host: FakeHost, tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
@@ -1647,6 +1729,7 @@ def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
         + ["--docs", "e5" * 20, "--reruns", "0"],
         "mr": ["--mr", "812"],
         "mr-post": ["--mr", "812", "--post"],
+        "shards": ["--all", "--jobs", "2", "--video", "never"],
         "watch": ["--story", "find-where-to-start", "--interactive"],
         "replay": ["--replay", str(source), "--reruns", "0"],
     }[mode]
@@ -1663,7 +1746,7 @@ def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
     for args in inside:
         assert args.stack == rid.DEFAULT_STACK
         assert str(args.repo_dir) == ("/source" if mode == "replay" else "/repo")
-        assert not args.dev_unconfined and args.judge is None
+        assert not args.dev_unconfined and args.judge is None and not args.merge
         assert args.post is (mode == "mr-post")
     if mode == "one-flow":
         (args,) = inside
@@ -1681,6 +1764,21 @@ def test_every_orchestrator_command_a_mode_runs_is_read_by_its_own_parser(
             "/out/inputs.json",
             "/out/build",
         )
+    elif mode == "shards":
+        assert [(args.all, args.shard, args.video) for args in inside] == [
+            (True, "1/2", "never"),
+            (True, "2/2", "never"),
+        ]
+        assert [str(args.artifact_dir) for args in inside] == [
+            f"/out/{rid.STORY_SHARDS}/shard-1",
+            f"/out/{rid.STORY_SHARDS}/shard-2",
+        ]
+        (merge,) = on_host
+        out = _run_dir(host)
+        assert merge.merge == [
+            str(out / rid.STORY_SHARDS / f"shard-{index}") for index in (1, 2)
+        ]
+        assert Path(merge.out) == out / rid.STORY_ARTIFACTS
     elif mode == "watch":
         (args,) = inside
         assert args.interactive and args.story == "find-where-to-start"
@@ -1835,6 +1933,33 @@ def test_the_runner_imports_nothing_but_the_standard_library() -> None:
     assert not [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.level]
 
 
+@pytest.mark.unit
+def test_a_shard_line_keeps_the_harness_word_first() -> None:
+    assert rid._tagged("FAILED: x", "shard 1/2") == "FAILED: shard 1/2: x"
+    assert rid._tagged("flow a@b: done", "shard 1/2") == "[shard 1/2] flow a@b: done"
+
+
+@pytest.mark.unit
+def test_concurrent_relays_never_interleave_inside_a_line() -> None:
+    lines = [f"line {n}" for n in range(200)]
+    seen: list[str] = []
+    lock = threading.Lock()
+
+    def echo(text: str) -> None:
+        with lock:
+            seen.append(text)
+
+    def popen(argv: list[str], **kwargs: Any) -> FakeProcess:
+        return FakeProcess(argv, lines, 0, False)
+
+    assert rid.run_shards(
+        [("a", ["x"]), ("b", ["y"])], env={}, popen=popen, echo=echo
+    ) == [0, 0]
+    assert sorted(seen) == sorted(
+        [f"[a] {line}" for line in lines] + [f"[b] {line}" for line in lines]
+    )
+
+
 # --------------------------------------------------------------------------- #
 # the ways a step fails
 # --------------------------------------------------------------------------- #
@@ -1941,6 +2066,17 @@ def test_a_ui_file_moved_out_of_src_ui_still_counts_as_a_ui_change(
 
 
 @pytest.mark.unit
+def test_dockers_memory_unread_is_said_rather_than_guessed() -> None:
+    def failing(argv: list[str], **kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    assert rid.docker_memory("docker", run=failing) is None
+    (line,) = rid._memory_lines(None, 2)
+    assert line.startswith("WARNING:") and "4 GiB" in line
+    assert len(rid._memory_lines(64 * 1024**3, 2)) == 1
+
+
+@pytest.mark.unit
 def test_a_host_with_no_uid_hands_nothing_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1976,6 +2112,45 @@ def test_a_probe_that_never_landed_leaves_the_server_as_root(tmp_path: Path) -> 
 
 
 @pytest.mark.unit
+def test_a_container_that_ignores_its_stop_is_killed() -> None:
+    class Stubborn(FakeProcess):
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is None:
+                raise KeyboardInterrupt
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+
+    started: list[Stubborn] = []
+
+    def popen(argv: list[str], **kwargs: Any) -> Stubborn:
+        process = Stubborn(argv, [], 0, False)
+        started.append(process)
+        return process
+
+    killed: list[str] = []
+    with pytest.raises(KeyboardInterrupt):
+        rid.run_shards(
+            [("a", ["x"])],
+            env={},
+            popen=popen,
+            echo=lambda s: None,
+            containers=["ux-stories-run-1"],
+            kill=killed.append,
+        )
+    assert started[0].killed
+    assert killed == ["ux-stories-run-1"]
+
+
+@pytest.mark.unit
+def test_every_shard_container_is_named_for_its_run(tmp_path: Path) -> None:
+    names = rid.shard_containers(tmp_path / "20261021T044915Z-route@platform admin", 3)
+    assert names == [
+        f"ux-stories-20261021T044915Z-route-platform-admin-{i}" for i in (1, 2, 3)
+    ]
+    assert all(rid.CONTAINER_NAME_RE.match(name) for name in names)
+    assert rid.shard_containers(tmp_path / "@@@", 1) == ["ux-stories-run-1"]
+
+
+@pytest.mark.unit
 def test_unreadable_results_are_a_warning_not_a_crash(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1989,7 +2164,7 @@ def test_the_ui_envs_web_url_line_saves_a_stack_lookup(host: FakeHost) -> None:
     environ = _environ(
         UX_TEST_UI_ENV=_b64(STACK_ENV_FILE + "UX_TEST_WEB_URL=https://ui.example/\n")
     )
-    _stories(host, "--story", "find-where-to-start", environ=environ)
+    _stories(host, "--all", environ=environ)
     (review,) = host.review_containers()
     assert _after(review.argv, "--web-url") == "https://ui.example/"
     assert not [c for c in host.calls if "describe-stacks" in c.argv]

@@ -138,8 +138,9 @@ What it does NOT protect, stated rather than implied
   itself; pinning the harness protects against edits to the harness files and
   nothing more. ``UX_TEST_PERSONAS`` is scoped to the environment ``ux-review``,
   so it reaches only a job that declares that environment, and this repository's
-  pipeline definition limits that to this one and the first-time-user story job
-  that drives the browser, ``ai_ux_test_stories``. ``UX_TEST_UI_ENV`` is stored at
+  pipeline definition limits that to this one and the two first-time-user story
+  jobs that drive the browser, ``ai_ux_test_stories`` and
+  ``ai_ux_test_stories_nightly``. ``UX_TEST_UI_ENV`` is stored at
   ``ux-review-build`` as well, the environment of ``ux_test_build``, which runs
   the MR's ``npm ci`` and needs the UI environment alone. An MR's own copy of the
   definition, which is what its pipeline runs, can declare either environment on
@@ -219,8 +220,8 @@ Usage
 Environment
 -----------
 In CI the three ``UX_TEST_*`` variables are masked, unprotected and scoped to the
-environment ``ux-review``, which this job declares with ``action: prepare``, as
-does the first-time-user story job that drives the browser, and no other job.
+environment ``ux-review``, which this job declares with ``action: prepare``, as do
+the first-time-user story jobs that drive the browser and no other job.
 ``ux_test_build`` declares ``ux-review-build``, at which a second copy of
 ``UX_TEST_UI_ENV`` alone is stored, so the job that builds the MR's UI never holds
 the persona's password. A variable left at the default scope reaches every job of

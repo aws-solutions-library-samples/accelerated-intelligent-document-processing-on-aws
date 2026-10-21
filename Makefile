@@ -1695,8 +1695,8 @@ ai-ux-test-stories-search: ## What a first-time user finds in the published docs
 
 # First-time-user stories in the Docker runner (scripts/ux_runner/run_in_docker.py
 # stories). ai-ux-test-stories-local is a dry run unless POST=1, which posts an MR
-# run's reply against idp-ux-nightly only: STORY=<id> [AS=<persona>] or MR=<iid>.
-# INTERACTIVE=1 watches one flow live from a terminal of your own
+# run's reply against idp-ux-nightly only: STORY=<id> [AS=<persona>], MR=<iid> or
+# ALL=1 [JOBS=n]. INTERACTIVE=1 watches one flow live from a terminal of your own
 # (PORT= when 9222 is taken), and REPLAY=<dir> re-runs a run from its own harness
 # commit. ai-ux-test-stories-pair starts the confined browser and prints the command
 # for a Claude session you start; PAIR=full opts into your whole session and
@@ -1708,9 +1708,10 @@ ai-ux-test-stories-search: ## What a first-time user finds in the published docs
 # default), so it is read only when it is set on the command line.
 .PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge
 
-ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run unless POST=1 (STORY=<id> [AS=] | MR=<iid>; INTERACTIVE=1 [PORT=]; REPLAY=<dir>)
+ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run unless POST=1 (STORY=<id> [AS=] | MR=<iid> | ALL=1 [JOBS=n]; INTERACTIVE=1 [PORT=]; REPLAY=<dir>)
 	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories \
 		$(if $(STORY),--story $(STORY)) $(if $(filter command line,$(origin AS)),--as $(AS)) $(if $(MR),--mr $(MR)) \
+		$(if $(filter 1 true yes y on,$(ALL)),--all) $(if $(JOBS),--jobs $(JOBS)) \
 		$(if $(VIDEO),--video $(VIDEO)) $(if $(filter 1 true yes y on,$(POST)),--post) \
 		$(if $(filter 1 true yes y on,$(INTERACTIVE)),--interactive) \
 		$(if $(PORT),--port $(PORT)) $(if $(REPLAY),--replay "$$REPLAY") \

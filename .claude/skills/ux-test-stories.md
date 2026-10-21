@@ -36,7 +36,7 @@ consent, from a teammate's prototype; no code was copied.
 | Mode | Who plays the user | Isolation | Bounds | Comparable to CI | Posted |
 |---|---|---|---|---|---|
 | **Unattended** | the pinned `claude -p` in the review container, through CI's whole lifecycle | the same as CI | per flow (steps, dollars, minutes) and per run (dollars) | yes | only with `POST=1`, and only against `idp-ux-nightly` |
-| **Watch** | the pinned Claude TUI in the browser container, with CI's story tools, through the relay | CI's tools; you may type | the step budget, the look, image and refusal caps, a wall clock the host enforces, and you. No dollar cap: the cost is computed at exit from the session's usage at the pinned rates | yes, unless you typed after the opening message, which labels the run `assisted`. Driving the page from `chrome://inspect` is not detected | never |
+| **Watch** | the pinned Claude TUI in the browser container, with CI's story tools, through the relay | CI's tools; you may type | the step budget, the look, image and refusal caps, a wall clock the host enforces, and you. No dollar cap: the cost is computed at exit from the session's usage at the pinned rates | yes, unless you typed after the opening message, which labels the run `assisted`. Driving the page from `chrome://inspect` is not detected, so a watched run never enters the nightly history | never |
 | **Pair** | a new `claude` session you start with the command the target prints | confined by default: started outside the checkout with `--bare`, `--strict-mcp-config`, `--tools=` and the story tools only. `PAIR=keychain` keeps a keychain sign-in, and `PAIR=full` opts into your whole session | you, plus the relay's caps | never; labelled `pair` | never |
 
 Unattended runs start from this session or a terminal. Watch and pair need a
@@ -170,6 +170,8 @@ assume itself. `UX_TEST_UI_ENV` is derived on the host from the stack's
 make ai-ux-test-stories-local STORY=route-folder-to-profile AS=platform-admin   # one flow
 make ai-ux-test-stories-local STORY=find-extraction-model                        # every persona in its `as`
 make ai-ux-test-stories-local MR=812                                             # what the MR job would select
+make ai-ux-test-stories-local ALL=1 JOBS=3                                       # the nightly set, 3 containers
+make ai-ux-test-stories-local ALL=1 STACK=<your-stack>                           # your own stack, whose video is withheld
 ```
 
 **Windows:**
@@ -177,11 +179,13 @@ make ai-ux-test-stories-local MR=812                                            
 ```powershell
 py scripts\ux_runner\run_in_docker.py stories --story route-folder-to-profile --as platform-admin
 py scripts\ux_runner\run_in_docker.py stories --mr 812
+py scripts\ux_runner\run_in_docker.py stories --all --jobs 3
 ```
 
 The make variables are the options of the Windows form: `STORY=` is `--story`,
-`AS=` is `--as`, `MR=` is `--mr`, `VIDEO=` is `--video`, `POST=1` is `--post`,
-`STACK=` is `--stack` and `WEB_URL=` is `--web-url`. `DOCS=`, `RUN_USD=` and `RERUNS=` are the orchestrator's `--docs`,
+`AS=` is `--as`, `MR=` is `--mr`, `ALL=1` is `--all`, `JOBS=` is `--jobs`,
+`VIDEO=` is `--video`, `POST=1` is `--post`, `STACK=` is `--stack` and `WEB_URL=`
+is `--web-url`. `DOCS=`, `RUN_USD=` and `RERUNS=` are the orchestrator's `--docs`,
 `--run-usd` and `--reruns`, which the Windows form passes through to it.
 
 **What a run does.** It is a dry run unless `POST=1`, which also needs
@@ -221,9 +225,14 @@ The terminal ends with one line per flow, the verdict, the steps used against th
 budget and the hesitations, and then the run's cost, counted and at the pinned
 rates, which the orchestrator's own final status line ends with as well.
 
-**Caps.** A run's dollar cap is its flow count times `flow_usd` from the
-catalogue's `[limits]`, unless `RUN_USD=` sets one, so a local run is not cut short
-by CI's per-job cap.
+**Caps and parallel runs.** Each container's dollar cap is its flow count times
+`flow_usd` from the catalogue's `[limits]`, unless `RUN_USD=` sets one, so a local
+run is not cut short by CI's per-job cap. `JOBS=n` runs n containers, each with its
+own network namespace, and merges their results. Each holds a Chrome, a Claude
+session and its recordings in memory: allow about 2 GB of Docker memory per
+container. The target prints Docker's memory limit and warns when `JOBS` exceeds
+it; a Mac's Docker Desktop default is often a few GB (Settings → Resources), and a
+devbox usually fits more. Too little memory shows up as timeouts, not as an error.
 
 ## Watch a confined run live
 
@@ -399,7 +408,8 @@ puts the MR UX test's outcome icons before each label, and the words "blocked" a
 
 ## Reproducing a CI result
 
-- **Exactly.** Download the job's `ux-test-stories/` artifact, then
+- **Exactly.** Download the job's `ux-test-stories/` artifact (a nightly shard's is
+  `ux-test-stories/shard-<i>/`), then
   `make ai-ux-test-stories-judge RUN=<that dir> CHECK=1`. It recomputes the
   verdicts, `results.json` and `section.md` from the journals and `story-run.json`,
   writes nothing, and for each file that differs prints `different`, the file and
@@ -418,7 +428,7 @@ puts the MR UX test's outcome icons before each label, and the words "blocked" a
   develop` and replay again. Never check out a commit a run names just to make
   its replay pass.
 
-## On merge requests
+## On merge requests and at night
 
 The `ai_ux_test_stories` job runs on a non-Draft MR to `develop` that changes
 `CHANGELOG.md`. It scores each catalogue story against the MR's added CHANGELOG
@@ -427,9 +437,17 @@ the MR changes `src/ui`, and otherwise the deployed UI with the MR head's docs; 
 that changes neither stops at the precheck in about a minute. It replies once in the
 code-review note's thread, an MR gets at most `mr_runs` runs, counted from the logs
 of its earlier story jobs whether they posted or not, and past that one reply points at
-`make ai-ux-test-stories-local MR=<iid>`. `UX_TEST_STORIES` set to `mr` keeps it, and
-any other value, `off` among them, turns it off. The job is `allow_failure` and not a
-gate.
+`make ai-ux-test-stories-local MR=<iid>`. The `ai_ux_test_stories_nightly`
+shards run the nightly set against `idp-ux-nightly` after the deploy, and
+`ai_ux_test_stories_digest` writes a digest and, in the scheduled pipeline, compares the
+night with the scheduled nights before it and posts a one-line summary to Slack when
+`UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set. A bad result counts as a regression when a
+second attempt confirms it; one whose confirming re-run did not fit in the night's
+budget or time is listed too, marked unconfirmed in the digest and on Slack, and the
+record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
+`nightly` keeps only that kind, and any other value, `off` among them, turns all three
+off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly
+set. Every job is `allow_failure` and none is a gate.
 
 ## Writing a story
 
@@ -512,11 +530,12 @@ is selected at 2 CHANGELOG points, so links to its pages alone never select it:
 several stories declare each long page, and a page link needs a section, a term or
 an issue beside it. An edited declared docs section and a changed
 `ui_paths` file add a point each, and never select a story on their own. A story an
-MR adds runs locally, never in that MR's own pipeline, because the harness and its
-catalogue come from `develop`. Stories are never generated from MR text.
+MR adds runs locally and in the nightly after the merge, never in that MR's own
+pipeline, because the harness and its catalogue come from `develop`. Stories are
+never generated from MR text.
 
-**What starts a new series.** Runs of a flow are like for like only within one
-series, so a new series starts with no earlier run to compare with. A story's
+**What starts a new series.** Night-to-night comparison is per series, and a new
+series has to build a fresh baseline before a regression can be flagged. A story's
 series changes with its id, title, intent, kind, `documented_steps`, `as`, `needs`,
 `first_visit`, its personas' groups and backgrounds, the `[limits]` table, the
 model, the effort, the prompt, judgement and relay revisions, the pinned
@@ -587,8 +606,8 @@ not redacted. Its operator, not a story run, does these once:
 1. **Personas.** Long-lived Admin, Author and Viewer personas, created with
    `scripts/ux_test_session.py setup idp-ux-nightly --group <group> --long-lived --region us-east-1`
    and merged into the masked CI variable `UX_TEST_PERSONAS`, which is stored at
-   environment scope `ux-review`. The story run job declares that environment, as
-   `ai_ux_test` does, and receives nothing stored at another scope.
+   environment scope `ux-review`. The story run jobs declare that environment, as
+   `ai_ux_test` does, and receive nothing stored at another scope.
 2. **The web URL.** A `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line in the
    masked CI variable `UX_TEST_UI_ENV`, in both of its copies, at `ux-review` and at
    `ux-review-build`, which hold the same value; the story jobs read the first.
@@ -605,7 +624,8 @@ not redacted. Its operator, not a story run, does these once:
 | `feature-platform` | the platform is on by default; install **Sample: Health Insurance Review** from **Extensions → Browse catalog**. Its pipeline hook is what `change-hook-update-setting` looks for, and installing it never changes the active configuration | the two extension stories |
 
 A flow that finds its fixture missing reports a precondition and is judged
-`not_run (precondition)`.
+`not_run (precondition)`, and the nightly digest's Harness health section names each
+missing fixture.
 
 ## The brief
 
@@ -680,6 +700,9 @@ Finish with exactly one report, report_done or report_blocked, once what is on s
   builds.
 - **Don't retry a refused sign-in by hand.** A run never retries one: its first
   refused sign-in for a group marks that group's remaining flows `not_run`, because
-  repeated failures lock the account out. After `--rotate`, or any change to
-  `UX_TEST_PERSONAS`, run one story per group first.
+  repeated failures lock the account out. That holds within one process. Each
+  `JOBS=` container and each nightly shard signs in on its own, so a stale password
+  costs one refused attempt per container for each group it runs, close together.
+  After `--rotate`, or any change to `UX_TEST_PERSONAS`, run one story per group
+  before a fan-out.
 - **Don't add a story for a CHANGELOG line nobody does in the web UI.**

@@ -16,6 +16,10 @@ Modes
 -----
 ``--story ID [--as PERSONA]``
     One story's flows. ``make ai-ux-test-stories-local`` runs this in Docker.
+``--all [--tier p0|p1|all] [--shard i/n]``
+    The nightly set, or one shard of it. Under GitLab CI it is the nightly
+    shard, which re-runs a flow that gave up or ran out of steps at twice its
+    budget; anywhere else it is a local run of the same flows.
 ``--mr IID``
     The flows the merge request's added CHANGELOG entries select
     (``ux_runner.changelog_select``), against the MR's UI build when it changes
@@ -32,6 +36,9 @@ Modes
     Re-judge a run from ``story-run.json`` and its journals: ``results.json`` and
     ``section.md``, byte for byte what the run wrote. Standard library only, so it
     runs on any host.
+``--merge DIR... --out DIR`` and ``--digest DIR --out DIR``
+    Several shards' runs as one, and the nightly digest over them, compared with
+    the earlier scheduled nights' digests.
 ``--precheck``
     The CI job's decision on a bare ``python3``, before the toolchain is
     installed: ``precheck.json`` and, when the run should go ahead, ``proceed``.
@@ -86,7 +93,10 @@ Properties it is built around
    ``section.md`` is what would have been posted.
 7. **A sign-in is never retried.** The first refused sign-in for a Cognito group
    marks the remaining flows of that group ``not_run (sign_in_refused)``, because
-   every flow signs in afresh and repeated failures lock the account out.
+   every flow signs in afresh and repeated failures lock the account out. That
+   bound is per process: each ``--jobs`` container and each nightly shard signs in
+   on its own, so a stale password is tried once by each of them that runs the
+   group.
 
 What it does NOT protect, stated rather than implied
 ----------------------------------------------------
@@ -129,7 +139,11 @@ Environment
     names the deployed stack's web URL when ``--web-url`` does not.
 ``GITLAB_REVIEW_TOKEN``, ``CI_API_V4_URL``, ``CI_PROJECT_ID``
     A merge request run's API access: to read the MR and its notes, and with
-    ``--post`` to reply.
+    ``--post`` to reply. A scheduled ``--digest`` uses the same token only to
+    read: develop's earlier scheduled pipelines and each one's ``digest.json``.
+``UX_TEST_STORIES_SLACK_WEBHOOK_URL``
+    Optional. A scheduled ``--digest`` posts its one-line summary to this Slack
+    Workflow Builder webhook; without it nothing is posted and nothing is said.
 ``ANTHROPIC_MODEL``, ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
     The Bedrock model id and the region of Bedrock, STS and Polly.
 ``UX_HARNESS``, ``UX_ENTRY``
@@ -139,10 +153,12 @@ Environment
     The harness commit, for a harness tree with no git of its own (a CI job's
     ``git archive`` extraction); 40 hex digits, optionally ``+dirty``.
 ``CI_JOB_STARTED_AT``, ``CI_COMMIT_SHA``, ``CI_MERGE_REQUEST_SOURCE_BRANCH_SHA``,
-``CI_PIPELINE_ID``, ``CI``, ``GITLAB_CI``
+``CI_PIPELINE_ID``, ``CI_PIPELINE_SOURCE``, ``CI_JOB_URL``, ``CI``, ``GITLAB_CI``
     Supplied by GitLab CI: the deadline counts from the job's start, a newer MR
-    head stands this pipeline down, and ``--dev-unconfined`` is refused where
-    ``CI`` or ``GITLAB_CI`` is set.
+    head stands this pipeline down, ``--all`` is the nightly shard where ``CI``
+    or ``GITLAB_CI`` is set, and ``--dev-unconfined`` is refused there. A digest
+    reads its history and posts to Slack only where ``CI_PIPELINE_SOURCE`` is
+    ``schedule``, leaves its own pipeline out of the history, and links its job.
 """
 
 from __future__ import annotations
@@ -163,6 +179,8 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -197,6 +215,7 @@ from ux_runner import (  # noqa: E402
     session,
     signin,
     stories,
+    story_digest,
     story_inputs,
     story_prompt,
     story_relay,
@@ -269,16 +288,17 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         "cache_write": 6.25e-6,
     },
 }
-#: Set by GitLab CI in every job. Where either is set, ``--dev-unconfined`` is
-#: refused.
+#: Set by GitLab CI in every job. Where either is set, ``--all`` is the nightly
+#: shard rather than a local run.
 CI_VARIABLES = ("CI", "GITLAB_CI")
 #: The ``UX_TEST_UI_ENV`` line that names the deployed stack's web URL, which the
 #: stack's ``WebUITestEnvFile`` output does not carry.
 WEB_URL_KEY = "UX_TEST_WEB_URL"
 INPUTS_SCHEMA = story_inputs.INPUTS_SCHEMA
 INPUTS_VERSION = story_inputs.INPUTS_VERSION
-#: Which flows a run renders a video of: those with a finding, every flow, or
-#: none. The review-stack check applies to each whatever this says.
+#: Which flows a run renders a video of: those with a finding (and at night only
+#: confirmed bad ones), every flow, or none. The review-stack check applies to
+#: each whatever this says.
 VIDEO_POLICIES = ("findings", "all", "never")
 #: The most videos one run renders and one reply carries.
 MAX_VIDEOS = 2
@@ -287,6 +307,20 @@ DEFAULT_RUN_DIR_NAME = "ux-test-stories"
 #: whether they posted or not, and how long counting them may take.
 MR_JOB = "ai_ux_test_stories"
 RUNS_COUNT_SECONDS = 60.0
+#: The nightly digest's job and its ``--out`` directory: a later night reads
+#: :data:`DIGEST_ARTIFACT` back from that job's artifacts as its history.
+DIGEST_JOB = "ai_ux_test_stories_digest"
+DIGEST_DIR_NAME = "ux-test-stories-digest"
+DIGEST_ARTIFACT = f"{DIGEST_DIR_NAME}/digest.json"
+#: The branch whose scheduled pipelines are the nights a digest is compared with.
+HISTORY_REF = review.DEFAULT_TARGET_BRANCH
+#: How long reading the earlier nights may take; a night not reached by then is
+#: a gap in the history.
+HISTORY_SECONDS = 300.0
+#: The optional Slack Workflow Builder webhook a scheduled digest posts its
+#: summary to, and how long that post may take.
+SLACK_WEBHOOK_ENV = "UX_TEST_STORIES_SLACK_WEBHOOK_URL"
+SLACK_SECONDS = 30.0
 
 _DEFAULT_REGION = "us-east-1"
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -294,9 +328,12 @@ _HARNESS_SHA_RE = re.compile(r"[0-9a-f]{40}(?:\+dirty)?")
 _ACCOUNT_ID_RE = re.compile(r"[0-9]{12}")
 _PIPELINE_ID_RE = re.compile(r"[0-9]{1,18}")
 _PROCEEDED_RE = re.compile(rb"PROCEED: [0-9]+ flow\(s\) of [0-9]+ stor")
+_SHARD_RE = re.compile(r"([1-9][0-9]{0,2})/([1-9][0-9]{0,2})")
 _CFT_PIN_RE = re.compile(r'^CFT_VERSION="([0-9]+(?:\.[0-9]+){3})"$', re.M)
 _SCREEN_NAME_RE = re.compile(r"[0-9]{3,6}\.jpg")
 _SCREENS_DIR = "screens"
+#: What stops a flow that a re-run at twice the budget can get past.
+_EXTENDED_CAUSES = ("budget_exhausted", "max_turns", "dollar_cap")
 _RENDER_MIN_SECONDS = 300.0
 _RENDER_MAX_SECONDS = 1800.0
 _POLL_SECONDS = gitlab_api.POLL_SECONDS
@@ -306,6 +343,8 @@ _RECORD_MAX_BYTES = 8 * _MIB
 _SUMMARY_MAX_BYTES = 1 * _MIB
 _SCREEN_BYTES = story_relay.SCREEN_BYTES
 _STDERR_CHARS = 400
+_SLACK_ANSWER_BYTES = 4096
+_WEBHOOK_CHARS = 2048
 _RECORDER_CURRENT = "current.json"
 _RECORDER_STOP_SAY = "That ends the story."
 _NARRATION_OVERRIDE = "narration.md"
@@ -410,6 +449,11 @@ class Runtime:
     clock: Callable[[], float] = time.monotonic
     wall: Callable[[], float] = time.time
     environ: dict[str, str] = field(default_factory=lambda: dict(os.environ))
+    history: (
+        Callable[[argparse.Namespace, Mapping[str, str]], story_digest.History | None]
+        | None
+    ) = None
+    slack: Callable[[str, Mapping[str, str]], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -776,6 +820,172 @@ def _default_forge(args: argparse.Namespace, credential: str) -> gitlab_api.UxGi
     return gitlab_api.UxGitlab(args.api_url, args.project, credential)
 
 
+def _scheduled(environ: Mapping[str, str]) -> bool:
+    return environ.get("CI_PIPELINE_SOURCE", "").strip() == "schedule"
+
+
+def nightly_history(
+    args: argparse.Namespace,
+    environ: Mapping[str, str],
+    *,
+    forge: Callable[[argparse.Namespace, str], gitlab_api.UxGitlab] = _default_forge,
+    clock: Callable[[], float] = time.monotonic,
+) -> story_digest.History | None:
+    """The earlier scheduled nights a digest is compared with, or None.
+
+    Read only in a scheduled pipeline, with ``GITLAB_REVIEW_TOKEN`` and only by
+    GET requests (``gitlab_api.scheduled_digests``): :data:`HISTORY_REF`'s newest
+    scheduled pipelines but this one, and in each the :data:`DIGEST_JOB`'s
+    :data:`DIGEST_ARTIFACT`, read by job id up to ``story_digest.DIGEST_MAX_BYTES``
+    within :data:`HISTORY_SECONDS`. ``story_digest`` validates each one, so a night
+    that is missing or invalid is a gap. None when the nights cannot be listed. One
+    printed line says what was read or why nothing was, and nothing here fails the
+    digest.
+    """
+    scrub = artifacts.Scrub(artifacts.redactor_for(environ))
+    credential = environ.get(review.GITLAB.credential_env, "").strip()
+    if not _scheduled(environ):
+        reason = "this is not a scheduled pipeline"
+    elif not credential:
+        reason = f"{review.GITLAB.credential_env} is not set"
+    elif not args.api_url or not args.project:
+        reason = "the GitLab API URL or the project is not known"
+    else:
+        reason = ""
+    if reason:
+        _say(scrub, f"history: not read, because {reason}")
+        return None
+    try:
+        pairs = gitlab_api.scheduled_digests(
+            forge(args, credential),
+            ref=HISTORY_REF,
+            job=DIGEST_JOB,
+            artifact=DIGEST_ARTIFACT,
+            max_bytes=story_digest.DIGEST_MAX_BYTES,
+            deadline=clock() + HISTORY_SECONDS,
+            own_pipeline=_pipeline_id(environ),
+            clock=clock,
+        )
+    except (review.Skip, review.Failure) as error:
+        _say(scrub, f"history: not read: {error}")
+        return None
+    except Exception as error:
+        _say(scrub, f"history: not read: {_unexpected(scrub, error)}")
+        return None
+    history = story_digest.History.from_digests(
+        [
+            (pipeline_id, None if raw is None else story_digest.read_digest(raw))
+            for pipeline_id, raw in pairs
+        ]
+    )
+    _say(
+        scrub,
+        f"history: {len(history.nights)} earlier night(s), {len(history.gaps)} gap(s)",
+    )
+    return history
+
+
+class _RedirectRefused(urllib.request.HTTPRedirectHandler):
+    """A redirect answers a post as the error it is, and is never followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_SLACK_OPENER = urllib.request.build_opener(_RedirectRefused)
+
+
+def _usable_webhook(url: str) -> bool:
+    """Whether ``url`` is an https URL with a host and no user, password or fragment."""
+    if (
+        not url
+        or len(url) > _WEBHOOK_CHARS
+        or not url.isascii()
+        or not url.isprintable()
+        or " " in url
+    ):
+        return False
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and bool(parts.hostname)
+        and parts.username is None
+        and parts.password is None
+        and not parts.fragment
+        and port != 0
+    )
+
+
+def post_slack(
+    webhook: str,
+    payload: Mapping[str, str],
+    *,
+    timeout: float = SLACK_SECONDS,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> str:
+    """POST ``payload`` to a Slack workflow webhook, and say what happened.
+
+    Only a usable https URL is posted to, a redirect is an error rather than a
+    new target, at most :data:`_SLACK_ANSWER_BYTES` of the answer is read, and
+    nothing raises, because a notification never decides the digest's outcome.
+    The webhook is a bearer credential, so no outcome quotes it or anything an
+    error says about it.
+    """
+    if not _usable_webhook(webhook):
+        return f"not posted, because {SLACK_WEBHOOK_ENV} is not an https URL"
+    body = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+    try:
+        request = urllib.request.Request(
+            webhook,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with (opener or _SLACK_OPENER).open(request, timeout=timeout) as response:
+            response.read(_SLACK_ANSWER_BYTES)
+            status = response.status
+    except urllib.error.HTTPError as error:
+        with contextlib.suppress(Exception):
+            error.close()
+        return f"not posted: Slack answered {error.code}"
+    except Exception as error:
+        return f"not posted ({type(error).__name__})"
+    if 200 <= status < 300:
+        return f"posted ({status})"
+    return f"not posted: Slack answered {status}"
+
+
+def post_digest_summary(
+    digest: Mapping[str, Any], runtime: Runtime, scrub: artifacts.Scrub
+) -> None:
+    """The scheduled digest's one-line Slack summary, when a webhook is set.
+
+    ``story_digest.slack_payload`` builds it from closed values only, and
+    ``CI_JOB_URL`` is its link. Without :data:`SLACK_WEBHOOK_ENV` nothing is
+    posted or printed; outside a scheduled pipeline one line says it was not
+    posted; and whatever happens, the digest's own outcome does not change.
+    """
+    webhook = runtime.environ.get(SLACK_WEBHOOK_ENV, "").strip()
+    if not webhook or runtime.slack is None:
+        return
+    scrub.redactor.add(webhook)
+    if not _scheduled(runtime.environ):
+        _say(scrub, "slack: not posted, because this is not a scheduled pipeline")
+        return
+    try:
+        payload = story_digest.slack_payload(
+            digest, job_url=runtime.environ.get("CI_JOB_URL", "").strip()
+        )
+        outcome = runtime.slack(webhook, payload)
+    except Exception as error:
+        outcome = f"not posted ({type(error).__name__})"
+    _say(scrub, f"slack: {outcome}")
+
+
 def default_runtime() -> Runtime:
     """The runtime a run uses: every collaborator is the real one."""
     return Runtime(
@@ -806,6 +1016,8 @@ def default_runtime() -> Runtime:
         index_docs=index_docs,
         compose_prompt=compose_prompt,
         harness=harness_revision,
+        history=nightly_history,
+        slack=post_slack,
     )
 
 
@@ -815,8 +1027,8 @@ class Plan:
 
     ``ui_kind`` is ``build`` (``build_dir`` served by the proxy) or ``deployed``
     (the stack's own ``web_url``). ``docs_ref`` is the commit the docs are read
-    from, or None for the working tree. ``head_sha`` heads the reply: the MR head
-    or the harness commit.
+    from, or None for the working tree. ``head_sha`` heads the reply: the MR head,
+    the nightly's commit, or the harness commit.
     """
 
     mode: str
@@ -833,6 +1045,7 @@ class Plan:
     inputs: StoryInputs | None = None
     selection: changelog_select.Selection | None = None
     change: ui_change.UiChange | None = None
+    stack_state: str | None = None
     replayed: str | None = None
 
 
@@ -986,6 +1199,24 @@ def settings_problem(
     return ""
 
 
+def parse_shard(text: str) -> tuple[int, int]:
+    """``i/n`` as ``(i, n)``, 1-based, with ``1 <= i <= n``; ValueError otherwise."""
+    found = _SHARD_RE.fullmatch(text.strip())
+    if found is None:
+        raise ValueError("--shard is i/n, such as 2/5")
+    index, total = int(found.group(1)), int(found.group(2))
+    if index > total:
+        raise ValueError("--shard i/n needs i no greater than n")
+    return index, total
+
+
+def _shard(keys: Sequence[stories.FlowKey], spec: str | None) -> list[stories.FlowKey]:
+    if spec is None:
+        return sorted(keys)
+    index, total = parse_shard(spec)
+    return stories.shard(keys, index, total)
+
+
 def _read_bounded(path: Path, limit: int, what: str) -> bytes:
     """A regular file, opened without following a link, of at most ``limit`` bytes."""
     try:
@@ -1017,10 +1248,28 @@ def _is_whole(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def deploy_state(path: Path | None) -> str | None:
+    """The review stack's state from ``deployment_summary.txt``; None without a path.
+
+    A summary that is absent or cannot be read is ``missing``, which runs the
+    flows and records the night as not comparable.
+    """
+    if path is None:
+        return None
+    try:
+        text = _read_bounded(path, _SUMMARY_MAX_BYTES, "the deployment summary")
+    except StoryRunError:
+        return "missing"
+    return story_digest.classify_stack_state(text.decode("utf-8", errors="replace"))
+
+
 def _flow_keys(
     args: argparse.Namespace, catalogue: stories.Catalogue
 ) -> list[stories.FlowKey]:
-    """The flows ``--story`` and ``--as`` name."""
+    """The flows ``--story``/``--as`` or ``--all``/``--tier`` name, before sharding."""
+    if args.all:
+        tiers = stories.TIERS if args.tier == "all" else (args.tier,)
+        return stories.flow_keys(catalogue, tiers=tiers)
     try:
         story = catalogue.story(args.story)
     except KeyError:
@@ -1049,6 +1298,8 @@ def _mode(args: argparse.Namespace, environ: Mapping[str, str]) -> str:
         return "mr"
     if args.interactive:
         return "watch"
+    if args.all and _ci_variable(environ):
+        return "nightly"
     return "local"
 
 
@@ -1083,15 +1334,26 @@ def _ui_source(
 def precheck_flows(
     args: argparse.Namespace, runtime: Runtime, catalogue: stories.Catalogue
 ) -> Decision:
-    """The decision for ``--story`` and ``--interactive`` runs.
+    """The decision for ``--story``, ``--all`` and ``--interactive`` runs.
 
-    In order: the flows, the UI source and the CI variables.
+    In order: the flows (after ``--shard``), the review stack's state when a
+    deployment summary is given (a stack still updating skips the shard before
+    anything is installed), the UI source and the CI variables.
     """
     environ = runtime.environ
     mode = _mode(args, environ)
-    keys = sorted(_flow_keys(args, catalogue))
+    keys = _shard(_flow_keys(args, catalogue), args.shard)
     if not keys:
-        return Decision(False, "skipped", "no flow to run")
+        where = f" in shard {args.shard}" if args.shard else ""
+        return Decision(False, "skipped", f"no flow to run{where}")
+    state = deploy_state(Path(args.deploy_summary) if args.deploy_summary else None)
+    if state == "running":
+        return Decision(
+            False,
+            "skipped",
+            "the review stack was still updating when the deployment ended, so the "
+            "night's flows would test a stack that is changing",
+        )
     kind, build, url, problem = _ui_source(args, environ)
     if problem and mode != "watch":
         return Decision(False, "skipped", problem)
@@ -1107,6 +1369,9 @@ def precheck_flows(
     if problem:
         return Decision(False, "skipped", problem)
     docs_ref = args.docs
+    if docs_ref is None and mode == "nightly":
+        commit = environ.get("CI_COMMIT_SHA", "").strip()
+        docs_ref = commit if _SHA_RE.fullmatch(commit) else None
     plan = Plan(
         mode=mode,
         keys=tuple(keys),
@@ -1119,6 +1384,7 @@ def precheck_flows(
         src_ui_tree=None,
         docs_ref=docs_ref,
         head_sha=_local_head(runtime),
+        stack_state=state if mode == "nightly" else None,
     )
     return Decision(True, "proceed", f"{len(keys)} flow(s)", plan=plan)
 
@@ -1160,6 +1426,7 @@ def precheck_replay(
             raise StoryRunError(
                 f"this harness's {key.story} does not run as {key.persona}"
             )
+    keys = _shard(keys, args.shard)
     if not keys:
         return Decision(False, "skipped", "the replayed run planned no flow")
     model = record.get("model") if isinstance(record.get("model"), str) else None
@@ -1512,8 +1779,8 @@ def precheck_mr(
         return Decision(
             False,
             "skipped",
-            "only the backend or the API contract changes besides the CHANGELOG; it "
-            "selects " + ", ".join(selection.stories),
+            "only the backend or the API contract changes besides the CHANGELOG; the "
+            "nightly run after the merge runs " + ", ".join(selection.stories),
             extra=extra,
         )
     else:
@@ -2748,7 +3015,7 @@ class StoryRun:
         """
         if self.args.run_usd is not None:
             return float(self.args.run_usd)
-        if self.planned.mode == "mr":
+        if self.planned.mode in ("mr", "nightly"):
             return float(catalogue.runs.job_usd)
         return float(len(self.planned.keys)) * float(catalogue.limits.flow_usd)
 
@@ -2762,7 +3029,7 @@ class StoryRun:
         once.
         """
         minutes = self.args.deadline_minutes
-        if minutes is None and self.planned.mode == "mr":
+        if minutes is None and self.planned.mode in ("mr", "nightly"):
             minutes = catalogue.runs.deadline_minutes
         if minutes is None:
             return None
@@ -2816,7 +3083,9 @@ class StoryRun:
         """Whether an attempt's recording may still be rendered once all are judged.
 
         Under ``--video all`` every allowed recording is; otherwise one whose
-        verdict is bad, or one that found a help link with no page behind it.
+        verdict is bad, or, outside the nightly, one that found a help link with no
+        page behind it. A nightly flow is rendered only once its bad verdict is
+        confirmed, which only the end of the run can say.
         """
         if attempt.withheld or self.args.video == "never":
             return False
@@ -2826,7 +3095,7 @@ class StoryRun:
             return True
         if result.verdict in story_verdict.BAD_VERDICTS:
             return True
-        return bool(result.help_links_unresolved)
+        return self.planned.mode != "nightly" and bool(result.help_links_unresolved)
 
     def claude_credentials(self, attempt: Attempt) -> dict[str, str]:
         """The flow's Bedrock-only session, minted now, or the job's own.
@@ -3089,15 +3358,29 @@ class StoryRun:
     def _rerun_scale(self, first: Attempt) -> int | None:
         """The budget scale a flow's one re-run gets, or None for no re-run.
 
-        A bad verdict (``stuck``, ``not_refused``, ``offered``) runs once more at
-        its own budget.
+        At night a flow that ran out of steps or gave up is run once more at
+        twice its budget, when that changes what stopped it: the steps, the turn
+        cap or the dollar cap. A wall clock or a refusal limit stays as it was,
+        so a flow they stopped is not run again for them.
         """
         if self.args.reruns < 1 or first.result is None:
             return None
         verdict = first.result.verdict
         if verdict in story_verdict.RERUN_VERDICTS:
             return 1
-        return None
+        if (
+            self.planned.mode != "nightly"
+            or verdict not in story_verdict.BUDGET_RERUN_VERDICTS
+        ):
+            return None
+        cause = first.result.sub_kind
+        if verdict == "gave_up" and cause not in _EXTENDED_CAUSES:
+            return None
+        if cause == "max_turns":
+            wider = stories.budget(self.catalogue.limits, first.flow.story, scale=2)
+            if stories.turn_cap(wider) <= stories.turn_cap(first.budget):
+                return None
+        return 2
 
     def _run_flows(self) -> None:
         """Every flow's first attempt, then the re-runs, each gated before it starts.
@@ -3105,7 +3388,7 @@ class StoryRun:
         First attempts go first, so a re-run never costs another flow its first
         attempt. A re-run whose gate does not open is no attempt, so its flow's
         bad verdict stays unconfirmed (1 of 1) rather than reading as mixed; the
-        record's ``reruns_not_run`` names it and why.
+        record's ``reruns_not_run`` names it and why, for the digest to count.
         """
         for flow in self.flows:
             attempt = self._new_attempt(flow, 1, 1)
@@ -3141,7 +3424,8 @@ class StoryRun:
         """The attempts whose recordings are rendered, at most :data:`MAX_VIDEOS`.
 
         One file per flow, of the attempt its confirmation shows: under ``--video
-        all`` every flow with a recording; otherwise a flow with a finding.
+        all`` every flow with a recording; at night only a confirmed bad verdict;
+        otherwise a flow with a finding.
         """
         if self.args.video == "never":
             return []
@@ -3158,6 +3442,11 @@ class StoryRun:
                 continue
             if self.args.video == "all":
                 wanted = True
+            elif self.planned.mode == "nightly":
+                wanted = (
+                    confirmation.state == "confirmed"
+                    and confirmation.verdict in story_verdict.BAD_VERDICTS
+                )
             else:
                 wanted = bool(shown.findings)
             if wanted:
@@ -3418,11 +3707,13 @@ class StoryRun:
 
     def _chosen_by(self) -> dict[str, Any]:
         """How the run's flows were chosen, for the reply's first lines."""
-        plan = self.planned
+        plan, args = self.planned, self.args
         if plan.mode == "mr":
             return {"kind": "mr"}
         if plan.replayed is not None:
             return {"kind": "replay"}
+        if args.all:
+            return {"kind": "all", "tier": args.tier, "shard": args.shard}
         return {"kind": "story", "flows": [str(key) for key in plan.keys]}
 
     def _review_stack(self) -> bool | None:
@@ -3460,6 +3751,7 @@ class StoryRun:
             "schema": story_verdict.RUN_SCHEMA,
             "version": story_verdict.RUN_VERSION,
             "mode": plan.mode,
+            "shard": self._shard_record(),
             "harness_sha": ready.harness_sha,
             "harness_dirty": ready.harness_dirty,
             "catalogue_sha256": catalogue_sha256(),
@@ -3477,6 +3769,7 @@ class StoryRun:
                 "build": facts.build if facts is not None else None,
                 "review_stack": self._review_stack(),
             },
+            "stack_state": plan.stack_state,
             "stack_changed_mid_run": len(builds) > 1,
             "ui_source": ui_source,
             "docs": {
@@ -3515,6 +3808,12 @@ class StoryRun:
             ),
             next(iter(self.facts_seen), None),
         )
+
+    def _shard_record(self) -> dict[str, int] | None:
+        if not self.args.shard:
+            return None
+        index, total = parse_shard(self.args.shard)
+        return {"index": index, "total": total}
 
     def _write_record(self) -> Judged:
         """Write ``story-run.json``, then judge the run directory as ``--judge`` does.
@@ -4164,6 +4463,445 @@ def judge_main(args: argparse.Namespace, runtime: Runtime) -> int:
     return 1 if judged.differences else 0
 
 
+def _shard_order(path: Path) -> tuple[int, int, str]:
+    found = re.search(r"([0-9]+)$", path.name)
+    return (0, int(found.group(1)), path.name) if found else (1, 0, path.name)
+
+
+def shard_dirs(roots: Sequence[Path]) -> list[Path]:
+    """Each root that holds a ``story-run.json``, else its subdirectories that do.
+
+    Subdirectories are taken in shard order (``shard-2`` before ``shard-10``), and
+    a link is never followed into.
+    """
+    found: list[Path] = []
+    for root in roots:
+        if root.is_symlink():
+            continue
+        if (root / story_verdict.RUN_FILE).is_file():
+            found.append(root)
+            continue
+        try:
+            children = [
+                child
+                for child in root.iterdir()
+                if child.is_dir()
+                and not child.is_symlink()
+                and (child / story_verdict.RUN_FILE).is_file()
+            ]
+        except OSError:
+            continue
+        found += sorted(children, key=_shard_order)
+    unique: list[Path] = []
+    for path in found:
+        if path.resolve() not in {item.resolve() for item in unique}:
+            unique.append(path)
+    return unique
+
+
+def merge_records(parts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The shards' ``story-run.json`` as one, by ``story_digest.merge_runs``.
+
+    Then what that leaves to the first shard is made order-free: the review-stack
+    flag is the run's own rule over every shard's opened flows, false when any
+    shard's is, true when every shard that opened a browser says true, and null
+    when none opened one, whichever shard comes first; the withheld
+    flows are every shard's, in key order, and the reason quoted first is the
+    first of those. The merged reply's ``sel`` covers every flow and its notes
+    every shard's, and its ``chosen_by`` is every shard's choice as one run's
+    (:func:`_merged_chosen_by`). The merged confinement is ``full`` only when every
+    shard's is, ``dev-unconfined`` when any shard's is, and null otherwise.
+    """
+    merged = story_digest.merge_runs(parts)
+    confinements = {part.get("confinement") for part in parts}
+    if confinements == {"full"}:
+        merged["confinement"] = "full"
+    elif "dev-unconfined" in confinements:
+        merged["confinement"] = "dev-unconfined"
+    else:
+        merged["confinement"] = None
+    flags = []
+    for part in parts:
+        stack = part.get("stack")
+        flags.append(stack.get("review_stack") if isinstance(stack, Mapping) else None)
+    known = [flag for flag in flags if flag is not None]
+    stack = dict(merged.get("stack") or {})
+    stack["review_stack"] = all(flag is True for flag in known) if known else None
+    merged["stack"] = stack
+    withheld = sorted(
+        (
+            dict(item)
+            for part in parts
+            for item in (part.get("video_withheld_flows") or [])
+            if isinstance(item, Mapping)
+        ),
+        key=lambda item: (str(item.get("key")), str(item.get("attempt"))),
+    )
+    merged["video_withheld_flows"] = withheld
+    merged["video_withheld"] = withheld[0].get("reason") if withheld else None
+    replies: list[Mapping[str, Any]] = [
+        reply for part in parts if isinstance(reply := part.get("reply"), Mapping)
+    ]
+    if replies:
+        reply = dict(replies[0])
+        reply["video_notes"] = [
+            note for item in replies for note in (item.get("video_notes") or [])
+        ]
+        reply["uploads"] = []
+        reply["videos"] = []
+        reply["sel"] = _merged_sel(merged, reply)
+        reply["chosen_by"] = _merged_chosen_by(replies)
+        merged["reply"] = reply
+    return merged
+
+
+def _merged_chosen_by(replies: Sequence[Mapping[str, Any]]) -> object:
+    """How the shards' flows were chosen, as one run's choice.
+
+    Shards of one run share a kind of choice. Hand-picked shards name every
+    shard's flows, in key order, and shards of a set are that whole set, with no
+    shard named. Any other kind, shards that differ in kind, and a shard whose
+    record predates ``chosen_by``, leave the first shard's as it is.
+    """
+    choices = [reply.get("chosen_by") for reply in replies]
+    first = choices[0]
+    if not all(isinstance(choice, Mapping) for choice in choices):
+        return first
+    kinds = {choice.get("kind") for choice in choices if isinstance(choice, Mapping)}
+    if kinds == {"story"}:
+        flows = {
+            flow
+            for choice in choices
+            if isinstance(choice, Mapping)
+            for flow in choice.get("flows") or []
+            if isinstance(flow, str)
+        }
+        return {"kind": "story", "flows": sorted(flows)}
+    if kinds == {"all"}:
+        tiers = list(
+            dict.fromkeys(
+                str(choice.get("tier") or "p0")
+                for choice in choices
+                if isinstance(choice, Mapping)
+            )
+        )
+        return {"kind": "all", "tier": " and ".join(tiers), "shard": None}
+    return first
+
+
+def _merged_sel(merged: Mapping[str, Any], reply: Mapping[str, Any]) -> str | None:
+    """The ``sel`` of every merged flow's first attempt, with the first reply's UI
+    source and docs tree; the first reply's own ``sel`` when those are absent."""
+    pairs: list[tuple[stories.FlowKey, str]] = []
+    for flow in merged.get("flows") or []:
+        if isinstance(flow, Mapping) and flow.get("attempt") == 1:
+            pairs.append((stories.FlowKey.parse(str(flow["key"])), str(flow["series"])))
+    try:
+        return changelog_select.selection_hash(
+            pairs,
+            ui_source=str(reply.get("ui_source")),
+            docs_tree=str(reply.get("docs_tree")),
+        )
+    except ValueError:
+        sel = reply.get("sel")
+        return sel if isinstance(sel, str) else None
+
+
+def _copy_tree(source: Path, target: Path, *, screens: bool = True) -> None:
+    """Copy the regular files under ``source`` to ``target``; links are left out,
+    and so are the screenshot folders when ``screens`` is False."""
+    for current, names, files in os.walk(source, followlinks=False):
+        here = Path(current)
+        relative = here.relative_to(source)
+        artifacts.artifact_dir(target / relative)
+        names[:] = [
+            name
+            for name in names
+            if not (here / name).is_symlink() and (screens or name != _SCREENS_DIR)
+        ]
+        for name in files:
+            path = here / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            with (
+                path.open("rb") as handle,
+                artifacts.open_artifact(target / relative / name) as out,
+            ):
+                shutil.copyfileobj(handle, out)
+
+
+def merge_dirs(
+    dirs: Sequence[Path],
+    out: Path,
+    environ: Mapping[str, str],
+    *,
+    media: bool = True,
+) -> Judged:
+    """Several run directories as one in ``out``, judged there as ``--judge`` would.
+
+    The record is :func:`merge_records`'s and the journals are copied, and with
+    ``media`` the screens and videos too, so ``out`` is a run directory like any
+    other; the digest leaves them in the shards' own artifacts. Its
+    ``results.json`` is judged from the copied journals, and is checked against
+    ``story_digest.merge_results`` over the shards' own, which a ``WARNING:`` line
+    reports when they differ or cannot be compared, as when two shards ran
+    harnesses of different judgement revisions.
+    """
+    runs = [
+        _read_json(path / story_verdict.RUN_FILE, f"{path.name}'s story-run.json")
+        for path in dirs
+    ]
+    results = [
+        _read_json(path / story_verdict.RESULTS_FILE, f"{path.name}'s results.json")
+        for path in dirs
+    ]
+    merged = merge_records(runs)
+    out = artifacts.artifact_dir(out)
+    for path in dirs:
+        flows = path / story_verdict.FLOWS_DIR
+        if flows.is_dir() and not flows.is_symlink():
+            _copy_tree(flows, out / story_verdict.FLOWS_DIR, screens=media)
+        for video in sorted(path.glob("*.mp4")) if media else ():
+            if video.is_file() and not video.is_symlink():
+                with (
+                    video.open("rb") as handle,
+                    artifacts.open_artifact(out / video.name) as target,
+                ):
+                    shutil.copyfileobj(handle, target)
+    artifacts.write_artifact(
+        out / story_verdict.RUN_FILE,
+        json.dumps(merged, indent=2, ensure_ascii=False) + "\n",
+    )
+    judged = judge_run_dir(out, environ)
+    try:
+        expected: object = story_digest.merge_results(results)
+    except story_verdict.RunRecordError as error:
+        expected = None
+        print(
+            f"WARNING: the shards' own results cannot be compared ({error}); "
+            "results.json is their journals' as this harness judges them",
+            flush=True,
+        )
+    written = _read_json(out / story_verdict.RESULTS_FILE, "the merged results.json")
+    if expected is not None and json.loads(json.dumps(expected)) != written:
+        print(
+            "WARNING: the shards' own results differ from what their journals judge "
+            "to; results.json is the journals'",
+            flush=True,
+        )
+    return judged
+
+
+def merge_main(args: argparse.Namespace, runtime: Runtime) -> int:
+    """``--merge DIR... --out DIR``: several shards' runs as one run directory."""
+    scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
+    dirs = shard_dirs([Path(path) for path in args.merge])
+    if not dirs:
+        _say(scrub, "FAILED: no story-run.json under " + ", ".join(args.merge))
+        return 1
+    try:
+        judged = merge_dirs(dirs, Path(args.out), runtime.environ)
+    except (story_verdict.RunRecordError, StoryRunError, review.Failure) as error:
+        _say(scrub, f"FAILED: {error}")
+        return 1
+    for line in flow_lines(judged.results):
+        _say(scrub, line)
+    cost = story_verdict.cost_text(story_verdict.cost_totals(judged.results))
+    _say(scrub, f"MERGED: {len(dirs)} run(s) into {args.out}; {cost}")
+    return 0
+
+
+def _night(
+    results: Mapping[str, Any], run: Mapping[str, Any], environ: Mapping[str, str]
+) -> story_digest.Night:
+    pipeline = environ.get("CI_PIPELINE_ID", "").strip()
+    pipeline_id = int(pipeline) if pipeline.isdigit() else 0
+    commit = environ.get("CI_COMMIT_SHA", "").strip()
+    if not _SHA_RE.fullmatch(commit):
+        harness = run.get("harness_sha")
+        commit = (
+            harness
+            if isinstance(harness, str) and _SHA_RE.fullmatch(harness)
+            else "0" * 40
+        )
+    return story_digest.night_from_results(
+        results, run, pipeline_id=pipeline_id, develop_sha=commit
+    )
+
+
+def _history_record(history: story_digest.History, available: bool) -> dict[str, Any]:
+    return {
+        "available": available,
+        "gaps": list(history.gaps),
+        "nights": [
+            {
+                "pipeline_id": night.pipeline_id,
+                "develop_sha": night.develop_sha,
+                "stack_state": night.stack_state,
+                "comparable": night.comparable,
+                "audits_clean": night.audits_clean,
+                "flows": [dataclasses.asdict(flow) for flow in night.flows],
+            }
+            for night in history.nights
+        ],
+    }
+
+
+def digest_main(args: argparse.Namespace, runtime: Runtime) -> int:
+    """``--digest DIR --out DIR``: the shards merged, compared with earlier nights.
+
+    It runs no model and no browser and imports nothing outside the standard
+    library. The earlier nights come from ``runtime.history``
+    (:func:`nightly_history`); without them nothing is compared, and ``digest.md``
+    says so. ``digest.json`` is what later nights read back; ``history.json`` is
+    the nights it was compared with. Once those are written, a scheduled pipeline
+    with a webhook posts the one-line Slack summary (:func:`post_digest_summary`),
+    which never changes the outcome.
+    """
+    scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
+    dirs = shard_dirs([Path(args.digest)])
+    out = Path(args.out)
+    if not dirs:
+        return idle_digest_main(args, runtime, scrub, out)
+    try:
+        judged = merge_dirs(dirs, out, runtime.environ, media=False)
+        results = _read_json(
+            out / story_verdict.RESULTS_FILE, "the merged results.json"
+        )
+        tonight = _night(results, judged.record, runtime.environ)
+        history = runtime.history(args, runtime.environ) if runtime.history else None
+        available = history is not None
+        known = history if history is not None else story_digest.History((), ())
+        found = story_digest.regressions(
+            tonight,
+            known,
+            rerun_did_not_fit={
+                str(item.get("key"))
+                for item in judged.record.get("reruns_not_run") or []
+                if isinstance(item, Mapping)
+            },
+        )
+        fixed = story_digest.fixed(tonight, known)
+        spend = judged.record.get("spend_usd")
+        digest = story_digest.digest_document(
+            tonight,
+            known,
+            found,
+            fixed,
+            spend_usd=float(spend) if isinstance(spend, (int, float)) else 0.0,
+            injections=sum(result.notes.injections for result in judged.results),
+            shards_ran=len(dirs),
+            reruns_not_run=len(judged.record.get("reruns_not_run") or []),
+        )
+        catalogue = load_catalogue()
+        nudges = _unreleased_nudges(Path(args.repo_dir), catalogue)
+        cap = len(dirs) * float(catalogue.runs.job_usd)
+        text = story_digest.compose_digest_md(
+            digest,
+            results,
+            judged.record,
+            uncovered=nudges,
+            cap_usd=cap,
+            history=history,
+        )
+        if not available:
+            text = text.rstrip("\n") + "\n\n_History unavailable: nothing compared._\n"
+        artifacts.write_artifact(
+            out / "digest.json", json.dumps(digest, indent=2, ensure_ascii=False) + "\n"
+        )
+        artifacts.write_artifact(out / "digest.md", scrub.note(text))
+        artifacts.write_json(
+            out / "history.json", _history_record(known, available), scrub
+        )
+        cost = story_verdict.cost_text(story_verdict.cost_totals(judged.results))
+    except (
+        story_verdict.RunRecordError,
+        StoryRunError,
+        review.Failure,
+        ValueError,
+    ) as error:
+        _say(scrub, f"FAILED: {error}")
+        return 1
+    post_digest_summary(digest, runtime, scrub)
+    _say(
+        scrub,
+        f"DIGEST: {len(dirs)} shard(s), {len(found)} regression(s), in {out}; {cost}",
+    )
+    return 0
+
+
+def _skipped_shards(root: Path) -> list[tuple[str, str, str]]:
+    """Each shard directory under ``root`` with the status and detail of its precheck."""
+    found: list[tuple[str, str, str]] = []
+    try:
+        children = sorted(
+            (child for child in root.iterdir() if child.is_dir()),
+            key=_shard_order,
+        )
+    except OSError:
+        return found
+    for child in children:
+        if child.is_symlink():
+            continue
+        try:
+            record = _read_json(child / "precheck.json", f"{child.name}'s precheck")
+        except StoryRunError:
+            found.append((child.name, "unknown", "it left no readable precheck.json"))
+            continue
+        status = record.get("status") if isinstance(record, dict) else None
+        detail = record.get("detail") if isinstance(record, dict) else None
+        found.append((child.name, str(status or "unknown"), str(detail or "")))
+    return found
+
+
+def idle_digest_main(
+    args: argparse.Namespace, runtime: Runtime, scrub: artifacts.Scrub, out: Path
+) -> int:
+    """The digest of a night on which no shard ran: recorded, never compared.
+
+    Its ``digest.json`` is one a later night reads as a gap, and its ``digest.md``
+    lists each shard's precheck. A scheduled pipeline posts its Slack line too.
+    """
+    try:
+        history = runtime.history(args, runtime.environ) if runtime.history else None
+        known = history if history is not None else story_digest.History((), ())
+        pipeline = runtime.environ.get("CI_PIPELINE_ID", "").strip()
+        commit = runtime.environ.get("CI_COMMIT_SHA", "").strip()
+        digest = story_digest.idle_digest_document(
+            pipeline_id=int(pipeline) if pipeline.isdigit() else 0,
+            develop_sha=commit if _SHA_RE.fullmatch(commit) else "0" * 40,
+            history=known,
+        )
+        text = story_digest.compose_idle_digest_md(
+            digest, _skipped_shards(Path(args.digest))
+        )
+        out = artifacts.artifact_dir(out)
+        artifacts.write_artifact(
+            out / "digest.json", json.dumps(digest, indent=2, ensure_ascii=False) + "\n"
+        )
+        artifacts.write_artifact(out / "digest.md", scrub.note(text))
+        artifacts.write_json(
+            out / "history.json", _history_record(known, history is not None), scrub
+        )
+    except (StoryRunError, review.Failure, ValueError) as error:
+        _say(scrub, f"FAILED: {error}")
+        return 1
+    post_digest_summary(digest, runtime, scrub)
+    _say(scrub, f"DIGEST: no shard ran under {args.digest}; recorded in {out}")
+    return 0
+
+
+def _unreleased_nudges(repo_dir: Path, catalogue: stories.Catalogue) -> list[str]:
+    """The ``[Unreleased]`` CHANGELOG leads no story covers, from ``repo_dir``."""
+    try:
+        text = _read_bounded(
+            repo_dir / "CHANGELOG.md", ui_change.MAX_OUTPUT_BYTES, "CHANGELOG.md"
+        ).decode("utf-8", errors="replace")
+    except StoryRunError:
+        return []
+    return changelog_select.uncovered_unreleased(catalogue, text)
+
+
 def run(args: argparse.Namespace, runtime: Runtime) -> int:
     """A run of planned flows: precheck, confinement, sessions, judging, the reply."""
     return StoryRun(args, runtime).execute()
@@ -4184,14 +4922,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--story", metavar="ID", help="run this story's flows")
+    modes.add_argument("--all", action="store_true", help="run the nightly set")
     modes.add_argument("--mr", type=int, metavar="IID", help="run what this MR selects")
     modes.add_argument("--replay", metavar="RUN_DIR", help="run an earlier run's flows")
     modes.add_argument("--judge", metavar="RUN_DIR", help="re-judge a run directory")
+    modes.add_argument(
+        "--merge", nargs="+", metavar="DIR", help="merge run directories into --out"
+    )
+    modes.add_argument(
+        "--digest", metavar="DIR", help="the nightly digest of DIR's shards into --out"
+    )
     parser.add_argument(
         "--as",
         dest="as_persona",
         metavar="PERSONA",
         help="with --story, only this persona",
+    )
+    parser.add_argument(
+        "--tier",
+        choices=(*stories.TIERS, "all"),
+        default="p0",
+        help="with --all, the tier to run (default: p0)",
+    )
+    parser.add_argument(
+        "--shard", metavar="I/N", help="run only shard I of N, by balanced round robin"
     )
     steps = parser.add_mutually_exclusive_group()
     steps.add_argument(
@@ -4216,6 +4970,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path(DEFAULT_RUN_DIR_NAME),
         help=f"where the run's records go (default: {DEFAULT_RUN_DIR_NAME})",
     )
+    parser.add_argument("--out", type=Path, help="with --merge or --digest, the output")
     parser.add_argument(
         "--check", action="store_true", help="with --judge, write nothing and compare"
     )
@@ -4294,6 +5049,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="GitLab API base URL (default: $CI_API_V4_URL)",
     )
     parser.add_argument(
+        "--deploy-summary",
+        type=Path,
+        help="the nightly deploy's deployment_summary.txt, for the stack's state",
+    )
+    parser.add_argument(
         "--deadline-minutes",
         type=int,
         help="minutes after the job started by which the run must be done "
@@ -4365,6 +5125,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.stack = session.REVIEW_STACK
     if args.as_persona is not None and args.story is None:
         parser.error("--as needs --story")
+    if args.shard is not None:
+        try:
+            parse_shard(args.shard)
+        except ValueError as error:
+            parser.error(str(error))
+        if args.mr is not None or args.interactive:
+            parser.error("--shard splits --all, --story or --replay runs")
     if args.interactive and (args.story is None or args.as_persona is None):
         parser.error("--interactive runs one flow: give --story and --as")
     if args.interactive and (args.run_usd is not None or args.reruns is not None):
@@ -4380,6 +5147,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--post replies on a merge request: it needs --mr")
     if args.post and args.dev_unconfined:
         parser.error("--dev-unconfined never posts")
+    if (args.merge or args.digest) and args.out is None:
+        parser.error("--merge and --digest need --out")
     if args.audit is not None and args.judge is None:
         parser.error("--audit needs --judge")
     if (args.check or args.summary or args.rejudge) and args.judge is None:
@@ -4438,6 +5207,10 @@ def main(argv: list[str] | None = None, runtime: Runtime | None = None) -> int:
             return 1
         if args.judge is not None:
             return judge_main(args, chosen)
+        if args.merge:
+            return merge_main(args, chosen)
+        if args.digest is not None:
+            return digest_main(args, chosen)
         if args.collect_only:
             return collect_main(args, chosen)
         if args.precheck:

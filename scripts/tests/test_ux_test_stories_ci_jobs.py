@@ -1,34 +1,40 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""The shape of the advisory first-time-user story job.
+"""The shape of the three advisory first-time-user story jobs.
 
 ``ai_ux_test_stories`` runs the stories a merge request's added CHANGELOG entries
-select and replies in its code-review thread. It is ``allow_failure: true``, so a
-broken job is a quiet one, and each property here is one a later edit to
-``.gitlab-ci.yml`` could drop with the job still green. Five of them are security
-properties rather than tidiness.
+select and replies in its code-review thread, ``ai_ux_test_stories_nightly`` runs
+the nightly story set in shards after the scheduled deploy, and
+``ai_ux_test_stories_digest`` compares that night with the earlier ones. All three
+are ``allow_failure: true``, so a broken job is a quiet one, and each property here
+is one a later edit to ``.gitlab-ci.yml`` could drop with every job still green.
+Five of them are security properties rather than tidiness.
 
-* **The job runs the target branch's harness or nothing.** It extracts
+* **Every job runs the target branch's harness or nothing.** Each extracts
   :data:`ai_ux_test_stories.HARNESS_PATHS`, in order, from the target branch with
-  ``git archive`` into a fresh directory and exits 1 when it cannot; it refuses,
+  ``git archive`` into a fresh directory and exits 1 when it cannot; each refuses,
   before its first run of the entry, a ``UX_HARNESS`` or ``UX_ENTRY`` that a
-  project or pipeline variable has changed; and it runs nothing by a path in the
-  checkout.
+  project or pipeline variable has changed; and none runs anything by a path in
+  the checkout.
 * **No CI configuration passes a development-only option of the orchestrator**,
   in any spelling argparse could read as one, abbreviations included. The
   orchestrator also refuses it wherever ``CI`` or ``GITLAB_CI`` is set, which
   ``test_ai_ux_test_stories.py`` pins.
-* **Posting is opt-in.** The flag that allows it is in the job's arguments, and
-  every run is against the review stack, the one stack a reply is posted for.
-* **The job holds the scoped variables it reads and no others.** It declares
-  ``ai_ux_test``'s environment with ``action: prepare``, which is what hands it
-  the persona, the UI env and the account id, and no rule reads a scoped
+* **Only the merge request job can post.** Posting is opt-in, so the flag that
+  allows it is in that job's arguments and in no other story job's, and every
+  run is against the review stack, the one stack a reply is posted for.
+* **Each job holds the scoped variables it reads and no others.** The two run
+  jobs declare ``ai_ux_test``'s environment with ``action: prepare``, which is
+  what hands them the persona, the UI env and the account id; the digest declares
+  only its own, which holds the Slack webhook, and no rule reads a scoped
   variable.
-* **It is advisory.** It is not a shared gate, and it does not run on GitHub.
+* **They are advisory.** None is a shared gate, and none runs on GitHub.
 
 The rest pins the wiring: the rules, evaluated here the way GitLab evaluates them,
-with the ``UX_TEST_STORIES`` switch; the timeout against the catalogue's deadline;
-and where the job writes its artifacts and how long they are kept.
+with the ``UX_TEST_STORIES`` switch; the stage order; the timeouts against the
+catalogue's deadline and the shard count against its time gate; and where each
+job writes its artifacts, how long they are kept, and that a later night finds
+the digest where it looks for one.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ import ast
 import fnmatch
 import functools
 import itertools
+import math
 import os
 import re
 import shlex
@@ -59,8 +66,10 @@ GITHUB = REPO_ROOT / ".github"
 ORCHESTRATOR = SCRIPTS / "sdlc" / "ai_ux_test_stories.py"
 CREDENTIAL_VENDOR = SCRIPTS / "sdlc" / "cfn" / "credential-vendor.yml"
 MR_JOB = "ai_ux_test_stories"
-STORY_JOBS = (MR_JOB,)
-RUN_JOBS = (MR_JOB,)
+NIGHTLY_JOB = "ai_ux_test_stories_nightly"
+DIGEST_JOB = "ai_ux_test_stories_digest"
+STORY_JOBS = (MR_JOB, NIGHTLY_JOB, DIGEST_JOB)
+RUN_JOBS = (MR_JOB, NIGHTLY_JOB)
 SETUP_JOB = "ai_ux_test"
 HARNESS = "$UX_HARNESS_DIR"
 ENTRY_WORD = "$UX_HARNESS_DIR/$UX_ENTRY"
@@ -88,7 +97,7 @@ def jobs(ci_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 @pytest.fixture(scope="module")
 def orchestrator() -> ModuleType:
-    """The orchestrator, imported for its own parser and its names."""
+    """The orchestrator, imported for its own parser and its digest's names."""
     for entry in (SCRIPTS, SCRIPTS / "sdlc"):
         if str(entry) not in sys.path:
             sys.path.insert(0, str(entry))
@@ -129,6 +138,12 @@ def _flattened(job: Mapping[str, Any]) -> list[str]:
 
 def _variables(job: Mapping[str, Any]) -> dict[str, str]:
     return {name: str(value) for name, value in (job.get("variables") or {}).items()}
+
+
+def _job_text(job: Mapping[str, Any]) -> str:
+    """Everything a job runs or passes, its commands and its variables."""
+    variables = [f"{name}={value}" for name, value in _variables(job).items()]
+    return "\n".join([*_flattened(job), *variables])
 
 
 _REFERENCE_RE = re.compile(
@@ -298,6 +313,12 @@ def _minutes(timeout: str) -> int:
     match = re.fullmatch(r"(?:([0-9]+)h)?\s*(?:([0-9]+)m)?", timeout.strip())
     assert match and any(match.groups()), f"{timeout!r} is not a timeout this reads"
     return int(match[1] or 0) * 60 + int(match[2] or 0)
+
+
+def _days(expire_in: str) -> int:
+    match = re.fullmatch(r"([0-9]+)\s*(days?|weeks?)", expire_in.strip())
+    assert match, f"{expire_in!r} is not an expiry this reads"
+    return int(match[1]) * (7 if match[2].startswith("week") else 1)
 
 
 _TOKEN_RE = re.compile(
@@ -576,6 +597,11 @@ _MR_CASES = [
     ("an MR to main", _merge_request(target="main"), "never"),
     ("a push to develop", _branch_pipeline("push"), "never"),
     ("the scheduled pipeline", _branch_pipeline("schedule"), "never"),
+    (
+        "Run pipeline for the nightly set",
+        _branch_pipeline("web", UX_TEST_STORIES_RUN="all"),
+        "never",
+    ),
 ]
 
 
@@ -591,30 +617,107 @@ def test_the_mr_job_runs_on_non_draft_mrs_to_develop_that_change_the_changelog(
     assert _outcome(jobs[MR_JOB], pipeline) == expected
 
 
+_NIGHTLY_CASES = [
+    ("the scheduled develop pipeline", _branch_pipeline("schedule"), "always"),
+    (
+        "a schedule on another branch",
+        _branch_pipeline("schedule", branch="main"),
+        "never",
+    ),
+    (
+        "Run pipeline on develop with UX_TEST_STORIES_RUN=all",
+        _branch_pipeline("web", UX_TEST_STORIES_RUN="all"),
+        "always",
+    ),
+    ("Run pipeline on develop without it", _branch_pipeline("web"), "never"),
+    (
+        "Run pipeline on develop with another value",
+        _branch_pipeline("web", UX_TEST_STORIES_RUN="nightly"),
+        "never",
+    ),
+    (
+        "Run pipeline on another branch",
+        _branch_pipeline("web", branch="feature/x", UX_TEST_STORIES_RUN="all"),
+        "never",
+    ),
+    ("a push to develop", _branch_pipeline("push"), "manual"),
+    ("a push to another branch", _branch_pipeline("push", branch="feature/x"), "never"),
+    ("an API pipeline on develop", _branch_pipeline("api"), "never"),
+    ("a non-Draft MR to develop", _merge_request(), "never"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", (NIGHTLY_JOB, DIGEST_JOB))
+@pytest.mark.parametrize(
+    ("pipeline", "expected"),
+    [(pipeline, expected) for _, pipeline, expected in _NIGHTLY_CASES],
+    ids=[label for label, _, _ in _NIGHTLY_CASES],
+)
+def test_the_nightly_pair_runs_on_the_scheduled_develop_pipeline(
+    jobs: dict[str, dict[str, Any]], name: str, pipeline: Pipeline, expected: str
+) -> None:
+    """``when: always`` on the schedule runs a night whose deploy failed or never
+    ran, so the night records the stack's state rather than going missing."""
+    assert _outcome(jobs[name], pipeline) == expected
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("switch", "mr_runs"),
+    ("switch", "mr_runs", "nightly_runs"),
     [
-        (None, True),
-        ("", True),
-        ("mr", True),
-        ("off", False),
-        ("OFF", False),
-        ("false", False),
-        ("0", False),
-        ("MR", False),
+        (None, True, True),
+        ("", True, True),
+        ("mr", True, False),
+        ("nightly", False, True),
+        ("off", False, False),
+        ("OFF", False, False),
+        ("false", False, False),
+        ("0", False, False),
+        ("MR", False, False),
+        ("nightly ", False, False),
     ],
 )
 def test_ux_test_stories_switches_the_jobs_and_any_other_value_stops_them(
     jobs: dict[str, dict[str, Any]],
     switch: str | None,
     mr_runs: bool,
+    nightly_runs: bool,
 ) -> None:
-    """Unset, empty or ``mr`` runs the job, and anything else stops it, so a
-    mistyped ``off`` still works as one."""
+    """Unset or empty runs all three, ``mr`` and ``nightly`` keep one kind, and
+    anything else stops them all, so a mistyped ``off`` still works as one."""
     extra = {} if switch is None else {"UX_TEST_STORIES": switch}
     mr = _outcome(jobs[MR_JOB], _merge_request(**extra))
     assert mr == ("on_success" if mr_runs else "never")
+    nights = [
+        (_branch_pipeline("schedule", **extra), "always"),
+        (_branch_pipeline("web", UX_TEST_STORIES_RUN="all", **extra), "always"),
+        (_branch_pipeline("push", **extra), "manual"),
+    ]
+    for name in (NIGHTLY_JOB, DIGEST_JOB):
+        for pipeline, when in nights:
+            assert _outcome(jobs[name], pipeline) == (when if nightly_runs else "never")
+
+
+@pytest.mark.unit
+def test_every_pipeline_with_a_shard_holds_the_digest_and_the_deploy_it_reads(
+    ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
+) -> None:
+    """``needs`` and ``dependencies`` naming a job absent from the pipeline fail
+    the pipeline's creation, which would take every other job with it."""
+    pipelines = [pipeline for _, pipeline, _ in _NIGHTLY_CASES]
+    pipelines += [
+        _branch_pipeline(source, UX_TEST_STORIES=switch, UX_TEST_STORIES_RUN="all")
+        for source in ("schedule", "web", "push")
+        for switch in ("", "nightly", "mr", "off")
+    ]
+    for pipeline in pipelines:
+        shard = _outcome(jobs[NIGHTLY_JOB], pipeline)
+        assert _outcome(jobs[DIGEST_JOB], pipeline) == shard, pipeline
+        if shard != "never":
+            assert _outcome(ci_config["integration_tests"], pipeline) != "never", (
+                pipeline
+            )
 
 
 @pytest.mark.unit
@@ -635,6 +738,18 @@ def test_the_mr_job_runs_only_where_the_code_review_it_replies_to_runs(
 
 
 @pytest.mark.unit
+def test_the_nightly_pair_shares_its_rules_by_anchor(
+    ci_text: str, jobs: dict[str, dict[str, Any]]
+) -> None:
+    """One list, so the digest's ``needs`` can never name an absent shard job; an
+    anchor rather than ``!reference``, which ``yaml.safe_load`` rejects."""
+    assert ci_text.count("rules: &ux_story_nightly_rules") == 1
+    assert ci_text.count("rules: *ux_story_nightly_rules") == 1
+    assert jobs[DIGEST_JOB]["rules"] == jobs[NIGHTLY_JOB]["rules"]
+    assert jobs[NIGHTLY_JOB]["rules"][-1] == {"when": "never"}
+
+
+@pytest.mark.unit
 def test_every_story_job_is_advisory_and_holds_no_lock(
     jobs: dict[str, dict[str, Any]],
 ) -> None:
@@ -652,11 +767,14 @@ def test_every_story_job_is_advisory_and_holds_no_lock(
 
 
 @pytest.mark.unit
-def test_the_mr_job_is_interruptible(
+def test_the_mr_job_is_interruptible_and_the_nightly_pair_is_not(
     jobs: dict[str, dict[str, Any]],
 ) -> None:
-    """A newer push supersedes an MR run."""
+    """A newer push supersedes an MR run; a merge to develop during the night must
+    not cancel a shard or its digest."""
     assert jobs[MR_JOB]["interruptible"] is True
+    for name in (NIGHTLY_JOB, DIGEST_JOB):
+        assert jobs[name]["interruptible"] is False, name
 
 
 @pytest.mark.unit
@@ -667,6 +785,8 @@ def test_the_timeouts_outlast_the_deadline_the_flows_keep_to(
     start, so the job's own timeout must be longer, or GitLab kills a run that
     would have finished."""
     assert jobs[MR_JOB]["timeout"] == "60m"
+    assert jobs[NIGHTLY_JOB]["timeout"] == "60m"
+    assert jobs[DIGEST_JOB]["timeout"] == "20m"
     for name in RUN_JOBS:
         assert _minutes(jobs[name]["timeout"]) > catalogue.runs.deadline_minutes, name
 
@@ -675,11 +795,31 @@ def test_the_timeouts_outlast_the_deadline_the_flows_keep_to(
 def test_the_run_jobs_take_the_runner_class_the_mr_ux_test_takes(
     ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
 ) -> None:
-    """The same confined browser, so the same runner."""
+    """The same confined browser, so the same runner; the digest runs no browser."""
     tags = ci_config[SETUP_JOB]["tags"]
     assert tags == ["size:large"]
     for name in RUN_JOBS:
         assert jobs[name]["tags"] == tags, name
+    assert "tags" not in jobs[DIGEST_JOB]
+
+
+@pytest.mark.unit
+def test_ux_nightly_is_the_last_stage_after_notify(
+    ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
+) -> None:
+    """After ``notify``, so ``nightly_notification`` neither waits for the stories
+    nor downloads what they write."""
+    stages = ci_config["stages"]
+    assert stages[-1] == "ux_nightly", stages
+    assert (
+        stages.index("integration_tests")
+        < stages.index("ux_review")
+        < stages.index("notify")
+        < stages.index("ux_nightly")
+    )
+    assert jobs[MR_JOB]["stage"] == "ux_review"
+    assert jobs[NIGHTLY_JOB]["stage"] == jobs[DIGEST_JOB]["stage"] == "ux_nightly"
+    assert ci_config["nightly_notification"]["stage"] == "notify"
 
 
 @pytest.mark.unit
@@ -695,6 +835,8 @@ def test_the_jobs_sit_where_no_text_slice_of_another_suite_reaches(
         SETUP_JOB,
         MR_JOB,
         "nightly_notification",
+        NIGHTLY_JOB,
+        DIGEST_JOB,
     )
     positions = [ci_text.index(f"\n{name}:\n") for name in names]
     assert positions == sorted(positions), dict(zip(names, positions, strict=True))
@@ -720,6 +862,26 @@ def test_the_mr_job_clones_the_history_its_inputs_are_diffed_over(
     """The MR's story inputs diff its head against the merge base with develop,
     which a shallow clone does not have."""
     assert _variables(jobs[MR_JOB])["GIT_DEPTH"] == "0"
+
+
+@pytest.mark.unit
+def test_the_digest_needs_every_shard_and_a_shard_takes_only_the_deploy_summary(
+    ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
+) -> None:
+    """A shard has no ``needs``, so it starts once the deploy and ``notify`` are
+    done, and it downloads ``integration_tests``' artifacts alone, among them the
+    summary that names the review stack's state."""
+    assert jobs[DIGEST_JOB]["needs"] == [{"job": NIGHTLY_JOB, "artifacts": True}]
+    nightly = jobs[NIGHTLY_JOB]
+    assert "needs" not in nightly
+    assert nightly["dependencies"] == ["integration_tests"]
+    values = {**_setup_values(nightly), "CI_NODE_INDEX": "1", "CI_NODE_TOTAL": "1"}
+    summaries = {
+        str(_parsed(orchestrator, argv).deploy_summary)
+        for argv in _entry_argvs(nightly, values)
+    }
+    assert summaries == {"deployment_summary.txt"}
+    assert summaries <= set(ci_config["integration_tests"]["artifacts"]["paths"])
 
 
 @pytest.mark.unit
@@ -780,7 +942,8 @@ def test_each_job_names_the_entrys_own_harness_paths_and_entry(
 ) -> None:
     """The job's list and the module's must be one list: ``test_ai_ux_test_stories``
     closes ``HARNESS_PATHS`` over its imports, which protects nothing unless the job
-    extracts that set, and the precheck refuses any other."""
+    extracts that set, and the precheck refuses any other. The three jobs share
+    the one scalar."""
     harness = _module_constant(ORCHESTRATOR, "HARNESS_PATHS")
     entry = _module_constant(ORCHESTRATOR, "ENTRY")
     assert entry == ORCHESTRATOR.relative_to(REPO_ROOT).as_posix()
@@ -797,10 +960,10 @@ def test_each_job_names_the_entrys_own_harness_paths_and_entry(
 
 
 @pytest.mark.unit
-def test_the_mr_job_takes_the_confined_setup_whole(
+def test_the_mr_and_nightly_jobs_take_the_confined_setup_whole(
     ci_text: str, ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
 ) -> None:
-    """The same steps in the same order as ``ai_ux_test``, driven by the job's own
+    """The same steps in the same order as ``ai_ux_test``, driven by each job's own
     variables: the umask first, the secretless apt, the pin, the root-only
     checkout, a fresh artifact directory, and the precheck before the install."""
     setup = ci_config[SETUP_JOB]["before_script"]
@@ -808,6 +971,44 @@ def test_the_mr_job_takes_the_confined_setup_whole(
         assert jobs[name]["before_script"] == setup, name
     assert ci_text.count("before_script: *ux_confined_setup") == len(RUN_JOBS)
     assert setup[0] == "umask 022"
+
+
+@pytest.mark.unit
+def test_the_digest_takes_the_setups_own_pin_steps_and_installs_nothing(
+    ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
+) -> None:
+    """The digest runs no model and no browser, so it takes three of the setup's
+    steps word for word, the run-time half of the pin between them, and none of
+    the apt, the toolchain install or the story precheck."""
+    setup = [str(step) for step in ci_config[SETUP_JOB]["before_script"]]
+    digest = [str(step) for step in jobs[DIGEST_JOB]["before_script"]]
+    (extraction,) = [step for step in setup if "git archive" in step]
+    (fresh,) = [step for step in setup if step.startswith('rm -rf "${UX_ARTIFACTS')]
+    assert digest[0] == setup[0] == "umask 022"
+    assert digest[1] == extraction
+    assert "harness_pin_problem" in digest[2]
+    assert digest[3:] == [fresh]
+    text = _job_text(jobs[DIGEST_JOB])
+    for needle in ("install.sh", "apt-get", "npm", "pip ", "--precheck"):
+        assert needle not in text, f"the digest runs {needle!r}"
+    out = _variables(jobs[DIGEST_JOB])["UX_ARTIFACTS"]
+    shards = _variables(jobs[NIGHTLY_JOB])["UX_ARTIFACTS"].split("/", 1)[0]
+    assert _expanded(fresh, {"UX_ARTIFACTS": out}) == (
+        f'rm -rf "{out}" && mkdir -p "{out}"'
+    )
+    assert out.split("/", 1)[0] != shards, (
+        "the digest's fresh output directory would delete the shards it reads"
+    )
+
+
+def _python_shim(tmp_path: Path) -> Path:
+    """A directory whose ``python3`` is this interpreter, put first on ``PATH``."""
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    shim = directory / "python3"
+    shim.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', "utf-8")
+    shim.chmod(0o755)
+    return directory
 
 
 def _bash(
@@ -826,6 +1027,59 @@ def _bash(
         timeout=120,
         check=False,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "change",
+    ["none", "a path left out", "another order", "no list", "another entry"],
+)
+def test_the_digest_refuses_a_harness_or_entry_its_variables_change(
+    jobs: dict[str, dict[str, Any]], tmp_path: Path, change: str
+) -> None:
+    """Run under bash as the job runs it, from this checkout as the extracted
+    harness: the entry's own check passes the job's variables and refuses any
+    other, which a project or pipeline variable of the same name could be."""
+    (step,) = [
+        str(entry)
+        for entry in jobs[DIGEST_JOB]["before_script"]
+        if "harness_pin_problem" in str(entry)
+    ]
+    variables = _variables(jobs[DIGEST_JOB])
+    paths = variables["UX_HARNESS"].split()
+    changed = {
+        "none": {},
+        "a path left out": {"UX_HARNESS": " ".join(paths[:-1])},
+        "another order": {"UX_HARNESS": " ".join(reversed(paths))},
+        "no list": {"UX_HARNESS": ""},
+        "another entry": {"UX_ENTRY": "scripts/sdlc/ai_ux_test.py"},
+    }[change]
+    environ = {
+        "PATH": f"{_python_shim(tmp_path)}{os.pathsep}{os.environ.get('PATH', '')}",
+        "HOME": str(tmp_path),
+        "UX_HARNESS_DIR": str(REPO_ROOT),
+        "UX_HARNESS": variables["UX_HARNESS"],
+        "UX_ENTRY": variables["UX_ENTRY"],
+        **changed,
+    }
+    shown = _bash(step, cwd=tmp_path, environ=environ)
+    if change == "none":
+        assert shown.returncode == 0, shown.stdout + shown.stderr[-800:]
+        assert shown.stdout.startswith("UX harness pin checked for "), shown.stdout
+    else:
+        assert shown.returncode == 1, shown.stdout + shown.stderr[-800:]
+        assert shown.stdout.startswith("FAILED: UX_"), shown.stdout
+
+
+@pytest.mark.unit
+def test_the_digests_pin_check_runs_after_the_extraction_and_before_the_digest(
+    jobs: dict[str, dict[str, Any]],
+) -> None:
+    steps = _flattened(jobs[DIGEST_JOB])
+    extraction = next(i for i, step in enumerate(steps) if "git archive" in step)
+    check = next(i for i, step in enumerate(steps) if "harness_pin_problem" in step)
+    runs = [i for i, step in enumerate(steps) if ENTRY_WORD in step]
+    assert runs and extraction < check < min(runs)
 
 
 @pytest.mark.unit
@@ -891,15 +1145,15 @@ def test_the_runs_record_the_commit_their_harness_was_extracted_from(
 @pytest.mark.parametrize(
     "command",
     [
-        "python3 -I -B scripts/sdlc/ai_ux_test_stories.py --mr 812",
-        "python3 -B ./scripts/sdlc/ai_ux_test_stories.py --judge a",
+        "python3 -I -B scripts/sdlc/ai_ux_test_stories.py --all",
+        "python3 -B ./scripts/sdlc/ai_ux_test_stories.py --digest a --out b",
         "sh scripts/ux_runner/install.sh",
         "make ai-ux-test-stories-local",
         ". scripts/x.sh",
         "source scripts/x.sh",
         "python3 -B - <<'PY'\nimport ai_ux_test_stories\nPY",
         "python3 -I -B -c 'import ai_ux_test_stories'",
-        "python3 -I -B -m ai_ux_test_stories --mr 812",
+        "python3 -I -B -m ai_ux_test_stories --all",
     ],
 )
 def test_the_checkout_scan_catches_every_way_of_running_the_mrs_copy(
@@ -1005,12 +1259,18 @@ def test_no_ci_configuration_passes_a_development_only_option(ci_text: str) -> N
 @pytest.mark.unit
 def test_only_the_mr_job_can_post(jobs: dict[str, dict[str, Any]]) -> None:
     """Posting is opt-in: the MR job's arguments carry the flag, for its precheck's
-    one-line replies and for its run's."""
+    one-line replies and for its run's, and neither nightly job carries it in any
+    spelling."""
     declared = _declared_long_options(ORCHESTRATOR)
     spellings = _spellings("--post", declared)
     assert "--post" in spellings, sorted(spellings)
     mode_args = _variables(jobs[MR_JOB])["UX_MODE_ARGS"]
     assert "--post" in _OPTION_WORD_RE.findall(mode_args), mode_args
+    for name in (NIGHTLY_JOB, DIGEST_JOB):
+        carried = sorted(
+            set(_OPTION_WORD_RE.findall(_job_text(jobs[name]))) & spellings
+        )
+        assert not carried, f"{name} passes --post as {carried}"
 
 
 def _parsed_runs(
@@ -1020,8 +1280,15 @@ def _parsed_runs(
     parsed: dict[str, list[Any]] = {}
     for name, job in jobs.items():
         values = {**_setup_values(job), "CI_MERGE_REQUEST_IID": SAMPLE_IID}
+        total = int(job.get("parallel", 1))
+        indexes = range(1, total + 1) if name == NIGHTLY_JOB else [1]
         parsed[name] = [
-            _parsed(orchestrator, argv) for argv in _entry_argvs(job, values)
+            _parsed(orchestrator, argv)
+            for index in indexes
+            for argv in _entry_argvs(
+                job,
+                {**values, "CI_NODE_INDEX": str(index), "CI_NODE_TOTAL": str(total)},
+            )
         ]
     return parsed
 
@@ -1031,9 +1298,10 @@ def test_each_story_command_line_is_one_the_orchestrators_parser_reads_as_meant(
     jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
 ) -> None:
     """Read with the orchestrator's own ``parse_args``: the mode, the run
-    directory and the posting each command means, and in none of them the
-    development-only option or a stack other than the review stack, the one stack
-    a story video is made of and a reply is posted for."""
+    directory, the shard, the deploy summary and the posting each command means,
+    and in none of them the development-only option or a stack other than the
+    review stack, the one stack a story video is made of and a reply is posted
+    for."""
     parsed = _parsed_runs(jobs, orchestrator)
     review_stack = orchestrator.session.REVIEW_STACK
     for name, runs in parsed.items():
@@ -1044,20 +1312,60 @@ def test_each_story_command_line_is_one_the_orchestrators_parser_reads_as_meant(
             assert args.video == "findings", name
     precheck, run = parsed[MR_JOB]
     for args in (precheck, run):
-        assert args.mr == int(SAMPLE_IID)
+        assert args.mr == int(SAMPLE_IID) and args.all is False
         assert args.artifact_dir == Path("ux-test-stories")
     assert precheck.precheck is True and precheck.inputs is None
     assert run.precheck is False and run.inputs == Path("ux-test-stories/inputs.json")
+    total = int(jobs[NIGHTLY_JOB]["parallel"])
+    shards = parsed[NIGHTLY_JOB]
+    assert len(shards) == 2 * total
+    for index in range(1, total + 1):
+        precheck, run = shards[2 * (index - 1) : 2 * index]
+        for args in (precheck, run):
+            assert args.all is True and args.mr is None
+            assert orchestrator.parse_shard(args.shard) == (index, total)
+            assert args.deploy_summary == Path("deployment_summary.txt")
+            assert args.artifact_dir == Path(f"ux-test-stories/shard-{index}")
+        assert precheck.precheck is True and run.precheck is False
+    (digest,) = parsed[DIGEST_JOB]
+    assert digest.digest == "ux-test-stories" and digest.mr is None
+    assert digest.out == Path(_variables(jobs[DIGEST_JOB])["UX_ARTIFACTS"])
+    assert digest.precheck is False
+
+
+@pytest.mark.unit
+def test_the_shards_hold_the_nightly_set_inside_each_shards_time_gate(
+    jobs: dict[str, dict[str, Any]], orchestrator: ModuleType, catalogue: Any
+) -> None:
+    """A shard starts a flow only while one more can finish before the deadline,
+    so it holds at most ``k = floor((deadline - setup - reserve) / flow_minutes)``
+    flows; fewer than ``ceil(flows / k)`` shards would leave the night's last
+    flows unstarted, and more shards than flows would hold a runner for nothing."""
+    total = jobs[NIGHTLY_JOB]["parallel"]
+    assert isinstance(total, int), total
+    (tier,) = {args.tier for args in _parsed_runs(jobs, orchestrator)[NIGHTLY_JOB]}
+    stories = orchestrator.stories
+    tiers = stories.TIERS if tier == "all" else (tier,)
+    flows = len(stories.flow_keys(catalogue, tiers=tiers))
+    runs, limits = catalogue.runs, catalogue.limits
+    per_shard = (
+        runs.deadline_minutes - runs.setup_minutes - runs.reserve_minutes
+    ) // limits.flow_minutes
+    assert per_shard >= 1, "no flow fits inside the deadline at all"
+    assert math.ceil(flows / per_shard) <= total <= flows, (flows, per_shard, total)
 
 
 @pytest.mark.unit
 def test_each_job_keeps_its_artifacts_where_it_writes_them(
     jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
 ) -> None:
-    """Nothing kept holds a session or a credential."""
+    """One directory per shard, so the digest's download of every shard merges
+    without a clash, and nothing that holds a session or a credential."""
     root = orchestrator.DEFAULT_RUN_DIR_NAME
     kept = {
         MR_JOB: ([f"{root}/"], "1 week"),
+        NIGHTLY_JOB: ([f"{root}/"], "30 days"),
+        DIGEST_JOB: (["ux-test-stories-digest/"], "30 days"),
     }
     for name, job in jobs.items():
         artifacts = job["artifacts"]
@@ -1070,6 +1378,27 @@ def test_each_job_keeps_its_artifacts_where_it_writes_them(
         for path in paths:
             for word in ("scratch", "recordings", "aws_after_script"):
                 assert word not in path, (name, path)
+    assert (
+        _variables(jobs[NIGHTLY_JOB])["UX_ARTIFACTS"] == f"{root}/shard-$CI_NODE_INDEX"
+    )
+
+
+@pytest.mark.unit
+def test_a_later_night_finds_this_nights_digest_where_it_looks(
+    jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
+) -> None:
+    """A night's history is each earlier scheduled pipeline's digest job, found by
+    name, and its ``digest.json``, read from that job's artifacts; a job renamed or
+    an output moved here would leave every later night with nothing to compare."""
+    digest = jobs[DIGEST_JOB]
+    assert orchestrator.DIGEST_JOB == DIGEST_JOB
+    written = f"{_variables(digest)['UX_ARTIFACTS']}/digest.json"
+    assert orchestrator.DIGEST_ARTIFACT == written
+    assert any(written.startswith(path) for path in digest["artifacts"]["paths"])
+    nights = orchestrator.story_digest.HISTORY_NIGHTS
+    assert _days(digest["artifacts"]["expire_in"]) >= nights, (
+        f"a digest must outlive the {nights} nights a later one reads back"
+    )
 
 
 @pytest.mark.unit
@@ -1077,7 +1406,7 @@ def test_no_story_job_is_a_shared_gate() -> None:
     from test_ci_gate_parity import SHARED_GATES
 
     for gate in SHARED_GATES:
-        for name in (*STORY_JOBS, "ai-ux-test-stories"):
+        for name in (*STORY_JOBS, "ai-ux-test-stories", "ux_nightly"):
             assert name not in gate, (
                 f"SHARED_GATES names {gate!r}, which asserts the advisory "
                 "first-time-user stories run as a gate in both CIs"
@@ -1091,12 +1420,40 @@ def test_the_story_jobs_are_gitlab_only() -> None:
             assert needle not in text, f"{where} names {needle}"
 
 
+#: The environment only the digest declares, which scopes the Slack webhook.
+DIGEST_ENVIRONMENT = {"name": "ux-stories-digest", "action": "prepare"}
+
+
+@pytest.mark.unit
+def test_only_the_digest_declares_the_environment_its_webhook_is_scoped_to(
+    ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
+) -> None:
+    """``UX_TEST_STORIES_SLACK_WEBHOOK_URL`` is a bearer credential, set at the
+    digest's environment scope, so no other job may declare that environment;
+    ``prepare`` records no deployment."""
+    assert jobs[DIGEST_JOB]["environment"] == DIGEST_ENVIRONMENT
+    declaring = sorted(
+        name
+        for name, job in ci_config.items()
+        if isinstance(job, dict)
+        and isinstance(job.get("environment"), dict)
+        and job["environment"].get("name") == DIGEST_ENVIRONMENT["name"]
+    )
+    assert declaring == [DIGEST_JOB]
+    coverage = (REPO_ROOT / "scripts/sdlc/docs/CI_TEST_COVERAGE.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"environment scope `{DIGEST_ENVIRONMENT['name']}`" in coverage
+
+
 #: The variables the browser jobs' environment scopes, which the run jobs read.
 BROWSER_SCOPED_VARIABLES = (
     "UX_TEST_UI_ENV",
     "UX_TEST_PERSONAS",
     "UX_TEST_AWS_ACCOUNT_ID",
 )
+#: The variable the digest's environment scopes.
+DIGEST_SCOPED_VARIABLE = "UX_TEST_STORIES_SLACK_WEBHOOK_URL"
 
 
 @pytest.mark.unit
@@ -1107,7 +1464,7 @@ def test_the_run_jobs_declare_the_environment_the_mr_ux_test_declares(
     env and the account id among them, and a variable set at an environment's
     scope reaches only a job that declares that environment. A run job declaring
     another than ``ai_ux_test``'s would stop at its precheck with ``SKIPPED:`` and
-    exit 0 on every merge request, which nothing else notices.
+    exit 0 on every merge request and every night, which nothing else notices.
     ``prepare`` is the action that hands a job the variables without recording a
     deployment, and the declaration is the job's own, not inherited."""
     expected = ci_config[SETUP_JOB].get("environment")
@@ -1119,6 +1476,29 @@ def test_the_run_jobs_declare_the_environment_the_mr_ux_test_declares(
 
 
 @pytest.mark.unit
+def test_the_digest_declares_no_environment_the_browser_jobs_variables_reach(
+    ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]]
+) -> None:
+    """The digest posts to Slack and reads earlier nights, and runs no browser, so it
+    holds none of the personas, the UI env or the account id: its one environment
+    is neither the run jobs' nor the MR UI build's, and does not begin with the
+    name theirs share, so a wildcard of that name cannot match it. A wider one
+    could, ``ux-*`` among them, which is one reason those variables are scoped by
+    exact name and never by a wildcard. Nothing it runs names one of them."""
+    browser = {
+        ci_config[name]["environment"]["name"]
+        for name in (SETUP_JOB, "ux_test_build", *RUN_JOBS)
+    }
+    prefix = os.path.commonprefix(sorted(browser))
+    assert prefix, browser
+    digest = jobs[DIGEST_JOB]["environment"]["name"]
+    assert digest not in browser and not digest.startswith(prefix), (digest, prefix)
+    assert "extends" not in jobs[DIGEST_JOB]
+    for variable in BROWSER_SCOPED_VARIABLES:
+        assert variable not in _job_text(jobs[DIGEST_JOB]), variable
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("name", STORY_JOBS)
 def test_no_story_job_rule_reads_a_variable_an_environment_scopes(
     jobs: dict[str, dict[str, Any]], name: str
@@ -1127,7 +1507,11 @@ def test_no_story_job_rule_reads_a_variable_an_environment_scopes(
     ``rules`` at pipeline creation, so a rule reading one would quietly decide that
     the job does not exist."""
     rules = yaml.safe_dump(jobs[name]["rules"])
-    read = [variable for variable in BROWSER_SCOPED_VARIABLES if variable in rules]
+    read = [
+        variable
+        for variable in (*BROWSER_SCOPED_VARIABLES, DIGEST_SCOPED_VARIABLE)
+        if variable in rules
+    ]
     assert not read, f"{name}'s rules read {read}"
 
 
@@ -1153,9 +1537,10 @@ def test_the_story_jobs_comments_name_the_environment_the_run_jobs_declare(
         encoding="utf-8"
     )
     flat = " ".join(coverage.split())
-    assert f"declares `ai_ux_test`'s environment, `{name}`, with `action: prepare`" in (
+    assert f"declare `ai_ux_test`'s environment, `{name}`, with `action: prepare`" in (
         flat
     )
+    assert f"declares only `{DIGEST_ENVIRONMENT['name']}`, so it holds none" in flat
 
 
 @pytest.mark.unit

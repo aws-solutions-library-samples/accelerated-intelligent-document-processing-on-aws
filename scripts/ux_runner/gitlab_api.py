@@ -76,6 +76,15 @@ reads it.
 
 What it reads of earlier pipelines
 ----------------------------------
+:func:`scheduled_digests` is how the nightly story digest finds the nights
+before it: one listing of a branch's newest scheduled pipelines, bounded to one
+page, then each pipeline's jobs, then one file of one job's artifacts by job id,
+read only up to the caller's size and returned as it arrived, for the caller to
+validate. Each of those is a GET, so the token it is given is used to read and
+nothing else. The ref-based artifact endpoint is not used: it answers from the
+latest successful pipeline on the ref, which on a day with a merge is a push
+pipeline whose nightly jobs never ran.
+
 :func:`runs_started` is how the MR story job counts the runs an MR has had,
 posted or not: one listing of the MR's pipelines, each pipeline's jobs, and the
 first bytes of each story job's log, which says whether its precheck went ahead.
@@ -124,6 +133,8 @@ CREDENTIAL_SHOWN_AS = "[redacted]"
 #: Seconds between two looks for the code-review note.
 POLL_SECONDS = 30.0
 
+#: How many of a branch's newest scheduled pipelines one history listing reads.
+SCHEDULED_PIPELINES = 20
 #: The most of an MR's pipelines :func:`runs_started` reads, newest first.
 MR_PIPELINES = 100
 #: How much of a job's log :func:`runs_started` reads; a story job's precheck
@@ -138,6 +149,10 @@ _BOUNDARY_RE = re.compile(r"[0-9A-Za-z'()+_,./:=?-]{1,70}")
 _UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 _LENGTH_RE = re.compile(r"[0-9]{1,18}")
 _PAGE_RE = re.compile(r"[0-9]{1,9}")
+_ARTIFACT_PATH_RE = re.compile(
+    r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}(?:/[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}){0,7}"
+)
+_FINISHED_JOB_STATES = frozenset({"success", "failed"})
 _STARTED_JOB_STATES = frozenset({"running", "success", "failed", "canceled"})
 
 
@@ -601,6 +616,44 @@ class UxGitlab(review.Gitlab):
         )
         return _object(payload, "POST /uploads")
 
+    def scheduled_pipelines(
+        self, ref: str, *, limit: int = SCHEDULED_PIPELINES
+    ) -> list[int]:
+        """The ids of ``ref``'s newest scheduled pipelines, newest first.
+
+        One page of at most ``limit``, which is at most GitLab's largest page of
+        100. A pipeline listed for another ref or from another source is not
+        returned, so a filter the API did not apply cannot bring a push or a
+        manual pipeline in.
+        """
+        if not 1 <= limit <= 100:
+            raise ValueError("a pipeline listing reads 1 to 100 pipelines")
+        query = urllib.parse.urlencode(
+            {
+                "ref": ref,
+                "source": "schedule",
+                "order_by": "id",
+                "sort": "desc",
+                "per_page": limit,
+            }
+        )
+        payload, _ = self._send("GET", self._project_url(f"/pipelines?{query}"))
+        if not isinstance(payload, list):
+            raise review.Failure("GitLab answered GET /pipelines with no list")
+        ids: list[int] = []
+        for item in payload[:limit]:
+            if not isinstance(item, dict):
+                continue
+            ident = item.get("id")
+            if isinstance(ident, bool) or not isinstance(ident, int) or ident < 1:
+                continue
+            listed_for = (item.get("ref", ref), item.get("source", "schedule"))
+            if listed_for != (ref, "schedule"):
+                continue
+            if ident not in ids:
+                ids.append(ident)
+        return sorted(ids, reverse=True)
+
     def pipeline_jobs(self, pipeline_id: int) -> list[dict[str, Any]]:
         """Every job of one pipeline, the latest attempt of each, as GitLab lists them."""
         return self._pages(f"/pipelines/{int(pipeline_id)}/jobs")
@@ -630,6 +683,19 @@ class UxGitlab(review.Gitlab):
         """The first ``limit`` bytes of one job's log, as GitLab stores it."""
         url = self._project_url(f"/jobs/{int(job_id)}/trace")
         payload, _ = self._send("GET", url, as_bytes=True, limit=limit, head=True)
+        return payload if isinstance(payload, bytes) else b""
+
+    def job_artifact(self, job_id: int, path: str, *, limit: int) -> bytes:
+        """One file of a job's artifacts as it is stored, refused past ``limit`` bytes.
+
+        The bytes are returned whatever type GitLab names, for the caller to
+        validate; ``path`` is a path inside the artifacts, never one on disk.
+        """
+        if not _ARTIFACT_PATH_RE.fullmatch(path):
+            raise ValueError("not an artifact path this client reads")
+        quoted = urllib.parse.quote(path, safe="/")
+        url = self._project_url(f"/jobs/{int(job_id)}/artifacts/{quoted}")
+        payload, _ = self._send("GET", url, as_bytes=True, limit=limit)
         return payload if isinstance(payload, bytes) else b""
 
 
@@ -755,6 +821,44 @@ def wait_for_review_note(
         sleep(poll_seconds)
 
 
+def scheduled_digests(
+    forge: UxGitlab,
+    *,
+    ref: str,
+    job: str,
+    artifact: str,
+    max_bytes: int,
+    deadline: float,
+    own_pipeline: int | None = None,
+    limit: int = SCHEDULED_PIPELINES,
+    clock: Callable[[], float] = time.monotonic,
+) -> list[tuple[int, bytes | None]]:
+    """``artifact`` of ``job`` in each of ``ref``'s newest scheduled pipelines.
+
+    Newest first, with ``own_pipeline`` left out: one listing of at most
+    ``limit`` pipelines, then each pipeline's jobs, then the newest finished
+    ``job``'s file, read by job id and refused past ``max_bytes``. A pipeline
+    whose job is absent or unfinished, or whose jobs or file cannot be read, is
+    paired with None, a gap rather than the end of the history, and so is every
+    pipeline not yet reached at ``deadline`` on ``clock``. A listing that cannot
+    be read raises, as any other request here does.
+    """
+    found: list[tuple[int, bytes | None]] = []
+    for pipeline_id in forge.scheduled_pipelines(ref, limit=limit):
+        if pipeline_id == own_pipeline:
+            continue
+        raw: bytes | None = None
+        if clock() < deadline:
+            try:
+                ident = _finished_job(forge.pipeline_jobs(pipeline_id), job)
+                if ident is not None:
+                    raw = forge.job_artifact(ident, artifact, limit=max_bytes)
+            except (review.Skip, review.Failure):
+                raw = None
+        found.append((pipeline_id, raw))
+    return found
+
+
 def runs_started(
     forge: UxGitlab,
     iid: int,
@@ -802,6 +906,20 @@ def runs_started(
             if marker.search(head):
                 count += 1
     return min(count, enough)
+
+
+def _finished_job(jobs: Sequence[Mapping[str, Any]], name: str) -> int | None:
+    """The id of the newest job called ``name`` that ran to its end, or None."""
+    ids = [
+        ident
+        for item in jobs
+        if item.get("name") == name
+        and item.get("status") in _FINISHED_JOB_STATES
+        and isinstance(ident := item.get("id"), int)
+        and not isinstance(ident, bool)
+        and ident > 0
+    ]
+    return max(ids) if ids else None
 
 
 def safe_upload_url(

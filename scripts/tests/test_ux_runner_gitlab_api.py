@@ -1113,12 +1113,205 @@ def test_the_wait_drives_the_real_client_over_the_wire(gitlab: _FakeGitlab) -> N
     ]
 
 
+# --- earlier pipelines: what the nightly digest compares with ---------------------
+
+DIGEST_JOB = "ai_ux_test_stories_digest"
+DIGEST_FILE = "ux-test-stories-digest/digest.json"
+PIPELINES = (
+    f"{PROJECT_PATH}/pipelines?ref=develop&source=schedule&order_by=id&sort=desc"
+    "&per_page=20"
+)
+
+
 def _jobs(pipeline: int) -> str:
     return f"{PROJECT_PATH}/pipelines/{pipeline}/jobs?per_page=100&page=1"
 
 
-def _job(ident: object, name: str, status: str = "success") -> object:
+def _artifact(job: int) -> str:
+    return f"{PROJECT_PATH}/jobs/{job}/artifacts/{DIGEST_FILE}"
+
+
+def _pipeline(ident: object, **extra: Any) -> dict[str, Any]:
+    return {"id": ident, "ref": "develop", "source": "schedule", **extra}
+
+
+def _job(ident: object, name: str = DIGEST_JOB, status: str = "success") -> object:
     return {"id": ident, "name": name, "status": status}
+
+
+def _digests(server: _FakeGitlab, **overrides: Any) -> list[tuple[int, bytes | None]]:
+    values: dict[str, Any] = {
+        "ref": "develop",
+        "job": DIGEST_JOB,
+        "artifact": DIGEST_FILE,
+        "max_bytes": 1024,
+        "deadline": 1e9,
+        **overrides,
+    }
+    return gitlab_api.scheduled_digests(_forge(server), **values)
+
+
+@pytest.mark.unit
+def test_the_history_reads_each_scheduled_nights_digest_by_job_id(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer(
+        "GET", PIPELINES, [_pipeline(30), _pipeline(29), _pipeline(28), _pipeline(27)]
+    )
+    gitlab.answer(
+        "GET",
+        _jobs(29),
+        [
+            _job(2904, name="ai_ux_test_stories_nightly"),
+            _job(2902),
+            _job(2903, status="failed"),
+            _job(2905, status="running"),
+            _job(True),
+        ],
+    )
+    gitlab.answer(
+        "GET",
+        _artifact(2903),
+        headers={"Content-Type": "application/octet-stream"},
+        raw=b'{"night": 29}',
+    )
+    gitlab.answer("GET", _jobs(28), [_job(2801, status="manual"), "not a job"])
+    gitlab.answer("GET", _jobs(27), [_job(2701)])
+    found = _digests(gitlab, own_pipeline=30)
+    assert found == [(29, b'{"night": 29}'), (28, None), (27, None)]
+    assert [(r["method"], r["path"]) for r in gitlab.requests] == [
+        ("GET", PIPELINES),
+        ("GET", _jobs(29)),
+        ("GET", _artifact(2903)),
+        ("GET", _jobs(28)),
+        ("GET", _jobs(27)),
+        ("GET", _artifact(2701)),
+    ]
+    assert all(r["headers"]["private-token"] == CREDENTIAL for r in gitlab.requests)
+
+
+@pytest.mark.unit
+def test_a_night_that_cannot_be_read_is_a_gap_and_the_history_goes_on(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, [_pipeline(29), _pipeline(28), _pipeline(27)])
+    gitlab.answer("GET", _jobs(29), {"message": "boom"}, status=500)
+    gitlab.answer("GET", _jobs(28), [_job(2801)])
+    gitlab.answer("GET", _artifact(2801), {"message": "too big"}, status=403)
+    gitlab.answer("GET", _jobs(27), [_job(2701)])
+    gitlab.answer("GET", _artifact(2701), raw=b"{}")
+    assert _digests(gitlab) == [(29, None), (28, None), (27, b"{}")]
+
+
+@pytest.mark.unit
+def test_a_digest_past_its_bound_is_a_gap_and_is_read_no_further(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, [_pipeline(29)])
+    gitlab.answer("GET", _jobs(29), [_job(2901)])
+    gitlab.answer("GET", _artifact(2901), raw=b" " * 1025)
+    assert _digests(gitlab) == [(29, None)]
+    with pytest.raises(review.Failure, match="is 1025 bytes, more than the 1024"):
+        _forge(gitlab).job_artifact(2901, DIGEST_FILE, limit=1024)
+    unmeasured = JSON_HEAD + b"Connection: close\r\n\r\n" + b" " * 4096
+    with _raw_server(_sender(unmeasured)) as api_url:
+        forge = gitlab_api.UxGitlab(api_url, "group/proj", CREDENTIAL)
+        with pytest.raises(review.Failure, match="runs past the 1024 bytes"):
+            forge.job_artifact(2901, DIGEST_FILE, limit=1024)
+
+
+@pytest.mark.unit
+def test_nights_not_reached_by_the_deadline_are_gaps_and_are_not_asked_for(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, [_pipeline(29), _pipeline(28), _pipeline(27)])
+    gitlab.answer("GET", _jobs(29), [_job(2901)])
+    gitlab.answer("GET", _artifact(2901), raw=b"{}")
+    times = iter([0.0, 10.0, 11.0])
+    found = _digests(gitlab, deadline=10.0, clock=lambda: next(times))
+    assert found == [(29, b"{}"), (28, None), (27, None)]
+    assert not [r for r in gitlab.requests if r["path"] in (_jobs(28), _jobs(27))]
+
+
+@pytest.mark.unit
+def test_a_listing_that_cannot_be_read_raises_as_any_request_does(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer("GET", PIPELINES, {"message": "403 Forbidden"}, status=403)
+    with pytest.raises(review.Skip, match="403"):
+        _digests(gitlab)
+    gitlab.answer("GET", PIPELINES, {"pipelines": []})
+    with pytest.raises(review.Failure, match="no list"):
+        _digests(gitlab)
+
+
+@pytest.mark.unit
+def test_the_listing_returns_only_this_refs_scheduled_pipelines(
+    gitlab: _FakeGitlab,
+) -> None:
+    gitlab.answer(
+        "GET",
+        PIPELINES,
+        [
+            _pipeline(33, ref="feature/x"),
+            _pipeline(32, source="push"),
+            _pipeline(True),
+            _pipeline(0),
+            _pipeline("31"),
+            "not a pipeline",
+            {"id": 29},
+            _pipeline(29),
+            _pipeline(30),
+        ],
+    )
+    assert _forge(gitlab).scheduled_pipelines("develop") == [30, 29]
+
+
+@pytest.mark.unit
+def test_the_listing_is_one_page_of_at_most_a_hundred(gitlab: _FakeGitlab) -> None:
+    listing = PIPELINES.replace("per_page=20", "per_page=2")
+    gitlab.answer("GET", listing, [_pipeline(n) for n in (30, 29, 28)])
+    assert _forge(gitlab).scheduled_pipelines("develop", limit=2) == [30, 29]
+    for limit in (0, 101):
+        with pytest.raises(ValueError, match="1 to 100"):
+            _forge(gitlab).scheduled_pipelines("develop", limit=limit)
+    assert [r["path"] for r in gitlab.requests] == [listing]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "kind", ["application/json", "application/octet-stream", "text/html"]
+)
+def test_an_artifact_is_returned_as_stored_whatever_type_gitlab_names(
+    gitlab: _FakeGitlab, kind: str
+) -> None:
+    gitlab.answer("GET", _artifact(7), headers={"Content-Type": kind}, raw=b"[not json")
+    assert _forge(gitlab).job_artifact(7, DIGEST_FILE, limit=64) == b"[not json"
+    gitlab.answer("GET", _artifact(8), raw=b"")
+    assert _forge(gitlab).job_artifact(8, DIGEST_FILE, limit=64) == b""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    ["", "../digest.json", "/etc/passwd", "a//b", "a/./b", "a/../b", "a b", "x" * 129],
+)
+def test_an_artifact_path_is_a_path_inside_the_artifacts(
+    gitlab: _FakeGitlab, path: str
+) -> None:
+    with pytest.raises(ValueError, match="not an artifact path"):
+        _forge(gitlab).job_artifact(7, path, limit=64)
+    assert gitlab.requests == []
+
+
+@pytest.mark.unit
+def test_a_bound_a_request_names_never_raises_the_clients_own(
+    gitlab: _FakeGitlab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gitlab_api, "MAX_ANSWER_BYTES", 1024)
+    gitlab.answer("GET", _artifact(7), raw=b" " * 2048)
+    with pytest.raises(review.Failure, match="is 2048 bytes, more than the 1024"):
+        _forge(gitlab).job_artifact(7, DIGEST_FILE, limit=4096)
 
 
 MR_PIPELINES = f"{PROJECT_PATH}/merge_requests/812/pipelines?per_page=100"

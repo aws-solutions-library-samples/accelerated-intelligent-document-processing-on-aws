@@ -24,9 +24,9 @@ one. Most of them are security properties rather than tidiness.
   job declares an environment of its own with ``action: prepare``, which hands a
   job the variables scoped to it and creates no deployment, so the persona's
   password, scoped to ``ai_ux_test``'s alone, never reaches the job that runs the
-  MR's ``npm ci``. The only other job that declares either environment is the
-  first-time-user story job that drives the browser, which reads what
-  ``ai_ux_test`` reads and declares exactly its environment. No job inherits one,
+  MR's ``npm ci``. The only other jobs that declare either environment are the
+  two first-time-user story jobs that drive the browser, which read what
+  ``ai_ux_test`` reads and declare exactly its environment. No job inherits one,
   no rule reads a scoped variable, and the docs tell the operator each variable's
   exact scopes and name the other jobs a variable left at the default one reaches
   through ``npm ci``.
@@ -75,7 +75,7 @@ TEST_JOB = "ai_ux_test"
 UX_JOBS = (BUILD_JOB, TEST_JOB)
 #: The first-time-user story jobs that drive the browser. They read the variables
 #: ``ai_ux_test`` reads, so they declare its environment, and nothing else.
-STORY_RUN_JOBS = ("ai_ux_test_stories",)
+STORY_RUN_JOBS = ("ai_ux_test_stories", "ai_ux_test_stories_nightly")
 #: Every job that may declare an environment a UX variable is scoped to.
 UX_ENVIRONMENT_JOBS = (*UX_JOBS, *STORY_RUN_JOBS)
 WRAPPER_KEY = ".without_job_secrets"
@@ -980,14 +980,14 @@ def test_the_build_jobs_skip_line_names_the_scope_its_copy_belongs_at(
 @pytest.mark.unit
 def test_no_other_job_declares_or_inherits_a_ux_environment(ci_config) -> None:
     """Declaring an environment is what hands a job the variables scoped to it, the
-    persona's password among them, so no job but the three in
+    persona's password among them, so no job but the four in
     :data:`UX_ENVIRONMENT_JOBS` reaches one a UX scope could match: either UX
     environment, another name beginning as both do, which a wildcard scope would
-    also match, or a name built from a variable. The story job among them
-    reaches exactly ``ai_ux_test``'s, by declaring it. A job reaches one through
-    ``extends`` as well as by declaring it, and a hidden template counts, since
-    another job can extend it. Read over this one file, which therefore includes
-    no other and starts no child pipeline."""
+    also match, or a name built from a variable. Each of the two story jobs among
+    them reaches exactly ``ai_ux_test``'s, by declaring it. A job reaches one
+    through ``extends`` as well as by declaring it, and a hidden template counts,
+    since another job can extend it. Read over this one file, which therefore
+    includes no other and starts no child pipeline."""
     assert "include" not in ci_config, (
         ".gitlab-ci.yml now includes other files, whose jobs this test cannot see"
     )
@@ -1022,6 +1022,7 @@ _PROBE = {"script": ["echo probe"]}
     [
         ({"probe": {**_PROBE, "extends": BUILD_JOB}}, {"probe"}),
         ({"probe": {**_PROBE, "extends": [".base", TEST_JOB]}, ".base": {}}, {"probe"}),
+        ({"probe": {**_PROBE, "extends": STORY_RUN_JOBS[1]}}, {"probe"}),
         (
             {
                 ".base": {"extends": TEST_JOB},
@@ -1568,6 +1569,8 @@ _STORY_MAKE_VARIABLES = (
     "STORY",
     "AS",
     "MR",
+    "ALL",
+    "JOBS",
     "VIDEO",
     "POST",
     "INTERACTIVE",
@@ -1622,6 +1625,7 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "ai-ux-test-stories-local",
         "STORY=find-where-to-start",
         "AS=new-analyst",
+        "JOBS=2",
         "VIDEO=never",
         "INTERACTIVE=1",
         "PORT=9333",
@@ -1640,6 +1644,8 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "find-where-to-start",
         "--as",
         "new-analyst",
+        "--jobs",
+        "2",
         "--video",
         "never",
         "--interactive",
@@ -1658,9 +1664,9 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "--reruns",
         "0",
     ]
-    code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812")
+    code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812", "ALL=yes")
     assert code == 0, err[-400:]
-    assert argv[2:] == ["--mr", "812"]
+    assert argv[2:] == ["--mr", "812", "--all"]
 
 
 @pytest.mark.unit
@@ -1772,6 +1778,7 @@ def test_the_gitignore_keeps_the_jobs_output_and_the_run_options_out_of_the_tree
         "ui-change.json",
         "ci_run_options.json",
         "ux-test-stories/",
+        "ux-test-stories-digest/",
     ):
         assert entry in lines, f".gitignore does not list {entry}"
 

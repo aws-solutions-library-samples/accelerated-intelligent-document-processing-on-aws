@@ -26,10 +26,10 @@ What is pinned, by the claim each test names:
   outputs byte for byte, ``--check`` included;
 * nothing is posted without ``--post``, ``--post`` needs a merge request and the
   review stack and every audit clean, and the reply goes in the review's thread;
-* the precheck's harness pin, its merge request decisions and the watched run's
-  transcript;
-* the harness list is closed over its imports, and ``--help`` and ``--judge``
-  import nothing outside the standard library.
+* the precheck's harness pin, its merge request decisions, the shard and merge
+  record rules, the digest entry and the watched run's transcript;
+* the harness list is closed over its imports, and ``--help``, ``--judge``,
+  ``--merge`` and ``--digest`` import nothing outside the standard library.
 """
 
 from __future__ import annotations
@@ -74,6 +74,7 @@ from ux_runner import (  # noqa: E402
     session,
     signin,
     stories,
+    story_digest,
     story_prompt,
     story_relay,
     story_section,
@@ -1966,6 +1967,8 @@ def test_a_run_records_its_whole_confinement(harness: StoryHarness) -> None:
 def test_post_is_refused_outside_a_merge_request_run() -> None:
     with pytest.raises(SystemExit):
         runner.parse_args(["--story", "find-where-to-start", "--post"])
+    with pytest.raises(SystemExit):
+        runner.parse_args(["--all", "--post"])
 
 
 @pytest.mark.unit
@@ -2006,8 +2009,8 @@ def test_which_ui_an_mr_tests_follows_what_it_changes(harness: StoryHarness) -> 
     )
     code, record = _precheck(harness, *_mr(harness, backend))
     assert record["detail"].startswith(
-        "only the backend or the API contract changes besides the CHANGELOG; it "
-        "selects route-folder-to-profile, "
+        "only the backend or the API contract changes besides the CHANGELOG; the "
+        "nightly run after the merge runs route-folder-to-profile, "
         "tell-why-a-document-used-its-configuration"
     )
     tests_only = _story_inputs(changed=(ChangedFile("M", "CHANGELOG.md"),))
@@ -2034,6 +2037,9 @@ def test_a_deployed_ui_run_without_any_ui_env_is_skipped_naming_the_variable(
     del harness.environ["UX_TEST_UI_ENV"]
     docs_only = _story_inputs(changed=(ChangedFile("M", "docs/web-ui.md"),))
     code, record = _precheck(harness, *_mr(harness, docs_only))
+    assert (code, record["status"]) == (0, "skipped")
+    assert record["detail"].startswith("UX_TEST_UI_ENV is not set")
+    code, record = _precheck(harness, *_night(harness, UPDATED_ROW, "--shard", "1/5"))
     assert (code, record["status"]) == (0, "skipped")
     assert record["detail"].startswith("UX_TEST_UI_ENV is not set")
 
@@ -2308,6 +2314,883 @@ def test_story_inputs_refuse_any_other_shape(
         runner.StoryInputs.from_json(data)
 
 
+# --- the nightly, shards, merge and digest ----------------------------------------
+
+UPDATED_ROW = (
+    "🌙 UX review stack (idp-ux-nightly, us-east-1)\n"
+    "  ✅ Updated in place to tonight's template — UPDATE_COMPLETE in 12.5 min\n"
+)
+RUNNING_ROW = (
+    "🌙 UX review stack (idp-ux-nightly, us-east-1)\n"
+    "  ⚠️ Still updating when the run ended — 30.0 min so far; CloudFormation "
+    "carries on\n"
+)
+
+
+def _night(harness: StoryHarness, summary: str, *extra: str) -> list[str]:
+    path = harness.tmp / "deployment_summary.txt"
+    path.write_text(summary, encoding="utf-8")
+    harness.environ.update(CI="true", CI_COMMIT_SHA=HEAD, CI_PIPELINE_ID="12345")
+    return ["--all", "--deploy-summary", str(path), *extra]
+
+
+@pytest.mark.unit
+def test_a_shard_runs_its_round_robin_share_of_the_nightly_set(
+    harness: StoryHarness,
+) -> None:
+    argv = harness.argv(*_night(harness, UPDATED_ROW, "--shard", "2/5"), story="")
+    assert runner.main(argv, harness.runtime()) == 0
+    record = harness.record()
+    keys = stories.flow_keys(stories.load_catalogue())
+    shard = [str(key) for key in stories.shard(keys, 2, 5)]
+    assert sorted({flow["key"] for flow in record["flows"]}) == shard
+    assert record["mode"] == "nightly"
+    assert record["shard"] == {"index": 2, "total": 5}
+    assert record["stack_state"] == "updated"
+    assert record["docs"]["ref"] == HEAD and record["docs"]["source"] == "git"
+
+
+@pytest.mark.unit
+def test_a_review_stack_still_updating_skips_the_shard_at_the_precheck(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, record = _precheck(harness, *_night(harness, RUNNING_ROW, "--shard", "1/5"))
+    assert (code, record["status"]) == (0, "skipped")
+    assert "still updating" in record["detail"]
+    assert not (harness.artifacts / "proceed").exists()
+
+
+@pytest.mark.unit
+def test_a_missing_deployment_summary_runs_and_records_the_night_as_missing(
+    harness: StoryHarness,
+) -> None:
+    harness.environ.update(CI="true", CI_COMMIT_SHA=HEAD)
+    argv = harness.argv(
+        "--all",
+        "--deploy-summary",
+        str(harness.tmp / "absent.txt"),
+        "--shard",
+        "5/5",
+        story="",
+    )
+    assert runner.main(argv, harness.runtime()) == 0
+    assert harness.record()["stack_state"] == "missing"
+
+
+@pytest.mark.unit
+def test_at_night_a_flow_that_gave_up_runs_once_more_at_twice_its_budget(
+    harness: StoryHarness,
+) -> None:
+    """The nightly's own re-run, at twice the step budget and the extended cap,
+    which a local run of the same flow does not get."""
+    key = stories.FlowKey("find-where-to-start", "new-analyst")
+    keys = stories.flow_keys(stories.load_catalogue())
+    spec = f"{keys.index(key) + 1}/{len(keys)}"
+    harness.script = {str(key): ["silent", "done"]}
+    harness.stop = "max_turns"
+    argv = harness.argv(
+        *_night(harness, UPDATED_ROW, "--run-usd", "100", "--shard", spec), story=""
+    )
+    assert runner.main(argv, harness.runtime()) == 0
+    flows = harness.record()["flows"]
+    assert [(f["key"], f["attempt"], f["budget_scale"]) for f in flows] == [
+        (str(key), 1, 1),
+        (str(key), 2, 2),
+    ]
+    second = harness.argvs[1]
+    assert second[second.index("--max-budget-usd") + 1] == "6.00"
+    assert flows[1]["budget"] == 2 * flows[0]["budget"]
+    verdicts = [flow["verdict"] for flow in harness.results()["flows"]]
+    assert verdicts == ["gave_up", "done"]
+    harness.environ.pop("CI")
+    harness.artifacts = harness.tmp / "local" / "ux-test-stories"
+    harness.argvs.clear()
+    argv = harness.argv("--as", "new-analyst", "--run-usd", "100", story=key.story)
+    assert runner.main(argv, harness.runtime()) == 0
+    assert len(harness.argvs) == 1
+
+
+@pytest.mark.unit
+def test_at_night_a_flow_its_wall_clock_stopped_is_not_run_again_for_it(
+    harness: StoryHarness,
+) -> None:
+    key = stories.FlowKey("find-where-to-start", "new-analyst")
+    keys = stories.flow_keys(stories.load_catalogue())
+    spec = f"{keys.index(key) + 1}/{len(keys)}"
+    harness.script = {str(key): ["silent"]}
+    harness.timed_out = True
+    argv = harness.argv(
+        *_night(harness, UPDATED_ROW, "--run-usd", "100", "--shard", spec), story=""
+    )
+    assert runner.main(argv, harness.runtime()) == 0
+    (only,) = harness.results()["flows"]
+    assert (only["verdict"], only["sub_kind"]) == ("gave_up", "wall_clock")
+    assert len(harness.argvs) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("left", [True, False, None])
+@pytest.mark.parametrize("right", [True, False, None])
+def test_a_merged_review_stack_flag_follows_the_runs_own_rule_over_every_shard(
+    left: bool | None, right: bool | None
+) -> None:
+    def part(flag: bool | None, key: str) -> dict[str, Any]:
+        return {
+            "schema": story_verdict.RUN_SCHEMA,
+            "version": story_verdict.RUN_VERSION,
+            "judgement_revision": story_verdict.JUDGEMENT_REVISION,
+            "stack": {
+                "name": REVIEW,
+                "version": None,
+                "build": None,
+                "review_stack": flag,
+            },
+            "flows": [],
+            "spend_usd": 0.0,
+            "video_withheld_flows": (
+                [{"key": key, "attempt": 1, "reason": PAGE_REASON}]
+                if flag is False
+                else []
+            ),
+        }
+
+    one = runner.merge_records([part(left, "b-story@x"), part(right, "a-story@y")])
+    other = runner.merge_records([part(right, "a-story@y"), part(left, "b-story@x")])
+    known = [flag for flag in (left, right) if flag is not None]
+    expected = all(known) if known else None
+    assert one["stack"]["review_stack"] is expected
+    assert other["stack"]["review_stack"] is expected
+    assert one["video_withheld_flows"] == other["video_withheld_flows"]
+    assert one["video_withheld"] == other["video_withheld"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("left", ["full", "dev-unconfined", None])
+@pytest.mark.parametrize("right", ["full", "dev-unconfined", None])
+def test_a_merged_confinement_is_full_only_when_every_shards_is(
+    left: str | None, right: str | None
+) -> None:
+    def part(confinement: str | None) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "schema": story_verdict.RUN_SCHEMA,
+            "version": story_verdict.RUN_VERSION,
+            "judgement_revision": story_verdict.JUDGEMENT_REVISION,
+            "stack": {"name": REVIEW, "review_stack": True},
+            "flows": [],
+            "spend_usd": 0.0,
+        }
+        if confinement is not None:
+            record["confinement"] = confinement
+        return record
+
+    one = runner.merge_records([part(left), part(right)])
+    other = runner.merge_records([part(right), part(left)])
+    if left == right == "full":
+        expected = "full"
+    elif "dev-unconfined" in (left, right):
+        expected = "dev-unconfined"
+    else:
+        expected = None
+    assert one["confinement"] == other["confinement"] == expected
+
+
+def _shard_runs(harness: StoryHarness) -> list[Path]:
+    """Two real shard runs of route-folder-to-profile, as the Docker runner makes them."""
+    dirs = []
+    for index in (1, 2):
+        harness.artifacts = harness.tmp / "shards" / f"shard-{index}"
+        argv = harness.argv("--shard", f"{index}/2", "--reruns", "0")
+        assert runner.main(argv, harness.runtime()) == 0
+        dirs.append(harness.artifacts)
+    return dirs
+
+
+@pytest.mark.unit
+def test_the_digest_judges_the_shards_journals_and_leaves_their_media_behind(
+    harness: StoryHarness,
+) -> None:
+    dirs = _shard_runs(harness)
+    for shard in dirs:
+        (shard / "flow-1.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    harness.environ.update({"CI_PIPELINE_ID": "77", "CI_COMMIT_SHA": HEAD})
+    out = harness.tmp / "digest"
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert list(out.glob("*.mp4")) == []
+    assert not [path for path in out.rglob("screens") if path.is_dir()]
+    assert list(out.rglob("journal.jsonl"))
+    digest = json.loads((out / "digest.json").read_text(encoding="utf-8"))
+    assert (digest["shards_ran"], digest["injections"], digest["reruns_not_run"]) == (
+        2,
+        0,
+        0,
+    )
+    merged = harness.tmp / "merged"
+    argv = ["--merge", *map(str, dirs), "--out", str(merged)]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert (merged / "flow-1.mp4").is_file()
+
+
+@pytest.mark.unit
+def test_shards_judged_under_different_revisions_still_merge_from_their_journals(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dirs = _shard_runs(harness)
+    results = dirs[1] / "results.json"
+    document = json.loads(results.read_text(encoding="utf-8"))
+    document["judgement_revision"] = story_verdict.JUDGEMENT_REVISION + 1
+    results.write_text(json.dumps(document), encoding="utf-8")
+    out = harness.tmp / "merged" / "ux-test-stories"
+    capsys.readouterr()
+    argv = ["--merge", *map(str, dirs), "--out", str(out)]
+    assert runner.main(argv, harness.runtime()) == 0
+    lines = _lines(capsys)
+    assert any(
+        line.startswith("WARNING: the shards' own results cannot be compared")
+        for line in lines
+    )
+    merged = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert merged["judgement_revision"] == story_verdict.JUDGEMENT_REVISION
+
+
+@pytest.mark.unit
+def test_merge_joins_shards_into_a_run_directory_that_judges_the_same(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness.facts["Author"] = dataclasses.replace(
+        harness.default_facts, stack_name=None
+    )
+    dirs = _shard_runs(harness)
+    out = harness.tmp / "merged" / "ux-test-stories"
+    capsys.readouterr()
+    argv = ["--merge", *map(str, dirs), "--out", str(out)]
+    assert runner.main(argv, harness.runtime()) == 0
+    lines = _lines(capsys)
+    assert lines[-1] == f"MERGED: 2 run(s) into {out}; {_cost(out)}"
+    assert not [line for line in lines if line.startswith("WARNING:")]
+    merged = json.loads((out / "story-run.json").read_text("utf-8"))
+    assert [flow["key"] for flow in merged["flows"]] == [
+        "route-folder-to-profile@new-analyst",
+        "route-folder-to-profile@platform-admin",
+    ]
+    assert merged["stack"]["review_stack"] is False
+    assert merged["video_withheld"] == PAGE_REASON
+    assert merged["shard"] is None
+    pairs = [
+        (stories.FlowKey.parse(flow["key"]), flow["series"]) for flow in merged["flows"]
+    ]
+    assert merged["reply"]["sel"] == runner.changelog_select.selection_hash(
+        pairs, ui_source="deployed", docs_tree="worktree"
+    )
+    shard_sels = {
+        json.loads((path / "story-run.json").read_text("utf-8"))["reply"]["sel"]
+        for path in dirs
+    }
+    assert merged["reply"]["sel"] not in shard_sels
+    assert runner.main(["--judge", str(out), "--check"], harness.runtime()) == 0
+    for flow in merged["flows"]:
+        assert (out / flow["journal"]).is_file()
+
+
+@pytest.mark.unit
+def test_a_merged_run_says_how_every_shards_flows_were_chosen(
+    harness: StoryHarness,
+) -> None:
+    """The merged reply names every hand-picked shard's flows, not the first
+    shard's alone, and shards of a set are that whole set, with no shard named."""
+    dirs = _shard_runs(harness)
+    parts = [
+        json.loads((path / "story-run.json").read_text(encoding="utf-8"))
+        for path in dirs
+    ]
+    assert [part["reply"]["chosen_by"]["flows"] for part in parts] == [
+        ["route-folder-to-profile@new-analyst"],
+        ["route-folder-to-profile@platform-admin"],
+    ]
+    out = harness.tmp / "merged" / "ux-test-stories"
+    argv = ["--merge", *map(str, dirs), "--out", str(out)]
+    assert runner.main(argv, harness.runtime()) == 0
+    merged = json.loads((out / "story-run.json").read_text("utf-8"))
+    assert merged["reply"]["chosen_by"] == {
+        "kind": "story",
+        "flows": [
+            "route-folder-to-profile@new-analyst",
+            "route-folder-to-profile@platform-admin",
+        ],
+    }
+    lines = (out / "section.md").read_text(encoding="utf-8").splitlines()
+    assert lines[3] == (
+        "Chosen by hand: route-folder-to-profile as new analyst, "
+        "route-folder-to-profile as platform admin"
+    )
+    for index, part in enumerate(parts, start=1):
+        part["reply"]["chosen_by"] = {
+            "kind": "all",
+            "tier": "p0",
+            "shard": f"{index}/2",
+        }
+    assert runner.merge_records(parts)["reply"]["chosen_by"] == {
+        "kind": "all",
+        "tier": "p0",
+        "shard": None,
+    }
+    parts[1]["reply"]["chosen_by"] = {"kind": "replay"}
+    assert runner.merge_records(parts)["reply"]["chosen_by"] == {
+        "kind": "all",
+        "tier": "p0",
+        "shard": "1/2",
+    }
+    del parts[1]["reply"]["chosen_by"]
+    assert runner.merge_records(parts)["reply"]["chosen_by"]["shard"] == "1/2"
+
+
+@pytest.mark.unit
+def test_merge_finds_the_shards_under_one_parent_in_shard_order(tmp_path: Path) -> None:
+    parent = tmp_path / "shards"
+    for index in (10, 2, 1):
+        folder = parent / f"shard-{index}"
+        folder.mkdir(parents=True)
+        (folder / "story-run.json").write_text("{}", encoding="utf-8")
+    (parent / "not-a-run").mkdir()
+    found = runner.shard_dirs([parent])
+    assert [path.name for path in found] == ["shard-1", "shard-2", "shard-10"]
+
+
+@pytest.mark.unit
+def test_the_digest_merges_the_shards_and_says_when_nothing_was_compared(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _shard_runs(harness)
+    harness.environ.update(CI_COMMIT_SHA=HEAD, CI_PIPELINE_ID="12345")
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = [
+        "--digest",
+        str(harness.tmp / "shards"),
+        "--out",
+        str(out),
+        "--repo-dir",
+        str(REPO_ROOT),
+    ]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert _lines(capsys)[-1] == (
+        f"DIGEST: 2 shard(s), 0 regression(s), in {out}; {_cost(out)}"
+    )
+    digest = json.loads((out / "digest.json").read_text("utf-8"))
+    assert digest["schema"] == story_digest.DIGEST_SCHEMA
+    assert digest["pipeline_id"] == 12345 and digest["develop_sha"] == HEAD
+    assert digest["stack_state"] == "missing" and digest["comparable"] is False
+    text = (out / "digest.md").read_text(encoding="utf-8")
+    assert text.startswith("# First-time-user stories — nightly digest")
+    assert text.rstrip().endswith("_History unavailable: nothing compared._")
+    history = json.loads((out / "history.json").read_text("utf-8"))
+    assert history == {"available": False, "gaps": [], "nights": []}
+    assert (out / "results.json").is_file() and (out / "flows").is_dir()
+
+
+@pytest.mark.unit
+def test_the_digest_judges_regressions_with_the_reruns_that_did_not_fit(
+    harness: StoryHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keys the shards' records name in ``reruns_not_run`` reach the
+    regressions, which report such a flow as unconfirmed rather than leaving it
+    out."""
+    dirs = _shard_runs(harness)
+    record_path = dirs[1] / "story-run.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["reruns_not_run"] = [
+        {"key": "route-folder-to-profile@platform-admin", "reason": "time"}
+    ]
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    seen: list[Any] = []
+    regressions = story_digest.regressions
+
+    def recording(*args: Any, **kwargs: Any) -> list[story_digest.Regression]:
+        seen.append(kwargs.get("rerun_did_not_fit"))
+        return regressions(*args, **kwargs)
+
+    monkeypatch.setattr(story_digest, "regressions", recording)
+    out = harness.tmp / "digest"
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert seen == [{"route-folder-to-profile@platform-admin"}]
+
+
+@pytest.mark.unit
+def test_the_digest_compares_with_the_history_the_runtime_supplies(
+    harness: StoryHarness,
+) -> None:
+    _shard_runs(harness)
+    out = harness.tmp / "digest"
+    runtime = harness.runtime()
+    asked: list[Any] = []
+
+    def history(args: Any, environ: Any) -> story_digest.History:
+        asked.append(args.digest)
+        return story_digest.History.from_digests([(11, None), (10, None)])
+
+    runtime.history = history
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    assert asked == [str(harness.tmp / "shards")]
+    assert json.loads((out / "digest.json").read_text("utf-8"))["gaps"] == [11, 10]
+    assert "History unavailable" not in (out / "digest.md").read_text("utf-8")
+
+
+# --- the history the digest reads, and its Slack summary ---------------------------
+
+API_URL = "https://gitlab.test/api/v4"
+PIPELINE = 12345
+WEBHOOK = "https://hooks.slack.test/triggers/T0/1/hooksecretvalue"
+JOB_URL = "https://gitlab.test/group/proj/-/jobs/987654"
+
+
+def _night_digest(pipeline_id: int) -> bytes:
+    """A valid digest.json v1 for one earlier night, as that night wrote it."""
+    night = story_digest.Night(
+        pipeline_id=pipeline_id,
+        develop_sha=HEAD,
+        stack_state="updated",
+        comparable=True,
+        audits_clean=True,
+        flows=(
+            story_digest.NightFlow(
+                "route-folder-to-profile@new-analyst",
+                "0123456789ab",
+                "done",
+                "single",
+                False,
+            ),
+        ),
+    )
+    document = story_digest.digest_document(
+        night, story_digest.History((), ()), [], [], spend_usd=1.5
+    )
+    return json.dumps(document).encode("utf-8")
+
+
+class HistoryGitlab(gitlab_api.UxGitlab):
+    """The real client over earlier scheduled pipelines, each with one digest job.
+
+    ``nights`` maps a pipeline id to the digest.json its digest job left, or None
+    for a job whose artifact is gone; only the transport is replaced.
+    """
+
+    def __init__(
+        self, nights: dict[int, bytes | None], *, refuse: bool = False
+    ) -> None:
+        super().__init__(API_URL, "group/proj", CREDENTIAL)
+        self.nights = nights
+        self.refuse = refuse
+        self.requests: list[tuple[str, str, str]] = []
+
+    def _send(
+        self, method: str, url: str, **kwargs: Any
+    ) -> tuple[object, dict[str, str]]:
+        parts = urlsplit(url)
+        path = parts.path.removeprefix("/api/v4/projects/group%2Fproj")
+        self.requests.append((method, path, parts.query))
+        if self.refuse:
+            raise review.Skip(f"GitLab refused GET /pipelines (403) for {self.token}")
+        if method == "GET" and path == "/pipelines":
+            listed = sorted(self.nights, reverse=True)
+            return [
+                {"id": n, "ref": "develop", "source": "schedule"} for n in listed
+            ], {}
+        found = re.fullmatch(r"/pipelines/(\d+)/jobs", path)
+        if method == "GET" and found:
+            job = {"id": int(found[1]) * 10, "name": runner.DIGEST_JOB}
+            return [{**job, "status": "success"}], {}
+        found = re.fullmatch(r"/jobs/(\d+)/artifacts/(.+)", path)
+        if method == "GET" and found and kwargs.get("as_bytes"):
+            assert found[2] == runner.DIGEST_ARTIFACT
+            assert kwargs.get("limit") == story_digest.DIGEST_MAX_BYTES
+            raw = self.nights[int(found[1]) // 10]
+            if raw is None:
+                raise review.Failure(f"GitLab returned 404 for GET {path}")
+            return raw, {}
+        raise review.Failure(f"the fake GitLab has no route for {method} {path}")
+
+
+def _history_args(*extra: str) -> Any:
+    return runner.parse_args(
+        [
+            "--digest",
+            "shards",
+            "--out",
+            "out",
+            "--api-url",
+            API_URL,
+            "--project",
+            "group/proj",
+            *extra,
+        ]
+    )
+
+
+def _scheduled(**changes: str | None) -> dict[str, str]:
+    values: dict[str, str | None] = {
+        "CI_PIPELINE_SOURCE": "schedule",
+        "CI_PIPELINE_ID": str(PIPELINE),
+        "GITLAB_REVIEW_TOKEN": CREDENTIAL,
+    }
+    values.update(changes)
+    return _environ(**values)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"CI_PIPELINE_SOURCE": None}, "this is not a scheduled pipeline"),
+        ({"CI_PIPELINE_SOURCE": "web"}, "this is not a scheduled pipeline"),
+        ({"GITLAB_REVIEW_TOKEN": None}, "GITLAB_REVIEW_TOKEN is not set"),
+    ],
+    ids=["no-source", "manual", "no-token"],
+)
+def test_the_history_is_read_only_in_a_scheduled_pipeline_with_the_token(
+    changes: dict[str, str | None], reason: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def forge(args: Any, credential: str) -> gitlab_api.UxGitlab:
+        raise AssertionError("no GitLab client is made")
+
+    history = runner.nightly_history(
+        _history_args(), _scheduled(**changes), forge=forge
+    )
+    assert history is None
+    assert _lines(capsys) == [f"history: not read, because {reason}"]
+
+
+@pytest.mark.unit
+def test_the_history_needs_the_api_and_the_project(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = runner.parse_args(["--digest", "shards", "--out", "out", "--api-url", ""])
+    assert runner.nightly_history(args, _scheduled()) is None
+    assert _lines(capsys) == [
+        "history: not read, because the GitLab API URL or the project is not known"
+    ]
+
+
+@pytest.mark.unit
+def test_the_history_is_the_earlier_scheduled_nights_each_validated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gitlab = HistoryGitlab(
+        {
+            PIPELINE: _night_digest(PIPELINE),
+            41: _night_digest(41),
+            40: _night_digest(39),
+            39: None,
+            38: b"[" * 100,
+        }
+    )
+    made: list[str] = []
+
+    def forge(args: Any, credential: str) -> gitlab_api.UxGitlab:
+        made.append(credential)
+        return gitlab
+
+    history = runner.nightly_history(_history_args(), _scheduled(), forge=forge)
+    assert history is not None
+    assert [night.pipeline_id for night in history.nights] == [41]
+    assert history.gaps == (40, 39, 38)
+    assert made == [CREDENTIAL]
+    assert {method for method, _, _ in gitlab.requests} == {"GET"}
+    listing = [query for _, path, query in gitlab.requests if path == "/pipelines"]
+    assert listing == ["ref=develop&source=schedule&order_by=id&sort=desc&per_page=20"]
+    assert f"/pipelines/{PIPELINE}/jobs" not in {path for _, path, _ in gitlab.requests}
+    assert _lines(capsys) == ["history: 1 earlier night(s), 3 gap(s)"]
+
+
+@pytest.mark.unit
+def test_a_history_that_cannot_be_listed_is_none_and_never_quotes_the_token(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    refused = runner.nightly_history(
+        _history_args(),
+        _scheduled(),
+        forge=lambda args, credential: HistoryGitlab({}, refuse=True),
+    )
+    assert refused is None
+
+    def broken(args: Any, credential: str) -> gitlab_api.UxGitlab:
+        raise RuntimeError(f"cannot build a client with {credential}")
+
+    assert runner.nightly_history(_history_args(), _scheduled(), forge=broken) is None
+    out = capsys.readouterr()
+    lines = out.out.splitlines()
+    assert lines[0].startswith("history: not read: GitLab refused GET /pipelines")
+    assert lines[1].startswith("history: not read: RuntimeError: cannot build")
+    assert CREDENTIAL not in out.out + out.err
+
+
+@pytest.mark.unit
+def test_nights_past_the_reading_time_are_gaps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gitlab = HistoryGitlab({41: _night_digest(41), 40: _night_digest(40)})
+    times = iter([0.0, 1.0, runner.HISTORY_SECONDS + 1])
+    history = runner.nightly_history(
+        _history_args(),
+        _scheduled(),
+        forge=lambda args, credential: gitlab,
+        clock=lambda: next(times),
+    )
+    assert history is not None
+    assert [night.pipeline_id for night in history.nights] == [41]
+    assert history.gaps == (40,)
+
+
+@pytest.mark.unit
+def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _shard_runs(harness)
+    harness.environ.update(
+        _scheduled(
+            CI_COMMIT_SHA=HEAD,
+            CI_JOB_URL=JOB_URL,
+            UX_TEST_STORIES_SLACK_WEBHOOK_URL=WEBHOOK,
+        )
+    )
+    gitlab = HistoryGitlab({PIPELINE: None, 41: _night_digest(41), 40: None})
+    runtime = harness.runtime()
+    posted: list[tuple[str, dict[str, str]]] = []
+
+    def slack(webhook: str, payload: dict[str, str]) -> str:
+        posted.append((webhook, payload))
+        return "posted (200)"
+
+    def history(args: Any, environ: Any) -> story_digest.History | None:
+        return runner.nightly_history(args, environ, forge=lambda a, credential: gitlab)
+
+    runtime.history = history
+    runtime.slack = slack
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert (
+        runner.main([*argv, "--api-url", API_URL, "--project", "group/proj"], runtime)
+        == 0
+    )
+    digest = json.loads((out / "digest.json").read_text("utf-8"))
+    assert digest["pipeline_id"] == PIPELINE and digest["gaps"] == [40]
+    record = json.loads((out / "history.json").read_text("utf-8"))
+    assert record["available"] is True
+    assert [night["pipeline_id"] for night in record["nights"]] == [41]
+    assert "History unavailable" not in (out / "digest.md").read_text("utf-8")
+    assert posted == [(WEBHOOK, story_digest.slack_payload(digest, job_url=JOB_URL))]
+    lines = _lines(capsys)
+    assert lines[-3:] == [
+        "history: 1 earlier night(s), 1 gap(s)",
+        "slack: posted (200)",
+        f"DIGEST: 2 shard(s), 0 regression(s), in {out}; {_cost(out)}",
+    ]
+    assert "hooksecretvalue" not in "\n".join(lines)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "said"),
+    [
+        ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": None}, []),
+        ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": "   "}, []),
+        (
+            {"CI_PIPELINE_SOURCE": "web"},
+            ["slack: not posted, because this is not a scheduled pipeline"],
+        ),
+    ],
+    ids=["no-webhook", "blank-webhook", "manual-pipeline"],
+)
+def test_the_digest_posts_to_slack_only_from_a_schedule_with_a_webhook(
+    harness: StoryHarness,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str | None],
+    said: list[str],
+) -> None:
+    _shard_runs(harness)
+    harness.environ.update(
+        _scheduled(**{"UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK, **changes})
+    )
+    runtime = harness.runtime()
+    runtime.slack = lambda webhook, payload: pytest.fail("Slack was posted to")
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    lines = _lines(capsys)
+    assert [line for line in lines if line.startswith("slack:")] == said
+    assert lines[-1].startswith("DIGEST: ")
+    assert "hooksecretvalue" not in "\n".join(lines)
+
+
+@pytest.mark.unit
+def test_a_slack_post_that_fails_never_fails_the_digest(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _shard_runs(harness)
+    harness.environ.update(_scheduled(UX_TEST_STORIES_SLACK_WEBHOOK_URL=WEBHOOK))
+    runtime = harness.runtime()
+
+    def slack(webhook: str, payload: dict[str, str]) -> str:
+        raise RuntimeError(f"cannot post to {webhook}")
+
+    runtime.slack = slack
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    lines = _lines(capsys)
+    assert lines[-2:] == [
+        "slack: not posted (RuntimeError)",
+        f"DIGEST: 2 shard(s), 0 regression(s), in {out}; {_cost(out)}",
+    ]
+    assert (out / "digest.json").is_file()
+
+
+class _Answer:
+    """What a Slack webhook answers: a status, and a body read in bounded pieces."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        self.reads: list[int] = []
+
+    def __enter__(self) -> _Answer:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.reads.append(size)
+        return b"ok"
+
+
+class _Opener:
+    """An opener that records the one request and answers, or raises, as told."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.requests: list[tuple[Any, float]] = []
+
+    def open(self, request: Any, timeout: float = 0.0) -> Any:
+        self.requests.append((request, timeout))
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "webhook",
+    [
+        "",
+        "http://hooks.slack.test/triggers/T0/1/x",
+        "https://user:pass@hooks.slack.test/triggers/T0/1/x",
+        "https://hooks.slack.test/triggers/T0/1/x#part",
+        "https:///triggers/T0/1/x",
+        "https://hooks.slack.test/triggers/T0/1/x y",
+        "https://hooks.slack.test/triggers/é",
+        "https://hooks.slack.test:0/triggers",
+        "https://hooks.slack.test:99999/triggers",
+        "https://hooks.slack.test/" + "x" * 2048,
+        "file:///etc/passwd",
+    ],
+)
+def test_post_slack_posts_only_to_a_usable_https_url(webhook: str) -> None:
+    opener = _Opener(_Answer(200))
+    outcome = runner.post_slack(webhook, {"status": "clean"}, opener=opener)
+    assert outcome == (
+        "not posted, because UX_TEST_STORIES_SLACK_WEBHOOK_URL is not an https URL"
+    )
+    assert opener.requests == []
+
+
+@pytest.mark.unit
+def test_post_slack_sends_the_payload_as_json_and_reads_a_bounded_answer() -> None:
+    answer = _Answer(200)
+    opener = _Opener(answer)
+    payload = {
+        "status": "clean",
+        "commit": "01234567",
+        "job_url": JOB_URL,
+        "summary": "é",
+    }
+    assert runner.post_slack(WEBHOOK, payload, opener=opener, timeout=7.0) == (
+        "posted (200)"
+    )
+    ((request, timeout),) = opener.requests
+    assert (request.full_url, request.get_method(), timeout) == (WEBHOOK, "POST", 7.0)
+    assert request.get_header("Content-type") == "application/json"
+    assert json.loads(request.data.decode("utf-8")) == payload
+    assert answer.reads == [4096]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (
+            runner.urllib.error.HTTPError(WEBHOOK, 400, "invalid_payload", {}, None),
+            "not posted: Slack answered 400",
+        ),
+        (
+            runner.urllib.error.URLError(f"cannot reach {WEBHOOK}"),
+            "not posted (URLError)",
+        ),
+        (TimeoutError(f"{WEBHOOK} timed out"), "not posted (TimeoutError)"),
+        (OSError(f"{WEBHOOK} unreachable"), "not posted (OSError)"),
+        (_Answer(302), "not posted: Slack answered 302"),
+        (_Answer(204), "posted (204)"),
+    ],
+    ids=["http-error", "url-error", "timeout", "os-error", "redirect", "no-content"],
+)
+def test_post_slack_never_raises_and_never_quotes_the_webhook(
+    answer: Any, outcome: str
+) -> None:
+    said = runner.post_slack(WEBHOOK, {"status": "clean"}, opener=_Opener(answer))
+    assert said == outcome
+    assert "hooksecretvalue" not in said
+
+
+@pytest.mark.unit
+def test_the_slack_opener_answers_a_redirect_as_an_error_and_never_follows_it() -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen: list[str] = []
+
+    class Redirecting(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            seen.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = do_POST
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Redirecting)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/hook"
+        request = runner.urllib.request.Request(url, data=b"{}", method="POST")
+        with pytest.raises(runner.urllib.error.HTTPError) as raised:
+            runner._SLACK_OPENER.open(request, timeout=5)
+        assert raised.value.code == 302
+        raised.value.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert seen == ["/hook"]
+
+
 # --- replay -----------------------------------------------------------------------
 
 
@@ -2411,7 +3294,7 @@ def test_a_watched_flow_refuses_the_options_it_does_not_read(
         runner.parse_args([*base, *option])
     assert "reads neither --run-usd nor --reruns" in capsys.readouterr().err
     assert runner.parse_args(base).reruns == 1
-    assert runner.parse_args(["--story", "x", "--reruns", "0"]).reruns == 0
+    assert runner.parse_args(["--all", "--reruns", "0"]).reruns == 0
 
 
 # --- watch mode -------------------------------------------------------------------
@@ -2739,13 +3622,20 @@ def test_help_runs_on_a_bare_python_without_the_pinned_packages() -> None:
 
 
 @pytest.mark.unit
-def test_judge_runs_on_a_bare_python_on_any_host(harness: StoryHarness) -> None:
-    assert harness.main(*ONE_FLOW) == 0
-    code, heavy, out = _heavy_imports(
-        "--judge", str(harness.artifacts), "--check", "--summary"
-    )
+def test_judge_and_digest_run_on_a_bare_python_on_any_host(
+    harness: StoryHarness,
+) -> None:
+    _shard_runs(harness)
+    run_dir = harness.tmp / "shards" / "shard-1"
+    code, heavy, out = _heavy_imports("--judge", str(run_dir), "--check", "--summary")
     assert code == 0, out
     assert not heavy, f"--judge imported {heavy}"
+    out_dir = harness.tmp / "digest"
+    code, heavy, out = _heavy_imports(
+        "--digest", str(harness.tmp / "shards"), "--out", str(out_dir)
+    )
+    assert code == 0, out
+    assert not heavy, f"--digest imported {heavy}"
 
 
 @pytest.mark.unit
@@ -2778,9 +3668,16 @@ def test_the_script_imports_on_a_python_without_sigkill_as_on_windows() -> None:
     [
         ["--story", "x", "--post"],
         ["--story", "x", "--interactive"],
+        ["--as", "new-analyst", "--all"],
+        ["--mr", "812", "--shard", "1/2"],
+        ["--all", "--shard", "3/2"],
+        ["--all", "--shard", "a/b"],
+        ["--merge", "a"],
+        ["--digest", "a"],
         ["--judge", "a", "--post"],
         ["--story", "x", "--audit", "a.json"],
         ["--story", "x", "--check"],
+        ["--all", "--collect-only"],
         ["--story", "x", "--dev-unconfined", "--post"],
         ["--story", "x", "--dev-video-any-stack"],
         ["--story", "x", "--dev-video"],
@@ -2800,6 +3697,15 @@ def test_no_option_renders_a_video_of_another_stack() -> None:
     args = runner.parse_args(["--story", "x"])
     assert args.video == "findings" and args.stack == REVIEW
     assert not any("dev_video" in name for name in vars(args))
+
+
+@pytest.mark.unit
+def test_shards_are_one_based_and_never_past_their_total() -> None:
+    assert runner.parse_shard("2/5") == (2, 5)
+    assert runner.parse_shard(" 1/1 ") == (1, 1)
+    for bad in ("0/5", "6/5", "1/0", "1-5", "1/5/2", ""):
+        with pytest.raises(ValueError):
+            runner.parse_shard(bad)
 
 
 @pytest.mark.unit
@@ -2884,6 +3790,8 @@ def test_the_default_runtime_binds_the_real_collaborators() -> None:
     assert runtime.compose_prompt is runner.compose_prompt
     assert runtime.harness is runner.harness_revision
     assert runtime.collect_story is runner.collect_story
+    assert runtime.history is runner.nightly_history
+    assert runtime.slack is runner.post_slack
     members = dict(session.BrowserRuntime.__annotations__)
     fields = {f.name for f in dataclasses.fields(runner.Runtime)}
     assert set(members) <= fields
@@ -3295,6 +4203,38 @@ def test_a_watched_flow_on_a_stack_older_than_its_story_is_not_run(
     assert runner.main(_watch(harness), harness.runtime()) == 0
     (flow,) = harness.record()["flows"]
     assert flow["not_run_reason"] == "since"
+
+
+@pytest.mark.unit
+def test_a_night_no_shard_ran_is_recorded_as_a_gap_and_a_merge_of_none_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], harness: StoryHarness
+) -> None:
+    root = tmp_path / "ux-test-stories"
+    for index, detail in ((1, "the review stack is still updating"), (2, "")):
+        shard = root / f"shard-{index}"
+        shard.mkdir(parents=True)
+        record = {"version": 1, "proceed": False, "status": "skipped", "detail": detail}
+        (shard / "precheck.json").write_text(json.dumps(record), "utf-8")
+    harness.environ.update({"CI_PIPELINE_ID": "4321", "CI_COMMIT_SHA": HEAD})
+    out = tmp_path / "out"
+    argv = ["--digest", str(root), "--out", str(out)]
+    assert runner.main(argv, harness.runtime()) == 0
+    assert _lines(capsys)[-1].startswith("DIGEST: no shard ran under")
+    digest = json.loads((out / "digest.json").read_text(encoding="utf-8"))
+    assert (digest["shards_ran"], digest["flows"], digest["stack_state"]) == (
+        0,
+        [],
+        "missing",
+    )
+    assert (digest["pipeline_id"], digest["develop_sha"]) == (4321, HEAD)
+    history = story_digest.History.from_digests([(4321, digest)])
+    assert (history.nights, history.gaps) == ((), (4321,))
+    text = (out / "digest.md").read_text(encoding="utf-8")
+    assert "- `shard-1`: skipped — the review stack is still updating" in text
+    assert "later nights read this one as a gap" in text
+    argv = ["--merge", str(tmp_path / "empty"), "--out", str(tmp_path / "merged")]
+    assert runner.main(argv, harness.runtime()) == 1
+    assert _lines(capsys)[0].startswith("FAILED: no story-run.json under")
 
 
 @pytest.mark.unit

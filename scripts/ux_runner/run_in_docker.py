@@ -35,9 +35,10 @@ managed policy and users as CI does. It has three modes.
     line per flow: its verdict, the steps used of its budget and its
     hesitations. By default a run is unattended and a **dry run** unless
     ``--post``: one flow (``--story --as``), every persona of a story
-    (``--story``) or what an MR's job would select (``--mr``, collected on the
+    (``--story``), what an MR's job would select (``--mr``, collected on the
     host, its ``src/ui`` built in the credential-free container when the MR
-    changes it). ``--interactive``
+    changes it) or the nightly set (``--all``), in ``--jobs`` containers with a
+    network namespace each, whose shards ``--merge`` joins. ``--interactive``
     starts a fresh browser container, runs the pinned Claude TUI in it for you to
     watch and type to, stops the container when the session ends or
     ``flow_minutes`` pass, and judges the run. ``--pair`` starts the browser and
@@ -157,7 +158,7 @@ Properties it is built around
    ``git`` and ``aws`` from ``PATH``, so it runs as
    ``py scripts\\ux_runner\\run_in_docker.py`` on Windows. ``review`` also runs
    ``ai_ux_test.py --collect-only`` on the host, and ``stories`` runs
-   ``ai_ux_test_stories.py --collect-only`` and ``--judge``,
+   ``ai_ux_test_stories.py --collect-only``, ``--merge`` and ``--judge``,
    ``stories.py list`` and ``changelog_select.py nudge`` there, so those
    scripts' imports have to hold there too. 3.11.4 is the first release whose
    ``tarfile`` has the ``filter='data'`` extraction the source export relies on.
@@ -177,6 +178,7 @@ Usage
 
     # first-time-user stories (`make ai-ux-test-stories-local ...`)
     python3 scripts/ux_runner/run_in_docker.py stories --story find-where-to-start --as new-analyst
+    python3 scripts/ux_runner/run_in_docker.py stories --all --jobs 3
     python3 scripts/ux_runner/run_in_docker.py stories --story find-where-to-start --interactive
     python3 scripts/ux_runner/run_in_docker.py stories --pair --story route-folder-to-profile --as platform-admin
     python3 scripts/ux_runner/run_in_docker.py stories --replay <a run's ux-test-stories/>
@@ -228,6 +230,7 @@ import subprocess  # nosec B404 - fixed argv lists, never a shell
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -995,6 +998,7 @@ STORY_SEARCH_ENTRY = "scripts/ux_runner/docs_index.py"
 STORY_CATALOGUE = REPO_ROOT / "scripts" / "ux_stories.toml"
 STORIES_OUT = REPO_ROOT / "scratch" / "ux-docker" / "stories"
 STORY_ARTIFACTS = "ux-test-stories"
+STORY_SHARDS = "shards"
 STORY_RUN_FILE = "story-run.json"
 STORY_RESULTS_FILE = "results.json"
 STORY_RUN_SCHEMA = "ux-test-stories/run"
@@ -1018,6 +1022,7 @@ CONFIRMATION_LABELS = {
     "confirmed": "2 of 2",
     "mixed": "mixed (1 of 2)",
 }
+HARNESS_LINE_PREFIXES = ("FAILED:", "SKIPPED:", "WARNING:")
 STORY_HARNESS_TREE = ("scripts", ".claude/skills", "docs-site/setup.sh")
 STORY_GIT_CONFIG = (
     ("GIT_CONFIG_COUNT", "1"),
@@ -1034,6 +1039,8 @@ OWNER_RE = re.compile(r"^[0-9]{1,10}:[0-9]{1,10}$")
 POSIX_BARE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 POWERSHELL_BARE_RE = re.compile(r"[A-Za-z0-9_./=-]+")
 SEARCH_QUERY_CHARS = 200
+MAX_STORY_JOBS = 16
+MEMORY_PER_CONTAINER = 2 * 1024**3
 WATCH_GRACE_SECONDS = 180
 DEFAULT_FLOW_MINUTES = 12
 PAIR_HOME = "/tmp/ux-pair"  # nosec B108 - a directory inside the browser container
@@ -1046,10 +1053,13 @@ STORY_OPTIONS_SET_HERE = (
     "--check",
     "--collect-only",
     "--dev-unconfined",
+    "--digest",
     "--inputs",
     "--judge",
+    "--merge",
     "--precheck",
     "--repo-dir",
+    "--shard",
     "--summary",
 )
 OWNER_PROBE = ".ux-owner-probe"
@@ -1179,6 +1189,7 @@ def story_mode(args: argparse.Namespace) -> str:
         for flag, on in (
             ("--story", args.story is not None),
             ("--mr", args.mr is not None),
+            ("--all", bool(args.all)),
         )
         if on
     ]
@@ -1192,6 +1203,8 @@ def story_mode(args: argparse.Namespace) -> str:
         )
     if args.mr is not None and args.mr <= 0:
         raise DockerRunError("--mr must be a merge request iid, such as 812")
+    if not 1 <= args.jobs <= MAX_STORY_JOBS:
+        raise DockerRunError(f"--jobs is a container count from 1 to {MAX_STORY_JOBS}")
     if args.video is not None and not VIDEO_POLICY_RE.match(args.video):
         raise DockerRunError(f"--video {args.video!r} is not a video policy word")
     if args.port is not None and not 0 < args.port < 65536:
@@ -1203,12 +1216,14 @@ def story_mode(args: argparse.Namespace) -> str:
         | {"--pair-full", "--pair-keychain"},
         "watch": {"--story", "--port", "--name", "--build-dir", "passthrough"},
         "replay": {"--video", "passthrough"},
-        "run": {"--story", "--mr", "--video", "--post"}
+        "run": {"--story", "--mr", "--all", "--jobs", "--video", "--post"}
         | {"--build-dir", "passthrough"},
     }[mode]
     given = {
         "--story": args.story is not None,
         "--mr": args.mr is not None,
+        "--all": bool(args.all),
+        "--jobs": args.jobs != 1,
         "--video": args.video is not None,
         "--post": bool(args.post),
         "--port": args.port is not None,
@@ -1241,8 +1256,11 @@ def story_mode(args: argparse.Namespace) -> str:
     if mode == "run":
         if len(selection) != 1:
             raise DockerRunError(
-                "an unattended run takes one of --story (with or without --as) or --mr"
+                "an unattended run takes one of --story (with or without --as), "
+                "--mr or --all"
             )
+        if args.jobs > 1 and args.mr is not None:
+            raise DockerRunError("--jobs shards --story and --all runs, never an MR's")
         if args.post and args.mr is None:
             raise DockerRunError("--post posts an MR's run, so it needs --mr")
         if args.build_dir is not None and args.mr is not None:
@@ -1256,7 +1274,7 @@ def _check_passthrough(passthrough: Sequence[str]) -> None:
     """Refuse an orchestrator option this script sets or must never pass in.
 
     The orchestrator reads the last of a repeated option, so a run directory,
-    checkout or inputs file passed through would replace this script's
+    checkout, inputs file or shard passed through would replace this script's
     and write outside the run's ``ux-test-stories/``, and a mode of the
     orchestrator's own (:data:`STORY_OPTIONS_SET_HERE`) would run something other
     than the mode chosen here. ``--dev-unconfined`` drops the managed policy and
@@ -1424,6 +1442,42 @@ def read_story_inputs(path: Path) -> tuple[str, bool]:
     return head, ui
 
 
+def docker_memory(docker: str, *, run: Callable[..., Any]) -> int | None:
+    """The memory Docker gives its containers, in bytes, or None when unread."""
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        [docker, "info", "--format", "{{json .MemTotal}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    text = (completed.stdout or "").strip()
+    if completed.returncode != 0 or not text.isdigit():
+        return None
+    return int(text)
+
+
+def _memory_lines(memory: int | None, jobs: int) -> list[str]:
+    need = jobs * MEMORY_PER_CONTAINER
+    if memory is None:
+        return [
+            f"WARNING: Docker's memory limit could not be read; {jobs} containers "
+            f"need about {need / 1024**3:.0f} GiB"
+        ]
+    lines = [
+        f"-> Docker has {memory / 1024**3:.1f} GiB of memory; {jobs} containers "
+        f"need about {need / 1024**3:.0f} GiB"
+    ]
+    if need > memory:
+        lines.append(
+            f"WARNING: --jobs {jobs} is more than Docker's memory holds; too little "
+            "memory shows as timeouts, not as an error (Docker Desktop: Settings > "
+            "Resources)"
+        )
+    return lines
+
+
 def _foreign_entries(root: Path, uid: int) -> bool:
     """Whether anything under ``root`` is owned by another user, or cannot be read."""
     unreadable: list[OSError] = []
@@ -1517,6 +1571,83 @@ def owner_probe(
             pass
     uid = int(getuid())
     return None if owner == uid else f"{uid}:{int(getgid())}"
+
+
+def shard_containers(out: Path, jobs: int) -> list[str]:
+    """One docker container name per shard of the run in ``out``, unique to the run."""
+    run_name = re.sub(r"[^A-Za-z0-9_.-]", "-", out.name)[:40].strip("-.") or "run"
+    return [f"ux-stories-{run_name}-{index}" for index in range(1, jobs + 1)]
+
+
+def _tagged(line: str, tag: str) -> str:
+    """A shard's output line, with the harness's own keywords kept at column 0."""
+    for prefix in HARNESS_LINE_PREFIXES:
+        if line.startswith(prefix):
+            return f"{prefix} {tag}:{line[len(prefix) :]}"
+    return f"[{tag}] {line}"
+
+
+def run_shards(
+    commands: Sequence[tuple[str, Sequence[str]]],
+    *,
+    env: Mapping[str, str],
+    popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+    echo: Callable[[str], None] = print,
+    containers: Sequence[str] = (),
+    kill: Callable[[str], None] | None = None,
+) -> list[int]:
+    """Run each ``(tag, argv)`` at once; their exit codes, in order.
+
+    Each container's output is relayed line by line with its tag, and a
+    ``FAILED:``, ``SKIPPED:`` or ``WARNING:`` line keeps that word first, so the
+    harness's own lines can still be found by it. An interrupt stops every
+    container: ``docker run`` passes the signal on to the container it runs. A
+    ``docker run`` still running a minute later is killed, and so, through
+    ``kill``, is the container named at its place in ``containers``, which
+    killing the client alone would leave running.
+    """
+    lock = threading.Lock()
+    started: list[subprocess.Popen[str]] = []
+    relays: list[threading.Thread] = []
+
+    def relay(stream: Any, tag: str) -> None:
+        for raw in stream:
+            with lock:
+                echo(_tagged(raw.rstrip("\r\n"), tag))
+
+    try:
+        for tag, argv in commands:
+            process = popen(  # noqa: S603 - fixed argv, no shell
+                list(argv),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=dict(env),
+            )
+            started.append(process)
+            thread = threading.Thread(
+                target=relay, args=(process.stdout, tag), daemon=True
+            )
+            thread.start()
+            relays.append(thread)
+        codes = [process.wait() for process in started]
+    except BaseException:
+        for process in started:
+            if process.poll() is None:
+                process.terminate()
+        for position, process in enumerate(started):
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                if kill is not None and position < len(containers):
+                    kill(containers[position])
+                process.kill()
+        raise
+    for thread in relays:
+        thread.join(timeout=10)
+    return codes
 
 
 def _flow_attempts(
@@ -1698,10 +1829,16 @@ def _review_container(
     names: Sequence[str],
     command: Sequence[str],
     mounts: Sequence[str] = (),
+    name: str | None = None,
 ) -> list[str]:
-    """``docker run`` of one story container: the MR UX test's review container."""
+    """``docker run`` of one story container: the MR UX test's review container.
+
+    ``name`` names the container, which a shard's is so that it can be stopped
+    when its ``docker run`` cannot.
+    """
     return (
         [docker, "run", "--rm", "--init", "--platform", platform_name]
+        + (["--name", name] if name else [])
         + ["--shm-size", "1g", "--security-opt", "no-new-privileges"]
         + ["--tmpfs", CONTAINER_TMPFS]
         + bind(harness, "/repo", readonly=True)
@@ -1797,9 +1934,10 @@ def _stories_run(
     args: argparse.Namespace,
     *,
     run: Callable[..., Any],
+    popen: Callable[..., subprocess.Popen[str]],
     environ: Mapping[str, str],
 ) -> int:
-    """An unattended run, in one container."""
+    """An unattended run: one container, or ``--jobs`` shards merged afterwards."""
     env = dict(environ)
     stack = args.stack or DEFAULT_STACK
     _check_stack(stack)
@@ -1819,6 +1957,8 @@ def _stories_run(
     docker = resolve_tool(args.docker)
     if args.mr is not None:
         label = f"mr{args.mr}"
+    elif args.all:
+        label = "all"
     else:
         label = story + (f"@{args.persona}" if args.persona else "")
     out = story_run_dir(label, out=args.out)
@@ -1844,6 +1984,8 @@ def _stories_run(
             )
         head, mr_ui = read_story_inputs(inputs)
         selection = ["--mr", str(args.mr), "--inputs", "/out/inputs.json"]
+    elif args.all:
+        selection = ["--all"]
     else:
         selection = ["--story", story]
         if args.persona:
@@ -1858,6 +2000,9 @@ def _stories_run(
         rebuild=args.rebuild_image,
         run=run,
     )
+    if args.jobs > 1:
+        for line in _memory_lines(docker_memory(docker, run=run), args.jobs):
+            print(line, flush=True)
     credentials = export_credentials(profile=args.profile, run=run)
     region = _region(env)
     ui_env = ui_env_text(env, stack=stack, profile=args.profile, region=region, run=run)
@@ -1901,30 +2046,81 @@ def _stories_run(
         )
     else:
         print("-> running the stories as a dry run; nothing is posted", flush=True)
-    completed = run(  # noqa: S603 - fixed argv, no shell
-        _review_container(
-            docker=docker,
-            platform_name=platform_name,
-            tag=tag,
-            harness=REPO_ROOT,
-            out=out,
-            names=names,
-            mounts=mounts,
-            command=_orchestrator(
-                selection,
-                artifact_dir=f"/out/{STORY_ARTIFACTS}",
-                stack=stack,
-                web_url=web_url,
-                build_dir=build_dir,
-                extra=extra,
+    if args.jobs == 1:
+        completed = run(  # noqa: S603 - fixed argv, no shell
+            _review_container(
+                docker=docker,
+                platform_name=platform_name,
+                tag=tag,
+                harness=REPO_ROOT,
+                out=out,
+                names=names,
+                mounts=mounts,
+                command=_orchestrator(
+                    selection,
+                    artifact_dir=f"/out/{STORY_ARTIFACTS}",
+                    stack=stack,
+                    web_url=web_url,
+                    build_dir=build_dir,
+                    extra=extra,
+                ),
             ),
-        ),
-        env=child_env,
-        check=False,
-    )
+            env=child_env,
+            check=False,
+        )
+        codes = [completed.returncode]
+    else:
+        (out / STORY_SHARDS).mkdir(exist_ok=True)
+        containers = shard_containers(out, args.jobs)
+        commands = [
+            (
+                f"shard {index}/{args.jobs}",
+                _review_container(
+                    docker=docker,
+                    platform_name=platform_name,
+                    tag=tag,
+                    harness=REPO_ROOT,
+                    out=out,
+                    names=names,
+                    mounts=mounts,
+                    name=containers[index - 1],
+                    command=_orchestrator(
+                        [*selection, "--shard", f"{index}/{args.jobs}"],
+                        artifact_dir=f"/out/{STORY_SHARDS}/shard-{index}",
+                        stack=stack,
+                        web_url=web_url,
+                        build_dir=build_dir,
+                        extra=extra,
+                    ),
+                ),
+            )
+            for index in range(1, args.jobs + 1)
+        ]
+        codes = run_shards(
+            commands,
+            env=child_env,
+            popen=popen,
+            containers=containers,
+            kill=lambda container: run(  # noqa: S603 - fixed argv, no shell
+                [docker, "kill", container], check=False, capture_output=True
+            ),
+        )
     return_ownership(out, docker=docker, tag=tag, platform_name=platform_name, run=run)
+    if args.jobs > 1:
+        print(f"-> merging {args.jobs} shards", flush=True)
+        shards = [
+            str(out / STORY_SHARDS / f"shard-{index}")
+            for index in range(1, args.jobs + 1)
+        ]
+        merged = run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-B", str(REPO_ROOT / STORIES_ENTRY), "--merge"]
+            + [*shards, "--out", str(out / STORY_ARTIFACTS)],
+            env=env,
+            check=False,
+        )
+        codes.append(merged.returncode)
     report_story_run(out / STORY_ARTIFACTS)
-    return completed.returncode
+    return next((code for code in codes if code != 0), 0)
 
 
 def _story_browser(
@@ -2898,7 +3094,7 @@ def stories(
         )
     if mode == "replay":
         return _stories_replay(args, run=run, environ=env)
-    return _stories_run(args, run=run, environ=env)
+    return _stories_run(args, run=run, popen=popen, environ=env)
 
 
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
@@ -3024,6 +3220,16 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         type=int,
         metavar="IID",
         help="run what that MR's job would select, collected on the host",
+    )
+    stories_parser.add_argument(
+        "--all", action="store_true", help="run the nightly set of stories"
+    )
+    stories_parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="containers a --story or --all run is sharded across (default: 1)",
     )
     stories_parser.add_argument(
         "--video",

@@ -16,6 +16,8 @@ does not read fails here:
   server's tool schemas advertise;
 * every flow of the real catalogue produces a start record the server takes, a
   journal the judge reads, and a flow context the run record round-trips;
+* the selector, the MR reply and the digest consume the verdict's results as the
+  judge CLI writes them, through the job's real redactor;
 * a vocabulary that two modules each hold stays equal in both;
 * each module imports only what the module graph gives it.
 """
@@ -26,7 +28,7 @@ import dataclasses
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,12 +45,14 @@ from ux_runner import (  # noqa: E402
     docs_index,
     section,
     stories,
+    story_digest,
     story_section,
     story_verdict,
 )
 
 HARNESS = "f23669def653f7c3a9606841cfc178c5456c1e8f"
 HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
+DEVELOP_SHA = "89abcdef0123456789abcdef0123456789abcdef"
 EPOCH = 1760961234.5
 SEEN_ON_SCREEN = "/a-help-link-the-screen-showed/"
 
@@ -1002,6 +1006,33 @@ def test_what_the_docker_runner_holds_by_value_is_what_the_container_side_holds(
 
 
 @pytest.mark.unit
+def test_what_only_the_story_jobs_carry_is_redacted_from_the_first_line() -> None:
+    """The web URL line of ``UX_TEST_UI_ENV`` and the Slack webhook are read by the
+    story orchestrator alone. Every job's redactor holds both from its environment,
+    so a precheck, a digest or another job prints neither, before any run registers
+    the URL itself."""
+    import base64
+
+    sdlc = str(SCRIPTS / "sdlc")
+    if sdlc not in sys.path:
+        sys.path.insert(0, sdlc)
+    import ai_ux_test_stories as orchestrator  # type: ignore[import-not-found]
+    from ux_runner import artifacts
+
+    url = "https://d1a2b3c4d5e6f7.cloudfront.net/"
+    webhook = "https://hooks.slack.example/t/a1b2c3"
+    ui_env = f"VITE_AWS_REGION=us-east-1\n{orchestrator.WEB_URL_KEY}={url}\n"
+    redactor = artifacts.redactor_for(
+        {
+            "UX_TEST_UI_ENV": base64.b64encode(ui_env.encode()).decode(),
+            orchestrator.SLACK_WEBHOOK_ENV: webhook,
+        }
+    )
+    out = redactor(f"{url}#/documents d1a2b3c4d5e6f7.cloudfront.net {webhook}")
+    assert "cloudfront" not in out and "slack" not in out, out
+
+
+@pytest.mark.unit
 def test_the_selector_picks_only_catalogue_flows_in_the_order_and_bounds_it_sets(
     catalogue: stories.Catalogue,
 ) -> None:
@@ -1047,6 +1078,185 @@ def test_the_selector_picks_only_catalogue_flows_in_the_order_and_bounds_it_sets
         assert story_section.STORY_MARKER_RE.fullmatch(
             story_section.marker_line(head_sha=HEAD_SHA, sel=sel, kind="run")
         )
+
+
+def serve_flow(
+    run_dir: Path,
+    catalogue: stories.Catalogue,
+    index: docs_index.Index,
+    key: stories.FlowKey,
+    attempt: int,
+    calls: Sequence[tuple[str, dict[str, Any]]],
+) -> story_verdict.FlowContext:
+    """One flow served into the run directory, where the judge CLI looks for it."""
+    start = catalogue_start(
+        catalogue, key, corpus_hash=index.corpus_hash, attempt=attempt
+    )
+    context = catalogue_context(catalogue, key, start)
+    assert context.journal is not None
+    journal = writer(run_dir / context.journal, start)
+    server = adapter(journal, index)
+    for name, arguments in calls:
+        tools_call(server, name, arguments)
+    journal.end("terminal")
+    return context
+
+
+def run_document(
+    contexts: Sequence[story_verdict.FlowContext], catalogue: stories.Catalogue
+) -> dict[str, Any]:
+    return {
+        "schema": story_verdict.RUN_SCHEMA,
+        "version": story_verdict.RUN_VERSION,
+        "mode": "nightly",
+        "shard": None,
+        "harness_sha": HARNESS,
+        "harness_dirty": False,
+        "catalogue_sha256": "c" * 64,
+        "prompt_revision": INPUTS.prompt_revision,
+        "judgement_revision": story_verdict.JUDGEMENT_REVISION,
+        "relay_revision": INPUTS.relay_revision,
+        "model": INPUTS.model,
+        "effort": INPUTS.effort,
+        "region": "us-east-1",
+        "versions": {
+            "claude_code": INPUTS.claude_code,
+            "chrome_devtools_mcp": INPUTS.chrome_devtools_mcp,
+            "chrome": INPUTS.chrome,
+        },
+        "stack": {"name": "idp-ux-nightly", "version": "0.6.12.dev1", "build": None},
+        "stack_state": "updated",
+        "stack_changed_mid_run": False,
+        "ui_source": {"kind": "deployed"},
+        "docs": {
+            "ref": None,
+            "corpus_hash": "9e8d7c6b5a41",
+            "source": "worktree",
+            "dirty": False,
+        },
+        "limits": dataclasses.asdict(catalogue.limits),
+        "flows": [context.to_json() for context in contexts],
+        "credential_scope": {"claude": "scoped", "render": None},
+        "spend_usd": 1.8,
+    }
+
+
+@pytest.mark.unit
+def test_the_judge_cli_s_results_feed_the_reply_and_the_digest_unchanged(
+    tmp_path: Path,
+    catalogue: stories.Catalogue,
+    index: docs_index.Index,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Served journals, judged by the CLI through the job's real redactor, then read
+    by the MR reply and the nightly digest: the merge of one shard is that shard."""
+    done = next(
+        k
+        for k in stories.flow_keys(catalogue, tiers=stories.TIERS)
+        if catalogue.story(k.story).expectation_for(k.persona) == "allowed"
+    )
+    offered = next(
+        k
+        for k in stories.flow_keys(catalogue, tiers=stories.TIERS)
+        if catalogue.story(k.story).expectation_for(k.persona) == "not_offered"
+        and catalogue.story(k.story).kind == "commit_point"
+    )
+    run_dir = tmp_path / "ux-test-stories"
+    hesitation = (
+        "note_confusion",
+        {
+            "what": "two lists, @team #12 <b>x</b> [which](http://example.com)",
+            "why": "neither said which",
+        },
+    )
+    pressed = ("report_done", {"evidence": "it saved", "stopped_at_commit_point": True})
+    contexts = [
+        serve_flow(
+            run_dir,
+            catalogue,
+            index,
+            done,
+            1,
+            [
+                hesitation,
+                ("report_done", {"evidence": "seen", "stopped_at_commit_point": False}),
+            ],
+        ),
+        serve_flow(run_dir, catalogue, index, offered, 1, [hesitation, pressed]),
+        serve_flow(run_dir, catalogue, index, offered, 2, [pressed]),
+    ]
+    run = run_document(contexts, catalogue)
+    (run_dir / story_verdict.RUN_FILE).write_text(
+        json.dumps(run, indent=2), encoding="utf-8"
+    )
+
+    assert story_verdict.main(["judge", str(run_dir)]) == 0
+    assert story_verdict.main(["judge", str(run_dir), "--check"]) == 0
+    capsys.readouterr()
+    written = json.loads(
+        (run_dir / story_verdict.RESULTS_FILE).read_text(encoding="utf-8")
+    )
+    results = [story_verdict.FlowResult.from_json(item) for item in written["flows"]]
+    found = [story_verdict.Finding.from_json(item) for item in written["findings"]]
+    assert [(r.key, r.attempt) for r in results] == sorted(
+        [(str(done), 1), (str(offered), 1), (str(offered), 2)]
+    )
+    assert [f.confirmation for f in found if f.category == "clarity"] == ["confirmed"]
+
+    merged = story_digest.merge_results([written])
+    assert json.loads(story_verdict.dump_json(merged)) == written
+    night = story_digest.night_from_results(
+        written,
+        run,
+        pipeline_id=7,
+        develop_sha=DEVELOP_SHA,
+    )
+    assert [(f.key, f.verdict, f.state) for f in night.flows] == [
+        (key, confirmation.verdict, confirmation.state)
+        for key, confirmation, _ in story_verdict.flow_confirmations(results)
+    ]
+    assert all(
+        flow.series == context.series
+        for flow in night.flows
+        for context in contexts
+        if context.key == flow.key
+    )
+
+    reply = story_section.compose_reply(
+        head_sha=HEAD_SHA,
+        sel="0" * 12,
+        uploads=(),
+        results=results,
+        found=found,
+        chosen=(),
+        uncovered=(),
+        caveats=story_section.standard_caveats(
+            ui_source="deployed",
+            docs_sha=None,
+            backend_changed=False,
+            stack=section.StackFacts(
+                name=run["stack"]["name"],
+                region=run["region"],
+                version=run["stack"]["version"],
+                build=run["stack"]["build"],
+            ),
+        ),
+        videos=(),
+        model=INPUTS.model,
+        stack="idp-ux-nightly",
+    )
+    notes = [{"id": 11, "body": reply}]
+    assert story_section.has_story_reply(notes, HEAD_SHA)
+    assert story_section.runs_used(notes) == 1
+    for key, confirmation, shown in story_verdict.flow_confirmations(results):
+        label = story_verdict.verdict_label(shown, confirmation)
+        assert label in reply, key
+    assert "two lists" in reply
+    assert "<b>" not in reply and "](http" not in reply and "@team" not in reply
+    assert (
+        "backend: `idp-ux-nightly` v0.6.12.dev1; its build could not be read from "
+        "the UI"
+    ) in reply
 
 
 @pytest.mark.unit
@@ -1112,6 +1322,12 @@ GRAPH: dict[str, set[str]] = {
         "ux_runner.ui_change",
         "ux_recorder_cdp",
         "ux_test_proxy",
+    },
+    "ux_runner.story_digest": {
+        "ux_runner.python_floor",
+        "ux_runner.section",
+        "ux_runner.story_verdict",
+        "ux_runner.ui_change",
     },
     "ux_runner.story_relay": {
         "ux_runner.agent",
