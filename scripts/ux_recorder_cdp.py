@@ -25,6 +25,30 @@ driving. Chrome allows several clients per target, so the recorder attaches its
 own and never has to route through the MCP server or change how the agent works.
 The two sessions do not see each other's commands.
 
+Why the overlay runs in an isolated world
+-----------------------------------------
+The page the recorder watches can be untrusted: in the unattended MR UX test it is
+the merge request's own UI code. So the cursor overlay, its click binding and the
+viewport measurement all live in an isolated world of their own
+(:data:`OVERLAY_WORLD`). ``Runtime.addBinding`` names that world, so the binding
+exists only there, and script in the page's own world cannot call it at all: it
+can neither forge a click report nor flood the DevTools connection with them. The
+overlay's listeners and state are out of its reach too, and it reports only
+events the browser marks ``isTrusted``, which a script-dispatched event never is.
+``window.innerWidth`` read in that world is the browser's own value, not one the
+page redefined. The DOM is shared, so the overlay still sees every element and
+the page still sees the cursor element the overlay adds.
+
+Why a message has a size bound
+------------------------------
+The isolated world closes the binding, not every event the page can cause:
+``Runtime.enable`` delivers the page's console messages, whose strings the page
+chooses. :meth:`WebSocketClient.recv_message` therefore reads at most
+:data:`MESSAGE_MAX_BYTES` of one message into memory. A longer message is read off
+the socket in bounded chunks and dropped, and ``dropped`` counts it. It is dropped
+rather than treated as the end of the connection, because closing would let a
+single oversized console line end the recording.
+
 Why screencast plus forced captures
 -----------------------------------
 ``Page.startScreencast`` emits a frame only when the compositor produces a new one,
@@ -116,6 +140,17 @@ OP_CLOSE = 0x8
 OP_PING = 0x9
 OP_PONG = 0xA
 
+#: The longest message read into memory, across all of its fragments. A JPEG of a
+#: whole viewport, at any quality and width the recorder offers, is a few MB of
+#: base64, far below it; a longer message is read off the socket and dropped.
+MESSAGE_MAX_BYTES = 32 * 1024 * 1024
+#: The most one ``recv`` asks for, so a large frame never costs one buffer of its
+#: whole claimed length at once.
+_RECV_CHUNK = 1024 * 1024
+#: RFC 6455 section 5.5: a control frame carries at most 125 bytes and is never
+#: fragmented.
+_CONTROL_PAYLOAD_MAX = 125
+
 
 class WebSocketError(Exception):
     """Handshake failure or protocol violation on the CDP socket."""
@@ -141,14 +176,26 @@ def accept_key(nonce: str) -> str:
 
 
 class WebSocketClient:
-    """A blocking RFC 6455 client sufficient for CDP on localhost."""
+    """A blocking RFC 6455 client sufficient for CDP on localhost.
 
-    def __init__(self, sock: Any, host: str, path: str) -> None:
+    ``max_message_bytes`` bounds what :meth:`recv_message` holds of one message,
+    and ``dropped`` counts the messages it discarded for exceeding it.
+    """
+
+    def __init__(
+        self,
+        sock: Any,
+        host: str,
+        path: str,
+        max_message_bytes: int = MESSAGE_MAX_BYTES,
+    ) -> None:
         self._sock = sock
         self._host = host
         self._path = path
         self._send_lock = threading.Lock()
         self._closed = False
+        self.max_message_bytes = max_message_bytes
+        self.dropped = 0
 
     @classmethod
     def connect(cls, url: str, timeout: float = 10.0) -> WebSocketClient:
@@ -222,66 +269,94 @@ class WebSocketClient:
     def _read_exact(self, n: int) -> bytes:
         buf = bytearray()
         while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
+            chunk = self._sock.recv(min(n - len(buf), _RECV_CHUNK))
             if not chunk:
                 raise WebSocketError("connection closed")
             buf += chunk
         return bytes(buf)
 
-    def _recv_frame(self) -> tuple[bool, int, bytes]:
+    def _skip(self, n: int) -> None:
+        """Read ``n`` bytes off the socket, a chunk at a time, keeping none."""
+        while n > 0:
+            chunk = self._sock.recv(min(n, _RECV_CHUNK))
+            if not chunk:
+                raise WebSocketError("connection closed")
+            n -= len(chunk)
+
+    def _recv_header(self) -> tuple[bool, int, int, bytes | None]:
+        """The next frame's FIN bit, opcode, payload length and mask; no payload."""
         b0, b1 = self._read_exact(2)
-        fin = bool(b0 & 0x80)
-        opcode = b0 & 0x0F
-        masked = bool(b1 & 0x80)
         length = b1 & 0x7F
         if length == 126:
             (length,) = struct.unpack("!H", self._read_exact(2))
         elif length == 127:
             (length,) = struct.unpack("!Q", self._read_exact(8))
-        mask = self._read_exact(4) if masked else None
+        mask = self._read_exact(4) if b1 & 0x80 else None
+        return bool(b0 & 0x80), b0 & 0x0F, length, mask
+
+    def _payload(self, length: int, mask: bytes | None) -> bytes:
         payload = self._read_exact(length) if length else b""
         if mask:
             payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        return fin, opcode, payload
+        return payload
 
     def recv_message(self) -> str | bytes | None:
-        """Next complete message, or None once the peer has closed."""
+        """Next complete message, or None once the connection has ended.
+
+        A data message longer than ``max_message_bytes`` across its fragments is
+        read off the socket without being kept, counted in ``dropped`` and passed
+        over for the next one, so its size costs time but never memory. A protocol
+        violation (a fragmented or oversized control frame, a continuation with no
+        message to continue, a message begun inside another, an unknown opcode)
+        ends the connection, as RFC 6455 requires, instead of escaping to the
+        thread that reads.
+        """
         fragments: list[bytes] = []
         message_opcode: int | None = None
-        while True:
-            if self._closed:
-                return None
+        size = 0
+        dropping = False
+        while not self._closed:
             try:
-                fin, opcode, payload = self._recv_frame()
+                fin, opcode, length, mask = self._recv_header()
+                if opcode in (OP_CLOSE, OP_PING, OP_PONG):
+                    if not fin or length > _CONTROL_PAYLOAD_MAX:
+                        raise WebSocketError("malformed control frame")
+                    payload = self._payload(length, mask)
+                    if opcode == OP_PING:
+                        self._send_frame(OP_PONG, payload)
+                    elif opcode == OP_CLOSE:
+                        self._closed = True
+                        try:
+                            self._send_frame(OP_CLOSE, payload[:2])
+                        except OSError:
+                            pass
+                        return None
+                    continue
+                if opcode in (OP_TEXT, OP_BINARY):
+                    if message_opcode is not None:
+                        raise WebSocketError("a message began inside another")
+                    message_opcode, size = opcode, 0
+                elif opcode != OP_CONT or message_opcode is None:
+                    raise WebSocketError(f"unexpected frame with opcode {opcode}")
+                size += length
+                if dropping or size > self.max_message_bytes:
+                    dropping, fragments = True, []
+                    self._skip(length)
+                else:
+                    fragments.append(self._payload(length, mask))
             except (WebSocketError, OSError):
                 self._closed = True
                 return None
-            if opcode == OP_PING:
-                self._send_frame(OP_PONG, payload)
+            if not fin:
                 continue
-            if opcode == OP_PONG:
+            kind, data = message_opcode, b"".join(fragments)
+            message_opcode, fragments = None, []
+            if dropping:
+                self.dropped += 1
+                dropping = False
                 continue
-            if opcode == OP_CLOSE:
-                self._closed = True
-                try:
-                    self._send_frame(OP_CLOSE, payload[:2])
-                except OSError:
-                    pass
-                return None
-            if opcode in (OP_TEXT, OP_BINARY):
-                message_opcode = opcode
-                fragments = [payload]
-            elif opcode == OP_CONT:
-                if message_opcode is None:
-                    raise WebSocketError("continuation frame without a start")
-                fragments.append(payload)
-            else:
-                raise WebSocketError(f"unsupported opcode {opcode}")
-            if fin:
-                data = b"".join(fragments)
-                if message_opcode == OP_TEXT:
-                    return data.decode("utf-8")
-                return data
+            return data.decode("utf-8", errors="replace") if kind == OP_TEXT else data
+        return None
 
     def close(self) -> None:
         if not self._closed:
@@ -312,6 +387,11 @@ class CdpSession:
         self.closed = threading.Event()
         self._reader: threading.Thread | None = None
 
+    @property
+    def dropped(self) -> int:
+        """Messages the transport discarded for their size (0 when it keeps none)."""
+        return int(getattr(self._ws, "dropped", 0))
+
     def start_reader(self) -> None:
         self._reader = threading.Thread(
             target=self._reader_loop, name="cdp-reader", daemon=True
@@ -326,9 +406,11 @@ class CdpSession:
             if isinstance(message, bytes):
                 continue
             try:
-                self.dispatch(json.loads(message))
-            except json.JSONDecodeError:
+                parsed = json.loads(message)
+            except (ValueError, RecursionError):
                 continue
+            if isinstance(parsed, dict):
+                self.dispatch(parsed)
         self.closed.set()
         with self._lock:
             for event, slot in self._pending.values():
@@ -614,9 +696,11 @@ CURSOR_OVERLAY_JS = r"""
     if (!el || !el.tagName || !el.closest) { return null; }
     const field = fieldOf(el);
     const label = field ? fieldName(field) : attr(el, 'aria-label') || textOf(el) || caption(el);
-    return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + ' "' +
+    return el.tagName.toLowerCase().slice(0, LABEL_LENGTH) +
+      (el.id ? '#' + String(el.id).slice(0, LABEL_LENGTH) : '') + ' "' +
       String(label).replace(/\s+/g, ' ').trim().slice(0, LABEL_LENGTH) + '"';
   };
+  const trusted = (e) => e.isTrusted !== false;
   const report = (e) => {
     if (typeof window.__uxRecorderEvent !== 'function') { return; }
     try {
@@ -629,8 +713,11 @@ CURSOR_OVERLAY_JS = r"""
       }));
     } catch (err) {}
   };
-  const onMove = (e) => place(e.clientX, e.clientY);
-  const onDown = (e) => { place(e.clientX, e.clientY); ripple(e.clientX, e.clientY); report(e); };
+  const onMove = (e) => { if (trusted(e)) { place(e.clientX, e.clientY); } };
+  const onDown = (e) => {
+    if (!trusted(e)) { return; }
+    place(e.clientX, e.clientY); ripple(e.clientX, e.clientY); report(e);
+  };
   document.addEventListener('pointermove', onMove, true);
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('mousedown', onDown, true);
@@ -650,8 +737,68 @@ CURSOR_OVERLAY_JS = r"""
 
 CURSOR_REMOVE_JS = "window.__uxRecorderCursor && window.__uxRecorderCursor.remove();"
 
+#: What the recorder reads as the viewport: the size clicks are bounded by and
+#: ``render`` scales its click markers by.
+VIEWPORT_JS = (
+    "({w: window.innerWidth, h: window.innerHeight, "
+    "dpr: window.devicePixelRatio, url: location.href})"
+)
 
 CLICK_BINDING = "__uxRecorderEvent"
+
+#: The isolated world the overlay, its click binding and the viewport measurement
+#: live in. Script in the page's own world can reach none of the three.
+OVERLAY_WORLD = "ux-recorder"
+
+
+def isolated_context(
+    session: Any, world: str = OVERLAY_WORLD, *, timeout: float = 10.0
+) -> int:
+    """The execution context of ``world`` in the page's main frame, made if need be.
+
+    ``Page.createIsolatedWorld`` creates the world on its first call for a frame
+    and answers with the same world's context for the current document after
+    that, so this is also how the context is found again after a navigation.
+    A reply without a context id raises :class:`CdpError`, as a refused call does.
+    """
+    tree = session.call("Page.getFrameTree", timeout=timeout)
+    try:
+        frame_id = tree["frameTree"]["frame"]["id"]
+        created = session.call(
+            "Page.createIsolatedWorld",
+            {"frameId": frame_id, "worldName": world},
+            timeout=timeout,
+        )
+        context = created["executionContextId"]
+    except (KeyError, TypeError) as exc:
+        raise CdpError(f"no isolated world {world!r}: {type(exc).__name__}") from None
+    if isinstance(context, bool) or not isinstance(context, int):
+        raise CdpError(f"no isolated world {world!r}: the context id is not a number")
+    return context
+
+
+def measure_viewport(session: Any, world: str = OVERLAY_WORLD) -> dict[str, Any]:
+    """The page's ``w``, ``h``, ``dpr`` and ``url``, read in ``world``; ``{}`` if not.
+
+    In the page's own world ``innerWidth`` and ``innerHeight`` are whatever its
+    script defines them to be, so a page could widen the bound
+    :func:`ux_recorder.parse_click` holds clicks to. In an isolated world they are
+    the browser's own values.
+    """
+    try:
+        reply = session.call(
+            "Runtime.evaluate",
+            {
+                "expression": VIEWPORT_JS,
+                "contextId": isolated_context(session, world),
+                "returnByValue": True,
+            },
+            timeout=10,
+        )
+    except CdpError:
+        return {}
+    value = (reply.get("result") or {}).get("value")
+    return value if isinstance(value, dict) else {}
 
 
 def install_cursor_overlay(session: CdpSession) -> str | None:
@@ -661,17 +808,41 @@ def install_cursor_overlay(session: CdpSession) -> str | None:
     log where a click really landed and what was under it. That is how a ripple
     drawn away from the intended element is diagnosed: the timeline names the
     element that was actually hit.
+
+    The binding, the script for future documents and the run on the current one
+    all name :data:`OVERLAY_WORLD`, so none of them is in the page's own world.
+    The binding is added first: it reaches every context of that name as the
+    context is created, which is how the current document's world receives it
+    when :func:`isolated_context` creates that world.
+
+    The caller must have enabled the Page domain first (``Page.enable``), as
+    ``Recorder.attach`` does: a script for future documents that names a world
+    runs only while it is enabled, so without it the overlay is on the current
+    document alone and no click after the first navigation is reported, with
+    nothing to say so. The overlay ignores an event
+    whose ``isTrusted`` is false, which is every event a script dispatches; it
+    spells that ``isTrusted !== false``, the same test in a browser, where every
+    event carries the property, and one the node harness that runs the overlay
+    in the tests (whose events are plain objects) passes too.
     """
     session.call("Runtime.enable")
-    session.call("Runtime.addBinding", {"name": CLICK_BINDING})
-    result = session.call(
-        "Page.addScriptToEvaluateOnNewDocument", {"source": CURSOR_OVERLAY_JS}
+    session.call(
+        "Runtime.addBinding",
+        {"name": CLICK_BINDING, "executionContextName": OVERLAY_WORLD},
     )
-    session.call("Runtime.evaluate", {"expression": CURSOR_OVERLAY_JS})
+    result = session.call(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": CURSOR_OVERLAY_JS, "worldName": OVERLAY_WORLD},
+    )
+    session.call(
+        "Runtime.evaluate",
+        {"expression": CURSOR_OVERLAY_JS, "contextId": isolated_context(session)},
+    )
     return result.get("identifier")
 
 
 def remove_cursor_overlay(session: CdpSession, identifier: str | None) -> None:
+    """Stop injecting the overlay and take it off the current document, if it can."""
     try:
         if identifier:
             session.call(
@@ -679,6 +850,13 @@ def remove_cursor_overlay(session: CdpSession, identifier: str | None) -> None:
                 {"identifier": identifier},
                 timeout=5,
             )
-        session.call("Runtime.evaluate", {"expression": CURSOR_REMOVE_JS}, timeout=5)
+        session.call(
+            "Runtime.evaluate",
+            {
+                "expression": CURSOR_REMOVE_JS,
+                "contextId": isolated_context(session, timeout=5),
+            },
+            timeout=5,
+        )
     except CdpError:
         pass
