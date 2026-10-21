@@ -1317,7 +1317,7 @@ Resources:
               strategy:
                 type: string
                 title: Strategy
-                description: "'single_pass': one call returns both the boundaries and the classes. 'two_stage': find the boundaries first with no class list in the prompt, then label each document with one call — cheaper on long documents with few sections, and it tells a wrong boundary apart from a wrong label. Billed as separate Segmentation and Labeling lines."
+                description: "'single_pass': one call returns both the boundaries and the classes. 'two_stage': find the boundaries first with no class list in the prompt, then label each document with one call — cheaper on long documents with few sections, and it tells a wrong boundary apart from a wrong label. Metered as separate Segmentation and Labeling lines."
                 enum: ["single_pass", "two_stage"]
                 default: "single_pass"
                 order: 0.2

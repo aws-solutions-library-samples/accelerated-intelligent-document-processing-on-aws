@@ -17,6 +17,7 @@ Classification methods:
   across the entire document packet at once.
 """
 
+import functools
 import json
 import logging
 import os
@@ -1463,6 +1464,61 @@ class ClassificationService:
         """
         return self._stage_prompt(stage, "system_prompt")
 
+    # ⚠️ The memo is PROCESS-GLOBAL and survives across tests and across Lambda
+    # invocations, which is what makes it worth having on a disk read — and what
+    # obliges a test that monkeypatches the defaults file to call `cache_clear()`
+    # in a `finally`, or the next test reads a stale block.
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _shipped_classification_defaults() -> Dict[str, Any]:
+        """``classification`` from the shipped system defaults, or ``{}``.
+
+        Read from disk, so it is the prompt this build would have written into a
+        new profile — which is the right fallback for a profile that predates a
+        field, and is why this is not a hardcoded string.
+
+        Returns ``{}`` rather than raising if the defaults cannot be read: a
+        missing defaults file must not turn into a classification failure, and
+        the caller's existing wrong-shape fallback still applies.
+        """
+        try:
+            from idp_common.config.merge_utils import load_system_defaults
+
+            defaults = load_system_defaults()
+            block = defaults.get("classification")
+            return block if isinstance(block, dict) else {}
+        except Exception as exc:
+            # Covered by `test_an_unreadable_defaults_file_does_not_raise`, so no
+            # `# pragma: no cover` here — the pragma would hide real coverage.
+            logger.warning(
+                "Could not read the shipped classification defaults: %s", exc
+            )
+            return {}
+
+    def _shipped_prompt(self, *path: str) -> str:
+        """One prompt from the shipped defaults, by dotted path, or ``""``.
+
+        ⚠️ This is the fallback that makes an empty stage prompt survivable, and
+        the reason it exists is that the alternative fallback CANNOT WORK. A
+        profile saved before `classification.packet` / `.segmentation` /
+        `.labeling` existed reads those prompts back empty, and falling back to
+        the single-pass page prompt makes the model answer in page shape — which
+        the segments parser cannot read, so every document fails with "No
+        segments found". A fallback that always fails is not a fallback.
+
+        The read path now backfills these fields from the default profile
+        (`ConfigurationManager.get_merged_configuration`), so this should not be
+        reached for a stored profile. It covers what that cannot: a config handed
+        to this service directly, a revision pinned to pre-upgrade content, and a
+        field cleared to empty by hand.
+        """
+        node: Any = self._shipped_classification_defaults()
+        for key in path:
+            if not isinstance(node, dict):
+                return ""
+            node = node.get(key)
+        return node if isinstance(node, str) else ""
+
     def _stage_prompt(self, stage: str, field: str) -> str:
         """Resolve one prompt field for a stage and the active granularity.
 
@@ -1476,12 +1532,21 @@ class ClassificationService:
             value = getattr(labeling, field)
             if value:
                 return value
+            shipped = self._shipped_prompt("labeling", field)
+            if shipped:
+                logger.warning(
+                    "classification.labeling.%s is empty, so Stage B is using "
+                    "the SHIPPED default for it. A profile saved before this "
+                    "field existed reads it back empty; save the profile to "
+                    "store the value, or set your own.",
+                    field,
+                )
+                return shipped
             logger.warning(
-                "classification.labeling.%s is empty, so Stage B has no prompt "
-                "of its own and is falling back to the single-pass "
-                "classification.%s — which asks for a document_boundary this "
-                "stage does not need. Restore it from the system defaults "
-                "(base-classification.yaml).",
+                "classification.labeling.%s is empty and the shipped default "
+                "could not be read, so Stage B is falling back to the "
+                "single-pass classification.%s — which asks for a "
+                "document_boundary this stage does not need.",
                 field,
                 field,
             )
@@ -1497,12 +1562,26 @@ class ClassificationService:
             value = getattr(source, field)
             if value:
                 return value
+            shipped = (
+                self._shipped_prompt("segmentation", "packet", field)
+                if self.granularity == self.GRANULARITY_PACKET
+                else self._shipped_prompt("segmentation", field)
+            )
+            if shipped:
+                logger.warning(
+                    "The %s granularity Stage A %s is empty, so segmentation is "
+                    "using the SHIPPED default for it. A profile saved before "
+                    "this field existed reads it back empty; save the profile to "
+                    "store the value, or set your own.",
+                    self.granularity,
+                    field,
+                )
+                return shipped
             logger.warning(
-                "The %s granularity Stage A %s is empty, so segmentation is "
-                "falling back to the single-pass prompt — which carries the "
-                "whole class vocabulary, the saving two-stage exists for. "
-                "Restore it from the system defaults "
-                "(base-classification.yaml).",
+                "The %s granularity Stage A %s is empty and the shipped default "
+                "could not be read, so segmentation is falling back to the "
+                "single-pass prompt — which carries the whole class vocabulary, "
+                "the saving two-stage exists for.",
                 self.granularity,
                 field,
             )
@@ -1513,12 +1592,23 @@ class ClassificationService:
             packet_prompt = getattr(self.config.classification.packet, field)
             if packet_prompt:
                 return packet_prompt
+            shipped = self._shipped_prompt("packet", field)
+            if shipped:
+                logger.warning(
+                    "classification.granularity is 'packet' but "
+                    "classification.packet.%s is empty, so the SHIPPED default "
+                    "for it is being used. A profile saved before this field "
+                    "existed reads it back empty; save the profile to store the "
+                    "value, or set your own.",
+                    field,
+                )
+                return shipped
             logger.warning(
                 "classification.granularity is 'packet' but "
-                "classification.packet.%s is empty; falling back to "
-                "classification.%s, which is written for PAGE granularity and "
-                "asks for a different output shape. Restore the packet prompt "
-                "from the system defaults (base-classification.yaml).",
+                "classification.packet.%s is empty and the shipped default could "
+                "not be read; falling back to classification.%s, which is "
+                "written for PAGE granularity and asks for a different output "
+                "shape — the segments parser will not read the answer.",
                 field,
                 field,
             )
