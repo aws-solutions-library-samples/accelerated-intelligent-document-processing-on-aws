@@ -2766,7 +2766,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Live tiers that drive real stacks. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
+      "reason": "Each row carries its own reason. The live tiers drive real stacks; ux-test-stories.md is Claude Code only, because its pair mode starts a claude --mcp-config session and its unattended runs go through run_in_background. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_repo_quality_review_skill.py"
     },

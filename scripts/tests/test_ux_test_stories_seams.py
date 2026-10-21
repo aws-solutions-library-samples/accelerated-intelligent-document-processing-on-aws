@@ -39,13 +39,16 @@ if str(SCRIPTS) not in sys.path:
 
 import ux_story_mcp as story  # noqa: E402
 from ux_runner import (  # noqa: E402
+    changelog_select,
     docs_index,
     section,
     stories,
+    story_section,
     story_verdict,
 )
 
 HARNESS = "f23669def653f7c3a9606841cfc178c5456c1e8f"
+HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 EPOCH = 1760961234.5
 SEEN_ON_SCREEN = "/a-help-link-the-screen-showed/"
 
@@ -965,6 +968,84 @@ def test_the_vocabularies_held_twice_are_equal() -> None:
 
 
 @pytest.mark.unit
+def test_what_the_docker_runner_holds_by_value_is_what_the_container_side_holds() -> (
+    None
+):
+    """``run_in_docker.py`` imports nothing from ``ux_runner``, so it keeps the names,
+    paths, schemas and words it shares with the orchestrator, the pair preparer,
+    the judge and the agent by value; each copy must stay the other side's."""
+    sdlc = str(SCRIPTS / "sdlc")
+    if sdlc not in sys.path:
+        sys.path.insert(0, sdlc)
+    import ai_ux_test_stories as orchestrator  # type: ignore[import-not-found]
+    from ux_runner import agent, session, story_pair, tool_profiles
+    from ux_runner import run_in_docker as rid
+
+    assert rid.STORIES_ENTRY == orchestrator.ENTRY
+    assert (REPO_ROOT / rid.STORY_PAIR_ENTRY).resolve() == Path(
+        story_pair.__file__
+    ).resolve()
+    assert (
+        rid.STORY_ARTIFACTS == orchestrator.DEFAULT_RUN_DIR_NAME == story_pair.ARTIFACTS
+    )
+    assert rid.STORY_RESULTS_FILE == story_verdict.RESULTS_FILE
+    assert rid.CI_ENV_NAMES == orchestrator.CI_VARIABLES
+    assert rid.DEFAULT_STACK == session.REVIEW_STACK
+    assert rid.OPENING_MESSAGE == agent.OPENING_MESSAGE
+    assert all(
+        rid.STORY_TOOL_RE.match(name) for name in tool_profiles.STORY_ALLOWED_TOOLS
+    )
+
+
+@pytest.mark.unit
+def test_the_selector_picks_only_catalogue_flows_in_the_order_and_bounds_it_sets(
+    catalogue: stories.Catalogue,
+) -> None:
+    """Each claim's own CHANGELOG entry, as the selector reads it, selects flows of
+    the catalogue, by its ``mr_as`` order, within its ``[runs]`` caps."""
+    entries = changelog_select.parse_entries(
+        (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    )
+    by_lead = {entry.lead: entry for entry in entries}
+    universe = set(stories.flow_keys(catalogue, tiers=stories.TIERS))
+    claims = [(s, claim.lead) for s in catalogue.stories for claim in s.claims]
+    assert claims
+    for claimed, lead in claims:
+        entry = by_lead[" ".join(lead.split())]
+        added = changelog_select.AddedEntry(
+            entry=entry,
+            modified=False,
+            in_released_section=entry.section.casefold() != "unreleased",
+        )
+        selection = changelog_select.select(catalogue, [added])
+        assert claimed.id in selection.stories
+        assert set(selection.flows) <= universe
+        assert len(selection.flows) <= catalogue.runs.mr_flows
+        assert len(selection.stories) <= catalogue.runs.mr_stories
+        for story_id in selection.stories:
+            chosen = [key.persona for key in selection.flows if key.story == story_id]
+            order = stories.mr_personas(catalogue.story(story_id))
+            assert chosen == [p for p in order if p in chosen]
+        pairs = [
+            (
+                key,
+                stories.series_hash(
+                    stories.story_hash(catalogue, catalogue.story(key.story)),
+                    key.persona,
+                    INPUTS,
+                ),
+            )
+            for key in selection.flows
+        ]
+        sel = changelog_select.selection_hash(
+            pairs, ui_source="deployed", docs_tree=HARNESS
+        )
+        assert story_section.STORY_MARKER_RE.fullmatch(
+            story_section.marker_line(head_sha=HEAD_SHA, sel=sel, kind="run")
+        )
+
+
+@pytest.mark.unit
 def test_a_kept_hash_or_sha_survives_the_job_s_redactor_and_still_reads(
     tmp_path: Path,
 ) -> None:
@@ -1013,11 +1094,47 @@ GRAPH: dict[str, set[str]] = {
         "ux_runner.stories",
         "ux_runner.ui_change",
     },
+    "ux_runner.story_section": {
+        "ux_runner.changelog_select",
+        "ux_runner.chrome",
+        "ux_runner.egress",
+        "ux_runner.paths",
+        "ux_runner.processes",
+        "ux_runner.python_floor",
+        "ux_runner.readback",
+        "ux_runner.section",
+        "ux_runner.stories",
+        "ux_runner.story_verdict",
+        "ux_runner.ui_change",
+        "ux_recorder_cdp",
+        "ux_test_proxy",
+    },
     "ux_runner.story_relay": {
         "ux_runner.agent",
         "ux_runner.paths",
         "ux_runner.processes",
         "ux_runner.tool_profiles",
+    },
+    "ux_runner.story_prompt": {
+        "ux_runner.python_floor",
+        "ux_runner.stories",
+        "ux_runner.tool_profiles",
+    },
+    "ux_runner.run_in_docker": set(),
+    "ux_runner.story_pair": {
+        "check_markdown_links",
+        "ux_runner.agent",
+        "ux_runner.docs_index",
+        "ux_runner.paths",
+        "ux_runner.processes",
+        "ux_runner.python_floor",
+        "ux_runner.section",
+        "ux_runner.stories",
+        "ux_runner.story_prompt",
+        "ux_runner.story_relay",
+        "ux_runner.story_verdict",
+        "ux_runner.tool_profiles",
+        "ux_runner.ui_change",
     },
     "ux_story_mcp": {"ux_recorder_mcp"},
 }

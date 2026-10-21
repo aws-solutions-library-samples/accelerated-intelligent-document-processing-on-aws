@@ -56,8 +56,12 @@ the CI job does not have.
 Usage (inside the image; ``run_in_docker.py browser`` builds this)::
 
     python3 /repo/scripts/ux_runner/browser.py --stack idp-ux-nightly \\
-        --web-url https://dxxxxxxxxxxxxx.cloudfront.net/ [--sign-in Admin] \\
-        --cdp-listen 0.0.0.0:9223 --out /out/browser
+        --web-url https://dxxxxxxxxxxxxx.cloudfront.net/ [--sign-in Admin \\
+        [--keep-welcome]] --cdp-listen 0.0.0.0:9223 --out /out/browser
+
+``--keep-welcome`` keeps the welcome page the sign-in otherwise dismisses, for a
+first-time-user story about a first visit (``run_in_docker.py stories`` passes it
+for a ``first_visit`` story).
 
 Environment: ``UX_TEST_UI_ENV`` (required), ``UX_TEST_PERSONAS`` (``--sign-in``
 only), ``UX_BROWSER_HOST_PORT`` and ``UX_BROWSER_CONTAINER`` (for the JSON line).
@@ -259,6 +263,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--sign-in", metavar="PERSONA", help="sign this UX_TEST_PERSONAS persona in"
     )
     parser.add_argument(
+        "--keep-welcome",
+        action="store_true",
+        help="with --sign-in, keep the welcome page the sign-in otherwise dismisses",
+    )
+    parser.add_argument(
         "--cdp-listen",
         default=DEFAULT_CDP_LISTEN,
         help="where the DevTools forwarder listens (default: %(default)s)",
@@ -276,6 +285,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if not args.web_url and not args.build_dir:
         parser.error("--web-url is required unless --build-dir is given")
+    if args.keep_welcome and not args.sign_in:
+        parser.error("--keep-welcome needs --sign-in")
     return args
 
 
@@ -379,7 +390,12 @@ def main(argv: list[str] | None = None) -> int:
                 chrome.verify_policy(session)
                 chrome.verify_proxy_path(session, proxy.refusal_log, owner=proxy.owner)
                 if persona is not None:
-                    signin.sign_in(session, persona, base_url=base_url)
+                    signin.sign_in(
+                        session,
+                        persona,
+                        base_url=base_url,
+                        dismiss_welcome=not args.keep_welcome,
+                    )
                 else:
                     session.call("Page.navigate", {"url": base_url})
             finally:

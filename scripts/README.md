@@ -108,7 +108,12 @@ The pieces of the unattended UX test of a merge request's web UI, which
 `sdlc/ai_ux_test.py` wires together: the confined headless Chrome and its managed
 policy, the egress proxy, sign-in over DevTools, the recorder control, the model
 session's tool and environment allowlists, the note composition, and the pinned
-toolchain (`install.sh`, from which the Docker image is also built).
+toolchain (`install.sh`, from which the Docker image is also built). The
+first-time-user stories below run on the same package, and two of its modules
+serve both: `session.py`, one confined, signed-in browser opened and closed in the
+order confinement needs, with the one check of whether a run's screens may become a
+video, and `artifacts.py`, the redactor every printed line and artifact goes
+through, and the artifact writes.
 
 In CI it is the advisory `ai_ux_test` job, which runs on non-Draft MRs to `develop`
 that change `src/ui/` and appends its findings and a narrated video to the
@@ -127,23 +132,34 @@ Unit tests: `scripts/tests/test_ux_runner_*.py`, `test_ux_test_proxy.py`,
 
 ### First-time-user stories (`ux_stories.toml`, `ux_story_mcp.py`)
 
-The stories are authored in `ux_stories.toml`, with these modules of their
-own in the `ux_runner/` package:
+The stories are authored in `ux_stories.toml` and run on the same `ux_runner/`
+package as the MR UX test, with these modules of their own:
 
 - `scripts/ux_runner/stories.py` — the catalogue's strict loader: closed keys, the intent-only lint on every title and intent, the story and series hashes that decide which runs are comparable, the step budget, flow keys and shards. `list [--tier p0|p1|all] [--json]` prints one line per flow.
 - `scripts/ux_runner/docs_index.py` — the documentation a first-time-user story reads: a standard-library BM25 index over exactly the pages `docs-site/setup.sh` publishes, split at H1–H3 outside code fences, addressed by the site's own paths (a slug in the wrong case is a miss, as on the site). `search QUERY [--json]` from a checkout or an `--index` file; `build --out FILE` indexes the checkout, and with `--git-ref REF` reads that commit's `docs/**.md` blobs from git objects instead.
 - `scripts/ux_runner/story_relay.py` — the story relay: an MCP client of the pinned chrome-devtools-mcp (no roots, file and full-page arguments stripped, screenshots forced to JPEG) that serves twelve of its tools behind an action budget, a post-action screenshot up to an image cap, a look cap, a 220-element snapshot cut, a best-effort commit guard and signed-out detection. Fixtures are re-recorded with `scripts/tests/fixtures/ux_story_relay/record.py` inside the runner image.
 - `scripts/ux_runner/story_verdict.py` — a flow's verdict, computed from its journal and the persona's expectation alone, never from the model's prose, with the findings, the re-run confirmation and `results.json`. `judge RUN_DIR [--check] [--summary]` re-judges a run from `story-run.json` and its journals; `--summary` prints a fixed-shape table holding no free text.
 - `scripts/ux_runner/changelog_select.py` — which stories an MR's added CHANGELOG entries select, by integer scores against each story's `match` block; MR text selects stories and never reaches a prompt. `nudge` prints the `[Unreleased]` leads no story covers.
+- `scripts/ux_runner/story_section.py` — the MR reply, composed from structured fields alone, behind a `ux-story:` marker that neither the MR UX test's nor the AI review's marker matches.
+- `scripts/ux_runner/story_prompt.py` — the deterministic story prompt: a header, the brief from `.claude/skills/ux-test-stories.md`, `ux-test-stories-ci.md` whole, the untrusted-input paragraph, the persona's group and background, the task with its kind's rule, and the action and look bounds; no MR text, page text or stack identifier, and every catalogue value quoted as a JSON string. `python3 -B scripts/ux_runner/story_prompt.py show STORY@PERSONA [--scale 2]` prints one flow's prompt.
+- `scripts/sdlc/ai_ux_test_stories.py` — the orchestrator: precheck, run and judge, each flow in a confined browser of its own and judged from the journal its server wrote, locally in Docker.
+- `scripts/ux_runner/story_pair.py` — a pair session's files, written inside the browser container: the docs index, the server's start record, a one-flow run record and the flow's prompt, which the printed command passes with `--append-system-prompt-file`.
 - `scripts/ux_runner/python_floor.py` — the Python the host-side story tools need, checked before an import can fail, so an older `python3` (macOS's own) ends with one `FAILED:` line naming the remedy rather than a traceback.
 
 ```bash
 make ai-ux-test-stories-list                       # validate the catalogue, list its flows and the uncovered [Unreleased] leads
 make ai-ux-test-stories-search Q="prefix mapping"  # what a first-time user would find in the published docs
+make ai-ux-test-stories-local STORY=<id> AS=<persona>     # one flow in Docker, as a dry run
+make ai-ux-test-stories-pair STORY=<id> AS=<persona>      # a confined session you start plays the user
+make ai-ux-test-stories-judge RUN=<dir> SUMMARY=1         # re-judge a run from its journals; CHECK=1 writes nothing
+py scripts\ux_runner\run_in_docker.py stories --story <id> --as <persona>   # Windows, without make
 ```
 
-Unit tests: `scripts/tests/test_ux_test_stories_*.py`, `test_ux_story_mcp.py`
-and `test_ux_story_relay.py`.
+The operator procedure is
+[`ux-test-stories.md`](../.claude/skills/ux-test-stories.md) and the unattended
+contract [`ux-test-stories-ci.md`](../.claude/skills/ux-test-stories-ci.md).
+Unit tests: `scripts/tests/test_ux_test_stories_*.py`, `test_ux_story_mcp.py`,
+`test_ux_story_relay.py` and `test_ai_ux_test_stories.py`.
 
 ### Model Limit Discovery (`discover_model_limits.py`)
 

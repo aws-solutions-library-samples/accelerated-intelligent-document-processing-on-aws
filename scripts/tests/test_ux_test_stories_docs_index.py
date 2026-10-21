@@ -48,7 +48,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import check_markdown_links  # noqa: E402
-from ux_runner import docs_index, ui_change  # noqa: E402
+from ux_runner import docs_index, story_prompt, ui_change  # noqa: E402
 from ux_runner.docs_index import DocsIndexError, DocsSource  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2403,3 +2403,9 @@ def test_a_heading_s_title_is_cleaned_and_its_anchor_is_the_site_s(
     assert docs_index.resolve(index, found.address) == section.id
     (hit,) = docs_index.search(index, "heading body")
     assert (hit.id, hit.address) == (found.id, found.address)
+
+
+@pytest.mark.unit
+def test_the_index_hides_exactly_what_the_prompt_refuses() -> None:
+    assert docs_index.HIDDEN_CHARACTERS_RE.pattern == story_prompt._HIDDEN_RE.pattern
+    assert not docs_index.HIDDEN_CHARACTERS_RE.search("\t\n")

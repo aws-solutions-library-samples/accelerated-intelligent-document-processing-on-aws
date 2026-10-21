@@ -709,9 +709,10 @@ def refusal_origin(record: Mapping[str, Any]) -> str:
 def not_the_page(target: str) -> bool:
     """Whether a refused target is Chrome's own request or the proxy self-test.
 
-    It is the ``background`` test ``section.refusal_caveat`` is handed where the
-    MR UX test's note counts what the page asked for. :func:`refusal_origin`
-    classifies the target.
+    It is the ``background`` test ``section.refusal_caveat`` is handed wherever a
+    caveat counts what the page asked for: the MR UX test's note, and the
+    first-time-user stories' reply, whose ``story_section.standard_caveats`` uses
+    it unless told otherwise. :func:`refusal_origin` classifies the target.
     """
     return refusal_origin({"target": target}) != "page"
 

@@ -2936,8 +2936,9 @@ def test_every_statement_of_the_stack_must_name_the_review_stack(
 
 @pytest.mark.unit
 def test_the_check_and_the_stack_are_sessions_own_called_not_copied() -> None:
-    """The MR UX test takes the function and the stack from ``session.py`` rather
-    than keeping copies that could drift apart."""
+    """The first-time-user stories hold their videos to the same check, so the MR
+    UX test takes the function and the stack from ``session.py`` rather than
+    keeping copies that could drift apart."""
     assert ai_ux_test.review_stack_problem is session.review_stack_problem
     assert ai_ux_test.REVIEW_STACK is session.REVIEW_STACK
 

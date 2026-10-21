@@ -1,0 +1,83 @@
+{
+  "claude_code": "2.1.281",
+  "pair_command": {
+    "turns": 2,
+    "builtin_tools": [],
+    "story_tools": [
+      "mcp__ux-story__report_done"
+    ],
+    "system_has_marker": true
+  },
+  "positional_opening": {
+    "first_turn_story_tools": []
+  },
+  "bare_applies_settings_env": true,
+  "served": {
+    "unassisted": [
+      {
+        "reply": "tool",
+        "id": "msg_recorded_0001",
+        "usage": {
+          "input_tokens": 4,
+          "cache_creation_input_tokens": 1000,
+          "cache_read_input_tokens": 700,
+          "output_tokens": 21
+        }
+      },
+      {
+        "reply": "summary",
+        "id": "msg_recorded_0003",
+        "usage": {
+          "input_tokens": 6,
+          "cache_creation_input_tokens": 3000,
+          "cache_read_input_tokens": 2100,
+          "output_tokens": 23
+        }
+      }
+    ],
+    "assisted": [
+      {
+        "reply": "tool",
+        "id": "msg_recorded_0005",
+        "usage": {
+          "input_tokens": 8,
+          "cache_creation_input_tokens": 5000,
+          "cache_read_input_tokens": 3500,
+          "output_tokens": 25
+        }
+      },
+      {
+        "reply": "summary",
+        "id": "msg_recorded_0006",
+        "usage": {
+          "input_tokens": 9,
+          "cache_creation_input_tokens": 6000,
+          "cache_read_input_tokens": 4200,
+          "output_tokens": 26
+        }
+      },
+      {
+        "reply": "noted",
+        "id": "msg_recorded_0008",
+        "usage": {
+          "input_tokens": 11,
+          "cache_creation_input_tokens": 8000,
+          "cache_read_input_tokens": 5600,
+          "output_tokens": 28
+        }
+      }
+    ],
+    "positional": [
+      {
+        "reply": "untooled",
+        "id": "msg_recorded_0010",
+        "usage": {
+          "input_tokens": 13,
+          "cache_creation_input_tokens": 10000,
+          "cache_read_input_tokens": 7000,
+          "output_tokens": 30
+        }
+      }
+    ]
+  }
+}

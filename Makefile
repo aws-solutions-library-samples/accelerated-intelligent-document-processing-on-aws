@@ -1693,6 +1693,42 @@ ai-ux-test-stories-search: ## What a first-time user finds in the published docs
 	@test -n "$$Q" || { echo 'usage: make ai-ux-test-stories-search Q="what a first-time user would type"'; exit 2; }
 	@$(PYTHON) scripts/ux_runner/docs_index.py search -- "$$Q"
 
+# First-time-user stories in the Docker runner (scripts/ux_runner/run_in_docker.py
+# stories). ai-ux-test-stories-local is a dry run: STORY=<id> [AS=<persona>].
+# ai-ux-test-stories-pair starts the confined browser and prints the command
+# for a Claude session you start; PAIR=full opts into your whole session and
+# PAIR=keychain keeps a keychain sign-in. ai-ux-test-stories-judge re-judges a run
+# on the host with no Docker, rewriting results.json and section.md: CHECK=1 writes
+# nothing, SUMMARY=1 prints the table. RUN reaches its recipe through the
+# environment, as Q does for the search target, so a path holding a quote or a
+# space arrives whole. AS is one of make's own variables (the assembler, `as` by
+# default), so it is read only when it is set on the command line.
+.PHONY: ai-ux-test-stories-local ai-ux-test-stories-pair ai-ux-test-stories-judge
+
+ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run (STORY=<id> [AS=])
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories \
+		$(if $(STORY),--story $(STORY)) $(if $(filter command line,$(origin AS)),--as $(AS)) \
+		$(if $(VIDEO),--video $(VIDEO)) \
+		$(if $(STACK),--stack $(STACK)) $(if $(WEB_URL),--web-url $(WEB_URL)) \
+		$(if $(DOCS),--docs $(DOCS)) $(if $(RUN_USD),--run-usd $(RUN_USD)) \
+		$(if $(RERUNS),--reruns $(RERUNS)) $(EXTRA_ARGS)
+
+ai-ux-test-stories-pair: ## Start the confined browser for one flow and print the command for a Claude session you start (STORY=<id> [AS=] [STACK=] [WEB_URL=] [PAIR=full|keychain])
+	@$(if $(STORY),,$(error set STORY=<id>, e.g. make ai-ux-test-stories-pair STORY=route-folder-to-profile AS=platform-admin))
+	@$(if $(filter-out full keychain,$(PAIR)),$(error PAIR is full or keychain, or unset for the confined session))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py stories --pair --story $(STORY) \
+		$(if $(filter command line,$(origin AS)),--as $(AS)) $(if $(STACK),--stack $(STACK)) \
+		$(if $(WEB_URL),--web-url $(WEB_URL)) $(if $(PORT),--port $(PORT)) \
+		$(if $(filter full,$(PAIR)),--pair-full) \
+		$(if $(filter keychain,$(PAIR)),--pair-keychain) $(EXTRA_ARGS)
+
+ai-ux-test-stories-judge: ## Re-judge a story run on the host, rewriting results.json and section.md (RUN=<dir holding story-run.json> required; CHECK=1 writes nothing; SUMMARY=1 prints the table; REJUDGE=1 judges a run of another JUDGEMENT_REVISION under this one)
+	@test -n "$$RUN" || { echo 'usage: make ai-ux-test-stories-judge RUN=<dir holding story-run.json> [CHECK=1] [SUMMARY=1] [REJUDGE=1]'; exit 2; }
+	@$(PYTHON) -B scripts/sdlc/ai_ux_test_stories.py --judge "$$RUN" \
+		$(if $(filter 1 true yes y on,$(CHECK)),--check) \
+		$(if $(filter 1 true yes y on,$(SUMMARY)),--summary) \
+		$(if $(filter 1 true yes y on,$(REJUDGE)),--rejudge)
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".

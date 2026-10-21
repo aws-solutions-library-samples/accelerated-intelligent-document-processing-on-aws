@@ -18,6 +18,7 @@ its `make` target and the skill that documents how to run it.
 | API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test.md` |
 | ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
 | UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test.md` |
+| First-time-user stories in a confined browser (one intent-only story as one persona, judged from the journal of its tool calls; unattended or paired) | `make ai-ux-test-stories-local STORY=…` · `make ai-ux-test-stories-pair STORY=… AS=…` | `.claude/skills/ux-test-stories.md` |
 | APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests.md` |
 | WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
@@ -645,26 +646,27 @@ treats that file as diagnostics only.
   page has loaded it, with its sign-in address before that on a full page load.
 - A video is made of the review stack and of no other, because its frames are not
   redacted, and that is enforced in `scripts/sdlc/ai_ux_test.py`, not left to the
-  default `--stack`. `review_stack_problem` checks three statements of which stack
-  the run is using, and all three must name `idp-ux-nightly`: `--stack`; the
-  settings parameter `UX_TEST_UI_ENV` names, which must be exactly `idp-ux-nightly-Settings`, as
-  `template.yaml` names it, so a lookalike stack whose buckets pass the egress
-  rules' name-prefix check still fails; and the stack name the signed-in sidebar
-  shows, which the UI reads from that parameter with the persona's own Cognito
-  credentials, whose role can read no other stack's, so a `UX_TEST_UI_ENV` that
-  pairs the review stack's parameter with another stack's pools leaves the page with
-  no stack name to show. It is decided once the persona is signed in, before the
-  recorder starts, and `_Run._video` applies it before anything is rendered. Against
-  any other stack the findings are posted with a line saying the video was withheld,
-  no mp4 is rendered, so none is uploaded or kept in the job's artifacts, and
-  `summary.json` records `stack.review_stack` and `recording.video_withheld`. The
-  review stack's own page fails the third check when it does not show the stack's
-  name, as when an MR changes the sidebar's stack item or the settings arrive after
-  the page is read; that run loses its video too, and its line says the stack could
-  not be confirmed as the review stack. A `UX_TEST_UI_ENV` holding another stack's
-  whole output rarely gets that far: unless that stack's name starts with
-  `idp-ux-nightly-`, its buckets fail the egress rules in the precheck, and no
-  session runs at all. The page is the MR's own code, so its
+  default `--stack`, by `review_stack_problem` in `scripts/ux_runner/session.py`,
+  the one check the first-time-user stories call too. It checks three statements of
+  which stack the run is using, and all three must name `idp-ux-nightly`: `--stack`;
+  the settings parameter `UX_TEST_UI_ENV` names, which must be exactly
+  `idp-ux-nightly-Settings`, as `template.yaml` names it, so a lookalike stack whose
+  buckets pass the egress rules' name-prefix check still fails; and the stack name
+  the signed-in sidebar shows, which the UI reads from that parameter with the
+  persona's own Cognito credentials, whose role can read no other stack's, so a
+  `UX_TEST_UI_ENV` that pairs the review stack's parameter with another stack's
+  pools leaves the page with no stack name to show. It is decided once the persona
+  is signed in, before the recorder starts, and `_Run._video` applies it before
+  anything is rendered. Against any other stack the findings are posted with a line
+  saying the video was withheld, no mp4 is rendered, so none is uploaded or kept in
+  the job's artifacts, and `summary.json` records `stack.review_stack` and
+  `recording.video_withheld`. The review stack's own page fails the third check when
+  it does not show the stack's name, as when an MR changes the sidebar's stack item
+  or the settings arrive after the page is read; that run loses its video too, and
+  its line says the stack could not be confirmed as the review stack. A
+  `UX_TEST_UI_ENV` holding another stack's whole output rarely gets that far: unless
+  that stack's name starts with `idp-ux-nightly-`, its buckets fail the egress rules
+  in the precheck, and no session runs at all. The page is the MR's own code, so its
   answer can only withhold a video; and the stack is known by its name rather than
   its account or its region: nothing in `UX_TEST_UI_ENV` names an account, and
   nothing records which region the review stack is in, so a stack called

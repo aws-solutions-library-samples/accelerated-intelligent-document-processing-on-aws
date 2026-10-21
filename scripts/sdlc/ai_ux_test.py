@@ -120,8 +120,9 @@ Properties it is built around
    example data. So a video is rendered, attached and uploaded only when three
    statements of which stack the run used all name it: ``--stack``, the settings
    parameter ``UX_TEST_UI_ENV`` names, and the stack the signed-in page reports
-   (:func:`review_stack_problem`, which is ``scripts/ux_runner/session.py``'s).
-   That is decided as soon as the page is signed in, before anything is recorded
+   (:func:`review_stack_problem`, which is ``scripts/ux_runner/session.py``'s, so
+   the first-time-user stories hold their videos to the same function). That is
+   decided as soon as the page is signed in, before anything is recorded
    (``_Run._video_withheld``), and applied before anything is rendered
    (``_Run._video``). Against any other stack nothing is
    rendered, so no mp4 reaches the note or the job's artifacts, and the section
@@ -643,7 +644,8 @@ def _settings_problem(args: argparse.Namespace, environ: Mapping[str, str]) -> s
 
 
 #: Why the run's stack is not established as :data:`REVIEW_STACK`, or ``""``: the
-#: one check of which stack a run used, ``session.review_stack_problem`` itself.
+#: one check of which stack a run used, ``session.review_stack_problem`` itself, so
+#: the MR UX test and the first-time-user stories decide a video by one function.
 review_stack_problem = session.review_stack_problem
 
 

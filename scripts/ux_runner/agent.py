@@ -118,6 +118,22 @@ DEVTOOLS_FLAGS: tuple[str, ...] = (
 #: orchestrator prepends the directory holding ``node``.
 DEFAULT_SEARCH_PATH = "/usr/local/bin:/usr/bin:/bin"
 
+#: The levels ``--effort`` takes, as the pinned CLI's own help lists them.
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+#: The four token counts of a session's ``usage`` object that are priced.
+USAGE_KEYS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+#: What the person types to open a paired story session, once its ``ux-story``
+#: server has started; the brief and the task are already in the session's system
+#: prompt.
+OPENING_MESSAGE = "Begin the task described in your instructions."
+
 #: The only names the AWS session handed to :func:`child_env` may use.
 _AWS_ENV_NAMES = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
 
@@ -131,6 +147,9 @@ class AgentResult:
     """The parsed outcome of one ``claude -p`` session.
 
     ``stop`` is one of ``end_turn``, ``max_turns``, ``budget`` or ``error``.
+    ``usage`` holds those of :data:`USAGE_KEYS` the answer reported as whole
+    numbers, so a cost can be computed from the tokens independently of the
+    CLI's own ``total_cost_usd``; it is ``None`` when the answer reported none.
     """
 
     text: str
@@ -139,6 +158,7 @@ class AgentResult:
     duration_s: float | None
     stop: str
     is_error: bool
+    usage: Mapping[str, int] | None = None
 
 
 def aws_env_from(source: Mapping[str, str]) -> dict[str, str]:
@@ -331,6 +351,19 @@ def write_mcp_config(path: Path, servers: Mapping[str, Any]) -> Path:
     return path
 
 
+def _effort_flag(effort: str | None) -> list[str]:
+    """``--effort <level>`` for a pinned level, nothing for ``None``.
+
+    Anything but one of :data:`EFFORT_LEVELS` raises :class:`AgentError`, so a
+    misspelt level fails before a session starts rather than inside the CLI.
+    """
+    if effort is None:
+        return []
+    if effort not in EFFORT_LEVELS:
+        raise AgentError(f"--effort takes one of {', '.join(EFFORT_LEVELS)}")
+    return ["--effort", effort]
+
+
 def claude_argv(
     claude: Path,
     mcp_config: Path,
@@ -338,11 +371,15 @@ def claude_argv(
     max_turns: int,
     max_budget_usd: float,
     profile: tool_profiles.ToolProfile = tool_profiles.EXPERT,
+    effort: str | None = None,
 ) -> list[str]:
     """The exact command line of the UX session. The prompt is not part of it.
 
     ``profile`` supplies the granted and the denied tools. The default,
-    ``tool_profiles.EXPERT``, is the MR UX test's own pair of lists.
+    ``tool_profiles.EXPERT``, is the MR UX test's own pair of lists. ``effort``
+    pins the session's effort level with ``--effort`` after every other flag,
+    and adds nothing when it is ``None``, so the MR UX test's command line is the
+    same with or without this parameter.
     """
     return [
         str(claude),
@@ -366,6 +403,7 @@ def claude_argv(
         str(max_turns),
         "--max-budget-usd",
         f"{max_budget_usd:.2f}",
+        *_effort_flag(effort),
     ]
 
 
@@ -381,6 +419,22 @@ def _count(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def usage_from(value: object) -> dict[str, int] | None:
+    """The :data:`USAGE_KEYS` of a ``usage`` object that are whole numbers.
+
+    A count that is missing, negative, a bool or not an integer is left out
+    rather than read as zero, and ``None`` means the object held none of them.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    kept = {
+        key: count
+        for key in USAGE_KEYS
+        if (count := _count(value.get(key))) is not None and count >= 0
+    }
+    return kept or None
 
 
 def _result_object(payload: object) -> dict[str, Any] | None:
@@ -405,8 +459,9 @@ def parse_output(stdout: str) -> AgentResult:
     ``subtype`` decides ``stop``: ``success`` is ``end_turn``, ``error_max_turns``
     is ``max_turns``, any subtype naming a budget is ``budget``, and anything else
     is ``error``. Cost and turn count are kept only when they are numbers, so a
-    missing or renamed field reads as unknown rather than as zero. Output that is
-    not JSON raises :class:`AgentError` showing its first 400 characters.
+    missing or renamed field reads as unknown rather than as zero, and the token
+    counts of ``usage`` the same way (:func:`usage_from`). Output that is not JSON
+    raises :class:`AgentError` showing its first 400 characters.
     """
     try:
         payload = json.loads(stdout)
@@ -432,6 +487,7 @@ def parse_output(stdout: str) -> AgentResult:
         duration_s=duration_ms / 1000 if duration_ms is not None else None,
         stop=stop,
         is_error=bool(result.get("is_error")),
+        usage=usage_from(result.get("usage")),
     )
 
 

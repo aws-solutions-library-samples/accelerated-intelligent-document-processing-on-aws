@@ -1489,7 +1489,10 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
     assert targets == [
         "ai-ux-browser",
         "ai-ux-test-local",
+        "ai-ux-test-stories-judge",
         "ai-ux-test-stories-list",
+        "ai-ux-test-stories-local",
+        "ai-ux-test-stories-pair",
         "ai-ux-test-stories-search",
     ], targets
     for target in targets:
@@ -1545,6 +1548,19 @@ def test_ai_ux_test_local_posts_only_for_an_affirmative_post(
 
 
 _STORY_MAKE_VARIABLES = (
+    "STORY",
+    "AS",
+    "VIDEO",
+    "STACK",
+    "WEB_URL",
+    "DOCS",
+    "RUN_USD",
+    "RERUNS",
+    "PAIR",
+    "RUN",
+    "CHECK",
+    "SUMMARY",
+    "REJUDGE",
     "Q",
     "EXTRA_ARGS",
 )
@@ -1573,6 +1589,102 @@ def _recipe(
         check=False,
     )
     return done.returncode, done.stdout.splitlines(), done.stderr
+
+
+@pytest.mark.unit
+def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() -> None:
+    """``make ai-ux-test-stories-local`` is the Windows form's options spelled as make
+    variables, so each variable the operator skill names reaches its option."""
+    code, argv, err = _recipe(
+        "ai-ux-test-stories-local",
+        "STORY=find-where-to-start",
+        "AS=new-analyst",
+        "VIDEO=never",
+        "STACK=idp-dev-stack4",
+        "WEB_URL=https://ui.example/",
+        "DOCS=abc123",
+        "RUN_USD=5",
+        "RERUNS=0",
+    )
+    assert code == 0, err[-400:]
+    assert argv == [
+        "scripts/ux_runner/run_in_docker.py",
+        "stories",
+        "--story",
+        "find-where-to-start",
+        "--as",
+        "new-analyst",
+        "--video",
+        "never",
+        "--stack",
+        "idp-dev-stack4",
+        "--web-url",
+        "https://ui.example/",
+        "--docs",
+        "abc123",
+        "--run-usd",
+        "5",
+        "--reruns",
+        "0",
+    ]
+
+
+@pytest.mark.unit
+def test_as_reaches_the_story_targets_only_from_the_command_line() -> None:
+    """``AS`` is one of make's own variables (the assembler), so a value make
+    supplies or the environment carries must not become a persona."""
+    for target in ("ai-ux-test-stories-local", "ai-ux-test-stories-pair"):
+        code, argv, err = _recipe(target, "STORY=x")
+        assert code == 0, err[-400:]
+        assert "--as" not in argv, target
+        code, argv, _ = _recipe(target, "STORY=x", environ={"AS": "new-analyst"})
+        assert "--as" not in argv, target
+        code, argv, _ = _recipe(target, "STORY=x", "AS=new-analyst")
+        assert argv[argv.index("--as") + 1] == "new-analyst", target
+
+
+@pytest.mark.unit
+def test_the_pair_target_needs_a_story_and_takes_only_its_two_pair_modes() -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-pair")
+    assert code != 0 and "set STORY=<id>" in err and not argv
+    code, argv, err = _recipe("ai-ux-test-stories-pair", "STORY=x", "PAIR=open")
+    assert code != 0 and "PAIR is full or keychain" in err and not argv
+    code, argv, err = _recipe("ai-ux-test-stories-pair", "STORY=x")
+    assert code == 0, err[-400:]
+    assert argv == ["scripts/ux_runner/run_in_docker.py", "stories", "--pair"] + [
+        "--story",
+        "x",
+    ]
+    for mode, flag in (("full", "--pair-full"), ("keychain", "--pair-keychain")):
+        _, argv, _ = _recipe("ai-ux-test-stories-pair", "STORY=x", f"PAIR={mode}")
+        assert argv[-1] == flag, mode
+
+
+@pytest.mark.unit
+def test_the_judge_target_rejudges_through_the_orchestrator_with_the_run_whole() -> (
+    None
+):
+    """``--judge`` rewrites ``section.md`` as well as ``results.json``, which the
+    judge CLI alone does not, and the run directory arrives as one argument."""
+    path = '/tmp/a run\'s "dir"'  # nosec B108 - a string, never opened
+    code, argv, err = _recipe(
+        "ai-ux-test-stories-judge", f"RUN={path}", "CHECK=1", "SUMMARY=true"
+    )
+    assert code == 0, err[-400:]
+    assert argv == [
+        "-B",
+        "scripts/sdlc/ai_ux_test_stories.py",
+        "--judge",
+        path,
+        "--check",
+        "--summary",
+    ]
+    code, argv, _ = _recipe("ai-ux-test-stories-judge", f"RUN={path}", "CHECK=0")
+    assert "--check" not in argv and "--summary" not in argv
+    code, argv, _ = _recipe("ai-ux-test-stories-judge", f"RUN={path}", "REJUDGE=1")
+    assert argv[-1] == "--rejudge"
+    code, argv, _ = _recipe("ai-ux-test-stories-judge")
+    assert code != 0 and argv[0].startswith("usage: make ai-ux-test-stories-judge")
 
 
 @pytest.mark.unit
@@ -1614,9 +1726,9 @@ def test_the_gitignore_keeps_the_jobs_output_and_the_run_options_out_of_the_tree
 
 @pytest.mark.unit
 def test_the_review_stack_is_the_one_the_nightly_build_updates() -> None:
-    """The one stack whose video the orchestrator renders, read as AST constants.
+    """The one stack whose video either orchestrator renders, read as AST constants.
 
-    It is ``session.py``'s, which the orchestrator takes rather than restates, and
+    It is ``session.py``'s, which both orchestrators take rather than restate, and
     the Docker runner's review mode is the CI-equivalent local run, so it tests the
     same stack by default.
     """

@@ -848,3 +848,83 @@ def test_the_built_in_denials_are_the_reviews_and_seven_more_and_claim_no_more()
     comment = comment.rsplit("\n\n", 1)[-1]
     assert "allowlist" in comment, "the prose route that discovers this list"
     assert "--tools ''" in comment and "ai_mr_review" in comment
+
+
+@pytest.mark.unit
+def test_parse_output_keeps_the_four_priced_token_counts_of_usage() -> None:
+    """The cost cap counts the tokens at pinned rates as well as the CLI's own
+    figure, so the four priced counts are kept as whole numbers and nothing else
+    of ``usage`` is."""
+    usage = {
+        "input_tokens": 8123,
+        "output_tokens": 6810,
+        "cache_read_input_tokens": 1240000,
+        "cache_creation_input_tokens": 50210,
+        "server_tool_use": {"web_search_requests": 0},
+        "service_tier": "standard",
+    }
+    parsed = _parsed(subtype="success", result="r", usage=usage)
+    assert parsed.usage == {
+        "input_tokens": 8123,
+        "output_tokens": 6810,
+        "cache_read_input_tokens": 1240000,
+        "cache_creation_input_tokens": 50210,
+    }
+    assert list(agent.USAGE_KEYS) == list(parsed.usage)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage", "kept"),
+    [
+        (None, None),
+        ("8123", None),
+        ({}, None),
+        ({"input_tokens": "8"}, None),
+        ({"input_tokens": True, "output_tokens": 3}, {"output_tokens": 3}),
+        ({"input_tokens": -1, "output_tokens": 2.5}, None),
+        ({"cache_read_input_tokens": 0}, {"cache_read_input_tokens": 0}),
+    ],
+)
+def test_a_usage_count_that_is_not_a_whole_number_is_unknown_not_zero(
+    usage: object, kept: dict[str, int] | None
+) -> None:
+    assert agent.usage_from(usage) == kept
+    fields: dict[str, Any] = {"subtype": "success", "result": "r"}
+    if usage is not None:
+        fields["usage"] = usage
+    assert _parsed(**fields).usage == kept
+
+
+@pytest.mark.unit
+def test_an_answer_without_usage_parses_as_it_did_before() -> None:
+    result = _parsed(subtype="success", result="r", total_cost_usd=1.5)
+    assert result.usage is None
+    assert [f.name for f in dataclasses.fields(agent.AgentResult)][-1] == "usage"
+
+
+@pytest.mark.unit
+def test_an_effort_level_is_the_last_flag_and_adds_nothing_when_absent() -> None:
+    claude, config = Path("/opt/claude"), Path("/run/mcp.json")
+    plain = agent.claude_argv(claude, config, max_turns=50, max_budget_usd=4.0)
+    pinned = agent.claude_argv(
+        claude, config, max_turns=50, max_budget_usd=4.0, effort="high"
+    )
+    assert pinned == [*plain, "--effort", "high"]
+    parameter = inspect.signature(agent.claude_argv).parameters["effort"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is None
+    assert agent.EFFORT_LEVELS == ("low", "medium", "high", "xhigh", "max")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("effort", ["", "High", "extreme", "max "])
+def test_an_effort_the_pinned_cli_does_not_take_is_refused(effort: str) -> None:
+    with pytest.raises(agent.AgentError, match="--effort takes one of"):
+        agent.claude_argv(
+            Path("/opt/claude"),
+            Path("/run/mcp.json"),
+            max_turns=1,
+            max_budget_usd=1,
+            effort=effort,
+        )

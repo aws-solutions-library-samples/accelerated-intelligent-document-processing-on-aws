@@ -8,7 +8,7 @@ image ``scripts/ux_runner/Dockerfile`` builds from ``scripts/ux_runner/install.s
 which is the same toolchain definition the CI job installs, so a run on a Mac
 (Apple Silicon included), on Windows under Docker Desktop or on a Linux devbox
 gets the same Chrome for Testing, Node, npm pins, ffmpeg, fonts, Python pins,
-managed policy and users as CI does. It has two modes.
+managed policy and users as CI does. It has three modes.
 
 ``review``
     The CI-equivalent test of one merge request, a **dry run** unless
@@ -26,6 +26,70 @@ managed policy and users as CI does. It has two modes.
     DevTools published on the host's own loopback (``127.0.0.1:9222``), for an
     interactive ux-test or product-demo session on a machine with no local
     Chrome. ``--stop`` stops it and leaves the socket audit behind.
+``stories``
+    First-time-user stories from ``scripts/ux_stories.toml``, run by
+    ``scripts/sdlc/ai_ux_test_stories.py`` in the same image. Every run gets its
+    own ``scratch/ux-docker/stories/<UTC time>-<run>/``, whose
+    ``ux-test-stories/`` holds ``story-run.json``, ``results.json``,
+    ``flows/<story@persona>/`` and ``section.md``, and the terminal ends with one
+    line per flow: its verdict, the steps used of its budget and its
+    hesitations. By default a run is unattended and a **dry run**: one flow
+    (``--story --as``) or every persona of a story (``--story``). ``--pair``
+    starts the browser and prints the command for a session of your own (below).
+    ``--list`` and ``--search`` are the
+    authoring helpers; ``--search`` runs in the image, because the docs index runs
+    ``docs-site/setup.sh``.
+
+The pair session
+----------------
+``--pair`` writes ``<run>/pair-mcp.json`` (mode 0600), whose one server is
+``ux-story`` in relay mode, started as ``docker exec -i <browser>
+/usr/bin/env -i ...``. The browser container holds the personas and
+``UX_TEST_UI_ENV``, for ``browser.py``, and no AWS session; the server's ``env -i``
+leaves it neither. The target prints the ``claude`` command and the message to
+open the session with. The command passes the brief and the task itself, as
+``--append-system-prompt-file <run>/pair-prompt.md``, because a session with no
+built-in tools has no Read or Skill tool to open the skill with, and the message is
+typed once the session has started its server: at 2.1.281 a message given as the
+TUI's argument is answered before the server's tools are offered.
+
+The session starts in a fresh, empty directory outside the checkout. Claude Code
+reads ``CLAUDE.md`` from its working directory and every parent and keys its
+auto-memory by that directory, so neither this repository's ``CLAUDE.md`` nor the
+memory it keeps for this project reaches the first-time user. It also starts
+with ``--bare``, which skips every ``CLAUDE.md``, auto-memory, hook and plugin,
+the user-level ones included, and ``--strict-mcp-config`` and ``--tools=``, so the
+story tools are the only ones it holds. ``--bare`` still applies the ``env`` of the
+user's ``settings.json``, so a Bedrock or API-key setup kept there works; what it
+costs is the sign-in it reads no keychain for, so a ``claude`` signed in only
+through the keychain is not signed in. ``--pair-keychain`` drops ``--bare`` for
+that ``claude``, and then the user-level ``CLAUDE.md``, hooks and plugins load as
+well. ``--pair-full`` is your whole session, started from the checkout, for trusted
+UI and docs only. ``--tools=`` rather than ``--tools ''`` keeps the list empty on
+every shell, Windows PowerShell 5.1 included, which drops an empty argument; the
+recordings in ``scripts/tests/fixtures/ux_story_transcript/`` show what these
+flags sent at the pin.
+
+Files the containers write
+--------------------------
+A container writes as root, and on a Linux host whose Docker is neither rootless
+nor remapped those files stay root's, so the run could not be re-judged on the
+host. After each container, anything under the run directory owned by another
+user is handed back by a container with no network and no credentials
+(``chown -hR``). A pair session's server instead runs as the developer
+(``docker exec --user``) where a probe file shows the container's root to be
+foreign, because nothing of this script runs when that session ends.
+
+Git inside a story container
+----------------------------
+The orchestrator reads a commit's docs, ``--docs``', from git objects in its
+``--repo-dir``. Git refuses a repository another user owns, which a
+bind-mounted checkout is to root on Linux, so each container that runs the
+orchestrator gets ``safe.directory`` as command-line configuration
+(``GIT_CONFIG_COUNT``), and a worktree checkout, whose ``.git`` file names its
+shared git directory by host path, gets that directory mounted read-only at the
+same path. ``UX_HARNESS_SHA`` carries the host's harness label, which the
+orchestrator reads where its harness has no git of its own.
 
 What this is NOT
 ----------------
@@ -86,9 +150,11 @@ Properties it is built around
    from ``ux_runner``, needs neither make nor bash, and resolves ``docker``,
    ``git`` and ``aws`` from ``PATH``, so it runs as
    ``py scripts\\ux_runner\\run_in_docker.py`` on Windows. ``review`` also runs
-   ``ai_ux_test.py --collect-only`` on the host, so that script's imports have
-   to hold there too. 3.11.4 is the first release whose ``tarfile`` has the
-   ``filter='data'`` extraction the source export relies on.
+   ``ai_ux_test.py --collect-only`` on the host, and ``stories`` runs
+   ``ai_ux_test_stories.py --judge``, ``stories.py list`` and
+   ``changelog_select.py nudge`` there, so those
+   scripts' imports have to hold there too. 3.11.4 is the first release whose
+   ``tarfile`` has the ``filter='data'`` extraction the source export relies on.
 
 Usage
 -----
@@ -103,8 +169,14 @@ Usage
     python3 scripts/ux_runner/run_in_docker.py browser --sign-in Admin
     python3 scripts/ux_runner/run_in_docker.py browser --stop
 
+    # first-time-user stories (`make ai-ux-test-stories-local ...`)
+    python3 scripts/ux_runner/run_in_docker.py stories --story find-where-to-start --as new-analyst
+    python3 scripts/ux_runner/run_in_docker.py stories --pair --story route-folder-to-profile --as platform-admin
+
 Unrecognised ``review`` options pass through to ``scripts/sdlc/ai_ux_test.py``,
-for example ``--max-turns 40`` or ``--persona Admin``.
+for example ``--max-turns 40`` or ``--persona Admin``, and unrecognised options of
+an unattended ``stories`` run to
+``scripts/sdlc/ai_ux_test_stories.py``, for example ``--docs <sha>``.
 
 Environment
 -----------
@@ -114,8 +186,9 @@ AWS credentials
     ``AWS_DEFAULT_REGION``) names the stack's region.
 ``UX_TEST_PERSONAS``, ``UX_TEST_AWS_ACCOUNT_ID``
     As the CI variables hold them: base64 of the persona JSON, and the account's
-    twelve digits. Required by ``review``; ``browser`` needs the personas only
-    for ``--sign-in``.
+    twelve digits. Required by ``review`` and by an unattended ``stories``
+    run; ``browser`` needs the personas only for
+    ``--sign-in``, and ``stories --pair`` needs only the personas.
 ``UX_TEST_UI_ENV``
     Optional. Without it, the stack's ``WebUITestEnvFile`` output and the names
     of the account's buckets that start with ``<stack>-`` are read on the host.
@@ -123,7 +196,9 @@ AWS credentials
     ``--post`` only.
 ``CI``, ``GITLAB_CI``
     Forwarded to the review container wherever the host sets them, so that
-    ``ai_ux_test.py`` refuses ``--dev-video-any-stack`` on a CI host.
+    ``ai_ux_test.py`` refuses ``--dev-video-any-stack`` on a CI host, and to every
+    story container, so that a developer-only option the story orchestrator
+    refuses under CI is refused there too.
 """
 
 from __future__ import annotations
@@ -134,14 +209,19 @@ import binascii
 import hashlib
 import io
 import json
+import math
 import os
 import platform
 import re
 import shutil
+import stat
 import subprocess  # nosec B404 - fixed argv lists, never a shell
 import sys
 import tarfile
+import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Any
 
@@ -720,6 +800,21 @@ def review(
     return completed.returncode
 
 
+def audit_state(path: Path) -> str:
+    """``state: <state>, <n> stray(s)`` of a ``browser-audit.json``, or why not."""
+    try:
+        audit = _read_json(path, AUDIT_BYTES, str(path))
+    except DockerRunError as error:
+        return f"state: unreadable, {error}"
+    if not isinstance(audit, dict):
+        return "state: unreadable, not a JSON object"
+    state = audit.get("state")
+    strays = audit.get("strays")
+    shown = state if isinstance(state, str) and state.isidentifier() else "unknown"
+    count = len(strays) if isinstance(strays, list) else 0
+    return f"state: {shown}, {count} stray(s)"
+
+
 def _is_ready_line(line: str) -> bool:
     """browser.py's one JSON line, which says the browser is ready to drive."""
     text = line.strip()
@@ -796,7 +891,7 @@ def browser(
         )
         audit = requested_out.expanduser().resolve() / "browser" / "browser-audit.json"
         if audit.is_file():
-            print(f"socket audit: {audit}")
+            print(f"socket audit: {audit} ({audit_state(audit)})")
         else:
             print(f"no socket audit at {audit}")
         return stopped.returncode
@@ -883,8 +978,1351 @@ def browser(
     return 0
 
 
+STORIES_ENTRY = "scripts/sdlc/ai_ux_test_stories.py"
+STORY_PAIR_ENTRY = "scripts/ux_runner/story_pair.py"
+STORY_LIST_ENTRY = "scripts/ux_runner/stories.py"
+STORY_NUDGE_ENTRY = "scripts/ux_runner/changelog_select.py"
+STORY_SEARCH_ENTRY = "scripts/ux_runner/docs_index.py"
+STORY_CATALOGUE = REPO_ROOT / "scripts" / "ux_stories.toml"
+STORIES_OUT = REPO_ROOT / "scratch" / "ux-docker" / "stories"
+STORY_ARTIFACTS = "ux-test-stories"
+STORY_RESULTS_FILE = "results.json"
+STORY_VERDICTS = (
+    "not_refused",
+    "stuck",
+    "offered",
+    "out_of_steps",
+    "error",
+    "gave_up",
+    "unclear",
+    "not_run",
+    "refused_as_expected",
+    "done",
+)
+BAD_STORY_VERDICTS = frozenset({"not_refused", "stuck", "offered"})
+CONFIRMATION_LABELS = {
+    "single": "",
+    "unconfirmed": "unconfirmed (1 of 1)",
+    "confirmed": "2 of 2",
+    "mixed": "mixed (1 of 2)",
+}
+STORY_HARNESS_TREE = ("scripts", ".claude/skills", "docs-site/setup.sh")
+STORY_GIT_CONFIG = (
+    ("GIT_CONFIG_COUNT", "1"),
+    ("GIT_CONFIG_KEY_0", "safe.directory"),
+    ("GIT_CONFIG_VALUE_0", "*"),
+)
+STORY_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+FLOW_KEY_RE = re.compile(
+    r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*@[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+)
+VIDEO_POLICY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,19}$")
+STORY_TOOL_RE = re.compile(r"^mcp__ux-story__[a-z][a-z_]{0,40}$")
+OWNER_RE = re.compile(r"^[0-9]{1,10}:[0-9]{1,10}$")
+POSIX_BARE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+POWERSHELL_BARE_RE = re.compile(r"[A-Za-z0-9_./=-]+")
+SEARCH_QUERY_CHARS = 200
+DEFAULT_FLOW_MINUTES = 12
+PAIR_HOME = "/tmp/ux-pair"  # nosec B108 - a directory inside the browser container
+PAIR_CONFIG = "pair-mcp.json"
+PAIR_ENV_NAMES = ("UX_TEST_PERSONAS", "UX_TEST_UI_ENV", "PYTHONUNBUFFERED")
+OPENING_MESSAGE = "Begin the task described in your instructions."
+STORY_OPTIONS_SET_HERE = (
+    "--artifact-dir",
+    "--audit",
+    "--check",
+    "--dev-unconfined",
+    "--judge",
+    "--repo-dir",
+    "--summary",
+)
+OWNER_PROBE = ".ux-owner-probe"
+STORY_RECORD_BYTES = 16 * 1024 * 1024
+PAIR_REPLY_BYTES = 256 * 1024
+AUDIT_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class StoryFacts:
+    """What the host needs of one catalogue story, read without the strict loader.
+
+    ``personas`` pairs each persona of the story's ``as`` table with its Cognito
+    group, in the catalogue's order. The orchestrator validates the catalogue in
+    full inside the container; the host reads only what it acts on before then.
+    """
+
+    story: str
+    personas: tuple[tuple[str, str], ...]
+    first_visit: bool
+    flow_minutes: int
+
+
+def _catalogue_problem(catalogue: Path, detail: str) -> DockerRunError:
+    return DockerRunError(
+        f"{catalogue.name}: {detail}; `make ai-ux-test-stories-list` (Windows: "
+        "`py scripts\\ux_runner\\stories.py list`) says what the catalogue holds"
+    )
+
+
+def story_facts(story: str, catalogue: Path | None = None) -> StoryFacts:
+    """The personas, groups, ``first_visit`` and ``flow_minutes`` of ``story``.
+
+    ``tomllib`` is imported here rather than at the top, so a Python older than
+    :data:`MINIMUM_PYTHON` still reaches :func:`main`'s version message.
+    """
+    import tomllib
+
+    path = STORY_CATALOGUE if catalogue is None else catalogue
+    if not STORY_ID_RE.match(story):
+        raise DockerRunError(f"{story!r} is not a story id (lower-case words and -)")
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise _catalogue_problem(path, f"cannot be read ({exc})") from exc
+    personas = data.get("personas")
+    entries = data.get("stories")
+    if not isinstance(personas, dict) or not isinstance(entries, list):
+        raise _catalogue_problem(path, "has no [personas] table or no [[stories]]")
+    entry = next(
+        (e for e in entries if isinstance(e, dict) and e.get("id") == story), None
+    )
+    if entry is None:
+        raise _catalogue_problem(path, f"has no story {story!r}")
+    table = entry.get("as")
+    if not isinstance(table, dict) or not table:
+        raise _catalogue_problem(path, f"story {story!r} has no `as` table")
+    pairs: list[tuple[str, str]] = []
+    for name in table:
+        record = personas.get(name)
+        group = record.get("group") if isinstance(record, dict) else None
+        if not isinstance(group, str) or not STORY_ID_RE.match(str(name)):
+            raise _catalogue_problem(
+                path, f"story {story!r} runs as {name!r}, which has no group"
+            )
+        pairs.append((str(name), group))
+    limits = data.get("limits", {})
+    minutes = (
+        limits.get("flow_minutes", DEFAULT_FLOW_MINUTES)
+        if isinstance(limits, dict)
+        else DEFAULT_FLOW_MINUTES
+    )
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or minutes < 1:
+        raise _catalogue_problem(path, "[limits] flow_minutes is not a whole number")
+    return StoryFacts(
+        story=story,
+        personas=tuple(pairs),
+        first_visit=entry.get("first_visit") is True,
+        flow_minutes=minutes,
+    )
+
+
+def choose_persona(facts: StoryFacts, persona: str | None) -> tuple[str, str]:
+    """The persona a paired flow runs as, and its group.
+
+    A story with one persona needs no ``--as``; one with several names them.
+    """
+    names = [name for name, _ in facts.personas]
+    if persona is None:
+        if len(facts.personas) == 1:
+            return facts.personas[0]
+        raise DockerRunError(
+            f"{facts.story} runs as {', '.join(names)}; choose one with --as"
+        )
+    for name, group in facts.personas:
+        if name == persona:
+            return name, group
+    raise DockerRunError(
+        f"{facts.story} does not run as {persona!r}; its personas are "
+        f"{', '.join(names)}"
+    )
+
+
+def story_mode(args: argparse.Namespace) -> str:
+    """Which stories mode the options ask for, refusing a combination that clashes.
+
+    One of ``list``, ``search``, ``pair`` and ``run`` (the unattended default),
+    with every option the chosen mode does not read refused by name rather than
+    ignored.
+    """
+    modes = (
+        ("list", "--list", bool(args.list)),
+        ("search", "--search", args.search is not None),
+        ("pair", "--pair", bool(args.pair)),
+    )
+    chosen = [(name, flag) for name, flag, on in modes if on]
+    if len(chosen) > 1:
+        raise DockerRunError(
+            f"{chosen[0][1]} and {chosen[1][1]} are different modes; choose one"
+        )
+    mode, mode_flag = chosen[0] if chosen else ("run", "an unattended run")
+    selection = [flag for flag, on in (("--story", args.story is not None),) if on]
+    if args.story is not None and not STORY_ID_RE.match(args.story):
+        raise DockerRunError(f"--story {args.story!r} is not a story id")
+    if args.persona is not None and not STORY_ID_RE.match(args.persona):
+        raise DockerRunError(f"--as {args.persona!r} is not a persona id")
+    if args.persona is not None and args.story is None:
+        raise DockerRunError(
+            "--as needs --story: it names one of that story's personas"
+        )
+    if args.video is not None and not VIDEO_POLICY_RE.match(args.video):
+        raise DockerRunError(f"--video {args.video!r} is not a video policy word")
+    if args.port is not None and not 0 < args.port < 65536:
+        raise DockerRunError(f"--port {args.port} is not a TCP port")
+    reads = {
+        "list": set(),
+        "search": set(),
+        "pair": {"--story", "--port", "--name", "--build-dir"}
+        | {"--pair-full", "--pair-keychain"},
+        "run": {"--story", "--video", "--build-dir", "passthrough"},
+    }[mode]
+    given = {
+        "--story": args.story is not None,
+        "--video": args.video is not None,
+        "--port": args.port is not None,
+        "--name": args.name != DEFAULT_BROWSER_NAME,
+        "--build-dir": args.build_dir is not None,
+        "--pair-full": bool(args.pair_full),
+        "--pair-keychain": bool(args.pair_keychain),
+        "passthrough": bool(args.passthrough),
+    }
+    unread = [flag for flag, on in given.items() if on and flag not in reads]
+    if "passthrough" in unread:
+        raise DockerRunError(
+            f"unrecognized arguments for {mode_flag}: {' '.join(args.passthrough)}"
+        )
+    if unread:
+        raise DockerRunError(f"{unread[0]} does not apply to {mode_flag}")
+    _check_passthrough(args.passthrough)
+    if mode == "pair" and selection != ["--story"]:
+        raise DockerRunError(f"{mode_flag} needs --story, and --as when it has several")
+    if mode == "run" and len(selection) != 1:
+        raise DockerRunError("an unattended run takes --story, with or without --as")
+    if args.pair_full and args.pair_keychain:
+        raise DockerRunError("--pair-full already drops --bare; choose one")
+    return mode
+
+
+def _check_passthrough(passthrough: Sequence[str]) -> None:
+    """Refuse an orchestrator option this script sets or must never pass in.
+
+    The orchestrator reads the last of a repeated option, so a run directory or
+    checkout passed through would replace this script's
+    and write outside the run's ``ux-test-stories/``, and a mode of the
+    orchestrator's own (:data:`STORY_OPTIONS_SET_HERE`) would run something other
+    than the mode chosen here. ``--dev-unconfined`` drops the managed policy and
+    the uid switch, which in a story container are the confinement, so it is
+    never passed in, whether ``CI`` is set or not.
+    """
+    named = {token.split("=", 1)[0] for token in passthrough if token.startswith("--")}
+    if "--dev-unconfined" in named:
+        raise DockerRunError(
+            "--dev-unconfined is for a development host's own Chrome; a story "
+            "container is the confinement, so it is never passed in"
+        )
+    refused = sorted(named & set(STORY_OPTIONS_SET_HERE))
+    if refused:
+        raise DockerRunError(
+            f"{refused[0]} is not passed through: this script sets the run's "
+            "directory, checkout and mode itself"
+        )
+
+
+def _read_json(path: Path, limit: int, what: str) -> Any:
+    """A JSON file of at most ``limit`` bytes, opened without following a link."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise DockerRunError(
+            f"{what} cannot be read ({exc.strerror or type(exc).__name__})"
+        ) from exc
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise DockerRunError(f"{what} is not a regular file")
+    with os.fdopen(descriptor, "rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise DockerRunError(f"{what} is larger than {limit} bytes")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise DockerRunError(f"{what} is not JSON") from exc
+
+
+def story_run_dir(
+    label: str, *, out: str | None, clock: Callable[[], float] = time.time
+) -> Path:
+    """A new ``scratch/ux-docker/stories/<UTC time>-<label>`` directory, or ``--out``.
+
+    The name sorts by time, and a second run in the same second takes the next
+    free suffix, so a run never writes into another's directory.
+    """
+    if out:
+        return prepare_out(Path(out))
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
+    for number in range(1, 100):
+        suffix = "" if number == 1 else f"-{number}"
+        candidate = STORIES_OUT / f"{stamp}-{label}{suffix}"
+        if not candidate.exists():
+            return prepare_out(candidate)
+    raise DockerRunError(f"{STORIES_OUT} already holds 99 runs started at {stamp}")
+
+
+def _git_text(repo: Path, arguments: Sequence[str], *, run: Callable[..., Any]) -> str:
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        [resolve_tool("git"), "-C", str(repo), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise DockerRunError(
+            f"`git {' '.join(arguments[:2])}` failed (exit {completed.returncode}): "
+            f"{_bounded(completed.stderr or '')}"
+        )
+    return completed.stdout or ""
+
+
+def harness_facts(repo: Path, *, run: Callable[..., Any]) -> tuple[str, bool]:
+    """The checkout's harness label and whether its ``docs/`` differ from HEAD.
+
+    The label is ``<sha>``, ``<sha>+dirty`` when the harness paths hold changes
+    (untracked files included) or ``unknown`` when git cannot say; the docs count
+    as changed when git cannot say either, which is the safe answer for a record.
+    """
+    try:
+        head = _git_text(repo, ["rev-parse", "HEAD"], run=run).strip()
+        harness = _git_text(
+            repo, ["status", "--porcelain", "--", *STORY_HARNESS_TREE], run=run
+        )
+        docs = _git_text(repo, ["status", "--porcelain", "--", "docs"], run=run)
+    except DockerRunError:
+        return "unknown", True
+    if not HEAD_SHA_RE.match(head):
+        return "unknown", True
+    return (f"{head}+dirty" if harness.strip() else head), bool(docs.strip())
+
+
+def checkout_git_mounts(repo: Path, *, run: Callable[..., Any]) -> list[str]:
+    """The shared git directory of a worktree checkout, mounted where its ``.git``
+    file names it, read-only.
+
+    A worktree's ``.git`` is a file naming a directory of the main checkout by its
+    host path, which a container does not have, so git inside the container would
+    find no repository at ``/repo``. Mounting that directory at the same path
+    makes the orchestrator's docs-from-a-commit work there. Windows paths cannot
+    be mount points in a Linux container, so a Windows worktree gets none.
+    """
+    if os.name == "nt" or not (repo / ".git").is_file():
+        return []
+    try:
+        common = _git_text(repo, ["rev-parse", "--git-common-dir"], run=run).strip()
+    except DockerRunError:
+        return []
+    if not common:
+        return []
+    shared = (repo / common).resolve()
+    if not shared.is_dir() or shared == repo or repo in shared.parents:
+        return []
+    return bind(shared, shared.as_posix(), readonly=True)
+
+
+def git_variables(harness: str) -> dict[str, str]:
+    """What git and the orchestrator read in a story container, by name.
+
+    ``safe.directory`` covers root reading a checkout its developer owns, which
+    git otherwise refuses on a Linux host, as command-line configuration through
+    ``GIT_CONFIG_COUNT``; ``UX_HARNESS_SHA`` is the harness label the
+    orchestrator falls back on where its harness has no git of its own.
+    """
+    variables = dict(STORY_GIT_CONFIG)
+    if harness != "unknown":
+        variables["UX_HARNESS_SHA"] = harness
+    return variables
+
+
+def _foreign_entries(root: Path, uid: int) -> bool:
+    """Whether anything under ``root`` is owned by another user, or cannot be read."""
+    unreadable: list[OSError] = []
+    for directory, names, files in os.walk(root, onerror=unreadable.append):
+        for name in [*names, *files]:
+            try:
+                if os.lstat(os.path.join(directory, name)).st_uid != uid:
+                    return True
+            except OSError:
+                return True
+        try:
+            if os.lstat(directory).st_uid != uid:
+                return True
+        except OSError:
+            return True
+    return bool(unreadable)
+
+
+def return_ownership(
+    out: Path,
+    *,
+    docker: str,
+    tag: str,
+    platform_name: str,
+    run: Callable[..., Any],
+    echo: Callable[[str], None] = print,
+) -> None:
+    """Give the run's files back to the developer where containers left them root's.
+
+    A container writes as root, and on a Linux host whose Docker is not rootless
+    those files stay root's on the host, so the run could not be re-judged there.
+    Where anything under ``out`` belongs to another user, a container with no
+    network and no credentials hands it back (``chown -hR``, which follows no
+    link). Docker Desktop and rootless Docker already map ownership, so on those
+    nothing runs. Windows has no uid to hand back.
+    """
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if getuid is None or getgid is None:
+        return
+    uid = int(getuid())
+    if not _foreign_entries(out, uid):
+        return
+    echo("-> handing the run's files back to you; the containers wrote them as root")
+    run(  # noqa: S603 - fixed argv, no shell
+        [docker, "run", "--rm", "--network", "none", "--platform", platform_name]
+        + bind(out, "/out", readonly=False)
+        + [tag, "chown", "-hR", f"{uid}:{int(getgid())}", "/out"],
+        check=False,
+    )
+    if _foreign_entries(out, uid):
+        echo(
+            f"WARNING: some files under {out} still belong to another user, so "
+            "re-judging it on this host may fail"
+        )
+
+
+def owner_probe(
+    docker: str,
+    name: str,
+    out: Path,
+    *,
+    run: Callable[..., Any],
+) -> str | None:
+    """``uid:gid`` for ``docker exec --user`` when the container's root is foreign.
+
+    The browser container writes a probe into ``out``; when it lands owned by
+    another user, the pair session's server runs as the developer instead, so the
+    journal it writes (mode 0600) can be judged on the host. ``None`` on Windows,
+    on Docker Desktop and under rootless Docker, where root's files are already
+    the developer's.
+    """
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if getuid is None or getgid is None:
+        return None
+    probe = out / OWNER_PROBE
+    run(  # noqa: S603 - fixed argv, no shell
+        [docker, "exec", name, "touch", f"/out/{OWNER_PROBE}"],
+        check=False,
+        capture_output=True,
+    )
+    try:
+        owner = os.lstat(probe).st_uid
+    except OSError:
+        return None
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    uid = int(getuid())
+    return None if owner == uid else f"{uid}:{int(getgid())}"
+
+
+def _flow_attempts(
+    results: Mapping[str, Any],
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    """``results.json``'s attempts by flow key, and how many entries were refused.
+
+    Only the structured fields the per-flow line prints are read, each against its
+    closed set or as a bounded integer; the free text beside them is never touched.
+    """
+    flows = results.get("flows")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    refused = 0
+    for entry in flows if isinstance(flows, list) else ():
+        if not isinstance(entry, dict):
+            refused += 1
+            continue
+        key = entry.get("key")
+        attempt = entry.get("attempt")
+        if (
+            not isinstance(key, str)
+            or not FLOW_KEY_RE.match(key)
+            or isinstance(attempt, bool)
+            or not isinstance(attempt, int)
+            or entry.get("verdict") not in STORY_VERDICTS
+        ):
+            refused += 1
+            continue
+        grouped.setdefault(key, []).append(entry)
+    return grouped, refused
+
+
+def _count(value: object, limit: int = 10**6) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= limit:
+        return None
+    return value
+
+
+def flow_line(key: str, attempts: Sequence[Mapping[str, Any]]) -> str:
+    """The flow's line, in the orchestrator's shape: verdict; steps; hesitations.
+
+    The verdict and its state follow the judge's confirmation rule: one attempt is
+    single, or unconfirmed when bad; a second attempt at twice the budget decides
+    on its own; two at the same budget are 2 of 2 when they agree and mixed when
+    they do not, showing the first. Only ``results.json``'s closed-set words and
+    whole numbers are printed, never its text.
+    """
+    ordered = sorted(attempts, key=lambda entry: int(entry["attempt"]))
+    shown = ordered[0]
+    if len(ordered) == 1:
+        state = "unconfirmed" if shown["verdict"] in BAD_STORY_VERDICTS else "single"
+    elif ordered[1].get("budget_scale") == 2:
+        shown = ordered[1]
+        state = "unconfirmed" if shown["verdict"] in BAD_STORY_VERDICTS else "single"
+    elif ordered[1]["verdict"] == shown["verdict"]:
+        state = "confirmed"
+    else:
+        state = "mixed"
+    used = _count(shown.get("actions_used"))
+    budget = _count(shown.get("budget"))
+    steps = (
+        f"{used} of {budget} steps"
+        if used is not None and budget is not None
+        else "steps not counted"
+    )
+    notes = shown.get("notes")
+    confusion = notes.get("confusion") if isinstance(notes, dict) else None
+    hesitations = len(confusion) if isinstance(confusion, list) else None
+    said = (
+        "hesitations not read"
+        if hesitations is None
+        else f"{hesitations} hesitation{'' if hesitations == 1 else 's'}"
+    )
+    label = CONFIRMATION_LABELS[state]
+    verdict = f"{shown['verdict']} ({label})" if label else str(shown["verdict"])
+    return f"flow {key}: {verdict}; {steps}; {said}"
+
+
+def _dollars(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    amount = float(value)
+    return amount if math.isfinite(amount) and 0 <= amount < 10**6 else None
+
+
+def cost_line(summary: object) -> str | None:
+    """``results.json``'s summary of what the run cost, as the orchestrator's final
+    line words it, or None when the summary does not hold the figures."""
+    if not isinstance(summary, Mapping):
+        return None
+    counted = _dollars(summary.get("counted_usd"))
+    pinned = _dollars(summary.get("pinned_usd"))
+    without = _count(summary.get("sessions_without_usage"))
+    if counted is None or pinned is None or without is None:
+        return None
+    text = f"${counted:.2f} counted, ${pinned:.2f} at the pinned rates"
+    if without:
+        text += f" ({without} session{'' if without == 1 else 's'} reported no usage)"
+    return f"cost:       {text}"
+
+
+def report_story_run(artifacts: Path, *, echo: Callable[[str], None] = print) -> None:
+    """Name the run's section and videos, then one line per flow, then the cost."""
+    section = artifacts / "section.md"
+    if section.is_file():
+        echo(f"section.md: {section}")
+    if artifacts.is_dir():
+        for video in sorted(artifacts.rglob("*.mp4")):
+            echo(f"video:      {video}")
+    results = artifacts / STORY_RESULTS_FILE
+    if not results.is_file():
+        echo(f"no {STORY_RESULTS_FILE} was written; see {artifacts}")
+        return
+    try:
+        data = _read_json(results, STORY_RECORD_BYTES, str(results))
+    except DockerRunError as exc:
+        echo(f"WARNING: {exc}")
+        return
+    grouped, refused = _flow_attempts(data if isinstance(data, dict) else {})
+    echo(f"results:    {results}")
+    if refused:
+        echo(
+            f"WARNING: {refused} entr{'y' if refused == 1 else 'ies'} of {results} "
+            "are not the v1 shape and are not shown"
+        )
+    for key in sorted(grouped):
+        echo(flow_line(key, grouped[key]))
+    cost = cost_line(data.get("summary") if isinstance(data, dict) else None)
+    if cost is not None:
+        echo(cost)
+
+
+def _story_names() -> tuple[str, ...]:
+    """What a container a model runs in receives by name: the review container's
+    names and CI's two."""
+    return CONTAINER_ENV_NAMES + CI_ENV_NAMES
+
+
+def _orchestrator(
+    selection: Sequence[str],
+    *,
+    artifact_dir: str,
+    stack: str,
+    web_url: str | None,
+    build_dir: str | None,
+    extra: Sequence[str] = (),
+    isolated: bool = False,
+    repo_dir: str = "/repo",
+) -> list[str]:
+    """The orchestrator's command line inside a container, pass-through last.
+
+    ``isolated`` adds ``-I``, for the run ``docker exec`` starts in the browser
+    container, whose environment is the container's own.
+    """
+    flags = ["-I", "-B"] if isolated else ["-B"]
+    command = ["python3", *flags, f"/repo/{STORIES_ENTRY}", *selection]
+    command += [
+        "--artifact-dir",
+        artifact_dir,
+        "--repo-dir",
+        repo_dir,
+        "--stack",
+        stack,
+    ]
+    if web_url:
+        command += ["--web-url", web_url]
+    if build_dir:
+        command += ["--build-dir", build_dir]
+    return command + list(extra)
+
+
+def _review_container(
+    *,
+    docker: str,
+    platform_name: str,
+    tag: str,
+    harness: Path,
+    out: Path,
+    names: Sequence[str],
+    command: Sequence[str],
+    mounts: Sequence[str] = (),
+) -> list[str]:
+    """``docker run`` of one story container: the MR UX test's review container."""
+    return (
+        [docker, "run", "--rm", "--init", "--platform", platform_name]
+        + ["--shm-size", "1g", "--security-opt", "no-new-privileges"]
+        + ["--tmpfs", CONTAINER_TMPFS]
+        + bind(harness, "/repo", readonly=True)
+        + bind(out, "/out", readonly=False)
+        + list(mounts)
+        + _env_flags(names)
+        + [tag, *command]
+    )
+
+
+def _require(env: Mapping[str, str], *names: str) -> None:
+    for name in names:
+        if not env.get(name):
+            raise DockerRunError(
+                f"{name} is not set on the host; export it as the CI variable holds "
+                "it (see the Environment section of --help)"
+            )
+
+
+def _ui_env_web_url(ui_env: str) -> str | None:
+    """The ``UX_TEST_WEB_URL=`` line CI's ``UX_TEST_UI_ENV`` carries, when present."""
+    for line in ui_env.splitlines():
+        name, separator, value = line.strip().partition("=")
+        if separator and name == "UX_TEST_WEB_URL" and value.strip():
+            return value.strip()
+    return None
+
+
+def _web_url(
+    args: argparse.Namespace,
+    ui_env: str,
+    stack: str,
+    *,
+    region: str | None,
+    run: Callable[..., Any],
+) -> str:
+    """``--web-url``, else the UI environment's line, else the stack's output."""
+    return (
+        args.web_url
+        or _ui_env_web_url(ui_env)
+        or stack_output(
+            stack, "ApplicationWebURL", profile=args.profile, region=region, run=run
+        )
+    )
+
+
+def _local_build(args: argparse.Namespace) -> Path | None:
+    if args.build_dir is None:
+        return None
+    build = Path(args.build_dir).expanduser().resolve()
+    if not (build / "index.html").is_file():
+        raise DockerRunError(f"{build} has no index.html; build the UI first")
+    return build
+
+
+def _stories_run(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any],
+    environ: Mapping[str, str],
+) -> int:
+    """An unattended run, in one container."""
+    env = dict(environ)
+    stack = args.stack or DEFAULT_STACK
+    _check_stack(stack)
+    _require(env, "UX_TEST_PERSONAS", "UX_TEST_AWS_ACCOUNT_ID")
+    story = str(args.story or "")
+    if story:
+        facts = story_facts(story)
+        if args.persona is not None:
+            choose_persona(facts, args.persona)
+    local_build = _local_build(args)
+    docker = resolve_tool(args.docker)
+    label = story + (f"@{args.persona}" if args.persona else "")
+    out = story_run_dir(label, out=args.out)
+    print(f"-> run directory: {out}", flush=True)
+    selection = ["--story", story]
+    if args.persona:
+        selection += ["--as", str(args.persona)]
+    platform_name = host_platform()
+    tag = image_tag(PACKAGE_DIR)
+    ensure_image(
+        tag,
+        platform_name,
+        PACKAGE_DIR,
+        docker=docker,
+        rebuild=args.rebuild_image,
+        run=run,
+    )
+    credentials = export_credentials(profile=args.profile, run=run)
+    region = _region(env)
+    ui_env = ui_env_text(env, stack=stack, profile=args.profile, region=region, run=run)
+    web_url = (
+        None
+        if local_build is not None
+        else _web_url(args, ui_env, stack, region=region, run=run)
+    )
+    mounts: list[str] = []
+    build_dir: str | None = None
+    if local_build is not None:
+        mounts = bind(local_build, "/ui-build", readonly=True)
+        build_dir = "/ui-build"
+    extra = ["--video", args.video] if args.video else []
+    extra += list(args.passthrough)
+    harness, _ = harness_facts(REPO_ROOT, run=run)
+    variables = git_variables(harness)
+    mounts += checkout_git_mounts(REPO_ROOT, run=run)
+    names = _story_names() + tuple(variables)
+    child_env = _container_env(env, credentials, ui_env)
+    child_env.update(variables)
+    print("-> running the stories as a dry run; nothing is posted", flush=True)
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        _review_container(
+            docker=docker,
+            platform_name=platform_name,
+            tag=tag,
+            harness=REPO_ROOT,
+            out=out,
+            names=names,
+            mounts=mounts,
+            command=_orchestrator(
+                selection,
+                artifact_dir=f"/out/{STORY_ARTIFACTS}",
+                stack=stack,
+                web_url=web_url,
+                build_dir=build_dir,
+                extra=extra,
+            ),
+        ),
+        env=child_env,
+        check=False,
+    )
+    return_ownership(out, docker=docker, tag=tag, platform_name=platform_name, run=run)
+    report_story_run(out / STORY_ARTIFACTS)
+    return completed.returncode
+
+
+def _story_browser(
+    *,
+    docker: str,
+    name: str,
+    platform_name: str,
+    port: int,
+    tag: str,
+    out: Path,
+    audit_out: tuple[Path, str],
+    stack: str,
+    web_url: str | None,
+    build_dir: Path | None,
+    group: str,
+    keep_welcome: bool,
+    names: Sequence[str],
+    mounts: Sequence[str] = (),
+) -> list[str]:
+    """``docker run -d`` of the browser container a paired flow uses.
+
+    Browser mode's container, signed in as the persona's group, keeping the welcome
+    page for a ``first_visit`` story, with the run directory at ``/out``.
+    ``audit_out`` is where ``browser-audit.json`` lands: a host directory and its
+    mount point inside the container.
+    """
+    audit_host, audit_target = audit_out
+    binds = bind(REPO_ROOT, "/repo", readonly=True) + bind(out, "/out", readonly=False)
+    if audit_target != "/out":
+        binds += bind(audit_host, audit_target, readonly=False)
+    if build_dir is not None:
+        binds += bind(build_dir, "/ui-build", readonly=True)
+    return (
+        [docker, "run", "-d", "--rm", "--name", name, "--init"]
+        + ["--platform", platform_name]
+        + ["-p", f"127.0.0.1:{port}:{CONTAINER_CDP_PORT}"]
+        + ["--shm-size", "1g", "--security-opt", "no-new-privileges"]
+        + ["--tmpfs", CONTAINER_TMPFS]
+        + binds
+        + list(mounts)
+        + _env_flags(names)
+        + [tag, "python3", "/repo/scripts/ux_runner/browser.py", "--stack", stack]
+        + (["--web-url", web_url] if web_url else [])
+        + (["--build-dir", "/ui-build"] if build_dir is not None else [])
+        + ["--sign-in", group]
+        + (["--keep-welcome"] if keep_welcome else [])
+        + ["--cdp-listen", CONTAINER_CDP_LISTEN, "--out", f"{audit_target}/browser"]
+    )
+
+
+def _start_browser(
+    argv: Sequence[str],
+    *,
+    name: str,
+    docker: str,
+    env: Mapping[str, str],
+    run: Callable[..., Any],
+    follow: Callable[[Sequence[str]], str | None],
+) -> None:
+    started = run(  # noqa: S603 - fixed argv, no shell
+        list(argv),
+        env=dict(env),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if started.returncode != 0:
+        raise DockerRunError(
+            f"`docker run` of {name} failed (exit {started.returncode}): "
+            f"{_bounded(started.stderr or '')}. If the name is taken, run "
+            "`run_in_docker.py browser --stop` or pass --name."
+        )
+    try:
+        ready = follow([docker, "logs", "-f", name])
+    except BaseException:
+        _stop_container(docker, name, run=run)
+        raise
+    if ready is None:
+        _stop_container(docker, name, run=run)
+        raise DockerRunError(f"{name} exited before it was ready; its output is above")
+
+
+def _stop_container(docker: str, name: str, *, run: Callable[..., Any]) -> None:
+    """``docker stop`` with browser mode's 30 seconds, so browser.py writes its audit."""
+    print(f"-> stopping {name}; it writes the socket audit", flush=True)
+    run(  # noqa: S603 - fixed argv, no shell
+        [docker, "stop", "-t", "30", name], check=False, capture_output=True
+    )
+
+
+def _browser_env(
+    env: Mapping[str, str],
+    credentials: Mapping[str, str],
+    ui_env: str,
+    *,
+    port: int,
+    name: str,
+) -> dict[str, str]:
+    child = _container_env(env, credentials, ui_env)
+    child["UX_BROWSER_HOST_PORT"] = str(port)
+    child["UX_BROWSER_CONTAINER"] = name
+    return child
+
+
+def _pair_reply(text: str, out: Path) -> dict[str, Any]:
+    """The pair preparer's last output line, checked before any of it is used.
+
+    The server's command must be ``/usr/bin/env -i`` with an empty environment
+    map and arguments that are plain strings, every tool must be a ``ux-story``
+    tool name, and the prompt must be a file under ``/out``, so what the host
+    writes and prints is the shape it expects whatever the line says.
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
+    try:
+        reply = json.loads(lines[-1]) if lines else None
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict):
+        raise DockerRunError(
+            "the pair preparer printed no JSON line; its output is above"
+        )
+    server = reply.get("server")
+    tools = reply.get("allowed_tools")
+    prompt = reply.get("prompt")
+    if (
+        not isinstance(server, dict)
+        or server.get("command") != "/usr/bin/env"
+        or server.get("env") != {}
+        or not isinstance(server.get("args"), list)
+        or not server["args"]
+        or server["args"][0] != "-i"
+        or not all(isinstance(part, str) for part in server["args"])
+    ):
+        raise DockerRunError("the pair preparer's server is not an `env -i` command")
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or not all(isinstance(t, str) and STORY_TOOL_RE.match(t) for t in tools)
+    ):
+        raise DockerRunError("the pair preparer named a tool that is not a story tool")
+    if not isinstance(prompt, str) or not prompt.startswith("/out/") or ".." in prompt:
+        raise DockerRunError("the pair preparer's prompt is not under /out")
+    host_prompt = out.joinpath(*PurePath(prompt[len("/out/") :]).parts)
+    if not host_prompt.is_file():
+        raise DockerRunError(f"the pair preparer wrote no {host_prompt}")
+    return {"server": server, "tools": list(tools), "prompt": host_prompt}
+
+
+def write_pair_config(
+    path: Path,
+    *,
+    docker: str,
+    name: str,
+    owner: str | None,
+    server: Mapping[str, Any],
+) -> Path:
+    """``pair-mcp.json``: one server, ``ux-story``, through ``docker exec -i``.
+
+    The file is created afresh with mode 0600 and never through a link. The
+    server's own command is the preparer's ``env -i`` line, so inside the
+    container it inherits none of the AWS session, ``UX_TEST_UI_ENV`` or personas
+    the container's environment holds, and ``--user`` runs it as the developer
+    where :func:`owner_probe` found the container's root to be foreign.
+    """
+    if owner is not None and not OWNER_RE.match(owner):
+        raise DockerRunError(f"{owner!r} is not a uid:gid")
+    args = ["exec", "-i"] + (["--user", owner] if owner else [])
+    args += [name, str(server["command"]), *server["args"]]
+    payload = {
+        "mcpServers": {
+            "ux-story": {"type": "stdio", "command": docker, "args": args, "env": {}}
+        }
+    }
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        if hasattr(os, "fchmod"):
+            os.fchmod(handle.fileno(), 0o600)
+        handle.write((json.dumps(payload, indent=2) + "\n").encode("utf-8"))
+    return path
+
+
+def _posix_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'" if value else "''"
+
+
+def _powershell_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def pair_command(
+    *,
+    config: Path,
+    prompt: Path,
+    tools: Sequence[str],
+    cwd: Path,
+    full: bool,
+    keychain: bool,
+    shell: str,
+) -> str:
+    """The command that starts the pair session, for ``posix`` or ``powershell``.
+
+    It changes into ``cwd`` first and starts ``claude`` only when that worked. The
+    confined form is ``--bare --strict-mcp-config --tools=`` (``=`` keeps the tool
+    list empty on every shell, Windows PowerShell 5.1's dropped ``''`` included),
+    the story tools granted, ``--permission-mode manual``, and the brief and the
+    task in ``--append-system-prompt-file``. ``keychain`` drops ``--bare``;
+    ``full`` drops the confinement as well.
+    """
+    quote = _powershell_quote if shell == "powershell" else _posix_quote
+    argv = ["claude"]
+    if not (full or keychain):
+        argv.append("--bare")
+    if not full:
+        argv += ["--strict-mcp-config"]
+    argv += ["--mcp-config", str(config)]
+    if not full:
+        argv.append("--tools=")
+    argv += ["--allowedTools", *tools, "--permission-mode", "manual"]
+    argv += ["--append-system-prompt-file", str(prompt)]
+    bare = POWERSHELL_BARE_RE if shell == "powershell" else POSIX_BARE_RE
+    words = [part if bare.fullmatch(part) else quote(part) for part in argv]
+    if shell == "powershell":
+        return f"Set-Location -LiteralPath {quote(str(cwd))} && {' '.join(words)}"
+    return f"cd {quote(str(cwd))} && {' '.join(words)}"
+
+
+def pair_directory(scratch: Callable[[], Path] | None = None) -> Path:
+    """A fresh empty directory outside the checkout for the pair session to start in.
+
+    Claude Code reads ``CLAUDE.md`` from its working directory and every parent,
+    and keys its auto-memory by that directory, so a session started inside the
+    checkout would know this repository's own notes about the product.
+    """
+    made = (scratch or (lambda: Path(tempfile.mkdtemp(prefix="ux-pair-"))))()
+    resolved = made.resolve()
+    if resolved == REPO_ROOT or REPO_ROOT in resolved.parents:
+        raise DockerRunError(
+            f"{resolved} is inside the checkout, where the session would read its "
+            "CLAUDE.md; set TMPDIR to a directory outside it"
+        )
+    return resolved
+
+
+def pair_after_commands(
+    *, out: Path, name: str, python: str, shell: str
+) -> tuple[str, str]:
+    """The two commands a pair session ends with, quoted for ``posix`` or ``powershell``.
+
+    Both run with this script's own interpreter, which passed its version check.
+    The first stops the browser container named ``name``, which writes the socket
+    audit into the run directory and prints its state; the second judges the run
+    with that audit folded in.
+    """
+    quote = _powershell_quote if shell == "powershell" else _posix_quote
+    call = "& " if shell == "powershell" else ""
+    script = REPO_ROOT / "scripts" / "ux_runner" / "run_in_docker.py"
+    stop = (
+        f"{call}{quote(python)} {quote(str(script))} browser --stop "
+        f"--name {quote(name)} --out {quote(str(out))}"
+    )
+    judge = (
+        f"{call}{quote(python)} -B {quote(str(REPO_ROOT / STORIES_ENTRY))} "
+        f"--judge {quote(str(out / STORY_ARTIFACTS))} "
+        f"--audit {quote(str(out / 'browser' / 'browser-audit.json'))} --summary"
+    )
+    return stop, judge
+
+
+def _pair_lines(
+    *,
+    out: Path,
+    config: Path,
+    prompt: Path,
+    tools: Sequence[str],
+    cwd: Path,
+    full: bool,
+    keychain: bool,
+    key: str,
+    group: str,
+    stack: str,
+    windows: bool,
+    name: str = DEFAULT_BROWSER_NAME,
+    python: str = sys.executable,
+) -> list[str]:
+    """What the pair target prints: the command, the opening message, then after."""
+    lines = [
+        f"-> {key} is ready: signed in as {group} on {stack}.",
+        "Start the session in your own terminal "
+        + ("(PowerShell 7):" if windows else "(bash or zsh):"),
+        "",
+    ]
+    shells = ("powershell", "posix") if windows else ("posix",)
+    for shell in shells:
+        if shell == "posix" and windows:
+            lines += ["or in Git Bash:", ""]
+        lines.append(
+            "  "
+            + pair_command(
+                config=config,
+                prompt=prompt,
+                tools=tools,
+                cwd=cwd,
+                full=full,
+                keychain=keychain,
+                shell=shell,
+            )
+        )
+        lines.append("")
+    lines += [
+        "Give it a few seconds to start its ux-story server, then send it this "
+        "opening message (sent sooner, it reaches the model before the story tools):",
+        "",
+        f"  {OPENING_MESSAGE}",
+        "",
+    ]
+    if full:
+        lines.append(
+            "WARNING: --pair-full starts your whole session: your CLAUDE.md, memory, "
+            "settings, built-in tools and MCP servers, beside the story tools. Use it "
+            "only for trusted UI and docs, with permission prompts on."
+        )
+    elif keychain:
+        lines.append(
+            f"The session starts in {cwd}, outside the checkout, so this repository's "
+            "CLAUDE.md and auto-memory do not reach it; without --bare your user-level "
+            "CLAUDE.md, hooks and plugins do."
+        )
+    else:
+        lines.append(
+            f"The session starts in {cwd}, outside the checkout, with --bare, so no "
+            "CLAUDE.md, auto-memory, hook or plugin reaches it. --bare reads no "
+            "keychain: it signs in through Bedrock or an API key, from your "
+            "environment or your settings.json's env. For a keychain sign-in, use "
+            "PAIR=keychain (--pair-keychain)."
+        )
+    lines += [
+        f"The brief and the task reach it in {prompt}.",
+        "",
+        "When the flow has ended, stop the session, then stop the browser, which "
+        "writes its socket audit, and judge the run with that audit:",
+    ]
+    for shell in shells:
+        if windows:
+            lines.append("in PowerShell:" if shell == "powershell" else "in Git Bash:")
+        lines += [
+            f"  {command}"
+            for command in pair_after_commands(
+                out=out, name=name, python=python, shell=shell
+            )
+        ]
+    return lines
+
+
+def _stories_pair(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any],
+    environ: Mapping[str, str],
+    follow: Callable[[Sequence[str]], str | None],
+    scratch: Callable[[], Path] | None,
+) -> int:
+    """Start the browser for a pair session and print the command that opens it.
+
+    The container is left running for the session. The browser mode's ``--stop``,
+    given the run directory, stops it and finds its socket audit there, and the
+    printed judge folds that audit into the run. ``--pair-full`` is refused on
+    the shared review stack.
+    """
+    env = dict(environ)
+    stack = args.stack or DEFAULT_STACK
+    _check_stack(stack)
+    if args.pair_full and stack == DEFAULT_STACK:
+        raise DockerRunError(
+            f"--pair-full gives the session your shell, your credentials and this "
+            f"checkout, and {DEFAULT_STACK} holds data any merge request's UI build "
+            "can write, so the full session pairs only on a stack of your own "
+            "(--stack); the confined session pairs on any"
+        )
+    _require(env, "UX_TEST_PERSONAS")
+    if not CONTAINER_NAME_RE.match(args.name):
+        raise DockerRunError(f"{args.name!r} is not a docker container name")
+    facts = story_facts(args.story)
+    persona, group = choose_persona(facts, args.persona)
+    local_build = _local_build(args)
+    port = args.port or DEFAULT_HOST_CDP_PORT
+    docker = resolve_tool(args.docker)
+    out = story_run_dir(f"pair-{facts.story}@{persona}", out=args.out)
+    print(f"-> run directory: {out}", flush=True)
+    platform_name = host_platform()
+    tag = image_tag(PACKAGE_DIR)
+    ensure_image(
+        tag,
+        platform_name,
+        PACKAGE_DIR,
+        docker=docker,
+        rebuild=args.rebuild_image,
+        run=run,
+    )
+    region = _region(env)
+    ui_env = ui_env_text(env, stack=stack, profile=args.profile, region=region, run=run)
+    web_url = (
+        None if local_build else _web_url(args, ui_env, stack, region=region, run=run)
+    )
+    names = PAIR_ENV_NAMES + BROWSER_ENV_NAMES
+    browser_env = _browser_env(env, {}, ui_env, port=port, name=args.name)
+    print(f"-> starting {args.name}; DevTools on 127.0.0.1:{port}", flush=True)
+    _start_browser(
+        _story_browser(
+            docker=docker,
+            name=args.name,
+            platform_name=platform_name,
+            port=port,
+            tag=tag,
+            out=out,
+            audit_out=(out, "/out"),
+            stack=stack,
+            web_url=web_url,
+            build_dir=local_build,
+            group=group,
+            keep_welcome=facts.first_visit,
+            names=names,
+        ),
+        name=args.name,
+        docker=docker,
+        env=browser_env,
+        run=run,
+        follow=follow,
+    )
+    try:
+        owner = owner_probe(docker, args.name, out, run=run)
+        harness, docs_dirty = harness_facts(REPO_ROOT, run=run)
+        prepared = run(  # noqa: S603 - fixed argv, no shell
+            [docker, "exec"]
+            + (["--user", owner] if owner else [])
+            + [args.name, "python3", "-I", "-B", f"/repo/{STORY_PAIR_ENTRY}"]
+            + ["prepare", "--story", facts.story, "--as", persona, "--run", "/out"]
+            + ["--stack", stack, "--harness", harness]
+            + ["--docs-dirty", "1" if docs_dirty else "0", "--home", PAIR_HOME]
+            + (["--build"] if local_build else []),
+            env=_build_env(env),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if prepared.returncode != 0:
+            raise DockerRunError(
+                f"preparing the pair session failed (exit {prepared.returncode}): "
+                f"{_bounded((prepared.stdout or '') + ' ' + (prepared.stderr or ''))}"
+            )
+        reply = _pair_reply((prepared.stdout or "")[-PAIR_REPLY_BYTES:], out)
+        config = write_pair_config(
+            out / PAIR_CONFIG,
+            docker=docker,
+            name=args.name,
+            owner=owner,
+            server=reply["server"],
+        )
+        cwd = REPO_ROOT if args.pair_full else pair_directory(scratch)
+    except BaseException:
+        _stop_container(docker, args.name, run=run)
+        raise
+    for line in _pair_lines(
+        out=out,
+        config=config,
+        prompt=reply["prompt"],
+        tools=reply["tools"],
+        cwd=cwd,
+        full=bool(args.pair_full),
+        keychain=bool(args.pair_keychain),
+        key=f"{facts.story}@{persona}",
+        group=group,
+        stack=stack,
+        windows=os.name == "nt",
+        name=args.name,
+    ):
+        print(line, flush=True)
+    return 0
+
+
+def _stories_list(*, run: Callable[..., Any]) -> int:
+    """Validate the catalogue, list its flows, then the leads no story covers.
+
+    Both run on the host: neither reads anything but the catalogue and the
+    CHANGELOG, so neither needs bash or Docker.
+    """
+    listed = run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-B", str(REPO_ROOT / STORY_LIST_ENTRY), "list"], check=False
+    )
+    if listed.returncode != 0:
+        return listed.returncode
+    print("[Unreleased] CHANGELOG leads no story covers:", flush=True)
+    nudged = run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-B", str(REPO_ROOT / STORY_NUDGE_ENTRY), "nudge"], check=False
+    )
+    return nudged.returncode
+
+
+def _stories_search(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any],
+    environ: Mapping[str, str],
+) -> int:
+    """What a first-time user finds for ``--search``, in a container with nothing.
+
+    The index runs ``docs-site/setup.sh`` to learn which pages the site publishes,
+    which needs bash and symlinks, so it runs in the image, with no network, no
+    credentials and the checkout read-only.
+    """
+    query = " ".join(str(args.search).split())
+    if not query or len(query) > SEARCH_QUERY_CHARS:
+        raise DockerRunError(
+            f"--search takes the words a first-time user would type, 1 to "
+            f"{SEARCH_QUERY_CHARS} characters"
+        )
+    docker = resolve_tool(args.docker)
+    platform_name = host_platform()
+    tag = image_tag(PACKAGE_DIR)
+    ensure_image(
+        tag,
+        platform_name,
+        PACKAGE_DIR,
+        docker=docker,
+        rebuild=args.rebuild_image,
+        run=run,
+    )
+    completed = run(  # noqa: S603 - fixed argv, no shell
+        [docker, "run", "--rm", "--init", "--network", "none"]
+        + ["--platform", platform_name, "--tmpfs", CONTAINER_TMPFS]
+        + bind(REPO_ROOT, "/repo", readonly=True)
+        + [tag, "python3", "-B", f"/repo/{STORY_SEARCH_ENTRY}", "search", "--", query],
+        env=_build_env(environ),
+        check=False,
+    )
+    return completed.returncode
+
+
+def stories(
+    args: argparse.Namespace,
+    *,
+    run: Callable[..., Any] = subprocess.run,
+    environ: Mapping[str, str] | None = None,
+    follow: Callable[[Sequence[str]], str | None] | None = None,
+    scratch: Callable[[], Path] | None = None,
+) -> int:
+    """First-time-user stories in the Docker runner; the mode's exit code."""
+    env = dict(os.environ if environ is None else environ)
+    mode = story_mode(args)
+    if mode == "list":
+        return _stories_list(run=run)
+    if mode == "search":
+        return _stories_search(args, run=run, environ=env)
+    if mode == "pair":
+        return _stories_pair(
+            args, run=run, environ=env, follow=follow or follow_logs, scratch=scratch
+        )
+    return _stories_run(args, run=run, environ=env)
+
+
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
-    """Both modes' options; unrecognised ``review`` options pass to ai_ux_test.py.
+    """Every mode's options; unrecognised ``review`` options pass to ai_ux_test.py,
+    and unrecognised ``stories`` options to ai_ux_test_stories.py.
 
     Abbreviations are off, so a pass-through option can never be read as a
     prefix of one of this script's own.
@@ -985,10 +2423,95 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         "--docker", default="docker", help="docker CLI (default: %(default)s)"
     )
 
+    stories_parser = modes.add_parser(
+        "stories",
+        allow_abbrev=False,
+        help="first-time-user stories: unattended (a dry run) or paired",
+    )
+    stories_parser.add_argument(
+        "--story", metavar="ID", help="a story of scripts/ux_stories.toml"
+    )
+    stories_parser.add_argument(
+        "--as",
+        dest="persona",
+        metavar="PERSONA",
+        help="one persona of the story's `as` (default: each of them, or its one)",
+    )
+    stories_parser.add_argument(
+        "--video",
+        metavar="POLICY",
+        help="the orchestrator's video policy, for example never",
+    )
+    story_modes = stories_parser.add_mutually_exclusive_group()
+    story_modes.add_argument(
+        "--pair",
+        action="store_true",
+        help="start the browser and print the command for a session you start",
+    )
+    story_modes.add_argument(
+        "--list",
+        action="store_true",
+        help="validate the catalogue, list its flows, then the uncovered leads",
+    )
+    story_modes.add_argument(
+        "--search",
+        metavar="QUERY",
+        help="what a first-time user finds in the published documentation",
+    )
+    stories_parser.add_argument(
+        "--pair-full",
+        action="store_true",
+        help="--pair: your whole session, from the checkout (trusted UI and docs)",
+    )
+    stories_parser.add_argument(
+        "--pair-keychain",
+        action="store_true",
+        help="--pair: without --bare, for a claude signed in through the keychain",
+    )
+    stories_parser.add_argument(
+        "--port",
+        type=int,
+        help="--pair: host port for DevTools, on 127.0.0.1 only "
+        f"(default: {DEFAULT_HOST_CDP_PORT})",
+    )
+    stories_parser.add_argument(
+        "--build-dir",
+        help="a built UI to serve at http://localhost:3000 instead of the stack's",
+    )
+    stories_parser.add_argument(
+        "--stack",
+        help=f"the stack (default: {DEFAULT_STACK})",
+    )
+    stories_parser.add_argument(
+        "--web-url",
+        help="deployed UI to open, by host name (default: UX_TEST_UI_ENV's "
+        "UX_TEST_WEB_URL line, else the stack's ApplicationWebURL output)",
+    )
+    stories_parser.add_argument(
+        "--out",
+        help="the run directory (default: scratch/ux-docker/stories/<time>-<run>)",
+    )
+    stories_parser.add_argument(
+        "--profile", help="AWS CLI profile on the host (default: the CLI's own)"
+    )
+    stories_parser.add_argument(
+        "--name",
+        default=DEFAULT_BROWSER_NAME,
+        help="--pair: the browser container (default: %(default)s)",
+    )
+    stories_parser.add_argument(
+        "--rebuild-image",
+        action="store_true",
+        help="rebuild the toolchain image even if it exists",
+    )
+    stories_parser.add_argument(
+        "--docker", default="docker", help="docker CLI (default: %(default)s)"
+    )
+
     args, extra = parser.parse_known_args(argv)
     if args.mode == "browser" and extra:
         browser_parser.error(f"unrecognized arguments: {' '.join(extra)}")
-    args.passthrough = list(extra) if args.mode == "review" else []
+    args.passthrough = list(extra) if args.mode in ("review", "stories") else []
     return args, extra
 
 
@@ -1015,6 +2538,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "review":
             return review(args)
+        if args.mode == "stories":
+            return stories(args)
         return browser(args)
     except DockerRunError as exc:
         print(f"FAILED: {exc}", file=sys.stderr)

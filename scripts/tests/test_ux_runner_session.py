@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import inspect
 import json
 import os
 import sys
@@ -498,6 +499,8 @@ def test_the_plan_and_the_opened_browser_hold_their_frozen_fields(
         ("persona_label", dataclasses.MISSING),
         ("build_dir", dataclasses.MISSING),
         ("dev_unconfined", False),
+        ("web_url", None),
+        ("dismiss_welcome", True),
     ]
     assert [f.name for f in dataclasses.fields(session.OpenedBrowser)] == [
         "target",
@@ -572,6 +575,7 @@ def test_a_refused_or_impossible_assume_mints_nothing(
     assert sts.assumed == []
 
 
+WEB_URL = "https://d111111abcdef8.cloudfront.net/"
 OTHER_STACK = "idp-dev-stack4"
 LOOKALIKE_STACK = "idp-ux-nightly-2"
 STACK_REASON = "`--stack` is not the review stack `idp-ux-nightly`"
@@ -580,6 +584,91 @@ PAGE_REASON = (
     "the signed-in page did not report `idp-ux-nightly` as its stack, so the run's "
     "stack could not be confirmed as the review stack"
 )
+
+
+@pytest.mark.unit
+def test_a_deployed_stack_is_tunnelled_to_and_signed_in_at_its_own_web_host(
+    runtime: _Runtime, tmp_path: Path
+) -> None:
+    """No build is served, the web host joins the stack's own hosts, and the one
+    sign-in goes to that host, in the same order as a build's."""
+    browser = _browser(runtime)
+    plan = _plan(tmp_path, build_dir=None, web_url=WEB_URL)
+    opened = browser.open(plan)
+    assert runtime.log == SIGN_IN_ORDER
+    rules = ux_test_proxy.stack_rules(UI_ENV, STACK, web_url=WEB_URL)
+    assert "d111111abcdef8.cloudfront.net:443" in rules.hosts
+    assert runtime.calls["launch_proxy"][1] == {
+        "run_dir": plan.run_dir,
+        "rules": rules,
+        "build_dir": None,
+        "user": paths.PROXY_USER,
+    }
+    assert runtime.calls["sign_in"] == (
+        (runtime.devtools, PERSONA),
+        {"base_url": WEB_URL},
+    )
+    assert opened.facts == FACTS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("deployed", [False, True], ids=["build", "deployed"])
+def test_a_first_visit_keeps_the_welcome_page_and_nothing_else_changes(
+    runtime: _Runtime, tmp_path: Path, deployed: bool
+) -> None:
+    changes: dict[str, Any] = {"dismiss_welcome": False}
+    if deployed:
+        changes.update(build_dir=None, web_url=WEB_URL)
+    _browser(runtime).open(_plan(tmp_path, **changes))
+    expected: dict[str, Any] = {"dismiss_welcome": False}
+    if deployed:
+        expected["base_url"] = WEB_URL
+    assert runtime.calls["sign_in"] == ((runtime.devtools, PERSONA), expected)
+    assert runtime.log == SIGN_IN_ORDER
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dismiss", [True, False], ids=["dismiss", "first-visit"])
+@pytest.mark.parametrize("deployed", [False, True], ids=["build", "deployed"])
+def test_every_sign_in_a_plan_asks_for_binds_to_the_real_sign_in(
+    runtime: _Runtime, tmp_path: Path, deployed: bool, dismiss: bool
+) -> None:
+    """The runtime's sign-in is a fake here, so the options a plan hands it are
+    bound to ``signin.sign_in``'s own signature: an option it does not take would
+    fail every real flow of that kind at its first sign-in."""
+    changes: dict[str, Any] = {"dismiss_welcome": dismiss}
+    if deployed:
+        changes.update(build_dir=None, web_url=WEB_URL)
+    _browser(runtime).open(_plan(tmp_path, **changes))
+    args, kwargs = runtime.calls["sign_in"]
+    inspect.signature(signin.sign_in).bind(*args, **kwargs)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "changes",
+    [{"build_dir": None}, {"web_url": WEB_URL}],
+    ids=["neither", "both"],
+)
+def test_a_plan_must_name_exactly_one_ui_before_anything_starts(
+    runtime: _Runtime, tmp_path: Path, changes: dict[str, Any]
+) -> None:
+    browser = _browser(runtime)
+    with pytest.raises(session.SessionError, match="exactly one UI"):
+        browser.open(_plan(tmp_path, **changes))
+    assert runtime.log == []
+    assert browser.proxy is None and browser.chrome_proc is None
+
+
+@pytest.mark.unit
+def test_a_web_url_that_is_not_https_is_refused_before_the_proxy_starts(
+    runtime: _Runtime, tmp_path: Path
+) -> None:
+    browser = _browser(runtime)
+    plan = _plan(tmp_path, build_dir=None, web_url="http://example.com/")
+    with pytest.raises(ux_test_proxy.EgressConfigError, match="https URL"):
+        browser.open(plan)
+    assert runtime.log == []
 
 
 @pytest.mark.unit

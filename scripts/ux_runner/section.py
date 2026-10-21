@@ -487,11 +487,13 @@ def _code(text: object, limit: int) -> str:
     return sanitize(text, limit).replace("`", "'")
 
 
-def _backend(stack: StackFacts) -> str:
-    """The backend the MR's UI ran against: the stack, its version and its build.
+def backend_caveat(stack: StackFacts) -> str:
+    """The backend the UI ran against: the stack, its version and its build.
 
     Each of the two is shown only in the shape :class:`StackFacts` accepts, and
-    one the UI did not show that way is named as unread instead.
+    one the UI did not show that way is named as unread instead. The MR UX test's
+    note (:func:`caveats_for`) and the first-time-user stories' reply both start
+    their backend caveat with it.
     """
     text = f"backend: `{_code(stack.name, NAME_CHARS)}`"
     if stack.shown_version:
@@ -518,7 +520,7 @@ def caveats_for(change: ui_change.UiChange, stack: StackFacts) -> list[str]:
     is the review stack's own deployment and not the MR's, so it says when the MR
     changes backend files that the stack therefore does not run.
     """
-    first = _backend(stack)
+    first = backend_caveat(stack)
     if change.backend:
         first += "; this MR's own backend changes are not deployed there"
     caveats = [first]

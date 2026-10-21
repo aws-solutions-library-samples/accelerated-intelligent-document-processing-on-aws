@@ -13,8 +13,15 @@ twice, because an orchestrator puts steps of its own (stopping the recorder)
 between them. :func:`mint_bedrock` and :func:`mint_polly` mint the two narrow AWS
 sessions, one per consumer, at the moment of use.
 
+The UI the browser signs in to is one of two (:class:`BrowserPlan`): a build the
+proxy serves itself at ``paths.UI_ORIGIN``, which is the MR UX test's, or a
+deployed stack's own web host, which the proxy only tunnels to and which a
+first-time-user story runs against whenever there is no build of its own to test.
+
 :func:`review_stack_problem` is the one check of whether a run's stack is the
 review stack, :data:`REVIEW_STACK`, the only stack whose screens become a video.
+Both orchestrators call it, the MR UX test's and the first-time-user stories', so
+the bound on what a video may show is the same function wherever a video is made.
 """
 
 from __future__ import annotations
@@ -112,6 +119,13 @@ class BrowserPlan:
     ``persona_label`` is the name the progress line prints for the persona, and
     ``dev_unconfined`` skips the policy self-test and measures the viewport
     without requiring it, for a development host's own Chrome.
+
+    Exactly one of ``build_dir`` and ``web_url`` names the UI. A build is served
+    by the proxy at ``paths.UI_ORIGIN``; a ``web_url`` is a deployed stack's own
+    ``https`` web host, which the proxy tunnels to as one more exact host and the
+    persona signs in at. ``dismiss_welcome`` is handed to the sign-in only when it
+    is false, for a story about a first visit, which must see the welcome page
+    the sign-in otherwise dismisses.
     """
 
     toolchain: paths.Toolchain
@@ -120,8 +134,10 @@ class BrowserPlan:
     stack: str
     persona: signin.Persona
     persona_label: str
-    build_dir: Path
+    build_dir: Path | None
     dev_unconfined: bool = False
+    web_url: str | None = None
+    dismiss_welcome: bool = True
 
 
 @dataclass(frozen=True)
@@ -183,10 +199,14 @@ class ConfinedBrowser:
         script cannot redefine it and must be :data:`paths.VIEWPORT`;
         ``dev_unconfined`` measures without requiring it. The DevTools session is
         closed before this returns.
+
+        A plan with a ``web_url`` is a deployed stack's: the proxy serves no build
+        and tunnels to that host as well as the stack's own, and the persona signs
+        in there. A plan naming both a build and a web URL, or neither, raises
+        :class:`SessionError` before anything starts.
         """
         rt = self.runtime
-        site = egress.prepare_site(plan.build_dir)
-        rules = ux_test_proxy.stack_rules(plan.ui_env, plan.stack)
+        site, rules, sign_in_options = self._ui_source(plan)
         proxy = rt.launch_proxy(
             run_dir=plan.run_dir, rules=rules, build_dir=site, user=paths.PROXY_USER
         )
@@ -212,7 +232,7 @@ class ConfinedBrowser:
         if not plan.dev_unconfined:
             rt.verify_policy(self.session)
         rt.verify_proxy_path(self.session, proxy.refusal_log, owner=proxy.owner)
-        rt.sign_in(self.session, plan.persona)
+        rt.sign_in(self.session, plan.persona, **sign_in_options)
         facts = rt.page_facts(self.session)
         measure = rt.measure_viewport if plan.dev_unconfined else rt.verify_viewport
         viewport = measure(self.session)
@@ -225,6 +245,36 @@ class ConfinedBrowser:
             viewport=viewport,
             browser_uid_switched=switched,
         )
+
+    @staticmethod
+    def _ui_source(
+        plan: BrowserPlan,
+    ) -> tuple[Path | None, ux_test_proxy.EgressRules, dict[str, Any]]:
+        """The site the proxy serves, its rules, and what the sign-in is told.
+
+        A build gives the MR UX test's own sequence and an empty set of sign-in
+        options, so its sign-in call is unchanged. A deployed stack gives no site,
+        rules with its web host, and the sign-in its ``base_url``; a first visit
+        adds ``dismiss_welcome=False`` either way.
+        """
+        if (plan.build_dir is None) == (plan.web_url is None):
+            raise SessionError(
+                "a browser plan names exactly one UI: a build to serve or a "
+                "deployed stack's web URL"
+            )
+        options: dict[str, Any] = {}
+        if plan.build_dir is not None:
+            site: Path | None = egress.prepare_site(plan.build_dir)
+            rules = ux_test_proxy.stack_rules(plan.ui_env, plan.stack)
+        else:
+            site = None
+            rules = ux_test_proxy.stack_rules(
+                plan.ui_env, plan.stack, web_url=plan.web_url
+            )
+            options["base_url"] = plan.web_url
+        if not plan.dismiss_welcome:
+            options["dismiss_welcome"] = False
+        return site, rules, options
 
     def close(
         self, *, on_audit: Callable[[chrome.SocketAudit], None]

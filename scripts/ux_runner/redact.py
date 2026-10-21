@@ -79,6 +79,7 @@ _UI_ENV_KEYS = (
     "VITE_CLOUDFRONT_DOMAIN",
     "VITE_API_BASE_URL",
     "VITE_STREAM_URL",
+    "UX_TEST_WEB_URL",
 )
 
 #: Where a query or header value ends: a separator, whitespace, a quote, markup,
@@ -204,8 +205,10 @@ def values_from_ui_env(env: Mapping[str, str]) -> list[str]:
 
     The Cognito pool, client and identity pool ids, the settings parameter, the
     bucket names (including every ``UX_TEST_BUCKETS`` name), the Cognito and
-    CloudFront domains, and the API and stream URLs, each URL both whole and as
-    its bare hostname, since a log line or an error usually names only the host.
+    CloudFront domains, and the API, stream and web URLs (the web URL is the
+    ``UX_TEST_WEB_URL`` line a run against the deployed UI reads), each URL both
+    whole and as its bare hostname, since a log line or an error usually names
+    only the host.
     The region and the UI tuning values are not identifying and are left out, so
     ``us-east-1`` in a report survives. Absent and empty keys are skipped.
     """
