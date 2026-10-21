@@ -3,11 +3,19 @@
 //
 // What the reviewer is asked to do: why the document is here (reason chips), the
 // queue's checklist (sent with Complete) and any escalation note.
-import React from 'react';
-import { Alert, Badge, Box, Checkbox, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
+//
+// Reasons arrive worst first (largest gap below the threshold), so the first few are
+// the ones to look at. Only TOP_REASONS are shown until the reviewer asks for the
+// rest; the server stores at most its own cap, so the total beyond that is a count.
+import React, { useState } from 'react';
+import { Alert, Badge, Box, Button, Checkbox, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { reasonText } from './review-api';
+
+export const TOP_REASONS = 5;
+
+const alerts = (n: number): string => `${n} more alert${n === 1 ? '' : 's'}`;
 
 interface ReviewTaskContextProps {
   detail: ReviewItemDetail;
@@ -18,6 +26,10 @@ interface ReviewTaskContextProps {
 
 const ReviewTaskContext = ({ detail, checklist, onChecklistChange, disabled }: ReviewTaskContextProps): React.JSX.Element => {
   const { item } = detail;
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? item.reasons : item.reasons.slice(0, TOP_REASONS);
+  const collapsed = item.reasons.length - shown.length;
+  const unlisted = Math.max(item.reasonCount - item.reasons.length, 0);
   return (
     <Container
       header={
@@ -33,7 +45,7 @@ const ReviewTaskContext = ({ detail, checklist, onChecklistChange, disabled }: R
           </Alert>
         )}
         <SpaceBetween direction="horizontal" size="xs">
-          {item.reasons.map((reason) => (
+          {shown.map((reason) => (
             <Popover
               key={`${reason.sectionId}-${reason.kind}-${reason.field ?? ''}-${reason.score}`}
               triggerType="custom"
@@ -52,7 +64,26 @@ const ReviewTaskContext = ({ detail, checklist, onChecklistChange, disabled }: R
               <Badge color="severity-medium">{reasonText(reason)}</Badge>
             </Popover>
           ))}
-          {item.reasonCount > item.reasons.length && <Badge color="grey">{`+${item.reasonCount - item.reasons.length} more`}</Badge>}
+          {collapsed > 0 && (
+            <Button variant="inline-link" onClick={() => setShowAll(true)} ariaLabel={`Show ${alerts(collapsed + unlisted)}`}>
+              {`+${alerts(collapsed + unlisted)}`}
+            </Button>
+          )}
+          {collapsed === 0 && unlisted > 0 && (
+            <Popover
+              triggerType="custom"
+              dismissButton={false}
+              size="small"
+              content={`Only the ${item.reasons.length} lowest-confidence alerts are listed.`}
+            >
+              <Badge color="grey">{`+${alerts(unlisted)}`}</Badge>
+            </Popover>
+          )}
+          {showAll && item.reasons.length > TOP_REASONS && (
+            <Button variant="inline-link" onClick={() => setShowAll(false)}>
+              Show fewer
+            </Button>
+          )}
         </SpaceBetween>
         {detail.checklist.length > 0 && (
           <SpaceBetween size="xxs">

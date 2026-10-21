@@ -13,6 +13,7 @@ SPDX-License-Identifier: MIT-0
 - [How a document reaches a queue](#how-a-document-reaches-a-queue)
 - [Annotator guide](#annotator-guide)
 - [Admin guide: Queue Management](#admin-guide-queue-management)
+- [Reviewing from the document page](#reviewing-from-the-document-page)
 - [Turning review queues on](#turning-review-queues-on)
 - [Review status for downstream consumers](#review-status-for-downstream-consumers)
 - [Limits and behaviour to know](#limits-and-behaviour-to-know)
@@ -62,7 +63,8 @@ a new stack, and while it is off documents keep the existing
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
    and the assignee completes it.
    - **Complete** applies the corrections, and the document ends `COMPLETED`.
-   - **Skip** gives it back to its queue, unassigned and not finished.
+   - **Skip** gives it back to its queue, unassigned and not finished, with a reason
+     from the queue's skip list.
    - An Admin can instead **Remove** it from the queue: it ends `COMPLETED` with the
      machine output unchanged.
    - The API's `rejectReviewItem` ends it `REJECTED` with the machine output
@@ -90,17 +92,22 @@ Inbox; other users have neither.
 - Select an item to open it in the **annotation screen**. Production and Test Studio
   items use the same screen, whether you open them from Tasks, an Inbox message or
   Queue Management. The document's page images are shown beside its fields.
-  - **Production item**: the reasons it is in review are at the top; hover a reason
-    chip to see the field, the score and the threshold. Your edits are saved as a
-    draft as you type. The queue's checklist is advisory. **Complete** applies your
-    corrections.
+  - **Production item**: the reasons it is in review are at the top, worst first.
+    The five lowest-confidence alerts are shown; **+N more alerts** lists the rest
+    and **Show fewer** collapses them again. Hover a reason chip to see the field,
+    the score and the threshold. Your edits are saved as a draft as you type. The
+    queue's checklist is advisory. **Complete** applies your corrections. **Review
+    history**, below the reasons, lists who claimed, skipped or completed the item in
+    this review, with any skip reason and note.
   - **Test Studio item**: correct the labels and choose **Complete**. You can also
     choose **Complete** without changing anything, which confirms the labels as
     correct; it needs no **Start annotating** first. Saving and versioning work
     exactly as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
     Tasks and goes back to its queue unassigned, where another Annotator can claim
-    it. It isn't finished, and a Production item's draft is kept.
+    it. It isn't finished, and a Production item's draft is kept. On a Production
+    item, choose a reason from the queue's skip list and optionally add a note;
+    both are kept in the item's review history.
   - The breadcrumbs read **My Work › Queues**, then the item's queue (linking to its
     page), then the document.
 - When you complete an item, it leaves your Tasks and the queue's progress counts it
@@ -147,6 +154,7 @@ dialog), edited in **Settings**, and deleted here. Each queue has:
 | Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Empty means none (only Admins) | empty |
 | Enabled | When off, no documents are added to the queue | on for a new queue; off for the seeded Default queue |
 | Confidence threshold | Documents with a field below this (0–1) are queued | `0.8` |
+| Skip reasons | The reasons an Annotator chooses from to give an item back unfinished, one per line (up to 20) | Needs expert review; Document unclear or incomplete; Conflict of interest; Out of time; Other (see note) |
 
 The **Default** queue is created automatically, disabled and with nobody listed, and
 it is created again if it is ever missing. Turn it on and add Annotators in
@@ -247,6 +255,22 @@ the queue's name, then the document, and the queue links back to its page.
   edits, and tells the former assignee in their Inbox. Then you can edit and
   complete it.
 - **An item assigned to you** has **Complete** and **Skip**, as for an Annotator.
+
+## Reviewing from the document page
+
+While a document is in a review queue (status **In Review**), it is reviewed only
+from its queue item:
+
+- The document page shows **Review**, which opens the item's annotation screen. It
+  is shown to Admins and Annotators, who are the roles that can open queue items.
+- **Edit Mode** and **Edit page grouping** are off for every role, and **Skip All
+  Reviews** and **Start Review** aren't offered. An edit made on the document page
+  would bypass the item's assignment and be overwritten by the reviewer's
+  corrections when the review completes.
+- In the document list, the **In Review** status links to the queue item for Admins
+  and Annotators.
+
+Once the review finishes, the document page can be edited as usual.
 
 ## Turning review queues on
 

@@ -509,6 +509,27 @@ def handler(event, context):
                 logger.info(
                     f"Marked HITL review as completed by {username} via Process Changes"
                 )
+            elif document.hitl_status:
+                # Already finished. A review completed section by section used to
+                # finish without recording who did it; fill that in from this caller,
+                # never overwriting a recorded reviewer.
+                identity = event.get("identity", {})
+                tracking_table = os.environ.get("TRACKING_TABLE")
+                if tracking_table:
+                    table = boto3.resource("dynamodb").Table(tracking_table)
+                    table.update_item(
+                        Key={"PK": f"doc#{object_key}", "SK": "none"},
+                        UpdateExpression=(
+                            "SET HITLReviewedBy = if_not_exists(HITLReviewedBy, :reviewedBy), "
+                            "HITLReviewedByEmail = if_not_exists(HITLReviewedByEmail, :reviewedByEmail)"
+                        ),
+                        ExpressionAttributeValues={
+                            ":reviewedBy": identity.get("username", "system"),
+                            ":reviewedByEmail": identity.get("claims", {}).get(
+                                "email", ""
+                            ),
+                        },
+                    )
 
         except ValueError as e:
             if str(e) == _QUEUE_MANAGED_MESSAGE:

@@ -20,6 +20,8 @@ import { MY_QUEUES_PATH, productionQueuePath, reviewItemHref } from '../../route
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import ReviewPresence from '../review-queues/ReviewPresence';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
+import ReviewItemHistory from '../review-queues/ReviewItemHistory';
+import ReasonModal from '../common/ReasonModal';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import type { ReviewItem } from '../../graphql/generated/operation-types';
 import AnnotationFrame from './AnnotationFrame';
@@ -54,6 +56,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   const focusField = searchParams.get('field');
   const [checklist, setChecklist] = useState<boolean[]>([]);
   const [busy, setBusy] = useState<AnnotationAction | null>(null);
+  const [askSkipReason, setAskSkipReason] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [takingOver, setTakingOver] = useState(false);
   /** Who was assigned the item just as this Admin tried to edit or complete it. */
@@ -203,6 +206,18 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
     }
   };
 
+  const confirmSkip = async (reason: string, note: string | undefined) => {
+    const ok = await run(
+      'skip',
+      async () => {
+        await releaseItem(item, reason, note);
+      },
+      'skip the item',
+    );
+    setAskSkipReason(false);
+    if (ok) exit(queuePath, `${name} returned to the queue.`, `p:${objectKey}`);
+  };
+
   const handleAction = async (action: AnnotationAction) => {
     if (action === 'claim') {
       reviewWork?.beginMutation();
@@ -221,14 +236,8 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
       return;
     }
     if (action === 'skip') {
-      const ok = await run(
-        'skip',
-        async () => {
-          await releaseItem(item);
-        },
-        'skip the item',
-      );
-      if (ok) exit(queuePath, `${name} returned to the queue.`, `p:${objectKey}`);
+      // The reason is asked for first; confirmSkip does the release.
+      setAskSkipReason(true);
       return;
     }
     const ok = await run(
@@ -300,7 +309,26 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
         onAction: (action) => void handleAction(action),
       }}
       notices={notices}
-      context={<ReviewTaskContext detail={detail} checklist={checklist} onChecklistChange={setChecklist} disabled={!canEdit} />}
+      context={
+        <SpaceBetween size="m">
+          <ReviewTaskContext detail={detail} checklist={checklist} onChecklistChange={setChecklist} disabled={!canEdit} />
+          <ReviewItemHistory history={detail.history} />
+          {/* Mounted only while asked, so its buttons are not on the screen otherwise. */}
+          {askSkipReason && (
+            <ReasonModal
+              visible
+              header="Skip this item"
+              reasons={detail.skipReasons}
+              confirmLabel="Skip"
+              loading={busy === 'skip'}
+              onDismiss={() => setAskSkipReason(false)}
+              onConfirm={(reason, note) => void confirmSkip(reason, note)}
+            >
+              <Box>It goes back to its queue, unassigned and not finished. Your saved edits are kept for whoever picks it up next.</Box>
+            </ReasonModal>
+          )}
+        </SpaceBetween>
+      }
     >
       {adapter.sections.length === 0 ? (
         <Container>

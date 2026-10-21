@@ -1053,7 +1053,7 @@ operations:
     groups: [Admin, Reviewer]
     kind: mutation
     enforced_in: src/lambda/complete_section_review/index.py
-    args: { objectKey: "__x__" }
+    args: { objectKey: "__x__", reason: "Other (see note)" }
     note: >-
       HITL review op. The handler gates on {Admin,Reviewer} both at the global
       gate (index.py:51) and the per-field check (index.py:72), matching the
@@ -1061,6 +1061,17 @@ operations:
       allowed role passing a bogus objectKey gets a benign 400 (doc-not-found),
       never a masked auth failure; a disallowed role (Viewer/Author) is rejected
       with Unauthorized regardless of the objectKey.
+  saveSectionReviewEdits:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    enforced_in: src/lambda/complete_section_review/index.py
+    args: { objectKey: "__x__", sectionId: "1", editedData: "{}" }
+    note: >-
+      HITL review op. It overwrites a section's extraction result in the output
+      bucket, so it is limited to the production review roles; Annotator saves
+      Test Studio labels through completeSectionReview instead. The per-field
+      check refuses any other group before objectKey is read, then the handler
+      refuses a Reviewer who is not the document's review owner.
 
   # ==========================================================================
   # Agents & chat
@@ -1364,9 +1375,9 @@ operations:
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
-    args: { objectKey: "__x__", cycleId: "000000000000000000000" }
+    args: { objectKey: "__x__", cycleId: "000000000000000000000", reason: "Other (see note)" }
     note: >-
-      Returns the caller's own item to its queue, keeping the draft (Skip). Only the holder may release (NOT_LEASE_HOLDER).
+      Returns the caller's own item to its queue, keeping the draft (Skip), with a reason from the queue's skip list. Only the holder may release (NOT_LEASE_HOLDER).
   saveReviewDraft:
     groups: [Admin, Annotator]
     kind: mutation

@@ -1,5 +1,5 @@
-mutation ReleaseReviewItem($objectKey: String!, $cycleId: String!) {
-  releaseReviewItem(objectKey: $objectKey, cycleId: $cycleId) {
+mutation ReleaseReviewItem($objectKey: String!, $cycleId: String!, $reason: String!, $note: String) {
+  releaseReviewItem(objectKey: $objectKey, cycleId: $cycleId, reason: $reason, note: $note) {
     objectKey
     cycleId
     profile

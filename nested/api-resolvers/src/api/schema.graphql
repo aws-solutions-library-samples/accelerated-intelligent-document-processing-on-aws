@@ -1455,6 +1455,8 @@ type ReviewQueueDefinition @aws_cognito_user_pools {
   priority: Int!
   checklist: [String!]!
   rejectReasons: [String!]!
+  # Why an Annotator gives an item back unfinished (Skip); one is required to skip.
+  skipReasons: [String!]!
   # An assigned item still open after this long sends its Annotator a reminder.
   timeLimitMinutes: Int!
   # Annotators (by email) who work this queue; empty means none (Admins only).
@@ -1473,6 +1475,8 @@ input ReviewQueueDefinitionInput {
   priority: Int
   checklist: [String!]
   rejectReasons: [String!]
+  # An update keeps the stored list when omitted; a new queue gets the defaults.
+  skipReasons: [String!]
   timeLimitMinutes: Int
   eligibleAnnotators: [String!]
   # 0-1; a new queue defaults to 0.8, an update keeps the stored value when omitted.
@@ -1825,6 +1829,7 @@ type ReviewItemDetail @aws_cognito_user_pools {
   sections: [ReviewSectionDetail!]!
   checklist: [String!]!
   rejectReasons: [String!]!
+  skipReasons: [String!]!
   claimCap: Int!
   myClaimCount: Int!
   history: [ReviewHistoryEntry!]!
@@ -2223,7 +2228,11 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
-  skipAllSectionsReview(objectKey: String!): Document
+  skipAllSectionsReview(objectKey: String!, reason: String!, note: String): Document
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Save a reviewer's edits to one section without completing its review: the
+  # review stays In Progress until processChanges or skipAllSectionsReview.
+  saveSectionReviewEdits(objectKey: String!, sectionId: String!, editedData: AWSJSON!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   claimReview(objectKey: String!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
@@ -2325,7 +2334,7 @@ type Mutation {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )
-  releaseReviewItem(objectKey: String!, cycleId: String!): ReviewItem
+  releaseReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator"]
     )

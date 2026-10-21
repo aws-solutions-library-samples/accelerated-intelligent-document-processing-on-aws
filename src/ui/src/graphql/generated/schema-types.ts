@@ -985,6 +985,7 @@ export type Mutation = {
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   saveReviewDraft?: Maybe<ReviewDraft>;
+  saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
@@ -1381,7 +1382,9 @@ export type MutationReleaseReviewArgs = {
 
 export type MutationReleaseReviewItemArgs = {
   cycleId: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  reason: Scalars['String']['input'];
 };
 
 
@@ -1441,6 +1444,13 @@ export type MutationSaveReviewDraftArgs = {
 };
 
 
+export type MutationSaveSectionReviewEditsArgs = {
+  editedData: Scalars['AWSJSON']['input'];
+  objectKey: Scalars['String']['input'];
+  sectionId: Scalars['String']['input'];
+};
+
+
 export type MutationSaveTestSetDocumentSectionArgs = {
   data?: InputMaybe<Scalars['AWSJSON']['input']>;
   objectKey: Scalars['String']['input'];
@@ -1483,7 +1493,9 @@ export type MutationSetActiveVersionArgs = {
 
 
 export type MutationSkipAllSectionsReviewArgs = {
+  note?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  reason: Scalars['String']['input'];
 };
 
 
@@ -2343,6 +2355,7 @@ export type ReviewItemDetail = {
   queueName?: Maybe<Scalars['String']['output']>;
   rejectReasons: Array<Scalars['String']['output']>;
   sections: Array<ReviewSectionDetail>;
+  skipReasons: Array<Scalars['String']['output']>;
 };
 
 export type ReviewItemPage = {
@@ -2361,6 +2374,7 @@ export type ReviewQueueDefinition = {
   name: Scalars['String']['output'];
   priority: Scalars['Int']['output'];
   rejectReasons: Array<Scalars['String']['output']>;
+  skipReasons: Array<Scalars['String']['output']>;
   timeLimitMinutes: Scalars['Int']['output'];
 };
 
@@ -2374,6 +2388,7 @@ export type ReviewQueueDefinitionInput = {
   name?: InputMaybe<Scalars['String']['input']>;
   priority?: InputMaybe<Scalars['Int']['input']>;
   rejectReasons?: InputMaybe<Array<Scalars['String']['input']>>;
+  skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
 };
 

@@ -266,6 +266,28 @@ describe('the actions', () => {
     expect(buttons()).not.toContain('Skip');
   });
 
+  it('ask why before skipping, and skip with that reason', async () => {
+    server.detail = { ...mine(), skipReasons: ['Out of time', 'Needs expert review'] } as ReviewItemDetail;
+    releaseItem.mockResolvedValue({});
+    renderScreen();
+    button('Skip').click();
+    // Nothing is released until a reason is chosen.
+    expect(releaseItem).not.toHaveBeenCalled();
+    const modal = createWrapper(document.body).findModal()!;
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    select.selectOptionByValue('Needs expert review');
+    modal.findContent().findTextarea()!.setTextareaValue('tax schedule');
+    modal
+      .findFooter()!
+      .findAllButtons()
+      .find((b) => b.getElement().textContent === 'Skip')!
+      .click();
+    await waitFor(() => expect(releaseItem).toHaveBeenCalledTimes(1));
+    expect(releaseItem.mock.calls[0].slice(1)).toEqual(['Needs expert review', 'tax schedule']);
+    await waitFor(() => expect(exit).toHaveBeenCalled());
+  });
+
   it('leave Take over to Admins: an Annotator viewing someone else’s item has neither', () => {
     role.isAdmin = false;
     role.isAnnotator = true;

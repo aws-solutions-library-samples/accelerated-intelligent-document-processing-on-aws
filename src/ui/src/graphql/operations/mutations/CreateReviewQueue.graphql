@@ -6,6 +6,7 @@ mutation CreateReviewQueue($input: ReviewQueueDefinitionInput!) {
     priority
     checklist
     rejectReasons
+    skipReasons
     timeLimitMinutes
     eligibleAnnotators
     isDefaultQueue

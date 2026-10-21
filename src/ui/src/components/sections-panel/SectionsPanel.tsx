@@ -43,6 +43,8 @@ import useUserRole from '../../hooks/use-user-role';
 import { useDocumentVersion } from '../../contexts/document-version';
 import { processChanges, getFilePresignedUrl, skipAllSectionsReview } from '../../graphql/generated';
 import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
+import { SKIP_ALL_REASONS, inReviewQueueEditReason, isInReviewQueue, isQueueManaged } from '../common/review-status';
+import ReasonModal from '../common/ReasonModal';
 
 const client = generateClient();
 const logger = new ConsoleLogger('SectionsPanel');
@@ -965,7 +967,7 @@ const SectionsPanel = ({
   // processed under a previous or different configuration profile.
   const configuration = mergedConfig;
   const { settings: settings2 } = useSettingsContext();
-  const { isReviewerOnly, canWrite, canReview } = useUserRole();
+  const { isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
   // When viewing a past document version, all edits are disabled — the panels
   // write to the *current* output objects, not the historical snapshot.
   const { isHistorical } = useDocumentVersion();
@@ -980,7 +982,8 @@ const SectionsPanel = ({
   const hitlStatusLower = documentItem?.hitlStatus?.toLowerCase().replace(/\s+/g, '') || '';
   const isHitlSkipped = hitlStatusLower === 'skipped' || hitlStatusLower === 'reviewskipped';
   const isHitlCompleted = hitlStatusLower === 'completed' || hitlStatusLower === 'reviewcompleted';
-  const hasPendingHITL = documentItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped;
+  // A queued document's review is skipped from its queue item, not here.
+  const hasPendingHITL = documentItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !isQueueManaged(documentItem?.hitlStatus);
   // Show skip button only if HITL pending and not already completed/skipped
   // (never while viewing a historical version — it mutates current state).
   const showSkipAllButton = canReview && hasPendingHITL && !isHistorical;
@@ -1068,17 +1071,21 @@ const SectionsPanel = ({
   // - REVIEWER only: HITL triggered but not claimed, document processing, or HITL completed/skipped
   // Admins and Authors can always edit
   // - Viewing a historical version (read-only snapshot)
+  // - In a review queue, for every role: it is reviewed from its queue item
+  const inReviewQueue = isInReviewQueue(documentItem?.hitlStatus);
   const isEditModeDisabled =
     isHistorical ||
+    inReviewQueue ||
     (!canWrite && !canReview) ||
     (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlCompleted || isHitlSkipped));
+  const editModeDisabledReason = inReviewQueue ? inReviewQueueEditReason(canWorkReviewQueues) : undefined;
 
   logger.debug('Edit Mode Check:', { isReviewerOnly, isEditModeDisabled, isHitlCompleted, isHitlSkipped });
 
   // Auto-exit edit mode when switching to a historical version, or (for
   // reviewers) when the document starts processing or HITL is completed/skipped.
   useEffect(() => {
-    if (isHistorical && isEditMode) {
+    if ((isHistorical || inReviewQueue) && isEditMode) {
       setIsEditMode(false);
       return;
     }
@@ -1086,10 +1093,11 @@ const SectionsPanel = ({
       logger.info('Auto-exiting edit mode due to status change');
       setIsEditMode(false);
     }
-  }, [isHistorical, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
+  }, [isHistorical, inReviewQueue, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
 
-  // Handle skip all sections review (Admin only)
-  const handleSkipAllSections = async () => {
+  // Handle skip all sections review (Admin or Reviewer); the reason and note are
+  // recorded with the skip in the review history.
+  const handleSkipAllSections = async (reason: string, note: string | undefined) => {
     setIsSkipping(true);
     setShowSkipAllModal(false);
 
@@ -1101,7 +1109,7 @@ const SectionsPanel = ({
 
       const result = await client.graphql({
         query: skipAllSectionsReview,
-        variables: { objectKey },
+        variables: { objectKey, reason, note },
       });
 
       logger.info('All sections review skipped successfully', result);
@@ -1626,11 +1634,22 @@ const SectionsPanel = ({
                         because it regenerates them. Hidden for Pattern-1, where BDA owns
                         the section structure. */}
                     {!isPattern1() && (
-                      <Button iconName="edit" onClick={() => setIsRegrouping(true)} disabled={isEditModeDisabled}>
+                      <Button
+                        iconName="edit"
+                        onClick={() => setIsRegrouping(true)}
+                        disabled={isEditModeDisabled}
+                        disabledReason={editModeDisabledReason}
+                      >
                         Edit page grouping
                       </Button>
                     )}
-                    <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick} disabled={isEditModeDisabled}>
+                    <Button
+                      variant="primary"
+                      iconName="edit"
+                      onClick={handleEditSectionsClick}
+                      disabled={isEditModeDisabled}
+                      disabledReason={editModeDisabledReason}
+                    >
                       Edit Mode
                     </Button>
                   </>
@@ -1795,34 +1814,26 @@ const SectionsPanel = ({
         </SpaceBetween>
       </Modal>
 
-      {/* Skip All Sections Review Modal (Admin only) */}
-      <Modal
+      {/* Skip All Sections Review Modal (Admin or Reviewer) */}
+      <ReasonModal
         onDismiss={() => setShowSkipAllModal(false)}
         visible={showSkipAllModal}
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button variant="link" onClick={() => setShowSkipAllModal(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" onClick={handleSkipAllSections}>
-                Skip All Reviews
-              </Button>
-            </SpaceBetween>
-          </Box>
-        }
         header="Skip All Section Reviews"
+        reasons={SKIP_ALL_REASONS}
+        confirmLabel="Skip All Reviews"
+        loading={isSkipping}
+        onConfirm={(reason, note) => void handleSkipAllSections(reason, note)}
       >
         <SpaceBetween size="s">
           <Alert type="warning">This action will skip all pending section reviews and continue the document processing workflow.</Alert>
           <Box>Skipping review will:</Box>
           <ul>
             <li>Mark all pending sections as review skipped without human verification</li>
-            <li>Record this action in the review history</li>
+            <li>Record this action, with your reason, in the review history</li>
           </ul>
           <Box>Are you sure you want to skip all section reviews?</Box>
         </SpaceBetween>
-      </Modal>
+      </ReasonModal>
     </SpaceBetween>
   );
 };

@@ -8,7 +8,7 @@ const VIEWS: Record<string, { type: StatusIndicatorProps.Type; label?: string }>
   COMPLETED: { type: 'success' },
   FAILED: { type: 'error' },
   ABORTED: { type: 'stopped' },
-  HITL_IN_PROGRESS: { type: 'in-progress', label: 'In review' },
+  HITL_IN_PROGRESS: { type: 'in-progress', label: 'In Review' },
   REJECTED: { type: 'stopped', label: 'Rejected' },
   REDACTED_SUPERSEDED: { type: 'info' },
   QUEUED: { type: 'pending' },
