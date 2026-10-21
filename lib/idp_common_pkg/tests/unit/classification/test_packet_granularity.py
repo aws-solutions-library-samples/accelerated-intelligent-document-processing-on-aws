@@ -1011,6 +1011,113 @@ class TestAModelRefusingImagesNamesTheSetting:
         ):
             assert not _looks_like_an_image_refusal(Exception(message)), message
 
+    def test_the_hint_survives_the_real_botocore_exception_shape(self, monkeypatch):
+        """⚠️ The shape production actually raises, and the one a naive
+        implementation fails on.
+
+        The non-retryable Bedrock branch re-raises the original botocore
+        `ClientError`, whose `__init__` takes `(error_response, operation_name)`.
+        Re-raising via `type(exc)(message)` therefore throws `TypeError` inside
+        the handler, leaving the operator with LESS information than before the
+        hint existed — and a test that raises `ValueError` instead cannot see it,
+        because `ValueError` takes one argument.
+        """
+        from botocore.exceptions import ClientError
+
+        service = _service(granularity="packet", modality={"images": True})
+        err = ClientError(
+            {
+                "Error": {
+                    "Code": "ValidationException",
+                    "Message": "This model does not support image input",
+                }
+            },
+            "Converse",
+        )
+
+        def refuse(*_args, **_kwargs):
+            raise err
+
+        monkeypatch.setattr(service, "_invoke_bedrock_model", refuse)
+        monkeypatch.setattr(
+            service, "_load_packet_page_images", lambda *a, **k: [("1", _png())]
+        )
+        with pytest.raises(ClientError) as excinfo:
+            service._classify_one_packet_window(
+                document=Document(id="d", input_key="d.pdf"),
+                config={"task_prompt": "p", "model_id": "us.amazon.nova-micro-v1:0"},
+                pages_content={"1": "text"},
+                window_page_ids=["1"],
+                window_label="1/1",
+                send_images=True,
+                forced_class=None,
+            )
+        message = str(excinfo.value)
+        assert "does not support image input" in message, "original must survive"
+        assert "classification.modality.images" in message
+        assert "nova-micro" in message
+        # The class is preserved, so a caller catching ClientError still does.
+        assert isinstance(excinfo.value, ClientError)
+
+    def test_the_model_name_comes_from_the_key_production_sets(self, monkeypatch):
+        """⚠️ `model_id`, not `model`. `_get_classification_config` builds
+        `{"model_id": ...}` and `_invoke_bedrock_model` reads `config["model_id"]`,
+        so reading `config["model"]` always fell through to the placeholder and the
+        message said "this model" — while a test passing `model` explicitly saw a
+        name and looked correct."""
+        service = _service(granularity="packet", modality={"images": True})
+        monkeypatch.setattr(
+            service,
+            "_invoke_bedrock_model",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ValueError("ValidationException: model does not support vision")
+            ),
+        )
+        monkeypatch.setattr(
+            service, "_load_packet_page_images", lambda *a, **k: [("1", _png())]
+        )
+        resolved = service._get_classification_config()
+        assert "model_id" in resolved, "the key this hint reads must be the real one"
+        with pytest.raises(ValueError) as excinfo:
+            service._classify_one_packet_window(
+                document=Document(id="d", input_key="d.pdf"),
+                config={"task_prompt": "p", "model_id": "us.amazon.nova-micro-v1:0"},
+                pages_content={"1": "text"},
+                window_page_ids=["1"],
+                window_label="1/1",
+                send_images=True,
+                forced_class=None,
+            )
+        assert "nova-micro" in str(excinfo.value)
+        assert "this model" not in str(excinfo.value)
+
+    def test_a_size_or_encoding_error_gets_no_capability_hint(self, monkeypatch):
+        """⚠️ "Turn images off" is the wrong remedy for an image that was too
+        large or badly encoded — that is a sizing problem on a model which does
+        accept images."""
+        service = _service(granularity="packet", modality={"images": True})
+        monkeypatch.setattr(
+            service,
+            "_invoke_bedrock_model",
+            lambda *a, **k: (_ for _ in ()).throw(
+                ValueError("ValidationException: image exceeds maximum size of 5 MB")
+            ),
+        )
+        monkeypatch.setattr(
+            service, "_load_packet_page_images", lambda *a, **k: [("1", _png())]
+        )
+        with pytest.raises(ValueError) as excinfo:
+            service._classify_one_packet_window(
+                document=Document(id="d", input_key="d.pdf"),
+                config={"task_prompt": "p", "model_id": "m"},
+                pages_content={"1": "text"},
+                window_page_ids=["1"],
+                window_label="1/1",
+                send_images=True,
+                forced_class=None,
+            )
+        assert "modality.images" not in str(excinfo.value)
+
     def test_the_hint_names_the_setting_and_keeps_the_original_message(
         self, monkeypatch
     ):
@@ -1027,7 +1134,7 @@ class TestAModelRefusingImagesNamesTheSetting:
         with pytest.raises(ValueError) as excinfo:
             service._classify_one_packet_window(
                 document=Document(id="d", input_key="d.pdf"),
-                config={"task_prompt": "p", "model": "us.amazon.nova-micro-v1:0"},
+                config={"task_prompt": "p", "model_id": "us.amazon.nova-micro-v1:0"},
                 pages_content={"1": "text"},
                 window_page_ids=["1"],
                 window_label="1/1",

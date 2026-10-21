@@ -166,10 +166,26 @@ def _looks_like_an_image_refusal(exc: Exception) -> bool:
     text = str(exc).lower()
     if not any(marker in text for marker in _IMAGE_REFUSAL_MARKERS):
         return False
-    # A throttle or a timeout that happens to mention an image is not a refusal.
+    # ⚠️ Not every image-shaped error is a CAPABILITY refusal, and the remedy
+    # differs: "set modality.images to false" is wrong advice for an image that
+    # was too large or badly encoded, which is a sizing or upstream problem on a
+    # model that does accept images. Screened here along with throttles and
+    # timeouts, which can also mention an image.
     return not any(
         benign in text
-        for benign in ("throttl", "timed out", "timeout", "too many requests")
+        for benign in (
+            "throttl",
+            "timed out",
+            "timeout",
+            "too many requests",
+            "exceeds",
+            "too large",
+            "maximum size",
+            "base64",
+            "decode",
+            "malformed",
+            "invalid image",
+        )
     )
 
 
@@ -5050,14 +5066,28 @@ class ClassificationService:
             # replaced, so a validation error with some other cause is not
             # mis-attributed. Issue #1524.
             if page_images and _looks_like_an_image_refusal(exc):
-                raise type(exc)(
-                    f"{exc}\n\nThis packet classification request carried "
+                # ⚠️ `raise type(exc)(msg)` does NOT work here, and the one
+                # exception class this path actually receives is the one it fails
+                # on: botocore's `ClientError.__init__` takes `(error_response,
+                # operation_name)`, so reconstructing it with a single string
+                # raises `TypeError` *inside* this handler and the operator ends
+                # up with less information than before the hint existed. The
+                # non-retryable Bedrock branch re-raises the original
+                # `ClientError`, so that is the production shape.
+                #
+                # Mutating `args` and re-raising keeps the class, the traceback
+                # and every other attribute, and works for any exception type.
+                hint = (
+                    f"This packet classification request carried "
                     f"{len(page_images)} page image(s) because "
                     f"classification.modality.images is on. If "
-                    f"{config.get('model', 'this model')} does not accept images, "
-                    f"set classification.modality.images to false — packet "
-                    f"granularity works text-only — or choose a model that does."
-                ) from exc
+                    f"{config.get('model_id') or 'this model'} does not accept "
+                    f"images, set classification.modality.images to false — "
+                    f"packet granularity works text-only — or choose a model "
+                    f"that does."
+                )
+                exc.args = (f"{exc}\n\n{hint}",) + tuple(exc.args[1:])
+                raise
             raise
 
         response = response_with_metering["response"]
