@@ -124,6 +124,23 @@ Unit tests: `scripts/tests/test_ux_runner_*.py`, `test_ux_test_proxy.py`,
 `test_ux_recorder_mcp.py`, `test_ai_ux_test.py` and, for the two CI jobs' shape,
 `test_ux_test_ci_jobs.py`.
 
+### First-time-user stories (`ux_stories.toml`)
+
+The stories are authored in `ux_stories.toml`, with these modules of their
+own in the `ux_runner/` package:
+
+- `scripts/ux_runner/stories.py` — the catalogue's strict loader: closed keys, the intent-only lint on every title and intent, the story and series hashes that decide which runs are comparable, the step budget, flow keys and shards. `list [--tier p0|p1|all] [--json]` prints one line per flow.
+- `scripts/ux_runner/docs_index.py` — the documentation a first-time-user story reads: a standard-library BM25 index over exactly the pages `docs-site/setup.sh` publishes, split at H1–H3 outside code fences, addressed by the site's own paths (a slug in the wrong case is a miss, as on the site). `search QUERY [--json]` from a checkout or an `--index` file; `build --out FILE` indexes the checkout, and with `--git-ref REF` reads that commit's `docs/**.md` blobs from git objects instead.
+- `scripts/ux_runner/changelog_select.py` — which stories an MR's added CHANGELOG entries select, by integer scores against each story's `match` block; MR text selects stories and never reaches a prompt. `nudge` prints the `[Unreleased]` leads no story covers.
+- `scripts/ux_runner/python_floor.py` — the Python the host-side story tools need, checked before an import can fail, so an older `python3` (macOS's own) ends with one `FAILED:` line naming the remedy rather than a traceback.
+
+```bash
+make ai-ux-test-stories-list                       # validate the catalogue, list its flows and the uncovered [Unreleased] leads
+make ai-ux-test-stories-search Q="prefix mapping"  # what a first-time user would find in the published docs
+```
+
+Unit tests: `scripts/tests/test_ux_test_stories_*.py`.
+
 ### Model Limit Discovery (`discover_model_limits.py`)
 
 Tests actual Bedrock API behavior to discover model `max_tokens` limits, then auto-generates `config_library/model_config_limits.yaml`.

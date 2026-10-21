@@ -1341,7 +1341,12 @@ def test_the_makefile_targets_are_outside_every_gate_section() -> None:
 
     sections = _makefile_sections()
     targets = sorted(t for t in sections if t.startswith("ai-ux-"))
-    assert targets == ["ai-ux-browser", "ai-ux-test-local"], targets
+    assert targets == [
+        "ai-ux-browser",
+        "ai-ux-test-local",
+        "ai-ux-test-stories-list",
+        "ai-ux-test-stories-search",
+    ], targets
     for target in targets:
         assert not sections[target].startswith(GATE_SECTION_PREFIXES), (
             f"`{target}` is declared under the gate section {sections[target]!r}"
@@ -1392,6 +1397,45 @@ def test_ai_ux_test_local_posts_only_for_an_affirmative_post(
     assert shown.returncode == 0, shown.stderr[-400:]
     assert "run_in_docker.py review --mr 812" in shown.stdout
     assert ("--post" in shown.stdout.split()) is posts
+
+
+_STORY_MAKE_VARIABLES = (
+    "Q",
+    "EXTRA_ARGS",
+)
+
+
+def _recipe(
+    target: str, *assignments: str, environ: dict[str, str] | None = None
+) -> tuple[int, list[str], str]:
+    """The arguments a target's recipe hands ``$(PYTHON)``, one a line.
+
+    ``PYTHON`` is replaced by ``printf``, so nothing but ``printf`` runs, and unlike
+    ``--dry-run`` what a recipe reads from the environment is expanded, which is
+    how a path holding a quote or a space reaches it.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _STORY_MAKE_VARIABLES}
+    env.update(environ or {})
+    done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["make", "--no-print-directory", target, "PYTHON=printf '%s\\n'", *assignments],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    return done.returncode, done.stdout.splitlines(), done.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("query", ["-h", "--json", "prefix mapping"])
+def test_the_search_target_hands_the_query_over_as_a_query(query: str) -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-search", environ={"Q": query})
+    assert code == 0, err[-400:]
+    assert argv == ["scripts/ux_runner/docs_index.py", "search", "--", query]
 
 
 @pytest.mark.unit

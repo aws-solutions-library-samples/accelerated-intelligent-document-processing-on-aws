@@ -1,0 +1,312 @@
+version = 1
+
+[limits]
+step_budget_multiple = 10
+step_budget_floor = 30
+documented_steps_max = 6
+flow_usd = 4.00
+flow_minutes = 12
+
+[runs]
+mr_stories = 2
+mr_flows = 3
+mr_runs = 4
+job_usd = 10.00
+extended_flow_usd = 6.00
+deadline_minutes = 55
+setup_minutes = 6
+reserve_minutes = 12
+
+[personas.new-analyst]
+group = "Author"
+background = "You joined document operations this week. You have read the release notes and nothing else, you are comfortable with web applications, and AWS is new to you."
+
+[personas.team-lead]
+group = "Viewer"
+background = "You lead a team that checks processing results and answers questions about them. You were told your access is read-only."
+
+[personas.platform-admin]
+group = "Admin"
+background = "You set this deployment up last month and look after its settings and extensions."
+
+[fixtures.complete-document]
+description = "a shipped sample (samples/lending_package.pdf) processed to COMPLETE"
+
+[fixtures.reprocessed-document]
+description = "a shipped sample processed twice, so it has an earlier version"
+
+[fixtures.evaluated-document]
+description = "a shipped sample processed in a Test Studio run against its expected results"
+
+[fixtures.test-run-documents]
+description = "documents submitted by a Test Studio run, beside ordinary uploads"
+
+[fixtures.unlabeled-documents]
+description = "shipped samples uploaded without expected results"
+
+[fixtures.feature-platform]
+description = "the Feature Platform enabled, with at least one extension installed"
+
+# ---- p0: 7 stories, 13 flows --------------------------------------------------------
+
+[[stories]]
+id = "find-where-to-start"
+title = "Find out where to start"
+intent = "You were just given access to this application. Find out what it is for and how you would get your first document processed."
+kind = "read"
+documented_steps = 3
+as = { new-analyst = "allowed" }
+first_visit = true
+tier = "p0"
+since = "0.6.0"
+origin = "smoke"
+
+[stories.match]
+docs = ["quick-start.md#web-ui", "web-ui.md#upload-documents"]
+terms = ["welcome page"]
+
+[[stories]]
+id = "read-a-processed-document"
+title = "Read what was extracted from a processed document"
+intent = "Open a document that has finished processing and find out what information was extracted from it."
+kind = "read"
+documented_steps = 3
+as = { new-analyst = "allowed", team-lead = "allowed", platform-admin = "allowed" }
+needs = ["complete-document"]
+tier = "p0"
+since = "0.6.0"
+origin = "smoke"
+rbac = "View document details"
+
+[stories.match]
+docs = ["web-ui.md#document-list"]
+terms = ["document details"]
+
+[[stories]]
+id = "find-extraction-model"
+title = "Find which model reads the fields out of your documents"
+intent = "Find out which model reads the fields out of your documents, and whether Claude Sonnet 5.5 is one of the models you could choose instead. Change nothing."
+kind = "read"
+documented_steps = 4
+as = { new-analyst = "allowed", team-lead = "not_offered" }
+tier = "p0"
+since = "0.6.12"
+origin = "changelog"
+rbac = "View/Edit configuration"
+claims = [{ lead = "Claude Sonnet 5.5 is selectable for every model-taking service." }]
+
+[stories.match]
+docs = ["configuration.md#pattern-configuration-via-web-ui"]
+issues = [1455]
+terms = ["Sonnet 5.5"]
+
+[[stories]]
+id = "route-folder-to-profile"
+title = "Make one input folder use one configuration"
+intent = "You want every document that arrives in one folder to be processed with one particular configuration, without anyone choosing it when they upload. Set that up."
+kind = "commit_point"
+documented_steps = 5
+as = { platform-admin = "allowed", new-analyst = "not_offered" }
+mr_as = ["platform-admin"]
+tier = "p0"
+since = "0.6.12"
+origin = "changelog"
+claims = [{ lead = "Configuration Profiles can be assigned by S3 prefix, so the destination decides the configuration." }]
+
+[stories.match]
+docs = ["configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands"]
+terms = ["prefix mapping"]
+
+[[stories]]
+id = "tell-production-from-test"
+title = "Tell production documents from test runs"
+intent = "See only the documents that came in through normal processing rather than through test runs, and find out how the application keeps the two apart."
+kind = "read"
+documented_steps = 3
+as = { new-analyst = "allowed", team-lead = "allowed" }
+needs = ["test-run-documents"]
+tier = "p0"
+since = "0.6.5"
+origin = "changelog"
+claims = [{ lead = "The Document List now shows only documents a user submitted; Test Studio runs have their own view." }]
+
+[stories.match]
+docs = ["web-ui.md#production-vs-test-studio-documents"]
+terms = ["Test Studio runs", "test-document"]
+
+[[stories]]
+id = "explain-missing-highlight"
+title = "Find out why a value is not highlighted on the page"
+intent = "On a processed document, find a value that is not highlighted on the page image, and find out why it is not."
+kind = "read"
+documented_steps = 4
+as = { team-lead = "allowed" }
+needs = ["complete-document"]
+tier = "p0"
+since = "0.6.12"
+origin = "changelog"
+claims = [{ lead = "Every extracted field now says whether it has a bounding box, and why not when it has none." }]
+
+[stories.match]
+docs = ["extraction-and-confidence.md#what-the-viewers-show"]
+issues = [1327]
+terms = ["bounding box"]
+
+[[stories]]
+id = "submit-a-document"
+title = "Find how to send in a document of your own"
+intent = "Find out how to send one of your own documents in for processing, and which file types are accepted."
+kind = "commit_point"
+documented_steps = 3
+as = { new-analyst = "allowed", team-lead = "not_offered" }
+tier = "p0"
+since = "0.6.0"
+origin = "finding"
+rbac = "Upload documents"
+
+[stories.match]
+docs = ["web-ui.md#upload-documents"]
+terms = ["upload documents"]
+
+# ---- p1: 8 stories, 10 flows --------------------------------------------------------
+
+[[stories]]
+id = "read-document-history"
+title = "See how a document changed between processing runs"
+intent = "A document has been processed more than once. Find its earlier results and see what changed between the runs."
+kind = "read"
+documented_steps = 3
+as = { team-lead = "allowed" }
+needs = ["reprocessed-document"]
+tier = "p1"
+since = "0.6.3"
+origin = "changelog"
+claims = [{ lead = "Historical document versions no longer report \"Low Confidence Fields: 0\" for every section." }]
+
+[stories.match]
+docs = ["document-versions.md#viewing-and-managing-versions"]
+issues = [573]
+terms = ["historical document versions"]
+
+[[stories]]
+id = "switch-page-text-views"
+title = "Read the text recognised on a page in two ways"
+intent = "On a processed document, read the text that was recognised on one page, first line by line and then as formatted text."
+kind = "read"
+documented_steps = 4
+as = { team-lead = "allowed" }
+needs = ["complete-document"]
+tier = "p1"
+since = "0.6.1"
+origin = "changelog"
+claims = [{ lead = "Page viewer unified into one Visual Editor layout with an OCR-lines / Markdown toggle." }]
+
+[stories.match]
+docs = ["web-ui.md#edit-pages"]
+terms = ["OCR Lines", "Visual Editor"]
+
+[[stories]]
+id = "judge-field-accuracy"
+title = "Find out which fields were extracted correctly"
+intent = "For documents that were checked against their expected results, find out which fields were extracted correctly and which were not."
+kind = "read"
+documented_steps = 4
+as = { new-analyst = "allowed" }
+needs = ["evaluated-document"]
+tier = "p1"
+since = "0.6.5"
+origin = "changelog"
+claims = [{ lead = "Per-field accuracy now reports its sample size and margin of error." }]
+
+[stories.match]
+docs = ["web-ui.md#evaluation-report", "test-studio.md#field-level-metrics"]
+terms = ["per-field accuracy"]
+
+[[stories]]
+id = "tell-why-a-document-used-its-configuration"
+title = "Find out why a document used its configuration"
+intent = "Pick a processed document and find out which configuration it was processed with, and why that configuration was the one used."
+kind = "read"
+documented_steps = 3
+as = { new-analyst = "allowed" }
+needs = ["complete-document"]
+tier = "p1"
+since = "0.6.12"
+origin = "changelog"
+claims = [{ lead = "Documents now record *where* their Configuration Profile came from." }]
+
+[stories.match]
+docs = ["configuration-profiles.md#profile-tracking-in-document-processing"]
+terms = ["ConfigSource", "Config Profile"]
+
+[[stories]]
+id = "remove-a-document"
+title = "Remove a document you no longer need"
+intent = "Remove one processed document that you no longer need from the application."
+kind = "commit_point"
+documented_steps = 3
+as = { new-analyst = "allowed", team-lead = "not_offered" }
+needs = ["complete-document"]
+tier = "p1"
+since = "0.6.12"
+origin = "changelog"
+rbac = "Delete documents"
+claims = [{ lead = "Deleting documents from the Document List now works, and a delete that does not finish says so instead of answering success." }]
+
+[stories.match]
+docs = ["web-ui.md#deleting-documents"]
+issues = [1366]
+terms = ["deleting documents"]
+
+[[stories]]
+id = "start-test-set-from-unlabeled"
+title = "Start a test set from documents without expected results"
+intent = "Some of your documents have no expected results yet. Start a test set from them, so that expected results can be added to it later."
+kind = "commit_point"
+documented_steps = 5
+as = { new-analyst = "allowed", team-lead = "not_offered" }
+needs = ["unlabeled-documents"]
+tier = "p1"
+since = "0.6.5"
+origin = "changelog"
+rbac = "Create/delete test sets"
+claims = [{ lead = "Test sets are now versioned, provenance-tracked benchmark objects, and can be built from unlabeled documents." }]
+
+[stories.match]
+docs = ["test-studio.md#versioning-test-sets"]
+terms = ["unlabeled documents", "draft labeling"]
+
+[[stories]]
+id = "check-extension-subscription"
+title = "Check whether a paid extension's subscription is active"
+intent = "Find out whether the subscription for a paid extension on this deployment is active, and what happens to that extension if it is not."
+kind = "read"
+documented_steps = 3
+as = { platform-admin = "allowed" }
+needs = ["feature-platform"]
+tier = "p1"
+since = "0.6.5"
+origin = "changelog"
+claims = [{ lead = "Extensions UI: one honest subscription banner, and a route to where a subscription is actually managed." }]
+
+[stories.match]
+docs = ["feature-platform.md#subscription-checks-for-paid-extensions"]
+terms = ["subscription banner", "Manage subscription"]
+
+[[stories]]
+id = "change-hook-update-setting"
+title = "Let an extension's processing step change documents"
+intent = "An installed extension runs a step of its own during processing. Find where you would allow that step to change the documents it processes, and set it to do so."
+kind = "commit_point"
+documented_steps = 5
+as = { platform-admin = "allowed" }
+needs = ["feature-platform"]
+tier = "p1"
+since = "0.6.4"
+origin = "changelog"
+claims = [{ lead = "`allowDocumentUpdate` is now editable in the Configuration UI." }]
+
+[stories.match]
+docs = ["feature-platform.md#pipeline-hooks"]
+issues = [613]
+terms = ["allowDocumentUpdate"]

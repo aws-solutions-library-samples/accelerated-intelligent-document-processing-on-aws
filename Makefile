@@ -1675,6 +1675,24 @@ ai-ux-browser: ## Start the confined headless Chrome + egress proxy + recorder i
 	@$(PYTHON) scripts/ux_runner/run_in_docker.py browser \
 		$(if $(STACK),--stack $(STACK)) $(EXTRA_ARGS)
 
+# First-time-user stories, authored in scripts/ux_stories.toml. Both targets run on
+# the host with no Docker, credentials or stack. JSON=1 prints the flows as one JSON
+# object and nothing after it. Q reaches the search recipe through the environment,
+# because GNU make exports a variable set on its command line, so a quote in the
+# query cannot break the shell line.
+.PHONY: ai-ux-test-stories-list ai-ux-test-stories-search
+
+ai-ux-test-stories-list: ## Validate scripts/ux_stories.toml, list its flows, then the [Unreleased] CHANGELOG leads no story covers (TIER=p0|p1|all; JSON=1 prints one JSON object)
+	@$(PYTHON) scripts/ux_runner/stories.py list \
+		$(if $(TIER),--tier $(TIER)) $(if $(filter 1 true yes y on,$(JSON)),--json) \
+		$(EXTRA_ARGS)
+	$(if $(filter 1 true yes y on,$(JSON)),,@echo "[Unreleased] CHANGELOG leads no story covers:")
+	$(if $(filter 1 true yes y on,$(JSON)),,@$(PYTHON) -B scripts/ux_runner/changelog_select.py nudge)
+
+ai-ux-test-stories-search: ## What a first-time user finds in the published docs (Q="prefix mapping" required)
+	@test -n "$$Q" || { echo 'usage: make ai-ux-test-stories-search Q="what a first-time user would type"'; exit 2; }
+	@$(PYTHON) scripts/ux_runner/docs_index.py search -- "$$Q"
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".

@@ -314,6 +314,7 @@ HARNESS_PATHS = (
     "scripts/ux_recorder_cdp.py",
     "scripts/ux_recorder_render.py",
     "scripts/ux_recorder_mcp.py",
+    "scripts/check_markdown_links.py",
     "scripts/ux_flows.yaml",
     ".claude/skills/ux-test.md",
     ".claude/skills/ux-test-ci.md",

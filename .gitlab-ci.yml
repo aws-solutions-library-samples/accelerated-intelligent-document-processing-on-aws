@@ -1427,7 +1427,7 @@ ai_ux_test:
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
       git fetch -q origin "refs/heads/$TARGET"
-      UX_HARNESS="scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+      UX_HARNESS="scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
       rm -rf "$UX_HARNESS_DIR" && mkdir -p "$UX_HARNESS_DIR"
       if git archive --format=tar -o /tmp/ux-harness.tar FETCH_HEAD -- $UX_HARNESS && tar -xf /tmp/ux-harness.tar -C "$UX_HARNESS_DIR" && chmod -R go-w "$UX_HARNESS_DIR"; then
         echo "UX harness pinned to origin/$TARGET in $UX_HARNESS_DIR: $UX_HARNESS"

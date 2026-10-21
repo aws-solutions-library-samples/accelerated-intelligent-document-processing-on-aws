@@ -228,7 +228,7 @@ There are two ways to build and deploy from source. Ask the user which they pref
 | **A — Combined (one-shot)** | `idp-cli deploy --from-code .` | Dev/test — builds, publishes, and deploys in a single command |
 | **B — Separate publish then deploy** | `idp-cli publish` → save URL → `idp-cli deploy --template-url` | Production / CI-CD — publish once, deploy to multiple stacks |
 
-#### Option A — One-shot (--from-code)
+#### Option A — One-shot (`--from-code`)
 
 ```bash
 # macOS / Linux
