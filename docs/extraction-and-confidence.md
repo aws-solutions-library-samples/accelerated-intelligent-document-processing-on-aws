@@ -1512,6 +1512,7 @@ extraction:
 > recorded as a structured **processing issue** on the section — `severity`
 > (error / warning / info), `code` (e.g. `assessment_incomplete`,
 > `assessment_row_too_large`, `assessment_coverage_incomplete`,
+> `assessment_fields_unscored`,
 > `assessment_recovered_with_retries`, `assessment_deadline_reached`), a
 > user-facing `message`, and a technical `root_cause`. These are persisted to
 > DynamoDB and shown in the Web UI: a **Status** column on the document's Sections

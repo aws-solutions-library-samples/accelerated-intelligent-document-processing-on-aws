@@ -6,13 +6,11 @@ import os
 from typing import Dict, Any, Optional, Union, overload, Literal
 from botocore.exceptions import ClientError
 import logging
-from copy import deepcopy
 from .configuration_manager import (
     ConfigurationManager,
     ConfigurationValidationError as ConfigurationValidationError,
     WriteGuard as WriteGuard,
 )
-from .merge_utils import deep_update
 from .models import (
     IDPConfig,
     ConfigurationRecord,
@@ -128,26 +126,31 @@ class ConfigurationReader:
 
         return idp_config
 
-    def simple_merge(
-        self, default: Dict[str, Any], custom: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Deep merge with custom values overriding defaults.
 
-        Custom configuration should only contain fields that differ from default,
-        not a complete configuration tree. Nested dicts are merged recursively.
+    # `simple_merge(default, custom)` was here: a `deep_update` of a deepcopied
+    # default with no migration of `custom`. It had no callers, and it is deleted
+    # rather than kept because config format 0.8 turned it from unused into a
+    # trap.
+    #
+    # ⚠️ The hazard is specific. A configuration stored by an earlier release
+    # carries `classificationMethod` and NO `granularity` key at all, and the
+    # 0.8 migration's "an explicit granularity wins" rule is `if not
+    # classification.get("granularity")`. The shipped default is `page`. So on
+    # any path that merges such a delta onto the defaults BEFORE migrating, that
+    # `page` arrives as the delta's own value, shadows `classificationMethod:
+    # textbasedHolisticClassification`, and silently runs page classification on
+    # a configuration asking for packet.
+    #
+    # Every live path migrates first, deliberately:
+    # `merge_utils.merge_config_with_defaults` migrates the delta at the top (its
+    # docstring has an "IMPORTANT -- migrate BEFORE merge" section naming this
+    # exact hazard),
+    # `ConfigurationManager.get_raw_configuration` and
+    # `get_merged_configuration` both migrate before their `deep_update`, and
+    # `update_configuration`'s handler goes through `merge_config_with_defaults`.
+    # Leaving a merge-first helper lying around is how a future caller reopens
+    # it; use `merge_config_with_defaults`, which takes `migrate=`.
 
-        Args:
-            default: The default configuration dictionary
-            custom: The custom overrides dictionary
-
-        Returns:
-            Merged configuration dictionary (default updated with custom)
-        """
-        from copy import deepcopy
-
-        merged = deepcopy(default)
-        return deep_update(merged, custom)
 
     @overload
     def get_merged_configuration(

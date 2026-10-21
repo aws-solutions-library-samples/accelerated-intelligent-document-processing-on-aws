@@ -83,16 +83,30 @@ live child.** If you cannot name one, you are about to stop the run rather than
 pause it. The heartbeat child in section 0 is the standing answer — it is running
 from the first action of the run precisely so that the answer is never "none".
 
-⚠️ **A prompt typed into this session kills every background agent.** Twice in one
-run the harness recorded `agents_killed` — *"6 background agents were stopped by the
-user"*, then *"5"* — at the instant a typed prompt arrived, and each killed agent's
-own transcript ends at `[Request interrupted by user]`. `SendMessage` then refuses
-them permanently, so roughly eleven agent-hours, every measurement and every report
-were lost while their pushed commits survived. Say this once at the start of a run:
-mid-run instructions are safe as answers to an `AskUserQuestion` (measured — five
-agents survived one) or from a second session via `SendMessage`, and a typed prompt
-costs the batch. After **any** unexpected prompt, assume every agent is gone and run
-the sweep in section 0 before acting on anything you remember.
+**A typed prompt leaves background agents alive, so mid-run instructions may go
+straight into this session.** Measured on 2026-10-20, CLI 2.1.296.1183: a message typed
+**mid-turn, while the session was running a command**, displaced that command to the
+background and left the subagent alone — *"moved to the background so that a message that
+arrived while it was running can reach you; it was not interrupted"*. The command then
+exited 0 and the probe agent finished its full 587-second run and reported normally, nine
+minutes later. Cite the completion rather than the `ListAgents` snapshot: a snapshot can
+catch an agent in the instant before it is reaped, a finished run cannot. Test the busy
+case, because during a run the session is working rather than idle.
+
+`AskUserQuestion` answers are also safe (five agents survived one), and a peer session is
+worth keeping for the independent-reader value in the bounds file rather than as
+insurance against losing a batch.
+
+⚠️ **Three bounds, and the first is a live hazard.** **Esc is untested and treated as
+destructive** — never use it on a running session. On **CLI builds before 2.1.296** a
+typed prompt did kill every background agent: the harness logged `agents_killed` twice in
+one run, each victim's transcript ending at `[Request interrupted by user]`, `SendMessage`
+refusing them afterwards, and roughly eleven agent-hours of measurements lost while the
+pushed commits survived. Whether that was fixed or was always Esc rather than typing is
+unresolved. So **re-measure after a CLI upgrade** — arm a throwaway probe, type a word
+while the session is busy, call `ListAgents` — and if agents ever do vanish alongside an
+unexpected prompt, assume they are gone and run the sweep in section 0 before acting on
+anything you remember.
 
 **Write your state to disk every cycle, and treat your own context as
 unreliable.** This loop outlives a single context window: a long run will compact,
@@ -181,18 +195,17 @@ figure that predicts whether an allocation will succeed, so the `awk` index abov
 load-bearing rather than incidental. The false-alarm direction is the one worth
 guarding, because nobody re-checks a number that says stop.
 
-Two properties make this the right shape rather than an external timer. It arrives as
-a **tool result**, not as a prompt, and a prompt arriving unbidden kills every
-background agent (see the ground rules); tool results demonstrably do not — ten-minute
-background waits returned here with five agents alive. And it always exits, so it
-cannot itself become the thing that looks tracked while doing nothing.
+Two properties make this the right shape. It arrives as a **tool result**, and tool
+results leave agents alive — ten-minute background waits returned here with five agents
+running. And it always exits, so it cannot itself become the thing that looks tracked
+while doing nothing.
 
 ⚠️ **It does not survive the session dying**, only the session going idle: the child
 and the session go together. Protection against the process itself dying has to come
 from outside, and nothing in this tree provides it; recovery is a human noticing, and
 what makes that cheap is the state file plus the journals.
 
-### `ScheduleWakeup` is the better child, and one thing about it is still unmeasured
+### `ScheduleWakeup` is the better child, and it is safe with agents in flight
 
 Prefer `ScheduleWakeup` over the backgrounded `sleep` wherever the wait is time-based
 rather than event-based. It is a first-class mechanism rather than a process: it cannot
@@ -210,14 +223,19 @@ stalling can adopt self-pacing **in place**, and the obvious alternative — sto
 compact, restart under `/loop` — is the wrong move, because it risks uncommitted
 worktrees, discards pending output and kills live subagents.
 
-What is **not** settled is whether a *firing* wakeup leaves background agents alive. The
-concern is specific and well-founded: a prompt arriving unbidden killed every background
-agent twice in one run, and a wakeup delivers a prompt. Nobody has measured whether that
-delivery behaves like a typed prompt or like a tool result. Until it is measured — a
-throwaway session holding one throwaway agent, a 60-second wakeup, `ListAgents`
-afterwards — **use `ScheduleWakeup` only when no agent is in flight**, and keep the
-backgrounded child for waits that overlap live agents. Do not read the settled half as
-settling this one; they are different claims about different events.
+**A firing wakeup does not kill background agents**, so `ScheduleWakeup` is safe with
+fixer agents in flight. Measured 2026-10-20 on CLI 2.1.296.1183, twice: a wakeup was
+booked while a `general-purpose` subagent was left alive mid-`sleep`, the turn ended, and
+the wakeup fired; `ListAgents` immediately afterwards showed the agent `running`, and it
+went on to finish its full run. A wakeup's delivery behaves like a **tool result**.
+
+⚠️ **Two agents, two firings, one build — re-measure after a CLI upgrade**, since the
+kill this replaces was observed on an earlier one and the method is three steps. It says
+nothing about **Esc**, which remains untested and treated as destructive.
+
+⚠️ **One call can repeat.** Passing a carry-forward `prompt` arms a dynamic loop that
+fires again unprompted; `ScheduleWakeup` with `stop: true` ends it. For exactly one
+wakeup, expect to stop the loop afterwards.
 
 Interval: well past the 300-second prompt-cache window, so 1200s or more for an idle
 check. Under 300s keeps the cache warm and is for polling something external that
@@ -234,14 +252,12 @@ cat scratch/backlog-run-state.json 2>/dev/null || echo "NO STATE - fresh run"
 
 `scratch/` is gitignored, so the file never reaches a commit. Shape:
 
-⚠️ **`sessionId` is not optional, and leaving it out costs the `Stop` hook its
-precision.** `scratch/` is gitignored but nothing cleans it up, so a state file
-outlives the run that wrote it; the hook therefore refuses a turn only when the file
-says *this* session owns the run. Without the key it falls back to the file's mtime and
-disregards anything older than four hours — which is a blunter instrument, and the
-reason it exists at all is that the first version of the hook had neither check and
-refused the first unrelated turn it saw, on a two-day-old file from another session.
-Write `sessionId` on the first dispatch and keep it there.
+⚠️ **Write `sessionId` on the first dispatch and keep it there**, or the `Stop` hook
+loses its precision. `scratch/` is gitignored but nothing cleans it up, so a state file
+outlives the run that wrote it — and a file claiming live work can otherwise refuse
+turns in unrelated sessions indefinitely. The hook therefore blocks only when the file
+says *this* session owns the run; without the key it falls back to mtime and disregards
+anything older than four hours, which is the blunter instrument.
 
 ```json
 {
@@ -922,72 +938,34 @@ trying to prevent it, and it is invisible because the run succeeds. Measured on
 this loop: three agents told to cap took the host to load 10.74 and then 23.33 on
 16 cores while each believed itself bounded.
 
-**This is faster as well as lighter, which is not the intuitive result.** Measured,
-four concurrent runs of the same suite on the same 16-core host:
+**Bounded is faster as well as lighter, which is not the intuitive result:** unbounded
+is 30% slower in batch wall clock at 2.5x the load, because oversubscription spends the
+difference on context switching. Capped runs are also predictable, which matters when you
+are deciding whether a run has hung. Figures in section 5.
 
-| Configuration | per run | batch wall clock | peak load |
-|---|---|---|---|
-| 1 × `-n auto`, idle host | 77 s | 77 s | ~14 |
-| 4 × `-n auto` concurrently | 224–243 s | **243 s** | **36.9** |
-| 4 × `-n 4` concurrently | 170.6–171.3 s | **171 s** | **14.7** |
+⚠️ **`PYTEST_PARALLEL` and `PYTEST_XDIST` are the only correct places for `-n`.** Passing
+one through `PYTEST_ARGS` puts two `-n` flags on one command line; pytest then collects
+nothing and exits 5, which reads as a pass to anything checking only for absence of
+failures.
 
-Unbounded is **30% slower in batch wall clock at 2.5× the load** — the
-oversubscription spends the difference on context switching. Bounded runs are also
-predictable, a 0.7 s spread across four against 19 s, which matters when you are
-deciding whether a run has hung. (Serial is 584 s, so `-n 4` is still a 3.4×
-speed-up; the floor of 2 keeps that worthwhile at higher N.)
+**Why the tier split is the main efficiency lever.** The whole-repo suites take every
+core, so each run blocks every other agent. With N=4 and each agent running the battery
+two or three times across its review rounds, a cycle pays a dozen whole-repo runs to land
+four PRs; pushing the expensive tier to one run per merge and one per batch cuts that to
+about five. The `idp_common` unit suite stays with the fixer agent — but only because of
+the cap, and uncapped it would be the heaviest thing in the loop.
 
-`PYTEST_PARALLEL` (for `lib/idp_common_pkg`) and `PYTEST_XDIST` (for root targets)
-are the documented overrides and the only correct places for `-n` — passing one
-through `PYTEST_ARGS` puts two `-n` flags on one command line, and pytest then
-collects nothing and exits 5, which reads as a pass to anything checking only for
-absence of failures.
-
-**Why the split, since it is the main efficiency lever in this loop.** Those
-suites take every core, so each run blocks every other agent. With N=4 and each
-agent running the whole battery two or three times across its review rounds, a
-cycle pays a dozen whole-repo runs to land four PRs. Pushing the expensive tier to
-one run per merge and one per batch cuts that to about five, and because the runs
-serialise on cores anyway the saving is close to linear in wall clock.
-
-The `idp_common` unit suite stays with the fixer agent deliberately — but only
-*because* of the cap. At `-n 4` alongside three siblings it is ~171 s, it is where
-most of this repository's tests live, and catching a break there at authoring time
-is far cheaper than discovering it at merge. Uncapped it would be the single
-heaviest thing in the loop, which is why the cap is a requirement and not a tip.
-
-**Run the targeted tests first as a fast fail, then the whole suite.** The targeted
-set takes seconds, so a change that breaks its own area is caught almost
-immediately rather than 70–170 s later:
+**Run the targeted tests first as a fast fail, then the whole suite:**
 
 ```bash
 pytest -q -n 4 tests/unit/<the area you changed>     # ~6-8 s; stop here on failure
 make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1 PYTEST_PARALLEL="-n 4"
 ```
 
-⚠️ **Do not replace the whole suite with a targeted subset, however it is
-derived.** This was measured and the subset loses. At `-n 4` run alone: a leaf
-module's own directory is **5.9 s** (86 tests), `ocr` alone **7.6 s** (413), `ocr`
-plus the one directory that imports it **8.3 s** (809), the worst case — the 13
-directories exercising `models` — **33.3 s** (5,117), and the whole suite **70.7 s**
-(9,442). So the best case saves about a minute and the worst case saves a factor of
-two, against these two facts:
-
-- **The suite is heavily coupled.** 19 of 28 test directories import modules other
-  than their own; `models` is exercised by 13 outside directories, `config` by 11,
-  `utils` by 8. Only `synthesis`, `monitoring`, `metrics` and `discovery` have no
-  external test consumers, so for almost any change the "targeted" set is most of
-  the suite anyway.
-- **79 `test_*.py` files sit at `tests/unit/` top level, in no module directory**,
-  and between them they import nearly every module. Any *directory*-based
-  derivation misses all 79 — and they are exactly where a cross-module break would
-  show up. A sound derivation needs file-level import analysis, which is real
-  machinery to build, maintain and get wrong, in exchange for that minute.
-
-The saving also matters less than it looks, because the capped runs go in parallel:
-four agents each running the whole suite finish in **171 s of wall clock, not
-4 × 171**. The marginal cost of "everyone runs it" is one run's worth per round.
-
+⚠️ **Do not replace the whole suite with a targeted subset, however it is derived.**
+Measured, and the subset loses: the suite is heavily coupled, 79 top-level test files sit
+in no module directory at all, and the capped runs go in parallel anyway so "everyone runs
+it" costs one run's worth per round. The figures are in the hazards file.
 **Two exceptions, and they are not negotiable.** An agent whose change touches
 `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate **must**
 run `make test-packages-cicd` itself, because that is the suite most likely to

@@ -190,14 +190,16 @@ session over letting one session run through several compactions.
 **The liveness invariant keeps the loop running; it does not keep the session
 alive.** A tracked child re-invokes you when it finishes, which covers every wait the
 loop creates itself. It does not cover the session being interrupted, the process
-being restarted, or an agent dying without a notification — and the obvious remedy,
-a timer that pings the session, is worse than the problem it solves here: the only
-two unsolicited prompts this session ever received killed every background agent it
-had. So an external keep-alive is not a substitute for the invariant, and if one is
-ever added it has to be established first — on a throwaway session holding a
-throwaway agent — that an injected prompt leaves background agents alive. Until then
-the heartbeat child covers the session going idle and nothing covers the process
-dying. Recovery from that is a human noticing, and what makes it cheap is the state
+being restarted, or an agent dying without a notification.
+
+A booked wakeup is the preferred child and the heartbeat `sleep` the fallback: on CLI
+2.1.296.1183 neither a firing `ScheduleWakeup` nor a prompt typed mid-turn disturbs a
+live subagent. See the `ScheduleWakeup` subsection in section 0 of the main skill for the
+method and the bounds — **Esc is untested and treated as destructive**, and both results
+want re-measuring after a CLI upgrade.
+
+What has no cover is the **process** dying, since every mechanism here lives inside the
+session. Recovery from that is a human noticing, and what makes it cheap is the state
 file plus the journals.
 
 **It does not bound review quality.** A nested reviewer that reads the diff and
@@ -229,3 +231,32 @@ repository's reach and so is a residual rather than a task.
 **It cannot enforce anything server-side.** Nothing in this repository can stop a
 merge; see "Visible is not blocking" in `CLAUDE.md`. The loop merges on its own
 measurement, so its discipline *is* the gate.
+
+
+---
+
+## Why a targeted test subset does not replace the suite
+
+Section 2 of the main skill says to run the whole `idp_common` unit suite rather than a
+derived subset, and section 5 holds the host figures for worker caps and N. This is the
+one measurement neither carries, kept here because you need it only to argue with that
+rule.
+
+At `-n 4` run alone: a leaf module's own directory is **5.9 s** (86 tests), `ocr` alone
+**7.6 s** (413), `ocr` plus the one directory that imports it **8.3 s** (809), the worst
+case — the 13 directories exercising `models` — **33.3 s** (5,117), and the whole suite
+**70.7 s** (9,442). So the best case saves about a minute and the worst a factor of two,
+against two facts:
+
+- **The suite is heavily coupled.** 19 of 28 test directories import modules other than
+  their own; `models` is exercised by 13 outside directories, `config` by 11, `utils` by
+  8. Only `synthesis`, `monitoring`, `metrics` and `discovery` have no external test
+  consumers, so for almost any change the "targeted" set is most of the suite anyway.
+- **79 `test_*.py` files sit at `tests/unit/` top level, in no module directory**, and
+  between them they import nearly every module. Any *directory*-based derivation misses
+  all 79 — exactly where a cross-module break shows up. A sound derivation needs
+  file-level import analysis: real machinery to build, maintain and get wrong, in
+  exchange for that minute.
+
+And the saving matters less than it looks, because capped runs go in parallel: four
+agents each running the whole suite finish in **171 s of wall clock, not 4 x 171**.
