@@ -267,32 +267,10 @@ in the player (QuickTime: View → Subtitles; VLC: Subtitle menu) — and writte
 
 ### Privacy
 
-A recording of a live stack shows real documents. Everything lands under
-`scratch/ux-recordings/` (gitignored); never commit it or attach it to a PR, and
-say so when you hand over the path. The frames show the page exactly as it looked,
-with nothing redacted: a password revealed by a show-password toggle is in the
-video. Polly receives only the narration text you wrote; frames never leave the
-machine.
-
-The one exception is the unattended MR UX test ([`ux-test-ci.md`](ux-test-ci.md)):
-its recording of the CI review stack `idp-ux-nightly`, which holds only shipped
-example data, is uploaded to the merge request as the finished mp4, and nothing
-else from the session goes with it. Its narration, captions and chapter labels are
-redacted before render reads them; its frames are uploaded as they were recorded,
-unredacted. The harness enforces that bound in code: `review_stack_problem` in
-`scripts/sdlc/ai_ux_test.py` lets a run make a video only when `--stack`, the
-settings parameter its `UX_TEST_UI_ENV` names and the stack its signed-in page
-reports all say `idp-ux-nightly`, and `_Run._video` applies that before anything is
-rendered. Against any other stack the findings are posted with a line saying the
-video was withheld, because recording another stack's screens needs a privacy
-decision of its own, and no mp4 is made, so none reaches the merge request or the
-job's artifacts. A page that does not show the stack's name, even the review
-stack's own, costs the video the same way, and its line says the stack could not be
-confirmed as the review stack. A local dry run follows the same rule unless it is
-given `--dev-video-any-stack`, the developer's opt-in, which forces the dry run, is
-refused wherever `CI` or `GITLAB_CI` is set, the Docker runner's container included,
-and appears in neither CI job in any spelling, which
-`scripts/tests/test_ux_test_ci_jobs.py` pins.
+Recordings land under `scratch/ux-recordings/`, which is gitignored. Two things
+about them are easy to miss: the frames are not redacted, so a password revealed
+by a show-password toggle is in the video, and Polly receives only the narration
+text you wrote, never a frame. Share a recording only when the user asks for it.
 
 Each click is also logged, with a label, in `events.jsonl` and `timeline.json`,
 and `render` prints the same labels in its click table and quotes them in its

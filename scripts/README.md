@@ -91,9 +91,8 @@ its end card lists the Key takeaways from `demo.md` (`demo.mp4`, `demo.srt`).
 Everything else — marks, pauses, click markers, pacing, captions — is shared.
 
 Output lives under `scratch/ux-recordings/<stack>-<timestamp>/` (demos:
-`demo-<title>-<timestamp>/`; gitignored):
-recordings of a live stack show real documents and are never committed. Nor is
-anything else in the session directory: it also holds the tab's address and title,
+`demo-<title>-<timestamp>/`; gitignored).
+Besides the recording, the session directory holds the tab's address and title,
 and a click log (`events.jsonl`, `timeline.json`) that labels clicks with text from
 the page, as the Privacy section of
 [`ux-test.md`](../.claude/skills/ux-test.md#privacy) describes. Polly receives only
