@@ -1227,11 +1227,55 @@ ai_mr_review:
 # bounds a push burst. ai_ux_test is idempotent per head SHA, and
 # `resource_group: ux_test_stack` serialises runs against the shared review stack.
 #
+# ⚠️ THE UX VARIABLES ARE SCOPED TO AN ENVIRONMENT, OR EVERY JOB GETS THEM.
 # Requires masked, NOT protected CI variables (a protected variable is absent
 # from MR pipelines): UX_TEST_UI_ENV, UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID,
-# plus GITLAB_REVIEW_TOKEN, which is shared with ai_mr_review. Without them the
-# jobs print SKIPPED: and exit 0.
+# each with environment scope `ux-review`, plus GITLAB_REVIEW_TOKEN, which is
+# shared with ai_mr_review, a job with no environment, and so keeps the default
+# scope. Without them the jobs print SKIPPED: and exit 0. These two jobs, and no
+# other, declare `environment: ux-review` with `action: prepare`, which gives a
+# job the variables scoped to that environment and creates no deployment. A
+# variable left at the default scope, All (`*`), reaches every job of every
+# pipeline: static_checks, unit_tests, package_tests and ui_tests each run
+# `npm ci` in src/ui, and so every lifecycle script of every UI dependency, with
+# the persona's password in the environment. A job's own `variables:` cannot take
+# a project variable away, because project variables outrank this file, so the
+# scope is the only thing that keeps it out of those jobs. No rule may read a
+# scoped variable: GitLab can leave it undefined while it evaluates `rules` at
+# pipeline creation. The setup steps are under footnote ³ in CI_TEST_COVERAGE.md.
 # ---------------------------------------------------------------------------
+# ⚠️ THE STEPS THAT RUN THIRD-PARTY CODE INHERIT NONE OF THE JOB'S SECRETS.
+#
+# Both UX jobs run them under this function, which hands on an environment built
+# from nothing: the search path, the home directory, npm's cache location when
+# the runner names one, a locale, the proxy variables when the runner sets them,
+# and install.sh's prefix. ux_test_build runs apt (its packages' maintainer
+# scripts), the MR's `npm ci` (every src/ui dependency's lifecycle scripts) and
+# its vite build (the MR's config and plugins) under it; ai_ux_test runs apt and
+# install.sh (pip, `npm ci` and the npm packages' own install scripts). None of
+# them needs the GitLab token, the persona passwords, the stack's UI env or an
+# AWS credential. An allowlist, because a denylist passes every variable nobody
+# named: CI_REPOSITORY_URL carries the job token, and a job receives every
+# project variable its environment's scope admits. It keeps the secrets out of a
+# package script's environment and its logs; it does not stop a hostile package,
+# which runs as root beside the job's shell and could read its /proc/<pid>/environ
+# and the checkout's .git/config. before_script and script share one shell, so a
+# job includes the definition once, ahead of its first use.
+.without_job_secrets: &without_job_secrets
+  - |
+    without_job_secrets() {
+      env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 \
+        ${npm_config_cache:+npm_config_cache="$npm_config_cache"} \
+        ${http_proxy:+http_proxy="$http_proxy"} \
+        ${https_proxy:+https_proxy="$https_proxy"} \
+        ${no_proxy:+no_proxy="$no_proxy"} \
+        ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} \
+        ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} \
+        ${NO_PROXY:+NO_PROXY="$NO_PROXY"} \
+        ${UX_RUNNER_PREFIX:+UX_RUNNER_PREFIX="$UX_RUNNER_PREFIX"} \
+        "$@"
+    }
+
 ux_test_build:
   stage: ux_review
   interruptible: true
@@ -1252,6 +1296,11 @@ ux_test_build:
       when: on_success
     - when: never
   needs: []
+  # The variables the two UX jobs read are scoped to this environment; see the
+  # note above the section. ai_ux_test declares the same mapping by its anchor.
+  environment: &ux_review_environment
+    name: ux-review
+    action: prepare
   variables:
     # The merge base with develop, which ui_change.py diffs against.
     GIT_DEPTH: 0
@@ -1262,22 +1311,34 @@ ux_test_build:
     paths:
       - src/ui/node_modules/
   before_script:
-    - apt-get update -y
-    - apt-get install curl git -y
+    - *without_job_secrets
+    - without_job_secrets apt-get update -y
+    - without_job_secrets apt-get install curl git -y
     - *node_setup
   script:
     - python3 scripts/ux_runner/ui_change.py --target-branch "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}" --out ui-change.json
+    # The env file is written first, from the one variable this job needs. It
+    # holds no credential: the review stack's UI configuration, which the build
+    # inlines into the bundle anyway, and its bucket names. npm ci then runs every
+    # src/ui dependency's lifecycle scripts, a malicious version the lockfile
+    # already resolves included, since its integrity hashes check only that a
+    # package is the one recorded; and the build runs vite with the MR's config.
+    # Both run under without_job_secrets, which keeps UX_TEST_PERSONAS out of
+    # their environment and logs. This job holds the persona only because it
+    # shares ai_ux_test's scope, so a package that goes looking can still read it
+    # from this shell's /proc/<pid>/environ. Node and npm themselves come from
+    # .node_setup, which runs with the job's environment, as in every job using it.
     - |
       if python3 -c 'import json, sys; sys.exit(0 if json.load(open("ui-change.json"))["skip"] else 1)'; then
         echo "Only tests changed under src/ui; nothing to build."
         exit 0
       fi
       if [ -z "${UX_TEST_UI_ENV:-}" ]; then
-        echo "SKIPPED: UX_TEST_UI_ENV is not set, so the MR's UI cannot be built against the review stack."
+        echo "SKIPPED: UX_TEST_UI_ENV is not set in this job, so the MR's UI cannot be built against the review stack. It belongs at environment scope ux-review."
         exit 0
       fi
       printf '%s' "$UX_TEST_UI_ENV" | base64 -d > src/ui/.env.production.local
-      cd src/ui && npm ci --prefer-offline --no-audit && npm run build:only
+      cd src/ui && without_job_secrets npm ci --prefer-offline --no-audit && without_job_secrets npm run build:only
   artifacts:
     paths:
       - src/ui/build/
@@ -1299,6 +1360,7 @@ ai_ux_test:
   needs:
     - job: ux_test_build
       artifacts: true
+  environment: *ux_review_environment
   variables:
     # Bedrock inference-profile id; the GitLab role grants the Opus family only.
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
@@ -1316,37 +1378,17 @@ ai_ux_test:
     - umask 022
     # ⚠️ THE STEPS THAT RUN THIRD-PARTY CODE INHERIT NONE OF THE JOB'S SECRETS.
     #
-    # apt (its packages' maintainer scripts) and install.sh (pip, `npm ci` and
-    # the npm packages' own install scripts) need neither the GitLab token, the
-    # persona passwords, the stack's UI env nor an AWS credential, so they run
-    # under this function, which hands on an environment built from nothing: the
-    # search path, the home directory, a locale, the proxy variables when the
-    # runner sets them, and install.sh's prefix. An allowlist, because a denylist
-    # passes every variable nobody named: CI_REPOSITORY_URL carries the job token,
-    # and every unprotected project variable reaches every MR job. It keeps the
-    # secrets out of a package script's environment and its logs; it does not
-    # stop a hostile package, which runs as root beside this shell and could read
-    # its /proc/<pid>/environ and the checkout's .git/config. What guards against
-    # that is that each download is checked before it is used: install.sh checks
-    # the Chrome for Testing zip and the Node tarball against the sha256 it records
-    # for each architecture, installs the Python packages with pip
-    # --require-hashes from the digests in requirements.txt and the npm packages
-    # from the lockfile's integrity hashes, and apt checks its repositories'
-    # signatures. npm's upgrade of itself is checked only against what the npm
-    # registry publishes for that version. before_script and script share one
-    # shell, so the function is defined once.
-    - |
-      without_job_secrets() {
-        env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 \
-          ${http_proxy:+http_proxy="$http_proxy"} \
-          ${https_proxy:+https_proxy="$https_proxy"} \
-          ${no_proxy:+no_proxy="$no_proxy"} \
-          ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} \
-          ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} \
-          ${NO_PROXY:+NO_PROXY="$NO_PROXY"} \
-          ${UX_RUNNER_PREFIX:+UX_RUNNER_PREFIX="$UX_RUNNER_PREFIX"} \
-          "$@"
-      }
+    # apt and install.sh run under the shared without_job_secrets above, which
+    # keeps the secrets out of a package script's environment and logs but does
+    # not stop a hostile package. What guards against one here is that each
+    # download is checked before it is used: install.sh checks the Chrome for
+    # Testing zip and the Node tarball against the sha256 it records for each
+    # architecture, installs the Python packages with pip --require-hashes from
+    # the digests in requirements.txt and the npm packages from the lockfile's
+    # integrity hashes, and apt checks its repositories' signatures. npm's
+    # upgrade of itself is checked only against what the npm registry publishes
+    # for that version.
+    - *without_job_secrets
     - without_job_secrets apt-get update -y
     - without_job_secrets apt-get install curl git -y
     # ⚠️ EXTRACT THE HARNESS FROM THE TARGET BRANCH, AND FAIL CLOSED.

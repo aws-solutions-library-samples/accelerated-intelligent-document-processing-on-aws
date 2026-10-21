@@ -29,13 +29,14 @@ deletes the user.
 ``--long-lived`` is the one exception to "throwaway", and exists for the CI review
 stack the unattended MR UX test signs in to (``.claude/skills/ux-test-ci.md``). It
 creates ``ux-persona-<group>@example.invalid``, a fixed name, so the masked CI
-variable ``UX_TEST_PERSONAS`` can hold its password from one run to the next, and
-prints the entry to merge into that variable. The ``--stale`` sweep matches only
-``ux-test-`` and so can never select a persona. Two refusals keep the variable and
-the pool in step: setup will not set a new password on an existing persona without
-``--rotate``, because that breaks the variable until somebody updates it, and
-teardown will not delete one without ``--long-lived``. Annotator is refused for
-now, because an annotator also needs a UsersTable row this option does not create.
+variable ``UX_TEST_PERSONAS``, scoped to the environment ``ux-review``, can hold its
+password from one run to the next, and prints the entry to merge into that
+variable. The ``--stale`` sweep matches only ``ux-test-`` and so can never select a
+persona. Two refusals keep the variable and the pool in step: setup will not set a
+new password on an existing persona without ``--rotate``, because that breaks the
+variable until somebody updates it, and teardown will not delete one without
+``--long-lived``. Annotator is refused for now, because an annotator also needs a
+UsersTable row this option does not create.
 
 The app client's auth flows are deliberately NOT modified. Setting a known
 password non-interactively needs only ``admin-set-user-password --permanent``,
@@ -291,7 +292,9 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
         "persona": {args.group: {"username": email, "password": password}},
         "next": (
             "merge this entry into the JSON object of every persona, base64 it, and "
-            "store it as the masked CI variable UX_TEST_PERSONAS"
+            "store it as the CI variable UX_TEST_PERSONAS: masked, not protected, "
+            "environment scope ux-review, and no copy left at the default scope, "
+            "which reaches every job"
         ),
     }
     print(json.dumps(session, indent=2))

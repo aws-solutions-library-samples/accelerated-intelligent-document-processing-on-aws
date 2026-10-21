@@ -29,6 +29,7 @@ from types import ModuleType
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 _SCRIPTS = Path(__file__).resolve().parents[1]
 _CTX = {
@@ -217,6 +218,24 @@ def test_the_printed_entry_is_what_ux_test_personas_holds(monkeypatch, capsys):
     )
     assert "UX_TEST_PERSONAS" in printed["next"]
     assert "base64" in printed["next"]
+
+
+@pytest.mark.unit
+def test_the_printed_hint_names_the_scope_the_ux_jobs_declare(monkeypatch, capsys):
+    """The hint is read at the one moment the operator stores the password, so it
+    names the environment scope, as the CI jobs declare it, and says that a copy
+    left at the default scope reaches every job."""
+    ci = yaml.safe_load((_SCRIPTS.parent / ".gitlab-ci.yml").read_text("utf-8"))
+    scope = ci["ai_ux_test"]["environment"]["name"]
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    module.cmd_setup(_setup_args())
+
+    hint = json.loads(capsys.readouterr().out)["next"]
+    assert f"environment scope {scope}" in hint, hint
+    assert "masked, not protected" in hint, hint
+    assert "default scope, which reaches every job" in hint, hint
 
 
 @pytest.mark.unit

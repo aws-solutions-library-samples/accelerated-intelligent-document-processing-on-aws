@@ -134,11 +134,15 @@ What it does NOT protect, stated rather than implied
 * **The trust root is the MR's own pipeline definition.** An MR pipeline uses the
   MR's ``.gitlab-ci.yml``, so an author with push access can rewrite this job
   itself; pinning the harness protects against edits to the harness files and
-  nothing more. The masked, unprotected variables this job needs
-  (``GITLAB_REVIEW_TOKEN``, ``UX_TEST_PERSONAS``, ``UX_TEST_UI_ENV``) are visible to
-  every job of an MR pipeline that runs MR code, ``ux_test_build``, ``unit_tests``
-  and ``ui_tests`` included. The bound is the one ``ai_mr_review`` relies on: a
-  fork's pipeline gets no masked variables, so this needs push access.
+  nothing more. ``UX_TEST_PERSONAS`` and ``UX_TEST_UI_ENV`` are scoped to the
+  environment ``ux-review``, so they reach only the jobs that declare it. This
+  repository's pipeline definition limits those to ``ux_test_build``, which runs
+  the MR's ``npm ci``, and this one; an MR's own copy of the definition, which is
+  what its pipeline runs, can declare it on any job. ``GITLAB_REVIEW_TOKEN``,
+  shared with ``ai_mr_review``, keeps the default scope and reaches every job. The
+  bound is the one ``ai_mr_review`` relies on: a fork's pipeline gets none of these
+  variables unless a member of the project runs it there, so this needs push
+  access.
 * **The MR's UI code holds the persona's credentials while it runs.** It is the
   login form, so it receives the password and the session's tokens, and it can
   reach the shared regional Cognito endpoints, through which it could hand them to
@@ -211,6 +215,10 @@ Usage
 
 Environment
 -----------
+In CI the three ``UX_TEST_*`` variables are masked, unprotected and scoped to the
+environment ``ux-review``, which the job declares with ``action: prepare``; a
+variable left at the default scope reaches every job of every pipeline.
+
 ``GITLAB_REVIEW_TOKEN``
     The project access token ``ai_mr_review`` posts with, shared with it. Needed to
     read the MR and its notes and to post; ``--dry-run`` runs without it.

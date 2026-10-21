@@ -457,7 +457,8 @@ two jobs' shape.
 
 **Why two jobs.** Chrome's DevTools port is unauthenticated, so no MR code may run in
 the job that drives the browser. `ux_test_build` runs the MR's `npm ci` (with its
-lifecycle scripts) and `vite build` (with its config) into `src/ui/build/`, and
+lifecycle scripts) and `vite build` (with its config) into `src/ui/build/`, both with
+none of the job's secrets in their environment (see the `env -i` item below), and
 `ai_ux_test` receives only those static files, which its egress proxy serves at
 `http://localhost:3000`. The build job also writes `ui-change.json`, but it is the
 job that ran MR code, so `ai_ux_test` classifies the change again from git and
@@ -511,25 +512,36 @@ treats that file as diagnostics only.
   pinned harness for root to read back. The egress proxy keeps the build's real
   path from start-up and clears group and other write bits on it, so the browser's
   uid can neither change what is served nor move the site elsewhere.
-- apt (with its packages' maintainer scripts) and `install.sh` (pip, `npm ci` and the
-  npm packages' own install scripts) do not inherit the job's secrets: they run
-  under `env -i` with only the search path, the home directory, a locale, the proxy
-  variables and `install.sh`'s prefix. An allowlist, because a denylist passes every
-  variable nobody named; `CI_REPOSITORY_URL`, for one, carries the job token. That
-  keeps the secrets out of a package script's environment and logs, not out of a
-  hostile package's reach: it runs as root beside the job's shell, and could read
-  that shell's `/proc/<pid>/environ` and the checkout's `.git/config`. What guards
-  against a hostile package is that each download is checked before it is used:
-  `install.sh` checks the Chrome for Testing zip and the Node tarball against the
-  sha256 it records for each architecture, installs the Python packages with
-  `pip --require-hashes` from the digests in `requirements.txt`, which a test pins
-  to `lib/idp_common_pkg/uv.lock`'s, and the npm packages from the lockfile's
-  integrity hashes, and apt checks its repositories' signatures. npm's upgrade of
-  itself to the pinned version is the one download checked only against what the
-  npm registry publishes for it. `install.sh` also changes into an empty
-  directory of its own and runs Python isolated (`-I`) before any `python3` or
-  `npm`, so nothing at the checkout's root can shadow a module or a registry
-  setting.
+- No step of either job that runs third-party code inherits the job's secrets. In
+  `ai_ux_test` those are apt (with its packages' maintainer scripts) and
+  `install.sh` (pip, `npm ci` and the npm packages' own install scripts); in
+  `ux_test_build` they are apt, the MR's `npm ci`, which runs every `src/ui`
+  dependency's lifecycle scripts, and its `vite build`. All of them run under
+  `without_job_secrets`, one definition in `.gitlab-ci.yml` that both jobs include,
+  which calls `env -i` with only the search path, the home directory, npm's cache
+  location when the runner names one, a locale, the proxy variables and
+  `install.sh`'s prefix. An allowlist, because a denylist passes every variable
+  nobody named; `CI_REPOSITORY_URL`, for one, carries the job token. `ux_test_build`
+  writes the UI env file before any of it runs, from the one variable it needs; the
+  file holds no credential, only the stack's UI configuration, which the build
+  inlines into the bundle anyway, and its bucket names. The wrapper keeps the
+  secrets out of a package script's environment and logs, not out of a hostile
+  package's reach: it runs as root beside the job's shell, and could read that
+  shell's `/proc/<pid>/environ` and the checkout's `.git/config`. In `ux_test_build`
+  nothing checks a dependency beyond the lockfile's integrity hashes, which a
+  malicious version the lockfile already resolves passes, and that job holds the
+  persona's password because it shares `ai_ux_test`'s environment scope (see
+  **CI variables** below). What guards against a hostile package in `ai_ux_test` is
+  that each download is checked before it is used: `install.sh` checks the Chrome
+  for Testing zip and the Node tarball against the sha256 it records for each
+  architecture, installs the Python packages with `pip --require-hashes` from the
+  digests in `requirements.txt`, which a test pins to `lib/idp_common_pkg/uv.lock`'s,
+  and the npm packages from the lockfile's integrity hashes, and apt checks its
+  repositories' signatures. npm's upgrade of itself to the pinned version is the
+  one download checked only against what the npm registry publishes for it.
+  `install.sh` also changes into an empty directory of its own and runs Python
+  isolated (`-I`) before any `python3` or `npm`, so nothing at the checkout's root
+  can shadow a module or a registry setting.
 - The artifact directory `ux-tests` is recreated before the harness writes into it,
   and the harness refuses it, and any artifact file in it, when it is a symlink:
   it sits in the MR's checkout, and the harness writes there as root.
@@ -692,24 +704,59 @@ it by hand. The section's marker records `upload=<id>` for a later, separately
 authorised deletion change.
 
 **CI variables.** All four are masked and **not** protected, because a protected
-variable is absent from MR pipelines. Without them both jobs print `SKIPPED:` and
-exit 0.
+variable is absent from MR pipelines. The three only the UX test reads are scoped to
+the environment `ux-review`, which both jobs, and no other, declare with
+`action: prepare`. GitLab gives a job the variables whose scope matches its
+environment, creates the environment by name the first time a pipeline holds such a
+job, and creates no deployment for a `prepare` job. Without the variables both jobs
+print `SKIPPED:` and exit 0.
 
-| Variable | What it holds |
-|---|---|
-| `UX_TEST_UI_ENV` | base64 of the review stack's `WebUITestEnvFile` output, plus an optional `UX_TEST_BUCKETS=` line of its exact bucket names; the egress rules come from it, and unless its `VITE_SETTINGS_PARAMETER` is `idp-ux-nightly-Settings` no video is rendered |
-| `UX_TEST_PERSONAS` | base64 of `{"<group>": {"username": …, "password": …}}`, from `scripts/ux_test_session.py setup idp-ux-nightly --group Admin --long-lived` |
-| `UX_TEST_AWS_ACCOUNT_ID` | the account the job's credentials must reach; only ever printed as its last four digits |
-| `GITLAB_REVIEW_TOKEN` | shared with `ai_mr_review`: a project access token with the least role that can create a note |
+| Variable | Environment scope | What it holds |
+|---|---|---|
+| `UX_TEST_UI_ENV` | `ux-review` | base64 of the review stack's `WebUITestEnvFile` output, plus an optional `UX_TEST_BUCKETS=` line of its exact bucket names; the egress rules come from it, and unless its `VITE_SETTINGS_PARAMETER` is `idp-ux-nightly-Settings` no video is rendered |
+| `UX_TEST_PERSONAS` | `ux-review` | base64 of `{"<group>": {"username": …, "password": …}}`, from `scripts/ux_test_session.py setup idp-ux-nightly --group Admin --long-lived` |
+| `UX_TEST_AWS_ACCOUNT_ID` | `ux-review` | the account the job's credentials must reach; only ever printed as its last four digits. Not a credential, and scoped so that nothing else reads it |
+| `GITLAB_REVIEW_TOKEN` | All (`*`) | shared with `ai_mr_review`, which declares no environment: a project access token with the least role that can create a note |
 
-⚠️ **The residual.** Masked, unprotected variables reach every job of an MR pipeline
-that runs MR code, `ux_test_build`, `unit_tests` and `ui_tests` included, and that
-includes the persona's password. An author with push access can also rewrite the
-job itself, since an MR pipeline runs the MR's own `.gitlab-ci.yml`, so pinning the
-harness protects against edits to the harness files and nothing more. The persona is
-a reviewer of shipped example data on a CI stack, not an operator account, and a
-fork's pipeline gets no masked variables, which is the bound `ai_mr_review` relies on
-as well.
+⚠️ **What an unscoped variable exposes.** A variable at the default scope, All (`*`),
+reaches every job of every pipeline in the project, and an MR pipeline holds other
+jobs that run `npm ci` in `src/ui` with their whole environment: `static_checks`,
+`unit_tests`, `package_tests` and `ui_tests`. An unscoped `UX_TEST_PERSONAS`
+therefore puts the persona's password in front of every lifecycle script of every UI
+dependency in each of them, on every MR, which no wrapper in the two UX jobs can do
+anything about. A job's own `variables:` cannot take it away either, because project
+variables outrank `.gitlab-ci.yml`, so the environment scope is the control. No
+`rules:` entry may read a scoped variable: GitLab can leave it undefined while it
+evaluates `rules` at pipeline creation.
+
+**Setting them up**, as a Maintainer:
+
+1. In **Settings → CI/CD → Variables**, add or edit each of `UX_TEST_PERSONAS`,
+   `UX_TEST_UI_ENV` and `UX_TEST_AWS_ACCOUNT_ID`: **Environment scope** `ux-review`,
+   **Visibility** Masked, **Protect variable** cleared, then save. The scope's list
+   shows only environments that exist, and `ux-review` exists only once a pipeline
+   has created one of these jobs, so until then type the name and create it as the
+   scope, or create the environment first under **Operate → Environments**.
+2. Check that no variable of the same name is left at **All (default)**. GitLab
+   keeps a key once per scope, and an unscoped copy still reaches every job whatever
+   the scoped one says.
+3. Leave `GITLAB_REVIEW_TOKEN` at **All (default)**.
+4. If `UX_TEST_PERSONAS` was ever saved at **All (default)**, its password has been
+   in every MR job's environment: rotate it with
+   `scripts/ux_test_session.py setup idp-ux-nightly --group Admin --long-lived --rotate`
+   and store the new value as in step 1.
+
+⚠️ **The residual.** The scope keeps the persona's password out of every job but the
+two UX jobs, and `ux_test_build`, which runs the MR's `npm ci`, is one of them: there
+`without_job_secrets` keeps it out of a package script's environment and logs, and a
+package that goes looking can still read it from the job shell's
+`/proc/<pid>/environ`. `GITLAB_REVIEW_TOKEN` reaches every job. An author with push
+access can also rewrite the jobs themselves, and declare `ux-review` on any job,
+since an MR pipeline runs the MR's own `.gitlab-ci.yml`, so pinning the harness
+protects against edits to the harness files and nothing more. The persona is a
+reviewer of shipped example data on a CI stack, not an operator account, and a
+fork's pipeline gets none of this project's variables unless a member of the project
+runs it here, which is the bound `ai_mr_review` relies on as well.
 
 **Cost and time caps.** A $10 model budget and 150 turns per session, a 25-minute
 session inside a 60-minute job, and at most 3 flows: the change itself, plus up to

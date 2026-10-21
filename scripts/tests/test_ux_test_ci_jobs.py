@@ -4,7 +4,7 @@
 
 Each property here is one a later edit to ``.gitlab-ci.yml`` could drop without any
 job going red, because both jobs are ``allow_failure: true``: a broken job is a quiet
-one. Four of them are security properties rather than tidiness.
+one. Most of them are security properties rather than tidiness.
 
 * **The harness comes from the target branch, and the job refuses otherwise.** An MR
   pipeline checks out the MR, so a harness run from the checkout would make the tool
@@ -14,6 +14,15 @@ one. Four of them are security properties rather than tidiness.
   nothing by a checkout-relative path.
 * **No MR code runs in the browser job.** The MR's ``npm ci`` and ``vite build`` run
   in ``ux_test_build``; ``ai_ux_test`` receives static files.
+* **No third-party step in either job inherits the job's secrets.** apt, the MR's
+  ``npm ci`` and its ``vite build`` in ``ux_test_build``, and ``install.sh`` in
+  ``ai_ux_test``, run under one shared ``env -i`` wrapper that hands on no
+  secret-like name, and ``ux_test_build`` writes the UI env file before any of them.
+* **The UX variables reach the two UX jobs and no other.** Both declare the
+  environment ``ux-review`` with ``action: prepare``, which hands a job the
+  variables scoped to it and creates no deployment. No other job declares it, no
+  rule reads a scoped variable, and the docs tell the operator to set that scope and
+  name the other jobs a variable left at the default one reaches through ``npm ci``.
 * **No CI configuration passes the developer's video opt-in.** It renders another
   stack's unredacted screens into the artifact directory, and a pipeline's
   artifacts can be downloaded. Where it arrives some other way, the orchestrator
@@ -31,11 +40,13 @@ toolchain need.
 from __future__ import annotations
 
 import ast
+import base64
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -49,10 +60,44 @@ NIGHTLY = REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py"
 RUN_IN_DOCKER = REPO_ROOT / "scripts" / "ux_runner" / "run_in_docker.py"
 GITHUB_WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 DEP_MANIFEST = REPO_ROOT / "scripts" / "generate-dep-manifest.sh"
+CI_COVERAGE_DOC = REPO_ROOT / "scripts" / "sdlc" / "docs" / "CI_TEST_COVERAGE.md"
 UX_LOCKFILE = "scripts/ux_runner/package-lock.json"
 BUILD_JOB = "ux_test_build"
 TEST_JOB = "ai_ux_test"
 UX_JOBS = (BUILD_JOB, TEST_JOB)
+WRAPPER_KEY = ".without_job_secrets"
+
+#: What each UX job declares: the environment the UX variables are scoped to,
+#: which GitLab hands a ``prepare`` job without creating a deployment.
+UX_ENVIRONMENT = {"name": "ux-review", "action": "prepare"}
+
+#: The variables only the UX jobs read, which the docs scope to that environment.
+SCOPED_VARIABLES = ("UX_TEST_PERSONAS", "UX_TEST_UI_ENV", "UX_TEST_AWS_ACCOUNT_ID")
+
+#: Every secret a UX job's environment can hold, each with a value a leak would show.
+_JOB_SECRETS = {
+    "GITLAB_REVIEW_TOKEN": "review-value",
+    "CI_JOB_TOKEN": "job-value",
+    "CI_REPOSITORY_URL": "https://gitlab-ci-token:job-value@gitlab.example/p.git",
+    "CI_DEPLOY_PASSWORD": "deploy-value",
+    "CI_REGISTRY_PASSWORD": "registry-value",
+    "SLACK_WEBHOOK_URL": "https://hooks.example/webhook-value",
+    "UX_TEST_PERSONAS": "personas-value",
+    "UX_TEST_UI_ENV": "ui-env-value",
+    "UX_TEST_AWS_ACCOUNT_ID": "111122223333",
+    "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "aws-secret-value",
+    "AWS_SESSION_TOKEN": "aws-session-value",
+    "NPM_TOKEN": "npm-token-value",
+    "npm_config__authToken": "npm-auth-value",
+}
+
+#: A name that reads as a credential, a token or a CI, GitLab, AWS or UX variable.
+_SECRET_LIKE_RE = re.compile(
+    r"TOKEN|PASS|SECRET|KEY|CRED|AUTH|PERSONA|SESSION|COOKIE|WEBHOOK|PRIVATE"
+    r"|^(?:AWS|CI|GITLAB|UX_TEST)_",
+    re.IGNORECASE,
+)
 
 
 @pytest.fixture(scope="module")
@@ -77,8 +122,16 @@ def ux_job(ci_config: dict[str, Any]) -> dict[str, Any]:
     return ci_config[TEST_JOB]
 
 
+def _flattened(job: dict[str, Any]) -> list[Any]:
+    """The job's before_script and script entries, a resolved anchor list unrolled."""
+    entries: list[Any] = []
+    for entry in [*job.get("before_script", []), *job["script"]]:
+        entries.extend(entry if isinstance(entry, list) else [entry])
+    return entries
+
+
 def _commands(job: dict[str, Any]) -> list[str]:
-    return [str(line) for line in [*job.get("before_script", []), *job["script"]]]
+    return [str(line) for line in _flattened(job)]
 
 
 def _module_constant(path: Path, name: str) -> Any:
@@ -383,18 +436,43 @@ def test_the_precheck_runs_before_the_toolchain_install(ux_job) -> None:
     )
 
 
-def _flattened(job: dict[str, Any]) -> list[Any]:
-    """The job's before_script and script entries, a resolved anchor list unrolled."""
-    entries: list[Any] = []
-    for entry in [*job.get("before_script", []), *job["script"]]:
-        entries.extend(entry if isinstance(entry, list) else [entry])
-    return entries
-
-
-#: The function the UX job runs third-party steps under, as the job defines it.
+#: The function the UX jobs run third-party steps under, as the file defines it.
 _SECRETLESS_RE = re.compile(
     r"^without_job_secrets\(\) \{\n(?P<body>.*?)\n\}$", re.MULTILINE | re.DOTALL
 )
+#: A use of that function, at the start of a command or after an operator.
+_WRAPPED_USE_RE = re.compile(r"(?:^|[\s;&|(])without_job_secrets ")
+
+
+def _wrapper_definition(ci_config: dict[str, Any]) -> str:
+    """The one definition of ``without_job_secrets``, the hidden key's only entry."""
+    shared = ci_config.get(WRAPPER_KEY)
+    assert isinstance(shared, list) and len(shared) == 1, (
+        f".gitlab-ci.yml no longer holds {WRAPPER_KEY} as a one-entry list for both "
+        f"UX jobs to include: {shared!r}"
+    )
+    (definition,) = shared
+    assert isinstance(definition, str) and _SECRETLESS_RE.search(definition), (
+        f"{WRAPPER_KEY} no longer defines without_job_secrets: {definition!r}"
+    )
+    return definition
+
+
+def _wrapper_index(ci_config: dict[str, Any], job: dict[str, Any]) -> int:
+    """Where ``job`` includes the shared definition, which it must do exactly once."""
+    definition = _wrapper_definition(ci_config)
+    found = [i for i, e in enumerate(_flattened(job)) if str(e) == definition]
+    assert len(found) == 1, f"the job includes the shared definition {len(found)} times"
+    return found[0]
+
+
+def _handed_on(definition: str) -> list[tuple[str, str]]:
+    """``(name, word)`` for each variable the definition's ``env -i`` hands on."""
+    body = _SECRETLESS_RE.search(definition)
+    assert body is not None, definition
+    words = body.group("body").replace("\\\n", " ").split()
+    assert words[:2] == ["env", "-i"] and words[-1] == '"$@"', words
+    return [(re.sub(r"^\$\{\w+:\+|=.*$", "", word), word) for word in words[2:-1]]
 
 
 @pytest.mark.unit
@@ -405,9 +483,11 @@ def test_the_ux_job_runs_no_npm_npx_vite_or_node_setup_of_its_own(
 
     install.sh's own pinned ``npm ci``, from the target branch's lockfile, is the
     only npm in the job, so neither the job's commands nor the ``.node_setup``
-    anchor may bring in another.
+    anchor may bring in another. The shared wrapper's definition names npm's cache
+    variable and runs nothing, so it is the one entry this scan does not read.
     """
-    entries = _flattened(ux_job)
+    definition = _wrapper_definition(ci_config)
+    entries = [e for e in _flattened(ux_job) if str(e) != definition]
     assert not [e for e in entries if e in ci_config[".node_setup"]], (
         "ai_ux_test uses the .node_setup anchor"
     )
@@ -416,28 +496,39 @@ def test_the_ux_job_runs_no_npm_npx_vite_or_node_setup_of_its_own(
         assert needle not in text, f"ai_ux_test runs {needle!r} itself"
 
 
-def _secretless_function(ux_job) -> tuple[int, str]:
-    entries = [str(entry) for entry in _flattened(ux_job)]
-    defined = [i for i, entry in enumerate(entries) if _SECRETLESS_RE.search(entry)]
-    assert defined, "ai_ux_test no longer defines without_job_secrets"
-    return defined[0], entries[defined[0]]
+@pytest.mark.unit
+@pytest.mark.parametrize("name", UX_JOBS)
+def test_each_ux_job_includes_the_one_shared_wrapper_before_its_first_use(
+    ci_text: str, ci_config, name: str
+) -> None:
+    """One definition, so the two jobs cannot drift apart, included ahead of the
+    first command that uses it; before_script and script share one shell."""
+    assert ci_text.count("without_job_secrets() {") == 1, (
+        "without_job_secrets is defined more than once: a job carries its own copy "
+        f"instead of including {WRAPPER_KEY}"
+    )
+    definition = _wrapper_definition(ci_config)
+    defined = _wrapper_index(ci_config, ci_config[name])
+    uses = [
+        i
+        for i, entry in enumerate(_commands(ci_config[name]))
+        if entry != definition and _WRAPPED_USE_RE.search(entry)
+    ]
+    assert uses, f"{name} includes without_job_secrets and never uses it"
+    assert defined < uses[0], f"{name} uses without_job_secrets before including it"
 
 
 @pytest.mark.unit
-def test_the_secretless_steps_get_an_environment_built_from_nothing(ux_job) -> None:
+def test_the_secretless_steps_get_an_environment_built_from_nothing(ci_config) -> None:
     """``env -i`` and named variables only: a denylist passes every variable nobody
-    named, such as CI_REPOSITORY_URL, which carries the job token, and any
-    unprotected project variable."""
-    _, definition = _secretless_function(ux_job)
-    body = _SECRETLESS_RE.search(definition)
-    assert body is not None
-    words = body.group("body").replace("\\\n", " ").split()
-    assert words[:2] == ["env", "-i"] and words[-1] == '"$@"', words
-    passed = {re.sub(r"^\$\{\w+:\+|=.*$", "", word) for word in words[2:-1]}
+    named, such as CI_REPOSITORY_URL, which carries the job token, and every
+    project variable the job's environment scope admits."""
+    passed = {name for name, _ in _handed_on(_wrapper_definition(ci_config))}
     expected = {
         "PATH",
         "HOME",
         "LANG",
+        "npm_config_cache",
         "http_proxy",
         "https_proxy",
         "no_proxy",
@@ -450,31 +541,49 @@ def test_the_secretless_steps_get_an_environment_built_from_nothing(ux_job) -> N
 
 
 @pytest.mark.unit
-def test_the_secretless_steps_inherit_no_variable_but_the_ones_named(ux_job) -> None:
+def test_the_wrapper_hands_on_no_secret_like_name_and_no_other_variables_value(
+    ci_config,
+) -> None:
+    """Each name the wrapper hands on carries its own value or a literal, and none
+    reads as a credential or a CI, GitLab, AWS or UX variable. The second half is
+    what an innocuous name cannot get past: ``P="$UX_TEST_PERSONAS"`` is caught by
+    the value it carries, not by its name."""
+    handed_on = _handed_on(_wrapper_definition(ci_config))
+    flagged = sorted(name for name, _ in handed_on if _SECRET_LIKE_RE.search(name))
+    assert not flagged, f"the wrapper hands on secret-like names: {flagged}"
+    for name, word in handed_on:
+        referenced = set(re.findall(r"\$\{?(\w+)", word))
+        assert referenced <= {name}, (
+            f"{word!r} hands on {name} carrying the value of "
+            f"{sorted(referenced - {name})}"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", sorted(_JOB_SECRETS))
+def test_the_secret_like_pattern_reads_every_secret_a_job_holds_as_one(
+    name: str,
+) -> None:
+    assert _SECRET_LIKE_RE.search(name), name
+
+
+@pytest.mark.unit
+def test_the_secretless_steps_inherit_no_variable_but_the_ones_named(
+    ci_config,
+) -> None:
     """Run as the job runs it, under bash, from a parent holding every secret the
-    job can see: what the third-party step receives is the allowlist alone."""
+    job can see: what the third-party step receives is the named variables alone.
+    npm's cache location is one of them, and npm's credentials, which share its
+    ``npm_config_`` prefix, are not."""
     bash = shutil.which("bash")
     assert bash, "bash runs the job's script and is on every Linux and macOS runner"
-    _, definition = _secretless_function(ux_job)
-    secrets = {
-        "GITLAB_REVIEW_TOKEN": "review-value",
-        "CI_JOB_TOKEN": "job-value",
-        "CI_REPOSITORY_URL": "https://gitlab-ci-token:job-value@gitlab.example/p.git",
-        "CI_DEPLOY_PASSWORD": "deploy-value",
-        "CI_REGISTRY_PASSWORD": "registry-value",
-        "SLACK_WEBHOOK_URL": "https://hooks.example/webhook-value",
-        "UX_TEST_PERSONAS": "personas-value",
-        "UX_TEST_UI_ENV": "ui-env-value",
-        "UX_TEST_AWS_ACCOUNT_ID": "111122223333",
-        "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "aws-secret-value",
-        "AWS_SESSION_TOKEN": "aws-session-value",
-    }
+    definition = _wrapper_definition(ci_config)
     parent = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": "/root",
         "https_proxy": "http://proxy.example:3128",
-        **secrets,
+        "npm_config_cache": "/root/.npm",
+        **_JOB_SECRETS,
     }
     shown = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [bash, "-c", f"{definition}\nwithout_job_secrets env"],
@@ -488,30 +597,326 @@ def test_the_secretless_steps_inherit_no_variable_but_the_ones_named(ux_job) -> 
     )
     assert shown.returncode == 0, shown.stderr[-400:]
     received = dict(line.split("=", 1) for line in shown.stdout.splitlines() if line)
-    assert set(received) == {"PATH", "HOME", "LANG", "https_proxy"}, sorted(received)
-    for value in secrets.values():
+    assert set(received) == {
+        "PATH",
+        "HOME",
+        "LANG",
+        "https_proxy",
+        "npm_config_cache",
+    }, sorted(received)
+    for value in _JOB_SECRETS.values():
         assert value not in shown.stdout
 
 
 @pytest.mark.unit
-def test_apt_and_the_toolchain_install_run_without_the_jobs_secrets(ux_job) -> None:
+@pytest.mark.parametrize(("name", "steps"), [(BUILD_JOB, 2), (TEST_JOB, 3)])
+def test_apt_and_the_toolchain_install_run_without_the_jobs_secrets(
+    ci_config, name: str, steps: int
+) -> None:
     """apt's maintainer scripts, pip and the npm packages' install scripts are
     third-party code that needs none of the token, the personas, the UI env or
     an AWS credential, so each step that runs them goes through the function that
-    hands on only the variables it names, defined before its first use."""
-    entries = [str(entry) for entry in _flattened(ux_job)]
-    defined = [_secretless_function(ux_job)[0]]
+    hands on only the variables it names, included before its first use."""
+    job = ci_config[name]
+    entries = _commands(job)
+    defined = _wrapper_index(ci_config, job)
     third_party = [
         i
         for i, entry in enumerate(entries)
         if "apt-get" in entry or "install.sh" in entry
     ]
-    assert len(third_party) == 3, third_party
+    assert len(third_party) == steps, third_party
     for index in third_party:
-        assert index > defined[0], f"{entries[index]!r} runs before the function exists"
+        assert index > defined, f"{entries[index]!r} runs before the function exists"
         assert re.search(
             r"(?:^|&& |; )without_job_secrets (?:apt-get|bash) ", entries[index]
         ), f"{entries[index]!r} runs with the job's secrets"
+
+
+#: Programs that run what npm installs, by the name a command runs them by.
+_NODE_RUNNERS = frozenset({"npm", "npx", "node", "vite", "yarn", "pnpm", "corepack"})
+
+
+@pytest.mark.unit
+def test_the_build_runs_npm_and_vite_only_under_the_wrapper(
+    ci_config, build_job
+) -> None:
+    """``npm ci`` runs every src/ui dependency's lifecycle scripts, a malicious
+    version the lockfile already resolves included, and the build runs vite with
+    the MR's config, so neither may inherit the job's environment. ``.node_setup``
+    installs Node and npm themselves, as in every job that builds the UI, and the
+    shared definition runs nothing; in every other command of the job, a word that
+    runs npm, npx, node or vite, by name or by path, follows the wrapper."""
+    toolchain = [str(entry) for entry in ci_config[".node_setup"]]
+    definition = _wrapper_definition(ci_config)
+    wrapped: list[list[str]] = []
+    bare: list[str] = []
+    for entry in _commands(build_job):
+        if entry in toolchain or entry == definition:
+            continue
+        for segment in re.split(r"&&|\|\||[;&|()\n]", entry):
+            words = segment.split()
+            for index, word in enumerate(words):
+                if Path(word).name not in _NODE_RUNNERS:
+                    continue
+                if index and words[index - 1] == "without_job_secrets":
+                    wrapped.append(words[index:])
+                else:
+                    bare.append(segment.strip())
+    assert not bare, f"ux_test_build runs these with the job's secrets: {bare}"
+    assert wrapped == [
+        ["npm", "ci", "--prefer-offline", "--no-audit"],
+        ["npm", "run", "build:only"],
+    ], wrapped
+
+
+#: What a shell adds to the environment it hands on, which no job put there.
+_SHELL_BOOKKEEPING = frozenset({"PWD", "OLDPWD", "SHLVL", "_"})
+
+
+@pytest.mark.unit
+def test_the_build_writes_the_ui_env_first_and_hands_npm_none_of_the_jobs_secrets(
+    build_job, ci_config, tmp_path: Path
+) -> None:
+    """The build job's own script, run under bash as the job runs it, with a
+    stand-in ``npm`` that records each call: the env file is already written, from
+    the one variable the build needs, when ``npm ci`` starts; both calls run in
+    ``src/ui``; and neither receives any secret the job holds, the UI env's own
+    base64 included, while the build still sees the decoded file on disk."""
+    bash = shutil.which("bash")
+    assert bash, "bash runs the job's script and is on every Linux and macOS runner"
+    (block,) = [entry for entry in _commands(build_job) if "npm ci" in entry]
+    checkout = tmp_path / "checkout"
+    ui_dir = checkout / "src" / "ui"
+    ui_dir.mkdir(parents=True)
+    (checkout / "ui-change.json").write_text('{"skip": false}', encoding="utf-8")
+    calls = tmp_path / "calls"
+    calls.mkdir()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, body in (
+        ("python3", f'exec {shlex.quote(sys.executable)} "$@"\n'),
+        (
+            "npm",
+            f"dir={shlex.quote(str(calls))}\n"
+            "n=$(ls \"$dir\" | wc -l | tr -d ' ')\n"
+            'mkdir "$dir/$n"\n'
+            'printf \'%s\\n\' "$@" > "$dir/$n/argv"\n'
+            'pwd -P > "$dir/$n/cwd"\n'
+            'env > "$dir/$n/env"\n'
+            'cat .env.production.local > "$dir/$n/envfile" 2>/dev/null || :\n',
+        ),
+    ):
+        tool = tools / name
+        tool.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+        tool.chmod(0o755)
+    ui_env = "VITE_USER_POOL_ID=us-east-1_Example\nVITE_AWS_REGION=us-east-1\n"
+    encoded = base64.b64encode(ui_env.encode()).decode()
+    secrets = {**_JOB_SECRETS, "UX_TEST_UI_ENV": encoded}
+    parent = {
+        "PATH": os.pathsep.join([str(tools), "/usr/bin", "/bin"]),
+        "HOME": str(tmp_path / "home"),
+        "https_proxy": "http://proxy.example:3128",
+        "npm_config_cache": str(tmp_path / "npm-cache"),
+        **secrets,
+    }
+    script = "\n".join(["set -eo pipefail", _wrapper_definition(ci_config), block])
+    shown = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [bash, "-c", script],
+        cwd=str(checkout),
+        env=parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    assert shown.returncode == 0, (shown.stdout + shown.stderr)[-600:]
+    runs = sorted(calls.iterdir(), key=lambda run: int(run.name))
+    argvs = [(run / "argv").read_text(encoding="utf-8").splitlines() for run in runs]
+    assert argvs == [["ci", "--prefer-offline", "--no-audit"], ["run", "build:only"]]
+    for run in runs:
+        assert Path((run / "cwd").read_text(encoding="utf-8").strip()) == (
+            ui_dir.resolve()
+        )
+        assert (run / "envfile").read_text(encoding="utf-8") == ui_env, (
+            "the UI env file was not written before npm ran"
+        )
+        dump = (run / "env").read_text(encoding="utf-8")
+        received = {line.split("=", 1)[0] for line in dump.splitlines() if "=" in line}
+        assert received - _SHELL_BOOKKEEPING == {
+            "PATH",
+            "HOME",
+            "LANG",
+            "https_proxy",
+            "npm_config_cache",
+        }, sorted(received)
+        for value in secrets.values():
+            assert value not in dump, f"npm {argvs[runs.index(run)]} received a secret"
+
+
+def _declared_environment(body: Any) -> str | None:
+    """The environment name a job or hidden template declares, in either spelling."""
+    if not isinstance(body, dict):
+        return None
+    declared = body.get("environment")
+    if isinstance(declared, dict):
+        declared = declared.get("name")
+    return declared if isinstance(declared, str) else None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", UX_JOBS)
+def test_each_ux_job_declares_the_environment_its_variables_are_scoped_to(
+    ci_config, name: str
+) -> None:
+    """A project variable scoped to ``ux-review`` reaches a job only when the job
+    declares that environment, and ``prepare`` is the action that is handed the
+    environment's variables without GitLab creating a deployment for the MR."""
+    assert ci_config[name].get("environment") == UX_ENVIRONMENT, (
+        f"{name} declares {ci_config[name].get('environment')!r}, not "
+        f"{UX_ENVIRONMENT}: either the scoped variables no longer reach it, or "
+        "every run records a deployment"
+    )
+
+
+@pytest.mark.unit
+def test_no_other_job_declares_the_ux_review_environment(ci_config) -> None:
+    """Declaring the environment is what hands a job the persona's password, so it
+    is declared by the two UX jobs alone, and by no hidden template another job
+    could extend. Read over this one file, which therefore includes no other."""
+    assert "include" not in ci_config, (
+        ".gitlab-ci.yml now includes other files, whose jobs this test cannot see"
+    )
+    others = {
+        name: body
+        for name, body in ci_config.items()
+        if isinstance(body, dict) and name not in UX_JOBS
+    }
+    for job in ("static_checks", "unit_tests", "package_tests", "ui_tests"):
+        assert job in others, f"{job} is gone, so this test may be reading nothing"
+    declaring = sorted(
+        name
+        for name, body in others.items()
+        if _declared_environment(body) == UX_ENVIRONMENT["name"]
+    )
+    assert not declaring, (
+        f"{declaring} declare {UX_ENVIRONMENT['name']!r}, which hands them every "
+        "variable scoped to it, the persona's password included"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", UX_JOBS)
+def test_no_rule_reads_a_variable_scoped_to_the_environment(
+    ci_config, name: str
+) -> None:
+    """GitLab can leave an environment-scoped variable undefined while it evaluates
+    ``rules`` at pipeline creation, so a rule reading one would quietly decide that
+    the job does not exist."""
+    rules = yaml.safe_dump(ci_config[name]["rules"])
+    read = [variable for variable in SCOPED_VARIABLES if variable in rules]
+    assert not read, f"{name}'s rules read {read}"
+
+
+def _ux_section_comment(ci_text: str) -> str:
+    """The comment that opens the UX section of ``.gitlab-ci.yml``, as one line.
+
+    From the section's own header, not the earlier mention in ``stages:``, to the
+    shared wrapper's key, so no other section's comment is read as this one's.
+    """
+    opening = "# Advisory UX test of a merge request's web UI, with a narrated video"
+    assert ci_text.count(opening) == 1, f"the UX section no longer opens {opening!r}"
+    start = ci_text.index(opening)
+    end = ci_text.index(f"\n{WRAPPER_KEY}:", start)
+    lines = ci_text[start:end].splitlines()
+    return " ".join(line.lstrip("#").strip() for line in lines if line.startswith("#"))
+
+
+def _scope_column(doc: str) -> dict[str, str]:
+    """``{variable: its Environment scope cell}`` from the CI-variables table."""
+    header = re.search(
+        r"^\| Variable \| Environment scope \| What it holds \|\n\|[-|]+\|\n", doc, re.M
+    )
+    assert header, f"{CI_COVERAGE_DOC.name} has no CI-variables table with a scope"
+    rows: dict[str, str] = {}
+    for line in doc[header.end() :].splitlines():
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        rows[cells[0].strip("`")] = cells[1]
+    return rows
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+@pytest.mark.unit
+def test_the_docs_name_the_environment_scope(ci_text: str, build_job) -> None:
+    """The operator sets the scope by hand, so every place that tells them how to
+    store a UX variable names the environment the jobs declare: the table and the
+    setup steps in CI_TEST_COVERAGE.md, the comment above the jobs, and the
+    orchestrator's own list of its environment."""
+    scope = build_job["environment"]["name"]
+    doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
+    rows = _scope_column(doc)
+    assert {variable: rows.get(variable) for variable in SCOPED_VARIABLES} == {
+        variable: f"`{scope}`" for variable in SCOPED_VARIABLES
+    }, rows
+    assert rows.get("GITLAB_REVIEW_TOKEN") == "All (`*`)", rows
+    start = doc.index("**Setting them up**")
+    steps = _flat(doc[start : doc.index("**The residual.**", start)])
+    for needle in (
+        f"**Environment scope** `{scope}`",
+        "**Visibility** Masked",
+        "**Protect variable** cleared",
+        "left at **All (default)**",
+    ):
+        assert needle in steps, needle
+    comment = _ux_section_comment(ci_text)
+    assert f"environment scope `{scope}`" in comment, comment
+    for variable in SCOPED_VARIABLES:
+        assert variable in comment, variable
+    docstring = ast.get_docstring(ast.parse(ORCHESTRATOR.read_text(encoding="utf-8")))
+    assert docstring is not None
+    environment = _flat(docstring.split("Environment\n-----------\n", 1)[1])
+    assert f"scoped to the environment ``{scope}``" in environment
+
+
+def _jobs_running_npm_ci_in_the_ui(ci_config: dict[str, Any]) -> set[str]:
+    return {
+        name
+        for name, body in ci_config.items()
+        if isinstance(body, dict)
+        and "script" in body
+        and any(
+            "npm ci" in line and re.search(r"src/ui(?![\w-])", line)
+            for line in "\n".join(_commands(body)).splitlines()
+        )
+    }
+
+
+@pytest.mark.unit
+def test_the_docs_name_every_other_job_an_unscoped_variable_reaches_through_npm_ci(
+    ci_config, ci_text: str
+) -> None:
+    """What an unscoped variable exposes, said by name: each other job that runs
+    ``npm ci`` in src/ui, and so every UI dependency's lifecycle scripts, with the
+    job's whole environment. Derived from the jobs, so a new one has to be named."""
+    running = _jobs_running_npm_ci_in_the_ui(ci_config)
+    assert BUILD_JOB in running, f"the derivation no longer sees {BUILD_JOB}'s npm ci"
+    others = sorted(running - set(UX_JOBS))
+    assert others, "no other job runs npm ci in src/ui, so this test reads nothing"
+    doc = CI_COVERAGE_DOC.read_text(encoding="utf-8")
+    opening = "⚠️ **What an unscoped variable exposes.**"
+    assert opening in doc
+    paragraph = _flat(doc[doc.index(opening) :].split("\n\n", 1)[0])
+    comment = _ux_section_comment(ci_text)
+    for job in others:
+        assert f"`{job}`" in paragraph, f"{CI_COVERAGE_DOC.name} does not name {job}"
+        assert job in comment, f"the comment above the UX jobs does not name {job}"
 
 
 @pytest.mark.unit
