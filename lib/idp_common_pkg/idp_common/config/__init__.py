@@ -126,7 +126,6 @@ class ConfigurationReader:
 
         return idp_config
 
-
     # `simple_merge(default, custom)` was here: a `deep_update` of a deepcopied
     # default with no migration of `custom`. It had no callers, and it is deleted
     # rather than kept because config format 0.8 turned it from unused into a
@@ -150,7 +149,6 @@ class ConfigurationReader:
     # `update_configuration`'s handler goes through `merge_config_with_defaults`.
     # Leaving a merge-first helper lying around is how a future caller reopens
     # it; use `merge_config_with_defaults`, which takes `migrate=`.
-
 
     @overload
     def get_merged_configuration(
