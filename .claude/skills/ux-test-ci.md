@@ -37,13 +37,16 @@ Nothing else: not the file's other `p0` flows, and not a flow the page suggests.
 
 ### 3. You hold four recorder tools and no shell
 
-Overrides the Bash cadence and "After stop". `mark`, `note`, `pause` and `resume`
-are MCP tools (`mcp__ux-recorder__mark` and so on); `start`, `stop` and `render` are
-not yours. The harness starts and stops the recording, writes `review.md` from your
-JSON block and renders the video. The cadence itself is unchanged: `mark` before
-each group of actions, with a short chapter label and one or two spoken sentences in
-`say`. At most 40 marks; a `pause` resumes on its own after 2 minutes, and all
-pauses together get 5.
+Overrides the Bash cadence, "After stop" and Privacy. `mark`, `note`, `pause` and
+`resume` are MCP tools (`mcp__ux-recorder__mark` and so on); `start`, `stop` and
+`render` are not yours. The harness starts and stops the recording, writes
+`review.md` from your JSON block, renders the video and posts it to the MR, which it
+does only for a run of the review stack. Unlike a recording someone makes by hand,
+this one leaves the machine, and it shows only the review stack's shipped example
+data. You hold no tool that could commit or attach anything yourself. The cadence
+itself is unchanged: `mark` before each group of actions, with a short chapter label
+and one or two spoken sentences in `say`. At most 40 marks; a `pause` resumes on its
+own after 2 minutes, and all pauses together get 5 minutes.
 
 ### 4. The review stack is shared: look, never commit
 

@@ -267,10 +267,12 @@ in the player (QuickTime: View → Subtitles; VLC: Subtitle menu) — and writte
 
 ### Privacy
 
-Recordings land under `scratch/ux-recordings/`, which is gitignored. Two things
-about them are easy to miss: the frames are not redacted, so a password revealed
-by a show-password toggle is in the video, and Polly receives only the narration
-text you wrote, never a frame.
+A recording of a live stack shows real documents. Everything lands under
+`scratch/ux-recordings/` (gitignored); never commit it or attach it to a PR, and
+say so when you hand over the path. The frames show the page exactly as it looked,
+with nothing redacted: a password revealed by a show-password toggle is in the
+video. Polly receives only the narration text you wrote; frames never leave the
+machine.
 
 Each click is also logged, with a label, in `events.jsonl` and `timeline.json`,
 and `render` prints the same labels in its click table and quotes them in its
