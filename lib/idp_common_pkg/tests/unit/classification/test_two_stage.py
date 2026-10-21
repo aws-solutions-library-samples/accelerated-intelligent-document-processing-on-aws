@@ -235,7 +235,7 @@ class TestStrategyConfig:
             _service(labeling={"method": "embeddings"})
 
     def test_an_unknown_labeling_pages_value_is_refused(self):
-        with pytest.raises(Exception, match="labeling.pages must be"):
+        with pytest.raises(Exception, match="section_classification.pages must be"):
             _service(labeling={"pages": "last"})
 
     def test_an_unknown_boundary_hints_value_is_refused(self):
@@ -855,8 +855,13 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
         """So the fallback is what THIS build would write into a new profile."""
         shipped = ClassificationService._shipped_classification_defaults()
         assert shipped, "the shipped classification defaults did not load"
-        assert shipped["packet"]["task_prompt"].strip()
-        assert shipped["labeling"]["task_prompt"].strip()
+        assert shipped["one_stage"]["packet"]["task_prompt"].strip()
+        assert shipped["two_stage"]["segmentation"]["llm"]["packet"][
+            "task_prompt"
+        ].strip()
+        assert shipped["two_stage"]["section_classification"]["llm"][
+            "task_prompt"
+        ].strip()
 
     def test_an_unreadable_defaults_file_does_not_raise(self, monkeypatch):
         """A missing defaults file must not turn into a classification failure;

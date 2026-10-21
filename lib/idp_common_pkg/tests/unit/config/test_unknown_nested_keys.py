@@ -503,8 +503,13 @@ def test_the_same_misnested_key_is_answered_for_each_place_it_can_be_written(whe
     for segment in reversed(where.split(".")):
         data = {segment: data}
     findings = collect_ignored_config_keys(data, IDPConfig)
+    # Classification's image settings live inside each call; the walk names the
+    # first route under what was written, which is the one-stage call.
+    image_parent = (
+        "classification.one_stage.llm" if where == "classification" else where
+    )
     assert [(f.path, f.suggestion) for f in findings] == [
-        (f"{where}.dpi", f"{where}.image.dpi")
+        (f"{where}.dpi", f"{image_parent}.image.dpi")
     ]
 
 

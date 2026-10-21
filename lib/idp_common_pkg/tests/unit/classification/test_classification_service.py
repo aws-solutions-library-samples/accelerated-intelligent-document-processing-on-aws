@@ -1988,7 +1988,10 @@ class TestClassificationService:
             )
 
             # Verify default value
-            assert service.config.classification.sectionSplitting == "llm_determined"
+            assert (
+                service.config.classification.file_shape.sectionSplitting
+                == "llm_determined"
+            )
 
     def test_section_splitting_invalid_value(self, mock_config):
         """Test that invalid sectionSplitting value falls back to llm_determined."""
@@ -2001,7 +2004,10 @@ class TestClassificationService:
             )
 
             # Verify fallback to default
-            assert service.config.classification.sectionSplitting == "llm_determined"
+            assert (
+                service.config.classification.file_shape.sectionSplitting
+                == "llm_determined"
+            )
 
     def test_section_splitting_page_prevents_same_type_joining(self, mock_config):
         """Test that page splitting prevents joining of same-type documents."""

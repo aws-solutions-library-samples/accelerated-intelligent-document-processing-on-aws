@@ -375,7 +375,7 @@ class ClassificationService:
         # Initialize backend-specific clients
         if self.backend == "bedrock":
             # Get model_id from typed config (type-safe access)
-            model_id = self.config.classification.model
+            model_id = self._call().model
             if not model_id:
                 raise ValueError("No model ID specified in configuration for Bedrock")
             self.bedrock_model = model_id
@@ -395,31 +395,30 @@ class ClassificationService:
 
         # Get max pages for classification (1 to ALL)
         self.max_pages_for_classification = (
-            self.config.classification.maxPagesForClassification
+            self.config.classification.file_shape.maxPagesForClassification
         )
 
-        # `granularity` is the setting; the deprecated `classificationMethod` it
-        # replaced is converted on every config read by
-        # `migrations.v07_to_v08`, so nothing here derives one from the other.
-        self.granularity = self.config.classification.granularity
+        # The page-reading call's granularity: one_stage's under single_pass,
+        # segmentation's under two_stage. Section classification has none.
         self.strategy = self.config.classification.strategy
+        self.granularity = self._page_input().granularity
 
         send_text, send_images = self._resolve_modality()
         if self.strategy == self.STRATEGY_TWO_STAGE:
-            labeling = self.config.classification.labeling
+            labeling = self.config.classification.two_stage.section_classification
             logger.info(
                 "Using TWO-STAGE classification: Stage A finds boundaries at %s "
                 "granularity (boundary_hints=%s), Stage B labels each segment "
                 "with one %s call over its %s page(s). Metered separately as "
                 "Segmentation and Labeling.",
                 self.granularity,
-                self.config.classification.segmentation.boundary_hints,
+                self.config.classification.two_stage.segmentation.llm.boundary_hints,
                 labeling.method,
                 labeling.k if labeling.pages == "first_k" else labeling.pages,
             )
 
         if self.granularity == self.GRANULARITY_PACKET:
-            packet_cfg = self.config.classification.packet
+            packet_cfg = self._page_input().packet
             logger.info(
                 "Using PACKET classification granularity (text=%s, images=%s, "
                 "window_pages=%s, overlap_pages=%s)",
@@ -716,8 +715,8 @@ class ClassificationService:
             return page_content_cache
 
         # Type-safe access to image config
-        target_width = self.config.classification.image.target_width
-        target_height = self.config.classification.image.target_height
+        target_width = self._call().image.target_width
+        target_height = self._call().image.target_height
 
         send_text, send_images = self._resolve_modality()
 
@@ -898,7 +897,7 @@ class ClassificationService:
         """
         # Page-level classification with document boundary detection
         t0 = time.time()
-        context_size = self.config.classification.contextPagesCount
+        context_size = self._page_input().page.contextPagesCount
         logger.info(
             f"Classifying document with {len(document.pages)} pages using multimodal page-level classification with {self.backend} backend"
             + (f" (contextPagesCount={context_size})" if context_size > 0 else "")
@@ -1418,13 +1417,15 @@ class ClassificationService:
             ValueError: If required configuration values are missing
         """
         # Type-safe access to classification config (no .get() needed!)
+        call = self._call(stage)
         config = {
             "model_id": self._stage_model(stage),
-            "temperature": self.config.classification.temperature,
-            "top_k": self.config.classification.top_k,
-            "top_p": self.config.classification.top_p,
-            "max_tokens": self.config.classification.max_tokens,
-            "reasoning_effort": self.config.classification.reasoning_effort,
+            "temperature": call.temperature,
+            "top_k": call.top_k,
+            "top_p": call.top_p,
+            "max_tokens": call.max_tokens,
+            "reasoning_effort": call.reasoning_effort,
+            "model_lambda_hook_arn": call.model_lambda_hook_arn,
             "metering_context": self.STAGE_METERING_CONTEXT[stage],
             "stage": stage,
         }
@@ -1446,7 +1447,7 @@ class ClassificationService:
         # Modality normalisation runs BEFORE the class-confidence splice: the
         # splice positions its block relative to the document/cache-point marker,
         # and rewriting placeholders afterwards could move content across it.
-        task_prompt = self._apply_modality_to_prompt(task_prompt)
+        task_prompt = self._apply_modality_to_prompt(task_prompt, stage)
         config["task_prompt"] = self._compose_class_confidence_prompt(
             task_prompt, stage
         )
@@ -1454,18 +1455,14 @@ class ClassificationService:
         return config
 
     def _stage_model(self, stage: str) -> str:
-        """The Bedrock model for one stage, falling back to the shared one.
+        """The model for one call: each call's block names its own.
 
-        Naming a model per stage is most of the point of two-stage: boundary
+        Naming a model per call is most of the point of two-stage: boundary
         detection may want a capable multimodal model looking at a whole packet,
-        while labeling a clean segment is often a much easier problem that a
+        while classifying a clean section is often a much easier problem that a
         cheaper model answers just as well.
         """
-        if stage == self.STAGE_SEGMENTATION:
-            return self.config.classification.segmentation.model or self.bedrock_model
-        if stage == self.STAGE_LABELING:
-            return self.config.classification.labeling.model or self.bedrock_model
-        return self.bedrock_model
+        return self._call(stage).model
 
     def _compose_class_confidence_prompt(
         self, task_prompt: str, stage: str = STAGE_CLASSIFICATION
@@ -1478,7 +1475,11 @@ class ClassificationService:
         honours a ``confidence``/``candidates`` key regardless of this setting —
         the mode composes the *instruction*, it does not gate the *parsing*.
         """
-        confidence_cfg = self.config.classification.confidence
+        confidence_cfg = self._call(
+            self.STAGE_LABELING
+            if stage == self.STAGE_LABELING
+            else self.STAGE_CLASSIFICATION
+        ).confidence
         mode = confidence_cfg.mode
         if mode == "off":
             return task_prompt
@@ -1618,116 +1619,117 @@ class ClassificationService:
             node = node.get(key)
         return node if isinstance(node, str) else ""
 
+    # ── Which block a call reads its settings from ──────────────────────────
+    # Config format 0.9 nests every setting inside the call that uses it. These
+    # are the ONLY places the service walks that tree, so the choice of block is
+    # made once rather than at fifty read sites.
+    #
+    # ⚠️ The page-reading code — the page and packet builders, the image loaders,
+    # the context-page preloader — is SHARED by single-pass and two-stage Stage A.
+    # So those paths ask for "the active strategy's page-reading call", while the
+    # Stage B paths name their own block. Exactly one strategy is ever active, so
+    # there is never a second page reader to confuse it with.
+
+    def _reader_stage(self) -> str:
+        """The stage that reads pages under the active strategy."""
+        if self.config.classification.strategy == self.STRATEGY_TWO_STAGE:
+            return self.STAGE_SEGMENTATION
+        return self.STAGE_CLASSIFICATION
+
+    def _call(self, stage: Optional[str] = None):
+        """The model-settings block for ``stage``; ``None`` is the page reader."""
+        cls = self.config.classification
+        stage = stage or self._reader_stage()
+        if stage == self.STAGE_LABELING:
+            return cls.two_stage.section_classification.llm
+        if stage == self.STAGE_SEGMENTATION:
+            return cls.two_stage.segmentation.llm
+        return cls.one_stage.llm
+
+    def _page_input(self):
+        """granularity / page / packet of the active page-reading call."""
+        return self.config.classification.page_input_call()
+
+    def _file_shape(self):
+        return self.config.classification.file_shape
+
     # ── Class validation, one source for every class-assigning path ─────────
     # Single-pass page, single-pass packet and Stage B all decide a class, and
     # all three read validation through these, so the settings cannot mean
     # different things on different paths again.
 
     def _class_validation_enforced(self) -> bool:
-        return bool(self.config.classification.enforceValidClasses)
+        return bool(
+            self.config.classification.class_assigning_llm().validation.enforceValidClasses
+        )
 
     def _class_validation_retries(self) -> int:
-        return int(self.config.classification.maxValidationRetries or 0)
+        return int(
+            self.config.classification.class_assigning_llm().validation.maxValidationRetries
+            or 0
+        )
 
     def _fallback_class(self) -> str:
-        return self.config.classification.invalidClassFallback
+        return self.config.classification.fallback_class
 
     def _stage_prompt(self, stage: str, field: str) -> str:
-        """Resolve one prompt field for a stage and the active granularity.
+        """Resolve one prompt field for a call and its granularity.
 
-        Stage B (labeling) is **not** granularity-dependent: it is always one
-        call about one segment's pages, whichever way the boundaries were found.
-        Stage A and single-pass both are, because both are asked either about
-        one page or about a whole packet.
+        Section classification is **not** granularity-dependent: it is always one
+        call about one section's pages, whichever way the boundaries were found.
+        One stage and segmentation both are, because both are asked either about
+        one page or about a whole packet — so their prompts live in the
+        ``page`` / ``packet`` sub-block of their own call.
+
+        An empty prompt resolves to the SHIPPED prompt for the same field, never
+        to a prompt of a different output shape: a fallback that asks for the
+        wrong shape always fails, which makes it no fallback at all.
         """
+        cls = self.config.classification
         if stage == self.STAGE_LABELING:
-            labeling = self.config.classification.labeling
-            value = getattr(labeling, field)
-            if value:
-                return value
-            shipped = self._shipped_prompt("labeling", field)
-            if shipped:
-                logger.warning(
-                    "classification.labeling.%s is empty, so Stage B is using "
-                    "the SHIPPED default for it. A profile saved before this "
-                    "field existed reads it back empty; save the profile to "
-                    "store the value, or set your own.",
-                    field,
-                )
-                return shipped
+            path = ("two_stage", "section_classification", "llm", field)
+            value = getattr(cls.two_stage.section_classification.llm, field)
+        else:
+            block = (
+                cls.two_stage.segmentation.llm
+                if stage == self.STAGE_SEGMENTATION
+                else cls.one_stage
+            )
+            root = (
+                ("two_stage", "segmentation", "llm")
+                if stage == self.STAGE_SEGMENTATION
+                else ("one_stage",)
+            )
+            sub = "packet" if block.granularity == self.GRANULARITY_PACKET else "page"
+            path = root + (sub, field)
+            value = getattr(getattr(block, sub), field)
+        if value:
+            return value
+        # ⚠️ The single-pass PAGE prompt gets no shipped fallback, unlike every
+        # other prompt here. The fallback exists for prompts added after a
+        # profile could have been saved, which read back empty through no choice
+        # of the operator's (#1522). The page prompt has always existed, so an
+        # empty one is a broken configuration — and the caller refuses it with a
+        # message naming the stage, which is the right outcome.
+        if path[:2] == ("one_stage", "page"):
+            return ""
+        shipped = self._shipped_prompt(*path)
+        if shipped:
             logger.warning(
-                "classification.labeling.%s is empty and the shipped default "
-                "could not be read, so Stage B is falling back to the "
-                "single-pass classification.%s — which asks for a "
-                "document_boundary this stage does not need.",
-                field,
-                field,
+                "classification.%s is empty, so the SHIPPED default for it is being "
+                "used. Save the profile to store the value, or set your own.",
+                ".".join(path),
             )
-            return getattr(self.config.classification, field)
+            return shipped
+        logger.error(
+            "classification.%s is empty and the shipped default could not be read.",
+            ".".join(path),
+        )
+        return ""
 
-        if stage == self.STAGE_SEGMENTATION:
-            segmentation = self.config.classification.segmentation
-            source = (
-                segmentation.packet
-                if self.granularity == self.GRANULARITY_PACKET
-                else segmentation
-            )
-            value = getattr(source, field)
-            if value:
-                return value
-            shipped = (
-                self._shipped_prompt("segmentation", "packet", field)
-                if self.granularity == self.GRANULARITY_PACKET
-                else self._shipped_prompt("segmentation", field)
-            )
-            if shipped:
-                logger.warning(
-                    "The %s granularity Stage A %s is empty, so segmentation is "
-                    "using the SHIPPED default for it. A profile saved before "
-                    "this field existed reads it back empty; save the profile to "
-                    "store the value, or set your own.",
-                    self.granularity,
-                    field,
-                )
-                return shipped
-            logger.warning(
-                "The %s granularity Stage A %s is empty and the shipped default "
-                "could not be read, so segmentation is falling back to the "
-                "single-pass prompt — which carries the whole class vocabulary, "
-                "the saving two-stage exists for.",
-                self.granularity,
-                field,
-            )
-            # Fall through to the single-pass resolution below.
-
-        flat = getattr(self.config.classification, field)
-        if self.granularity == self.GRANULARITY_PACKET:
-            packet_prompt = getattr(self.config.classification.packet, field)
-            if packet_prompt:
-                return packet_prompt
-            shipped = self._shipped_prompt("packet", field)
-            if shipped:
-                logger.warning(
-                    "classification.granularity is 'packet' but "
-                    "classification.packet.%s is empty, so the SHIPPED default "
-                    "for it is being used. A profile saved before this field "
-                    "existed reads it back empty; save the profile to store the "
-                    "value, or set your own.",
-                    field,
-                )
-                return shipped
-            logger.warning(
-                "classification.granularity is 'packet' but "
-                "classification.packet.%s is empty and the shipped default could "
-                "not be read; falling back to classification.%s, which is "
-                "written for PAGE granularity and asks for a different output "
-                "shape — the segments parser will not read the answer.",
-                field,
-                field,
-            )
-        return flat
-
-    def _resolve_modality(self, task_prompt: Optional[str] = None) -> tuple[bool, bool]:
+    def _resolve_modality(
+        self, task_prompt: Optional[str] = None, stage: Optional[str] = None
+    ) -> tuple[bool, bool]:
         """Resolve ``(send_text, send_images)`` for a classification call.
 
         An unset flag is inferred from the prompt's placeholders, which is
@@ -1742,8 +1744,11 @@ class ClassificationService:
             task_prompt: Template to infer from. Defaults to the configured
                 prompt for the active granularity.
         """
-        modality = self.config.classification.modality
-        template = task_prompt if task_prompt is not None else self._raw_task_prompt()
+        stage = stage or self._reader_stage()
+        modality = self._call(stage).modality
+        template = (
+            task_prompt if task_prompt is not None else self._raw_task_prompt(stage)
+        )
 
         send_text = (
             modality.text
@@ -1757,7 +1762,9 @@ class ClassificationService:
         )
         return send_text, send_images
 
-    def _apply_modality_to_prompt(self, task_prompt: str) -> str:
+    def _apply_modality_to_prompt(
+        self, task_prompt: str, stage: Optional[str] = None
+    ) -> str:
         """Rewrite a prompt template so its placeholders match the modality.
 
         Only an **explicitly set** flag causes a rewrite; an inferred one agrees
@@ -1777,7 +1784,7 @@ class ClassificationService:
         the last thing the model reads) and logged, since a prompt the operator
         did not write is something they need to be able to see.
         """
-        modality = self.config.classification.modality
+        modality = self._call(stage).modality
         result = task_prompt
 
         for flag, placeholder, element in (
@@ -2376,8 +2383,8 @@ class ClassificationService:
         if image_uri and send_images:
             try:
                 # Type-safe access to image config
-                target_width = self.config.classification.image.target_width
-                target_height = self.config.classification.image.target_height
+                target_width = self._call().image.target_width
+                target_height = self._call().image.target_height
 
                 # Just pass the values directly - prepare_image handles empty strings/None
                 image_content = image.prepare_image(
@@ -2912,7 +2919,9 @@ class ClassificationService:
                 # cost comparison across this change is a straight read.
                 # Two-stage bills its halves under "Segmentation" and "Labeling".
                 context=config.get("metering_context", "Classification"),
-                model_lambda_hook_arn=self.config.classification.model_lambda_hook_arn,
+                model_lambda_hook_arn=config.get(
+                    "model_lambda_hook_arn", self._call().model_lambda_hook_arn
+                ),
                 reasoning_effort=config.get("reasoning_effort"),
             )
         except Exception as exc:
@@ -3697,7 +3706,7 @@ class ClassificationService:
                 worst one). A packet-level call has no per-page signal to pass,
                 and then the segment's score is the best available.
         """
-        strategy = self.config.classification.sectionSplitting.lower()
+        strategy = self._file_shape().sectionSplitting.lower()
 
         if not segments:
             logger.warning(
@@ -3975,7 +3984,7 @@ class ClassificationService:
         it as "nothing to detect" is what collapses every multi-document packet
         into one section by construction — the bug both issues report.
         """
-        strategy = self.config.classification.sectionSplitting.lower()
+        strategy = self._file_shape().sectionSplitting.lower()
         if strategy in ("disabled", "page"):
             return False
 
@@ -4022,7 +4031,7 @@ class ClassificationService:
                 "Set sectionSplitting: disabled (or page) to skip inference "
                 "entirely.",
                 class_name,
-                self.config.classification.sectionSplitting.lower(),
+                self._file_shape().sectionSplitting.lower(),
                 len(document.pages),
                 class_name,
             )
@@ -4072,7 +4081,7 @@ class ClassificationService:
             "sectionSplitting: disabled to skip it when one file is always one "
             "document.",
             self.single_class_name,
-            self.config.classification.sectionSplitting.lower(),
+            self._file_shape().sectionSplitting.lower(),
             len(document.pages),
         )
         return False
@@ -4636,7 +4645,7 @@ class ClassificationService:
         to guarantee the model sees the packet as a single whole — at the cost of
         failing outright on a packet larger than the context window.
         """
-        packet_cfg = self.config.classification.packet
+        packet_cfg = self._page_input().packet
         window = packet_cfg.window_pages
         overlap = packet_cfg.overlap_pages
         total = len(sorted_page_ids)
@@ -4851,16 +4860,20 @@ class ClassificationService:
         return content
 
     def _load_packet_page_images(
-        self, document: Document, page_ids: List[str]
+        self, document: Document, page_ids: List[str], stage: Optional[str] = None
     ) -> List[tuple[str, bytes]]:
-        """Load and resize the page images one packet call will carry.
+        """Load and resize the page images one multi-page call will carry.
+
+        Shared by the packet calls (the page reader) and section classification,
+        so ``stage`` picks whose image sizing applies — each call sizes its own.
 
         A page whose image cannot be loaded is omitted rather than failing the
         call: the text for that page is still in the request, and the remaining
         images still tell the model where the other documents start.
         """
-        target_width = self.config.classification.image.target_width
-        target_height = self.config.classification.image.target_height
+        image_settings = self._call(stage).image
+        target_width = image_settings.target_width
+        target_height = image_settings.target_height
 
         loaded: List[tuple[str, bytes]] = []
         for page_id in page_ids:
@@ -5288,7 +5301,8 @@ class ClassificationService:
         title the class names happen to mention.
         """
         if (
-            self.config.classification.segmentation.boundary_hints != "class_names"
+            self.config.classification.two_stage.segmentation.llm.boundary_hints
+            != "class_names"
             or not self.document_types
         ):
             return ""
@@ -5455,8 +5469,8 @@ class ClassificationService:
     ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
         """Stage A at page granularity: one boundary-only call per page."""
         config = self._get_classification_config(self.STAGE_SEGMENTATION)
-        send_text, send_images = self._resolve_modality()
-        context_size = self.config.classification.contextPagesCount
+        send_text, send_images = self._resolve_modality(stage=self.STAGE_SEGMENTATION)
+        context_size = self._page_input().page.contextPagesCount
 
         page_content_cache = self._preload_page_content(document, context_size)
         sorted_page_ids = sorted(
@@ -5484,8 +5498,8 @@ class ClassificationService:
                 try:
                     image_content = image.prepare_image(
                         page.image_uri,
-                        self.config.classification.image.target_width,
-                        self.config.classification.image.target_height,
+                        self._call().image.target_width,
+                        self._call().image.target_height,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to load image for page {page_id}: {e}")
@@ -5600,7 +5614,7 @@ class ClassificationService:
         propagate into extraction as though it had been decided.
         """
         config = self._get_classification_config(self.STAGE_LABELING)
-        _, send_images = self._resolve_modality()
+        _, send_images = self._resolve_modality(stage=self.STAGE_LABELING)
         pages_content, _ = self._format_pages_with_coverage(document)
 
         metering: Dict[str, Any] = {}
@@ -5612,7 +5626,11 @@ class ClassificationService:
             page_ids = self._labeling_pages(segment)
             paged_text = self._format_paged_text(pages_content, page_ids)
             page_images = (
-                self._load_packet_page_images(document, page_ids) if send_images else []
+                self._load_packet_page_images(
+                    document, page_ids, stage=self.STAGE_LABELING
+                )
+                if send_images
+                else []
             )
             content = self._build_packet_content(
                 config["task_prompt"], paged_text, page_images
@@ -5665,7 +5683,7 @@ class ClassificationService:
 
     def _labeling_pages(self, segment: Segment) -> List[str]:
         """Which of a segment's pages Stage B sends, per ``labeling.pages``."""
-        labeling = self.config.classification.labeling
+        labeling = self.config.classification.two_stage.section_classification
         if labeling.pages == "first":
             return segment.page_ids[:1]
         if labeling.pages == "all":

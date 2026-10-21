@@ -39,12 +39,16 @@ import yaml
 from idp_common.classification.service import ClassificationService
 from idp_common.models import Document, Page
 
+# ⚠️ The FROZEN config-format-0.8 defaults, not the current file. These tests
+# exist to prove an unedited pre-0.9 configuration still behaves identically, so
+# their input must stay the flat shape a stored 0.8 profile actually holds; the
+# 0.9 reader migrates it on load. Pointing this at the live defaults would turn
+# them into tests of the new shape and stop testing back-compat at all.
 DEFAULTS = (
-    __import__("pathlib").Path(__file__).resolve().parents[3]
-    / "idp_common"
+    __import__("pathlib").Path(__file__).resolve().parents[1]
     / "config"
-    / "system_defaults"
-    / "base-classification.yaml"
+    / "fixtures"
+    / "base-classification-0.8.yaml"
 )
 
 
@@ -152,7 +156,7 @@ class TestAliasTable:
         config = _shipped_classification()
         config["sectionSplitting"] = splitting
         service = _service(config)
-        assert service.config.classification.sectionSplitting == splitting
+        assert service.config.classification.file_shape.sectionSplitting == splitting
 
     def test_max_pages_for_classification_still_overrides_splitting(self):
         """Documented pre-existing behaviour, deliberately NOT changed.
