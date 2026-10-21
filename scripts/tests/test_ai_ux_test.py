@@ -1372,14 +1372,14 @@ def test_a_run_whose_page_was_refused_nothing_carries_no_refusal_caveat(
 
 
 @pytest.mark.unit
-def test_a_pages_own_request_to_a_host_chrome_no_longer_calls_is_a_caveat(
+def test_a_pages_own_request_to_a_stopped_background_host_is_a_caveat(
     harness: Harness,
 ) -> None:
-    """Chrome no longer calls www.google.com by itself, so a refusal of it is the
-    page's, a reCAPTCHA or an embedded map for instance, and the note says a
-    screen can look broken. A Google sign-in button from accounts.google.com still
-    reads as Chrome's, because Chrome calls that host too; refusals.jsonl is where
-    that one shows."""
+    """The managed policy stops Chrome calling www.google.com by itself, so a refusal
+    of it is the page's, a reCAPTCHA or an embedded map for instance, and the note
+    says a screen can look broken. A Google sign-in button from accounts.google.com
+    still reads as Chrome's, because Chrome calls that host too; refusals.jsonl is
+    where that one shows."""
     harness.refusals += [
         _refusal("accounts.google.com:443"),
         _refusal("www.google.com:443"),

@@ -72,8 +72,8 @@ query (``clients2.google.com``), and the policy the start-up query to
 ``www.google.com/async/folae`` (``DefaultSearchProviderEnabled``) and the leak
 check (``passwordsleakcheck-pa.googleapis.com``) that submitting a password, the
 sign-in's included, sets off (``PasswordLeakDetectionEnabled``). Their hosts are
-not among :data:`BROWSER_BACKGROUND_HOSTS`, since Chrome no longer calls them, so
-a refusal of one is the page's and the note counts it: a reCAPTCHA or a map
+not among :data:`BROWSER_BACKGROUND_HOSTS`, since with those calls stopped a
+refusal of one is the page's, and the note counts it: a reCAPTCHA or a map
 embedded from ``www.google.com``, for instance.
 
 The viewport
@@ -182,8 +182,8 @@ HEADLESS_FRAME_HEIGHT = 143
 #: the GCM check-in, the component update check and the spell-check dictionary's
 #: download redirector. :func:`refusal_origin` labels a refusal of any of them as
 #: the browser's own, so each one also hides the page's own requests to that host
-#: from the note. A host Chrome no longer calls therefore has no place here: it
-#: would hide the page's requests and nothing else.
+#: from the note. A host whose calls the flags or the policy stop therefore has no
+#: place here: it would hide the page's requests and nothing else.
 BROWSER_BACKGROUND_HOSTS: frozenset[str] = frozenset(
     {
         "accounts.google.com",

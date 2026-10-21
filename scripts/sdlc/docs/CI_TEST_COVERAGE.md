@@ -642,9 +642,9 @@ treats that file as diagnostics only.
   page has loaded it, with its sign-in address before that on a full page load.
 - A video is made of the review stack and of no other, because its frames are not
   redacted, and that is enforced in `scripts/sdlc/ai_ux_test.py`, not left to the
-  default `--stack`. `review_stack_problem` requires three statements of which stack
-  the run used to name `idp-ux-nightly`: `--stack`; the settings parameter
-  `UX_TEST_UI_ENV` names, which must be exactly `idp-ux-nightly-Settings`, as
+  default `--stack`. `review_stack_problem` checks three statements of which stack
+  the run is using, and all three must name `idp-ux-nightly`: `--stack`; the
+  settings parameter `UX_TEST_UI_ENV` names, which must be exactly `idp-ux-nightly-Settings`, as
   `template.yaml` names it, so a lookalike stack whose buckets pass the egress
   rules' name-prefix check still fails; and the stack name the signed-in sidebar
   shows, which the UI reads from that parameter with the persona's own Cognito

@@ -1217,11 +1217,12 @@ def test_the_hosts_chrome_calls_by_itself_are_the_ones_the_live_image_refused() 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("host", _STOPPED_BACKGROUND_HOSTS)
-def test_a_host_chrome_no_longer_calls_is_not_passed_off_as_chromes(host: str) -> None:
-    """Listing a host Chrome no longer calls would only ever hide the page's own
-    requests to it, a reCAPTCHA or a map from www.google.com for instance."""
+def test_a_stopped_background_host_is_not_passed_off_as_chromes(host: str) -> None:
+    """Listing a host whose calls the flags or the policy stop would only ever hide
+    the page's own requests to it, a reCAPTCHA or a map from www.google.com for
+    instance."""
     assert host not in chrome.BROWSER_BACKGROUND_HOSTS, (
-        f"{host} is no longer called by Chrome under the committed flags and policy, "
+        f"the committed flags and policy stop Chrome calling {host}, "
         "so listing it would hide only the page's own requests to it"
     )
     assert chrome.refusal_origin({"method": "CONNECT", "target": f"{host}:443"}) == (

@@ -1230,6 +1230,19 @@ def test_the_build_job_classifies_the_change_before_it_builds(build_job) -> None
 
 
 @pytest.mark.unit
+def test_the_build_job_restores_and_saves_no_cache(ci_config, build_job) -> None:
+    """The MR's ``npm ci`` writes into src/ui/node_modules, and the cache the other
+    UI jobs restore is keyed on the lockfile alone, so a cache here would hand that
+    install to other pipelines. Restoring one would do this job no good, since
+    ``npm ci`` deletes node_modules before it installs."""
+    declared = build_job.get("cache", (ci_config.get("default") or {}).get("cache"))
+    assert not declared, (
+        f"{BUILD_JOB} has a cache ({declared!r}), so what the MR's install writes "
+        "reaches every job that restores the same key"
+    )
+
+
+@pytest.mark.unit
 def test_the_artifacts_are_the_build_and_the_ux_tests_directory(
     build_job, ux_job
 ) -> None:

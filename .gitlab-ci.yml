@@ -1220,6 +1220,11 @@ ai_mr_review:
 # port is unauthenticated, so the MR's build (npm ci with its lifecycle scripts,
 # and vite with its config) runs in ux_test_build, and reaches ai_ux_test only as
 # static files that the egress proxy serves at http://localhost:3000.
+# ux_test_build declares no cache, so nothing the MR's install writes reaches
+# another job either: the node_modules cache the other UI jobs restore is keyed
+# on the lockfile alone, and so shared with other pipelines that have the same
+# lockfile. Restoring it would do this job no good, since npm ci deletes
+# node_modules before it installs.
 #
 # AUTOMATIC on non-Draft MRs to develop that change src/ui/, with identical rules
 # on both jobs. If they differed, `needs: [ux_test_build]` could name a job absent
@@ -1316,12 +1321,6 @@ ux_test_build:
   variables:
     # The merge base with develop, which ui_change.py diffs against.
     GIT_DEPTH: 0
-  cache:
-    key:
-      files:
-        - src/ui/package-lock.json
-    paths:
-      - src/ui/node_modules/
   before_script:
     - *without_job_secrets
     - without_job_secrets apt-get update -y
