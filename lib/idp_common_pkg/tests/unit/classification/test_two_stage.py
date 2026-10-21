@@ -19,7 +19,7 @@ Three properties here are the ones a refactor could lose without any structural
 test noticing:
 
 - **The two halves are metered separately**, under ``Segmentation`` and
-  ``Labeling``, while single-pass stays ``Classification`` with unchanged units.
+  ``SectionClassification``, while single-pass stays ``Classification`` with unchanged units.
   That split is what makes "is this actually cheaper on my documents?"
   answerable from the cost table rather than from arithmetic.
 - **Stage A sends no class vocabulary.** If a prompt or substitution change
@@ -189,7 +189,7 @@ class _Router:
 
         if stage == ClassificationService.STAGE_LABELING:
             label = self.labels.pop(0) if self.labels else "invoice"
-            return _reply({"class": label}, "Labeling")
+            return _reply({"class": label}, "SectionClassification")
 
         return _reply(
             {"class": "invoice", "document_boundary": "start"}, "Classification"
@@ -265,7 +265,7 @@ class TestStagePromptResolution:
             service = _service(granularity=granularity)
             config = service._get_classification_config(service.STAGE_LABELING)
             assert config["system_prompt"] == "stage B system"
-            assert config["metering_context"] == "Labeling"
+            assert config["metering_context"] == "SectionClassification"
 
     def test_single_pass_keeps_the_classification_metering_context(self):
         """Unchanged units, so a cost comparison across this change is a
@@ -414,11 +414,13 @@ class TestTwoStagePacket:
         result = self._run(service, _document(2), router)
 
         assert "Segmentation/bedrock/nova" in result.metering
-        assert "Labeling/bedrock/nova" in result.metering
+        assert "SectionClassification/bedrock/nova" in result.metering
         assert "Classification/bedrock/nova" not in result.metering
         # One Stage A call, two Stage B calls.
         assert result.metering["Segmentation/bedrock/nova"]["inputTokens"] == 10
-        assert result.metering["Labeling/bedrock/nova"]["inputTokens"] == 20
+        assert (
+            result.metering["SectionClassification/bedrock/nova"]["inputTokens"] == 20
+        )
 
     def _router_for_two_segments(self) -> _Router:
         return _Router(
@@ -463,7 +465,7 @@ class TestTwoStagePacket:
         def boom(content, config):  # noqa: ARG001 - content unused, stage decides
             if config.get("stage") == "segmentation":
                 raise RuntimeError("throttled")
-            return _reply({"class": "invoice"}, "Labeling")
+            return _reply({"class": "invoice"}, "SectionClassification")
 
         with (
             patch("idp_common.s3.get_text_content", return_value="text"),
@@ -493,7 +495,7 @@ class TestTwoStagePacket:
                 b["text"] for b in content if "text" in b
             ):
                 raise RuntimeError("throttled")
-            return _reply({"class": "invoice"}, "Labeling")
+            return _reply({"class": "invoice"}, "SectionClassification")
 
         with (
             patch("idp_common.s3.get_text_content", return_value="text"),
@@ -618,7 +620,7 @@ class TestStageBClassValidation:
                 )
             index = min(calls["n"], len(replies) - 1)
             calls["n"] += 1
-            return _reply({"class": replies[index]}, "Labeling")
+            return _reply({"class": replies[index]}, "SectionClassification")
 
         with (
             patch("idp_common.s3.get_text_content", return_value="text"),

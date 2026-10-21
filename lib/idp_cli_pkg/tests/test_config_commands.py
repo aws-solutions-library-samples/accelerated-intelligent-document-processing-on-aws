@@ -510,7 +510,10 @@ def test_validate_refuses_max_tokens_above_the_model_limit():
         result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
     assert result.exit_code == 1
     flat = " ".join(result.output.split())
-    assert "classification.max_tokens (999999) exceeds model limit (10,000)" in flat
+    assert (
+        "classification.one_stage.llm.max_tokens (999999) exceeds model limit (10,000)"
+        in flat
+    )
     # The remedy has to carry the number, or the user guesses.
     assert "Reduce max_tokens to 10,000 or less" in flat
 
@@ -524,7 +527,9 @@ def test_validate_refuses_a_value_of_the_wrong_type():
     assert result.exit_code == 1
     flat = " ".join(result.output.split())
     assert "Pydantic validation failed" in flat
-    assert "classification.temperature" in flat
+    # A flat (pre-0.9) key is migrated before validation, so the error names
+    # the call it now belongs to.
+    assert "classification.one_stage.llm.temperature" in flat
 
 
 @pytest.mark.unit

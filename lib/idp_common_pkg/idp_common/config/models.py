@@ -2357,6 +2357,31 @@ class ClassificationConfig(BaseModel):
         return self.one_stage.llm
 
 
+#: Where the class-assigning call's settings live, per strategy. A tool writing
+#: "the classification model" — a custom or fine-tuned model ARN, say — writes
+#: here, because that is the call whose model decides the class.
+CLASS_ASSIGNING_LLM_PATHS: Dict[str, Tuple[str, ...]] = {
+    "single_pass": ("one_stage", "llm"),
+    "two_stage": ("two_stage", "section_classification", "llm"),
+}
+
+
+def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
+    """The path, under ``classification``, of the active class-assigning call.
+
+    Reads the raw dict so a writer can use it before validation. An absent or
+    unrecognised strategy is ``single_pass``, the default.
+    """
+    strategy = (
+        str(classification.get("strategy") or "").strip().lower()
+        if isinstance(classification, dict)
+        else ""
+    )
+    return CLASS_ASSIGNING_LLM_PATHS.get(
+        strategy, CLASS_ASSIGNING_LLM_PATHS["single_pass"]
+    )
+
+
 class SummarizationConfig(BaseModel):
     """Document summarization configuration"""
 

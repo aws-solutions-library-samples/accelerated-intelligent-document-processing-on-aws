@@ -131,50 +131,134 @@ VARIANTS = {
 }
 
 
+#: Every model call a classification config can make, under ``classification``.
+CALL_PATHS = (
+    ("one_stage", "llm"),
+    ("two_stage", "segmentation", "llm"),
+    ("two_stage", "section_classification", "llm"),
+)
+
+#: The calls that assign a class, and so carry a confidence block.
+CLASS_ASSIGNING_PATHS = (
+    ("one_stage", "llm"),
+    ("two_stage", "section_classification", "llm"),
+)
+
+
+def _node(root, path):
+    """The dict at ``path`` under ``root``, created on the way down."""
+    for key in path:
+        child = root.get(key)
+        if not isinstance(child, dict):
+            child = root[key] = {}
+        root = child
+    return root
+
+
+def _get(root, *path):
+    """The value at ``path`` under ``root``, or None."""
+    for key in path:
+        root = root.get(key) if isinstance(root, dict) else None
+    return root
+
+
+def _reader(cls, strategy):
+    """The block whose granularity and page prompts are in force."""
+    if strategy == "two_stage":
+        return _get(cls, "two_stage", "segmentation", "llm") or {}
+    return cls.get("one_stage") or {}
+
+
+def _class_assigning(cls):
+    strategy = cls.get("strategy") or "single_pass"
+    path = CLASS_ASSIGNING_PATHS[1 if strategy == "two_stage" else 0]
+    return _get(cls, *path) or {}
+
+
 def build_config(base_path, model_id, mode, top_k, variant=None):
     """Merge the test set's class config with system defaults + our overrides.
 
     Merging with the system defaults keeps the stored config self-contained (the
-    same reason make_configs.py does it) and, critically, is what populates
-    `classification.confidence.task_prompt_topk` — the block that gets spliced
-    into the prompt. A config that set only `mode: topk` would ask for nothing.
-    The same reasoning applies to a `granularity: packet` variant, which needs
-    `classification.packet.task_prompt` from the defaults: packet granularity has
+    same reason make_configs.py does it) and, critically, is what populates the
+    class-assigning call's `confidence.task_prompt_topk` — the block that gets
+    spliced into the prompt. A config that set only `mode: topk` would ask for
+    nothing. The same reasoning applies to a `granularity: packet` variant, which
+    needs `one_stage.packet.task_prompt` from the defaults: packet granularity has
     its own prompt because it asks for a different output shape, and a config
     carrying only the flag would send the page prompt to the segments parser.
+
+    The model under test is written into EVERY call, so a two-stage cell runs
+    both of its calls on it — the model axis compares models, not a mix.
 
     Args:
         variant: A key of :data:`VARIANTS`, or None for the stored config's own
             settings (which is what this driver did before the axis existed).
     """
     from idp_common.config.merge_utils import merge_config_with_defaults
+    from idp_common.config.migrations import migrate_config
 
     cfg = yaml.safe_load(open(os.path.join(REPO, base_path)))
     cfg.pop("description", None)
     cfg.pop("managed", None)
+    # Migrated first, so the overrides below are written into the nested shape
+    # whatever format the test set's config was saved in.
+    cfg = migrate_config(cfg)
     classification = cfg.setdefault("classification", {})
-    classification["model"] = model_id
-    classification["confidence"] = {
-        "mode": mode,
-        "top_k_candidates": str(top_k),
-    }
+    for path in CALL_PATHS:
+        _node(classification, path)["model"] = model_id
+    for path in CLASS_ASSIGNING_PATHS:
+        _node(classification, path)["confidence"] = {
+            "mode": mode,
+            "top_k_candidates": str(top_k),
+        }
     if variant:
         spec = VARIANTS[variant]
-        classification["granularity"] = spec["granularity"]
+        classification["strategy"] = spec.get("strategy", "single_pass")
+        _node(classification, ("one_stage",))["granularity"] = spec["granularity"]
+        _node(classification, CALL_PATHS[1])["granularity"] = spec["granularity"]
         # Set EXPLICITLY rather than left empty. An unset modality flag is
         # inferred from the prompt's placeholders, which is the right default for
         # a user and the wrong one for a measurement: the cell would then be
         # describing whatever the prompt happens to say rather than the
         # combination its name claims.
-        classification["modality"] = {
-            "text": bool(spec["text"]),
-            "images": bool(spec["images"]),
-        }
-        classification["strategy"] = spec.get("strategy", "single_pass")
+        for path in CALL_PATHS:
+            _node(classification, path)["modality"] = {
+                "text": bool(spec["text"]),
+                "images": bool(spec["images"]),
+            }
     # Summarization is an unscored late step here; turning it off keeps the cost
     # figures attributable to OCR + classification + extraction.
     cfg.setdefault("summarization", {})["enabled"] = False
     return merge_config_with_defaults(copy.deepcopy(cfg), validate=True)
+
+
+def confidence_block_problems(cls, mode):
+    """The class-assigning call must carry a non-empty block for ``mode``."""
+    if mode == "off":
+        return []
+    conf = _class_assigning(cls).get("confidence") or {}
+    suffix = "topk" if mode == "topk" else "verbalized"
+    # ⚠️ Mirror the service's own fallback rather than reading the page key
+    # alone: at packet granularity it resolves `task_prompt_<mode>_packet or
+    # task_prompt_<mode>`, so a config carrying only the packet-specific key
+    # is legitimate and would otherwise be reported as having no confidence
+    # prompt — a false problem, which is the one thing a guard like this must
+    # not produce. Today's shipped defaults carry both keys, so this is about
+    # a hand-written config rather than about the default.
+    candidates = [f"task_prompt_{suffix}"]
+    strategy = cls.get("strategy") or "single_pass"
+    if (
+        strategy != "two_stage"
+        and _reader(cls, strategy).get("granularity") == "packet"
+    ):
+        candidates.insert(0, f"task_prompt_{suffix}_packet")
+    block = next((conf.get(k) or "" for k in candidates if conf.get(k)), "")
+    if "<class-confidence>" not in block:
+        return [
+            f"confidence.task_prompt_{mode} block is empty after merge — the "
+            "run would ask for no confidence at all"
+        ]
+    return []
 
 
 def variant_merge_problems(cfg, variant, mode):
@@ -193,31 +277,35 @@ def variant_merge_problems(cfg, variant, mode):
     problems = []
     cls = cfg.get("classification") or {}
     spec = VARIANTS[variant]
-
-    if cls.get("granularity") != spec["granularity"]:
-        problems.append(
-            f"granularity is {cls.get('granularity')!r}, expected "
-            f"{spec['granularity']!r}"
-        )
-    modality = cls.get("modality") or {}
-    for flag in ("text", "images"):
-        if bool(modality.get(flag)) is not bool(spec[flag]):
-            problems.append(
-                f"modality.{flag} is {modality.get(flag)!r}, expected {spec[flag]!r}"
-            )
     expected_strategy = spec.get("strategy", "single_pass")
     if cls.get("strategy") != expected_strategy:
         problems.append(
             f"strategy is {cls.get('strategy')!r}, expected {expected_strategy!r}"
         )
+    reader = _reader(cls, expected_strategy)
 
-    # The prompt a cell actually sends. Packet granularity reads
-    # classification.packet.task_prompt and must ask for a `segments` array; the
-    # page prompt asks for one class plus a boundary verdict and is read by a
-    # different parser, so a packet cell running the page prompt fails every
-    # document rather than measuring anything.
-    if spec["granularity"] == "packet":
-        packet_prompt = (cls.get("packet") or {}).get("task_prompt") or ""
+    if reader.get("granularity") != spec["granularity"]:
+        problems.append(
+            f"granularity is {reader.get('granularity')!r}, expected "
+            f"{spec['granularity']!r}"
+        )
+    active = CALL_PATHS[1:] if expected_strategy == "two_stage" else CALL_PATHS[:1]
+    for path in active:
+        modality = _get(cls, *path, "modality") or {}
+        for flag in ("text", "images"):
+            if bool(modality.get(flag)) is not bool(spec[flag]):
+                problems.append(
+                    f"{'.'.join(path)}.modality.{flag} is {modality.get(flag)!r}, "
+                    f"expected {spec[flag]!r}"
+                )
+
+    # The prompt a cell actually sends. Packet granularity reads the packet
+    # prompt and must ask for a `segments` array; the page prompt asks for one
+    # class plus a boundary verdict and is read by a different parser, so a
+    # packet cell running the page prompt fails every document rather than
+    # measuring anything.
+    if spec["granularity"] == "packet" and expected_strategy != "two_stage":
+        packet_prompt = _get(cls, "one_stage", "packet", "task_prompt") or ""
         # Checked against the keys the PARSER requires rather than the word
         # "segments": a prompt merely mentioning segments in prose would satisfy
         # a substring test while asking for an output shape
@@ -229,44 +317,25 @@ def variant_merge_problems(cfg, variant, mode):
         ]
         if missing:
             problems.append(
-                "classification.packet.task_prompt does not ask for the output "
-                f"shape the segments parser reads (missing {missing}) after merge"
+                "classification.one_stage.packet.task_prompt does not ask for the "
+                f"output shape the segments parser reads (missing {missing}) after "
+                "merge"
             )
-    if spec.get("strategy") == "two_stage":
-        segmentation = cls.get("segmentation") or {}
-        stage_a = (
-            (segmentation.get("packet") or {}).get("task_prompt")
-            if spec["granularity"] == "packet"
-            else segmentation.get("task_prompt")
-        ) or ""
-        if not stage_a:
+    if expected_strategy == "two_stage":
+        side = "packet" if spec["granularity"] == "packet" else "page"
+        if not (_get(reader, side, "task_prompt") or ""):
             problems.append(
-                f"the {spec['granularity']} Stage A task_prompt is empty after "
-                "merge, so two-stage would fall back to the single-pass prompt "
-                "and carry the class vocabulary this strategy exists to drop"
+                f"the {spec['granularity']} segmentation task_prompt is empty after "
+                "merge, so two-stage would fall back to the shipped prompt rather "
+                "than the one this cell names"
             )
-        if not (cls.get("labeling") or {}).get("task_prompt"):
-            problems.append("classification.labeling.task_prompt is empty after merge")
+        if not _get(cls, "two_stage", "section_classification", "llm", "task_prompt"):
+            problems.append(
+                "classification.two_stage.section_classification.llm.task_prompt "
+                "is empty after merge"
+            )
 
-    if mode != "off":
-        conf = cls.get("confidence") or {}
-        suffix = "topk" if mode == "topk" else "verbalized"
-        # ⚠️ Mirror the service's own fallback rather than reading the page key
-        # alone: at packet granularity it resolves `task_prompt_<mode>_packet or
-        # task_prompt_<mode>`, so a config carrying only the packet-specific key
-        # is legitimate and would otherwise be reported as having no confidence
-        # prompt — a false problem, which is the one thing a guard like this must
-        # not produce. Today's shipped defaults carry both keys, so this is about
-        # a hand-written config rather than about the default.
-        candidates = [f"task_prompt_{suffix}"]
-        if cls.get("granularity") == "packet":
-            candidates.insert(0, f"task_prompt_{suffix}_packet")
-        block = next((conf.get(k) or "" for k in candidates if conf.get(k)), "")
-        if "<class-confidence>" not in block:
-            problems.append(
-                f"confidence.task_prompt_{mode} block is empty after merge — the "
-                "run would ask for no confidence at all"
-            )
+    problems.extend(confidence_block_problems(cls, mode))
     return problems
 
 
@@ -309,14 +378,18 @@ def launch(stack, testset_id, version, context, n_files):
 #: Metering context prefixes that belong to the classification step.
 #:
 #: ⚠️ **Three, not one.** `single_pass` bills under `Classification/`; `two_stage`
-#: bills its halves under `Segmentation/` and `Labeling/` and emits NO
+#: bills its halves under `Segmentation/` and `SectionClassification/` and emits NO
 #: `Classification/` entry at all (GitHub #1329). Filtering on `Classification/`
 #: alone — which this function did — matched nothing for a two-stage run and
 #: returned a cost of `0.0`, so the configuration with an extra call per segment
 #: appeared to be the free one. That is the most misleading possible answer in a
 #: cost comparison, and it is the same silent-zero this module refuses elsewhere
 #: (#1079, #1146): adding nothing is the same arithmetic as adding zero.
-CLASSIFICATION_CONTEXTS = ("Classification/", "Segmentation/", "Labeling/")
+CLASSIFICATION_CONTEXTS = (
+    "Classification/",
+    "Segmentation/",
+    "SectionClassification/",
+)
 
 
 def classification_cost(metering):
@@ -368,13 +441,13 @@ def classification_cost(metering):
             #       invocation, so this reads 1 for `page` and `packet` alike and
             #       cannot tell them apart. In a two-stage run the single
             #       invocation lands under `Classification` while the spend lands
-            #       under `Segmentation`/`Labeling`, so those two read 0.
+            #       under `Segmentation`/`SectionClassification`, so those two read 0.
             #
             #   `<ctx>/bedrock/<model>` `requests` -> BEDROCK CALLS. This is the
             #       count packet granularity's N-calls-to-one claim is about, and
             #       it is per stage: a two-stage page-granularity run on a 6-page
             #       document measured 6 under `Segmentation` and 6 under
-            #       `Labeling`.
+            #       `SectionClassification`.
             #
             # ⚠️ The Bedrock count is NOT always present — the same stack emitted
             # a `Classification/bedrock/...` entry without a `requests` key on one
@@ -697,7 +770,7 @@ def score_run(res, run_id):
         else None,
         "classification_tokens": cls_tokens,
         # Per metering context, so a two-stage run shows where the money and the
-        # tokens went — Segmentation or Labeling — rather than only their sum.
+        # tokens went — Segmentation or SectionClassification — rather than only their sum.
         # See the note on `lambda_invocations` above for what that count does and
         # does not evidence.
         # `totals`, not `bucket` — see the loop above. A comprehension scopes its
@@ -847,13 +920,8 @@ def main():
         if variant:
             problems = variant_merge_problems(cfg, variant, a.mode)
         else:
-            block = (cfg.get("classification", {}).get("confidence") or {}).get(
-                f"task_prompt_{'topk' if a.mode == 'topk' else 'verbalized'}", ""
-            )
-            problems = (
-                []
-                if a.mode == "off" or "<class-confidence>" in block
-                else ["confidence prompt block is empty after merge"]
+            problems = confidence_block_problems(
+                cfg.get("classification") or {}, a.mode
             )
         if problems:
             failures.append(f"{version}:\n  - " + "\n  - ".join(problems))

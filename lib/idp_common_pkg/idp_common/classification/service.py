@@ -295,7 +295,7 @@ class ClassificationService:
     STAGE_METERING_CONTEXT = {
         STAGE_CLASSIFICATION: "Classification",
         STAGE_SEGMENTATION: "Segmentation",
-        STAGE_LABELING: "Labeling",
+        STAGE_LABELING: "SectionClassification",
     }
 
     # Soft cap on the number of schema attribute names emitted per class
@@ -410,7 +410,7 @@ class ClassificationService:
                 "Using TWO-STAGE classification: Stage A finds boundaries at %s "
                 "granularity (boundary_hints=%s), Stage B labels each segment "
                 "with one %s call over its %s page(s). Metered separately as "
-                "Segmentation and Labeling.",
+                "Segmentation and SectionClassification.",
                 self.granularity,
                 self.config.classification.two_stage.segmentation.llm.boundary_hints,
                 labeling.method,
@@ -2917,7 +2917,8 @@ class ClassificationService:
                 max_tokens=config["max_tokens"],
                 # Single-pass keeps "Classification" with unchanged units, so a
                 # cost comparison across this change is a straight read.
-                # Two-stage bills its halves under "Segmentation" and "Labeling".
+                # Two-stage bills its halves under "Segmentation" and
+                # "SectionClassification".
                 context=config.get("metering_context", "Classification"),
                 model_lambda_hook_arn=config.get(
                     "model_lambda_hook_arn", self._call().model_lambda_hook_arn
@@ -5336,10 +5337,10 @@ class ClassificationService:
         windowing and context-page settings, with a prompt that asks only where
         documents start and returns segments with no class. Stage B makes one
         call per segment, carrying the vocabulary and the examples, over the
-        pages ``labeling.pages`` selects.
+        pages ``two_stage.section_classification.pages`` selects.
 
         The two halves are metered separately, under ``Segmentation`` and
-        ``Labeling``, which is what makes "is this actually cheaper on my
+        ``SectionClassification``, which is what makes "is this actually cheaper on my
         documents?" answerable from the cost table rather than from arithmetic.
         It also separates a wrong boundary from a wrong label, which one
         section-level outcome cannot.
@@ -5727,7 +5728,7 @@ class ClassificationService:
             content_array = result["response"]["output"]["message"].get("content", [])
             if not content_array:
                 raise ValueError(
-                    f"Labeling failed for {label}: LLM returned empty response"
+                    f"Section classification failed for {label}: LLM returned empty response"
                 )
             text = "".join(
                 item["text"]

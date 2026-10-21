@@ -601,7 +601,7 @@ class TestValidateMaxTokens:
 
         assert result["valid"] is False
         assert len(result["errors"]) == 1
-        assert "classification.max_tokens" in result["errors"][0]
+        assert "classification.one_stage.llm.max_tokens" in result["errors"][0]
         assert "16000" in result["errors"][0]
         assert "10,000" in result["errors"][0]
 
@@ -619,7 +619,7 @@ class TestValidateMaxTokens:
 
         assert result["valid"] is False
         assert len(result["errors"]) == 1
-        assert "classification.max_tokens" in result["errors"][0]
+        assert "classification.one_stage.llm.max_tokens" in result["errors"][0]
         assert "10000" in result["errors"][0]
         assert "8,192" in result["errors"][0]
 
@@ -655,7 +655,7 @@ class TestValidateMaxTokens:
 
         assert result["valid"] is False
         assert len(result["errors"]) == 1
-        assert "classification.max_tokens" in result["errors"][0]
+        assert "classification.one_stage.llm.max_tokens" in result["errors"][0]
         assert "70000" in result["errors"][0]
         assert "64,000" in result["errors"][0]
 
@@ -1168,3 +1168,112 @@ class TestValidateMultiDocDiscoveryForcedTool:
             "analysis_model_id picklist, but the validator refuses it — the UI would "
             "offer a model the backend rejects."
         )
+
+
+def _two_stage(**overrides):
+    """A nested (0.9) two-stage classification block."""
+    section = {
+        "model": "us.amazon.nova-lite-v1:0",
+        "task_prompt": "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}",
+    }
+    segmentation = {
+        "model": "us.amazon.nova-lite-v1:0",
+        "granularity": "page",
+        "page": {"task_prompt": "boundaries {DOCUMENT_IMAGE}"},
+    }
+    section.update(overrides.pop("section", {}))
+    segmentation.update(overrides.pop("segmentation", {}))
+    return {
+        "classification": {
+            "strategy": "two_stage",
+            "one_stage": overrides.pop("one_stage", {}),
+            "two_stage": {
+                "segmentation": {"llm": segmentation},
+                "section_classification": {"llm": section},
+            },
+        }
+    }
+
+
+class TestNestedClassificationIsValidated:
+    """Each classification setting lives inside its call (format 0.9). A
+    validator that read `classification.model` would find nothing and pass
+    everything, so these assert each call the active strategy makes is checked
+    — and only those."""
+
+    def test_each_two_stage_model_is_checked_by_its_path(self):
+        config = _two_stage(section={"model": "not-a-model"})
+        result = {"valid": True, "errors": [], "warnings": []}
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value={"us.amazon.nova-lite-v1:0"},
+        ):
+            _validate_model_ids(config, result)
+        assert result["valid"] is False
+        assert len(result["errors"]) == 1
+        assert result["errors"][0].startswith(
+            "classification.two_stage.section_classification.llm.model"
+        )
+
+    def test_the_inactive_strategy_is_not_checked(self):
+        """A model the selected strategy never calls cannot fail a document, so
+        it must not block saving an unrelated edit."""
+        config = _two_stage(one_stage={"llm": {"model": "not-a-model"}})
+        result = {"valid": True, "errors": [], "warnings": []}
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value={"us.amazon.nova-lite-v1:0"},
+        ):
+            _validate_model_ids(config, result)
+        assert result == {"valid": True, "errors": [], "warnings": []}
+
+    def test_a_segmentation_max_tokens_over_the_limit_is_caught(self):
+        config = _two_stage(segmentation={"max_tokens": 50000})
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_max_tokens(config, result)
+        assert result["valid"] is False
+        assert result["errors"][0].startswith(
+            "classification.two_stage.segmentation.llm.max_tokens (50000)"
+        )
+
+    def test_a_segmentation_prompt_with_no_content_placeholder_is_refused(self):
+        config = _two_stage(segmentation={"page": {"task_prompt": "no content"}})
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_task_prompt_placeholders(config, result)
+        assert result["valid"] is False
+        assert result["errors"][0].startswith(
+            "classification.two_stage.segmentation.llm.page.task_prompt must include"
+        )
+
+    def test_the_one_stage_packet_prompt_is_the_one_checked_at_packet_granularity(
+        self,
+    ):
+        config = {
+            "classification": {
+                "strategy": "single_pass",
+                "one_stage": {
+                    "granularity": "packet",
+                    "page": {"task_prompt": "page {DOCUMENT_TEXT}"},
+                    "packet": {"task_prompt": "packet, no content"},
+                },
+            }
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_task_prompt_placeholders(config, result)
+        assert result["valid"] is False
+        assert result["errors"][0].startswith(
+            "classification.one_stage.packet.task_prompt must include"
+        )
+
+    def test_a_flat_block_is_still_checked(self):
+        """A caller handing over an unmigrated block gets it checked, not
+        skipped: the flat model is what every call inherited."""
+        result = {"valid": True, "errors": [], "warnings": []}
+        with patch(
+            "idp_common.config.merge_utils._load_valid_bedrock_models",
+            return_value={"us.amazon.nova-lite-v1:0"},
+        ):
+            _validate_model_ids({"classification": {"model": "bad"}}, result)
+        assert [e.split(" ")[0] for e in result["errors"]] == [
+            "classification.one_stage.llm.model"
+        ]
