@@ -33,5 +33,12 @@
     "severity": "HIGH",
     "reason": "Not reachable. It reaches this repository only through astro in docs-site, the documentation site, which CI builds into static files. The advisory concerns a shared HTTP cache returning one user's cached response to another, and no deployed component of the solution runs astro or a shared cache on it. No fixed release exists yet; upgrade and remove this entry once one is published.",
     "triagedOn": "2026-10-05"
+  },
+  {
+    "id": "GHSA-c4qx-w738-7hr3",
+    "package": "@graphql-tools/utils",
+    "severity": "HIGH",
+    "reason": "Not reachable at runtime. Prototype pollution in mergeIncrementalResult. In src/ui the package is reached only through the @graphql-codegen/* dev tooling (npm ls @graphql-tools/utils), and nothing under src/ui/src imports @graphql-tools, so it never ships in the built bundle. The fixed releases depend on @whatwg-node/promise-helpers@2, which requires Node >=22.15.0, while the UI build pins Node 22.14.0 (.gitlab-ci.yml, the UI CodeBuild project in template.yaml, scripts/sdlc/cfn/codepipeline-s3.yml) and src/ui/.npmrc sets engine-strict=true, so the bump fails npm ci. Revisit when the Node pin moves to 22.15 or later.",
+    "triagedOn": "2026-10-22"
   }
 ]
