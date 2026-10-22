@@ -1498,9 +1498,11 @@ class ExtractionConfig(BaseModel):
 
 
 class ClassificationClassConfidenceConfig(BaseModel):
-    """How classification reports confidence in the CLASS it chose (v0.7).
+    """How a classification call reports confidence in the CLASS it chose.
 
-    Nested as ``classification.confidence``. Deliberately NOT the same thing as
+    Carried by each call that assigns a class:
+    ``classification.one_stage.llm.confidence`` and
+    ``classification.two_stage.section_classification.llm.confidence``. Deliberately NOT the same thing as
     ``extraction.confidence``: that block configures a whole confidence-scoring
     *inference* over extracted fields, whereas this one only decides what the
     classification prompt asks the model to return alongside the class. There is
@@ -1603,8 +1605,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in ("off", "topk", "verbalized"):
             raise ValueError(
-                "classification.confidence.mode must be 'off', 'topk', or "
-                f"'verbalized', got {v!r}"
+                f"confidence.mode must be 'off', 'topk', or 'verbalized', got {v!r}"
             )
         return v_str
 
