@@ -168,6 +168,47 @@ def _levenshtein_sim(a: str, b: str) -> float:
         return 0.0
 
 
+def _levenshtein_can_reach(a: str, b: str, threshold: float) -> bool:
+    """Could character similarity between ``a`` and ``b`` reach ``threshold``?
+
+    An **exact** bound, not a heuristic, so skipping on a False answer cannot
+    change any result. :func:`fuzz_score` is ``1 - distance / max(len)`` over
+    punctuation-stripped strings, and Levenshtein distance is at least the
+    difference in length, so::
+
+        similarity <= 1 - |la - lb| / max(la, lb) == min(la, lb) / max(la, lb)
+
+    When that ceiling is below the threshold the O(n·m) dynamic program cannot
+    produce a match and is pure cost. It is computed over the SAME stripping
+    ``fuzz_score`` applies, because stripping changes both lengths and a bound
+    taken before it is not a bound after it.
+
+    Why it is worth having: this sweep runs whenever no whole-string candidate
+    exists, and #1519 made that far more common by stopping a ``_TIER_WEAK_PARTIAL``
+    fragment from short-circuiting it. Reaching the verdict "nothing here resembles
+    this value" then means a full DP against every line on the page, for every long
+    value. Measured over 50 real sections, grounding went from 4.6s to 25.4s with
+    98% of it inside ``fuzz_score`` at 165M inner comparisons; with this guard it is
+    0.5s and the grounding results are identical. That cost lands in the Assessment
+    Lambda, which has a wall-clock budget, so leaving it would trade wrong boxes for
+    unscored rows.
+
+    Returns True when the bound cannot be computed, so a missing evaluation
+    module leaves behaviour unchanged rather than silently narrowing the tier.
+    """
+    if not a or not b:
+        return False
+    try:
+        from idp_common.evaluation.text_matching import strip_punctuation_space
+
+        la, lb = len(strip_punctuation_space(a)), len(strip_punctuation_space(b))
+    except Exception:  # noqa: BLE001 - keep grounding resilient if eval is absent
+        return True
+    if not la or not lb:
+        return False
+    return min(la, lb) / max(la, lb) >= threshold
+
+
 def _infer_hint(value: Any) -> str:
     """Infer a field's logical type from the value itself (heuristic fallback).
 
@@ -408,6 +449,47 @@ _TIER_PARTIAL = 5
 _TIER_FUZZY = 6
 # Character-level Levenshtein near-miss (OCR noise) — last resort.
 _TIER_LEVENSHTEIN = 7
+# A substring match covering less than _PARTIAL_MIN_COVERAGE of the value — a
+# FRAGMENT. Ranked last, BELOW the whole-string fuzzy tiers, because a line
+# accounting for a tenth of a value is weaker evidence of where that value sits
+# than a line resembling the whole of it (#1519).
+_TIER_WEAK_PARTIAL = 8
+
+#: Coverage below which a substring match is demoted to ``_TIER_WEAK_PARTIAL``
+#: rather than ranked as a real ``_TIER_PARTIAL`` hit (#1519).
+#:
+#: ``_TIER_PARTIAL`` asked only "is this line a substring of the value", with no
+#: floor, and that caused two separate failures. A fragment was **accepted** as the
+#: value's location — a box sat on a single digit for a form id, on a single letter
+#: for an author name, and on a different author entirely. And because any
+#: candidate at all short-circuits the fuzzy and Levenshtein sweeps, a fragment also
+#: **suppressed** the match that was right: where OCR misread one character inside a
+#: sentence, the 10-character column header ``"IDENTIFIED"`` (29% coverage) won over
+#: the correct whole line at 0.9706 similarity, which was never computed.
+#:
+#: **Demotion, not rejection — and that choice is measured.** Rejecting a sub-floor
+#: match looks safer and does more harm than good. Over 265 populated non-list
+#: fields across five real documents, 83 ground via ``_TIER_PARTIAL``; of the 62
+#: below half coverage, **48 matched a line whose value genuinely is on the page**,
+#: spread across several lines (a 3-line address, a specification assembled from
+#: consecutive rows), and only 14 were coincidences. Rejecting them all removes 14
+#: wrong boxes at the cost of 48 right ones. No absolute-size rule does better: the
+#: best tested — at least 2 tokens and 8 characters — reaches exactly break-even, 8
+#: removed for 8 lost, because short real content (``"Carbon plate"``, ``"12
+#: inches"``) is lexically indistinguishable from short junk (``"UN 173"``). The
+#: property that separates them is spatial, not lexical.
+#:
+#: So a fragment is kept and ranked **last** instead. A whole-string match outranks
+#: it where one exists, and it still supplies the only box where one does not.
+#: Measured over 50 sections through the full grounding path: **no box is lost**, 10
+#: move to a better match, and the rest are unchanged.
+#:
+#: 0.5 is where the measured distribution splits. At or above it, matches are
+#: correct prefixes and suffixes of a value spanning two OCR lines — ``"PO Box 307,
+#: Shortland Street"`` for a value continuing ``", Auckland 1140"``. Below it they
+#: are fragments, which may still be the best available evidence but should never
+#: beat a line resembling the whole value.
+_PARTIAL_MIN_COVERAGE = 0.5
 
 # geometry_source tags for the format-bridged tiers (distinct from "ocr" so they
 # are auditable). _TIER_TYPED / variant matches -> "ocr-normalized";
@@ -483,7 +565,11 @@ def _collect_candidates_in_page(
     Matching layers (best tier wins; the caller filters to the most precise):
       1. EXACT/SUBSTRING/PARTIAL on the value AND its format variants (``norm_variants``)
          — variants bridge reformatting (e.g. "04/04/2022" for value "2022-04-04").
-         A variant hit is tagged ``ocr-normalized``.
+         A variant hit is tagged ``ocr-normalized``. A substring match covering
+         less than ``_PARTIAL_MIN_COVERAGE`` of the value is a FRAGMENT and is
+         recorded as ``_TIER_WEAK_PARTIAL`` — still a candidate, but ranked below
+         every whole-string tier, and no longer able to short-circuit the sweeps
+         below (#1519). Read that constant before changing either.
       2. SPAN — value text reconstructed across consecutive lines.
       3. TYPED — date/number/phone parse to the SAME logical value (``hint``); the
          robust bridge for reformatting that text similarity misses. Tagged
@@ -523,7 +609,15 @@ def _collect_candidates_in_page(
             elif nv in norm_text:
                 tier = _TIER_SUBSTRING
             elif norm_text in nv:
-                tier = _TIER_PARTIAL
+                # A line covering less than half the value is a fragment. It is
+                # DEMOTED rather than rejected — see _TIER_WEAK_PARTIAL — so a
+                # whole-string match can outrank it where one exists, and it still
+                # supplies the only box where one does not.
+                tier = (
+                    _TIER_PARTIAL
+                    if len(norm_text) >= _PARTIAL_MIN_COVERAGE * len(nv)
+                    else _TIER_WEAK_PARTIAL
+                )
             else:
                 continue
             if best_tier is None or tier < best_tier:
@@ -561,8 +655,16 @@ def _collect_candidates_in_page(
         candidates.extend(_collect_span_candidates(norm_value, norm_lines, page_num))
         best_so_far = min((t for t, *_ in candidates), default=None)
 
-    if candidates:
-        # Have at least a PARTIAL/TYPED/SPAN hit → fuzzy/Levenshtein can't improve.
+    if candidates and min(t for t, *_ in candidates) < _TIER_FUZZY:
+        # Have a PARTIAL-or-better hit → fuzzy/Levenshtein cannot improve on it.
+        #
+        # ⚠️ The condition is on the tier, not merely on ``candidates`` being
+        # non-empty, and that distinction is the whole of #1519. A bare ``if
+        # candidates`` let a FRAGMENT short-circuit these sweeps: a line covering
+        # 29% of the value returned here, and the line resembling the whole of it
+        # at 0.9706 similarity was never computed, so the box landed on a column
+        # header. A ``_TIER_WEAK_PARTIAL`` candidate must therefore fall through —
+        # it is kept, and a whole-string match simply outranks it.
         return candidates
 
     # Token-overlap fuzzy.
@@ -577,6 +679,14 @@ def _collect_candidates_in_page(
     # Character-level Levenshtein near-miss (last resort; OCR noise).
     for norm_text, line in norm_lines:
         if not norm_text:
+            continue
+        # O(1) exact ceiling before the O(n·m) dynamic program — see
+        # _levenshtein_can_reach. This sweep reaches far more values since the
+        # _PARTIAL_MIN_COVERAGE floor stopped fragments from short-circuiting it,
+        # and the DP against every line on a page is what made that expensive.
+        if not _levenshtein_can_reach(
+            norm_value, norm_text, _LEVENSHTEIN_MATCH_THRESHOLD
+        ):
             continue
         if _levenshtein_sim(norm_value, norm_text) >= _LEVENSHTEIN_MATCH_THRESHOLD:
             match = _build_match(line, page_num, _TIER_LEVENSHTEIN, _SOURCE_FUZZY)

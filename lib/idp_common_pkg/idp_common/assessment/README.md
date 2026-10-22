@@ -1172,7 +1172,35 @@ enhanced_assessment = ground_assessment_geometry(
 Key behaviors:
 
 - **Tiered matching** of each extracted value to OCR `lines[]`: exact → value-in-line →
-  multi-line span (boxes unioned) → line fragment → token-overlap fuzzy (≥ 0.6).
+  multi-line span (boxes unioned) → line fragment covering at least half the value →
+  token-overlap fuzzy (≥ 0.6) → character similarity (≥ 0.8) → **fragment covering less
+  than half the value**, ranked last.
+
+  That last tier is the whole of
+  [#1519](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1519).
+  A fragment used to rank as an ordinary line-fragment match with no size
+  requirement, which put boxes on a single digit for a form id, on a single letter
+  for an author name, and on a different author entirely. It also *suppressed* the
+  right answer: any candidate short-circuits the fuzzy and character passes, so
+  where OCR had misread one character inside a sentence, a 29%-coverage column
+  header won and the line resembling the whole value — 0.9706 similarity — was never
+  computed.
+
+  **It is demoted rather than dropped, and that is measured.** Dropping sub-half
+  fragments removes 14 wrong boxes and 48 right ones: most of them point at a value
+  that genuinely is on the page, spread over several lines (a three-line address, a
+  specification assembled from consecutive rows). No absolute-size rule does better
+  than break-even, because short real content is indistinguishable from short junk —
+  the property that separates them is spatial. Ranking the fragment below the
+  whole-string tiers instead loses **no** box and moves 10 onto a better line, over
+  50 measured sections.
+
+  ⚠️ The cost is real and is paid elsewhere: the character-similarity pass now runs
+  whenever no whole-string candidate exists, and it is an O(n·m) dynamic program per
+  line. `_levenshtein_can_reach` is an **exact** O(1) ceiling in front of it
+  (`similarity ≤ min(len)/max(len)`, computed over the same stripping the scorer
+  applies), without which grounding went from 4.6s to 25.4s over those sections, 98%
+  of it in that one function. Keep the guard if you touch the tiers.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).

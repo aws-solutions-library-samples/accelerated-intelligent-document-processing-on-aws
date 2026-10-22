@@ -1688,6 +1688,15 @@ advisory).
 on multiple rows (e.g. a repeated amount in a table), the i-th assessed list item
 maps to the i-th occurrence in reading order.
 
+**A line resembling the whole value beats a fragment of it.** Matching is tiered,
+and a line that is only a short *piece* of the value — one word of a sentence, one
+figure from a specification — is ranked **last**, below the fuzzy and
+character-similarity passes. It is still used when nothing better is found, so a
+value split across several OCR lines keeps a box; it just no longer outranks a line
+that resembles the value as a whole. Without that ordering, a value whose OCR text
+carried a single misread character could be matched to an unrelated column header
+that happened to share one word with it, and the box would land on the header.
+
 **Format-aware matching.** Extraction often canonicalizes a value to a schema
 format that differs from how it appears in the document (a date extracted as
 `2022-04-04` but printed `04/04/2022`; an amount `1234.00` printed `$1,234.00`; a
