@@ -97,6 +97,14 @@ STAGE_CLASSIFICATION = "classification"
 STAGE_SEGMENTATION = "segmentation"
 STAGE_LABELING = "labeling"
 
+#: Where each call's settings live under ``classification`` (config format 0.9),
+#: for messages that have to name the setting to change.
+STAGE_CALL_PATH = {
+    STAGE_CLASSIFICATION: "one_stage.llm",
+    STAGE_SEGMENTATION: "two_stage.segmentation.llm",
+    STAGE_LABELING: "two_stage.section_classification.llm",
+}
+
 # Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
 # text comes from model output or a service error message, and the issue rides to
 # DynamoDB inside the section map, whose 400 KB item ceiling the assessment path
@@ -138,10 +146,10 @@ def aggregate_page_confidence(values: List[Optional[float]]) -> Optional[float]:
 
 _CLASSIFICATION_METHOD_REMOVED = (
     "ClassificationService.classification_method was removed in config format "
-    "0.8. Set `classification.granularity` ('page' or 'packet') and, if you want "
-    "it explicit, `classification.modality.text` / `.images` in the config "
-    "instead; a stored config carrying the old key is converted on read. The "
-    "resolved value is readable as `service.granularity`."
+    "0.8. Set `classification.one_stage.granularity` ('page' or 'packet') and, if "
+    "you want it explicit, `classification.one_stage.llm.modality.text` / "
+    "`.images` in the config instead; a stored config carrying the old key is "
+    "converted on read. The resolved value is readable as `service.granularity`."
 )
 
 
@@ -207,8 +215,8 @@ def _annotate_image_refusal(
 
     ⚠️ A model that does not accept images refuses the request, and its own
     message does not mention the setting that caused it — so the operator sees a
-    Bedrock validation error with no reason to look at
-    ``classification.modality.images``.
+    Bedrock validation error with no reason to look at the call's
+    ``modality.images``.
 
     This is done at the call rather than refused when a configuration is saved,
     because deciding it up front needs a per-model vision list this repository
@@ -232,11 +240,14 @@ def _annotate_image_refusal(
     if not images or not _looks_like_an_image_refusal(exc):
         return
     model = config.get("model_id") or "this model"
+    setting = (
+        f"classification.{STAGE_CALL_PATH.get(config.get('stage'), 'one_stage.llm')}"
+        ".modality.images"
+    )
     hint = (
         f"This classification request carried {images} page image(s) because "
-        f"classification.modality.images is on. If {model} does not accept "
-        f"images, set classification.modality.images to false, or choose a model "
-        f"that does."
+        f"{setting} is on. If {model} does not accept images, set {setting} to "
+        f"false, or choose a model that does."
     )
     try:
         exc.args = (f"{exc}\n{hint}",) + tuple(exc.args[1:])
@@ -1817,16 +1828,18 @@ class ClassificationService:
                     f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
                 )
                 logger.info(
-                    "classification.modality turned %s on but the task prompt had "
-                    "no %s placeholder; appended one.",
+                    "classification.%s.modality turned %s on but the task prompt "
+                    "had no %s placeholder; appended one.",
+                    STAGE_CALL_PATH[stage or self._reader_stage()],
                     element,
                     placeholder,
                 )
             elif not flag and present:
                 result = self._strip_placeholder(result, placeholder, element)
                 logger.info(
-                    "classification.modality turned %s off; removed %s from the "
+                    "classification.%s.modality turned %s off; removed %s from the "
                     "task prompt so the content is neither sent nor paid for.",
+                    STAGE_CALL_PATH[stage or self._reader_stage()],
                     element,
                     placeholder,
                 )
@@ -2947,7 +2960,7 @@ class ClassificationService:
             # ⚠️ Enriched HERE rather than at a call site, because this is the one
             # choke point every classification request goes through — page-level,
             # packet, Stage A segmentation and Stage B labeling. The same
-            # `classification.modality.images` setting attaches images on the
+            # per-call `modality.images` setting attaches images on the
             # first three, and page granularity is the DEFAULT, so a hint added
             # only to the packet path would miss the common case. Fixing the
             # instance and not the class is the recurring defect this repository
@@ -4914,8 +4927,8 @@ class ClassificationService:
         if loaded and len(loaded) > image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD:
             logger.info(
                 "This packet call carries %d images, above Bedrock's %d-image "
-                "threshold, so each will be downscaled to %dpx. Reduce "
-                "classification.packet.window_pages to keep full resolution.",
+                "threshold, so each will be downscaled to %dpx. Reduce the packet "
+                "window_pages of this call to keep full resolution.",
                 len(loaded),
                 image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD,
                 image.BEDROCK_MANY_IMAGE_MAX_DIMENSION,

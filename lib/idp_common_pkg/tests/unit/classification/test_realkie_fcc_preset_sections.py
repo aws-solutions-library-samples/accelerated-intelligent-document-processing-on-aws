@@ -140,7 +140,7 @@ def test_without_the_setting_a_page_called_a_start_splits_the_invoice(
     """The default strategy reproduces the split: pages [1, 2], [3, 4] and [5]."""
     raw = _load(relative_path)
     classification = raw.get("classification") or {}
-    classification.pop("sectionSplitting", None)
+    (classification.get("file_shape") or {}).pop("sectionSplitting", None)
     raw["classification"] = classification
     config = _stored_config(raw)
     assert config.classification.file_shape.sectionSplitting == "llm_determined"

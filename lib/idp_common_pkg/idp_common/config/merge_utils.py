@@ -427,7 +427,7 @@ def merge_config_with_defaults(
 
     Example:
         user_config = {
-            "classification": {"model": "us.amazon.nova-lite-v1:0"},
+            "classification": {"one_stage": {"llm": {"model": "us.amazon.nova-lite-v1:0"}}},
             "classes": [...]
         }
         result = merge_config_with_defaults(user_config, "pattern-2")

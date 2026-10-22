@@ -1559,7 +1559,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
     task_prompt_topk: str = Field(
         default="",
         description=(
-            "Instruction block spliced into classification.task_prompt in 'topk' "
+            "Instruction block spliced into this call's task prompt in 'topk' "
             "mode (populated from system defaults). Editable like every other "
             "prompt here. `{TOP_K_CANDIDATES}` is substituted with the resolved "
             "candidate count. Inserted BEFORE the document/cache-point marker so "
@@ -1570,7 +1570,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
     task_prompt_verbalized: str = Field(
         default="",
         description=(
-            "Instruction block spliced into classification.task_prompt in "
+            "Instruction block spliced into this call's task prompt in "
             "'verbalized' mode (populated from system defaults), on the same "
             "splice rules as task_prompt_topk."
         ),
@@ -1687,7 +1687,7 @@ class ClassificationModalityConfig(BaseModel):
     @field_validator("text", "images", mode="before")
     @classmethod
     def parse_tristate(cls, v: Any, info: ValidationInfo) -> Optional[bool]:
-        return _parse_tristate_bool(v, f"classification.modality.{info.field_name}")
+        return _parse_tristate_bool(v, f"modality.{info.field_name}")
 
     @model_validator(mode="after")
     def refuse_no_modality(self) -> "ClassificationModalityConfig":
@@ -1703,7 +1703,7 @@ class ClassificationModalityConfig(BaseModel):
         """
         if self.text is False and self.images is False:
             raise ValueError(
-                "classification.modality has both text and images turned off, "
+                "modality has both text and images turned off for this call, "
                 "which leaves nothing to classify. Turn at least one on."
             )
         return self
@@ -1763,8 +1763,7 @@ class ClassificationPacketConfig(BaseModel):
             return int(v)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"classification.packet.{info.field_name} must be a whole number "
-                f"of pages, got {v!r}"
+                f"packet.{info.field_name} must be a whole number of pages, got {v!r}"
             ) from exc
 
     @model_validator(mode="after")
@@ -1778,7 +1777,7 @@ class ClassificationPacketConfig(BaseModel):
         """
         if self.window_pages and self.overlap_pages >= self.window_pages:
             raise ValueError(
-                f"classification.packet.overlap_pages ({self.overlap_pages}) must "
+                f"packet.overlap_pages ({self.overlap_pages}) must "
                 f"be smaller than window_pages ({self.window_pages}); an overlap "
                 f"at least as large as the window means each window covers no new "
                 f"pages, so a long packet would cost one call per page."
@@ -4154,7 +4153,7 @@ def _suggest_path(
        ``extraction``, so ``extraction.enabled`` gets no hint rather than one of the
        eight, and ``hitl.model`` reaches the root only to find eleven equally near
        candidates and decline, rather than being answered with
-       ``classification.model``.
+       ``summarization.model``.
     2. *Misspelling.* Failing that, a close name among the **siblings** — the fields
        of the model the key was actually written in.
 

@@ -1066,9 +1066,33 @@ class TestAModelRefusingImagesNamesTheSetting:
         raised = self._invoke(monkeypatch, err, [{"image": {}}])
         message = str(raised)
         assert self.REFUSAL in message, "the original error must survive"
-        assert "classification.modality.images" in message
+        assert "classification.one_stage.llm.modality.images" in message
         assert "nova-micro" in message
         assert isinstance(raised, ClientError), "the class must be preserved"
+
+    @pytest.mark.parametrize(
+        ("stage", "setting"),
+        [
+            ("classification", "classification.one_stage.llm.modality.images"),
+            (
+                "segmentation",
+                "classification.two_stage.segmentation.llm.modality.images",
+            ),
+            (
+                "labeling",
+                "classification.two_stage.section_classification.llm.modality.images",
+            ),
+        ],
+    )
+    def test_the_hint_names_the_setting_of_the_call_that_failed(self, stage, setting):
+        """Each call has its own modality (config format 0.9), so the hint must
+        name the one that sent the images — pointing a two-stage user at the
+        one-stage setting would send them to a block their strategy never runs."""
+        from idp_common.classification.service import _annotate_image_refusal
+
+        exc = ValueError(self.REFUSAL)
+        _annotate_image_refusal(exc, [{"image": {}}], {**self.CONFIG, "stage": stage})
+        assert setting in str(exc)
 
     def test_the_model_name_comes_from_the_key_production_sets(self, monkeypatch):
         """`model_id`, not `model`: `_get_classification_config` builds
@@ -1126,7 +1150,7 @@ class TestAModelRefusingImagesNamesTheSetting:
             service._invoke_bedrock_model(
                 content=[{"image": {}}], config=dict(self.CONFIG)
             )
-        assert "classification.modality.images" in str(excinfo.value)
+        assert "classification.one_stage.llm.modality.images" in str(excinfo.value)
 
 
 def _segments_reply(*segments: Dict[str, Any]) -> Dict[str, Any]:

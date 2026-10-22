@@ -399,5 +399,5 @@ class TestTheRemovedAttributeRefuses:
         with pytest.raises(AttributeError) as excinfo:
             _ = service.classification_method
         message = str(excinfo.value)
-        assert "classification.granularity" in message
+        assert "classification.one_stage.granularity" in message
         assert "service.granularity" in message

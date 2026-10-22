@@ -27,8 +27,9 @@ use_bda: false
 notes: "RealKIE-FCC-Verified 1S-TopK settings (simple integrated extraction+confidence in a single LLM call). Summarization and chat disabled by default."
 
 classification:
-  # Every file in this test set is one invoice; use llm_determined for files that hold several documents.
-  sectionSplitting: disabled
+  file_shape:
+    # Every file in this test set is one invoice; use llm_determined for files that hold several documents.
+    sectionSplitting: disabled
 
 extraction:
   mode: simple            # non-agentic single-pass extraction
