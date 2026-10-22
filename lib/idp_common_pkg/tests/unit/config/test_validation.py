@@ -1277,3 +1277,38 @@ class TestNestedClassificationIsValidated:
         assert [e.split(" ")[0] for e in result["errors"]] == [
             "classification.one_stage.llm.model"
         ]
+
+
+class TestValidateReportsTheClassificationConversion:
+    """A pre-0.9 file validates, and the user is told it was converted."""
+
+    def test_a_flat_file_is_reported_as_converted(self):
+        from idp_common.config.merge_utils import validate_config
+
+        result = validate_config(
+            {"classification": {"model": "us.amazon.nova-lite-v1:0"}, "classes": []}
+        )
+        notices = [w for w in result["warnings"] if "pre-0.9 flat layout" in w]
+        assert notices and "model" in notices[0]
+
+    def test_a_page_limit_with_boundary_detection_is_called_out(self):
+        from idp_common.config.merge_utils import validate_config
+
+        result = validate_config(
+            {
+                "classification": {
+                    "maxPagesForClassification": "2",
+                    "sectionSplitting": "llm_determined",
+                },
+                "classes": [],
+            }
+        )
+        assert any("one document per file" in w for w in result["warnings"])
+
+    def test_a_nested_file_gets_no_conversion_notice(self):
+        from idp_common.config.merge_utils import validate_config
+
+        result = validate_config(
+            {"classification": {"one_stage": {"granularity": "page"}}, "classes": []}
+        )
+        assert not any("flat layout" in w for w in result["warnings"])
