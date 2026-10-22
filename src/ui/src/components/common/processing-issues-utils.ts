@@ -44,11 +44,13 @@ const FAILURE_CODES = new Set([
 /**
  * Codes at `info` severity that mean something was actually RECOVERED.
  *
- * Severity alone cannot carry this. Four backend codes are `info`, and only this
- * one reports a repair: the other three — `extraction_sparse`
- * ("possible silent extraction loss"), `extraction_off_schema_fields` (fields
- * dropped before assessment) and `assessment_geometry_incomplete` (scored fields
- * with no bounding box) — all report something *missing*. Labelling those
+ * Severity alone cannot carry this. Only `assessment_recovered_with_retries`
+ * reports a repair; every other `info` code reports something *missing* —
+ * `extraction_sparse` ("possible silent extraction loss"),
+ * `extraction_off_schema_fields` (fields dropped before assessment),
+ * `extraction_row_count_unverified` (no OCR evidence to check a row count
+ * against) and `assessment_geometry_incomplete` (scored fields with no bounding
+ * box). The gate owns the enumeration. Labelling those
  * "Auto-recovered" tells an operator the opposite of what happened, and the two
  * extraction codes are the ones most worth looking at, so the mislabel lands
  * where it costs most. `extraction_sparse` is also by far the most common issue
