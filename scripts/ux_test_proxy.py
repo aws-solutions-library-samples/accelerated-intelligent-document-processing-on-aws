@@ -18,14 +18,16 @@ connections.
 What it passes
 --------------
 * **CONNECT to a listed ``host:443``.** The list is exact host names: the review
-  stack's Cognito, SSM, API Gateway and Lambda Function URL hosts and its buckets
-  by exact name (each on its regional host and, in the commercial partition, on
-  its global one too), derived by :func:`stack_rules` from the stack's own UI
+  stack's Cognito, SSM, API Gateway and Lambda Function URL hosts and its buckets by
+  exact name (each on its regional host and, in the commercial partition, on its
+  global one too), derived by :func:`stack_rules` from the stack's own UI
   environment, plus :data:`EGRESS_ALLOWED_STATIC_HOSTS`. Every address the name
-  resolves to must be public, and the tunnel connects to the address that was
-  checked rather than looking the name up again, so a name cannot pass the check
-  on one answer and connect on another. A tunnel is opaque TLS: the proxy sees
-  host names, never paths or bodies, which is why the list is per host and short.
+  resolves to must be public or, for a name ending in ``.amazonaws.com``, every one
+  must be a VPC endpoint's address (:data:`VPC_ENDPOINT_ALLOWED_NETWORKS`). The
+  tunnel connects to the address that was checked rather than looking the name up
+  again, so a name cannot pass the check on one answer and connect on another. A
+  tunnel is opaque TLS: the proxy sees host names, never paths or bodies, which is
+  why the list is per host and short.
 * **GET and HEAD of ``http://localhost:3000/...``, in local-build mode.** With
   ``--build-dir`` the proxy serves the MR's static build itself, so the browser
   loads the MR's UI without any web server that runs MR code. Paths are resolved
@@ -34,9 +36,9 @@ What it passes
 Everything else is refused with a one-line body and recorded, one JSON line per
 refusal, with a reason from a fixed vocabulary (:data:`REFUSAL_REASONS`): any
 other host or port, a name that resolves to an address that is not public
-(instance metadata, loopback, private, link-local) unless it is an AWS service name
-answering a VPC endpoint's address, plain HTTP to anything but the
-local build, a request that is not a proxy request, any method but GET and HEAD,
+(instance metadata, loopback, private, link-local) unless it is an AWS service
+name answering a VPC endpoint's address, plain HTTP to anything but the local
+build, a request that is not a proxy request, any method but GET and HEAD,
 a path outside the build, a tunnel beyond the cap, and a request the proxy cannot
 read: one ``http.server`` cannot parse, a head longer than :data:`HEAD_LIMIT`
 bytes, or one still incomplete :data:`HEAD_TIMEOUT` seconds after the proxy began
@@ -66,11 +68,16 @@ Bounds worth knowing
 * A path-style S3 URL (``s3.<region>.amazonaws.com/<bucket>/...``) is refused:
   its host names no bucket, so listing it would admit every bucket. The backend
   presigns that way only for uploads, which the unattended test never makes.
-* Names are resolved by the system resolver. The public-address rule is what
-  stands between a name on the list and an internal address; it does not make the
-  resolver trustworthy. An IP address is never tunnelled to, in any spelling: a
-  permitted name must end in a label that begins with a letter, and a rules file
-  that lists anything else is refused.
+* Names are resolved by the system resolver. The public-address rule is what stands
+  between a name on the list and an internal address; it does not make the resolver
+  trustworthy. For a listed name ending in ``.amazonaws.com`` an answer wholly
+  within :data:`VPC_ENDPOINT_ALLOWED_NETWORKS` is accepted as a VPC endpoint's, so
+  on that set it is the exact name, and the TLS certificate the browser checks
+  through the tunnel, that keep the page off other internal hosts. A dual-stack
+  endpoint that answers a private IPv4 address beside a public IPv6 one is a mix and
+  is refused. An IP address is never tunnelled to, in any spelling: a permitted name
+  must end in a label that begins with a letter, and a rules file that lists
+  anything else is refused.
 * A client is held to a deadline, a size and a line count for each request head
   as a whole, not for each read, and at most twice ``--max-tunnels`` connections
   are open at once, so a slow or oversized request costs one connection for at

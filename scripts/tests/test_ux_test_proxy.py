@@ -429,6 +429,7 @@ def test_an_aws_service_name_answering_a_vpc_endpoint_address_is_tunnelled(
     sock.close()
     assert status == 200
     assert running.connects == [("10.0.12.34", 443)]
+    assert running.reasons() == []
 
 
 @pytest.mark.unit
