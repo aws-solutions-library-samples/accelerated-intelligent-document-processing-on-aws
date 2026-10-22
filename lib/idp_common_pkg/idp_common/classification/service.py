@@ -241,7 +241,7 @@ def _annotate_image_refusal(
         return
     model = config.get("model_id") or "this model"
     setting = (
-        f"classification.{STAGE_CALL_PATH.get(config.get('stage'), 'one_stage.llm')}"
+        f"classification.{STAGE_CALL_PATH.get(str(config.get('stage')), 'one_stage.llm')}"
         ".modality.images"
     )
     hint = (
