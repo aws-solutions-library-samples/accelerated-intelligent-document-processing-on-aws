@@ -594,7 +594,7 @@ def merge_results(parts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 _SCOPE_ORDER = {
     "claude": ("ambient", "scoped"),
-    "render": ("unavailable", "scoped"),
+    "render": ("ambient", "unavailable", "scoped"),
 }
 
 

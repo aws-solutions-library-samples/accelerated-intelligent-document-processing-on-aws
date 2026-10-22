@@ -1581,6 +1581,7 @@ _STORY_MAKE_VARIABLES = (
     "DOCS",
     "RUN_USD",
     "RERUNS",
+    "NARRATE",
     "PAIR",
     "RUN",
     "CHECK",
@@ -1635,6 +1636,7 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "DOCS=abc123",
         "RUN_USD=5",
         "RERUNS=0",
+        "NARRATE=1",
     )
     assert code == 0, err[-400:]
     assert argv == [
@@ -1663,6 +1665,7 @@ def test_the_stories_target_hands_each_variable_the_skill_names_to_its_option() 
         "5",
         "--reruns",
         "0",
+        "--narrate-with-own-credentials",
     ]
     code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812", "ALL=yes")
     assert code == 0, err[-400:]
@@ -1680,6 +1683,19 @@ def test_the_stories_target_posts_only_for_an_affirmative_post(
     code, argv, err = _recipe("ai-ux-test-stories-local", "MR=812", f"POST={value}")
     assert code == 0, err[-400:]
     assert ("--post" in argv) is posts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "narrates"),
+    [("", False), ("0", False), ("no", False), ("1", True), ("yes", True)],
+)
+def test_the_stories_target_narrates_with_own_credentials_only_when_asked(
+    value: str, narrates: bool
+) -> None:
+    code, argv, err = _recipe("ai-ux-test-stories-local", "STORY=x", f"NARRATE={value}")
+    assert code == 0, err[-400:]
+    assert ("--narrate-with-own-credentials" in argv) is narrates
 
 
 @pytest.mark.unit

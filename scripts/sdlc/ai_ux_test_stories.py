@@ -49,7 +49,10 @@ Properties it is built around
    directory under ``/tmp`` and so a fresh Chrome profile, the egress proxy as
    the browser's only network path, one socket audit for each Chrome from its
    launch until after it has exited, the persona signed in over DevTools before
-   anything records, and a Bedrock-only session minted for that flow alone. The
+   anything records, and a Bedrock-only session minted for that flow alone. Render
+   gets a Polly-only session, or, when none can be minted, no credential and no
+   narration, unless ``--narrate-with-own-credentials`` asks for the run's own on a
+   developer's machine. The
    browser is closed, its audit taken and its proxy stopped before the next
    flow starts, and nothing is rendered until every Chrome is gone. A socket the
    browser must not have opened, or a process of its uid that outlived it, fails
@@ -156,7 +159,8 @@ Environment
 ``CI_PIPELINE_ID``, ``CI_PIPELINE_SOURCE``, ``CI_JOB_URL``, ``CI``, ``GITLAB_CI``
     Supplied by GitLab CI: the deadline counts from the job's start, a newer MR
     head stands this pipeline down, ``--all`` is the nightly shard where ``CI``
-    or ``GITLAB_CI`` is set, and ``--dev-unconfined`` is refused there. A digest
+    or ``GITLAB_CI`` is set, and ``--dev-unconfined`` and
+    ``--narrate-with-own-credentials`` are refused there. A digest
     reads its history and posts to Slack only where ``CI_PIPELINE_SOURCE`` is
     ``schedule``, leaves its own pipeline out of the history, and links its job.
 """
@@ -3574,11 +3578,27 @@ class StoryRun:
         return "\n".join(lines) + "\n"
 
     def _polly_session(self, attempt: Attempt) -> dict[str, str] | None:
-        """Render's Polly-only session, minted now, or None: render never gets more."""
+        """Render's Polly-only session, minted now, or None.
+
+        Render gets more only with ``--narrate-with-own-credentials``, which main
+        refuses in CI: when no Polly-only session can be minted, it then gets the
+        run's own credentials, recorded as ``ambient``, rather than none.
+        """
         ready = self.prepared
         polly = session.mint_polly(
             ready.sts, ready.identity, f"ux-story-render-{len(self.attempts)}"
         )
+        if polly is None and self.args.narrate_with_own_credentials:
+            own = agent.aws_env_from(self.runtime.environ)
+            if own.get("AWS_ACCESS_KEY_ID") and own.get("AWS_SECRET_ACCESS_KEY"):
+                self.scrub.redactor.add(*own.values())
+                self.scopes["render"] = "ambient"
+                self.say(
+                    f"WARNING: no Polly-only session could be minted for "
+                    f"{attempt.context.key}, so its video is narrated with the run's "
+                    "own AWS credentials (credential_scope.render: ambient)"
+                )
+                return own
         if polly is None:
             self.scopes["render"] = "unavailable"
             self.say(
@@ -5083,6 +5103,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-narration", action="store_true", help="render videos without a voice"
     )
     parser.add_argument(
+        "--narrate-with-own-credentials",
+        action="store_true",
+        help=(
+            "when no Polly-only session can be minted, narrate with this run's own "
+            "AWS credentials rather than render without a voice; refused wherever "
+            "CI or GITLAB_CI is set"
+        ),
+    )
+    parser.add_argument(
         "--max-upload-mb",
         type=int,
         default=95,
@@ -5195,6 +5224,13 @@ def main(argv: list[str] | None = None, runtime: Runtime | None = None) -> int:
             print(
                 "FAILED: --dev-unconfined is for a development host's own Chrome, "
                 f"and {ci} is set, so this is CI",
+                flush=True,
+            )
+            return 1
+        if args.narrate_with_own_credentials and ci:
+            print(
+                "FAILED: --narrate-with-own-credentials is for a developer's own "
+                f"machine, and {ci} is set, so this is CI",
                 flush=True,
             )
             return 1

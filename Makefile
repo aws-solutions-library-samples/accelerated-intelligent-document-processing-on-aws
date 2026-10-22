@@ -1717,7 +1717,8 @@ ai-ux-test-stories-local: ## First-time-user stories in Docker, a dry run unless
 		$(if $(PORT),--port $(PORT)) $(if $(REPLAY),--replay "$$REPLAY") \
 		$(if $(STACK),--stack $(STACK)) $(if $(WEB_URL),--web-url $(WEB_URL)) \
 		$(if $(DOCS),--docs $(DOCS)) $(if $(RUN_USD),--run-usd $(RUN_USD)) \
-		$(if $(RERUNS),--reruns $(RERUNS)) $(EXTRA_ARGS)
+		$(if $(RERUNS),--reruns $(RERUNS)) \
+		$(if $(filter 1 true yes y on,$(NARRATE)),--narrate-with-own-credentials) $(EXTRA_ARGS)
 
 ai-ux-test-stories-pair: ## Start the confined browser for one flow and print the command for a Claude session you start (STORY=<id> [AS=] [STACK=] [WEB_URL=] [PAIR=full|keychain])
 	@$(if $(STORY),,$(error set STORY=<id>, e.g. make ai-ux-test-stories-pair STORY=route-folder-to-profile AS=platform-admin))

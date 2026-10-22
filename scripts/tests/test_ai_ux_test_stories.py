@@ -1933,6 +1933,67 @@ def test_post_needs_every_flows_audit_clean(harness: StoryHarness) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("variable", ["CI", "GITLAB_CI"])
+def test_narrating_with_own_credentials_is_refused_wherever_ci_is_set(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str], variable: str
+) -> None:
+    harness.environ[variable] = "true"
+    assert harness.main("--narrate-with-own-credentials") == 1
+    assert harness.calls == []
+    assert _lines(capsys) == [
+        "FAILED: --narrate-with-own-credentials is for a developer's own machine, "
+        f"and {variable} is set, so this is CI"
+    ]
+
+
+@pytest.mark.unit
+def test_own_credentials_narrate_a_video_when_no_polly_session_can_be_minted(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a host that cannot re-assume its own role, the opt-in hands render the
+    run's own credentials, says so once and records it, rather than none."""
+    _bad_and_good(harness)
+    harness.sts.refuse = True
+    assert harness.main("--narrate-with-own-credentials") == 0
+    (rendered,) = harness.render_kwargs
+    assert rendered["narration"] is True
+    assert rendered["aws"] == {
+        "AWS_ACCESS_KEY_ID": AWS_KEY_ID,
+        "AWS_SECRET_ACCESS_KEY": AWS_KEY_TEXT,
+        "AWS_SESSION_TOKEN": AWS_SESSION_TEXT,
+    }
+    assert harness.record()["credential_scope"]["render"] == "ambient"
+    lines = _lines(capsys)
+    said = [line for line in lines if "narrated with the run's own AWS" in line]
+    assert len(said) == 1 and said[0].startswith("WARNING:")
+    assert AWS_KEY_TEXT not in "\n".join(lines)
+
+
+@pytest.mark.unit
+def test_without_the_opt_in_a_refused_polly_session_renders_without_a_voice(
+    harness: StoryHarness,
+) -> None:
+    _bad_and_good(harness)
+    harness.sts.refuse = True
+    assert harness.main() == 0
+    (rendered,) = harness.render_kwargs
+    assert rendered["narration"] is False
+    assert rendered["aws"] == {}
+    assert harness.record()["credential_scope"]["render"] == "unavailable"
+
+
+@pytest.mark.unit
+def test_the_opt_in_changes_nothing_when_a_polly_session_is_minted(
+    harness: StoryHarness,
+) -> None:
+    _bad_and_good(harness)
+    assert harness.main("--narrate-with-own-credentials") == 0
+    (rendered,) = harness.render_kwargs
+    assert rendered["aws"]["AWS_ACCESS_KEY_ID"] == POLLY[0]
+    assert harness.record()["credential_scope"]["render"] == "scoped"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("variable", ["CI", "GITLAB_CI"])
 def test_dev_unconfined_is_refused_wherever_ci_is_set(
     harness: StoryHarness, capsys: pytest.CaptureFixture[str], variable: str
 ) -> None:

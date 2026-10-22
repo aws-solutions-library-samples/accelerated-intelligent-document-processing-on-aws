@@ -961,6 +961,31 @@ def test_merging_results_refuses_overlap_mixed_revisions_and_bad_shapes() -> Non
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("renders", "merged_render"),
+    [
+        (("scoped", "ambient"), "ambient"),
+        (("unavailable", "ambient"), "ambient"),
+        (("scoped", "unavailable"), "unavailable"),
+        (("scoped", "scoped"), "scoped"),
+    ],
+)
+def test_a_merged_runs_render_scope_is_its_weakest_with_own_credentials_weakest(
+    renders: tuple[str, str], merged_render: str
+) -> None:
+    """Narrating with the run's own credentials is the broadest render scope, so a
+    shard that did makes the merged run's render scope ``ambient``."""
+    first = _run(
+        _context(KEY), index=1, scope={"claude": "scoped", "render": renders[0]}
+    )
+    second = _run(
+        _context(OTHER_KEY), index=2, scope={"claude": "scoped", "render": renders[1]}
+    )
+    merged = story_digest.merge_runs([first, second])
+    assert merged["credential_scope"]["render"] == merged_render
+
+
+@pytest.mark.unit
 def test_merged_runs_concatenate_flows_sum_spend_and_keep_the_first_shards_facts() -> (
     None
 ):

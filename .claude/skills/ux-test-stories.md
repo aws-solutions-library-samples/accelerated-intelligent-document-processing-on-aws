@@ -157,10 +157,13 @@ deliberately, with
 **Credentials by host.** An SSO or IAM-user session cannot re-assume its own role,
 so `claude` runs on the exported session: a `WARNING:` line says so before it
 starts, `story-run.json` records `credential_scope.claude: ambient`, and the video
-has no narration. An EC2 instance role is scoped only when its trust policy lets it
-assume itself. `UX_TEST_UI_ENV` is derived on the host from the stack's
-`WebUITestEnvFile` output, and the web URL from its `ApplicationWebURL` output;
-`WEB_URL=` names it instead.
+has no narration. `NARRATE=1` (`--narrate-with-own-credentials`) narrates it with
+your own credentials instead, on your own machine only: a second `WARNING:` line
+says so, `story-run.json` records `credential_scope.render: ambient`, and the run is
+refused wherever `CI` or `GITLAB_CI` is set. An EC2 instance role is scoped only
+when its trust policy lets it assume itself. `UX_TEST_UI_ENV` is derived on the host
+from the stack's `WebUITestEnvFile` output, and the web URL from its
+`ApplicationWebURL` output; `WEB_URL=` names it instead.
 
 ## Unattended runs in Docker
 
@@ -185,8 +188,9 @@ py scripts\ux_runner\run_in_docker.py stories --all --jobs 3
 The make variables are the options of the Windows form: `STORY=` is `--story`,
 `AS=` is `--as`, `MR=` is `--mr`, `ALL=1` is `--all`, `JOBS=` is `--jobs`,
 `VIDEO=` is `--video`, `POST=1` is `--post`, `STACK=` is `--stack` and `WEB_URL=`
-is `--web-url`. `DOCS=`, `RUN_USD=` and `RERUNS=` are the orchestrator's `--docs`,
-`--run-usd` and `--reruns`, which the Windows form passes through to it.
+is `--web-url`. `DOCS=`, `RUN_USD=`, `RERUNS=` and `NARRATE=1` are the
+orchestrator's `--docs`, `--run-usd`, `--reruns` and
+`--narrate-with-own-credentials`, which the Windows form passes through to it.
 
 **What a run does.** It is a dry run unless `POST=1`, which also needs
 `GITLAB_REVIEW_TOKEN`, `CI_API_V4_URL` and `CI_PROJECT_ID` exported as the CI
