@@ -134,14 +134,14 @@ def test_current_reader_resolves_the_compat_copy_like_the_original(
     )
 
 
-def test_two_stage_blocks_change_only_where_the_migration_copies_flat_settings(built):
-    """The two_stage drift is unread by single_pass, but it is pinned, not assumed."""
+def test_a_two_stage_model_of_its_own_is_kept_under_the_flat_model(built):
+    """The cell sets only the one-stage model, so the two-stage calls keep the
+    defaults' model. The flat `model` in the compat copy replaces a two-stage
+    model only where that call followed the one-stage model, so the copy
+    resolves to exactly the original — pinned, not assumed."""
     original = built["classification-model-haiku45"]
     compat, _ = classification_flat.with_flat_classification(original)
-    assert _diff(_resolved(original), _resolved(compat)) == [
-        "two_stage.section_classification.llm.model",
-        "two_stage.segmentation.llm.model",
-    ]
+    assert _diff(_resolved(original), _resolved(compat)) == []
     assert _resolved(compat)["strategy"] == "single_pass"
 
 
