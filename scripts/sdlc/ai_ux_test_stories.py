@@ -34,7 +34,8 @@ Modes
     server, a person reads along, and the host stops the container and judges.
 ``--judge RUN_DIR [--check] [--summary] [--audit FILE]``
     Re-judge a run from ``story-run.json`` and its journals: ``results.json`` and
-    ``section.md``, byte for byte what the run wrote. Standard library only, so it
+    ``section.md``, byte for byte what the run wrote, and ``report.html``, the run
+    as a page to browse (``ux_runner.story_report``). Standard library only, so it
     runs on any host.
 ``--merge DIR... --out DIR`` and ``--digest DIR --out DIR``
     Several shards' runs as one, and the nightly digest over them, compared with
@@ -223,6 +224,7 @@ from ux_runner import (  # noqa: E402
     story_inputs,
     story_prompt,
     story_relay,
+    story_report,
     story_section,
     story_verdict,
     tool_profiles,
@@ -2686,6 +2688,9 @@ def judge_run_dir(
     the computed hashes kept, which is all the run itself writes them with, so a
     run directory re-judged anywhere gives the same bytes. With ``check`` nothing
     is written and each file that would change is listed with where it differs.
+    Without it, ``report.html`` is written from them as well (:func:`write_report`),
+    which is every place a run, a merge, a digest or a re-judge finishes a run
+    directory.
     """
     record = _read_json(run_dir / story_verdict.RUN_FILE, story_verdict.RUN_FILE)
     if not isinstance(record, dict):
@@ -2711,7 +2716,29 @@ def judge_run_dir(
                 differences.append((name, where))
         else:
             artifacts.write_artifact(target, text)
+    if not check:
+        write_report(run_dir)
     return Judged(record, results, found, differences)
+
+
+def write_report(run_dir: Path) -> Path | None:
+    """``report.html`` in ``run_dir``, the run as one page to browse; None when it
+    could not be written, which one ``WARNING:`` line says and nothing else heeds.
+
+    It is made from the redacted files already written and from the harness's
+    catalogue, which gives each story's intent. No outcome, record or exit code
+    depends on it.
+    """
+    try:
+        known = story_report.load_catalogue(catalogue_path())
+        return story_report.write_report(run_dir, catalogue=known)
+    except Exception as error:
+        print(
+            f"WARNING: {story_report.REPORT_FILE} was not written: "
+            f"{story_report.failure(error)}",
+            flush=True,
+        )
+        return None
 
 
 def _judge_scrub(environ: Mapping[str, str]) -> artifacts.Scrub:

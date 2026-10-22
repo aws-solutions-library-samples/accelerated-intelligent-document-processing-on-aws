@@ -982,7 +982,7 @@ def test_what_the_docker_runner_holds_by_value_is_what_the_container_side_holds(
     if sdlc not in sys.path:
         sys.path.insert(0, sdlc)
     import ai_ux_test_stories as orchestrator  # type: ignore[import-not-found]
-    from ux_runner import agent, session, story_pair, tool_profiles
+    from ux_runner import agent, session, story_pair, story_report, tool_profiles
     from ux_runner import run_in_docker as rid
 
     assert rid.STORIES_ENTRY == orchestrator.ENTRY
@@ -994,6 +994,7 @@ def test_what_the_docker_runner_holds_by_value_is_what_the_container_side_holds(
     )
     assert rid.STORY_RUN_FILE == story_verdict.RUN_FILE
     assert rid.STORY_RESULTS_FILE == story_verdict.RESULTS_FILE
+    assert rid.STORY_REPORT_FILE == story_report.REPORT_FILE
     assert rid.STORY_RUN_SCHEMA == story_verdict.RUN_SCHEMA
     assert rid.STORY_INPUTS_SCHEMA == orchestrator.INPUTS_SCHEMA
     assert rid.STORY_INPUTS_BYTES == orchestrator.story_inputs.INPUTS_MAX_BYTES
@@ -1326,6 +1327,13 @@ GRAPH: dict[str, set[str]] = {
     "ux_runner.story_digest": {
         "ux_runner.python_floor",
         "ux_runner.section",
+        "ux_runner.story_verdict",
+        "ux_runner.ui_change",
+    },
+    "ux_runner.story_report": {
+        "ux_runner.python_floor",
+        "ux_runner.section",
+        "ux_runner.stories",
         "ux_runner.story_verdict",
         "ux_runner.ui_change",
     },

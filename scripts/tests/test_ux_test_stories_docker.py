@@ -1023,6 +1023,7 @@ def test_the_run_ends_with_one_line_per_flow_and_no_text_from_the_run(
     artifacts = tmp_path / "ux-test-stories"
     artifacts.mkdir()
     (artifacts / "section.md").write_text(MODEL_TEXT)
+    (artifacts / rid.STORY_REPORT_FILE).write_text(MODEL_TEXT)
     (artifacts / "flows" / "a@b").mkdir(parents=True)
     (artifacts / "flows" / "a@b" / "ux-story-1.mp4").write_bytes(b"\0")
     document = _results(
@@ -1045,6 +1046,10 @@ def test_the_run_ends_with_one_line_per_flow_and_no_text_from_the_run(
     ]
     assert any("2 entries" in line and line.startswith("WARNING:") for line in lines)
     assert f"video:      {artifacts / 'flows' / 'a@b' / 'ux-story-1.mp4'}" in lines
+    assert lines[:2] == [
+        f"section.md: {artifacts / 'section.md'}",
+        f"report.html: {artifacts / rid.STORY_REPORT_FILE}",
+    ]
 
 
 @pytest.mark.unit

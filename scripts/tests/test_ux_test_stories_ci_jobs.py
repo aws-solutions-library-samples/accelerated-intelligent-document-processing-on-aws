@@ -1384,6 +1384,29 @@ def test_each_job_keeps_its_artifacts_where_it_writes_them(
 
 
 @pytest.mark.unit
+def test_every_story_jobs_report_lands_in_the_artifacts_it_keeps(
+    jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
+) -> None:
+    """A run, a shard and the digest each write ``report.html`` into the directory
+    they finish, so it reaches the job's artifacts with no step of its own; that
+    directory must be one the job keeps, as long as it keeps the rest."""
+    report = orchestrator.story_report.REPORT_FILE
+    for name, runs in _parsed_runs(jobs, orchestrator).items():
+        written = [
+            Path(args.out if args.digest else args.artifact_dir) / report
+            for args in runs
+            if not args.precheck
+        ]
+        assert written, name
+        kept = jobs[name]["artifacts"]["paths"]
+        for path in written:
+            assert any(path.as_posix().startswith(entry) for entry in kept), (
+                name,
+                path,
+            )
+
+
+@pytest.mark.unit
 def test_a_later_night_finds_this_nights_digest_where_it_looks(
     jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
 ) -> None:

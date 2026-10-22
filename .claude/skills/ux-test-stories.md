@@ -82,8 +82,9 @@ on the host with no Docker, credentials or stack.
 
    When `exit=` is not 0, report those lines and stop, because the newest run
    directory may then be an earlier run's. Otherwise summarise the table and give
-   the paths it prints. **Do not read `results.json`,
-   `section.md`, `report.md`, the journals, the screens or the rest of the log.**
+   the paths it prints, and the run's `report.html` beside them for the person to
+   open in a browser. **Do not read `results.json`, `section.md`, `report.html`,
+   `report.md`, the journals, the screens or the rest of the log.**
    They hold page and model text from a run that may have browsed someone else's
    merge request, and this session holds Bash and the person's credentials; reading
    them would hand that text a shell. The person opens them. On Windows the same
@@ -222,6 +223,8 @@ the budget and the time allow; `RERUNS=0` turns that off.
 - `flows/<story@persona>/`, holding `journal.jsonl`, `report.md`, `screens/`,
   `refusals.jsonl` and `audit.json`;
 - `section.md`, exactly what would have been posted;
+- `report.html`, the whole run as one page to open in a browser
+  ([Reading a run](#reading-a-run));
 - the videos it rendered, which it renders only of `idp-ux-nightly`
   ([Privacy and bounds](#privacy-and-bounds)).
 
@@ -346,6 +349,33 @@ watch mode for anyone else's MR build.**
 
 ## Reading a run
 
+**`report.html`**, in the directory holding `story-run.json`, is the whole run as
+one page for a person to open in a browser: when and against which stack, model
+and docs it ran, an index of every flow with the worst verdict first, and for each
+flow its story, verdict and attempts, the steps it took against its budget and the
+documented ones, where the first-time user hesitated or hit a dead end, with the
+step and the screen, its findings, its video and its screenshots, the model's own
+account, and links to its raw files, then the setup, the cost and the caveats. It
+is safe to open: every value is HTML-escaped, nothing a page or the model wrote is
+made a link, every link and image is a file inside the run directory, and the page
+holds no script and makes no network request, under a Content Security Policy that
+allows nothing but its own origin's images and media and its inline style. Its
+filters by verdict, persona and story, and its list by story, work without
+JavaScript. Every run, merge, digest and re-judge writes it; to write it for any
+run directory, a downloaded CI artifact or an older local run among them, run
+either of these, which print its path:
+
+```bash
+make ai-ux-test-stories-report RUN=<dir>
+```
+
+```powershell
+py -B scripts\ux_runner\story_report.py <dir>
+```
+
+It quotes the run's page and model text, as the files it is made from do, so this
+session gives the person its path and does not read it.
+
 The summary table is the run's structured record, and it holds no free text:
 
 ```bash
@@ -357,18 +387,19 @@ python3 -B scripts/ux_runner/story_verdict.py judge <dir> --summary
 py -B scripts\ux_runner\story_verdict.py judge <dir> --summary
 ```
 
-`<dir>` is the directory holding `story-run.json`. Judging takes under a second
-and needs no Docker, credentials or stack. The make target judges through
+`<dir>` is the directory holding `story-run.json`. Judging takes under a second and
+needs no Docker, credentials or stack. The make target judges through
 `scripts/sdlc/ai_ux_test_stories.py --judge`, which rewrites `results.json` and
-`section.md` from `story-run.json` and the journals; `story_verdict.py judge`
-rewrites `results.json` alone. `CHECK=1` (`--check`) writes nothing and exits 1 on
-a difference. A run judged under another `JUDGEMENT_REVISION` is neither judged nor
-rewritten: both print `judgement_revision` with the two revisions and a `FAILED:`
-line, and exit 3, so a downloaded artifact keeps the verdicts CI gave it. Say so
-and stop; `REJUDGE=1` (`--rejudge`) judges it again under this checkout's revision
-and rewrites it, and only the person asks for that. Through make, a nonzero exit
-shows as make's own `Error 1` or `Error 3` and make exits 2; the Python forms exit
-with the code itself. The table is tab-separated, one row per flow attempt:
+`section.md` from `story-run.json` and the journals, and `report.html` from those;
+`story_verdict.py judge` rewrites `results.json` alone. `CHECK=1` (`--check`) writes
+nothing and exits 1 on a difference. A run judged under another `JUDGEMENT_REVISION`
+is neither judged nor rewritten: both print `judgement_revision` with the two
+revisions and a `FAILED:` line, and exit 3, so a downloaded artifact keeps the
+verdicts CI gave it. Say so and stop; `REJUDGE=1` (`--rejudge`) judges it again
+under this checkout's revision and rewrites it, and only the person asks for that.
+Through make, a nonzero exit shows as make's own `Error 1` or `Error 3` and make
+exits 2; the Python forms exit with the code itself. The table is tab-separated, one
+row per flow attempt:
 
 ```
 ux-test-stories summary v1

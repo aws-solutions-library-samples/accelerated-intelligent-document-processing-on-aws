@@ -884,6 +884,12 @@ and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
   audit was clean. A bad result is a regression once a second attempt confirms it;
   when that confirming re-run did not fit in a shard's budget or time, the result is
   still listed, marked unconfirmed in `digest.md` and on Slack.
+- **Artifacts.** The MR job keeps `ux-test-stories/`, each nightly shard
+  `ux-test-stories/shard-<i>/` and the digest `ux-test-stories-digest/`. Each holds
+  `report.html`, the run as one page to open in a browser once downloaded: every
+  value escaped, no script and no network request. The digest's covers every
+  shard's flows; their screens and videos stay in each shard's artifacts, beside
+  that shard's own `report.html`.
 - **Switches.** `UX_TEST_STORIES` set to `mr` keeps only the MR job and `nightly`
   keeps only the nightly pair; `off`, or any other value, stops all three, so a
   mistyped `off` still stops them. A manual pipeline on `develop` with

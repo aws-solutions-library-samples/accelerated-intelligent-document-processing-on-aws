@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT-0
 """The Python the host-side story tools need, said before an import can fail.
 
-``stories.py``, ``changelog_select.py``, ``story_verdict.py`` and
-``scripts/sdlc/ai_ux_test_stories.py`` run on a developer's host, where
+``stories.py``, ``changelog_select.py``, ``story_verdict.py``, ``story_report.py``
+and ``scripts/sdlc/ai_ux_test_stories.py`` run on a developer's host, where
 ``python3`` can be older than they are written for; macOS's ``/usr/bin/python3``
 is. Each calls :func:`require` before it imports anything that needs a newer
 Python, so an interpreter that can still parse them (3.9 can) ends with one

@@ -392,6 +392,7 @@
         "scripts/ux_runner/story_pair.py": 97.4,
         "scripts/ux_runner/story_prompt.py": 99.55,
         "scripts/ux_runner/story_relay.py": 97.71,
+        "scripts/ux_runner/story_report.py": 99.08,
         "scripts/ux_runner/story_section.py": 100.0,
         "scripts/ux_runner/story_verdict.py": 98.24,
         "scripts/ux_runner/tool_profiles.py": 100.0,
