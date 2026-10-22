@@ -275,8 +275,8 @@ def migrate_v08_to_v09(config: Any) -> Any:
         _put_merged(out, SECTION_CLASSIFICATION_LLM, "confidence", flat["confidence"])
 
     # ── One fallback.
-    if "invalidClassFallback" in flat and "fallback_class" not in out:
-        out["fallback_class"] = flat["invalidClassFallback"]
+    if "invalidClassFallback" in flat:
+        out["fallback_class"] = copy.deepcopy(flat["invalidClassFallback"])
 
     # ── File shape. A page limit implies "one document" (see the module doc).
     if "sectionSplitting" in flat:

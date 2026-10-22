@@ -65,6 +65,8 @@ EXEMPT = {
     # The frozen pre-0.9 system defaults the migration tests read. It records
     # what a past release shipped, so it must not follow a later prompt change.
     "lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.8.yaml",
+    # The same, for the defaults the v0.6.12 release shipped.
+    "lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.6.12.yaml",
 }
 
 
