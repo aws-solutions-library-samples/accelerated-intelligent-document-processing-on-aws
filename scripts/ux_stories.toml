@@ -88,11 +88,11 @@ title = "Find which model reads the fields out of your documents"
 intent = "Find out which model reads the fields out of your documents, and whether Claude Sonnet 5.5 is one of the models you could choose instead. Change nothing."
 kind = "read"
 documented_steps = 4
-as = { new-analyst = "allowed", team-lead = "not_offered" }
+as = { new-analyst = "allowed", team-lead = "allowed" }
 tier = "p0"
 since = "0.6.12"
 origin = "changelog"
-rbac = "View/Edit configuration"
+rbac = "View config profiles"
 claims = [{ lead = "Claude Sonnet 5.5 is selectable for every model-taking service." }]
 
 [stories.match]
@@ -107,6 +107,7 @@ intent = "You want every document that arrives in one folder to be processed wit
 kind = "commit_point"
 documented_steps = 5
 as = { platform-admin = "allowed", new-analyst = "not_offered" }
+rbac = "Manage prefix mappings"
 mr_as = ["platform-admin"]
 tier = "p0"
 since = "0.6.12"

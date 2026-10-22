@@ -1686,6 +1686,17 @@ def test_every_rbac_row_exists_and_agrees_with_each_persona_expectation(
     checked = 0
     for story in catalogue.stories:
         if story.rbac is None:
+            refused = [
+                name for name, expected in story.expectations if expected != "allowed"
+            ]
+            if refused:
+                problems.append(
+                    f"story {story.id}: expects {', '.join(refused)} to be refused but "
+                    "names no rbac row; a refusal rests on a row of the Permission Matrix "
+                    'in docs/rbac.md, so name it with rbac = "<row>" in '
+                    "scripts/ux_stories.toml, adding the row to docs/rbac.md if it is "
+                    "missing"
+                )
             continue
         row = rows.get(story.rbac)
         if row is None:

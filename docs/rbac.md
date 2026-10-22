@@ -167,6 +167,7 @@ CONFIGURATION
   Delete config profile           ✅      ❌       ❌        ❌
   Set active profile              ✅      ✅†      ❌        ❌
   Sync BDA                        ✅      ✅†      ❌        ❌
+  Manage prefix mappings          ✅      ❌       ❌        ❌
 
 CONFIGURATION PROFILE REVISIONS
   View/compare revisions          ✅      ✅†      ❌        ✅†
