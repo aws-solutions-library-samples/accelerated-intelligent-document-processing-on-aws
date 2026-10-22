@@ -793,8 +793,9 @@ export const DocumentPanel = ({
   const hitlView = normalizeHitlStatus(localItem?.hitlStatus);
   const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !hitlView.queueManaged;
   const showStartReview = isReviewer && hasPendingHITL && !hasReviewOwner;
-  // One way in for a queued document, for everyone who can work queue items.
-  const showReviewInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
+  // One way in for a queued document: Edit opens its queue item, for everyone who can
+  // work queue items; anyone else gets the direct edit, which opens it read-only.
+  const editInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
 
   // Handle Start Review button click
   const handleStartReview = async () => {
@@ -954,16 +955,6 @@ export const DocumentPanel = ({
               variant="h2"
               actions={
                 <SpaceBetween direction="horizontal" size="xs">
-                  {showReviewInQueue && (
-                    <Button
-                      iconName="user-profile"
-                      variant="primary"
-                      href={reviewItemHref(localItem.objectKey)}
-                      ariaLabel="Review this document in its review queue"
-                    >
-                      Review
-                    </Button>
-                  )}
                   {showStartReview && (
                     <Button
                       iconName="user-profile"
@@ -975,16 +966,28 @@ export const DocumentPanel = ({
                       Start Review
                     </Button>
                   )}
-                  {/* The unified editor's direct edit; it decides what is editable. */}
-                  {(canWrite || canReview) && (
+                  {/* The unified editor: the queue item for a queued document, otherwise
+                      the direct edit, which decides what is editable. */}
+                  {editInQueue ? (
                     <Button
                       iconName="edit"
-                      href={documentEditHref(localItem.objectKey)}
-                      disabled={!isEditableStatus(localItem.objectStatus)}
-                      disabledReason={isEditableStatus(localItem.objectStatus) ? undefined : PROCESSING_REASON}
+                      variant="primary"
+                      href={reviewItemHref(localItem.objectKey)}
+                      ariaLabel="Edit this document in its review queue"
                     >
                       Edit
                     </Button>
+                  ) : (
+                    (canWrite || canReview) && (
+                      <Button
+                        iconName="edit"
+                        href={documentEditHref(localItem.objectKey)}
+                        disabled={!isEditableStatus(localItem.objectStatus)}
+                        disabledReason={isEditableStatus(localItem.objectStatus) ? undefined : PROCESSING_REASON}
+                      >
+                        Edit
+                      </Button>
+                    )
                   )}
                   <Button
                     iconName="gen-ai"

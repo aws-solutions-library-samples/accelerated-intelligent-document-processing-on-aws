@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Process Changes on a Test Studio document. What has to hold: there is no Save as
- * Draft (no test-set save leaves labels unreviewed); Process Changes saves the open
+ * Complete on a Test Studio document. What has to hold: there is no Save as
+ * Draft (no test-set save leaves labels unreviewed); Complete saves the open
  * section's edits first, then confirms only the sections not saved, and exits once;
  * and the screen tells the breadcrumbs the set's name.
  */
@@ -111,15 +111,15 @@ beforeEach(() => {
   });
 });
 
-describe('Process Changes on a Test Studio document', () => {
+describe('Complete on a Test Studio document', () => {
   it('offers no Save as Draft', () => {
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Skip', 'Discard Changes', 'Edit Page Grouping', 'Processing Report', 'Process Changes']);
+    expect(barButtons()).toEqual(['History', 'Skip', 'Discard Changes', 'Edit Page Grouping', 'Processing Report', 'Complete']);
   });
 
   it('saves the open section, then confirms the rest, and exits once', async () => {
     renderScreen();
-    button('Process Changes').click();
+    button('Complete').click();
     await waitFor(() => expect(exit).toHaveBeenCalledTimes(1));
     expect(controller.save).toHaveBeenCalledTimes(1);
     expect(confirmSections).toHaveBeenCalledWith(['2']);
@@ -129,7 +129,7 @@ describe('Process Changes on a Test Studio document', () => {
   it('stops when the save fails', async () => {
     controller.save.mockResolvedValue(false);
     renderScreen();
-    button('Process Changes').click();
+    button('Complete').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalled());
     expect(confirmSections).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
@@ -140,6 +140,27 @@ describe('Process Changes on a Test Studio document', () => {
     expect(editorProps).toMatchObject({ actionsPlacement: 'external', saveOnSectionSwitch: true, regroupPlacement: 'external' });
     button('Edit Page Grouping').click();
     expect(editorProps!.regroupOpen).toBe(true);
+  });
+
+  it('puts the Edit | View switch in the top bar, opening on Edit', () => {
+    renderScreen();
+    const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
+    expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View']);
+    expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
+  });
+
+  it('names the document and its ground truth under the title', () => {
+    renderScreen();
+    expect(createWrapper(document.body).findHeader()!.findDescription()!.getElement().textContent).toBe(
+      'Document: ts-1/input/a.pdfGround Truth: a.pdf',
+    );
+    expect(editorProps).toMatchObject({ hideHeader: true });
+  });
+
+  it('shows no notice when there is nothing to act on, and no assignment note', () => {
+    renderScreen();
+    expect(createWrapper(document.body).findAllAlerts()).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('You can still correct and complete it');
   });
 
   it('tells the breadcrumbs the set name', () => {

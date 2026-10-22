@@ -188,9 +188,9 @@ HITL review is automatically triggered when:
      so you can come back and keep editing
 
 4. **Complete the Review**:
-   - Click **Process Changes** (in the document editor or the Sections panel) to
-     finish the review and reprocess the document. The editor saves your latest
-     edits first and asks you to confirm
+   - Click **Complete** in the document editor (or **Process Changes** in the
+     Sections panel's Edit Mode) to finish the review and reprocess the document. The
+     editor saves your latest edits first and asks you to confirm
    - Document status changes to **Review Completed**, and **Review Completed By**
      records you
 
@@ -213,13 +213,13 @@ Admins have additional capabilities:
 
 ### 3. Result Integration
 
-When the review is completed with **Process Changes**, or every section is completed or skipped:
+When the review is completed with **Complete** (or **Process Changes**), or every section is completed or skipped:
 - Document status changes to **Review Completed** or **Review Skipped**
 - Corrected data is saved to S3
 - **Review Completed By** field records who completed/skipped the review
 - Review history is recorded with reviewer information and timestamps
 
-**Note:** Finalizing reviews — **Process Changes**, completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
+**Note:** Finalizing reviews — **Complete** (or **Process Changes**), completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
 
 ## Configuration
 
@@ -317,7 +317,7 @@ The actions are at the top:
 | **Save as Draft** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
 | **Edit Page Grouping** | Opens the page-grouping board in a dialog | editors |
 | **Processing Report** | How the open section was extracted | everyone |
-| **Process Changes** | Saves the edits, confirms, then reprocesses the document (evaluation and summary) | Admin, Reviewer |
+| **Complete** | Saves the edits, confirms, then reprocesses the document (evaluation and summary) | Admin, Reviewer |
 
 A disabled action says why on hover. A Reviewer's edits are saved through the review
 API and a Reviewer doesn't save baseline edits.
@@ -365,7 +365,7 @@ API and a Reviewer doesn't save baseline edits.
 
 After making edits to predictions or baselines, you can trigger reprocessing to re-run downstream steps with the updated data:
 
-1. **Save and reprocess**: Click **Process Changes** in the document editor. It saves your prediction and baseline edits, asks you to confirm, then reprocesses the document. (**Save as Draft** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
+1. **Save and reprocess**: Click **Complete** in the document editor. It saves your prediction and baseline edits, asks you to confirm, then reprocesses the document. (**Save as Draft** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
 2. **Confirm**: The confirmation says which steps re-run
 3. **Automatic Pipeline Execution**: The document automatically transitions through processing stages:
    - `SUMMARIZING` → Re-generates document summary using updated extraction data

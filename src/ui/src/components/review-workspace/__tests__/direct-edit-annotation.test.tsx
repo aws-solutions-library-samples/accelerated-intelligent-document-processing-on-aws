@@ -3,8 +3,8 @@
 
 /**
  * The unified editor on a direct edit. What has to hold: the bar is History, Discard
- * Changes, Save as Draft, Edit Page Grouping, Processing Report and Process Changes,
- * with no Skip; Save as Draft saves through the editor; Process Changes confirms, then
+ * Changes, Save as Draft, Edit Page Grouping, Processing Report and Complete,
+ * with no Skip; Save as Draft saves through the editor; Complete confirms, then
  * calls processChanges with no section changes; an Author can save but not process; a
  * document in a review queue, or still processing, is read-only, and an in-review one
  * offers "Review in queue" to an Annotator; and the evaluation baseline reaches the
@@ -114,9 +114,9 @@ beforeEach(() => {
 });
 
 describe('the direct edit', () => {
-  it('offers History, Discard Changes, Save as Draft, Edit Page Grouping, Processing Report and Process Changes, with no Skip', async () => {
+  it('offers History, Discard Changes, Save as Draft, Edit Page Grouping, Processing Report and Complete, with no Skip', async () => {
     await renderEditor();
-    expect(bar()).toEqual(['History', 'Discard Changes', 'Save as Draft', 'Edit Page Grouping', 'Processing Report', 'Process Changes']);
+    expect(bar()).toEqual(['History', 'Discard Changes', 'Save as Draft', 'Edit Page Grouping', 'Processing Report', 'Complete']);
     expect(editorProps!.isReadOnly).toBe(false);
     expect(editorProps!.actionsPlacement).toBe('external');
   });
@@ -132,7 +132,7 @@ describe('the direct edit', () => {
   it('confirms, then calls processChanges with no section changes', async () => {
     controller.isDirty.mockReturnValue(true);
     await renderEditor();
-    button('Process Changes').click();
+    button('Complete').click();
     await waitFor(() => expect(createWrapper(document.body).findModal()).not.toBeNull());
     // The edits are saved before the confirmation, and nothing is sent until it is confirmed.
     expect(controller.save).toHaveBeenCalledTimes(1);
@@ -153,7 +153,7 @@ describe('the direct edit', () => {
     Object.assign(role, { isAdmin: false, isAuthor: true, canWrite: true, canReview: false, canWorkReviewQueues: false });
     await renderEditor();
     expect(button('Save as Draft')).toBeTruthy();
-    expect(disabledReason('Process Changes')).toBe('Process Changes needs the Admin or Reviewer role.');
+    expect(disabledReason('Complete')).toBe('Complete needs the Admin or Reviewer role, because it reprocesses the document.');
   });
 
   it('opens a document in a review queue read-only, with Review in queue for an Annotator', async () => {
@@ -168,14 +168,14 @@ describe('the direct edit', () => {
     expect(review?.getElement().getAttribute('href')).toBe('#/review-queues/items/in%2Fdoc.pdf');
     expect(disabledReason('Save as Draft')).toBe('This document is in a review queue. Choose Review to work on it there.');
     expect(disabledReason('Edit Page Grouping')).toBe('This document is in a review queue. Choose Review to work on it there.');
-    expect(disabledReason('Process Changes')).toBe('This document is in a review queue. Choose Review to work on it there.');
+    expect(disabledReason('Complete')).toBe('This document is in a review queue. Choose Review to work on it there.');
   });
 
   it('is read-only while the document is still processing', async () => {
     server.doc = rawDoc({ ObjectStatus: 'RUNNING' });
     await renderEditor();
     expect(editorProps!.isReadOnly).toBe(true);
-    expect(disabledReason('Process Changes')).toBe('Available when processing finishes');
+    expect(disabledReason('Complete')).toBe('Available when processing finishes');
   });
 
   it('has no subtitle under the title and no Edit history tab in the editor', async () => {

@@ -30,7 +30,7 @@ There are two kinds of queue:
   set's documents whose labels need a human check before they become ground truth.
 
 An **Admin** assigns queue items to **Annotators**. An Annotator corrects the
-item and finishes it with **Process Changes**, or skips it to give it back to its
+item and finishes it with **Complete**, or skips it to give it back to its
 queue. An Admin can work
 a Production item too. For a Production
 document, the corrections are applied by a second (finalize) run, which produces
@@ -68,7 +68,7 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
 3. An Annotator listed on the queue claims it, or an Admin assigns it to one (or
    works it themselves, see [Working an item as an Admin](#working-an-item-as-an-admin)),
    and the assignee finishes it.
-   - **Process Changes** applies the corrections, and the document ends `COMPLETED`.
+   - **Complete** applies the corrections, and the document ends `COMPLETED`.
    - **Skip** gives it back to its queue, unassigned and not finished, with a reason
      from the queue's skip list.
    - An Admin can instead **Remove** it from the queue: it ends `COMPLETED` with the
@@ -101,7 +101,7 @@ Inbox; other users have neither.
   images are shown beside its fields.
   - The actions are at the top, each shown where it applies: **History**, **Skip**,
     **Discard Changes**, **Save as Draft**, **Edit Page Grouping**, **Processing
-    Report** and **Process Changes**. A disabled action says why on hover.
+    Report** and **Complete**. A disabled action says why on hover.
   - **History** opens the **Field Edits** made to the open section and, on a
     Production item, the item's **Review Activity**: who claimed, skipped or
     completed it in this review, with any skip reason and note.
@@ -110,13 +110,13 @@ Inbox; other users have neither.
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
     lists the rest and **Show fewer** collapses them again. Hover a reason chip to
     see the field, the score and the threshold. Your edits are saved as a draft as
-    you type, or straight away with **Save as Draft**. **Process Changes** saves
+    you type, or straight away with **Save as Draft**. **Complete** saves
     your latest edits and applies your corrections. **Edit Page Grouping** corrects
     the document's split as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
     (a section you remove takes its draft with it). Only the item's holder can
     regroup it; an Admin's first regroup assigns an unassigned item to them.
-  - **Test Studio item**: correct the labels and choose **Process Changes**, which
+  - **Test Studio item**: correct the labels and choose **Complete**, which
     saves the open section and confirms the rest. You can also choose it without
     changing anything, which confirms the labels as correct; it needs no **Start
     annotating** first. There is no **Save as Draft**: saving a Test Studio section
@@ -274,29 +274,28 @@ Open an item from its queue's page. Its breadcrumbs read **Home**, then the queu
 name, then the document, and the queue links back to its page.
 
 - **An unassigned item** says **Not assigned yet. Editing or completing assigns it to
-  you.** You can edit it straight away: your first saved edit, or **Process
-  Changes**, assigns the item to you first. If an Annotator claimed it a moment earlier, the
+  you.** You can edit it straight away: your first saved edit, or **Complete**, assigns the item to you first. If an Annotator claimed it a moment earlier, the
   screen says who and turns view-only.
 - **An item assigned to someone else** is view-only, with **Take over**. Taking over
   assigns the item to you, keeps its draft so you carry on from the Annotator's
   edits, and tells the former assignee in their Inbox. Then you can edit and
   complete it.
-- **An item assigned to you** has **Process Changes** and **Skip**, as for an Annotator.
+- **An item assigned to you** has **Complete** and **Skip**, as for an Annotator.
 
 ## Reviewing from the document page
 
-While a document is in a review queue (status **In Review**), it is reviewed only
-from its queue item:
+While a document is in a review queue (status **In Review**), it is reviewed from
+its queue item:
 
-- The document page shows **Review**, which opens the item in the document editor.
-  It is shown to Admins and Annotators, who are the roles that can open queue items.
-- **Edit** and **Edit Data** open the document editor's direct edit read-only, with
-  **Review in queue** for Admins and Annotators.
-- **Edit Mode** and the Sections panel's **Edit Page Grouping** are off for every
-  role (regroup from the queue item instead), and **Skip All Reviews** and **Start
-  Review** aren't offered. An edit made on the document page
-  would bypass the item's assignment and be overwritten by the reviewer's
-  corrections when the review completes.
+- The document page's **Edit** opens the queue item in the document editor for
+  Admins and Annotators, the roles that can open queue items. For other roles it opens
+  the direct edit, read-only.
+- **Edit Data** opens the direct edit read-only, with **Review in queue** for Admins
+  and Annotators.
+- **Edit Mode** and the Sections panel's **Edit Page Grouping** stay enabled, but the
+  server refuses what it can't take: **Process Changes** (Edit Mode) on a document in review, and
+  a regroup by anyone but the queue item's holder. Regroup from the queue item.
+  **Skip All Reviews** and **Start Review** aren't offered.
 - In the document list, the **In Review** status links to the queue item for Admins
   and Annotators.
 

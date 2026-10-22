@@ -5,8 +5,8 @@
 // Test Studio item and a direct edit: the title row with the item's facts, the action
 // bar, notices, the task context and the editor. The actions, each shown where it
 // applies, are History, Skip (give the item back to its queue), Discard Changes, Save
-// as Draft, Edit Page Grouping, Processing Report and Process Changes, the primary
-// action. An Annotator viewing an unassigned item sees Claim instead of the editing
+// as Draft, Edit Page Grouping, Processing Report and Complete, the primary action.
+// A context may put its own control first (Test Studio's Edit | View). An Annotator viewing an unassigned item sees Claim instead of the editing
 // actions. Every disabled action says why on hover.
 import React from 'react';
 import { Button, Header, SpaceBetween } from '@cloudscape-design/components';
@@ -42,10 +42,12 @@ export interface AnnotationActionsProps {
   /** Offer Edit Page Grouping. */
   showRegroup?: boolean;
   regroupDisabledReason?: string;
-  /** Why Process Changes is unavailable; undefined when it is available. */
+  /** Why Complete is unavailable; undefined when it is available. */
   processDisabledReason?: string;
-  /** Hover text while Process Changes is available. */
+  /** Hover text while Complete is available. */
   processHint?: string;
+  /** A control shown first in the bar (Test Studio's Edit | View switch). */
+  leading?: React.ReactNode;
 }
 
 const AnnotationActions = ({
@@ -64,6 +66,7 @@ const AnnotationActions = ({
   regroupDisabledReason,
   processDisabledReason,
   processHint,
+  leading,
 }: AnnotationActionsProps): React.JSX.Element => {
   const working = busy !== null ? 'Working…' : undefined;
   const history = onShowHistory && (
@@ -81,6 +84,7 @@ const AnnotationActions = ({
   if (showClaim) {
     return (
       <SpaceBetween direction="horizontal" size="xs">
+        {leading}
         {history}
         {report}
         <span title={working ? undefined : 'Assign this item to you, then work it here or from My Work › Tasks'}>
@@ -98,6 +102,7 @@ const AnnotationActions = ({
   const processReason = working ?? processDisabledReason;
   return (
     <SpaceBetween direction="horizontal" size="xs">
+      {leading}
       {history}
       {showSkip && (
         <span title={skipReason ? undefined : SKIP_HINT}>
@@ -130,7 +135,7 @@ const AnnotationActions = ({
           loading={busy === 'process'}
           onClick={() => onAction('process')}
         >
-          Process Changes
+          Complete
         </Button>
       </span>
     </SpaceBetween>
@@ -142,6 +147,8 @@ interface AnnotationFrameProps {
   title: string;
   /** The full object key, shown under the title; omitted, no subtitle is shown. */
   objectKey?: string;
+  /** Under the title instead of the object key (Test Studio: the document and its ground truth). */
+  subtitle?: React.ReactNode;
   /** Beside the title: status and kind badge. */
   badges?: React.ReactNode;
   /** Under the title: where the item comes from and who it is assigned to. */
@@ -160,6 +167,7 @@ interface AnnotationFrameProps {
 const AnnotationFrame = ({
   title,
   objectKey,
+  subtitle,
   badges,
   meta,
   actions,
@@ -173,7 +181,7 @@ const AnnotationFrame = ({
       <SpaceBetween size="s">
         <Header
           variant="h1"
-          description={objectKey ? <span title={objectKey}>{objectKey}</span> : undefined}
+          description={subtitle ?? (objectKey ? <span title={objectKey}>{objectKey}</span> : undefined)}
           actions={<AnnotationActions {...actions} />}
         >
           <SpaceBetween direction="horizontal" size="s" alignItems="center">

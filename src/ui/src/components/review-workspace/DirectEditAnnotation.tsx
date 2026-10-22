@@ -10,7 +10,7 @@
 // A document in a review queue opens read-only: it is edited from its queue item,
 // and finalizing that item would overwrite edits made here. So does a document still
 // processing. Save as Draft needs the Admin or Author role, or a Reviewer holding the
-// document's legacy review; Process Changes needs the Admin or Reviewer role. The
+// document's legacy review; Complete needs the Admin or Reviewer role. The
 // server enforces both.
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -31,6 +31,7 @@ import { inReviewQueueEditReason } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
 import { documentName } from '../review-queues/review-api';
 import AnnotationFrame from './AnnotationFrame';
+import EditorNotices from './EditorNotices';
 import type { AnnotationAction } from './AnnotationFrame';
 import { useDirectEditAnnotation } from './direct-edit-adapter';
 import { PROCESSING_REASON, isEditableStatus } from './direct-edit-status';
@@ -40,7 +41,7 @@ import SectionEditor from './SectionEditor';
 import type { SectionEditorController } from './SectionEditor';
 import useSectionEvaluation from './use-section-evaluation';
 
-export const PROCESS_ROLE_REASON = 'Process Changes needs the Admin or Reviewer role.';
+export const PROCESS_ROLE_REASON = 'Complete needs the Admin or Reviewer role, because it reprocesses the document.';
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 
 interface DirectEditAnnotationProps {
@@ -209,32 +210,30 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
     }
   };
 
+  // One alert for the screen's notices; an error keeps its own.
   const notices = (
-    <>
-      {error && (
-        <Alert type="error" dismissible onDismiss={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
-      {inReview && (
-        <Alert
-          type="info"
-          action={
-            canWorkReviewQueues ? (
-              <Button href={reviewItemHref(objectKey)} iconName="arrow-right">
-                Review in queue
-              </Button>
-            ) : undefined
-          }
-        >
-          This document is in a review queue. Edits are made in the queue.
-        </Alert>
-      )}
-      {!inReview && readOnlyReason === PROCESSING_REASON && (
-        <Alert type="info">View only. This document is still processing; its results can be edited once processing finishes.</Alert>
-      )}
-      {!inReview && readOnlyReason === EDIT_ROLE_REASON && <Alert type="info">View only. {EDIT_ROLE_REASON}</Alert>}
-    </>
+    <EditorNotices
+      notices={[
+        !!error && { id: 'error', type: 'error', content: error, onDismiss: () => setError(null) },
+        inReview && {
+          id: 'in-review',
+          type: 'info',
+          content: 'This document is in a review queue. Edits are made in the queue.',
+          action: canWorkReviewQueues ? (
+            <Button href={reviewItemHref(objectKey)} iconName="arrow-right">
+              Review in queue
+            </Button>
+          ) : undefined,
+        },
+        !inReview &&
+          readOnlyReason === PROCESSING_REASON && {
+            id: 'processing',
+            type: 'info',
+            content: 'View only. This document is still processing; its results can be edited once processing finishes.',
+          },
+        !inReview && readOnlyReason === EDIT_ROLE_REASON && { id: 'role', type: 'info', content: `View only. ${EDIT_ROLE_REASON}` },
+      ]}
+    />
   );
 
   return (
@@ -249,7 +248,7 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
         showRegroup: showEditing,
         regroupDisabledReason: readOnlyReason ?? (boardSections.length === 0 ? 'This document has no sections' : undefined),
         processDisabledReason: processReason,
-        processHint: 'Save your changes and reprocess the document (evaluation and summary)',
+        processHint: 'Save your changes and complete the document: it is reprocessed (evaluation and summary)',
         onShowHistory: () => setShowHistory(true),
         onShowReport: () => setShowReport(true),
         busy,
@@ -284,8 +283,8 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
               consequence={
                 <>
                   Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the
-                  document is <b>not</b> reprocessed, so they may no longer match their pages. Use <b>Process Changes</b> afterwards if you
-                  would rather the pipeline redo them.
+                  document is <b>not</b> reprocessed, so they may no longer match their pages. Use <b>Complete</b> afterwards if you would
+                  rather the pipeline redo them.
                 </>
               }
               saveLabel="Save page grouping"

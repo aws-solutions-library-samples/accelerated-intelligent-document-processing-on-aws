@@ -151,6 +151,8 @@ interface GroundTruthVisualEditorProps {
   controllerRef?: React.MutableRefObject<SectionEditorController | null>;
   actionsPlacement?: 'header' | 'external';
   showHistoryTab?: boolean;
+  /** Hide the editor's own title row (the unified editor names the ground truth above). */
+  hideHeader?: boolean;
   onSavingChange?: (saving: boolean) => void;
   saveOnSectionSwitch?: boolean;
   onDataChange?: (data: Record<string, unknown> | null) => void;
@@ -183,6 +185,7 @@ const GroundTruthVisualEditor = ({
   controllerRef,
   actionsPlacement,
   showHistoryTab,
+  hideHeader,
   onSavingChange,
   saveOnSectionSwitch,
   onDataChange,
@@ -521,7 +524,7 @@ const GroundTruthVisualEditor = ({
           <Badge color={classConfig.source === 'baseline' ? 'grey' : 'blue'}>Classes from: {describeClassConfigSource(classConfig)}</Badge>
           {editHistoryCount > 0 && (
             <Box fontSize="body-s" color="text-body-secondary">
-              {editHistoryCount} edit{editHistoryCount === 1 ? '' : 's'} — see Edit history
+              {editHistoryCount} edit{editHistoryCount === 1 ? '' : 's'} — see {showHistoryTab === false ? 'History' : 'Edit history'}
             </Box>
           )}
         </SpaceBetween>
@@ -731,6 +734,7 @@ const GroundTruthVisualEditor = ({
       controllerRef={controllerRef}
       actionsPlacement={actionsPlacement}
       showHistoryTab={showHistoryTab}
+      hideHeader={hideHeader}
       onSavingChange={onSavingChange}
       saveOnSectionSwitch={saveOnSectionSwitch}
       onSave={handleSave}

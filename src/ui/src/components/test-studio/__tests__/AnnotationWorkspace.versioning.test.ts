@@ -91,8 +91,9 @@ describe('AnnotationWorkspace version transition', () => {
     // The reassurance is the load-bearing half: the reason it is safe to agree is that
     // the current labels survive as something scoreable.
     expect(DRAFT_PROMPT_BODY).toMatch(/current labels are preserved/);
-    // The annotation screen asks, with the prompt above, until a transition is open.
-    expect(SCREEN).toMatch(/\{!draft && \(\s*<Alert\s+type="info"\s+header=\{DRAFT_PROMPT_HEADER\}/);
+    // The annotation screen asks, with the prompt above, until a transition is open
+    // (one notice in the screen's consolidated alert).
+    expect(SCREEN).toMatch(/!draft && \{\s*id: 'draft',[\s\S]*?<b>\{DRAFT_PROMPT_HEADER\}\.<\/b> \{DRAFT_PROMPT_BODY\}/);
     expect(SCREEN).toMatch(/onClick=\{\(\) => void handleOpenDraft\(\)\}>\s*Start annotating/);
   });
 
@@ -133,7 +134,7 @@ describe('AnnotationWorkspace version transition', () => {
     expect(SCREEN).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
 
-  it('lets Process Changes open the transition itself, only when none is open, and only on click', () => {
+  it('lets Complete open the transition itself, only when none is open, and only on click', () => {
     // HITL review queues (IDP-0002 R2-N): Complete needs no edit and no Start annotating
     // first. Choosing it is the explicit act that opens the version transition, so the
     // commitment is still never made on arrival - only from the Complete handler, and

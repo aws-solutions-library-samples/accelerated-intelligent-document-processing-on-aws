@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The unified editor for a Test Studio document: the ground-truth editor (the
-// test-set adapter over the shared SectionEditor), Process Changes and Skip. Saving a
+// test-set adapter over the shared SectionEditor), Complete and Skip. Saving a
 // section marks it reviewed, so there is no Save as Draft here: switching sections
-// saves the open one, and Process Changes saves it and confirms the sections not saved
+// saves the open one, and Complete saves it and confirms the sections not saved
 // yet, so "the labels are correct" and "I corrected them" end the same way.
 // Skip gives the document back to its queue, unassigned and not reviewed, for another
 // Annotator to claim. The assignee works the document; an Admin or Author may too. An
@@ -47,6 +47,7 @@ import {
   mayChangeClassFor,
 } from '../test-studio/annotation-edit-flags';
 import AnnotationFrame from './AnnotationFrame';
+import EditorNotices from './EditorNotices';
 import EditorHistoryModal from './EditorHistoryModal';
 import ProcessingReportModal from './ProcessingReportModal';
 import type { SectionEditorController } from './SectionEditor';
@@ -95,7 +96,7 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
   // Sections saved on this screen: they already count as reviewed. A ref, so Process
   // Changes sees a save it has just made.
   const savedSections = useRef<Set<string>>(new Set());
-  // While Process Changes runs, a save it makes doesn't exit on its own.
+  // While Complete runs, a save it makes doesn't exit on its own.
   const processing = useRef(false);
 
   const queueName = queue?.name ?? null;
@@ -175,7 +176,7 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
   if (isComplete) skipReason = doc.reviewed ? 'This document is already reviewed' : 'This document was already skipped';
   else if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
   else if (loading) skipReason = 'Loading…';
-  // Process Changes saves the open section itself, so unsaved edits don't block it.
+  // Complete saves the open section itself, so unsaved edits don't block it.
   let completeReason: string | undefined = skipReason;
   if (!skipReason && dirty) skipReason = 'Save or discard your changes first';
   if (!completeReason) {
@@ -267,71 +268,72 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
   const handleSaved = (baselineKey: string) => {
     const sectionId = sections.find((s) => s.baselineKey === baselineKey)?.sectionId;
     if (sectionId) savedSections.current.add(sectionId);
-    // Process Changes finishes the document itself.
+    // Complete finishes the document itself.
     if (processing.current) return;
     // Saving the last section reviews the document, which ends its assignment.
     if (sections.every((s) => savedSections.current.has(s.sectionId))) {
       exit(queuePath, `Saved. ${objectKey} is marked reviewed.`, workItemId);
       return;
     }
-    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Process Changes.`);
+    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Complete.`);
   };
 
   const editorReadOnly = editFlags.isReadOnly || !mayWork;
   const mayChangeClass = mayChangeClassFor(editFlags.canChangeClass && mayWork, editorReadOnly);
 
+  // One alert for the screen's notices, so the space stays given over to annotation.
   const notices = (
-    <>
-      {!testSetBucket && <Alert type="error">TestSetBucket is not configured in settings.</Alert>}
-      {!mayWork && (
-        <Alert type="info">
-          View only.{' '}
-          {doc.assignedTo
-            ? `This document is assigned to ${doc.assignedTo}.`
+    <EditorNotices
+      notices={[
+        !testSetBucket && { id: 'bucket', type: 'error', content: 'TestSetBucket is not configured in settings.' },
+        !mayWork && {
+          id: 'view-only',
+          type: 'info',
+          content: doc.assignedTo
+            ? `View only. This document is assigned to ${doc.assignedTo}.`
             : canClaim
-              ? 'Claim this document to work on it; it is then assigned to you and shows in My Work › Tasks.'
-              : 'It is not assigned to you.'}
-        </Alert>
-      )}
-      {mayWork && !doc.claimedByMe && (
-        <Alert type="info">
-          {doc.assignedTo
-            ? `Assigned to ${doc.assignedTo}. You can still correct and complete it.`
-            : 'Not assigned to an Annotator. You can still correct and complete it, or assign it from the test set queue.'}
-        </Alert>
-      )}
-      {!draft && (
-        <Alert
-          type="info"
-          header={DRAFT_PROMPT_HEADER}
-          action={
+              ? 'View only. Claim this document to work on it; it is then assigned to you and shows in My Work › Tasks.'
+              : 'View only. It is not assigned to you.',
+        },
+        !draft && {
+          id: 'draft',
+          type: 'info',
+          content: (
+            <>
+              <b>{DRAFT_PROMPT_HEADER}.</b> {DRAFT_PROMPT_BODY}
+            </>
+          ),
+          action: (
             <Button variant="primary" loading={isOpeningDraft} disabled={!canAnnotate} onClick={() => void handleOpenDraft()}>
               Start annotating
             </Button>
-          }
-        >
-          {DRAFT_PROMPT_BODY}
-        </Alert>
-      )}
-      {!doc.reviewObjectKey && !doc.labelSource && (
-        <Alert type="warning" header="Not ready to annotate">
-          This document has no labels yet. Generate draft labels for the set first, then it can be reviewed.
-        </Alert>
-      )}
-      {!doc.reviewObjectKey && doc.labelSource && (
-        <Alert type="info" header="Authored ground truth">
-          This document carries authored ground truth rather than a machine draft. Check its labels, correct them if needed, then choose
-          Process Changes.
-          {groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}
-        </Alert>
-      )}
-    </>
+          ),
+        },
+        !doc.reviewObjectKey &&
+          !doc.labelSource && {
+            id: 'no-labels',
+            type: 'warning',
+            content: 'Not ready to annotate: this document has no labels yet. Generate draft labels for the set first.',
+          },
+        !doc.reviewObjectKey &&
+          !!doc.labelSource && {
+            id: 'authored',
+            type: 'info',
+            content: `Authored ground truth: check its labels, correct them if needed, then choose Complete.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}`,
+          },
+      ]}
+    />
   );
 
   return (
     <AnnotationFrame
       title={objectKey}
-      objectKey={doc.inputKey}
+      subtitle={
+        <SpaceBetween size="xxxs">
+          <span title={doc.inputKey}>Document: {doc.inputKey}</span>
+          <span title={doc.objectKey}>Ground Truth: {doc.objectKey}</span>
+        </SpaceBetween>
+      }
       badges={
         <>
           <Badge color="grey">Test Studio</Badge>
@@ -362,6 +364,18 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
         showRegroup: true,
         regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
         showClaim: canClaim,
+        // Edit the ground truth, or view the source document.
+        leading: testSetBucket ? (
+          <SegmentedControl
+            label="Edit or view the document"
+            selectedId={docView}
+            onChange={({ detail }) => setDocView(detail.selectedId as DocView)}
+            options={[
+              { id: 'ground-truth', text: 'Edit' },
+              { id: 'source', text: 'View' },
+            ]}
+          />
+        ) : undefined,
         onShowHistory: () => setShowHistory(true),
         onShowReport: () => setShowReport(true),
         busy,
@@ -391,14 +405,6 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
     >
       {testSetBucket && (
         <SpaceBetween size="s">
-          <SegmentedControl
-            selectedId={docView}
-            onChange={({ detail }) => setDocView(detail.selectedId as DocView)}
-            options={[
-              { id: 'ground-truth', text: 'Annotate' },
-              { id: 'source', text: 'View source document' },
-            ]}
-          />
           {docView === 'source' && <FileViewer objectKey={doc.inputKey} bucket={testSetBucket} />}
           {docView === 'ground-truth' && (
             <GroundTruthVisualEditor
@@ -419,6 +425,7 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
               controllerRef={editor}
               actionsPlacement="external"
               showHistoryTab={false}
+              hideHeader
               saveOnSectionSwitch
               regroupPlacement="external"
               regroupOpen={regroupOpen}

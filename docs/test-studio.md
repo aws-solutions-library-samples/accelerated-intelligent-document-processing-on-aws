@@ -1184,10 +1184,12 @@ The queue page shows:
 Per-document actions sit in one bar at the top of the document editor (the same
 editor as production review items), so finishing a long document does not mean
 scrolling past every field to reach them: **History**, **Skip**, **Discard Changes**,
-**Edit Page Grouping**, **Processing Report** and **Process Changes**, or **Claim**
+**Edit Page Grouping**, **Processing Report** and **Complete**, or **Claim**
 for an Annotator viewing an unassigned document. There is no **Save as Draft**:
 saving a section marks it reviewed, so switching sections saves the open one, and
-**Process Changes** saves the open section and confirms the rest.
+**Complete** saves the open section and confirms the rest. The bar starts with an **Edit | View** switch: **Edit** shows the ground-truth editor
+and **View** the source document. Under the title the screen names the **Document**
+(its input key) and its **Ground Truth**, and its notices share one alert.
 
 On large sets the queue is read a page at a time, and the page says so rather than
 implying the whole set has been ranked. What bounds that page is the number of

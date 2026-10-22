@@ -4,7 +4,7 @@
 // The direct-edit adapter of the unified editor: loads any processed document (whether
 // or not it is in review), its page images and section results; saves a section's
 // edits without reprocessing (Save as Draft); and submits the document for
-// reprocessing (Process Changes).
+// reprocessing (Complete).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 

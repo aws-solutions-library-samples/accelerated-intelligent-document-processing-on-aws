@@ -231,8 +231,8 @@ matters if the document is used as the prediction side of an evaluation.
 **The extracted values are kept and the document is not reprocessed.** Saving writes
 the page grouping and the section classes and nothing else, so extracted fields and any
 a reviewer corrected by hand survive. They were extracted from a different set of pages,
-so they may no longer match; use **Edit Mode → Process Changes**, or **Process
-Changes** in the document editor, afterwards if you would rather the pipeline redo
+so they may no longer match; use **Edit Mode → Process Changes**, or **Complete**
+in the document editor, afterwards if you would rather the pipeline redo
 them.
 
 That is the difference between the two routes, and it is the reason both exist:
@@ -681,12 +681,12 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   role. The actions are at the top, each shown where it applies: **History** (field
   edits, and a Production item's review activity), **Skip** (queue items, for the
   assignee), **Discard Changes**, **Save as Draft** (Production items and direct
-  edits), **Edit Page Grouping**, **Processing Report** and **Process Changes**.
-  Process Changes completes a queue item, and on a direct edit saves the edits,
+  edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
+  Complete finishes a queue item, and on a direct edit saves the edits,
   confirms, and reprocesses the document. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
-  item directly (the first saved edit, or Process Changes, assigns it to them) and
+  item directly (the first saved edit, or Complete, assigns it to them) and
   uses **Take over** on one assigned to someone else.
 - The Document List shows a queue-held document's **Status** as **HITL_IN_PROGRESS** and its
   **Review Status** as **In Review**, which for Admins and Annotators links to the queue

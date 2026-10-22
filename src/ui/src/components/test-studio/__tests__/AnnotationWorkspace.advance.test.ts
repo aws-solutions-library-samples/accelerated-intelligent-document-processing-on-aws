@@ -43,7 +43,7 @@ const SCREEN = readFileSync(join(__dirname, '..', '..', 'review-workspace', 'Tes
  * here. They pinned the in-page "Save & next in queue" rail, which this page no longer
  * has: it is a queue table, and each row opens the per-document annotation screen
  * (review-workspace/TestSetAnnotation.tsx), which returns to the queue (or My Work)
- * after Process Changes, Skip or the last section's save. There is no in-page advance, no
+ * after Complete, Skip or the last section's save. There is no in-page advance, no
  * local next-document choice and no local retirement of a row left to test. The
  * intent of those tests — leave the saved document at once, and never claim a
  * part-reviewed packet as reviewed — is pinned below against the screen that owns it.
@@ -75,7 +75,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
     expect(everyAt).toBeGreaterThan(-1);
     expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
-    expect(handleSaved).toContain('Check the other sections, then choose Process Changes.');
+    expect(handleSaved).toContain('Check the other sections, then choose Complete.');
   });
 
   it('does not report a skipped document as reviewed', () => {

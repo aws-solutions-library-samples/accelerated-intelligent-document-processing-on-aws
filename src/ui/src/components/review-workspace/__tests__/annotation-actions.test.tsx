@@ -4,7 +4,7 @@
 /**
  * The unified editor's action bar. What has to hold: the buttons come in the order
  * History, Skip, Discard Changes, Save as Draft, Edit Page Grouping, Processing Report,
- * Process Changes, each only where it applies; Claim mode shows History, Processing
+ * Complete, each only where it applies; Claim mode shows History, Processing
  * Report and Claim only; a disabled button carries its reason; while an action runs
  * every button is disabled; and each button reports its own action.
  */
@@ -59,13 +59,13 @@ describe('the unified editor action bar', () => {
       'Save as Draft',
       'Edit Page Grouping',
       'Processing Report',
-      'Process Changes',
+      'Complete',
     ]);
   });
 
-  it('shows only History, Processing Report and Process Changes by default', () => {
+  it('shows only History, Processing Report and Complete by default', () => {
     renderBar();
-    expect(labels()).toEqual(['History', 'Processing Report', 'Process Changes']);
+    expect(labels()).toEqual(['History', 'Processing Report', 'Complete']);
   });
 
   it('shows History, Processing Report and Claim in claim mode', () => {
@@ -76,7 +76,7 @@ describe('the unified editor action bar', () => {
   it('disables a button with its reason', () => {
     renderBar({ ...ALL, regroupDisabledReason: 'Not while in review', processDisabledReason: 'Assigned to someone else' });
     expect(isDisabled(button('Edit Page Grouping'))).toBe(true);
-    expect(isDisabled(button('Process Changes'))).toBe(true);
+    expect(isDisabled(button('Complete'))).toBe(true);
     expect(isDisabled(button('Save as Draft'))).toBe(false);
     const regroup = createWrapper(document.body)
       .findAllButtons()
@@ -95,7 +95,7 @@ describe('the unified editor action bar', () => {
     ['Discard Changes', 'discard'],
     ['Save as Draft', 'save'],
     ['Edit Page Grouping', 'regroup'],
-    ['Process Changes', 'process'],
+    ['Complete', 'process'],
   ])('%s reports %s', (name, action) => {
     const { onAction } = renderBar(ALL);
     fireEvent.click(button(name));

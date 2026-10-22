@@ -3,8 +3,8 @@
 
 /**
  * The unified editor on a production item, by role. What has to hold: an Admin on
- * an unassigned item can edit it and use Process Changes, and the first draft save or
- * Process Changes
+ * an unassigned item can edit it and use Complete, and the first draft save or
+ * Complete
  * claims it once (concurrent saves share the one claim) before the save or complete
  * is sent; if an Annotator got there first the screen says so and goes view-only; an
  * Admin on someone else's item sees it view-only with Take over, which calls
@@ -188,12 +188,12 @@ describe('an Admin on an unassigned item', () => {
     renderScreen();
     expect(readOnly()).toBe(false);
     expect(document.body.textContent).toContain('Not assigned yet. Editing or completing assigns it to you.');
-    expect(button('Process Changes').isDisabled()).toBe(false);
+    expect(button('Complete').isDisabled()).toBe(false);
   });
 
   it('claims the item, then completes it', async () => {
     renderScreen();
-    fireEvent.click(button('Process Changes').getElement());
+    fireEvent.click(button('Complete').getElement());
     await waitFor(() => expect(complete).toHaveBeenCalled());
     expect(claimItem).toHaveBeenCalledTimes(1);
     expect(claimItem.mock.calls[0][0]).toMatchObject({ objectKey: 'in/w2.pdf', cycleId: 'c1' });
@@ -261,7 +261,7 @@ describe('an Admin on an item assigned to someone else', () => {
     renderScreen();
     expect(readOnly()).toBe(true);
     expect(document.body.textContent).toContain(`Assigned to ${ANN}. Take over to edit or complete it.`);
-    expect(button('Process Changes').isDisabled()).toBe(true);
+    expect(button('Complete').isDisabled()).toBe(true);
     expect(buttons()).not.toContain('Skip');
   });
 
@@ -379,11 +379,11 @@ describe('the actions', () => {
     expect(controller.discard).toHaveBeenCalledTimes(1);
   });
 
-  it('save unsaved edits before completing on Process Changes', async () => {
+  it('save unsaved edits before completing on Complete', async () => {
     server.detail = mine();
     controller.isDirty.mockReturnValue(true);
     renderScreen();
-    fireEvent.click(button('Process Changes').getElement());
+    fireEvent.click(button('Complete').getElement());
     await waitFor(() => expect(complete).toHaveBeenCalled());
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(complete.mock.invocationCallOrder[0]);
   });

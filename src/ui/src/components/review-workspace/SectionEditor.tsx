@@ -118,6 +118,8 @@ interface SectionEditorProps {
   actionsPlacement?: 'header' | 'external';
   /** Show the Edit history tab; the unified editor shows the edits under History instead. */
   showHistoryTab?: boolean;
+  /** Hide the title row (the frame already names the document and holds the actions). */
+  hideHeader?: boolean;
   onSavingChange?: (saving: boolean) => void;
   onSelectedSectionChange?: (sectionId: string | null) => void;
   /** Switching sections with unsaved changes saves them first, instead of asking. */
@@ -171,6 +173,7 @@ const SectionEditor = ({
   controllerRef,
   actionsPlacement = 'header',
   showHistoryTab = true,
+  hideHeader = false,
   onSavingChange,
   onSelectedSectionChange,
   saveOnSectionSwitch = false,
@@ -482,24 +485,26 @@ const SectionEditor = ({
 
   return (
     <SpaceBetween size="s">
-      <Header
-        variant="h3"
-        actions={
-          !isReadOnly &&
-          actionsPlacement === 'header' && (
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button onClick={handleDiscard} disabled={!hasChanges || isSaving}>
-                Discard changes
-              </Button>
-              <Button variant="primary" onClick={() => void handleSave()} loading={isSaving} disabled={!hasChanges}>
-                {saveButtonText ?? 'Save changes'}
-              </Button>
-            </SpaceBetween>
-          )
-        }
-      >
-        {title ?? objectKey}
-      </Header>
+      {!hideHeader && (
+        <Header
+          variant="h3"
+          actions={
+            !isReadOnly &&
+            actionsPlacement === 'header' && (
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button onClick={handleDiscard} disabled={!hasChanges || isSaving}>
+                  Discard changes
+                </Button>
+                <Button variant="primary" onClick={() => void handleSave()} loading={isSaving} disabled={!hasChanges}>
+                  {saveButtonText ?? 'Save changes'}
+                </Button>
+              </SpaceBetween>
+            )
+          }
+        >
+          {title ?? objectKey}
+        </Header>
+      )}
 
       {headerExtras && headerExtras(ctx)}
 

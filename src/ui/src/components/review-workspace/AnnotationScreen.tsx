@@ -9,7 +9,7 @@
 //   /review-queues/items/:objectKey                      kind="production"
 //   /review-queues/test-sets/:testSetId/items/:objectKey kind="test-set"
 //
-// Assignments do not expire. The assignee finishes the item with Process Changes or
+// Assignments do not expire. The assignee finishes the item with Complete or
 // skips it (gives it back to its queue); an Admin opening it gets the same screen.
 import React from 'react';
 import { useParams } from 'react-router-dom';

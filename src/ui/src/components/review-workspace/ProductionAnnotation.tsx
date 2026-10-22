@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The unified editor for a production review item: the shared SectionEditor over the
-// item's sections, edits autosaved as drafts (and Save as Draft), then Process Changes
+// item's sections, edits autosaved as drafts (and Save as Draft), then Complete
 // (complete the review) or Skip (give the item back to its queue; the draft is kept). Only the assignee edits. Any Annotator listed
 // on the item's queue can open it read-only, and Claim an unassigned item to work it.
 // An Admin edits an unassigned item directly: the first draft save, or Process
@@ -28,6 +28,7 @@ import type { GroupedSection } from '../common/section-grouping';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import type { ReviewItem } from '../../graphql/generated/operation-types';
 import AnnotationFrame from './AnnotationFrame';
+import EditorNotices from './EditorNotices';
 import type { AnnotationAction } from './AnnotationFrame';
 import EditorHistoryModal from './EditorHistoryModal';
 import ProcessingReportModal from './ProcessingReportModal';
@@ -104,7 +105,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   }, [queueId, queueName, onItemQueue]);
 
   /**
-   * Before an Admin's first draft save or Process Changes on an unassigned item: claim it
+   * Before an Admin's first draft save or Complete on an unassigned item: claim it
    * (once, however many saves are waiting) and re-read it. Resolves true when the item
    * is the caller's; false when an Annotator was assigned it first.
    */
@@ -183,7 +184,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   const terminal = !assigned && item.state !== QueueItemState.OPEN;
   const assignee = assigned ? item.ownerEmail : null;
   const assignedToMe = assigned && item.isMine;
-  // An Admin edits an unassigned item straight away; the first save or Process Changes assigns it to them.
+  // An Admin edits an unassigned item straight away; the first save or Complete assigns it to them.
   const adminOnOpen = isAdmin && item.state === QueueItemState.OPEN;
   const canEdit = assignedToMe || adminOnOpen;
   // An Admin takes over an item assigned to someone else before editing it.
@@ -322,40 +323,44 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
     if (ok) exit(queuePath, `Completed ${name}. Your corrections are being applied.`, `p:${objectKey}`);
   };
 
+  // One alert for the screen's notices, so the space stays given over to the review.
   const notices = (
-    <>
-      {terminal && (
-        <Alert type="info" header="This review is finished">
-          {item.state === 'FINALIZING'
-            ? 'The review was submitted and its corrections are being applied.'
-            : `This item is ${stateView.label.toLowerCase()}. It can no longer be edited.`}
-        </Alert>
-      )}
-      {adminOnOpen && <Alert type="info">Not assigned yet. Editing or completing assigns it to you.</Alert>}
-      {canTakeOver && (
-        <Alert
-          type={assignedJustNow ? 'warning' : 'info'}
-          action={
+    <EditorNotices
+      notices={[
+        terminal && {
+          id: 'finished',
+          type: 'info',
+          content:
+            item.state === 'FINALIZING'
+              ? 'This review is finished: it was submitted and its corrections are being applied.'
+              : `This review is finished: the item is ${stateView.label.toLowerCase()} and can no longer be edited.`,
+        },
+        adminOnOpen && { id: 'unassigned', type: 'info', content: 'Not assigned yet. Editing or completing assigns it to you.' },
+        canTakeOver && {
+          id: 'take-over',
+          type: assignedJustNow ? 'warning' : 'info',
+          content: assignedJustNow
+            ? `Assigned to ${assignee ?? assignedJustNow} just now. Take over to edit or complete it.`
+            : `Assigned to ${assignee}. Take over to edit or complete it.`,
+          action: (
             <Button onClick={() => void handleTakeOver()} loading={takingOver} disabled={busy !== null}>
               Take over
             </Button>
-          }
-        >
-          {assignedJustNow
-            ? `Assigned to ${assignee ?? assignedJustNow} just now. Take over to edit or complete it.`
-            : `Assigned to ${assignee}. Take over to edit or complete it.`}
-        </Alert>
-      )}
-      {!terminal && !canEdit && !isAdmin && (
-        <Alert type="info">
-          {assignee
-            ? `View only. This item is assigned to ${assignee}.`
-            : canClaim
-              ? 'View only. Claim this item to work on it; it is then assigned to you and shows in My Work › Tasks.'
-              : 'View only.'}
-        </Alert>
-      )}
-    </>
+          ),
+        },
+        !terminal &&
+          !canEdit &&
+          !isAdmin && {
+            id: 'view-only',
+            type: 'info',
+            content: assignee
+              ? `View only. This item is assigned to ${assignee}.`
+              : canClaim
+                ? 'View only. Claim this item to work on it; it is then assigned to you and shows in My Work › Tasks.'
+                : 'View only.',
+          },
+      ]}
+    />
   );
 
   return (
@@ -401,8 +406,8 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
                 <>
                   {groupingError && <Alert type="error">{groupingError}</Alert>}
                   Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted values and your draft edits are{' '}
-                  <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>Process Changes</b>. A
-                  section you remove takes its draft edits with it.
+                  <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>Complete</b>. A section
+                  you remove takes its draft edits with it.
                 </>
               }
               saveLabel="Save page grouping"

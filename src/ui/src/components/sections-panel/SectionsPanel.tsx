@@ -44,7 +44,7 @@ import { documentEditHref } from '../../routes/constants';
 import { useDocumentVersion } from '../../contexts/document-version';
 import { getFilePresignedUrl, skipAllSectionsReview } from '../../graphql/generated';
 import { parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
-import { SKIP_ALL_REASONS, inReviewQueueEditReason, isInReviewQueue, isQueueManaged } from '../common/review-status';
+import { SKIP_ALL_REASONS, isInReviewQueue, isQueueManaged } from '../common/review-status';
 import ReasonModal from '../common/ReasonModal';
 
 const client = generateClient();
@@ -815,7 +815,7 @@ const SectionsPanel = ({
   // processed under a previous or different configuration profile.
   const configuration = mergedConfig;
   const { settings: settings2 } = useSettingsContext();
-  const { isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
+  const { isReviewerOnly, canWrite, canReview } = useUserRole();
   // When viewing a past document version, all edits are disabled — the panels
   // write to the *current* output objects, not the historical snapshot.
   const { isHistorical } = useDocumentVersion();
@@ -915,22 +915,8 @@ const SectionsPanel = ({
     inReviewQueue ||
     (!canWrite && !canReview) ||
     (isReviewerOnly && ((hitlTriggered && !hasReviewOwner) || isDocumentProcessing || isHitlCompleted || isHitlSkipped));
-  const editModeDisabledReason = inReviewQueue ? inReviewQueueEditReason(canWorkReviewQueues) : undefined;
 
   logger.debug('Edit Mode Check:', { isReviewerOnly, isEditModeDisabled, isHitlCompleted, isHitlSkipped });
-
-  // Auto-exit edit mode when switching to a historical version, or (for
-  // reviewers) when the document starts processing or HITL is completed/skipped.
-  useEffect(() => {
-    if ((isHistorical || inReviewQueue) && isEditMode) {
-      setIsEditMode(false);
-      return;
-    }
-    if (isReviewerOnly && isEditMode && (isDocumentProcessing || isHitlCompleted || isHitlSkipped)) {
-      logger.info('Auto-exiting edit mode due to status change');
-      setIsEditMode(false);
-    }
-  }, [isHistorical, inReviewQueue, isReviewerOnly, isDocumentProcessing, isHitlCompleted, isHitlSkipped, isEditMode]);
 
   // Handle skip all sections review (Admin or Reviewer); the reason and note are
   // recorded with the skip in the review history.
@@ -1416,22 +1402,13 @@ const SectionsPanel = ({
                         because it regenerates them. Hidden for Pattern-1, where BDA owns
                         the section structure. */}
                     {!isPattern1() && (
-                      <Button
-                        iconName="edit"
-                        onClick={() => setIsRegrouping(true)}
-                        disabled={isEditModeDisabled}
-                        disabledReason={editModeDisabledReason}
-                      >
+                      // Always enabled for now; the server still refuses a save it can't take.
+                      <Button iconName="edit" onClick={() => setIsRegrouping(true)}>
                         Edit Page Grouping
                       </Button>
                     )}
-                    <Button
-                      variant="primary"
-                      iconName="edit"
-                      onClick={handleEditSectionsClick}
-                      disabled={isEditModeDisabled}
-                      disabledReason={editModeDisabledReason}
-                    >
+                    {/* Always enabled for now; the server still refuses a save it can't take. */}
+                    <Button variant="primary" iconName="edit" onClick={handleEditSectionsClick}>
                       Edit Mode
                     </Button>
                   </>
