@@ -46,24 +46,24 @@ Properties it is built around
    ``uxbrowser`` with flags and a managed policy that send every request to
    ``scripts/ux_test_proxy.py`` (run as ``uxproxy``), which tunnels only to the
    review stack's own hosts by exact name and refuses instance metadata, DevTools
-   and private addresses. Two self-tests prove the policy is enforced and the
-   traffic arrives at the proxy before anything is recorded, and a socket audit by
-   uid covers Chrome's whole life: it starts as soon as Chrome is launched, so the
-   sign-in on the MR's own login page is inside it, and its last pass runs after
-   Chrome has been terminated, which happens as soon as the recorder stops and
-   before anything is rendered or posted. Terminating Chrome kills its process
-   group and then, once the uid's processes have had a few seconds to exit by
-   themselves as Chrome's own crashpad handlers do, every process its uid still
-   runs (``chrome.kill_strays``), so a browser process that left the group with
-   ``setsid`` cannot outlive the audit either. Nothing is posted unless the audit
-   is clean and no such process was still running once that wait was over. The
-   proxy's directory is ``uxproxy``'s, so its ready file, refusal log,
-   stats and log are read back the way render's outputs are (``egress``,
-   ``readback``): a link, a pipe, another uid's file or an oversized one in their
-   place is refused unread. That fails the run for all but the stats, which are
-   read only for ``summary.json`` once the run is decided, and are then left out
-   with a line saying why, while the refusal log is still copied for the note's
-   caveat to point at.
+   and private addresses, except a VPC endpoint's for an AWS service name. Two
+   self-tests prove the policy is enforced and the traffic arrives at the proxy
+   before anything is recorded, and a socket audit by uid covers Chrome's whole
+   life: it starts as soon as Chrome is launched, so the sign-in on the MR's own
+   login page is inside it, and its last pass runs after Chrome has been terminated,
+   which happens as soon as the recorder stops and before anything is rendered or
+   posted. Terminating Chrome kills its process group and then, once the uid's
+   processes have had a few seconds to exit by themselves as Chrome's own crashpad
+   handlers do, every process its uid still runs (``chrome.kill_strays``), so a
+   browser process that left the group with ``setsid`` cannot outlive the audit
+   either. Nothing is posted unless the audit is clean and no such process was still
+   running once that wait was over. The proxy's directory is ``uxproxy``'s, so its
+   ready file, refusal log, stats and log are read back the way render's outputs are
+   (``egress``, ``readback``): a link, a pipe, another uid's file or an oversized
+   one in their place is refused unread. That fails the run for all but the stats,
+   which are read only for ``summary.json`` once the run is decided, and are then
+   left out with a line saying why, while the refusal log is still copied for the
+   note's caveat to point at.
 3. **No secret reaches the model.** The persona is signed in over DevTools before
    the recorder starts, so the password reaches neither the model nor the video's
    narration. ``claude`` runs with no built-in tools (``--tools ''``), only the

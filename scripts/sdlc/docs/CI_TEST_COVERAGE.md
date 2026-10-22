@@ -555,8 +555,11 @@ treats that file as diagnostics only.
   and Function URL hosts, and its buckets by exact name, never by a name prefix,
   on their regional S3 hosts and, in the commercial partition, the global ones the
   backend presigns its file URLs with), plus one static host, and only when every
-  address the name resolves to is public. Instance metadata, the DevTools port and
-  private addresses are refused, and every refusal is logged to `refusals.jsonl`,
+  address the name resolves to is public or, for an AWS service name, every one is
+  a VPC endpoint's private address, which is how an interface endpoint with private
+  DNS answers inside its VPC, as the CI runners' SSM endpoint does. Instance
+  metadata, loopback, link-local addresses and the DevTools port are refused for
+  every name, and every refusal is logged to `refusals.jsonl`,
   a request the proxy cannot parse included. The proxy also bounds how many
   connections are open at once and how long and how large a request head may be,
   so a slow or malformed client cannot hold it. Its working directory is
