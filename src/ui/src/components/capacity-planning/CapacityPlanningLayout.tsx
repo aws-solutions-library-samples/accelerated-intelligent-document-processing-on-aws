@@ -32,6 +32,11 @@ import DateRangeModal from '../common/DateRangeModal';
 import { parseMetering } from '../../graphql/awsjson-parsers';
 import { classificationModelOf } from '../../utils/classification-config';
 
+// Two-stage classification meters its halves as Segmentation and
+// SectionClassification instead of Classification; all three are the
+// classification step.
+const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'Segmentation/', 'SectionClassification/'];
+
 // Type definitions for configuration and state
 interface Configuration {
   ocr?: { backend?: string; model_id?: string; model?: string };
@@ -412,7 +417,7 @@ const CapacityPlanningLayout = () => {
             data.avgPages = Math.max(data.avgPages, pageCount);
             console.log(`📄 Extracted page count from ${key}: ${pageCount} pages`);
           }
-        } else if (key.startsWith('Classification/')) {
+        } else if (CLASSIFICATION_METERING_PREFIXES.some((prefix) => key.startsWith(prefix))) {
           const tokenCount = metrics.totalTokens || (metrics.inputTokens || 0) + (metrics.outputTokens || 0);
           data.classificationTokens += Number(tokenCount) || 0;
           data.classificationRequests += estimateRequestsFromTokens(tokenCount, 'Classification');
