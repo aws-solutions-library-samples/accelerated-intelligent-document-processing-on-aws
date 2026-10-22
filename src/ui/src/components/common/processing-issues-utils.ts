@@ -42,11 +42,33 @@ const FAILURE_CODES = new Set([
 ]);
 
 /**
+ * Codes at `info` severity that mean something was actually RECOVERED.
+ *
+ * Severity alone cannot carry this. Four backend codes are `info`, and only this
+ * one reports a repair: the other three — `extraction_sparse`
+ * ("possible silent extraction loss"), `extraction_off_schema_fields` (fields
+ * dropped before assessment) and `assessment_geometry_incomplete` (scored fields
+ * with no bounding box) — all report something *missing*. Labelling those
+ * "Auto-recovered" tells an operator the opposite of what happened, and the two
+ * extraction codes are the ones most worth looking at, so the mislabel lands
+ * where it costs most. `extraction_sparse` is also by far the most common issue
+ * in practice, which makes the wrong reading the usual one.
+ *
+ * Enumerating what IS recovery rather than what is not keeps this set at one
+ * entry and makes a new backend `info` code default to the neutral label instead
+ * of silently claiming a repair. `scripts/tests/test_info_code_ui_parity.py`
+ * fails if the backend grows an `info` code that no side classifies.
+ */
+const RECOVERY_CODES = new Set(['assessment_recovered_with_retries']);
+
+/**
  * Reduce a section's issues to a single Cloudscape StatusIndicator type +
  * label, worst-severity-wins:
  *   error   -> "error"   ("Failed" when the stage raised, else "Incomplete")
  *   warning -> "warning" ("Degraded")
- *   info    -> "info"    ("Auto-recovered")
+ *   info    -> "info"    ("Auto-recovered" only when every note is a recovery,
+ *                         else "Info" — most `info` notes report something
+ *                         missing, not something repaired)
  *   none    -> "success" ("OK")
  */
 export const getSectionIssueStatus = (
@@ -64,7 +86,12 @@ export const getSectionIssueStatus = (
   if (severities.has('warning')) {
     return { type: 'warning', label: 'Degraded', count: issues.length };
   }
-  return { type: 'info', label: 'Auto-recovered', count: issues.length };
+  // "Auto-recovered" only when EVERY note is a recovery — not when merely one is.
+  // A section carrying both a repair and a sparse-extraction note has something
+  // still worth reading, so the neutral label is the honest summary and the
+  // recovery stays visible in the message and the Processing Report tab.
+  const allRecovered = issues.every((i) => RECOVERY_CODES.has((i.code || '').toLowerCase()));
+  return { type: 'info', label: allRecovered ? 'Auto-recovered' : 'Info', count: issues.length };
 };
 
 /** True when any section in the list carries at least one processing issue. */

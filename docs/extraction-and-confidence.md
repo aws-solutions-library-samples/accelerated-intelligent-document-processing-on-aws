@@ -2269,8 +2269,10 @@ text, so they are unaffected by the backend.
 on such a backend `extraction_row_count_unverified` will be common.** Two UI
 surfaces count issues without reading severity, so an `info` issue moves them
 exactly as a warning would: the section's status indicator goes from **OK** to the
-generic info label **Auto-recovered** (the same label `extraction_sparse` gets),
-and the document list's **Processing Issues** count becomes non-zero. Both happen
+neutral info label **Info** (the same label `extraction_sparse` gets — **Auto-recovered**
+is reserved for the one `info` code that reports an actual repair,
+`assessment_recovered_with_retries`), and the document list's **Processing Issues**
+count becomes non-zero. Both happen
 on every section holding a 30-or-more-row object list, including sections where
 nothing is wrong — which is the trade for being able to tell "could not check"
 from "checked and found complete" at all.
