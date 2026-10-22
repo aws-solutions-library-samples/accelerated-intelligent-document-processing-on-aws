@@ -19,7 +19,7 @@ Three properties here are the ones a refactor could lose without any structural
 test noticing:
 
 - **The two halves are metered separately**, under ``Segmentation`` and
-  ``Labeling``, while single-pass stays ``Classification`` with unchanged units.
+  ``SectionClassification``, while single-pass stays ``Classification`` with unchanged units.
   That split is what makes "is this actually cheaper on my documents?"
   answerable from the cost table rather than from arithmetic.
 - **Stage A sends no class vocabulary.** If a prompt or substitution change
@@ -189,7 +189,7 @@ class _Router:
 
         if stage == ClassificationService.STAGE_LABELING:
             label = self.labels.pop(0) if self.labels else "invoice"
-            return _reply({"class": label}, "Labeling")
+            return _reply({"class": label}, "SectionClassification")
 
         return _reply(
             {"class": "invoice", "document_boundary": "start"}, "Classification"
@@ -235,7 +235,7 @@ class TestStrategyConfig:
             _service(labeling={"method": "embeddings"})
 
     def test_an_unknown_labeling_pages_value_is_refused(self):
-        with pytest.raises(Exception, match="labeling.pages must be"):
+        with pytest.raises(Exception, match="section_classification.pages must be"):
             _service(labeling={"pages": "last"})
 
     def test_an_unknown_boundary_hints_value_is_refused(self):
@@ -265,7 +265,7 @@ class TestStagePromptResolution:
             service = _service(granularity=granularity)
             config = service._get_classification_config(service.STAGE_LABELING)
             assert config["system_prompt"] == "stage B system"
-            assert config["metering_context"] == "Labeling"
+            assert config["metering_context"] == "SectionClassification"
 
     def test_single_pass_keeps_the_classification_metering_context(self):
         """Unchanged units, so a cost comparison across this change is a
@@ -414,11 +414,13 @@ class TestTwoStagePacket:
         result = self._run(service, _document(2), router)
 
         assert "Segmentation/bedrock/nova" in result.metering
-        assert "Labeling/bedrock/nova" in result.metering
+        assert "SectionClassification/bedrock/nova" in result.metering
         assert "Classification/bedrock/nova" not in result.metering
         # One Stage A call, two Stage B calls.
         assert result.metering["Segmentation/bedrock/nova"]["inputTokens"] == 10
-        assert result.metering["Labeling/bedrock/nova"]["inputTokens"] == 20
+        assert (
+            result.metering["SectionClassification/bedrock/nova"]["inputTokens"] == 20
+        )
 
     def _router_for_two_segments(self) -> _Router:
         return _Router(
@@ -463,7 +465,7 @@ class TestTwoStagePacket:
         def boom(content, config):  # noqa: ARG001 - content unused, stage decides
             if config.get("stage") == "segmentation":
                 raise RuntimeError("throttled")
-            return _reply({"class": "invoice"}, "Labeling")
+            return _reply({"class": "invoice"}, "SectionClassification")
 
         with (
             patch("idp_common.s3.get_text_content", return_value="text"),
@@ -493,7 +495,7 @@ class TestTwoStagePacket:
                 b["text"] for b in content if "text" in b
             ):
                 raise RuntimeError("throttled")
-            return _reply({"class": "invoice"}, "Labeling")
+            return _reply({"class": "invoice"}, "SectionClassification")
 
         with (
             patch("idp_common.s3.get_text_content", return_value="text"),
@@ -618,7 +620,7 @@ class TestStageBClassValidation:
                 )
             index = min(calls["n"], len(replies) - 1)
             calls["n"] += 1
-            return _reply({"class": replies[index]}, "Labeling")
+            return _reply({"class": replies[index]}, "SectionClassification")
 
         with (
             patch("idp_common.s3.get_text_content", return_value="text"),
@@ -855,8 +857,13 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
         """So the fallback is what THIS build would write into a new profile."""
         shipped = ClassificationService._shipped_classification_defaults()
         assert shipped, "the shipped classification defaults did not load"
-        assert shipped["packet"]["task_prompt"].strip()
-        assert shipped["labeling"]["task_prompt"].strip()
+        assert shipped["one_stage"]["packet"]["task_prompt"].strip()
+        assert shipped["two_stage"]["segmentation"]["llm"]["packet"][
+            "task_prompt"
+        ].strip()
+        assert shipped["two_stage"]["section_classification"]["llm"][
+            "task_prompt"
+        ].strip()
 
     def test_an_unreadable_defaults_file_does_not_raise(self, monkeypatch):
         """A missing defaults file must not turn into a classification failure;
@@ -870,3 +877,62 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
             assert ClassificationService._shipped_classification_defaults() == {}
         finally:
             ClassificationService._shipped_classification_defaults.cache_clear()
+
+
+# --------------------------------------------------------------------------
+# A declared file shape fixes the segments, so segmentation is skipped
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestADeclaredFileShapeSkipsSegmentation:
+    """Under "one document" or "one per page" the segments are known before any
+    call, and section forming would discard whatever segmentation returned. At
+    packet granularity with images that is the expensive call, so it is not made.
+    """
+
+    def _run(self, service, document, router):
+        with (
+            patch("idp_common.s3.get_text_content", side_effect=_page_texts()),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=router),
+        ):
+            return service.two_stage_classify_document(document)
+
+    @staticmethod
+    def _stages(router):
+        return [stage for stage, _ in router.calls]
+
+    @pytest.mark.parametrize("granularity", ["page", "packet"])
+    def test_one_document_makes_one_section_classification_call(self, granularity):
+        service = _service(
+            granularity=granularity,
+            sectionSplitting="disabled",
+            labeling={"pages": "all"},
+        )
+        router = _Router(labels=["receipt"])
+        result = self._run(service, _document(4), router)
+
+        assert self._stages(router) == [ClassificationService.STAGE_LABELING]
+        assert [s.page_ids for s in result.sections] == [["1", "2", "3", "4"]]
+        assert result.sections[0].classification == "receipt"
+        assert not any(k.startswith("Segmentation/") for k in result.metering)
+        # The one call saw every page, because `pages: all` asked for it.
+        text = "".join(b["text"] for b in router.calls[0][1] if "text" in b)
+        assert all(f"PAGE-{i}" in text for i in range(1, 5))
+
+    def test_one_per_page_classifies_each_page_once(self):
+        service = _service(sectionSplitting="page")
+        router = _Router(labels=["invoice", "receipt", "invoice"])
+        result = self._run(service, _document(3), router)
+
+        assert self._stages(router) == [ClassificationService.STAGE_LABELING] * 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+
+    def test_detected_boundaries_still_run_segmentation(self):
+        """The default is untouched: there, boundaries are what segmentation is for."""
+        service = _service(sectionSplitting="llm_determined")
+        router = _Router(boundaries={"1": "start", "2": "continue"}, labels=["invoice"])
+        self._run(service, _document(2), router)
+
+        assert self._stages(router).count(ClassificationService.STAGE_SEGMENTATION) == 2

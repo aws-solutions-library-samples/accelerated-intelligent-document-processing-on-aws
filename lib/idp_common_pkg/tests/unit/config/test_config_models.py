@@ -140,8 +140,8 @@ class TestConfigModels:
         assert config.extraction.confidence.enabled is True
 
         # Numbers from strings
-        assert config.classification.temperature == 0.0
-        assert config.classification.max_tokens == 4096
+        assert config.classification.one_stage.llm.temperature == 0.0
+        assert config.classification.one_stage.llm.max_tokens == 4096
 
         # Numbers from natives
         assert config.extraction.top_p == 0.1
@@ -152,25 +152,35 @@ class TestConfigModels:
         from idp_common.config.models import ClassificationConfig
 
         cfg = ClassificationConfig()
-        assert cfg.enforceValidClasses is True
-        assert cfg.maxValidationRetries == 2
-        assert cfg.invalidClassFallback == "unclassified"
+        validation = cfg.one_stage.llm.validation
+        assert validation.enforceValidClasses is True
+        assert validation.maxValidationRetries == 2
+        assert cfg.fallback_class == "unclassified"
 
     def test_classification_valid_class_enforcement_parsing(self):
         """String-typed stored config values parse into the correct types."""
         from idp_common.config.models import ClassificationConfig
 
-        cfg = ClassificationConfig(
-            enforceValidClasses="false",
-            maxValidationRetries="3",
-            invalidClassFallback="other",
+        cfg = ClassificationConfig.model_validate(
+            {
+                "enforceValidClasses": "false",
+                "maxValidationRetries": "3",
+                "invalidClassFallback": "other",
+            }
         )
-        assert cfg.enforceValidClasses is False
-        assert cfg.maxValidationRetries == 3
-        assert cfg.invalidClassFallback == "other"
+        # Flat (pre-0.9) keys passed straight to the model are migrated, not
+        # dropped: direct construction is a second entry point to protect.
+        for validation in (
+            cfg.one_stage.llm.validation,
+            cfg.two_stage.section_classification.llm.validation,
+        ):
+            assert validation.enforceValidClasses is False
+            assert validation.maxValidationRetries == 3
+        assert cfg.fallback_class == "other"
 
         # Negative retries are clamped to 0.
-        assert ClassificationConfig(maxValidationRetries="-1").maxValidationRetries == 0
+        clamped = ClassificationConfig.model_validate({"maxValidationRetries": "-1"})
+        assert clamped.one_stage.llm.validation.maxValidationRetries == 0
 
     def test_config_type_hints(self):
         """Test that config can be used as type hint"""
@@ -463,7 +473,7 @@ class TestPipelineHookPreservation:
         )
         assert len(cfg.rule_validation.postHook) == 1
         # classification still has its default model (not wiped out).
-        assert cfg.classification.model
+        assert cfg.classification.one_stage.llm.model
 
 
 @pytest.mark.unit

@@ -69,8 +69,10 @@ Simply specify the model ID with the desired tier suffix in your configuration:
 
 ```yaml
 classification:
-  model: "us.amazon.nova-2-lite-v1:0:priority"  # Fast classification
   # ... other settings
+  one_stage:
+    llm:
+      model: "us.amazon.nova-2-lite-v1:0:priority"  # Fast classification
 
 extraction:
   model: "us.amazon.nova-2-lite-v1:0:flex"  # Cost-effective extraction
@@ -119,8 +121,10 @@ The model dropdown will show all available models including those with tier suff
 **Example configuration:**
 ```yaml
 classification:
-  model: "us.amazon.nova-2-lite-v1:0:priority"
   # Fast classification for real-time user uploads
+  one_stage:
+    llm:
+      model: "us.amazon.nova-2-lite-v1:0:priority"
 ```
 
 ### Standard Tier (Default)
@@ -157,8 +161,10 @@ You can use different tiers for different operations:
 
 ```yaml
 classification:
-  model: "us.amazon.nova-2-lite-v1:0:priority"
   # Fast classification for user experience
+  one_stage:
+    llm:
+      model: "us.amazon.nova-2-lite-v1:0:priority"
 
 extraction:
   model: "us.amazon.nova-2-lite-v1:0:flex"

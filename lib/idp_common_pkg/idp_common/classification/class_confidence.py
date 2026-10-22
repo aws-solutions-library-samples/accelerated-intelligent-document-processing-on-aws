@@ -3,7 +3,8 @@
 
 """Opt-in CLASS confidence for classification: prompt assembly + resolution.
 
-Turning `classification.confidence.mode` on splices an instruction block into the
+Turning a class-assigning call's `confidence.mode` on (for example
+`classification.one_stage.llm.confidence.mode`) splices an instruction block into the
 classification task prompt and resolves whatever comes back into a confidence
 plus (in ``topk`` mode) the ranked runner-up classes. Off by default, and no-op
 when off.
@@ -24,7 +25,7 @@ Two modes, and the difference between them is the whole point:
   both more legible and validatable against the vocabulary.
 
 The blocks are EDITABLE CONFIG TEMPLATES
-(``classification.confidence.task_prompt_topk`` /
+(``confidence.task_prompt_topk`` /
 ``task_prompt_verbalized``), not hardcoded strings, matching how every other
 prompt in this repo can be tuned without a code change.
 

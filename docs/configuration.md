@@ -130,15 +130,7 @@ The GenAI IDP Accelerator uses a **system defaults** architecture where configur
    upload, and the `update_configuration` Lambda) read the top-level **`use_bda`**
    flag: `pattern-1.yaml` when it is set, `pattern-2.yaml` otherwise. That is the same
    flag that routes the workflow at run time, so the defaults merged underneath a
-   configuration now match the branch it will actually take.
-
-   Until config format 0.8 these tools sniffed `classification.classificationMethod
-   == "bda"` instead and did **not** read `use_bda`, so a BDA deployment configured
-   only through `use_bda: true` resolved against `pattern-2.yaml` and carried the OCR,
-   classification, chat, rule-validation and LLM extraction defaults BDA mode does not
-   use. (`"bda"` was never one of that key's two documented values and nothing in the
-   product wrote it; the key itself is gone — see
-   [Classification Method → Granularity](migration-classification-granularity.md).)
+   configuration match the branch it will actually take.
 
 2. **User configurations** are merged on top, overriding only the specified values
 
@@ -175,7 +167,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification, `sectionSplitting`, `contextPagesCount` |
+| `base-classification.yaml` | classification: strategy, the one-stage and two-stage calls, `file_shape` |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -200,7 +192,8 @@ notes: "Configuration that classifies a whole packet in one call"
 
 # Override just the classification granularity
 classification:
-  granularity: packet
+  one_stage:
+    granularity: packet
 
 # Override confidence to use integrated mode
 extraction:
@@ -505,17 +498,22 @@ extraction:
 **For large documents**, prefer **Advanced (agentic) extraction** — it shards both
 extraction and confidence assessment and yields the best-calibrated confidence.
 
-### Classification confidence (`classification.confidence.*`)
+### Classification confidence (`classification.one_stage.llm.confidence.*`)
 
 Separate from the extraction confidence above, and **on by default** — so an
 existing deployment that never set it starts paying for it on upgrade.
 
 ```yaml
 classification:
-  confidence:
-    mode: topk          # topk (default) | off
-    top_k_candidates: 3 # alternative classes returned per page
+  one_stage:
+    llm:
+      confidence:
+        mode: topk          # topk (default) | verbalized | off
+        top_k_candidates: 3 # alternative classes returned per page
 ```
+
+Two-stage section classification has the same block at
+`classification.two_stage.section_classification.llm.confidence`.
 
 Each page's classification returns its top-K candidate classes with
 probabilities, giving a per-page confidence you can threshold on and a visible
@@ -525,7 +523,7 @@ reason when a page is ambiguous.
 is per *section*, this scales with page count. Measured at roughly **+17% of the
 classification step**, which is a small share of a typical bill because
 classification is cheap relative to extraction — but on a page-heavy corpus it is
-not free. Set `mode: off` to return to the previous behaviour.
+not free. Set `mode: off` to ask for no confidence.
 
 See [Classification](./classification.md) for the full reference, including how the
 score reaches the UI and what a `None` confidence means.
@@ -1105,7 +1103,8 @@ Pattern-2 and Pattern-3 support configurable strategies for how classified pages
 
 ```yaml
 classification:
-  sectionSplitting: page  # or "disabled", "llm_determined"
+  file_shape:
+    sectionSplitting: page  # or "disabled", "llm_determined"
 ```
 
 ### Use Cases
@@ -1118,28 +1117,24 @@ For more details on classification methods and section splitting, see [classific
 
 ### Page Limit Configuration
 
-Control how many pages are used during document classification to optimize performance and costs:
+For a file you know is one document, classify only its first pages:
 
 ```yaml
 classification:
-  maxPagesForClassification: "ALL"  # or "1", "2", "3", etc.
+  file_shape:
+    sectionSplitting: disabled          # one document per file
+    maxPagesForClassification: "3"      # "ALL" (default) or "1", "2", "3", "5", "10"
 ```
 
 **Behavior:**
 - **"ALL"** (default): Uses all pages for classification
-- **Numeric value**: Classifies only the first N pages, then applies that classification to the entire document
+- **Numeric value**: Classifies only the first N pages, then applies their
+  majority class to every page of the file as one section
 
-⚠️ **A numeric value overrides `sectionSplitting` for any file longer than N**,
-which then becomes a single section whatever `sectionSplitting` says — so a
-multi-document packet is collapsed. A file of N pages or fewer is classified and
-sectioned normally. The same setting therefore behaves differently on different
-files in one run, which is right for a corpus of known single-document files and
-wrong for packets.
-
-**Important:** When a file is longer than the numeric limit, the classification
-result from its first N pages is applied to ALL of its pages, forcing a single
-class and section for that file. A file of N pages or fewer is unaffected, as
-above.
+The limit applies only with `sectionSplitting: disabled`. With boundary detection
+on it is ignored, with a warning in the classification log: a limit there would
+collapse only files longer than N while sectioning shorter ones normally, so the
+same setting would give different answers for different files in one run.
 
 **Use Cases:**
 - Performance optimization for large documents
@@ -1631,14 +1626,16 @@ The solution supports configurable image dimensions across all processing servic
 
 ### New Default Behavior (Preserves Original Resolution)
 
-**Important Change**: As of the latest version, empty strings or unspecified image dimensions now preserve the original document resolution instead of resizing to default dimensions.
+Empty strings or unspecified image dimensions preserve the original document resolution.
 
 ```yaml
 # Preserves original image resolution (recommended for high-accuracy processing)
 classification:
-  image:
-    target_width: ""     # Empty string = no resizing
-    target_height: ""    # Empty string = no resizing
+  one_stage:
+    llm:              # each classification call has its own image block
+      image:
+        target_width: ""     # Empty string = no resizing
+        target_height: ""    # Empty string = no resizing
 
 extraction:
   image:
@@ -1658,9 +1655,11 @@ You can still specify exact dimensions when needed for performance optimization:
 ```yaml
 # Custom dimensions for specific requirements
 classification:
-  image:
-    target_width: "1200"   # Resize to 1200 pixels wide
-    target_height: "1600"  # Resize to 1600 pixels tall
+  one_stage:
+    llm:
+      image:
+        target_width: "1200"   # Resize to 1200 pixels wide
+        target_height: "1600"  # Resize to 1600 pixels tall
 
 # Performance-optimized dimensions
 extraction:
@@ -1800,14 +1799,15 @@ request is the remedy.
 **Previous Behavior**: Empty strings defaulted to 951x1268 pixel resizing
 **New Behavior**: Empty strings preserve original image resolution
 
-If you were relying on the previous default resizing behavior, explicitly set dimensions:
+To resize every classification page image to a fixed size, set both dimensions on the call:
 
 ```yaml
-# To maintain previous default behavior
 classification:
-  image:
-    target_width: "951"
-    target_height: "1268"
+  one_stage:
+    llm:
+      image:
+        target_width: "951"
+        target_height: "1268"
 ```
 
 ## Additional Configuration Resources

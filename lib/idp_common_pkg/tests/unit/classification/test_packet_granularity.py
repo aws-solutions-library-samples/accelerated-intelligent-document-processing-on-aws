@@ -1066,9 +1066,33 @@ class TestAModelRefusingImagesNamesTheSetting:
         raised = self._invoke(monkeypatch, err, [{"image": {}}])
         message = str(raised)
         assert self.REFUSAL in message, "the original error must survive"
-        assert "classification.modality.images" in message
+        assert "classification.one_stage.llm.modality.images" in message
         assert "nova-micro" in message
         assert isinstance(raised, ClientError), "the class must be preserved"
+
+    @pytest.mark.parametrize(
+        ("stage", "setting"),
+        [
+            ("classification", "classification.one_stage.llm.modality.images"),
+            (
+                "segmentation",
+                "classification.two_stage.segmentation.llm.modality.images",
+            ),
+            (
+                "labeling",
+                "classification.two_stage.section_classification.llm.modality.images",
+            ),
+        ],
+    )
+    def test_the_hint_names_the_setting_of_the_call_that_failed(self, stage, setting):
+        """Each call has its own modality (config format 0.9), so the hint must
+        name the one that sent the images — pointing a two-stage user at the
+        one-stage setting would send them to a block their strategy never runs."""
+        from idp_common.classification.service import _annotate_image_refusal
+
+        exc = ValueError(self.REFUSAL)
+        _annotate_image_refusal(exc, [{"image": {}}], {**self.CONFIG, "stage": stage})
+        assert setting in str(exc)
 
     def test_the_model_name_comes_from_the_key_production_sets(self, monkeypatch):
         """`model_id`, not `model`: `_get_classification_config` builds
@@ -1126,4 +1150,123 @@ class TestAModelRefusingImagesNamesTheSetting:
             service._invoke_bedrock_model(
                 content=[{"image": {}}], config=dict(self.CONFIG)
             )
-        assert "classification.modality.images" in str(excinfo.value)
+        assert "classification.one_stage.llm.modality.images" in str(excinfo.value)
+
+
+def _segments_reply(*segments: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "response": {
+            "output": {
+                "message": {
+                    "content": [{"text": json.dumps({"segments": list(segments)})}]
+                }
+            }
+        },
+        "metering": {},
+    }
+
+
+@pytest.mark.unit
+class TestPacketGranularityHonoursClassValidation:
+    """⚠️ `enforceValidClasses`, `maxValidationRetries` and the fallback class now
+    apply on single-pass PACKET granularity, as they already did on page
+    granularity and on Stage B.
+
+    They used not to. An out-of-vocabulary segment class was logged "using
+    anyway" and kept, so the three settings were silently inert on one of the
+    class-assigning paths while the configuration panel showed them as in force.
+    """
+
+    def _run(self, monkeypatch, replies, **classification):
+        service = _service(classes=_classes("invoice", "receipt"), **classification)
+        calls: List[List[Dict[str, Any]]] = []
+        queue = list(replies)
+
+        def invoke(*, content, config):
+            calls.append(content)
+            return queue.pop(0)
+
+        monkeypatch.setattr(service, "_invoke_bedrock_model", invoke)
+        segments, _ = service._classify_one_packet_window(
+            document=_document(2),
+            config=service._get_classification_config(),
+            pages_content={"1": "a", "2": "b"},
+            window_page_ids=["1", "2"],
+            window_label="1/1",
+            send_images=False,
+            forced_class=None,
+        )
+        return segments, calls
+
+    BAD = {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "purchase_order"}
+    GOOD = {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "invoice"}
+
+    def test_an_invalid_class_is_re_prompted_and_corrected(self, monkeypatch):
+        segments, calls = self._run(
+            monkeypatch, [_segments_reply(self.BAD), _segments_reply(self.GOOD)]
+        )
+        assert [s.doc_class for s in segments] == ["invoice"]
+        assert len(calls) == 2, "one retry"
+        retry_text = json.dumps(calls[1])
+        assert "purchase_order" in retry_text, "the retry names the rejected class"
+        assert "invoice" in retry_text and "receipt" in retry_text
+
+    def test_retries_exhausted_assign_the_fallback_unscored(self, monkeypatch):
+        segments, calls = self._run(
+            monkeypatch,
+            [_segments_reply(self.BAD)] * 3,
+            maxValidationRetries=2,
+        )
+        assert len(calls) == 3
+        assert segments[0].doc_class == "unclassified"
+        assert segments[0].confidence is None, "a fallback is not a prediction"
+        assert segments[0].candidates == []
+
+    def test_a_configured_fallback_class_is_used(self, monkeypatch):
+        segments, _ = self._run(
+            monkeypatch,
+            [_segments_reply(self.BAD)] * 3,
+            invalidClassFallback="receipt",
+        )
+        assert segments[0].doc_class == "receipt"
+
+    def test_enforcement_off_keeps_the_class_and_makes_one_call(self, monkeypatch):
+        """Legacy behaviour, preserved exactly when the operator opts out."""
+        segments, calls = self._run(
+            monkeypatch, [_segments_reply(self.BAD)], enforceValidClasses=False
+        )
+        assert len(calls) == 1
+        assert segments[0].doc_class == "purchase_order"
+
+    def test_only_the_invalid_segment_is_replaced(self, monkeypatch):
+        """A valid segment in the same window keeps its class and its score."""
+        two = (
+            {"ordinal_start_page": 1, "ordinal_end_page": 1, "type": "invoice"},
+            {"ordinal_start_page": 2, "ordinal_end_page": 2, "type": "purchase_order"},
+        )
+        segments, _ = self._run(
+            monkeypatch, [_segments_reply(*two)] * 3, maxValidationRetries=2
+        )
+        assert [s.doc_class for s in segments] == ["invoice", "unclassified"]
+
+    def test_a_regex_forced_class_is_not_validated(self, monkeypatch):
+        """The operator's document-name match already decided the class."""
+        service = _service(classes=_classes("invoice"))
+        calls = []
+
+        def invoke(*, content, config):
+            calls.append(1)
+            return _segments_reply(self.BAD)
+
+        monkeypatch.setattr(service, "_invoke_bedrock_model", invoke)
+        segments, _ = service._classify_one_packet_window(
+            document=_document(2),
+            config=service._get_classification_config(),
+            pages_content={"1": "a", "2": "b"},
+            window_page_ids=["1", "2"],
+            window_label="1/1",
+            send_images=False,
+            forced_class="invoice",
+        )
+        assert len(calls) == 1
+        assert segments[0].doc_class == "invoice"

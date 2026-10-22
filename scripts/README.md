@@ -131,7 +131,7 @@ python scripts/discover_model_limits.py --verbose
 
 **Requirements:** AWS credentials with Bedrock `InvokeModel` permissions
 
-**See also:** [`idp-cli config-validate`](../docs/idp-cli.md#config-validate), which checks a configuration's `classification.max_tokens` and `summarization.max_tokens` against the verified limits this script writes
+**See also:** [`idp-cli config-validate`](../docs/idp-cli.md#config-validate), which checks the `max_tokens` of each classification call and `summarization.max_tokens` against the verified limits this script writes
 
 ### API RBAC / Auth Test (`test_api_rbac.py`)
 

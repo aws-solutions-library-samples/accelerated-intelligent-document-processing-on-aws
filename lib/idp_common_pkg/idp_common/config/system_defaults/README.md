@@ -135,7 +135,9 @@ Users only need to specify what differs from defaults:
 notes: "My lending package processor"
 
 classification:
-  model: us.amazon.nova-lite-v1:0
+  one_stage:
+    llm:
+      model: us.amazon.nova-lite-v1:0
 
 extraction:
   model: us.amazon.nova-lite-v1:0

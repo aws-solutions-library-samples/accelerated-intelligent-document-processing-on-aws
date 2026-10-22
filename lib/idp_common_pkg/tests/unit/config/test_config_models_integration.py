@@ -253,10 +253,17 @@ class TestConfigModelsIntegration:
         config = IDPConfig.model_validate(config_dict)
 
         # All should be properly typed
-        assert config.classification.temperature == 0.5
-        assert isinstance(config.classification.temperature, float)
-        assert config.classification.max_tokens == 1000
-        assert isinstance(config.classification.max_tokens, int)
+        # The flat classification keys migrate into every call's block, and are
+        # coerced there.
+        for call in (
+            config.classification.one_stage.llm,
+            config.classification.two_stage.segmentation.llm,
+            config.classification.two_stage.section_classification.llm,
+        ):
+            assert call.temperature == 0.5
+            assert isinstance(call.temperature, float)
+            assert call.max_tokens == 1000
+            assert isinstance(call.max_tokens, int)
 
         assert config.extraction.top_p == 0.2
         assert isinstance(config.extraction.top_p, float)

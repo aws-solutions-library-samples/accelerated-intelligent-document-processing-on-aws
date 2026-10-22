@@ -277,10 +277,11 @@ Two calibration separations are tracked, on the same −0.03 threshold:
 `calibration_separation` (extracted FIELDS) and `class_calibration_separation`
 (the CLASSIFICATION, from the eval report's per-page `predicted_confidence` vs
 `correct`). Both are `mean(conf | right) − mean(conf | wrong)`; both are `None`
-when that dimension was not scored, which is the default for classification
-(`classification.confidence.mode: off`) — a `None` there means "not measured",
-not "perfect". Turn the mode on for any run whose point is to judge whether
-classification confidence is worth acting on, and report `class_accuracy` and
+when that dimension was not scored — for classification, when the run sets
+`classification.one_stage.llm.confidence.mode: off` (the shipped default is
+`topk`) — and a `None` there means "not measured", not "perfect". Keep the mode on
+for any run whose point is to judge whether classification confidence is worth
+acting on, and report `class_accuracy` and
 `n_class_scored_pages` alongside it so a separation computed from three pages
 is not read as a result.
 

@@ -148,9 +148,10 @@ interface SchemaProperty {
   // it the negation dependsOn also lacks.
   //
   // `field` resolves in the NEAREST ENCLOSING SCOPE that has it: from
-  // `classification.image.target_width`, the field `modality.images` is looked
-  // for at `classification.image.modality.images`, then
-  // `classification.modality.images`, then `modality.images`. That is what lets
+  // `classification.one_stage.llm.image.target_width`, the field
+  // `modality.images` is looked for at `...llm.image.modality.images`, then
+  // `classification.one_stage.llm.modality.images`, and so on up to
+  // `modality.images`. That is what lets
   // a condition reference a sibling object's field without spelling out the
   // whole path, which dependsOn (sibling-then-root only) cannot do.
   showWhen?: Array<{
@@ -168,6 +169,10 @@ interface SchemaProperty {
   // with every field inside it unreachable and nothing saying why. Modality,
   // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
+  // Display text for enum values, keyed by the stored value. The stored value
+  // never changes; only what the dropdown shows does (e.g. `single_pass` reads
+  // "One stage"). A value with no entry shows as itself.
+  enumLabels?: Record<string, string>;
   // Only Admins may change this object: other users see its fields read-only.
   adminOnly?: boolean | string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
@@ -431,6 +436,12 @@ const getConstraintText = (property: Record<string, unknown>): string => {
 };
 
 // Resizable Columns Component
+/** The text an enum dropdown shows for a stored value (see `enumLabels`). */
+export const enumOptionLabel = (property: { enumLabels?: Record<string, string> }, value: string): string => {
+  const label = property.enumLabels?.[value];
+  return typeof label === 'string' && label ? label : value;
+};
+
 interface ResizableColumnsProps {
   columns: number;
   children?: React.ReactNode;
@@ -926,7 +937,7 @@ const ConfigBuilder = ({
     //   one of its fields is edited, and `updateValue` deletes an object again
     //   once its last field is cleared. Hiding the group then makes every field
     //   inside it unreachable — the user cannot set a value because the control
-    //   is not rendered, and nothing says why. `classification.modality` is
+    //   is not rendered, and nothing says why. Each call's `modality` is
     //   permanently in that state: both its flags default to empty. Children
     //   read their own schema defaults when the parent is absent, so rendering
     //   is safe.
@@ -1801,11 +1812,12 @@ const ConfigBuilder = ({
         </ExtBox>
       );
     } else if (property.enum) {
+      const labelFor = (opt: string): string => enumOptionLabel(property, opt);
       input = (
         <Select
-          selectedOption={{ value: String(displayValue || ''), label: String(displayValue || '') }}
+          selectedOption={{ value: String(displayValue || ''), label: labelFor(String(displayValue || '')) }}
           onChange={({ detail }) => updateValue(path, detail.selectedOption.value)}
-          options={(property.enum as string[]).map((opt: string) => ({ value: opt, label: opt }))}
+          options={(property.enum as string[]).map((opt: string) => ({ value: opt, label: labelFor(opt) }))}
         />
       );
     } else if (

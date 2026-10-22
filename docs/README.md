@@ -100,6 +100,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Migration
 
+- [Migration v0.6.12 to v0.6.13](./migration-v0612-to-v0613.md) - Classification settings nested by model call (config format 0.9)
 - [Migration v0.4 to v0.5](./migration-v04-to-v05.md) - Upgrading from v0.4.x to v0.5.x (Unified Pattern)
 
 ### GovCloud

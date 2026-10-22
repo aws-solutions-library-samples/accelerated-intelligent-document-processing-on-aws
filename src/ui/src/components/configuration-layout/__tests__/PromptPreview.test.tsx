@@ -36,6 +36,7 @@ import PromptPreview, {
   formatToolSpecForPreview,
   getAttributeNamesForClass,
   invalidToolPropertyNames,
+  resolveClassificationStepPrompt,
   resolveTopK,
   schemaDivergenceFor,
   simpleIntegratedDowngraded,
@@ -714,5 +715,74 @@ describe('resolveTopK', () => {
 
   it('falls back to the configured count when there are no classes', () => {
     expect(resolveTopK(4, 0)).toBe(4);
+  });
+});
+
+// Config format 0.9: each classification call carries its own prompts, model,
+// modality and confidence. The preview must read the call the selected step is,
+// never a neighbour's setting.
+describe('resolveClassificationStepPrompt', () => {
+  const TOPK = '<class-confidence>top {TOP_K_CANDIDATES}</class-confidence>';
+  const TOPK_PACKET = '<class-confidence>per segment, top {TOP_K_CANDIDATES}</class-confidence>';
+  const cls = {
+    one_stage: {
+      granularity: 'page',
+      page: { system_prompt: 'PAGE SYS', task_prompt: 'PAGE {DOCUMENT_TEXT} {DOCUMENT_IMAGE}' },
+      packet: { system_prompt: 'PACKET SYS', task_prompt: 'PACKET {DOCUMENT_TEXT}' },
+      llm: {
+        model: 'one-stage-model',
+        modality: { images: 'false' },
+        confidence: { mode: 'topk', top_k_candidates: 3, task_prompt_topk: TOPK, task_prompt_topk_packet: TOPK_PACKET },
+      },
+    },
+    two_stage: {
+      segmentation: {
+        llm: {
+          model: 'boundary-model',
+          granularity: 'packet',
+          page: { task_prompt: 'SEG PAGE {DOCUMENT_TEXT}' },
+          packet: { system_prompt: 'SEG SYS', task_prompt: 'SEG PACKET {DOCUMENT_TEXT}' },
+        },
+      },
+      section_classification: {
+        llm: {
+          model: 'section-model',
+          system_prompt: 'SC SYS',
+          task_prompt: 'SC {DOCUMENT_TEXT}',
+          confidence: { mode: 'topk', top_k_candidates: 3, task_prompt_topk: TOPK, task_prompt_topk_packet: TOPK_PACKET },
+        },
+      },
+    },
+  };
+
+  it('one stage reads its own granularity, prompts, model and modality', () => {
+    const out = resolveClassificationStepPrompt(cls, 'classification', 5);
+    expect(out.model).toBe('one-stage-model');
+    expect(out.system_prompt).toBe('PAGE SYS');
+    expect(out.task_prompt).not.toContain('{DOCUMENT_IMAGE}');
+    expect(out.task_prompt).toContain('top 3');
+  });
+
+  it('a one-stage packet call gets the packet prompt and the per-segment block', () => {
+    const packet = { ...cls, one_stage: { ...cls.one_stage, granularity: 'packet' } };
+    const out = resolveClassificationStepPrompt(packet, 'classification', 5);
+    expect(out.system_prompt).toBe('PACKET SYS');
+    expect(out.task_prompt).toContain('PACKET');
+    expect(out.task_prompt).toContain('per segment, top 3');
+  });
+
+  it('segmentation reads its own granularity and model, and asks for no confidence', () => {
+    const out = resolveClassificationStepPrompt(cls, 'classification_segmentation', 5);
+    expect(out.model).toBe('boundary-model');
+    expect(out.system_prompt).toBe('SEG SYS');
+    expect(out.task_prompt).toBe('SEG PACKET {DOCUMENT_TEXT}');
+  });
+
+  it('section classification takes the page-shaped block and keeps the images one stage turned off', () => {
+    const out = resolveClassificationStepPrompt(cls, 'classification_section', 5);
+    expect(out.model).toBe('section-model');
+    expect(out.system_prompt).toBe('SC SYS');
+    expect(out.task_prompt).toContain('top 3');
+    expect(out.task_prompt).not.toContain('per segment');
   });
 });

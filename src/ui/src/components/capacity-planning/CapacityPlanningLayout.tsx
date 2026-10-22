@@ -30,6 +30,12 @@ import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
 import DateRangeModal from '../common/DateRangeModal';
 import { parseMetering } from '../../graphql/awsjson-parsers';
+import { classificationModelOf } from '../../utils/classification-config';
+
+// Two-stage classification meters its halves as Segmentation and
+// SectionClassification instead of Classification; all three are the
+// classification step.
+const CLASSIFICATION_METERING_PREFIXES = ['Classification/', 'Segmentation/', 'SectionClassification/'];
 
 // Type definitions for configuration and state
 interface Configuration {
@@ -411,7 +417,7 @@ const CapacityPlanningLayout = () => {
             data.avgPages = Math.max(data.avgPages, pageCount);
             console.log(`📄 Extracted page count from ${key}: ${pageCount} pages`);
           }
-        } else if (key.startsWith('Classification/')) {
+        } else if (CLASSIFICATION_METERING_PREFIXES.some((prefix) => key.startsWith(prefix))) {
           const tokenCount = metrics.totalTokens || (metrics.inputTokens || 0) + (metrics.outputTokens || 0);
           data.classificationTokens += Number(tokenCount) || 0;
           data.classificationRequests += estimateRequestsFromTokens(tokenCount, 'Classification');
@@ -1369,7 +1375,7 @@ const CapacityPlanningLayout = () => {
       // Only include OCR model when OCR backend is Bedrock (not Textract)
       const modelConfig = {
         extraction_model: configuration?.extraction?.model,
-        classification_model: configuration?.classification?.model,
+        classification_model: classificationModelOf(configuration?.classification),
         assessment_model: configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model,
         summarization_model: configuration?.summarization?.model,
         ocr_model: configuration?.ocr?.backend === 'bedrock' ? configuration?.ocr?.model_id : null,
@@ -1688,7 +1694,7 @@ const CapacityPlanningLayout = () => {
 
       // Add other models
       [
-        { id: configuration?.classification?.model, step: 'Classification' },
+        { id: classificationModelOf(configuration?.classification), step: 'Classification' },
         { id: configuration?.extraction?.model, step: 'Extraction' },
         { id: configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model, step: 'Assessment' },
         { id: configuration?.summarization?.model, step: 'Summarization' },
@@ -1938,7 +1944,7 @@ const CapacityPlanningLayout = () => {
     } else {
       csvContent += `OCR,Textract (No model)\n`;
     }
-    csvContent += `Classification,"${configuration?.classification?.model || 'Not configured'}"\n`;
+    csvContent += `Classification,"${classificationModelOf(configuration?.classification) || 'Not configured'}"\n`;
     csvContent += `Extraction,"${configuration?.extraction?.model || 'Not configured'}"\n`;
     csvContent += `Assessment,"${(configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model) || 'Not configured'}"\n`;
     csvContent += `Summarization,"${configuration?.summarization?.model || 'Not configured'}"\n`;
@@ -2085,7 +2091,7 @@ const CapacityPlanningLayout = () => {
           </Alert>
         )}
 
-        {getDeployedPattern() === 'PATTERN-2' && !configuration?.classification?.model && !manualPattern && (
+        {getDeployedPattern() === 'PATTERN-2' && !classificationModelOf(configuration?.classification) && !manualPattern && (
           <Alert type="warning">
             <strong>⚠️ Pattern Detection Used Fallback.</strong> Using Pattern 2 default. Configure models in{' '}
             <strong>View/Edit Configuration</strong> for accurate calculations.
@@ -2215,7 +2221,7 @@ const CapacityPlanningLayout = () => {
                     <div>
                       <div>Classification</div>
                       <div style={{ fontSize: '0.8em', color: '#2f3b4a', fontWeight: 'normal' }}>
-                        Model: {configuration?.classification?.model || 'Not configured'}
+                        Model: {classificationModelOf(configuration?.classification) || 'Not configured'}
                       </div>
                     </div>
                   ),
