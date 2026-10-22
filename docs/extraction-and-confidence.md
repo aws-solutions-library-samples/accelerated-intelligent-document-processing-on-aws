@@ -1779,7 +1779,7 @@ S3 and matches each extracted value to an OCR line.
 For each assessed leaf field, the service:
 
 1. Loads `pageData.json` for the section's pages via `Page.ocr_page_data_uri` (older documents without this artifact are skipped — see fallback).
-2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **single-line fragment** → **token-overlap fuzzy** (Jaccard ≥ 0.6).
+2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **fragment covering at least half the value** → **token-overlap fuzzy** (Jaccard ≥ 0.6) → **character similarity** (≥ 0.8) → **fragment covering less than half the value** (last).
 3. **Disambiguates repeated values spatially** (for `llm_grounded`): all candidates are collected and the one whose box center is nearest the LLM-estimated box is chosen. Without a usable LLM reference box, an ambiguous match keeps the LLM box rather than risk attaching the wrong row's geometry.
 4. On a confident match, **replaces** the field's `geometry` with the real OCR box and adds provenance keys.
 

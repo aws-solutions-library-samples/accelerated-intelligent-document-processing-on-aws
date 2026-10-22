@@ -22,7 +22,8 @@ Design notes (see scratch/assessment-ocr-grounding-plan.md):
 - **explainability_info contract:** the grounded box *replaces* the contents of the
   existing ``geometry`` array (same shape, ``[{boundingBox:{left,top,width,height},
   page}]``, 0-1, 1-indexed page). Two additive keys are written on the field
-  assessment: ``geometry_source`` ("ocr" | "ocr-paragraph" | "llm") and, when a
+  assessment: ``geometry_source`` ("ocr" | "ocr-paragraph" | "ocr-normalized" |
+  "ocr-fuzzy" | "ocr-weak" | "llm") and, when a
   matched line carries OCR confidence, ``ocr_confidence`` (0-1). The LLM
   ``confidence`` / ``confidence_reason`` are never overwritten, so HITL thresholds
   and ``confidence_threshold_alerts`` are unaffected.
@@ -168,7 +169,25 @@ def _levenshtein_sim(a: str, b: str) -> float:
         return 0.0
 
 
-def _levenshtein_can_reach(a: str, b: str, threshold: float) -> bool:
+def _stripped_len(text: str) -> Optional[int]:
+    """Length of ``text`` after the stripping :func:`fuzz_score` applies.
+
+    Split out so a caller sweeping many lines against ONE value can compute the
+    value's length once instead of per line — see the ``a_stripped_len`` argument
+    of :func:`_levenshtein_can_reach`. None when the evaluation module is absent,
+    which callers must read as "cannot bound" rather than as a length of zero.
+    """
+    try:
+        from idp_common.evaluation.text_matching import strip_punctuation_space
+
+        return len(strip_punctuation_space(text))
+    except Exception:  # noqa: BLE001 - keep grounding resilient if eval is absent
+        return None
+
+
+def _levenshtein_can_reach(
+    a: str, b: str, threshold: float, a_stripped_len: Optional[int] = None
+) -> bool:
     """Could character similarity between ``a`` and ``b`` reach ``threshold``?
 
     An **exact** bound, not a heuristic, so skipping on a False answer cannot
@@ -201,8 +220,11 @@ def _levenshtein_can_reach(a: str, b: str, threshold: float) -> bool:
     try:
         from idp_common.evaluation.text_matching import strip_punctuation_space
 
-        la, lb = len(strip_punctuation_space(a)), len(strip_punctuation_space(b))
+        la = _stripped_len(a) if a_stripped_len is None else a_stripped_len
+        lb = len(strip_punctuation_space(b))
     except Exception:  # noqa: BLE001 - keep grounding resilient if eval is absent
+        return True
+    if la is None:
         return True
     if not la or not lb:
         return False
@@ -552,6 +574,12 @@ def _ensure_page_indexes(page_data: Dict[str, Any]) -> Dict[str, List[Dict[str, 
         else []
     )
     page_data["__norm_lines_cache__"] = norm_lines
+    # Token sets per line, cached for the same reason the normalized lines are: the
+    # token-overlap sweep runs once per VALUE, so recomputing them there is
+    # O(values x lines). That sweep used to be reached rarely — any candidate at all
+    # short-circuited it — and #1519 made it reachable for every value whose best
+    # match is a fragment, which is a large minority of fields.
+    page_data["__norm_tokens_cache__"] = [_tokens(nt) for nt, _ln in norm_lines]
     idx = {}
     for nt, ln in norm_lines:
         if nt:
@@ -681,16 +709,24 @@ def _collect_candidates_in_page(
         # it is kept, and a whole-string match simply outranks it.
         return candidates
 
-    # Token-overlap fuzzy.
-    for norm_text, line in norm_lines:
+    # Token-overlap fuzzy. Line token sets come from the page cache (see
+    # _ensure_page_indexes) rather than being rebuilt per value.
+    line_tokens = page_data.get("__norm_tokens_cache__") or [
+        _tokens(nt) for nt, _ln in norm_lines
+    ]
+    for (norm_text, line), tokens in zip(norm_lines, line_tokens):
         if not norm_text:
             continue
-        if _jaccard(value_tokens, _tokens(norm_text)) >= _FUZZY_MATCH_THRESHOLD:
+        if _jaccard(value_tokens, tokens) >= _FUZZY_MATCH_THRESHOLD:
             match = _build_match(line, page_num, _TIER_FUZZY)
             if match is not None:
                 candidates.append(match)
 
-    # Character-level Levenshtein near-miss (last resort; OCR noise).
+    # Character-level Levenshtein near-miss (last resort; OCR noise). The value's
+    # stripped length is computed ONCE here: it is the same for every line, and
+    # recomputing it inside the loop put two regex passes over the value on every
+    # line of the page — in the loop the guard exists to make cheap.
+    value_stripped_len = _stripped_len(norm_value)
     for norm_text, line in norm_lines:
         if not norm_text:
             continue
@@ -699,7 +735,10 @@ def _collect_candidates_in_page(
         # _PARTIAL_MIN_COVERAGE floor stopped fragments from short-circuiting it,
         # and the DP against every line on a page is what made that expensive.
         if not _levenshtein_can_reach(
-            norm_value, norm_text, _LEVENSHTEIN_MATCH_THRESHOLD
+            norm_value,
+            norm_text,
+            _LEVENSHTEIN_MATCH_THRESHOLD,
+            a_stripped_len=value_stripped_len,
         ):
             continue
         if _levenshtein_sim(norm_value, norm_text) >= _LEVENSHTEIN_MATCH_THRESHOLD:

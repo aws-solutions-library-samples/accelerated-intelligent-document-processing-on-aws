@@ -1207,7 +1207,7 @@ Key behaviors:
 - **Coordinates stay 0–1**: `pageData` geometry is already normalized, so grounded boxes skip
   the 0–1000 → 0–1 rescale that LLM boxes go through. No mixed scales in `explainability_info`.
 - **Additive output**: a matched field gets `geometry_source`
-  (`"ocr"`/`"ocr-paragraph"`/`"ocr-weak"`/`"llm"`) and, when available,
+  (`"ocr"`/`"ocr-paragraph"`/`"ocr-normalized"`/`"ocr-fuzzy"`/`"ocr-weak"`/`"llm"`) and, when available,
   `ocr_confidence` (0–1). `"ocr-weak"` marks a box whose matched line covers less than
   half the value, which is how to count such boxes in a stored artifact without
   re-deriving the tiers. The LLM `confidence`/`confidence_reason` are never modified,
