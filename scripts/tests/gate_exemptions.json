@@ -3078,6 +3078,17 @@
       "reason": "The confined Chrome's only network path is this proxy, which tunnels CONNECT only to the hosts the stack's UI environment names (its Cognito pools, SSM, execute-api and Function URL hosts, and its buckets by exact name) plus this list. One member, cdn.jsdelivr.net, from which @monaco-editor/react loads the editor at run time. Pinned to its exact members, because a host added here becomes reachable by the MR's own UI code running in that browser, so adding one is a deliberate edit to the pin rather than a one-word change.",
       "memberKind": "CONNECT host:port"
     },
+    "scripts/ux_test_proxy.py::VPC_ENDPOINT_ALLOWED_NETWORKS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the one relaxation of the UX browser's egress proxy refusing a name whose answers are not public, and it applies only to an allowlisted AWS service name",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ux_test_proxy.py",
+      "reason": "An interface VPC endpoint with private DNS answers its service's public name, such as ssm.<region>.amazonaws.com, with the endpoint's private address inside the VPC, and the CI runners have one for SSM, so a proxy refusing every non-public answer refused the UI's settings lookup and the MR UX test reviewed nothing. Four members: RFC 1918's three ranges and the shared 100.64.0.0/10 a VPC may also be given. They are accepted only for a name that is on the stack's exact allowlist and ends in amazonaws.com, and only when every answer is in them, never in a mix with public answers; loopback, link-local (instance metadata included), unique-local IPv6 and every other address stay refused for every name, and the browser still checks the service's TLS certificate through the tunnel. Pinned to its exact members, because a range added here becomes reachable by the MR's own UI code wherever an AWS name resolves into it.",
+      "memberKind": "IPv4 network"
+    },
     "security/threat-modeling/scripts/build_threat_model.py::SKIP_MARKERS": {
       "kind": "exemption",
       "memberKind": "literal string",

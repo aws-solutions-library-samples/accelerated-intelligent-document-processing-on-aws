@@ -46,7 +46,8 @@ Properties it is built around
    ``uxbrowser`` with flags and a managed policy that send every request to
    ``scripts/ux_test_proxy.py`` (run as ``uxproxy``), which tunnels only to the
    review stack's own hosts by exact name and refuses instance metadata, DevTools
-   and private addresses. Two self-tests prove the policy is enforced and the
+   and private addresses, except a VPC endpoint's for an AWS service name. Two
+   self-tests prove the policy is enforced and the
    traffic arrives at the proxy before anything is recorded, and a socket audit by
    uid covers Chrome's whole life: it starts as soon as Chrome is launched, so the
    sign-in on the MR's own login page is inside it, and its last pass runs after

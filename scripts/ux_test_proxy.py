@@ -34,7 +34,8 @@ What it passes
 Everything else is refused with a one-line body and recorded, one JSON line per
 refusal, with a reason from a fixed vocabulary (:data:`REFUSAL_REASONS`): any
 other host or port, a name that resolves to an address that is not public
-(instance metadata, loopback, private, link-local), plain HTTP to anything but the
+(instance metadata, loopback, private, link-local) unless it is an AWS service name
+answering a VPC endpoint's address, plain HTTP to anything but the
 local build, a request that is not a proxy request, any method but GET and HEAD,
 a path outside the build, a tunnel beyond the cap, and a request the proxy cannot
 read: one ``http.server`` cannot parse, a head longer than :data:`HEAD_LIMIT`
@@ -207,6 +208,20 @@ _BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]")
 _STACK_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,127}")
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 _NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+#: The ranges an interface VPC endpoint takes its addresses from: RFC 1918, and the
+#: shared range a VPC may also be given. With private DNS, the service's public
+#: name answers one of them inside that VPC, as ``ssm.<region>.amazonaws.com`` does
+#: on the CI runners. Accepted only for an AWS service name (:func:`resolve_public`)
+#: and pinned by ``scripts/tests/test_ux_test_proxy.py``, because a range added here
+#: becomes reachable by the MR's own page code wherever such a name resolves into it.
+VPC_ENDPOINT_ALLOWED_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+    ipaddress.IPv4Network("100.64.0.0/10"),
+)
+#: The suffix of the names that may answer a VPC endpoint's address.
+AWS_SERVICE_SUFFIX = ".amazonaws.com"
 _IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
 
 
@@ -427,18 +442,43 @@ def is_public_address(address: str) -> bool:
     return _global(parsed)
 
 
+def is_vpc_endpoint_address(address: str) -> bool:
+    """Whether ``address`` lies in :data:`VPC_ENDPOINT_ALLOWED_NETWORKS`.
+
+    An IPv4-mapped IPv6 address is judged as the IPv4 address it carries. No other
+    IPv6 address is one, so ``fd00:ec2::254`` and every other unique-local or
+    link-local address stays refused, as do loopback, link-local IPv4 and anything
+    that does not parse.
+    """
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address):
+        if parsed.ipv4_mapped is None:
+            return False
+        parsed = parsed.ipv4_mapped
+    return any(parsed in network for network in VPC_ENDPOINT_ALLOWED_NETWORKS)
+
+
 def resolve_public(
     host: str,
     port: int,
     resolver: Callable[..., list[Any]] = socket.getaddrinfo,
+    *,
+    vpc_endpoint: bool = False,
 ) -> str | None:
     """The address a tunnel to ``host`` connects to, or ``None`` to refuse it.
 
     Every address the resolver answers must be public, not merely the one that
     would be used, so a name that answers one public and one internal address is
-    refused rather than left to chance. The first IPv4 address wins, then the
-    first IPv6 one. A resolver error propagates; the caller reports it as an
-    upstream failure rather than as a refusal.
+    refused rather than left to chance. With ``vpc_endpoint``, which the proxy sets
+    only for an allowlisted AWS service name, every answer may instead be a VPC
+    endpoint's address (:func:`is_vpc_endpoint_address`), which is how an interface
+    endpoint with private DNS answers; a mix of the two is still refused, and the
+    browser still checks that service's TLS certificate through the tunnel. The
+    first IPv4 address wins, then the first IPv6 one. A resolver error propagates;
+    the caller reports it as an upstream failure rather than as a refusal.
     """
     answers = resolver(host, port, type=socket.SOCK_STREAM)
     addresses: list[tuple[int, str]] = []
@@ -446,9 +486,13 @@ def resolve_public(
         family, address = answer[0], str(answer[4][0])
         if family not in (socket.AF_INET, socket.AF_INET6):
             return None
-        if not is_public_address(address):
-            return None
         addresses.append((family, address))
+    public = all(is_public_address(address) for _, address in addresses)
+    endpoint = vpc_endpoint and all(
+        is_vpc_endpoint_address(address) for _, address in addresses
+    )
+    if not (public or endpoint):
+        return None
     for wanted in (socket.AF_INET, socket.AF_INET6):
         for family, address in addresses:
             if family == wanted:
@@ -886,8 +930,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             listed = rules.permits(host, TLS_PORT)
             self._refuse("port_not_allowed" if listed else "host_not_allowed")
             return
+        name = _normal_host(host)
         try:
-            address = resolve_public(_normal_host(host), port, self.proxy.resolver)
+            address = resolve_public(
+                name,
+                port,
+                self.proxy.resolver,
+                vpc_endpoint=name.endswith(AWS_SERVICE_SUFFIX),
+            )
         except (OSError, UnicodeError, ValueError):
             self._upstream_failed()
             return

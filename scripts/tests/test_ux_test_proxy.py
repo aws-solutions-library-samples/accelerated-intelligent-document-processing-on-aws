@@ -419,6 +419,34 @@ def test_a_listed_host_resolving_to_any_internal_address_is_refused(
 
 
 @pytest.mark.unit
+def test_an_aws_service_name_answering_a_vpc_endpoint_address_is_tunnelled(
+    start_proxy: Callable[..., Running],
+) -> None:
+    """An interface endpoint with private DNS answers the service's public name
+    with its own private address inside the VPC, as SSM's does on the CI runners."""
+    running = start_proxy(answers={STACK_HOST: ["10.0.12.34"]})
+    status, sock = _tunnel(running.port, f"{STACK_HOST}:443")
+    sock.close()
+    assert status == 200
+    assert running.connects == [("10.0.12.34", 443)]
+
+
+@pytest.mark.unit
+def test_a_listed_name_outside_aws_answering_a_vpc_endpoint_address_is_refused(
+    start_proxy: Callable[..., Running],
+) -> None:
+    running = start_proxy(
+        hosts=frozenset({"cdn.jsdelivr.net:443"}),
+        answers={"cdn.jsdelivr.net": ["10.0.12.34"]},
+    )
+    status, sock = _tunnel(running.port, "cdn.jsdelivr.net:443")
+    sock.close()
+    assert status == 403
+    assert running.reasons() == ["resolves_to_non_public_address"]
+    assert running.connects == []
+
+
+@pytest.mark.unit
 def test_a_failed_lookup_is_an_upstream_failure_rather_than_a_refusal(
     start_proxy: Callable[..., Running],
 ) -> None:
@@ -576,6 +604,79 @@ def test_internal_special_and_malformed_addresses_are_not_public(address: str) -
 )
 def test_global_unicast_addresses_are_public(address: str) -> None:
     assert proxy.is_public_address(address) is True
+
+
+@pytest.mark.unit
+def test_the_vpc_endpoint_networks_are_pinned_to_rfc_1918_and_the_shared_range() -> (
+    None
+):
+    assert proxy.VPC_ENDPOINT_ALLOWED_NETWORKS == tuple(
+        ipaddress.IPv4Network(network)
+        for network in (
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+        )
+    ), (
+        "VPC_ENDPOINT_ALLOWED_NETWORKS is pinned: an AWS service name resolving into "
+        "any range on it is reachable by the MR's own page code, so the list is "
+        "audited when it changes, here and in its gate_exemptions.json entry"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "address",
+    ["10.0.12.34", "172.31.255.254", "192.168.1.1", "100.64.0.1", "::ffff:10.0.0.1"],
+)
+def test_rfc_1918_and_shared_addresses_are_vpc_endpoint_addresses(address: str) -> None:
+    assert proxy.is_vpc_endpoint_address(address) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "169.254.169.254",
+        "172.32.0.1",
+        "100.128.0.1",
+        UNSPECIFIED,
+        "224.0.0.1",
+        PUBLIC_V4,
+        "::1",
+        "fd00:ec2::254",
+        "fe80::1",
+        "64:ff9b::a00:1",
+        "not-an-address",
+    ],
+)
+def test_loopback_metadata_link_local_and_ipv6_are_never_vpc_endpoint_addresses(
+    address: str,
+) -> None:
+    assert proxy.is_vpc_endpoint_address(address) is False
+
+
+@pytest.mark.unit
+def test_an_aws_name_may_answer_only_vpc_endpoint_addresses_and_never_a_mix() -> None:
+    def answering(*addresses: str) -> Callable[..., list[Any]]:
+        return lambda host, port, **kwargs: [_answer(a, port) for a in addresses]
+
+    endpoint = answering("10.0.12.34", "10.0.40.7")
+    assert proxy.resolve_public("h", 443, endpoint, vpc_endpoint=True) == "10.0.12.34"
+    assert proxy.resolve_public("h", 443, endpoint) is None
+    public = answering(PUBLIC_V4)
+    assert proxy.resolve_public("h", 443, public, vpc_endpoint=True) == PUBLIC_V4
+    for mixed in (
+        (PUBLIC_V4, "10.0.0.5"),
+        ("10.0.0.5", "127.0.0.1"),
+        ("10.0.0.5", "169.254.169.254"),
+        ("10.0.0.5", "fd00:ec2::254"),
+    ):
+        assert (
+            proxy.resolve_public("h", 443, answering(*mixed), vpc_endpoint=True) is None
+        ), mixed
 
 
 @pytest.mark.unit
