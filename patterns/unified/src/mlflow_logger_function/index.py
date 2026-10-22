@@ -98,6 +98,53 @@ def _extract_field_metrics(field_metrics):
     return flat
 
 
+def _dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _classification_view(cls_cfg):
+    """The classification settings that actually run, as one flat dict.
+
+    Since config format 0.9 each classification setting lives inside the call
+    that uses it (``one_stage``, ``two_stage.segmentation.llm``,
+    ``two_stage.section_classification.llm``). The parameter names logged here
+    stay the ones every earlier run carries — ``classification.model``,
+    ``classification.temperature``, ``classification.modality.*`` — and describe
+    the call that assigns the class under the active strategy, so a run before
+    and after the change can be compared on one axis. A two-stage run also gets
+    ``segmentation`` (its boundary call's model and prompts).
+
+    A dict with no nested blocks is returned as it is, so a flat config still
+    logs what it holds.
+    """
+    if "one_stage" not in cls_cfg and "two_stage" not in cls_cfg:
+        return cls_cfg
+    strategy = str(cls_cfg.get("strategy") or "single_pass").strip().lower()
+    view = {"strategy": cls_cfg.get("strategy")}
+    if strategy == "two_stage":
+        two_stage = _dict(cls_cfg.get("two_stage"))
+        seg = _dict(_dict(two_stage.get("segmentation")).get("llm"))
+        call = _dict(_dict(two_stage.get("section_classification")).get("llm"))
+        granularity = seg.get("granularity") or "page"
+        reader = _dict(seg.get("packet" if granularity == "packet" else "page"))
+        view.update(call)
+        view["granularity"] = granularity
+        view["segmentation"] = {
+            "model": seg.get("model"),
+            "system_prompt": reader.get("system_prompt"),
+            "task_prompt": reader.get("task_prompt"),
+        }
+        return view
+    one_stage = _dict(cls_cfg.get("one_stage"))
+    granularity = one_stage.get("granularity") or "page"
+    reader = _dict(one_stage.get("packet" if granularity == "packet" else "page"))
+    view.update(_dict(one_stage.get("llm")))
+    view["granularity"] = granularity
+    view["system_prompt"] = reader.get("system_prompt")
+    view["task_prompt"] = reader.get("task_prompt")
+    return view
+
+
 def _extract_config_params(config):
     """Extract model IDs, inference params, and flags from IDP config as MLflow params.
 
@@ -127,6 +174,8 @@ def _extract_config_params(config):
         stage_cfg = config.get(config_key)
         if not isinstance(stage_cfg, dict):
             continue
+        if stage_name == "classification":
+            stage_cfg = _classification_view(stage_cfg)
 
         # Model ID
         model = stage_cfg.get("model")
@@ -176,6 +225,9 @@ def _extract_config_params(config):
     # made, `modality` what each call sees, and `strategy` whether boundaries
     # and classes come from one call or two.
     #
+    # Read through `_classification_view`, so these are the active strategy's
+    # values whichever config format the dict is in.
+    #
     # This logged `classification.method` from `classificationMethod`, which was
     # removed in config format 0.8 and is migrated away on read — so the
     # parameter would have silently disappeared from every run with nothing
@@ -183,14 +235,25 @@ def _extract_config_params(config):
     # new one would look identically configured.
     cls_cfg = config.get("classification")
     if isinstance(cls_cfg, dict):
+        cls_view = _classification_view(cls_cfg)
         for key, param in (
             ("granularity", "classification.granularity"),
             ("strategy", "classification.strategy"),
         ):
-            value = cls_cfg.get(key)
+            value = cls_view.get(key)
             if value:
                 params[param] = str(value)
-        modality = cls_cfg.get("modality")
+        segmentation = cls_view.get("segmentation")
+        if isinstance(segmentation, dict):
+            # Two-stage boundary call: its own model, so its own parameter.
+            model = segmentation.get("model")
+            if model:
+                params["classification.segmentation.model"] = str(model)
+            for prompt_key in ("system_prompt", "task_prompt"):
+                prompt_val = segmentation.get(prompt_key)
+                if prompt_val:
+                    prompts[f"classification.segmentation.{prompt_key}"] = prompt_val
+        modality = cls_view.get("modality")
         if isinstance(modality, dict):
             for flag in ("text", "images"):
                 value = modality.get(flag)

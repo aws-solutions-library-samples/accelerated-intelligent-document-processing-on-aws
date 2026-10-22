@@ -56,8 +56,12 @@ from typing_extensions import Self
 # values each bundled two independent choices, in favour of
 # `classification.granularity` plus `classification.modality`; a holistic
 # configuration also has its hand-written flat prompts copied into
-# `classification.packet`, which is where packet granularity reads them.
-CONFIG_FORMAT_VERSION = "0.8"
+# `classification.packet`, which is where packet granularity reads them. v0.9
+# nested every classification setting inside the call that uses it
+# (`one_stage`, `two_stage.segmentation`, `two_stage.section_classification`),
+# moved the file-shape assertions under `file_shape`, and replaced
+# `invalidClassFallback` with `fallback_class`.
+CONFIG_FORMAT_VERSION = "0.9"
 
 
 def _parse_optional_max_tokens(v: Any) -> Optional[int]:
@@ -1494,9 +1498,11 @@ class ExtractionConfig(BaseModel):
 
 
 class ClassificationClassConfidenceConfig(BaseModel):
-    """How classification reports confidence in the CLASS it chose (v0.7).
+    """How a classification call reports confidence in the CLASS it chose.
 
-    Nested as ``classification.confidence``. Deliberately NOT the same thing as
+    Carried by each call that assigns a class:
+    ``classification.one_stage.llm.confidence`` and
+    ``classification.two_stage.section_classification.llm.confidence``. Deliberately NOT the same thing as
     ``extraction.confidence``: that block configures a whole confidence-scoring
     *inference* over extracted fields, whereas this one only decides what the
     classification prompt asks the model to return alongside the class. There is
@@ -1555,7 +1561,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
     task_prompt_topk: str = Field(
         default="",
         description=(
-            "Instruction block spliced into classification.task_prompt in 'topk' "
+            "Instruction block spliced into this call's task prompt in 'topk' "
             "mode (populated from system defaults). Editable like every other "
             "prompt here. `{TOP_K_CANDIDATES}` is substituted with the resolved "
             "candidate count. Inserted BEFORE the document/cache-point marker so "
@@ -1566,7 +1572,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
     task_prompt_verbalized: str = Field(
         default="",
         description=(
-            "Instruction block spliced into classification.task_prompt in "
+            "Instruction block spliced into this call's task prompt in "
             "'verbalized' mode (populated from system defaults), on the same "
             "splice rules as task_prompt_topk."
         ),
@@ -1599,8 +1605,7 @@ class ClassificationClassConfidenceConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in ("off", "topk", "verbalized"):
             raise ValueError(
-                "classification.confidence.mode must be 'off', 'topk', or "
-                f"'verbalized', got {v!r}"
+                f"confidence.mode must be 'off', 'topk', or 'verbalized', got {v!r}"
             )
         return v_str
 
@@ -1683,7 +1688,7 @@ class ClassificationModalityConfig(BaseModel):
     @field_validator("text", "images", mode="before")
     @classmethod
     def parse_tristate(cls, v: Any, info: ValidationInfo) -> Optional[bool]:
-        return _parse_tristate_bool(v, f"classification.modality.{info.field_name}")
+        return _parse_tristate_bool(v, f"modality.{info.field_name}")
 
     @model_validator(mode="after")
     def refuse_no_modality(self) -> "ClassificationModalityConfig":
@@ -1699,34 +1704,19 @@ class ClassificationModalityConfig(BaseModel):
         """
         if self.text is False and self.images is False:
             raise ValueError(
-                "classification.modality has both text and images turned off, "
+                "modality has both text and images turned off for this call, "
                 "which leaves nothing to classify. Turn at least one on."
             )
         return self
 
 
 class ClassificationPacketConfig(BaseModel):
-    """Settings that apply only to ``granularity: packet``.
+    """What a call does at ``granularity: packet``: one call per packet or window.
 
-    Grouped rather than flattened so the configuration panel can show or hide
-    the whole block on one condition, and so the packet prompts sit beside the
-    windowing they interact with.
-
-    **The prompts here are separate from ``classification.task_prompt`` because
-    granularity is not orthogonal to the prompt**, even though modality is. A
-    page-level call is asked for one class plus a ``start``/``continue`` verdict;
-    a packet-level call is asked for a list of segments. Different output
-    schemas, so different prompts and different parsers.
-
-    Sharing one key is what made the ``classificationMethod`` dropdown that
-    preceded these settings unusable: selecting holistic sent the page prompt —
-    which asks for ``{"class", "document_boundary"}`` — to the packet parser,
-    which reads ``segments``, and the document failed with "No segments found in
-    the classification result". No shipped preset set that value, so the enum
-    was effectively unreachable from the UI. It was removed in config format
-    0.8; a stored config carrying it is migrated by
-    ``migrations.v07_to_v08``, which relocates such a hand-written flat prompt
-    into this block.
+    The prompts here are separate from the page prompts because granularity is
+    not orthogonal to the prompt, even though modality is: a page call is asked
+    for one class plus a ``start``/``continue`` verdict, a packet call for a list
+    of segments. Different output shapes, so different prompts and parsers.
     """
 
     window_pages: int = Field(
@@ -1753,21 +1743,13 @@ class ClassificationPacketConfig(BaseModel):
         ),
     )
     system_prompt: str = Field(
-        default="",
-        description=(
-            "System prompt for packet-level calls. Empty falls back to "
-            "classification.system_prompt."
-        ),
+        default="", description="System prompt for packet calls."
     )
     task_prompt: str = Field(
         default="",
         description=(
-            "Task prompt for packet-level calls. Asks for a `segments` array "
-            "rather than one class plus a boundary verdict, so it is a separate "
-            "key from classification.task_prompt. Empty falls back to "
-            "classification.task_prompt, which is also where the migration from "
-            "config format 0.7 copies a pre-0.8 packet configuration's "
-            "hand-written prompt from."
+            "Task prompt for packet calls. Asks for a `segments` array of page "
+            "ranges rather than one class plus a boundary verdict."
         ),
     )
 
@@ -1782,8 +1764,7 @@ class ClassificationPacketConfig(BaseModel):
             return int(v)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"classification.packet.{info.field_name} must be a whole number "
-                f"of pages, got {v!r}"
+                f"packet.{info.field_name} must be a whole number of pages, got {v!r}"
             ) from exc
 
     @model_validator(mode="after")
@@ -1797,7 +1778,7 @@ class ClassificationPacketConfig(BaseModel):
         """
         if self.window_pages and self.overlap_pages >= self.window_pages:
             raise ValueError(
-                f"classification.packet.overlap_pages ({self.overlap_pages}) must "
+                f"packet.overlap_pages ({self.overlap_pages}) must "
                 f"be smaller than window_pages ({self.window_pages}); an overlap "
                 f"at least as large as the window means each window covers no new "
                 f"pages, so a long packet would cost one call per page."
@@ -1805,73 +1786,281 @@ class ClassificationPacketConfig(BaseModel):
         return self
 
 
-class ClassificationStagePromptsConfig(BaseModel):
-    """Packet-granularity prompt overrides for a two-stage stage.
+_REASONING_EFFORT_DESCRIPTION = (
+    "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / Sonnet 4.6 / "
+    "Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, or max (via "
+    "output_config.effort); OpenAI GPT-5.x accept minimal, low, medium, or high "
+    "(via reasoning.effort); xAI Grok accepts none, low, medium, high, or xhigh "
+    "(via reasoning.effort, NOT max); OpenAI GPT-6 Astra accepts none, low, medium, "
+    "high, xhigh, or max (via reasoning.effort, NOT minimal). Ignored by models "
+    "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
+)
 
-    Separate from the page-granularity prompts for the same reason
-    ``classification.packet`` is separate from ``classification``: a page-level
-    call and a packet-level call are asked for different output shapes, so they
-    need different prompts and are read by different parsers.
+DEFAULT_CLASSIFICATION_MODEL = "us.amazon.nova-pro-v1:0"
+
+
+def _parse_float_param(v: Any) -> float:
+    if isinstance(v, str):
+        return float(v) if v.strip() else 0.0
+    return float(v)
+
+
+def _parse_int_param(v: Any, default: int) -> int:
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return default
+    result = int(v)
+    return result if result >= 0 else 0
+
+
+def _normalise_granularity(v: Any, path: str) -> str:
+    """``page`` | ``packet``; empty is ``page``; anything else raises.
+
+    Not a silent fallback: the two values produce different prompts, different
+    parsers and a roughly N-fold difference in call count, so quietly picking one
+    is a cost and accuracy decision the operator did not make.
     """
+    if v is None:
+        return "page"
+    v_str = str(v).strip().lower()
+    if v_str == "":
+        return "page"
+    if v_str in ("page", "packet"):
+        return v_str
+    raise ValueError(f"{path} must be 'page' or 'packet', got {v!r}")
 
-    system_prompt: str = Field(default="")
-    task_prompt: str = Field(default="")
+
+def _single_value_method(v: Any, path: str, planned: str) -> str:
+    """A ``method`` enum that ships with ``llm`` only.
+
+    The other methods are declared in the configuration shape now — their
+    sub-blocks exist with defaults — so adding them later needs no migration. They
+    are refused until they are implemented, rather than offered and then failing on
+    the first document.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return "llm"
+    v_str = str(v).strip().lower()
+    if v_str != "llm":
+        raise ValueError(
+            f"{path} must be 'llm', got {v!r}. {planned} is declared but not yet "
+            "implemented; see GitHub issue #1329."
+        )
+    return v_str
 
 
-class ClassificationSegmentationConfig(BaseModel):
-    """Stage A of two-stage classification: where each document starts and ends.
+class ClassificationModelSettings(BaseModel):
+    """The settings of one LLM call. Reused by every classification call.
 
-    Only read when ``classification.strategy`` is ``two_stage``. Stage A reuses
-    ``granularity``, ``modality``, ``image.*``, ``contextPagesCount`` and
-    ``packet.window_pages``/``overlap_pages`` — it is the same call shape as
-    single-pass classification, asked a smaller question.
-
-    **The saving is the prefix.** A single-pass call carries the class list,
-    every class description and every few-shot example on every call, even
-    though finding a boundary does not depend on the class vocabulary. Stage A
-    drops all of it, which on a page-granularity configuration is the dominant
-    per-call cost and is paid N times.
+    One block, so a call's model, its parameters, what it is sent and how its page
+    images are sized all sit together inside the call that uses them. There is no
+    classification-level model any more: a setting one strategy silently ignores
+    is the problem this layout exists to remove.
     """
 
     model: str = Field(
-        default="",
+        default=DEFAULT_CLASSIFICATION_MODEL,
         description=(
-            "Bedrock model for Stage A. Empty uses classification.model. The "
-            "point of naming it separately is that the two stages have "
-            "different needs: boundary detection may want a capable multimodal "
-            "model looking at a whole packet, while labeling a clean segment is "
-            "often a much easier problem."
+            "Bedrock model ID for this call. Use 'LambdaHook' to invoke a custom "
+            "Lambda function instead of Bedrock."
         ),
+    )
+    model_lambda_hook_arn: Optional[str] = Field(
+        default=None,
+        description=(
+            "Lambda function ARN for custom inference (used when model is "
+            "'LambdaHook'). Function name must start with GENAIIDP-."
+        ),
+    )
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_k: float = Field(default=5.0, ge=0.0)
+    reasoning_effort: str = Field(
+        default="medium", description=_REASONING_EFFORT_DESCRIPTION
+    )
+    max_tokens: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional cap on output tokens. Leave empty to use the selected "
+            "model's maximum output limit (recommended). If set, it must not "
+            "exceed the model's limit."
+        ),
+    )
+    modality: ClassificationModalityConfig = Field(
+        default_factory=ClassificationModalityConfig,
+        description=(
+            "What this call is sent: page text, page images, or both. Both flags "
+            "default to 'infer from this call's task prompt'."
+        ),
+    )
+    image: ImageConfig = Field(
+        default_factory=ImageConfig,
+        description="How page images are sized for this call, when images are sent.",
+    )
+
+    @field_validator("temperature", "top_p", "top_k", mode="before")
+    @classmethod
+    def parse_float(cls, v: Any) -> float:
+        return _parse_float_param(v)
+
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def parse_max_tokens(cls, v: Any) -> Optional[int]:
+        return _parse_optional_max_tokens(v)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def default_empty_model(cls, v: Any) -> str:
+        """An empty model is the default model, not "no model".
+
+        Each call has its own model, so a block whose model was cleared would
+        otherwise send no model ID at all. The substitution is logged.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            if v is not None:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "A classification call's model is empty; using the default "
+                    "model %s. Set the model on that call to choose another.",
+                    DEFAULT_CLASSIFICATION_MODEL,
+                )
+            return DEFAULT_CLASSIFICATION_MODEL
+        return str(v)
+
+
+class ClassificationValidationConfig(BaseModel):
+    """Re-prompt when a call returns a class outside the configured vocabulary.
+
+    Only on calls that decide a class: one stage, and two-stage section
+    classification. Never segmentation, which returns no class.
+    """
+
+    enforceValidClasses: bool = Field(
+        default=True,
+        description=(
+            "Validate the returned class against the configured classes and "
+            "re-prompt when it is not one of them. Off: an out-of-vocabulary "
+            "class is logged and used as-is."
+        ),
+    )
+    maxValidationRetries: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Re-prompts allowed before the fallback class is assigned. Only used "
+            "when enforceValidClasses is on."
+        ),
+    )
+
+    @field_validator("maxValidationRetries", mode="before")
+    @classmethod
+    def parse_retries(cls, v: Any) -> int:
+        return _parse_int_param(v, 2)
+
+    @field_validator("enforceValidClasses", mode="before")
+    @classmethod
+    def parse_enforce(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
+class ClassificationClassAssigningSettings(ClassificationModelSettings):
+    """Model settings for a call that decides a CLASS: adds validation and confidence."""
+
+    validation: ClassificationValidationConfig = Field(
+        default_factory=ClassificationValidationConfig
+    )
+    confidence: ClassificationClassConfidenceConfig = Field(
+        default_factory=ClassificationClassConfidenceConfig,
+        description=(
+            "Confidence in the class (see ClassificationClassConfidenceConfig). "
+            "Unrelated to extraction.confidence, which scores extracted fields."
+        ),
+    )
+
+
+class ClassificationPageInputConfig(BaseModel):
+    """What a call does at ``granularity: page``: one call per page."""
+
+    contextPagesCount: int = Field(
+        default=0,
+        description=(
+            "Pages before and after the current page to send as context. 0 sends "
+            "none. Page granularity only: a packet call already sees every page in "
+            "its window."
+        ),
+    )
+    system_prompt: str = Field(default="", description="System prompt for page calls.")
+    task_prompt: str = Field(default="", description="Task prompt for page calls.")
+
+    @field_validator("contextPagesCount", mode="before")
+    @classmethod
+    def parse_context(cls, v: Any) -> int:
+        return _parse_int_param(v, 0)
+
+
+class OneStageConfig(BaseModel):
+    """``strategy: single_pass`` — boundaries and classes from the same call."""
+
+    granularity: str = Field(
+        default="page",
+        description=(
+            "'page': one call per page. 'packet': one call per packet, or per "
+            "window, paying the instructions, class list and examples once rather "
+            "than per page. Image tokens are the same either way."
+        ),
+    )
+    page: ClassificationPageInputConfig = Field(
+        default_factory=ClassificationPageInputConfig
+    )
+    packet: ClassificationPacketConfig = Field(
+        default_factory=ClassificationPacketConfig
+    )
+    llm: ClassificationClassAssigningSettings = Field(
+        default_factory=ClassificationClassAssigningSettings
+    )
+
+    @field_validator("granularity", mode="before")
+    @classmethod
+    def validate_granularity(cls, v: Any) -> str:
+        return _normalise_granularity(v, "classification.one_stage.granularity")
+
+
+class SegmentationLLMConfig(ClassificationModelSettings):
+    """Two-stage segmentation by an LLM: boundaries only, no class vocabulary.
+
+    Model settings only — no validation and no class confidence — because this
+    call returns page ranges and never a class. The saving over one stage is the
+    prefix: no class list, descriptions or few-shot examples on any call.
+    """
+
+    granularity: str = Field(
+        default="page",
+        description="'page': one boundary call per page. 'packet': per packet or window.",
+    )
+    page: ClassificationPageInputConfig = Field(
+        default_factory=ClassificationPageInputConfig
+    )
+    packet: ClassificationPacketConfig = Field(
+        default_factory=ClassificationPacketConfig
     )
     boundary_hints: str = Field(
         default="none",
         description=(
-            "Whether Stage A is told the class NAMES as hints for where a new "
-            "document starts. 'none' (default) sends no vocabulary at all. "
-            "'class_names' sends the names only — not the descriptions and not "
-            "the examples — which can help when boundaries are marked by a form "
-            "number or title the names mention, at the cost of a small prefix."
+            "'none' sends no class vocabulary. 'class_names' sends the class names "
+            "only — not descriptions, not examples — which can help when a "
+            "boundary is marked by a form number or title the names mention."
         ),
     )
-    system_prompt: str = Field(
-        default="",
-        description="Stage A system prompt for page granularity.",
-    )
-    task_prompt: str = Field(
-        default="",
-        description=(
-            "Stage A task prompt for page granularity: asks only whether this "
-            "page starts a new document, with no class list and no class in the "
-            "answer."
-        ),
-    )
-    packet: ClassificationStagePromptsConfig = Field(
-        default_factory=ClassificationStagePromptsConfig,
-        description=(
-            "Stage A prompts for packet granularity: ask for page RANGES only, "
-            "with no type per range."
-        ),
-    )
+
+    @field_validator("granularity", mode="before")
+    @classmethod
+    def validate_granularity(cls, v: Any) -> str:
+        return _normalise_granularity(
+            v, "classification.two_stage.segmentation.llm.granularity"
+        )
 
     @field_validator("boundary_hints", mode="before")
     @classmethod
@@ -1881,76 +2070,129 @@ class ClassificationSegmentationConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in ("none", "class_names"):
             raise ValueError(
-                "classification.segmentation.boundary_hints must be 'none' or "
-                f"'class_names', got {v!r}"
+                "classification.two_stage.segmentation.llm.boundary_hints must be "
+                f"'none' or 'class_names', got {v!r}"
             )
         return v_str
 
 
-class ClassificationLabelingConfig(BaseModel):
-    """Stage B of two-stage classification: what class each segment is.
+class ExternalModelConfig(BaseModel):
+    """An external model behind a stable contract. **Declared, not yet implemented.**
 
-    Only read when ``classification.strategy`` is ``two_stage``. **One call per
-    segment, not per page** — which is the other half of the two-stage saving: a
-    40-page statement is labeled once instead of forty times.
-
-    ``method`` is deliberately a single-value enum today. Embeddings and
-    external classifier endpoints are the other two methods #1329 describes, and
-    both need a measurement before their defaults can be set honestly (which
-    embeddings model, text or image or both, how many exemplars a class needs to
-    be labeled reliably). Shipping the enum with one value means adding one
-    later is not a breaking change to anyone's configuration.
+    Shared by the boundary model (segmentation) and the decision model (section
+    classification), so both methods land without a configuration migration.
     """
+
+    backend: str = Field(default="", description="sagemaker | bedrock_custom | lambda")
+    endpoint: str = Field(
+        default="",
+        description="Endpoint name, model ARN, or function ARN (GENAIIDP- prefix).",
+    )
+    input: str = Field(default="images", description="images | text | both")
+    timeout_ms: int = Field(default=30000, ge=0)
+    max_concurrency: int = Field(default=4, ge=1)
+    price_per_request: float = Field(
+        default=0.0, ge=0.0, description="Per-request price, for metering."
+    )
+
+
+class SegmentationConfig(BaseModel):
+    """Two-stage segmentation: where each document starts and ends."""
 
     method: str = Field(
         default="llm",
-        description=(
-            "How each segment gets its class. 'llm' (the only value today) makes "
-            "one LLM call per segment with the class vocabulary and the few-shot "
-            "examples."
-        ),
+        description="'llm' (the only value today). 'boundary_model' is declared.",
     )
-    model: str = Field(
-        default="",
-        description="Bedrock model for Stage B. Empty uses classification.model.",
-    )
-    pages: str = Field(
-        default="first_k",
-        description=(
-            "Which pages of a segment represent it for labeling. 'first' sends "
-            "only the first page, 'first_k' the first `k`, 'all' every page. "
-            "'first_k' is the default because a document's identity is almost "
-            "always on its opening pages, while 'all' makes a long segment cost "
-            "as much to label as page-level classification cost to classify it."
-        ),
-    )
-    k: int = Field(
-        default=2,
-        ge=1,
-        description="How many pages 'first_k' sends.",
-    )
-    system_prompt: str = Field(default="", description="Stage B system prompt.")
-    task_prompt: str = Field(
-        default="",
-        description=(
-            "Stage B task prompt: given a segment's pages, return its class. "
-            "Carries the class vocabulary and {FEW_SHOT_EXAMPLES}."
-        ),
-    )
+    llm: SegmentationLLMConfig = Field(default_factory=SegmentationLLMConfig)
+    boundary_model: ExternalModelConfig = Field(default_factory=ExternalModelConfig)
 
     @field_validator("method", mode="before")
     @classmethod
     def validate_method(cls, v: Any) -> str:
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return "llm"
-        v_str = str(v).strip().lower()
-        if v_str != "llm":
-            raise ValueError(
-                f"classification.labeling.method must be 'llm', got {v!r}. "
-                "'embeddings' and 'classifier' are planned but not implemented; "
-                "see GitHub issue #1329."
-            )
-        return v_str
+        return _single_value_method(
+            v, "classification.two_stage.segmentation.method", "'boundary_model'"
+        )
+
+
+class SectionClassificationLLMConfig(ClassificationClassAssigningSettings):
+    """Two-stage section classification by an LLM: one call per section."""
+
+    system_prompt: str = Field(default="", description="System prompt.")
+    task_prompt: str = Field(
+        default="",
+        description=(
+            "Given a section's pages, return its class. Carries the class "
+            "vocabulary and {FEW_SHOT_EXAMPLES}."
+        ),
+    )
+
+
+class EmbeddingsConfig(BaseModel):
+    """Section classification by embedding similarity. **Declared, not implemented.**"""
+
+    model: str = Field(default="", description="A multimodal embeddings model.")
+    min_similarity: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class DecisionModelConfig(ExternalModelConfig):
+    """Section classification by an external model. **Declared, not implemented.**"""
+
+    label_map: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Model label → configured class (or 'unclassified').",
+    )
+    score_calibration: str = Field(
+        default="none", description="none | softmax | per_class_thresholds"
+    )
+
+
+class LowConfidenceConfig(BaseModel):
+    """What happens when a non-LLM section classifier is not confident.
+
+    Applies only when ``section_classification.method`` is not ``llm``. Below
+    ``min_confidence`` the section is either re-run through the LLM block or given
+    ``classification.fallback_class`` — the same fallback used when validation
+    retries run out, so there is one fallback setting, not two.
+    """
+
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    on_low_confidence: str = Field(
+        default="fallback_class", description="'llm' | 'fallback_class'"
+    )
+
+
+class SectionClassificationConfig(BaseModel):
+    """Two-stage section classification: one class per section, not per page."""
+
+    method: str = Field(
+        default="llm",
+        description="'llm' (the only value today). 'embeddings' and 'decision_model' are declared.",
+    )
+    pages: str = Field(
+        default="first_k",
+        description=(
+            "Which pages of a section are sent. 'first' the first page, 'first_k' "
+            "the first `k`, 'all' every page. A document's identity is almost "
+            "always on its opening pages, while 'all' makes a long section cost as "
+            "much as page-level classification."
+        ),
+    )
+    k: int = Field(default=2, ge=1, description="How many pages 'first_k' sends.")
+    llm: SectionClassificationLLMConfig = Field(
+        default_factory=SectionClassificationLLMConfig
+    )
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    decision_model: DecisionModelConfig = Field(default_factory=DecisionModelConfig)
+    low_confidence: LowConfidenceConfig = Field(default_factory=LowConfidenceConfig)
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def validate_method(cls, v: Any) -> str:
+        return _single_value_method(
+            v,
+            "classification.two_stage.section_classification.method",
+            "'embeddings' / 'decision_model'",
+        )
 
     @field_validator("pages", mode="before")
     @classmethod
@@ -1960,212 +2202,138 @@ class ClassificationLabelingConfig(BaseModel):
         v_str = str(v).strip().lower()
         if v_str not in ("first", "first_k", "all"):
             raise ValueError(
-                "classification.labeling.pages must be 'first', 'first_k', or "
-                f"'all', got {v!r}"
+                "classification.two_stage.section_classification.pages must be "
+                f"'first', 'first_k', or 'all', got {v!r}"
             )
         return v_str
 
     @field_validator("k", mode="before")
     @classmethod
     def parse_k(cls, v: Any) -> int:
+        return _parse_int_param(v, 2) or 1
+
+
+class TwoStageConfig(BaseModel):
+    """``strategy: two_stage`` — segment first, then classify each section."""
+
+    segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
+    section_classification: SectionClassificationConfig = Field(
+        default_factory=SectionClassificationConfig
+    )
+
+
+class FileShapeConfig(BaseModel):
+    """Advanced: what you already know about a file's shape.
+
+    By default every file is treated as a packet and its boundaries are detected.
+    These settings are assertions that override that, which is why they sit apart
+    from the strategy rather than beside it.
+    """
+
+    sectionSplitting: str = Field(
+        default="llm_determined",
+        description=(
+            "'llm_determined' (default): detect the boundaries. 'disabled': the "
+            "whole file is one document. 'page': every page is its own document."
+        ),
+    )
+    maxPagesForClassification: str = Field(
+        default="ALL",
+        description=(
+            "With sectionSplitting 'disabled', classify only the first N pages and "
+            "give the whole file their majority class. 'ALL' classifies every page."
+        ),
+    )
+
+    @field_validator("sectionSplitting", mode="before")
+    @classmethod
+    def validate_section_splitting(cls, v: Any) -> str:
+        import logging
+
+        if isinstance(v, str):
+            v = v.lower().strip()
+        valid_values = ["disabled", "page", "llm_determined"]
+        if v not in valid_values:
+            logging.getLogger(__name__).warning(
+                "Invalid sectionSplitting value %r, using default 'llm_determined'. "
+                "Valid values: %s",
+                v,
+                ", ".join(valid_values),
+            )
+            return "llm_determined"
+        return v
+
+    @field_validator("maxPagesForClassification", mode="before")
+    @classmethod
+    def parse_max_pages(cls, v: Any) -> str:
+        """'ALL' or a page count; a legacy 0 means 'ALL'."""
         if v is None or (isinstance(v, str) and not v.strip()):
-            return 2
-        try:
-            return int(v)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"classification.labeling.k must be a whole number of pages, got {v!r}"
-            ) from exc
+            return "ALL"
+        if isinstance(v, (int, float)):
+            return "ALL" if v <= 0 else str(int(v))
+        if isinstance(v, str):
+            v_upper = v.strip().upper()
+            if v_upper in ("ALL", "0"):
+                return "ALL"
+            return v.strip()
+        return str(v)
 
 
 class ClassificationConfig(BaseModel):
-    """Document classification configuration"""
+    """Document classification configuration (config format 0.9).
+
+    ``strategy`` decides how many calls are made and what each does. Every
+    model setting lives inside the call that uses it — ``one_stage``, or
+    ``two_stage.segmentation`` and ``two_stage.section_classification`` — so no
+    setting at this level is silently ignored by one strategy. The flat keys of
+    earlier formats are converted on read by ``migrations.v08_to_v09``.
+    """
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
         default_factory=list,
         description="Pipeline hooks invoked after classification (Feature Platform)",
     )
-    model: str = Field(
-        default="us.amazon.nova-pro-v1:0",
-        description="Bedrock model ID for classification. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
-    )
-    model_lambda_hook_arn: Optional[str] = Field(
-        default=None,
-        description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
-    )
-    system_prompt: str = Field(
-        default="", description="System prompt for classification"
-    )
-    task_prompt: str = Field(
-        default="", description="Task prompt template for classification"
-    )
-    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
-    top_k: float = Field(default=5.0, ge=0.0)
-    reasoning_effort: str = Field(
-        default="medium",
-        description=(
-            "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
-            "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
-            "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
-            "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
-            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
-            "reasoning.effort, NOT minimal). "
-            "Ignored by models "
-            "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
-        ),
-    )
-    max_tokens: Optional[int] = Field(
-        default=None,
-        gt=0,
-        description="Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit.",
-    )
-    maxPagesForClassification: str = Field(
-        default="ALL",
-        description="Max pages to use for classification. 'ALL' = all pages, or a number to limit to N pages",
-    )
-    # `classificationMethod` was removed in config format 0.8. It is migrated to
-    # `granularity` on every read by `migrations.v07_to_v08`, which also
-    # relocates a holistic config's hand-written flat prompts into
-    # `classification.packet` — so nothing here needs to read it, and a stored
-    # config still carrying it is converted before this model sees it.
-    granularity: str = Field(
-        default="page",
-        description=(
-            "How many calls classification makes. 'page': one call per page. "
-            "'packet': one call per packet, or per window, which pays the "
-            "instructions, class list and few-shot examples once instead of per "
-            "page. Image tokens are the same either way."
-        ),
-    )
-    packet: ClassificationPacketConfig = Field(
-        default_factory=ClassificationPacketConfig,
-        description=(
-            "Settings used only when granularity is 'packet': the window size, "
-            "the overlap between windows, and the packet-level prompts."
-        ),
-    )
     strategy: str = Field(
         default="single_pass",
         description=(
-            "'single_pass' (default): one call returns both the boundaries and "
-            "the classes, which is what classification has always done. "
-            "'two_stage': boundaries first with no class vocabulary in the "
-            "prompt, then one call per segment to label it. Two-stage saves the "
-            "class list and the few-shot examples on every boundary call, and "
-            "labels once per document rather than once per page; it also "
-            "separates a wrong boundary from a wrong label, which a single "
-            "section-level outcome cannot."
+            "'single_pass' (One stage): one call returns both the boundaries and "
+            "the classes. 'two_stage': boundaries first with no class vocabulary, "
+            "then one call per section to classify it."
         ),
     )
-    segmentation: ClassificationSegmentationConfig = Field(
-        default_factory=ClassificationSegmentationConfig,
-        description=(
-            "Stage A of two-stage classification (strategy: two_stage). Not to "
-            "be confused with `sectionSplitting`, which decides how the "
-            "resulting segments become sections and applies to both strategies."
-        ),
-    )
-    labeling: ClassificationLabelingConfig = Field(
-        default_factory=ClassificationLabelingConfig,
-        description="Stage B of two-stage classification (strategy: two_stage).",
-    )
-    sectionSplitting: str = Field(
-        default="llm_determined",
-        description="Section splitting strategy: 'disabled' (entire doc as one section), 'page' (one section per page), 'llm_determined' (use LLM boundary detection)",
-    )
-    contextPagesCount: int = Field(
-        default=0,
-        description="Number of pages before/after target page to include as context. "
-        "Applies to granularity 'page' only. "
-        "0=no context (default), 1=include 1 page on each side, 2=include 2 pages on each side.",
-    )
-    enforceValidClasses: bool = Field(
-        default=True,
-        description="When True, validate the predicted class against the configured "
-        "class vocabulary and retry (re-prompting the model) on out-of-vocabulary "
-        "predictions. When False, an out-of-vocabulary prediction is logged and used "
-        "as-is (legacy behavior). Applies to granularity 'page'.",
-    )
-    maxValidationRetries: int = Field(
-        default=2,
-        ge=0,
-        description="Maximum number of re-prompt retries when the predicted class is "
-        "not in the configured class vocabulary. Only used when enforceValidClasses "
-        "is True.",
-    )
-    invalidClassFallback: str = Field(
+    fallback_class: str = Field(
         default="unclassified",
-        description="Class label assigned when all validation retries are exhausted. "
-        "Should be one of the configured classes or the built-in 'unclassified'. "
-        "Only used when enforceValidClasses is True.",
-    )
-    confidence: ClassificationClassConfidenceConfig = Field(
-        default_factory=ClassificationClassConfidenceConfig,
         description=(
-            "Confidence in the CLASS (see ClassificationClassConfidenceConfig). "
-            "Defaults to 'topk'; unrelated to extraction.confidence, which scores "
-            "extracted fields."
+            "Class assigned when a class cannot be decided: validation retries ran "
+            "out, or a non-LLM section classifier was not confident. One of the "
+            "configured classes, or the built-in 'unclassified'."
         ),
     )
-    image: ImageConfig = Field(default_factory=ImageConfig)
-    modality: ClassificationModalityConfig = Field(
-        default_factory=ClassificationModalityConfig,
-        description=(
-            "What each classification call sees — text, images, or both. "
-            "Independent of granularity: the same two flags apply to page-level "
-            "and packet-level calls. See ClassificationModalityConfig; both "
-            "default to 'infer from the prompt'."
-        ),
-    )
+    one_stage: OneStageConfig = Field(default_factory=OneStageConfig)
+    two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
+    file_shape: FileShapeConfig = Field(default_factory=FileShapeConfig)
 
-    @field_validator("temperature", "top_p", "top_k", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def parse_float(cls, v: Any) -> float:
-        """Parse float from string or number"""
-        if isinstance(v, str):
-            return float(v) if v else 0.0
-        return float(v)
+    def migrate_flat_keys(cls, data: Any) -> Any:
+        """Convert pre-0.9 flat keys even when this model is built directly.
 
-    @field_validator("max_tokens", mode="before")
-    @classmethod
-    def parse_int(cls, v: Any) -> Optional[int]:
-        """Parse optional max_tokens (empty/0 -> None = use model max)."""
-        return _parse_optional_max_tokens(v)
-
-    @field_validator("maxPagesForClassification", mode="before")
-    @classmethod
-    def parse_max_pages(cls, v: Any) -> str:
-        """Parse maxPagesForClassification - accepts 'ALL' or numeric string/int.
-
-        Converts legacy value of 0 to 'ALL' for backward compatibility.
-        Returns string to match UI schema enum: ['ALL', '1', '2', '3', '5', '10']
+        ``IDPConfig`` already migrates on load. This covers a caller that builds
+        ``ClassificationConfig(**flat)`` itself, which would otherwise have every
+        flat key silently discarded by ``extra="ignore"`` — the same conversion,
+        at a second entry point, so neither route loses a setting.
         """
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return "ALL"
-        if isinstance(v, (int, float)):
-            # Convert legacy 0 to "ALL" for backward compatibility
-            if v <= 0:
-                return "ALL"
-            return str(int(v))
-        if isinstance(v, str):
-            v_upper = v.strip().upper()
-            # "ALL" or legacy "0" both mean all pages
-            if v_upper == "ALL" or v_upper == "0":
-                return "ALL"
-            return v.strip()
-        return str(v)
+        if not isinstance(data, dict):
+            return data
+        from .migrations.v08_to_v09 import FLAT_KEYS, migrate_v08_to_v09
+
+        if not FLAT_KEYS & data.keys():
+            return data
+        return migrate_v08_to_v09({"classification": data})["classification"]
 
     @field_validator("strategy", mode="before")
     @classmethod
     def validate_strategy(cls, v: Any) -> str:
-        """Normalize the strategy; reject an unknown value loudly.
-
-        Not a silent fallback, for the same reason as ``granularity``: the two
-        strategies make a different number of calls with different prompts, so
-        quietly picking one is a cost decision the operator did not make.
-        """
         if v is None or (isinstance(v, str) and not v.strip()):
             return "single_pass"
         v_str = str(v).strip().lower()
@@ -2176,84 +2344,54 @@ class ClassificationConfig(BaseModel):
             )
         return v_str
 
-    @field_validator("granularity", mode="before")
+    @field_validator("fallback_class", mode="before")
     @classmethod
-    def validate_granularity(cls, v: Any) -> str:
-        """Normalize granularity; empty means the ``page`` default.
+    def default_fallback(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "unclassified"
+        return str(v)
 
-        An unrecognised value raises rather than falling back, because the two
-        values produce different prompts, different parsers and a roughly
-        N-fold difference in call count — silently picking one would be a cost
-        and accuracy decision the operator did not make. (``sectionSplitting``
-        below does fall back, which predates this and is a smaller difference.)
+    # ── Resolved views. Every reader goes through these rather than walking the
+    # tree, so the strategy-dependent choice of block is made in one place.
 
-        Empty is accepted and resolves to ``page``, so a stored config written
-        before this setting existed loads without an error: an empty value meant
-        "derive it from ``classificationMethod``", and with that key gone the
-        page path is what the derivation produced for every value but one. The
-        migration normally fills it in from the method; this covers a config
-        carrying the empty value and no method at all.
-        """
-        if v is None:
-            return "page"
-        v_str = str(v).strip().lower()
-        if v_str == "":
-            return "page"
-        if v_str in ("page", "packet"):
-            return v_str
-        raise ValueError(
-            f"classification.granularity must be 'page' or 'packet', got {v!r}"
-        )
+    def page_input_call(self) -> Union[OneStageConfig, SegmentationLLMConfig]:
+        """The block whose granularity / page / packet settings are in force."""
+        if self.strategy == "two_stage":
+            return self.two_stage.segmentation.llm
+        return self.one_stage
 
-    @field_validator("sectionSplitting", mode="before")
-    @classmethod
-    def validate_section_splitting(cls, v: Any) -> str:
-        """Validate and normalize section splitting value"""
-        import logging
+    def class_assigning_llm(
+        self,
+    ) -> Union[ClassificationClassAssigningSettings, SectionClassificationLLMConfig]:
+        """The block that decides the class under the active strategy."""
+        if self.strategy == "two_stage":
+            return self.two_stage.section_classification.llm
+        return self.one_stage.llm
 
-        logger = logging.getLogger(__name__)
 
-        if isinstance(v, str):
-            v = v.lower().strip()
+#: Where the class-assigning call's settings live, per strategy. A tool writing
+#: "the classification model" — a custom or fine-tuned model ARN, say — writes
+#: here, because that is the call whose model decides the class.
+CLASS_ASSIGNING_LLM_PATHS: Dict[str, Tuple[str, ...]] = {
+    "single_pass": ("one_stage", "llm"),
+    "two_stage": ("two_stage", "section_classification", "llm"),
+}
 
-        valid_values = ["disabled", "page", "llm_determined"]
-        if v not in valid_values:
-            logger.warning(
-                f"Invalid sectionSplitting value '{v}', using default 'llm_determined'. "
-                f"Valid values: {', '.join(valid_values)}"
-            )
-            return "llm_determined"
-        return v
 
-    @field_validator("contextPagesCount", mode="before")
-    @classmethod
-    def parse_context_pages_count(cls, v: Any) -> int:
-        """Parse contextPagesCount from string or number, ensuring non-negative value"""
-        if isinstance(v, str):
-            v = int(v) if v else 0
-        result = int(v)
-        if result < 0:
-            return 0
-        return result
+def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
+    """The path, under ``classification``, of the active class-assigning call.
 
-    @field_validator("maxValidationRetries", mode="before")
-    @classmethod
-    def parse_max_validation_retries(cls, v: Any) -> int:
-        """Parse maxValidationRetries from string or number, ensuring non-negative value"""
-        if isinstance(v, str):
-            v = int(v) if v.strip() else 2
-        result = int(v)
-        if result < 0:
-            return 0
-        return result
-
-    @field_validator("enforceValidClasses", mode="before")
-    @classmethod
-    def parse_enforce_valid_classes(cls, v: Any) -> bool:
-        """Parse enforceValidClasses from string or bool (config may store as string)"""
-        if isinstance(v, str):
-            return v.strip().lower() in ("true", "1", "yes", "on")
-        return bool(v)
+    Reads the raw dict so a writer can use it before validation. An absent or
+    unrecognised strategy is ``single_pass``, the default.
+    """
+    strategy = (
+        str(classification.get("strategy") or "").strip().lower()
+        if isinstance(classification, dict)
+        else ""
+    )
+    return CLASS_ASSIGNING_LLM_PATHS.get(
+        strategy, CLASS_ASSIGNING_LLM_PATHS["single_pass"]
+    )
 
 
 class SummarizationConfig(BaseModel):
@@ -4028,7 +4166,7 @@ def _suggest_path(
        ``extraction``, so ``extraction.enabled`` gets no hint rather than one of the
        eight, and ``hitl.model`` reaches the root only to find eleven equally near
        candidates and decline, rather than being answered with
-       ``classification.model``.
+       ``summarization.model``.
     2. *Misspelling.* Failing that, a close name among the **siblings** — the fields
        of the model the key was actually written in.
 
@@ -4324,7 +4462,7 @@ class IDPConfig(BaseModel):
     )
     ocr: OCRConfig = Field(default_factory=OCRConfig, description="OCR configuration")
     classification: ClassificationConfig = Field(
-        default_factory=lambda: ClassificationConfig(model="us.amazon.nova-pro-v1:0"),
+        default_factory=ClassificationConfig,
         description="Classification configuration",
     )
     extraction: ExtractionConfig = Field(
@@ -4736,17 +4874,29 @@ class IDPConfig(BaseModel):
         deliberate: a config-load failure must be a thing the operator can act
         on from the message alone.
         """
-        if (
-            self.ocr.backend
-            and self.ocr.backend.strip().lower() == "none"
-            and self.classification.modality.images is False
-        ):
-            raise ValueError(
-                "ocr.backend is 'none' (no page text is produced) and "
-                "classification.modality.images is false, so classification "
-                "would have no text and no images to work from. Either choose a "
-                "real OCR backend, or turn classification.modality.images on."
-            )
+        if not (self.ocr.backend and self.ocr.backend.strip().lower() == "none"):
+            return self
+        cls = self.classification
+        # Only the calls the active strategy makes: an inactive block with images
+        # off can send nothing to anyone, and refusing it would stop an operator
+        # saving a configuration whose live calls are fine.
+        if cls.strategy == "two_stage":
+            calls = {
+                "two_stage.segmentation.llm": cls.two_stage.segmentation.llm,
+                "two_stage.section_classification.llm": (
+                    cls.two_stage.section_classification.llm
+                ),
+            }
+        else:
+            calls = {"one_stage.llm": cls.one_stage.llm}
+        for path, call in calls.items():
+            if call.modality.images is False:
+                raise ValueError(
+                    "ocr.backend is 'none' (no page text is produced) and "
+                    f"classification.{path}.modality.images is false, so that call "
+                    "would have no text and no images to work from. Either choose "
+                    "a real OCR backend, or turn its images on."
+                )
         return self
 
     def to_dict(self, **extra_fields: Any) -> Dict[str, Any]:

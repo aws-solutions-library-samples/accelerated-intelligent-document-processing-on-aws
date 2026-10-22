@@ -39,7 +39,7 @@ interface PageItem {
   ClassConfidence?: number | null;
   /** The model's stated evidence for Class, when the prompt asked for one. */
   ClassReason?: string | null;
-  /** Ranked alternatives from classification.confidence.mode: topk. */
+  /** Ranked alternatives from the classification call's confidence.mode: topk. */
   ClassCandidates?: ({ Class?: string | null; Probability?: number | null } | null)[] | null;
   ImageUri?: string;
   TextUri?: string;

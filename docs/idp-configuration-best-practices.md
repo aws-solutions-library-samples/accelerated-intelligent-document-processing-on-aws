@@ -837,19 +837,21 @@ Few-shot examples are automatically integrated using the `{FEW_SHOT_EXAMPLES}` p
 **Classification with Few-Shot Examples:**
 ```yaml
 classification:
-  task_prompt: |
-    Classify this document into exactly one of these categories:
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document into exactly one of these categories:
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
+        <few_shot_examples>
+        {FEW_SHOT_EXAMPLES}
+        </few_shot_examples>
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    <document_content>
-    {DOCUMENT_TEXT}
-    </document_content>
+        <document_content>
+        {DOCUMENT_TEXT}
+        </document_content>
 ```
 
 **Extraction with Few-Shot Examples:**
@@ -1229,11 +1231,13 @@ The services support configurable image dimensions for optimal performance:
 
 ```yaml
 classification:
-  model: us.amazon.nova-pro-v1:0
-  # Image processing settings - preserves original resolution
-  image:
-    target_width: ""     # Empty string = no resizing (recommended)
-    target_height: ""    # Empty string = no resizing (recommended)
+  one_stage:
+    llm:
+      model: us.amazon.nova-pro-v1:0
+      # Image processing settings - preserves original resolution
+      image:
+        target_width: ""     # Empty string = no resizing (recommended)
+        target_height: ""    # Empty string = no resizing (recommended)
 ```
 
 #### Custom Image Dimensions
@@ -1243,15 +1247,19 @@ Configure specific dimensions when performance optimization is needed:
 ```yaml
 # For high-accuracy processing with controlled dimensions
 classification:
-  image:
-    target_width: "1200"   # Resize to 1200 pixels wide
-    target_height: "1600"  # Resize to 1600 pixels tall
+  one_stage:
+    llm:
+      image:
+        target_width: "1200"   # Resize to 1200 pixels wide
+        target_height: "1600"  # Resize to 1600 pixels tall
 
 # For fast processing with lower resolution
 classification:
-  image:
-    target_width: "600"    # Smaller for faster processing
-    target_height: "800"   # Maintains reasonable quality
+  one_stage:
+    llm:
+      image:
+        target_width: "600"    # Smaller for faster processing
+        target_height: "800"   # Maintains reasonable quality
 ```
 
 #### Image Resizing Features

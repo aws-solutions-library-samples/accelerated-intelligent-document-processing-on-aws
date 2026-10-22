@@ -318,8 +318,8 @@ export default defineConfig({
           label: "Migration",
           items: [
             {
-              label: "Classification Method → Granularity",
-              slug: "migration-classification-granularity",
+              label: "v0.6.12 → v0.6.13 Migration",
+              slug: "migration-v0612-to-v0613",
             },
             { label: "v0.5 → v0.6 Migration", slug: "migration-v05-to-v06" },
             { label: "v0.4 → v0.5 Migration", slug: "migration-v04-to-v05" },

@@ -14,7 +14,7 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 **Region:** us-west-2 · **Stack:** `IDPBench066`
 **Test set:** `docsplit` (DocSplit-Poly-Seq — RVL-CDIP-derived packets, 13 classes)
 · first **20 packets**, **298 pages** per model per mode, one run each, no failures
-**Config:** `config_library/unified/docsplit/config.yaml`, `classification.confidence.mode`
+**Config:** `config_library/unified/docsplit/config.yaml`, `classification.one_stage.llm.confidence.mode`
 ∈ {`topk` (`top_k_candidates: 3`), `off`}, everything else at system defaults;
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)

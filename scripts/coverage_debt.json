@@ -129,6 +129,7 @@
         "idp_common/config/migrations/v05_to_v06.py": 96.94,
         "idp_common/config/migrations/v06_to_v07.py": 100.0,
         "idp_common/config/migrations/v07_to_v08.py": 100.0,
+        "idp_common/config/migrations/v08_to_v09.py": 98.62,
         "idp_common/config/models.py": 96.1,
         "idp_common/config/prefix_mappings.py": 98.81,
         "idp_common/config/retired_models.py": 92.31,

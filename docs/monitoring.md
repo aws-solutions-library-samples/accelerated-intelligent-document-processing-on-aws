@@ -460,7 +460,7 @@ and two of the three causes report nothing here:
 ⚠️ **That last case is not always rare, and which configuration you run decides
 it.** On the default `multimodalPageLevelClassification` with
 `enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
-coerced to `invalidClassFallback`, so it becomes the silent `unclassified` case
+coerced to `fallback_class`, so it becomes the silent `unclassified` case
 above and the count really is bounded by configuration edits. Two other supported
 configurations store the model's invented class name verbatim —
 `textbasedHolisticClassification`, which has no enforcement loop at all, and

@@ -629,14 +629,33 @@ class TestTheSeverityIsOneAReaderSees:
     def test_info_would_have_been_the_wrong_choice(self):
         """Pinned as a reason rather than left as a preference.
 
-        ``info`` renders as "Auto-recovered" in the sections panel, which is a
-        false statement about a section that lost rows. So the severity is not
-        merely non-silent, it is the right one of the two non-silent options.
+        ``info`` is the severity that keeps the processing report's status line at
+        SUCCESS, so a section that lost rows would read as a clean run. That is
+        the argument, and it holds whatever the sections panel calls an info note.
+
+        ⚠️ Do **not** pin this on the string "Auto-recovered" appearing in the
+        panel's source. That label is reserved for codes reporting an actual repair
+        (#1521), so the string survives on the recovery branch and such an
+        assertion passes whether or not a lost-rows note would carry it — green for
+        a reason that is not the reason. Assert against ``RECOVERY_CODES``, which is
+        what decides the label.
         """
         src = (
             _repo_root() / "src/ui/src/components/common/processing-issues-utils.ts"
         ).read_text(encoding="utf-8")
-        assert "Auto-recovered" in src
+        # Parse the set, do not grep for the identifier: `"RECOVERY_CODES" in src`
+        # holds whatever the set contains, including a version that lists this
+        # code, so it would pass in the one case worth catching.
+        recovery = re.search(
+            r"const\s+RECOVERY_CODES\s*=\s*new\s+Set\(\s*(\[[^\]]*\])\s*\)", src
+        )
+        assert recovery, "RECOVERY_CODES is no longer declared in the panel's helper"
+        recovery_codes = set(re.findall(r"'([^']+)'", recovery.group(1)))
+        assert PARTIAL not in recovery_codes, (
+            f"{PARTIAL} is listed as a recovery code, so an info severity would "
+            "render as 'Auto-recovered' — a false statement about a section that "
+            "lost rows"
+        )
         svc = _svc()
         svc._document_text = EIGHT_HUNDRED
         issue = next(

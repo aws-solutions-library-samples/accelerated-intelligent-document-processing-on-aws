@@ -43,7 +43,7 @@ def task_prompt() -> str:
     if not DEFAULTS.exists():  # pragma: no cover - packaged install
         pytest.skip(f"{DEFAULTS} not present")
     cfg = yaml.safe_load(DEFAULTS.read_text())
-    return cfg["classification"]["task_prompt"]
+    return cfg["classification"]["one_stage"]["page"]["task_prompt"]
 
 
 def test_the_rules_block_is_present(task_prompt):

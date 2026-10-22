@@ -402,7 +402,8 @@ def _realkie_fcc_section_splitting(relative_path: str):
     parsed = yaml.safe_load(
         (CONFIG_LIBRARY_ROOT / relative_path).read_text(encoding="utf-8")
     )
-    return (parsed.get("classification") or {}).get("sectionSplitting")
+    classification = parsed.get("classification") or {}
+    return (classification.get("file_shape") or {}).get("sectionSplitting")
 
 
 class TestRealkieFccSectionSplitting:
@@ -418,7 +419,7 @@ class TestRealkieFccSectionSplitting:
     declare ``disabled``.
 
     The deploy-time preset, ``unified/realkie-fcc-verified/config.yaml``, does not
-    set ``classification.sectionSplitting``. A stack deployed with
+    set ``classification.file_shape.sectionSplitting``. A stack deployed with
     ``ConfigurationPreset=realkie-fcc-verified`` and no ``CustomConfigPath``
     rebuilds its ``default`` profile from that file on every update, ``default`` is
     usually the active profile, and an imported or newly uploaded profile is built
@@ -430,7 +431,7 @@ class TestRealkieFccSectionSplitting:
     def test_declares_whole_document_sections(self, relative_path: str):
         splitting = _realkie_fcc_section_splitting(relative_path)
         assert splitting == "disabled", (
-            f"{relative_path} sets classification.sectionSplitting to "
+            f"{relative_path} sets classification.file_shape.sectionSplitting to "
             f"{splitting!r}. Every file in this test set is one invoice, so it needs "
             f"'disabled' (one section over every page). Anything else lets page-level "
             f"classification split an invoice, and an unrecognised value is coerced "
@@ -440,7 +441,7 @@ class TestRealkieFccSectionSplitting:
     def test_the_deploy_time_preset_leaves_section_splitting_unset(self):
         splitting = _realkie_fcc_section_splitting(REALKIE_FCC_DEPLOY_TIME_PRESET)
         assert splitting is None, (
-            f"{REALKIE_FCC_DEPLOY_TIME_PRESET} sets classification.sectionSplitting "
+            f"{REALKIE_FCC_DEPLOY_TIME_PRESET} sets classification.file_shape.sectionSplitting "
             f"to {splitting!r}. A stack deployed with this preset rebuilds its "
             f"`default` profile from this file on every update, so the value would "
             f"change that stack's `default` on upgrade, and every profile created "

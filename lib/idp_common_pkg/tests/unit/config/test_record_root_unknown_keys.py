@@ -54,6 +54,7 @@ from pydantic import BaseModel, ValidationError
 
 from idp_common.config import models as models_module
 from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.migrations import migrate_config
 from idp_common.config.models import (
     IDPConfig,
     ModelConfigLimitsConfig,
@@ -358,6 +359,27 @@ def test_a_correctly_spelled_record_is_reported_clean(root: type[BaseModel]):
 # ---------------------------------------------------------------------------
 
 
+def _is_a_migrated_legacy_key(reached: Reached, key: str) -> bool:
+    """Whether the migration chain consumes ``key`` written at ``reached``.
+
+    Such a key is not dropped — it is a legacy spelling the chain relocates
+    (``classification.granularity`` becomes ``classification.one_stage.granularity``)
+    — so it is not a mis-nesting. Measured through the real chain rather than
+    listed, so a new migration is accounted for without an edit here.
+    """
+    if reached.root is not IDPConfig:
+        return False
+    migrated = migrate_config(_nest(reached.steps, {key: "probe-value"}))
+    node: typing.Any = migrated
+    for name, shape in reached.steps:
+        node = node.get(name) if isinstance(node, dict) else None
+        if shape == "list":
+            node = node[0] if isinstance(node, list) and node else None
+        elif shape == "map":
+            node = node.get("probe") if isinstance(node, dict) else None
+    return not (isinstance(node, dict) and key in node)
+
+
 def _misnesting_cases() -> list[tuple[Reached, str, str]]:
     """Every (parent, child) pair under a root, paired with a field the child owns.
 
@@ -373,7 +395,11 @@ def _misnesting_cases() -> list[tuple[Reached, str, str]]:
             _shape, child = _target(field.annotation)
             if child is None or _keeps_extras(child):
                 continue
-            owned = sorted(set(child.model_fields) - set(reached.model.model_fields))
+            owned = sorted(
+                key
+                for key in set(child.model_fields) - set(reached.model.model_fields)
+                if not _is_a_migrated_legacy_key(reached, key)
+            )
             if not owned:
                 continue
             cases.append((reached, name, owned[0]))

@@ -1872,7 +1872,7 @@ class ExtractionService:
         * the label resolves to a class in configuration →
           ``EMPTY_SCHEMA_NO_ATTRIBUTES``;
         * the label is the ``unclassified`` sentinel (or the configured
-          ``classification.invalidClassFallback``, which defaults to it) →
+          ``classification.fallback_class``, which defaults to it) →
           ``EMPTY_SCHEMA_UNCLASSIFIED``. Classification determined no class,
           which is an ordinary outcome for a blank page and a reportable failure
           for a page whose classification errored — a distinction only
@@ -1899,7 +1899,7 @@ class ExtractionService:
         """
         if self._get_class_schema(class_label):
             return EMPTY_SCHEMA_NO_ATTRIBUTES
-        fallback = self.config.classification.invalidClassFallback
+        fallback = self.config.classification.fallback_class
         if class_label in {UNCLASSIFIED_CLASS, fallback}:
             return EMPTY_SCHEMA_UNCLASSIFIED
         return EMPTY_SCHEMA_CLASS_NOT_CONFIGURED

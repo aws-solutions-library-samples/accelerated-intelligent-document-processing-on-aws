@@ -62,7 +62,24 @@ EXEMPT = {
     "benchmarks/tests/test_suite_declarations.py",
     # This guard, which has to spell out the string it forbids.
     "scripts/tests/test_classification_prompt_copies_in_sync.py",
+    # The frozen pre-0.9 system defaults the migration tests read. It records
+    # what a past release shipped, so it must not follow a later prompt change.
+    "lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.8.yaml",
+    # The same, for the defaults the v0.6.12 release shipped.
+    "lib/idp_common_pkg/tests/unit/config/fixtures/base-classification-0.6.12.yaml",
 }
+
+
+def _page_prompt(classification: dict):
+    """The one-stage page task prompt, in either config format.
+
+    Config format 0.9 keeps it at `one_stage.page.task_prompt`; a pre-0.9 file
+    (a preset not yet converted, or a notebook config) keeps it flat.
+    """
+    nested = ((classification.get("one_stage") or {}).get("page") or {}).get(
+        "task_prompt"
+    )
+    return nested if nested is not None else classification.get("task_prompt")
 
 
 def _canonical_rules() -> str:
@@ -72,7 +89,7 @@ def _canonical_rules() -> str:
     <boundary-detection-rules> below"), so the opening tag is found by searching
     backwards from the closing one.
     """
-    prompt = yaml.safe_load(DEFAULTS.read_text())["classification"]["task_prompt"]
+    prompt = _page_prompt(yaml.safe_load(DEFAULTS.read_text())["classification"])
     close = "</boundary-detection-rules>"
     end = prompt.index(close)
     start = prompt.rindex("<boundary-detection-rules>", 0, end)
@@ -178,7 +195,7 @@ def _configs_doing_page_level_boundary_detection():
         classification = loaded.get("classification")
         if not isinstance(classification, dict):
             continue
-        prompt = classification.get("task_prompt")
+        prompt = _page_prompt(classification)
         if isinstance(prompt, str) and "document_boundary" in prompt:
             yield pytest.param(prompt, id=str(rel))
 

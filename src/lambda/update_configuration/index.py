@@ -459,6 +459,38 @@ def detect_pattern_from_config(config: Dict[str, Any]) -> str:
     return "pattern-2"
 
 
+def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) -> None:
+    """Write the stack's custom/fine-tuned model ARNs into a merged config.
+
+    ``CustomClassificationModelARN`` replaces the model of the call that assigns
+    the class under the active strategy — ``one_stage.llm`` for a single pass,
+    ``two_stage.section_classification.llm`` for two stages. Segmentation keeps
+    its own model: it only finds boundaries, which is not what a classification
+    model was trained to do. ``CustomExtractionModelARN`` replaces
+    ``extraction.model``. An empty or absent ARN changes nothing.
+    """
+    from idp_common.config.models import class_assigning_llm_path
+
+    classification_arn = str(properties.get("CustomClassificationModelARN") or "")
+    if classification_arn.strip() and isinstance(config.get("classification"), dict):
+        classification = config["classification"]
+        path = class_assigning_llm_path(classification)
+        node = classification
+        for key in path:
+            if not isinstance(node.get(key), dict):
+                node[key] = {}
+            node = node[key]
+        node["model"] = classification_arn
+        logger.info(
+            "Updated classification.%s.model to: %s", ".".join(path), classification_arn
+        )
+
+    extraction_arn = str(properties.get("CustomExtractionModelARN") or "")
+    if extraction_arn.strip() and isinstance(config.get("extraction"), dict):
+        config["extraction"]["model"] = extraction_arn
+        logger.info("Updated extraction model to: %s", extraction_arn)
+
+
 def merge_custom_with_defaults(
     custom_config: Dict[str, Any],
     pattern: str = None,
@@ -839,31 +871,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
 
                 # Apply custom model ARNs if provided
                 if isinstance(resolved_default, dict):
-                    # Replace classification model if CustomClassificationModelARN is provided and not empty
-                    if (
-                        "CustomClassificationModelARN" in properties
-                        and properties["CustomClassificationModelARN"].strip()
-                    ):
-                        if "classification" in resolved_default:
-                            resolved_default["classification"]["model"] = properties[
-                                "CustomClassificationModelARN"
-                            ]
-                            logger.info(
-                                f"Updated classification model to: {properties['CustomClassificationModelARN']}"
-                            )
-
-                    # Replace extraction model if CustomExtractionModelARN is provided and not empty
-                    if (
-                        "CustomExtractionModelARN" in properties
-                        and properties["CustomExtractionModelARN"].strip()
-                    ):
-                        if "extraction" in resolved_default:
-                            resolved_default["extraction"]["model"] = properties[
-                                "CustomExtractionModelARN"
-                            ]
-                            logger.info(
-                                f"Updated extraction model to: {properties['CustomExtractionModelARN']}"
-                            )
+                    apply_custom_model_arns(resolved_default, properties)
 
                 configurations["Config#default#System Default"] = resolved_default
 
