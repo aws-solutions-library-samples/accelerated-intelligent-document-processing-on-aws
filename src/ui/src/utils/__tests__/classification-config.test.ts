@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import { describe, expect, it } from 'vitest';
-import { classAssigningLlmPath, classificationModelOf, setClassificationModel } from '../classification-config';
+import { classAssigningLlmPath, classificationModelOf, flatClassificationKeysIn, setClassificationModel } from '../classification-config';
 
 describe('classAssigningLlmPath', () => {
   it('is the one-stage call for single_pass, and by default', () => {
@@ -52,5 +52,20 @@ describe('setClassificationModel', () => {
     const cls: Record<string, unknown> = {};
     setClassificationModel(cls, 'arn:custom');
     expect(cls).toEqual({ one_stage: { llm: { model: 'arn:custom' } } });
+  });
+});
+
+describe('flatClassificationKeysIn', () => {
+  it('names the pre-0.9 keys a file still carries', () => {
+    expect(flatClassificationKeysIn({ classification: { model: 'm', granularity: 'page', strategy: 'single_pass' } })).toEqual([
+      'model',
+      'granularity',
+    ]);
+  });
+
+  it('is empty for a nested file and for a file with no classification', () => {
+    expect(flatClassificationKeysIn({ classification: { one_stage: { granularity: 'page' } } })).toEqual([]);
+    expect(flatClassificationKeysIn({ extraction: {} })).toEqual([]);
+    expect(flatClassificationKeysIn(null)).toEqual([]);
   });
 });

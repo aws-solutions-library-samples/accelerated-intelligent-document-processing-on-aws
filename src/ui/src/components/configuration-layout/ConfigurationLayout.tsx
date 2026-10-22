@@ -42,6 +42,7 @@ import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import { deepMerge } from '../../utils/configUtils';
 import { syncBdaIdp } from '../../graphql/generated';
 import { parseConfigurationData } from '../../graphql/awsjson-parsers';
+import { flatClassificationKeysIn } from '../../utils/classification-config';
 
 const client = generateClient();
 const logger = new ConsoleLogger('ConfigurationLayout');
@@ -2889,6 +2890,13 @@ const ConfigurationLayout = (): React.JSX.Element => {
           <Alert type="success" header="Configuration Loaded">
             Configuration successfully loaded and ready to be saved as a new version.
           </Alert>
+          {flatClassificationKeysIn(importedConfigForNewVersion).length > 0 && (
+            <Alert type="info" header="Classification settings will be converted">
+              This file uses the classification layout from v0.6.12 or earlier (
+              {flatClassificationKeysIn(importedConfigForNewVersion).join(', ')}). Each setting is moved into the model call that uses it
+              when the profile is created, and behaves as before. Download the profile afterwards to get a file in the current layout.
+            </Alert>
+          )}
 
           <FormField
             label="Profile Name"
