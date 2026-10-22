@@ -93,3 +93,26 @@ def test_a_body_without_a_version_stamp_is_not_given_one(module):
     captured = module._capture_config("config-table", "lending")
 
     assert captured["Config"] == item
+
+
+@pytest.mark.unit
+def test_a_body_the_migration_cannot_convert_is_recorded_as_stored(module, monkeypatch):
+    """The capture is a record for later comparison. A revision that was read
+    but cannot be normalised must not fail the test run."""
+
+    def broken(_body):
+        raise ValueError("cannot convert")
+
+    monkeypatch.setattr(module, "migrate_config", broken)
+    stored = _flat_body()
+    manager = MagicMock()
+    manager.get_revision.return_value = stored
+    monkeypatch.setitem(
+        sys.modules,
+        "idp_common.config.configuration_manager",
+        MagicMock(ConfigurationManager=MagicMock(return_value=manager)),
+    )
+
+    captured = module._capture_config("config-table", "lending", 5)
+
+    assert captured["Config"]["classification"]["model"] == "flat-model"

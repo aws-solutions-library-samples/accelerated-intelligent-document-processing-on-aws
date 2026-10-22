@@ -559,7 +559,17 @@ def _current_format(body):
     """
     if not isinstance(body, dict) or not body:
         return body
-    migrated = migrate_config(copy.deepcopy(body))
+    try:
+        migrated = migrate_config(copy.deepcopy(body))
+    except Exception:  # noqa: BLE001 — the capture is a record, not the run's config
+        # The body was read; only its normalisation for later comparison failed.
+        # Record it as stored rather than failing the test run over it.
+        logger.warning(
+            "Could not convert the captured configuration to the current format; "
+            "recording it as stored",
+            exc_info=True,
+        )
+        return body
     if "config_format_version" not in body:
         # Normalise the shape only: a body that recorded no format version is
         # not given one, so an already-current body is captured unchanged.

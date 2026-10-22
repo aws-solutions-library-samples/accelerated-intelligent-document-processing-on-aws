@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT-0
 
 import { describe, expect, it } from 'vitest';
-import { classAssigningLlmPath, classificationModelOf, flatClassificationKeysIn, setClassificationModel } from '../classification-config';
+import {
+  classAssigningLlmPath,
+  classificationModelOf,
+  flatClassificationKeysIn,
+  pageLimitBecomesOneDocument,
+  setClassificationModel,
+} from '../classification-config';
 
 describe('classAssigningLlmPath', () => {
   it('is the one-stage call for single_pass, and by default', () => {
@@ -67,5 +73,18 @@ describe('flatClassificationKeysIn', () => {
     expect(flatClassificationKeysIn({ classification: { one_stage: { granularity: 'page' } } })).toEqual([]);
     expect(flatClassificationKeysIn({ extraction: {} })).toEqual([]);
     expect(flatClassificationKeysIn(null)).toEqual([]);
+  });
+});
+
+describe('pageLimitBecomesOneDocument', () => {
+  it('is true for a page limit with boundary detection', () => {
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: '3' } })).toBe(true);
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: 2, sectionSplitting: 'page' } })).toBe(true);
+  });
+
+  it('is false without a limit or when the file is already one document', () => {
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: 'ALL' } })).toBe(false);
+    expect(pageLimitBecomesOneDocument({ classification: { maxPagesForClassification: '3', sectionSplitting: 'disabled' } })).toBe(false);
+    expect(pageLimitBecomesOneDocument({ classification: { model: 'm' } })).toBe(false);
   });
 });

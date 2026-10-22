@@ -89,3 +89,23 @@ export const flatClassificationKeysIn = (config: unknown): string[] => {
   if (!classification || typeof classification !== 'object') return [];
   return FLAT_CLASSIFICATION_KEYS.filter((key) => Object.hasOwn(classification as object, key));
 };
+
+/**
+ * Whether converting this file turns boundary detection into "one document per
+ * file": a page limit combined with any section splitting other than
+ * `disabled` (mirrors `conversion_notices` in `v08_to_v09.py`).
+ */
+export const pageLimitBecomesOneDocument = (config: unknown): boolean => {
+  const classification = config && typeof config === 'object' ? (config as Record<string, unknown>).classification : undefined;
+  if (!classification || typeof classification !== 'object') return false;
+  const cls = classification as Record<string, unknown>;
+  const raw = cls.maxPagesForClassification;
+  if (raw === undefined || raw === null) return false;
+  const text = String(raw).trim().toUpperCase();
+  const limit = Number(text);
+  if (text === '' || text === 'ALL' || !Number.isInteger(limit) || limit <= 0) return false;
+  const splitting = String(cls.sectionSplitting ?? 'llm_determined')
+    .trim()
+    .toLowerCase();
+  return splitting !== 'disabled';
+};
