@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import gzip
 import json
 import logging
@@ -13,6 +14,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_common.api_adapter import ResourceNotFound  # type: ignore
+from idp_common.config.migrations import migrate_config  # type: ignore
 from idp_common.review_queues.statuses import (  # type: ignore
     LEGACY_DONE,
     LegacyHitlStatus,
@@ -547,6 +549,24 @@ def _pin_revision(config_table, config_version, revision):
         )
 
 
+def _current_format(body):
+    """``body`` migrated to the current config format, without mutating it.
+
+    A run records its configuration so it can be compared with other runs later.
+    Capturing a pre-0.9 profile or revision in its stored (flat classification)
+    shape would make every moved setting compare as ``<missing>`` against a run
+    captured in the nested shape, so the capture is normalised here.
+    """
+    if not isinstance(body, dict) or not body:
+        return body
+    migrated = migrate_config(copy.deepcopy(body))
+    if "config_format_version" not in body:
+        # Normalise the shape only: a body that recorded no format version is
+        # not given one, so an already-current body is captured unchanged.
+        migrated.pop("config_format_version", None)
+    return migrated
+
+
 def _capture_config(config_table, config_version=None, config_revision=None):
     """Capture configuration - specific revision, specific profile, or active"""
     table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
@@ -593,7 +613,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
         # instead." — which failed every startTestRun that pinned a revision.
         # The config read from DynamoDB never hit this because it comes back as
         # Decimal already.
-        config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
+        config["Config"] = json.loads(
+            json.dumps(_current_format(body)), parse_float=Decimal
+        )
         _pin_revision(config_table, config_version, config_revision)
         return config
 
@@ -611,7 +633,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
                 return config
         response = table.get_item(Key={"Configuration": key})
         if "Item" in response:
-            config["Config"] = _decompress_config_item(response["Item"])
+            config["Config"] = _current_format(
+                _decompress_config_item(response["Item"])
+            )
         else:
             logger.warning(f"Config {key} not found")
 

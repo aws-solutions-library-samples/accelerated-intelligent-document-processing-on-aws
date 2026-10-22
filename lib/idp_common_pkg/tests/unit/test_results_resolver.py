@@ -684,6 +684,57 @@ def test_build_config_comparison():
 
 
 @pytest.mark.unit
+def test_comparing_a_pre_0_9_run_with_a_current_one_lines_up_classification():
+    """A run captured before the 0.9 format holds flat ``classification`` keys.
+
+    Compared raw against a run captured in the nested shape, every classification
+    setting showed as ``<missing>`` on one side. ``_get_test_run_config`` migrates
+    the stored body on read, so identical settings compare equal and only a real
+    difference is reported.
+    """
+    flat = {
+        "config_format_version": "0.8",
+        "classification": {"model": "m1", "temperature": Decimal("0")},
+    }
+    nested = {
+        "config_format_version": "0.9",
+        "classification": {
+            "one_stage": {"llm": {"model": "m2", "temperature": 0}},
+            "two_stage": {
+                "segmentation": {"llm": {"model": "m1", "temperature": 0}},
+                "section_classification": {"llm": {"model": "m1", "temperature": 0}},
+            },
+        },
+    }
+    items = {
+        "testrun#old": {"Config": {"Config": flat}},
+        "testrun#new": {"Config": {"Config": nested}},
+    }
+    mock_table = Mock()
+    mock_table.get_item.side_effect = lambda Key: {"Item": items[Key["PK"]]}
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+    ):
+        configs = [
+            {"testRunId": run, "config": index._get_test_run_config(run)}
+            for run in ("old", "new")
+        ]
+
+    differences = index._build_config_comparison(configs)
+
+    assert differences == [
+        {
+            "setting": "classification.one_stage.llm.model",
+            "values": {"old": "m1", "new": "m2"},
+        }
+    ]
+    # The stored body is not rewritten.
+    assert flat["classification"] == {"model": "m1", "temperature": Decimal("0")}
+
+
+@pytest.mark.unit
 def test_get_test_results_missing_metrics_returns_partial_not_raises():
     """When processing reached a terminal state but the evaluation aggregation
     never cached testRunResult (timed out / failed silently on a large run),
