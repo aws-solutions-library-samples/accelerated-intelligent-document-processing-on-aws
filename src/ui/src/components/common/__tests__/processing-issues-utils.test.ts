@@ -86,9 +86,53 @@ describe('getSectionIssueStatus', () => {
     });
     expect(getSectionIssueStatus({ ProcessingIssues: [issue('info', 'extraction_sparse')] })).toEqual({
       type: 'info',
-      label: 'Auto-recovered',
+      label: 'Info',
       count: 1,
     });
+  });
+
+  // An `info` note usually reports something MISSING, not something repaired, so
+  // the label must not claim a recovery that did not happen. Only
+  // `assessment_recovered_with_retries` reports one.
+  it.each([
+    ['extraction_sparse', 'possible silent extraction loss'],
+    ['extraction_off_schema_fields', 'fields dropped before assessment'],
+    ['assessment_geometry_incomplete', 'scored fields with no bounding box'],
+  ])('labels the non-recovery info note %s "Info", not "Auto-recovered"', (code) => {
+    const status = getSectionIssueStatus({ ProcessingIssues: [issue('info', code)] });
+    expect(status.type).toBe('info');
+    expect(status.label).toBe('Info');
+  });
+
+  it('labels a genuine recovery "Auto-recovered"', () => {
+    const status = getSectionIssueStatus({
+      ProcessingIssues: [issue('info', 'assessment_recovered_with_retries')],
+    });
+    expect(status).toEqual({ type: 'info', label: 'Auto-recovered', count: 1 });
+  });
+
+  it('matches a recovery code case-insensitively', () => {
+    const status = getSectionIssueStatus({
+      ProcessingIssues: [issue('info', 'ASSESSMENT_RECOVERED_WITH_RETRIES')],
+    });
+    expect(status.label).toBe('Auto-recovered');
+  });
+
+  it('does not claim recovery when a non-recovery note sits alongside one', () => {
+    // Something was repaired AND something is still worth reading. "Auto-recovered"
+    // would be true of one issue and misleading about the section, so the neutral
+    // label wins; the repair stays visible in the message and Processing Report.
+    const status = getSectionIssueStatus({
+      ProcessingIssues: [issue('info', 'assessment_recovered_with_retries'), issue('info', 'extraction_sparse')],
+    });
+    expect(status).toEqual({ type: 'info', label: 'Info', count: 2 });
+  });
+
+  it('keeps a warning outranking any info note', () => {
+    const status = getSectionIssueStatus({
+      ProcessingIssues: [issue('info', 'assessment_recovered_with_retries'), issue('warning', 'assessment_fields_unscored')],
+    });
+    expect(status.label).toBe('Degraded');
   });
 
   it('lets the worst severity win, and a failure outranks a warning', () => {
