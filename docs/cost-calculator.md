@@ -296,20 +296,20 @@ By default, Bedrock usage appears in AWS Cost Explorer as a single line item per
 1. In the IDP web UI, go to **View/Edit Configuration**
 2. Toggle to **JSON View** or **YAML View**
 3. Find the `model` or `model_id` fields in the relevant processing step sections — for example:
-   - **Classification**: `classification.model_id`
-   - **Extraction**: `extraction.model_id`
+   - **Classification**: `classification.one_stage.llm.model` (or, under `strategy: two_stage`, each call's `llm.model`: `classification.two_stage.segmentation.llm.model` and `classification.two_stage.section_classification.llm.model`)
+   - **Extraction**: `extraction.model`
    - **Assessment (confidence)**: `extraction.confidence.model`
    - **Summarization**: `summarization.model`
 4. **Replace** the standard model ID or cross-region inference profile ID with the new **Application Inference Profile ARN**
 
    **Before:**
    ```yaml
-   model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+   model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
    ```
 
    **After:**
    ```yaml
-   model_id: arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdef123456
+   model: arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdef123456
    ```
 
 5. Click **Save Changes**

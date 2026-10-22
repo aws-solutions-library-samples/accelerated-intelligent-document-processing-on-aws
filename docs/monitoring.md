@@ -458,19 +458,18 @@ and two of the three causes report nothing here:
   `extraction_class_not_configured` issue from the Extraction step.
 
 ⚠️ **That last case is not always rare, and which configuration you run decides
-it.** On the default `multimodalPageLevelClassification` with
-`enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
-coerced to `fallback_class`, so it becomes the silent `unclassified` case
-above and the count really is bounded by configuration edits. Two other supported
-configurations store the model's invented class name verbatim —
-`textbasedHolisticClassification`, which has no enforcement loop at all, and
-`multimodalPageLevelClassification` with `enforceValidClasses: false` — and there
-the rate follows model output rather than operator action. Small, cheap
-classification models are the most prone to those predictions. On either of those
-paths expect data points proportional to throughput, and use
-`ConfidenceUnavailableThreshold` to set the volume at which it is worth paging;
-better still, define the classes the model keeps reaching for, or turn enforcement
-on. The report itself is correct either way — the section holds no data — so the
+it.** With `validation.enforceValidClasses` on (the default), every call that
+assigns a class — one stage at page or packet granularity, and two-stage section
+classification — re-prompts on an out-of-vocabulary prediction and then assigns
+`fallback_class`, so it becomes the silent `unclassified` case above and the count
+really is bounded by configuration edits. With `enforceValidClasses: false` the
+model's invented class name is stored verbatim, and there the rate follows model
+output rather than operator action. Small, cheap classification models are the most
+prone to those predictions. On that path expect data points proportional to
+throughput, and use `ConfidenceUnavailableThreshold` to set the volume at which it
+is worth paging; better still, define the classes the model keeps reaching for, or
+turn enforcement on. See
+[Enforcing a Valid Class Vocabulary](./classification.md#enforcing-a-valid-class-vocabulary-validation--retry). The report itself is correct either way — the section holds no data — so the
 parameter, not a carve-out, is the right lever.
 
 The first two report nothing at all, exactly as an

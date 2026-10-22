@@ -102,16 +102,29 @@ The configuration uses multiple evaluation methods tailored to data types:
 
 ### Classification Settings
 
-- **Model**: Amazon Nova Pro
-- **Method**: Text-based holistic classification
+This preset carries no `classification:` block, so every classification setting
+comes from the system defaults
+(`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`):
+
+- **Strategy / granularity**: one stage, page granularity — one call per page, with
+  a `start`/`continue` boundary verdict per page that is folded into sections
+- **Modality**: text and images (the default task prompt carries both
+  `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`)
+- **Model**: Amazon Nova 2 Lite
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 
-The classification component analyzes document packages to identify document type boundaries and classify each section appropriately across all 10 document types.
+The classification component segments each package from the per-page boundary
+signal and classifies each section across all 10 document types. To have the model
+see the whole package in one call instead, set
+`classification.one_stage.granularity: packet`.
 
 ### Extraction Settings
 
-- **Model**: Amazon Nova Pro
+This preset carries no `extraction:` block either, so extraction uses the system
+defaults (`base-extraction.yaml`):
+
+- **Model**: Claude Sonnet 5
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 - **Document Image Support**: Uses `{DOCUMENT_IMAGE}` placeholder for multimodal extraction
@@ -120,7 +133,7 @@ The extraction component processes each document section to extract structured d
 
 ### Assessment Settings
 
-- **Model**: Amazon Nova Pro
+- **Model**: Amazon Nova Lite (the system default `extraction.confidence.model`)
 - **Default Confidence Threshold**: 0.8
 - **Temperature**: 0 (deterministic outputs)
 

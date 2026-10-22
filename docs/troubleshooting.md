@@ -193,14 +193,14 @@ exist in the configuration the document was processed under, so there was no sch
 to extract against and the section holds no data. Three causes: a class renamed or
 deleted while documents were in flight; an old document reprocessed under a
 configuration that no longer defines its class; or the classifier returned a class
-outside the configured vocabulary on a path that does not enforce one —
-`textbasedHolisticClassification`, which has no enforcement loop, or
-`multimodalPageLevelClassification` with `enforceValidClasses: false`. Add the class
-to the configuration, reclassify the document under the current one, or turn
-enforcement on. The same section also carries
+outside the configured vocabulary with `validation.enforceValidClasses: false`, which
+stores the model's class verbatim. With enforcement on (the default), page and packet
+granularity and two-stage section classification all re-prompt and then assign
+`fallback_class` instead. Add the class to the configuration, reclassify the document
+under the current one, or turn enforcement on. The same section also carries
 `assessment_skipped_confidence_unavailable`, because it has no confidence scores
-either — so on those two non-enforcing paths these arrive at a rate set by model
-output rather than by configuration edits, and
+either — so with enforcement off these arrive at a rate set by model output rather
+than by configuration edits, and
 [`ConfidenceUnavailableThreshold`](./monitoring.md#confidence-assessment-degraded)
 is what you tune if the alarm is too sensitive for your corpus.
 
@@ -228,8 +228,9 @@ artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
 was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
-three you are most likely to see. These are recorded on the
-`multimodalPageLevelClassification` path only.
+three you are most likely to see. These are recorded only at one-stage page
+granularity; packet granularity and two stage still re-prompt and assign
+`fallback_class`, but record no issue for it.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit

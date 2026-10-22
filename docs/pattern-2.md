@@ -118,9 +118,9 @@ Each step includes comprehensive retry logic for handling transient errors:
 #### Classification Function
 - **Purpose**: Classifies pages or document packets using Claude via Bedrock and segments into sections
 - **Key Features**:
-  - Two classification methods:
-    - Page-level classification (multimodalPageLevelClassification)
-    - Holistic packet classification (textbasedHolisticClassification)
+  - Two classification granularities, set by `classification.one_stage.granularity` (see [Classification](./classification.md)):
+    - Page granularity (the default): one call per page
+    - Packet granularity: one call per packet
   - RVL-CDIP dataset categories for classification
   - Concurrent page processing
   - Automatic image resizing and optimization
@@ -231,7 +231,6 @@ The pattern exports these outputs to the parent stack:
 ### Configuration
 
 **Stack Deployment Parameters:**
-- `ClassificationMethod`: Classification methodology to use (options: 'multimodalPageLevelClassification' or 'textbasedHolisticClassification')
 - **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
 - `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
 - `MaxConcurrentWorkflows`: Workflow concurrency limit
@@ -406,13 +405,13 @@ ocr:
 
 ## Customizing Classification
 
-The pattern supports two different classification methods:
+Classification runs at one of two granularities, set in the configuration by `classification.one_stage.granularity`:
 
-1. **Page-Level Classification (multimodalPageLevelClassification)**: This is the default method that classifies each page independently based on its visual layout and textual content. It outputs a simple JSON format with a single class label per page.
+1. **Page granularity (`page`)**: This is the default. It classifies each page based on its visual layout and textual content, and outputs a JSON object with a class label (and a start/continue boundary marker) per page. Its prompts are `classification.one_stage.page.system_prompt` and `classification.one_stage.page.task_prompt`.
 
-2. **Holistic Packet Classification (textbasedHolisticClassification)**: This method examines the document as a whole to identify boundaries between different document types within a multi-document packet. It can detect logical document boundaries and identifies document types in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies document segments with start and end page numbers.
+2. **Packet granularity (`packet`)**: This granularity examines the document as a whole to identify boundaries between different document types within a multi-document packet. It can detect logical document boundaries and identifies document types in the context of the whole document. This is especially useful for packets where individual pages may not be clearly classifiable on their own. It outputs a JSON format that identifies document segments with start and end page numbers. Its prompts are `classification.one_stage.packet.system_prompt` and `classification.one_stage.packet.task_prompt`.
 
-You can select which method to use by setting the `ClassificationMethod` parameter when deploying the stack.
+The granularity is a configuration setting, not a stack parameter: change it in the configuration (for example in the web UI's configuration editor). [Classification](./classification.md) covers both granularities, the two-stage strategy, and how to choose between them.
 
 The classification system uses RVL-CDIP dataset categories and can be customized through the configuration files. Classification models and prompts are now managed through the configuration library rather than CloudFormation parameters.
 
