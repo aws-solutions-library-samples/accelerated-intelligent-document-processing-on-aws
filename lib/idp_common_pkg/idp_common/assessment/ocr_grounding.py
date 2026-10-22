@@ -50,12 +50,50 @@ _LEVENSHTEIN_MATCH_THRESHOLD = 0.8
 # Keeps unions tight; multi-line addresses/cells are typically 2-4 lines.
 _MAX_SPAN_LINES = 6
 
+#: Separator punctuation collapsed to a space *inside* a string before matching.
+#:
+#: The defect this closes is in the SPAN tier rather than in anything about lists
+#: (#1520). A value written across two OCR lines carries a separator **at the line
+#: break that the page does not have**: the document reads ``"510 W. 24th Street,
+#: #2"`` then ``"Sioux Falls, SD 57105"``, and extraction returns the two joined by
+#: ``", "``. :func:`_collect_span_candidates` joins consecutive lines with a single
+#: space and requires exact equality, so that one extra comma defeats the span and
+#: the field falls back to whatever fragment matched — measured cases include a box
+#: on the OCR line ``"1"`` for a full street address and on ``"A."`` for a thesis
+#: title. Collapsing the separators on both sides makes the two agree.
+#:
+#: ⚠️ **Only ``,`` and ``;``, and the exclusions are measured rather than cautious.**
+#: Adding ``/`` and ``|`` was tried over the same corpus and is worse on both counts:
+#: it loses a box, and it moves five date boxes to a *different* rendering of the
+#: same date (two of them onto another page), because ``/`` is the separator
+#: :func:`_value_variants` builds its ``%m/%d/%Y`` forms from — so stripping it lets
+#: a reformatted variant outrank the line carrying the value verbatim. ``/`` is also
+#: how a model composes a label that is nowhere on the page (``"Request/Approval"``,
+#: ``"Yes/No"``), and giving those a box is the #1519 harm rather than a fix.
+#:
+#: ⚠️ **The trailing ``\s`` is the load-bearing part, not a tidiness detail.** A
+#: separator a model inserted at a join is followed by whitespace (``", "``); one
+#: *inside* a token is digit grouping or OCR noise and must be left alone. Collapsing
+#: those too costs 60 boxes on a deliberately-garbled OCR corpus: the line
+#: ``"2,6,6914"`` is a mangled ``"2,669.14"`` that the Levenshtein tier matches at
+#: 0.875, and substituting a space **adds a character that was never there**, pushing
+#: the character distance past the threshold. Those boxes were correct — they sat on
+#: the amount — so the narrower rule keeps a tier this one has no business touching.
+#:
+#: This runs on **both** an extracted value and an OCR line, since one function
+#: normalizes both. It can therefore only make the two *agree* about punctuation
+#: they already differ on; it never adds text to either side.
+_INTERNAL_SEPARATORS = re.compile(r"[,;]+\s")
+
 
 def _normalize(text: Any) -> str:
-    """Casefold, collapse whitespace, and strip surrounding punctuation."""
+    """Casefold, collapse separators and whitespace, strip surrounding punctuation."""
     if text is None:
         return ""
     s = str(text).casefold()
+    # Internal separator punctuation -> space, so a value and the OCR line it came
+    # from compare equal when only their separators differ (see the constant).
+    s = _INTERNAL_SEPARATORS.sub(" ", s)
     # Collapse all whitespace runs to single spaces.
     s = re.sub(r"\s+", " ", s).strip()
     # Strip leading/trailing punctuation that commonly differs between an
@@ -1109,6 +1147,7 @@ def match_value_to_geometry(
     # over ~1,800 lines × the full fuzzy ladder. Falls through to the full scan only
     # when nothing matched exactly (reformatting / OCR noise).
     candidates: List[Tuple[int, Dict[str, Any], str, Optional[float]]] = []
+    primary_exact = False
     for page_num in sorted(page_data_by_page):
         page_data = page_data_by_page[page_num]
         if not isinstance(page_data, dict) or not page_data.get("geometryAvailable"):
@@ -1121,7 +1160,18 @@ def match_value_to_geometry(
                 )
                 if m is not None:
                     candidates.append(m)
-    if candidates:
+                    if i == 0:
+                        primary_exact = True
+    # ⚠️ Short-circuit on a **primary** exact hit only, not on any exact hit. The
+    # speed-up this path exists for is the verbatim case (every cell of a 300-row
+    # table equals its OCR line), and that case sets ``primary_exact``. A hit from a
+    # format *variant* must not suppress the full scan: it would skip collecting the
+    # line that carries the value verbatim, and the verbatim preference below cannot
+    # choose a candidate that was never produced. Measured: a ``"4-15-11"`` whose
+    # exact line sits on page 2 was grounded on page 1's ``"APR 15 2011"`` stamp,
+    # because the ``%b %d, %Y`` variant hit this index and the page-2 line was never
+    # looked at (#1520).
+    if primary_exact:
         best_tier = _TIER_EXACT  # by construction
     else:
         # Full (slower) collection across all pages: substring/span/typed/fuzzy.
@@ -1140,6 +1190,26 @@ def match_value_to_geometry(
 
     if not candidates:
         return None
+
+    # A WHOLE-STRING verbatim hit outranks a format-bridged variant at any tier.
+    #
+    # Grounding answers "where on the page did this value come from", and a line
+    # carrying the value as extracted is better evidence of that than a different
+    # rendering of the same logical value elsewhere. Measured: a ``"4/11/13"`` taken
+    # from ``"Barbara Madsen 4/11/13"`` was grounded on an ``"APR 11 2013"`` stamp,
+    # because the variant matched that stamp EXACTly (tier 1) while the verbatim line
+    # was only a SUBSTRING hit (tier 2) — so tier order alone decides it the wrong
+    # way round (#1520).
+    #
+    # Bounded to tiers at or above SPAN on purpose: those are the tiers where the
+    # whole value matched. A *fragment* of the value (PARTIAL/WEAK_PARTIAL) is weaker
+    # evidence than a variant that matched in full, so it must not win here — which
+    # is the same ordering #1519 established for ``_TIER_WEAK_PARTIAL``.
+    whole_verbatim = [
+        c for c in candidates if c[0] <= _TIER_SPAN and c[2] != _SOURCE_NORMALIZED
+    ]
+    if whole_verbatim:
+        candidates = whole_verbatim
 
     # Keep only the most precise tier that matched (exact beats substring beats
     # span beats fuzzy), so a high-precision hit is never displaced by fuzzy noise.

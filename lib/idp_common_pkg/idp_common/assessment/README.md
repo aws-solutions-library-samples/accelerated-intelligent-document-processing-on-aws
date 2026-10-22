@@ -460,6 +460,35 @@ the standalone and in-shard paths: it confirms every extracted value has a real
 box, emitting `assessment_confidence_out_of_range` / `assessment_geometry_incomplete`
 for anything structurally wrong.
 
+The geometry half asks a **different question of a list row than of a scalar
+field**, and the asymmetry is deliberate:
+
+| Shape | Reports when |
+|---|---|
+| List row | **any** scored row carries no box |
+| Scalar / group field | **no populated field** in the section carries a box |
+
+The scalar side was counted in neither half before
+([#1520](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1520)) —
+the counter lived inside the `isinstance(data_val, list)` branch — so the rung
+could not fire for a section whose fields are all scalars, which is most of them.
+Measured over 571 real sections: **no** list leaf was scored-but-box-less, while
+495 scalar ones were, across 222 sections. The rung was counting the case that does
+not arise and was blind to the one that does.
+
+⚠️ **The scalar threshold is "nothing was located", not "something is missing",
+and loosening it is not the harmless improvement it looks like.** Reporting per
+leaf fires on 40% of real sections, and the largest single contributor is
+`Language` — values like "English" — followed by `LetterType`, `MemoType` and
+`FormType`. Those values are the model's characterization of the document rather
+than text on the page, so no box can exist for them and their absence is the
+correct outcome rather than a defect. An `info` note that is usually about nothing
+teaches an operator to ignore the surface. "No populated field in this section
+carries a box" is a different statement and worth making: the highlight feature
+produced nothing there at all, which a reviewer opening the section sees and cannot
+otherwise explain. It fires on 2% of the same corpus, and the shape mirrors the
+`scored_fields <= 0` condition one rung down so the two read alike.
+
 ### Omitted fields, as distinct from unscored rows
 
 The recovery and reporting above are built around list **rows**, and a populated

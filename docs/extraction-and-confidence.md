@@ -1758,6 +1758,31 @@ else inferred from the value. Format-bridged matches are tagged
 `geometry_source: "ocr-normalized"` and Levenshtein near-misses `"ocr-fuzzy"`,
 distinct from exact `"ocr"` hits so they stay auditable.
 
+A line carrying the value **verbatim and in full** outranks a format-bridged
+variant, whatever tier each matched at. Grounding answers "where on the page did
+this value come from", and a line holding the value as extracted is better evidence
+of that than a different rendering of the same logical value elsewhere: a
+`SubmissionDate` of `4/11/13` read off `Barbara Madsen 4/11/13` belongs on that
+line, not on an `APR 11 2013` received-stamp further up the page. The preference
+stops at whole-value matches — a *fragment* of the value is weaker evidence than a
+variant that matched all of it, so it does not win here.
+
+**Separators at a line break.** A value written across two OCR lines carries a
+separator at the break that the page does not have: the document reads
+`510 W. 24th Street, #2` then `Sioux Falls, SD 57105`, and extraction returns the
+two joined by `", "`. Multi-line matching joins consecutive lines with a single
+space and requires exact equality, so that one extra comma used to defeat it and
+the field fell back to whatever fragment matched — in that case a box on the OCR
+line `1`. A comma or semicolon **followed by whitespace** is therefore collapsed to
+a space on both sides before matching, which also grounds a list the page renders
+without separators at all (`Keywords: Particulate matter Air pollution …`).
+
+⚠️ Only `,` and `;`, and only when followed by whitespace. A separator *inside* a
+token is digit grouping or OCR noise rather than a join the model inserted, and
+`/` is both the separator date variants are built from and the way a model composes
+a label that is nowhere on the page (`Request/Approval`). Collapsing either costs
+correct boxes rather than adding them.
+
 ### `llm_grounded` / `llm` — LLM-estimated boxes
 
 In these modes the assessment/confidence prompt asks the model for boxes.

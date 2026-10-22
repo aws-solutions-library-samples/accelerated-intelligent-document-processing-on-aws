@@ -1656,3 +1656,184 @@ class TestTheDateShapeOfASlash:
     )
     def test_outcome(self, variant, text, embedded):
         assert g._only_inside_longer_number(variant, text) is embedded
+
+class TestSeparatorAtALineBreak:
+    """A value written across OCR lines carries a separator the page does not (#1520).
+
+    The document reads ``"510 W. 24th Street, #2"`` then ``"Sioux Falls, SD 57105"``;
+    extraction returns the two joined by ``", "``. The span tier joins consecutive
+    lines with a single space and demands exact equality, so that one extra comma
+    defeated it and the field fell back to a fragment — the real measured box for
+    this address was the OCR line ``"1"``.
+    """
+
+    def test_an_address_split_at_a_comma_spans_both_lines(self):
+        pd = {
+            1: _page(
+                [
+                    _line("510 W. 24th Street, #2", 0.2, 0.30, width=0.3, height=0.02),
+                    _line("Sioux Falls, SD 57105", 0.2, 0.33, width=0.3, height=0.02),
+                ]
+            )
+        }
+        geom, source, _conf = g.match_value_to_geometry(
+            "510 W. 24th Street, #2, Sioux Falls, SD 57105", pd
+        )
+        assert source == "ocr"
+        bb = geom["boundingBox"]
+        # The union covers BOTH lines, not just one of them.
+        assert bb["top"] == pytest.approx(0.30)
+        assert bb["height"] == pytest.approx(0.05)
+
+    def test_the_fragment_box_is_what_this_replaces(self):
+        """Without the span, the only candidate is a one-character fragment.
+
+        Keyed on the measured failure rather than on the fix: with the second
+        address line absent there is no span to find, so the ladder still falls to
+        the fragment and tags it ``ocr-weak``. That the fix did not simply widen
+        every match is the property under test.
+        """
+        pd = {1: _page([_line("1", 0.5, 0.28, width=0.002, height=0.005)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            "510 W. 24th Street, #2, Sioux Falls, SD 57105", pd
+        )
+        assert source == g._SOURCE_WEAK
+
+    def test_a_comma_joined_list_matches_a_comma_free_line(self):
+        """The reported shape: the page renders the items without separators."""
+        pd = {
+            1: _page(
+                [
+                    _line("Keywords Particulate matter Air pollution", 0.1, 0.70),
+                    _line("Cardiovascular Respiratory Public policy", 0.5, 0.76),
+                ]
+            )
+        }
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Particulate matter, Air pollution, Cardiovascular, "
+            "Respiratory, Public policy",
+            pd,
+        )
+        assert geom is not None
+        assert geom["boundingBox"]["top"] == pytest.approx(0.76)
+
+    def test_semicolons_are_separators_too(self):
+        pd = {1: _page([_line("Chronic pain disc pain cell therapy", 0.1, 0.2)])}
+        geom, _source, _conf = g.match_value_to_geometry(
+            "Chronic pain; disc pain; cell therapy", pd
+        )
+        assert geom is not None
+
+    def test_a_slash_survives_normalization(self):
+        """``/`` is excluded from the separator set, and that is load-bearing.
+
+        It is the separator ``_value_variants`` builds its ``%m/%d/%Y`` forms from,
+        so collapsing it would let a reformatted variant outrank the line carrying
+        the value verbatim — measured as five date boxes moving to a different
+        rendering of the same date, two of them onto another page. Asserted on
+        ``_normalize`` directly because that is where the exclusion lives; what it
+        protects is covered by ``TestVerbatimBeatsFormatBridged``.
+        """
+        assert g._normalize("Request/Approval") == "request/approval"
+        assert g._normalize("04/11/2013") == "04/11/2013"
+        # The two that ARE collapsed, for contrast.
+        assert g._normalize("Yes, No") == "yes no"
+        assert g._normalize("disc pain; cell therapy") == "disc pain cell therapy"
+
+    def test_a_pipe_survives_normalization(self):
+        """``|`` is excluded too: it delimits Markdown table cells in OCR text,
+        where collapsing it would merge adjacent cells into one string."""
+        assert g._normalize("Total | 1234") == "total | 1234"
+
+    def test_a_separator_inside_a_token_survives(self):
+        """Only a separator followed by whitespace is a join the model inserted.
+
+        One *inside* a token is digit grouping or OCR noise. Collapsing those costs
+        60 boxes on a deliberately-garbled OCR corpus, and the mechanism is that
+        substituting a space **adds a character that was never there**:
+        ``_levenshtein_sim`` compares punctuation-stripped strings, so a comma is
+        already invisible to it while a space is not.
+        """
+        assert g._normalize("2,6,6914") == "2,6,6914"
+        assert g._normalize("1,234.00") == "1,234.00"
+
+    def test_a_garbled_amount_still_matches_by_character_similarity(self):
+        """``"2,6,6914"`` is a mangled ``"2,669.14"`` and the box was correct.
+
+        The end-to-end form of the test above: the Levenshtein tier reaches this
+        value, and a separator rule that touched the token would take the tier out
+        rather than merely change what it ranks.
+        """
+        pd = {1: _page([_line("2,6,6914", 0.40, 0.36, width=0.03, height=0.013)])}
+        geom, source, _conf = g.match_value_to_geometry(2669.14, pd)
+        assert geom is not None
+        assert source in ("ocr", g._SOURCE_NORMALIZED, g._SOURCE_FUZZY)
+
+
+class TestVerbatimBeatsFormatBridged:
+    """A line carrying the value as extracted outranks a reformatted rendering.
+
+    Grounding answers "where did this value come from", so the line holding the
+    value verbatim is better evidence than a different rendering of the same logical
+    value elsewhere on the page. Both halves are measured regressions that the
+    separator change would otherwise have introduced (#1520).
+    """
+
+    def test_a_verbatim_substring_beats_a_variant_exact_match(self):
+        """``"4/11/13"`` came from ``"Barbara Madsen 4/11/13"``, not from a stamp.
+
+        The variant matches the stamp EXACTly (tier 1) while the verbatim line is
+        only a SUBSTRING hit (tier 2), so tier order alone decides this the wrong
+        way round.
+        """
+        pd = {
+            1: _page(
+                [
+                    _line("APR 11 2013", 0.80, 0.09),
+                    _line("Barbara Madsen 4/11/13", 0.54, 0.87),
+                ]
+            )
+        }
+        geom, source, _conf = g.match_value_to_geometry("4/11/13", pd)
+        assert source == "ocr"
+        assert geom["boundingBox"]["top"] == pytest.approx(0.87)
+
+    def test_a_verbatim_exact_on_a_later_page_beats_a_variant_on_an_earlier_one(self):
+        """The tie-break is positional, so page order would otherwise decide it.
+
+        This is the case the exact-index fast path hid entirely: a variant hit there
+        used to suppress the full scan, so the page-2 line was never collected and
+        no preference could reach it.
+        """
+        pd = {
+            1: _page([_line("APR 15 2011", 0.79, 0.13)]),
+            2: _page([_line("4-15-11", 0.75, 0.18)]),
+        }
+        geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
+        assert source == "ocr"
+        assert geom["page"] == 2
+
+    def test_a_variant_still_wins_when_the_value_is_not_on_the_page_verbatim(self):
+        """The preference must not disable format bridging, only rank below it."""
+        pd = {1: _page([_line("April 11, 2013", 0.3, 0.2)])}
+        geom, source, _conf = g.match_value_to_geometry("2013-04-11", pd)
+        assert geom is not None
+        assert source == g._SOURCE_NORMALIZED
+
+    def test_a_fragment_does_not_beat_a_variant_that_matched_in_full(self):
+        """The preference is bounded to whole-string tiers.
+
+        A ``_TIER_WEAK_PARTIAL`` fragment of the value is weaker evidence than a
+        variant that matched the whole of it, which is the ordering #1519
+        established; extending the verbatim preference below SPAN would invert it.
+        """
+        pd = {
+            1: _page(
+                [
+                    _line("April 11, 2013", 0.3, 0.2),
+                    _line("4", 0.9, 0.9, width=0.002),
+                ]
+            )
+        }
+        _geom, source, _conf = g.match_value_to_geometry("2013-04-11", pd)
+        assert source == g._SOURCE_NORMALIZED

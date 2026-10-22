@@ -1843,7 +1843,12 @@ def audit_explainability(
       it there corrupts the coverage arithmetic.
     - When ``geometry_mode not in (None, "off")``, a confidence leaf carries a
       geometry block (``bbox``/``geometry``) — flagged as a *warning*, not an
-      error, since geometry is advisory enrichment.
+      error, since geometry is advisory enrichment. The two halves of this rung ask
+      different questions, for reasons measured at the emission site: **any**
+      box-less list row reports, while a **scalar** field reports only when no
+      populated field in the section carries a box at all. Counting scalars happened
+      in neither half before (#1520), so the rung could not fire for a section whose
+      fields are all scalars — which is most of them.
     - Confidence values are within [0, 1].
     - **Coverage (#901 item 3):** the share of extracted list rows that actually
       carry a confidence. A materially short section emits
@@ -1883,6 +1888,8 @@ def audit_explainability(
     want_geometry = bool(geometry_mode) and geometry_mode != "off"
     out_of_range = 0
     missing_geometry_rows = 0
+    missing_geometry_scalars = 0
+    scalar_geometry_total = 0
 
     def _leaf_confidences(node: Any) -> list[dict[str, Any]]:
         """All ``{confidence: ...}`` leaves under a row/scalar assessment node."""
@@ -1928,10 +1935,21 @@ def audit_explainability(
             # ran — absence produced nothing to check and the audit stayed silent
             # on the one thing it was looking at (#1474). Presence is now its own
             # question, asked below over every populated non-list field at once.
+            scalar_populated = _is_populated_value(data_val)
             for leaf in _leaf_confidences(assessed):
                 conf = leaf.get("confidence")
                 if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
                     out_of_range += 1
+                # Geometry was counted in the list branch only, so this rung could
+                # not fire for a scalar field at all — the same row/scalar asymmetry
+                # as #1474. Measured over 571 real sections: **no** list leaf was
+                # scored-but-box-less, while 495 scalar ones were, in 222 sections.
+                # The rung was therefore counting the case that does not arise and
+                # structurally blind to the one that does (#1520).
+                if want_geometry and scalar_populated and conf is not None:
+                    scalar_geometry_total += 1
+                    if not _has_geometry(leaf):
+                        missing_geometry_scalars += 1
 
     if out_of_range:
         issues.append(
@@ -1945,14 +1963,35 @@ def audit_explainability(
                 details={"out_of_range_leaves": out_of_range},
             )
         )
-    if missing_geometry_rows:
+    # A section where NOTHING was located is the scalar half's condition, and it is
+    # deliberately not "any box-less scalar".
+    #
+    # ⚠️ Reporting per leaf here would be noise, measured: it fires on 40% of real
+    # sections, and the largest single contributor is ``Language`` (values like
+    # "English"), followed by ``LetterType``/``MemoType``/``FormType`` — fields whose
+    # value is the model's characterization of the document and is nowhere on the
+    # page, so no box can exist for them and their absence is the correct outcome
+    # rather than a defect. An info note that is usually about nothing is how
+    # ``extraction_sparse`` became background, and an operator learns to ignore the
+    # surface rather than the code.
+    #
+    # "No populated field in the section carries a box" is a different statement and
+    # one worth making: the highlight feature produced nothing at all there, which an
+    # operator opening the section will see and cannot otherwise explain. It fires on
+    # 2% of the same corpus. The shape mirrors the ``scored_fields <= 0`` condition
+    # this function already uses one rung down, so the two rungs read alike.
+    no_scalar_geometry_at_all = (
+        scalar_geometry_total > 0 and missing_geometry_scalars == scalar_geometry_total
+    )
+    if missing_geometry_rows or no_scalar_geometry_at_all:
+        missing_total = missing_geometry_rows + missing_geometry_scalars
         issues.append(
             ProcessingIssue(
                 stage="assessment",
                 severity="info",
                 code="assessment_geometry_incomplete",
                 message=(
-                    f"{missing_geometry_rows} scored leaf/leaves have no bounding "
+                    f"{missing_total} scored leaf/leaves have no bounding "
                     f"box under geometry.mode '{geometry_mode}'."
                 ),
                 root_cause=(
@@ -1961,7 +2000,12 @@ def audit_explainability(
                     else "model omitted a box for some cells"
                 ),
                 section_id=section_id,
-                details={"missing_geometry_leaves": missing_geometry_rows},
+                details={
+                    "missing_geometry_leaves": missing_total,
+                    "missing_geometry_rows": missing_geometry_rows,
+                    "missing_geometry_scalars": missing_geometry_scalars,
+                    "scalar_leaves_wanting_geometry": scalar_geometry_total,
+                },
             )
         )
 
