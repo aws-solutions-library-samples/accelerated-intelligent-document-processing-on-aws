@@ -6,5 +6,6 @@ mutation UpdateTestSetQueue($input: TestSetQueueSettingsInput!) {
     claimLeaseMinutes
     eligibleAnnotators
     checklist
+    skipReasons
   }
 }

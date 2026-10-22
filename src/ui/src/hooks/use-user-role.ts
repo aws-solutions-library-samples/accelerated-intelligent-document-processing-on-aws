@@ -117,6 +117,8 @@ interface UserRoleReturn {
   canReview: boolean;
   /** True if user can annotate test-set ground truth (Admin, Author or Annotator) */
   canAnnotate: boolean;
+  /** Admin or Annotator: can open a production review-queue item. */
+  canWorkReviewQueues: boolean;
   /** Config profiles the user is allowed to access. null/undefined = unrestricted (all versions). */
   allowedConfigVersions: string[] | null;
   /**
@@ -299,6 +301,8 @@ const useUserRole = (): UserRoleReturn => {
   const canDeleteConfig = isAdmin;
   const canReview = isAdmin || isReviewer;
   const canAnnotate = isAdmin || isAuthor || isAnnotator;
+  // Who can open a production review-queue item (the routes' RequireRole set).
+  const canWorkReviewQueues = isAdmin || isAnnotator;
   // Membership of APP_GROUPS, not `groups.length`: an unrecognised group name
   // grants nothing in this app, so it must not read as a role. Gated on
   // `!loading` so the flag is never true merely because the session has not
@@ -329,6 +333,7 @@ const useUserRole = (): UserRoleReturn => {
     canDeleteConfig,
     canReview,
     canAnnotate,
+    canWorkReviewQueues,
     allowedConfigVersions,
     allowedTestSets,
     hasNoRole,

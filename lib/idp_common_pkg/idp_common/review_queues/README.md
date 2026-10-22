@@ -138,7 +138,11 @@ when the finalize run ends.
 - The queue's `time_limit_minutes` schedules one `review.task_reminder` to the
   holder if the item is still open after that long. The item stays assigned.
 - **Skip** is `releaseReviewItem` by the holder: the item goes back to the queue
-  `OPEN`, unassigned, with its draft kept.
+  `OPEN`, unassigned, with its draft kept. It takes a `reason` from the queue's
+  `skip_reasons` (`DEFAULT_SKIP_REASONS` unless the queue sets its own;
+  `REASON_REQUIRED` or `BAD_ARGUMENT` otherwise) and an optional `note`, both
+  written to the `released` history event. `getReviewItem` returns the list as
+  `skipReasons`.
 - An Annotator listed on a queue may open its items read-only (`getReviewItem`);
   saving, completing and rejecting need the claim. `getReviewItem` also returns
   `queueName`, the queue's display name, for the web UI's breadcrumbs. The holder keeps access to their
@@ -157,7 +161,10 @@ when the finalize run ends.
   section is reviewed, `complete_section_review` ends the assignment.
   `skipTestSetDocument` (`unassign`) hands the document back: the assignment ends,
   the document is unassigned again and still counts as remaining, and its labels
-  are left alone. Documents skipped before this behaviour carry `Skipped`,
+  are left alone. It takes a `reason` from the set's `skipReasons` (its queue
+  settings, or `DEFAULT_SKIP_REASONS` until one is saved; `getAnnotationQueue`
+  returns the list) and an optional `note`; `unassign(skip=...)` appends who, when,
+  the reason and the note to the document's `SkipHistory` in the same write. Documents skipped before this behaviour carry `Skipped`,
   `SkippedBy` and `SkippedAtMs` (`mark_skipped`); summary rebuilds keep those,
   `assign` clears them, and `assignment_counts` and `getAnnotationQueue`'s
   `completedDocs` still treat such a document as completed.
@@ -190,7 +197,7 @@ not part of any run manifest and is deleted by Reprocess.
 | Operation | Who | Effect |
 |---|---|---|
 | `completeReviewItem` | the assignee | → `FINALIZING`, disposition `complete`; the queue checklist answers are recorded |
-| `rejectReviewItem` | the assignee | → `FINALIZING`, disposition `rejected`, a reason from the queue's `reject_reasons` and an optional note. The web UI doesn't offer it |
+| `rejectReviewItem` | the assignee | → `FINALIZING`, disposition `rejected`, a reason from the queue's `reject_reasons` and an optional note, both kept on the item and in the `rejected` history event. The web UI doesn't offer it |
 | `reassignReviewItem`, `forceReleaseReviewItem` | Admin | assign to an eligible Annotator, or unassign (→ `OPEN`, draft kept) |
 | `takeOverReviewItem` | Admin | an item `CLAIMED` by someone else → `CLAIMED` by the calling Admin, draft kept; a `taken_over` history event, both claim counters moved, and the former holder told (`review.claim_released`). Refused with `NOT_ASSIGNED` for an `OPEN` item (claim it instead), `ALREADY_YOURS` for the Admin's own, and `INVALID_STATE` once the item has left review |
 | `moveReviewItem` | Admin | move to another queue (ends any assignment) |

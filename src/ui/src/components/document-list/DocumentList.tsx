@@ -27,6 +27,7 @@ import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
 import DateRangeModal from '../common/DateRangeModal';
+import { isQueueManaged } from '../common/review-status';
 import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from '../document-panel/document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from '../document-panel/DocumentDownloadModals';
@@ -81,7 +82,7 @@ const DocumentList = (): React.JSX.Element => {
   const [currentUsername, setCurrentUsername] = useState('');
   const { settings } = useSettingsContext();
   const { currentCredentials } = useAppContext();
-  const { isAdmin, isReviewerOnly, canWrite, canReview } = useUserRole();
+  const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
   const navigate = useNavigate();
 
   // Bulk artifact download (ZIP) for the selected documents
@@ -293,7 +294,8 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleClaimReview = async () => {
     const client = generateClient();
-    const selectedItems = collectionProps.selectedItems as MappedDocument[];
+    // Queued documents are reviewed from their queue item; the server refuses them here.
+    const selectedItems = (collectionProps.selectedItems as MappedDocument[]).filter((item) => !isQueueManaged(item.hitlStatus));
     const isSingleSelection = selectedItems.length === 1;
 
     // Claim reviews for all selected documents
@@ -339,7 +341,7 @@ const DocumentList = (): React.JSX.Element => {
 
   const handleReleaseReview = async () => {
     const client = generateClient();
-    for (const item of collectionProps.selectedItems as MappedDocument[]) {
+    for (const item of (collectionProps.selectedItems as MappedDocument[]).filter((doc) => !isQueueManaged(doc.hitlStatus))) {
       try {
         const result = await client.graphql({
           query: releaseReview,
@@ -550,7 +552,7 @@ const DocumentList = (): React.JSX.Element => {
             currentUsername={currentUsername}
           />
         }
-        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView)}
+        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView, canWorkReviewQueues)}
         items={items}
         loading={isDocumentsListLoading}
         loadingText="Loading documents"

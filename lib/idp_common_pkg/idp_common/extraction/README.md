@@ -2478,17 +2478,21 @@ signals make both loud without changing what is extracted:
 
   | Surface | Reader | Before | After |
   |---|---|---|---|
-  | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Auto-recovered** |
+  | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Info** |
   | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py`, or summed from the sections on the GSI path | `0` | non-zero |
 
   So on an OCR configuration that renders no exact-width tables, a document where
-  nothing is wrong gets a non-zero issue count and a section labelled
-  **Auto-recovered** — which is close to the opposite of "the row count is
-  unverified". That label is `getSectionIssueStatus`'s generic text for an
-  info-only section and is shared with `extraction_sparse` and
-  `extraction_off_schema_fields`, so it is not specific to this code and giving it
-  a case is a UI change rather than a backend one; `processing-issues-utils.ts`
-  already special-cases `FAILURE_CODES`, so the precedent exists. Note that the
+  nothing is wrong gets a non-zero issue count and a section labelled **Info**.
+  That label is `getSectionIssueStatus`'s neutral text for an info-only section and
+  is shared with `extraction_sparse` and `extraction_off_schema_fields`, so it says
+  only "there is a note here" and leaves the note itself to the message and the
+  Processing Report tab. **Auto-recovered** is reserved for
+  `assessment_recovered_with_retries`, the one `info` code that reports a repair,
+  so an unverified row count is no longer described as a recovery — which it is
+  close to the opposite of
+  ([#1521](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1521)).
+  The non-zero issue count remains, and is the trade for being able to tell "could
+  not check" from "checked and found complete" at all. Note that the
   sparse `HasProcessingIssues` attribute is **not** a third surface: its own
   writer records that it has no reader anywhere — not a GSI key, not projected, not
   queried, absent from the UI and from every Glue and Athena schema.

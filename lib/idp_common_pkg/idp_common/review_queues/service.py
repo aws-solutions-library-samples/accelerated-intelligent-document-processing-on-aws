@@ -603,6 +603,9 @@ class ReviewQueueService:
             reject_reasons=list(
                 definition.reject_reasons if definition else rq.reject_reasons
             ),
+            skip_reasons=list(
+                definition.skip_reasons if definition else rq.skip_reasons
+            ),
             claim_cap=rq.max_claims_per_reviewer,
             my_claim_count=my_count,
             history=history,
@@ -796,15 +799,39 @@ class ReviewQueueService:
         return item_view(new, caller)
 
     def release(
-        self, caller: CallerContext, object_key: str, cycle_id: str
+        self,
+        caller: CallerContext,
+        object_key: str,
+        cycle_id: str,
+        reason: str,
+        note: Optional[str] = None,
     ) -> ReviewItemView:
+        """Give an assigned item back to its queue unfinished (Skip), saying why."""
+        if not reason or not reason.strip():
+            raise ReviewValidationError("REASON_REQUIRED", "choose a skip reason")
         old = self._owned_live(caller, object_key, cycle_id)
+        rq = self._rq(old.profile)
+        definition = rq.queue(old.queue)
+        allowed = definition.skip_reasons if definition else rq.skip_reasons
+        if reason not in allowed:
+            raise ReviewValidationError(
+                "BAD_ARGUMENT", "the reason isn't in this queue's list"
+            )
         _, now_ms, now_iso = self._now()
         new = old.model_copy(deep=True)
         new.state = OPEN
         self._release_fields(new)
         extra = [self.store.counter_txn_item(caller.reviewer_key, -1, now_iso=now_iso)]
-        extra.extend(self._history(new, "released", caller.email, {}, now_ms, now_iso))
+        extra.extend(
+            self._history(
+                new,
+                "released",
+                caller.email,
+                {"reason": reason, **({"note": note} if note else {})},
+                now_ms,
+                now_iso,
+            )
+        )
         try:
             self._write(
                 old,
@@ -975,6 +1002,7 @@ class ReviewQueueService:
         apply: Callable[[ReviewItemRecord], None],
         supervised: bool = False,
         note: Optional[str] = None,
+        reason: Optional[str] = None,
     ) -> ReviewItemView:
         """Move the item to FINALIZING and send its finalize message.
 
@@ -1013,7 +1041,10 @@ class ReviewQueueService:
                 new,
                 _HISTORY_EVENTS[disposition],
                 caller.email,
-                {"note": note} if note else {},
+                {
+                    **({"reason": reason} if reason else {}),
+                    **({"note": note} if note else {}),
+                },
                 now_ms,
                 now_iso,
             )
@@ -1116,7 +1147,13 @@ class ReviewQueueService:
             r.reject_note = note
 
         return self._finalize(
-            caller, object_key, cycle_id, disposition="rejected", apply=apply
+            caller,
+            object_key,
+            cycle_id,
+            disposition="rejected",
+            apply=apply,
+            note=note,
+            reason=reason,
         )
 
     def remove(

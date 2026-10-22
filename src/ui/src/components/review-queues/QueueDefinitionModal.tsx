@@ -5,8 +5,9 @@
 // name, priority, reminder time limit, confidence threshold, enabled switch and
 // eligible Annotators — or edit a Test Studio queue's settings (the same, less the
 // id, name, threshold and switch, which a test set doesn't have: its documents come
-// from the set, not from the pipeline). A queue's stored checklist and reject reasons
-// are kept as they are; the dialog doesn't edit them.
+// from the set, not from the pipeline). Every queue's skip reasons, which an Annotator
+// picks from when giving an item back, are edited here one per line. A queue's stored
+// checklist and reject reasons are kept as they are; the dialog doesn't edit them.
 import React, { useEffect, useState } from 'react';
 import type { MultiselectProps } from '@cloudscape-design/components';
 import {
@@ -28,6 +29,9 @@ import type { ReviewQueueDefinition, ReviewQueueDefinitionInput } from '../../gr
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { createReviewQueue, updateReviewQueue, updateTestSetQueue } from './reviewer-assignment';
 
+/** The server's limit on a queue's skip list. */
+const MAX_SKIP_REASONS = 20;
+
 /** A Test Studio queue (one test set) whose settings are edited. */
 export interface TestSetQueueTarget {
   testSetId: string;
@@ -37,6 +41,7 @@ export interface TestSetQueueTarget {
   claimLeaseMinutes?: number | null;
   eligibleAnnotators?: readonly string[] | null;
   checklist?: readonly string[] | null;
+  skipReasons?: readonly string[] | null;
 }
 
 /** The backend's queue id rule. */
@@ -88,6 +93,8 @@ const QueueDefinitionModal = ({
   const [eligible, setEligible] = useState<readonly MultiselectProps.Option[]>([]);
   // Not edited here; saved back unchanged.
   const [checklist, setChecklist] = useState<string[]>([]);
+  // One reason per line. Left empty on a new queue, the server's defaults apply.
+  const [skipReasonsText, setSkipReasonsText] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +110,7 @@ const QueueDefinitionModal = ({
     setEnabled(queue?.enabled ?? true);
     setEligible((testSet?.eligibleAnnotators ?? queue?.eligibleAnnotators ?? []).map((e) => ({ value: e, label: e })));
     setChecklist([...(testSet?.checklist ?? queue?.checklist ?? [])]);
+    setSkipReasonsText((testSet?.skipReasons ?? queue?.skipReasons ?? []).join('\n'));
     setSubmitted(false);
     setError(null);
   }, [visible, queue, testSet]);
@@ -124,6 +132,20 @@ const QueueDefinitionModal = ({
       : `Enter a whole number of minutes from 1 to ${MAX_TIME_LIMIT_MINUTES}.`;
   // A Test Studio queue has no threshold or switch, so neither is checked there.
   const confidenceError = testSet ? undefined : thresholdError(threshold);
+  const skipReasons = [
+    ...new Set(
+      skipReasonsText
+        .split('\n')
+        .map((r) => r.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const skipReasonsError =
+    creating || skipReasons.length > 0
+      ? skipReasons.length > MAX_SKIP_REASONS
+        ? `Keep it to ${MAX_SKIP_REASONS} reasons.`
+        : undefined
+      : 'Enter at least one reason.';
 
   const annotatorOptions: MultiselectProps.Option[] = [
     ...annotators.map((e) => ({ value: e, label: e })),
@@ -133,7 +155,7 @@ const QueueDefinitionModal = ({
 
   const save = async () => {
     setSubmitted(true);
-    if (idError || nameError || priorityError || timeLimitError || confidenceError) return;
+    if (idError || nameError || priorityError || timeLimitError || confidenceError || skipReasonsError) return;
     setSaving(true);
     setError(null);
     if (testSet) {
@@ -146,6 +168,7 @@ const QueueDefinitionModal = ({
           timeLimitMinutes: timeLimitNumber,
           eligibleAnnotators,
           checklist,
+          skipReasons,
         });
         onSaved(undefined, {
           ...testSet,
@@ -153,6 +176,7 @@ const QueueDefinitionModal = ({
           priority: priorityNumber,
           claimLeaseMinutes: timeLimitNumber,
           eligibleAnnotators,
+          skipReasons,
         });
       } catch (err) {
         setError(describeApiError(err, 'save the queue settings'));
@@ -171,6 +195,7 @@ const QueueDefinitionModal = ({
       checklist,
       // Not edited here: an existing queue keeps its list; a new one gets the defaults.
       rejectReasons: queue?.rejectReasons ?? undefined,
+      skipReasons: skipReasons.length > 0 ? skipReasons : undefined,
       confidenceThreshold: Number(threshold),
       enabled,
     };
@@ -276,6 +301,15 @@ const QueueDefinitionModal = ({
           </ColumnLayout>
           <FormField label="Description" stretch>
             <Textarea value={description} rows={2} onChange={({ detail }) => setDescription(detail.value)} />
+          </FormField>
+          <FormField
+            label="Skip reasons"
+            description="An Annotator who gives an item back unfinished chooses one; it is kept in the item's review history. One per line."
+            constraintText={creating ? 'Leave empty to use the default reasons.' : undefined}
+            errorText={submitted ? skipReasonsError : undefined}
+            stretch
+          >
+            <Textarea value={skipReasonsText} rows={4} onChange={({ detail }) => setSkipReasonsText(detail.value)} />
           </FormField>
           <FormField
             label="Eligible Annotators"

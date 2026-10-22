@@ -568,6 +568,10 @@
       "Admin",
       "Annotator"
     ],
+    "saveSectionReviewEdits": [
+      "Admin",
+      "Reviewer"
+    ],
     "saveTestSetDocumentSection": [
       "Admin",
       "Annotator",
