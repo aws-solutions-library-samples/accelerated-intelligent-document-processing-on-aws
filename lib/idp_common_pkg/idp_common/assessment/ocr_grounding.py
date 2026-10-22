@@ -496,6 +496,16 @@ _PARTIAL_MIN_COVERAGE = 0.5
 # _TIER_LEVENSHTEIN -> "ocr-fuzzy".
 _SOURCE_NORMALIZED = "ocr-normalized"
 _SOURCE_FUZZY = "ocr-fuzzy"
+#: Provenance for a ``_TIER_WEAK_PARTIAL`` box — the matched line covers less than
+#: half the value, so this is the weakest evidence of location the ladder emits and
+#: is only ever used when nothing better matched (#1519).
+#:
+#: It exists to make the box **auditable in an artifact**. Without a distinct tag a
+#: fragment-based box is recorded as plain ``"ocr"``, identical to a verbatim match,
+#: so neither a reviewer nor a later measurement can tell how much of the value a
+#: box actually rests on. Counting this value over a corpus is how to answer "how
+#: many boxes are standing on a fragment" without re-deriving the tiers.
+_SOURCE_WEAK = "ocr-weak"
 
 
 def _dedup_norm_variants(variants: Optional[List[str]], norm_value: str) -> List[str]:
@@ -643,12 +653,16 @@ def _collect_candidates_in_page(
     # Tier-aware early-out. The caller keeps only the MOST PRECISE tier that
     # matched, so a pass that can only produce a WORSE tier than what we already
     # have is pure waste. Tiers: EXACT=1 < SUBSTRING=2 < SPAN=3 < TYPED=4 <
-    # PARTIAL=5 < FUZZY=6 < LEVENSHTEIN=7.
+    # PARTIAL=5 < FUZZY=6 < LEVENSHTEIN=7 < WEAK_PARTIAL=8.
     #   • SPAN (3): skip only if we already have EXACT/SUBSTRING (≤ SPAN). A mere
-    #     PARTIAL/TYPED (>SPAN) must NOT skip it — a multi-line span can still win.
-    #   • FUZZY/LEVENSHTEIN (6/7): skip whenever ANY candidate exists — they can
-    #     never beat tiers 1-5. Skipping these O(lines) sweeps is the bulk of the
-    #     speed-up for real documents.
+    #     PARTIAL/TYPED/WEAK_PARTIAL (>SPAN) must NOT skip it — a multi-line span
+    #     can still win.
+    #   • FUZZY/LEVENSHTEIN (6/7): skip whenever a candidate BETTER THAN FUZZY
+    #     exists — those they can never beat. A ``_TIER_WEAK_PARTIAL`` (8)
+    #     candidate must fall through to them, since they outrank it; that is the
+    #     substance of #1519 and the condition below is written on the tier for
+    #     exactly this reason. Skipping these O(lines) sweeps where they cannot
+    #     win is still the bulk of the speed-up for real documents.
     best_so_far = min((t for t, *_ in candidates), default=None)
     if best_so_far is None or best_so_far > _TIER_SPAN:
         # Multi-line spans (value == concatenation of consecutive lines).
@@ -756,11 +770,18 @@ def _build_match(
 
     ``source_override`` tags format-bridged matches ("ocr-normalized"/"ocr-fuzzy")
     distinctly; otherwise provenance is "ocr"/"ocr-paragraph" from the line.
+
+    A ``_TIER_WEAK_PARTIAL`` match is always tagged ``"ocr-weak"``, overriding both,
+    because how little of the value the box rests on is the more important fact
+    about it than which surface form matched — and it is the only way to tell such
+    a box from a verbatim one in a stored artifact.
     """
     box = _line_box(line)
     if box is None:
         return None
-    if source_override is not None:
+    if tier == _TIER_WEAK_PARTIAL:
+        source = _SOURCE_WEAK
+    elif source_override is not None:
         source = source_override
     else:
         source = "ocr-paragraph" if line.get("geometrySource") == "paragraph" else "ocr"

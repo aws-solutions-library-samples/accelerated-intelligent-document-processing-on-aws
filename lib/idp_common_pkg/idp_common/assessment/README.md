@@ -1206,9 +1206,12 @@ Key behaviors:
   its LLM box (so identical amounts across table rows don't collapse onto one line).
 - **Coordinates stay 0–1**: `pageData` geometry is already normalized, so grounded boxes skip
   the 0–1000 → 0–1 rescale that LLM boxes go through. No mixed scales in `explainability_info`.
-- **Additive output**: a matched field gets `geometry_source` (`"ocr"`/`"ocr-paragraph"`/
-  `"llm"`) and, when available, `ocr_confidence` (0–1). The LLM `confidence`/`confidence_reason`
-  are never modified, so HITL and confidence alerts are unaffected.
+- **Additive output**: a matched field gets `geometry_source`
+  (`"ocr"`/`"ocr-paragraph"`/`"ocr-weak"`/`"llm"`) and, when available,
+  `ocr_confidence` (0–1). `"ocr-weak"` marks a box whose matched line covers less than
+  half the value, which is how to count such boxes in a stored artifact without
+  re-deriving the tiers. The LLM `confidence`/`confidence_reason` are never modified,
+  so HITL and confidence alerts are unaffected.
 - **Config gate**: `extraction.geometry.mode` (`ocr_only` default | `llm_grounded` | `llm` | `off`). The legacy `assessment.ground_geometry_in_ocr: false` maps to `llm`; old configs are migrated on read.
 - **Safe fallback**: absent `pageData.json`, `geometryAvailable: false`, or no value match →
   keep the LLM-estimated box (identical to prior behavior). `pageData.json` is read from S3, so

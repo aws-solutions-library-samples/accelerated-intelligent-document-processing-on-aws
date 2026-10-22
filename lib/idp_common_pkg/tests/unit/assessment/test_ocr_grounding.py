@@ -1080,9 +1080,25 @@ class TestWeakPartialDemotion:
         """Why fragments are demoted rather than rejected. Measured over 265
         fields, 48 of the 62 sub-floor matches point at a value that really is on
         the page across several lines, against 14 coincidences — so dropping them
-        all loses more than it saves."""
-        pd = {1: _page([_line("Eight speed forward, one reverse unit", 0.1, 0.3)])}
-        value = "Gearbox: Eight speed forward, one reverse unit with reverse gear"
+        all loses more than it saves.
+
+        The fixture is chosen so that **only** the weak tier can produce this box:
+        16.9% coverage puts it under the floor, token overlap of 0.22 is below the
+        fuzzy threshold, and the length ratio means the Levenshtein ceiling skips
+        it. If sub-floor fragments were rejected there would be no box at all, so
+        this test reds under that change rather than passing either way.
+        """
+        value = (
+            "Carbon fibre maincase (gearbox); Carbon plate floor; Kevlar side panels"
+        )
+        pd = {1: _page([_line("Carbon plate", 0.1, 0.3)])}
+
+        # Assert the mechanism, not just the outcome: the only candidate is the
+        # demoted tier.
+        nv = g._normalize(value)
+        candidates = g._collect_candidates_in_page(nv, g._tokens(nv), pd[1], 1)
+        assert [tier for tier, *_ in candidates] == [g._TIER_WEAK_PARTIAL]
+
         geom, _s, _c = g.match_value_to_geometry(value, pd)
         assert geom is not None
         assert geom["boundingBox"]["top"] == 0.3
@@ -1183,3 +1199,35 @@ class TestLevenshteinCanReach:
         rather than quietly rejecting candidates."""
         with patch.dict("sys.modules", {"idp_common.evaluation.text_matching": None}):
             assert g._levenshtein_can_reach("abc", "abcdefghijklmnop", 0.8) is True
+
+
+class TestWeakBoxProvenance:
+    """A fragment-based box is tagged ``ocr-weak`` so it is auditable (#1519).
+
+    Without a distinct tag it is recorded as plain ``"ocr"``, identical to a
+    verbatim match, and neither a reviewer nor a later measurement can tell how
+    much of the value a box rests on. Counting this tag over a corpus is how to
+    answer "how many boxes stand on a fragment" from stored artifacts alone.
+    """
+
+    def test_a_fragment_box_is_tagged_weak(self):
+        value = (
+            "Carbon fibre maincase (gearbox); Carbon plate floor; Kevlar side panels"
+        )
+        pd = {1: _page([_line("Carbon plate", 0.1, 0.3)])}
+        _geom, source, _conf = g.match_value_to_geometry(value, pd)
+        assert source == g._SOURCE_WEAK == "ocr-weak"
+
+    def test_a_strong_match_keeps_plain_ocr_provenance(self):
+        pd = {1: _page([_line("Account: 12345", 0.1, 0.05)])}
+        _geom, source, _conf = g.match_value_to_geometry("Account: 12345", pd)
+        assert source == "ocr"
+
+    def test_an_at_floor_partial_is_not_tagged_weak(self):
+        """Only the sub-floor tier is weak; a half-or-more prefix is an ordinary
+        match and must not be labelled as resting on a fragment."""
+        pd = {1: _page([_line("PO Box 307, Shortland Street", 0.2, 0.44)])}
+        _geom, source, _conf = g.match_value_to_geometry(
+            "PO Box 307, Shortland Street, Auckland 1140", pd
+        )
+        assert source == "ocr"

@@ -1800,7 +1800,7 @@ For each assessed leaf field, the service:
 }
 ```
 
-- **`geometry_source`** — `"ocr"` (grounded in a real OCR line), `"ocr-paragraph"` (grounded in a paragraph-level box shared by sibling lines, as the Mistral hook produces), `"ocr-normalized"` / `"ocr-fuzzy"` (format-bridged / Levenshtein matches), or `"llm"` (kept the LLM-estimated box).
+- **`geometry_source`** — `"ocr"` (grounded in a real OCR line), `"ocr-paragraph"` (grounded in a paragraph-level box shared by sibling lines, as the Mistral hook produces), `"ocr-normalized"` / `"ocr-fuzzy"` (format-bridged / Levenshtein matches), `"ocr-weak"` (the matched line covers less than half the value — the weakest evidence of location, used only when nothing better matched, so treat the highlight as approximate), or `"llm"` (kept the LLM-estimated box).
 - **`ocr_confidence`** — the matched OCR line's confidence (0–1), when available. **Informational only**; the LLM `confidence`/`confidence_reason` are never overwritten, so HITL triggering and threshold alerts are unaffected.
 
 **Safe fallback (backward compatibility).** Grounding degrades to exactly the
