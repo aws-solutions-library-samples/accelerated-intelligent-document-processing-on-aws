@@ -3502,12 +3502,9 @@ class ClassificationService:
             limited_document = self._limit_pages_for_classification(document)
 
             if limited_document.id != document.id:  # Pages were actually limited
-                # Classify the limited document.
-                # NOTE: _apply_limited_classification_to_all_pages collapses the
-                # result into one all-pages section for every config, so
-                # maxPagesForClassification still overrides sectionSplitting here
-                # — a pre-existing limitation of that setting, not specific to the
-                # regex path.
+                # Classify the limited document. A page limit is only in force
+                # under sectionSplitting "disabled" (see __init__), so collapsing
+                # the result into one all-pages section is what that setting asks.
                 if self.strategy == self.STRATEGY_TWO_STAGE:
                     classified_limited = self.two_stage_classify_document(
                         limited_document, forced_class=forced_class
