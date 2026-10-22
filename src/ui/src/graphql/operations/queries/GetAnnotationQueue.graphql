@@ -2,6 +2,7 @@ query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Bo
   getAnnotationQueue(testSetId: $testSetId, limit: $limit, includeCompleted: $includeCompleted) {
     testSetId
     claimLeaseMinutes
+    skipReasons
     summaryStatus
     summaryCount
     totalDocs

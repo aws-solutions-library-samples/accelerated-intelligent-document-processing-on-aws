@@ -182,9 +182,16 @@ HITL review is automatically triggered when:
    - In the document detail view, locate the **Sections** panel
    - Click **View/Edit Data** to open the visual editor
    - Review and correct extracted key-value pairs
-   - Click **Mark Review Complete** for each section
+   - Click **Save All Changes** to save your corrections. Saving does not finish the
+     review: the document stays **Review In Progress** and you stay its review owner,
+     so you can come back and keep editing
 
-4. **Release Review** (optional):
+4. **Complete the Review**:
+   - Click **Process Changes** to finish the review and reprocess the document
+   - Document status changes to **Review Completed**, and **Review Completed By**
+     records you
+
+5. **Release Review** (optional):
    - If you need to stop reviewing, click **Release Review**
    - Document returns to **Review Pending** status
    - Another reviewer can claim it
@@ -194,6 +201,7 @@ HITL review is automatically triggered when:
 Admins have additional capabilities:
 
 - **Skip All Reviews**: Click **Skip All Reviews** to mark all pending sections as skipped
+  - Choose a reason (for example **Extracted values look correct** or **Duplicate document**) and optionally add a note; both are recorded with the skip in the review history, and the document page shows them as **Skip Reason**
   - Document status changes to **Review Skipped**
   - The **Review Completed By** field records the admin who skipped
   - Downstream reprocessing (Summarization/Evaluation) is triggered automatically — consistent with completing all sections — which also fires the optional post-processing Lambda hook (`PostProcessingLambdaHookFunctionArn`) on workflow completion
@@ -202,13 +210,13 @@ Admins have additional capabilities:
 
 ### 3. Result Integration
 
-When all sections are reviewed or skipped:
+When the review is completed with **Process Changes**, or every section is completed or skipped:
 - Document status changes to **Review Completed** or **Review Skipped**
 - Corrected data is saved to S3
 - **Review Completed By** field records who completed/skipped the review
 - Review history is recorded with reviewer information and timestamps
 
-**Note:** Finalizing reviews — either completing the last pending section or using **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
+**Note:** Finalizing reviews — **Process Changes**, completing the last pending section, or **Skip All Reviews** — automatically triggers document reprocessing to re-run Summarization/Evaluation and fire the optional post-processing Lambda hook on workflow completion. Use the **Reprocess** button if you later edit data and need to re-run those steps again.
 
 ## Configuration
 

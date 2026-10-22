@@ -39,6 +39,7 @@ from idp_common.review_queues.annotators import (  # type: ignore
     cognito_account,
     persona_for_groups,
 )
+from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS  # type: ignore
 from idp_common.review_queues.statuses import LEGACY_DONE  # type: ignore
 from idp_common.review_queues.testset_docs import (  # type: ignore
     SUMMARY_BUILDING,
@@ -3069,6 +3070,8 @@ def get_annotation_queue(args, event=None):
     result = {
         "testSetId": test_set_id,
         "claimLeaseMinutes": time_limit_minutes(meta),
+        # What a Skip may give as its reason (skipTestSetDocument).
+        "skipReasons": _skip_reasons(meta),
         # BUILDING while the background build of the set's summaries runs; the
         # documents listed so far are returned meanwhile.
         "summaryStatus": summary_status,
@@ -4793,9 +4796,25 @@ def skip_test_set_document(args, event=None):
         raise ValueError("Invalid test set id")
     if not object_key or ".." in object_key or object_key.startswith("/"):
         raise ValueError("Invalid object key")
+    reason = args.get("reason")
+    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    if reason not in _skip_reasons(meta or {}):
+        raise ValueError(
+            "REASON_REQUIRED: choose a skip reason from this test set's queue settings"
+        )
+    note = (args.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
     caller = (caller_email(event) or "").lower()
     store = _doc_store()
-    store.unassign(test_set_id, object_key)
+    store.unassign(
+        test_set_id,
+        object_key,
+        skip={
+            "by": caller,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "reason": reason,
+            **({"note": note} if note else {}),
+        },
+    )
     store_assigned_count(_get_tracking_table(), store, test_set_id)
     logger.info(f"skipTestSetDocument {test_set_id}/{object_key} by {caller}")
     return {"testSetId": test_set_id, "objectKey": object_key, "skipped": True}
@@ -4854,7 +4873,16 @@ _QUEUE_SETTING_ATTRS = {
     "timeLimitMinutes": "TimeLimitMinutes",
     "eligibleAnnotators": "QueueEligibleAnnotators",
     "checklist": "QueueChecklist",
+    "skipReasons": "QueueSkipReasons",
 }
+
+#: Longest skip note kept, the review queues' note limit.
+MAX_SKIP_NOTE = 1000
+
+
+def _skip_reasons(item):
+    """The set's skip reasons: its own list, or the review queues' defaults."""
+    return [str(r) for r in (item.get("QueueSkipReasons") or DEFAULT_SKIP_REASONS)]
 
 
 def _queue_settings_view(item):
@@ -4866,6 +4894,7 @@ def _queue_settings_view(item):
             str(e) for e in (item.get("QueueEligibleAnnotators") or [])
         ],
         "checklist": [str(c) for c in (item.get("QueueChecklist") or [])],
+        "skipReasons": _skip_reasons(item),
     }
 
 
@@ -4914,6 +4943,15 @@ def update_test_set_queue(args):
         if len(items) > 20:
             raise ValueError("checklist has at most 20 items")
         values["checklist"] = items
+    if data.get("skipReasons"):
+        reasons = list(
+            dict.fromkeys(
+                str(r).strip()[:200] for r in data["skipReasons"] if str(r).strip()
+            )
+        )
+        if not reasons or len(reasons) > 20:
+            raise ValueError("skipReasons lists 1 to 20 reasons")
+        values["skipReasons"] = reasons
     if not values:
         raise ValueError("Nothing to update")
     # Before the write, so a listed user who isn't an Annotator refuses the save.

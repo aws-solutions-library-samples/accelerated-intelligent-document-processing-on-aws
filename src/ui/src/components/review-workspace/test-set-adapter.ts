@@ -54,8 +54,12 @@ export interface TestSetAnnotation {
   saveSection: (sectionId: string, data: Record<string, unknown>) => Promise<void>;
   /** Confirm sections unchanged, one at a time; each counts as reviewed. */
   confirmSections: (sectionIds: string[]) => Promise<void>;
-  /** Give the document back to its queue: the assignment ends and it is not reviewed. */
-  skip: () => Promise<void>;
+  /**
+   * Give the document back to its queue: the assignment ends and it is not reviewed.
+   * `reason` comes from the set's skip list (`queue.skipReasons`); it and `note` are
+   * recorded with the skip.
+   */
+  skip: (reason: string, note?: string) => Promise<void>;
 }
 
 export const useTestSetAnnotation = (testSetId: string, objectKey: string): TestSetAnnotation => {
@@ -139,9 +143,12 @@ export const useTestSetAnnotation = (testSetId: string, objectKey: string): Test
     [doc, testSetId, objectKey],
   );
 
-  const skip = useCallback(async (): Promise<void> => {
-    await client.graphql({ query: skipTestSetDocument, variables: { testSetId, objectKey } });
-  }, [testSetId, objectKey]);
+  const skip = useCallback(
+    async (reason: string, note?: string): Promise<void> => {
+      await client.graphql({ query: skipTestSetDocument, variables: { testSetId, objectKey, reason, note } });
+    },
+    [testSetId, objectKey],
+  );
 
   return {
     queue,

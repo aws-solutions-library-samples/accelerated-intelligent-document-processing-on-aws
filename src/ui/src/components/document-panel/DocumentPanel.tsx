@@ -50,7 +50,7 @@ import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadM
 import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
 import { isProfileReadable } from '../../utils/readable-profile';
-import { normalizeHitlStatus } from '../common/review-status';
+import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
 import { reviewItemHref } from '../../routes/constants';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
@@ -452,7 +452,10 @@ const MeteringExpandableSection = ({ meteringData, documentItem }: MeteringExpan
   );
 };
 
+const isHitlSkippedStatus = (raw: string | null | undefined): boolean => normalizeHitlStatus(raw).kind === 'skipped';
+
 const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.JSX.Element => {
+  const skipAll = isHitlSkippedStatus(item.hitlStatus) ? lastSkipAllReason(item.hitlReviewHistory) : null;
   return (
     <Container>
       <ColumnLayout columns={8} variant="text-grid">
@@ -571,6 +574,22 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
             <div>{item.hitlReviewedByEmail || item.hitlReviewedBy || '-'}</div>
           </div>
         </SpaceBetween>
+
+        {skipAll && (
+          <SpaceBetween size="xs">
+            <div>
+              <Box margin={{ bottom: 'xxxs' }} color="text-label">
+                <strong>Skip Reason</strong>
+              </Box>
+              <div>{skipAll.reason}</div>
+              {skipAll.note && (
+                <Box variant="small" color="text-body-secondary">
+                  {skipAll.note}
+                </Box>
+              )}
+            </div>
+          </SpaceBetween>
+        )}
 
         <SpaceBetween size="xs">
           <div>
@@ -750,7 +769,7 @@ export const DocumentPanel = ({
     wasTerminalRef.current = isTerminalStatus;
   }, [isTerminalStatus, objectKey, getDocumentDetailsFromIds]);
 
-  const { isReviewer, isAdmin, allowedConfigVersions, loading: roleLoading } = useUserRole();
+  const { isReviewer, canWorkReviewQueues, allowedConfigVersions, loading: roleLoading } = useUserRole();
   // Fetch active configuration for dynamic confidence threshold (used by sections panel, etc.)
   const { mergedConfig } = useConfiguration(
     isProfileReadable('default', versions, { allowedConfigVersions, loading: roleLoading }) ? 'default' : null,
@@ -776,7 +795,8 @@ export const DocumentPanel = ({
   const hitlView = normalizeHitlStatus(localItem?.hitlStatus);
   const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !hitlView.queueManaged;
   const showStartReview = isReviewer && hasPendingHITL && !hasReviewOwner;
-  const showOpenInQueue = hitlView.queueManaged && hitlView.kind === 'in_review' && isAdmin;
+  // One way in for a queued document, for everyone who can work queue items.
+  const showReviewInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
 
   // Handle Start Review button click
   const handleStartReview = async () => {
@@ -936,9 +956,14 @@ export const DocumentPanel = ({
               variant="h2"
               actions={
                 <SpaceBetween direction="horizontal" size="xs">
-                  {showOpenInQueue && (
-                    <Button iconName="external" variant="primary" href={reviewItemHref(localItem.objectKey)}>
-                      Open in review queue
+                  {showReviewInQueue && (
+                    <Button
+                      iconName="user-profile"
+                      variant="primary"
+                      href={reviewItemHref(localItem.objectKey)}
+                      ariaLabel="Review this document in its review queue"
+                    >
+                      Review
                     </Button>
                   )}
                   {showStartReview && (

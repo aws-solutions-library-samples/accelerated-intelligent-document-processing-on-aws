@@ -266,6 +266,49 @@ describe('the actions', () => {
     expect(buttons()).not.toContain('Skip');
   });
 
+  it('open the review history from History, which is not on the screen otherwise', () => {
+    server.detail = {
+      ...mine(),
+      history: [{ at: '2026-10-20T09:00:00.000Z', event: 'claimed', actor: ADMIN, details: null }],
+    } as ReviewItemDetail;
+    renderScreen();
+    expect(buttons()).toContain('History');
+    expect(createWrapper(document.body).findModal()).toBeNull();
+    button('History').click();
+    const modal = createWrapper(document.body).findModal()!;
+    expect(modal.findHeader().getElement().textContent).toBe('Review history (1)');
+    expect(modal.findContent().getElement().textContent).toContain('Claimed');
+  });
+
+  it('offer History beside Claim to an Annotator viewing an unassigned item', () => {
+    role.isAdmin = false;
+    role.isAnnotator = true;
+    renderScreen();
+    expect(buttons()).toEqual(expect.arrayContaining(['History', 'Claim']));
+  });
+
+  it('ask why before skipping, and skip with that reason', async () => {
+    server.detail = { ...mine(), skipReasons: ['Out of time', 'Needs expert review'] } as ReviewItemDetail;
+    releaseItem.mockResolvedValue({});
+    renderScreen();
+    button('Skip').click();
+    // Nothing is released until a reason is chosen.
+    expect(releaseItem).not.toHaveBeenCalled();
+    const modal = createWrapper(document.body).findModal()!;
+    const select = modal.findContent().findSelect()!;
+    select.openDropdown();
+    select.selectOptionByValue('Needs expert review');
+    modal.findContent().findTextarea()!.setTextareaValue('tax schedule');
+    modal
+      .findFooter()!
+      .findAllButtons()
+      .find((b) => b.getElement().textContent === 'Skip')!
+      .click();
+    await waitFor(() => expect(releaseItem).toHaveBeenCalledTimes(1));
+    expect(releaseItem.mock.calls[0].slice(1)).toEqual(['Needs expert review', 'tax schedule']);
+    await waitFor(() => expect(exit).toHaveBeenCalled());
+  });
+
   it('leave Take over to Admins: an Annotator viewing someone else’s item has neither', () => {
     role.isAdmin = false;
     role.isAnnotator = true;

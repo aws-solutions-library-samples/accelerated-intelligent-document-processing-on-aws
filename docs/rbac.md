@@ -131,7 +131,9 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   no My Work and no Inbox (no navigation entry, no bell, no Inbox page). **HITL ›
   Queue Management** is Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
-  `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`) are unchanged.
+  `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
+  `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
+  Annotators.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
   are in a production review queue (`QUEUE_MANAGED`).
 - **Residual access.** Like every role, an Annotator can call `getDocument` and
@@ -524,7 +526,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 125 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 126 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -798,6 +800,7 @@ enforcement itself is Layer 2.
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
 | `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
+| `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
 | `markInboxMessages`, `markAllInboxMessagesRead`, `deleteInboxMessages`, `clearReadInboxMessages`, `updateInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |

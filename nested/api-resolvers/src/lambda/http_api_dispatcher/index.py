@@ -340,6 +340,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "completeSectionReview": "claimReview",
     "releaseReview": "claimReview",
     "skipAllSectionsReview": "claimReview",
+    "saveSectionReviewEdits": "claimReview",
     # createUser (UserManagementFunctionArn)
     "updateUser": "createUser",
     "deleteUser": "createUser",

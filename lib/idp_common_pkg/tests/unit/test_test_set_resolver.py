@@ -10360,7 +10360,7 @@ class TestTestSetQueueClaims:
         )
 
         test_set_index.skip_test_set_document(
-            {"testSetId": "listed", "objectKey": "mine.pdf"},
+            {"testSetId": "listed", "objectKey": "mine.pdf", "reason": "Out of time"},
             _caller("ann@example.com", "Annotator"),
         )
 

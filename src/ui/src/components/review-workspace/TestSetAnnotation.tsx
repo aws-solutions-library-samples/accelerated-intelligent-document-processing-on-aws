@@ -45,6 +45,7 @@ import {
   groundTruthAlertSuffix,
 } from '../test-studio/annotation-edit-flags';
 import AnnotationFrame from './AnnotationFrame';
+import ReasonModal from '../common/ReasonModal';
 import type { AnnotationAction } from './AnnotationFrame';
 import { NOT_ASSIGNED_MESSAGE, useTestSetAnnotation } from './test-set-adapter';
 import useAnnotationExit from './use-annotation-exit';
@@ -69,6 +70,7 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   // ?view=source (the queue's View action) opens on the source document.
   const [docView, setDocView] = useState<DocView>(searchParams.get('view') === 'source' ? 'source' : 'ground-truth');
   const [busy, setBusy] = useState<AnnotationAction | null>(null);
+  const [askSkipReason, setAskSkipReason] = useState(false);
   const [isOpeningDraft, setIsOpeningDraft] = useState(false);
   const [dirty, setDirty] = useState(false);
   // Sections saved on this screen: they already count as reviewed.
@@ -186,19 +188,34 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       await handleClaim();
       return;
     }
+    if (action === 'skip') {
+      // The reason is asked for first; confirmSkip does the skip.
+      setAskSkipReason(true);
+      return;
+    }
     setBusy(action);
     try {
-      if (action === 'skip') {
-        await adapter.skip();
-        exit(queuePath, `${objectKey} returned to the queue.`, workItemId);
-        return;
-      }
       // Idempotent server-side: the version transition this completion belongs to.
       if (!draft) await adapter.openDraft();
       await adapter.confirmSections(remaining);
       exit(queuePath, `${objectKey} is complete and marked reviewed.`, workItemId);
     } catch (err) {
-      setErrorMessage(describeApiError(err, action === 'skip' ? 'skip this document' : 'complete this document'));
+      setErrorMessage(describeApiError(err, 'complete this document'));
+      void reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirmSkip = async (reason: string, note: string | undefined) => {
+    setBusy('skip');
+    try {
+      await adapter.skip(reason, note);
+      setAskSkipReason(false);
+      exit(queuePath, `${objectKey} returned to the queue.`, workItemId);
+    } catch (err) {
+      setAskSkipReason(false);
+      setErrorMessage(describeApiError(err, 'skip this document'));
       void reload();
     } finally {
       setBusy(null);
@@ -302,6 +319,22 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
         onAction: (action) => void handleAction(action),
       }}
       notices={notices}
+      dialogs={
+        // Mounted only while asked, so its buttons are not on the screen otherwise.
+        askSkipReason ? (
+          <ReasonModal
+            visible
+            header="Skip this document"
+            reasons={queue.skipReasons ?? []}
+            confirmLabel="Skip"
+            loading={busy === 'skip'}
+            onDismiss={() => setAskSkipReason(false)}
+            onConfirm={(reason, note) => void confirmSkip(reason, note)}
+          >
+            <Box>It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.</Box>
+          </ReasonModal>
+        ) : undefined
+      }
     >
       {testSetBucket && (
         <SpaceBetween size="s">

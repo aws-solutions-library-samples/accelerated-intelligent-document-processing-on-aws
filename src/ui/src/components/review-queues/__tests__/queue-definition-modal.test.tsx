@@ -36,6 +36,7 @@ const queue = (over: Partial<ReviewQueueDefinition> = {}): ReviewQueueDefinition
   priority: 1,
   checklist: [],
   rejectReasons: [],
+  skipReasons: ['Out of time'],
   timeLimitMinutes: 60,
   eligibleAnnotators: [],
   isDefaultQueue: false,
@@ -175,7 +176,9 @@ describe('the queue dialog', () => {
   });
 
   it('leaves the threshold and switch off a Test Studio queue, which has neither', async () => {
-    const onSaved = open({ testSet: { testSetId: 'ts-1', name: 'Invoices', priority: 0, claimLeaseMinutes: 30 } });
+    const onSaved = open({
+      testSet: { testSetId: 'ts-1', name: 'Invoices', priority: 0, claimLeaseMinutes: 30, skipReasons: ['Out of time'] },
+    });
     const labels = createWrapper(document.body)
       .findAllFormFields()
       .map((f) => f.findLabel()?.getElement().textContent);
@@ -186,6 +189,8 @@ describe('the queue dialog', () => {
     const sent = updateTestSetQueue.mock.calls[0][0] as Record<string, unknown>;
     expect(sent).not.toHaveProperty('confidenceThreshold');
     expect(sent).not.toHaveProperty('enabled');
+    // A Test Studio queue has skip reasons too, saved with its settings.
+    expect(sent.skipReasons).toEqual(['Out of time']);
   });
 
   it('has no reject-reasons editor, and an edit keeps the stored list', async () => {
@@ -198,6 +203,33 @@ describe('the queue dialog', () => {
     clickSave();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ rejectReasons: ['Illegible', 'Wrong document'] }));
+  });
+
+  it('edits the skip reasons one per line, trimmed and without duplicates', async () => {
+    const onSaved = open({ queue: queue({ skipReasons: ['Out of time'] }) });
+    const textarea = field('Skip reasons').findControl()!.findTextarea()!;
+    expect(textarea.getTextareaValue()).toBe('Out of time');
+    textarea.setTextareaValue(' Out of time \n\nNeeds a specialist\nOut of time');
+    clickSave();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(updateReviewQueue).toHaveBeenCalledWith(expect.objectContaining({ skipReasons: ['Out of time', 'Needs a specialist'] }));
+  });
+
+  it('refuses to save an existing queue with no skip reasons', async () => {
+    open({ queue: queue() });
+    field('Skip reasons').findControl()!.findTextarea()!.setTextareaValue('  \n ');
+    clickSave();
+    await waitFor(() => expect(field('Skip reasons').findError()?.getElement().textContent).toBe('Enter at least one reason.'));
+    expect(updateReviewQueue).not.toHaveBeenCalled();
+  });
+
+  it('sends no skip reasons for a new queue left empty, so it gets the defaults', async () => {
+    const onCreated = open();
+    setInput('Queue id', 'claims');
+    setInput('Name', 'Claims');
+    clickSave();
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect((createReviewQueue.mock.calls[0][0] as Record<string, unknown>).skipReasons).toBeUndefined();
   });
 
   it('sends no reject reasons for a new queue, so it gets the defaults', async () => {

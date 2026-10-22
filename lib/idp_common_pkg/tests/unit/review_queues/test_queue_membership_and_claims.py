@@ -128,7 +128,7 @@ class TestProductionClaims:
         _seed_open(service, "c.pdf", "listed")
         service.claim(_annotator(), "c.pdf", "0" * 21)
 
-        released = service.release(_annotator(), "c.pdf", "0" * 21)
+        released = service.release(_annotator(), "c.pdf", "0" * 21, "Out of time")
 
         assert released.state == "OPEN"
         assert service.store.get_item("c.pdf").owner_key is None
@@ -147,7 +147,10 @@ class TestProductionClaims:
 
         # Still openable and releasable by the holder; nobody else unlisted gets in.
         service.get_item_detail(_annotator(), "d.pdf")
-        assert service.release(_annotator(), "d.pdf", "0" * 21).state == "OPEN"
+        assert (
+            service.release(_annotator(), "d.pdf", "0" * 21, "Out of time").state
+            == "OPEN"
+        )
         with pytest.raises(ReviewAccessDenied):
             service.get_item_detail(_annotator(), "d.pdf")
 

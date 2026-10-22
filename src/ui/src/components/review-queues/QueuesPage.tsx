@@ -279,6 +279,7 @@ const QueuesPage = (): React.JSX.Element => {
         claimLeaseMinutes: row.ref.claimLeaseMinutes,
         eligibleAnnotators: row.ref.eligibleAnnotators,
         checklist: row.ref.checklist,
+        skipReasons: row.ref.skipReasons,
       });
     }
   };
