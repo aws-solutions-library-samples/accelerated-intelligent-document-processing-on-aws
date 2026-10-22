@@ -27,6 +27,7 @@ import {
   SpaceBetween,
   Spinner,
   Tabs,
+  Toggle,
 } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -36,7 +37,10 @@ import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
 import EditHistoryTab from '../document-viewer/EditHistoryTab';
+import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
+import { diffLeafPaths } from './direct-edit-save';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
+import type { SectionEvaluation } from './use-section-evaluation';
 
 const logger = new ConsoleLogger('SectionEditor');
 
@@ -51,6 +55,17 @@ export interface SectionEditorContext {
 }
 
 type Slot = (ctx: SectionEditorContext) => React.ReactNode;
+
+/**
+ * What a parent that places the Save and Discard actions itself (the unified editor's
+ * top bar) calls. `save` saves the open section when it has changes and resolves true
+ * when there was nothing to save or the save succeeded.
+ */
+export interface SectionEditorController {
+  save: () => Promise<boolean>;
+  discard: () => void;
+  isDirty: () => boolean;
+}
 
 interface SectionEditorProps {
   objectKey: string;
@@ -97,6 +112,22 @@ interface SectionEditorProps {
   /** Ask before switching sections with unsaved changes (off when autosaving). */
   confirmSectionSwitch?: boolean;
   unsavedChangesMessage?: string;
+  /** Filled with the editor's save, discard and dirty check, for a parent's own buttons. */
+  controllerRef?: React.MutableRefObject<SectionEditorController | null>;
+  /** `external` hides the in-pane Discard and Save: the parent shows them. */
+  actionsPlacement?: 'header' | 'external';
+  /** Show the Edit history tab; the unified editor shows the edits under History instead. */
+  showHistoryTab?: boolean;
+  onSavingChange?: (saving: boolean) => void;
+  onSelectedSectionChange?: (sectionId: string | null) => void;
+  /** Switching sections with unsaved changes saves them first, instead of asking. */
+  saveOnSectionSwitch?: boolean;
+  /** The document's configuration, for the field renderer's per-field thresholds. */
+  mergedConfig?: Record<string, unknown>;
+  /** The evaluation baseline to compare with and edit (direct edit). */
+  evaluation?: SectionEvaluation;
+  /** The section to open first; defaults to the first section. */
+  initialSectionId?: string | null;
 }
 
 /**
@@ -137,8 +168,19 @@ const SectionEditor = ({
   autosaveMs,
   confirmSectionSwitch = true,
   unsavedChangesMessage = 'You have unsaved changes. Leave this document and discard them?',
+  controllerRef,
+  actionsPlacement = 'header',
+  showHistoryTab = true,
+  onSavingChange,
+  onSelectedSectionChange,
+  saveOnSectionSwitch = false,
+  mergedConfig,
+  evaluation,
+  initialSectionId = null,
 }: SectionEditorProps): React.JSX.Element => {
-  const [selectedSectionId, setSelectedSectionId] = useState<string>(sections[0]?.sectionId ?? '1');
+  const firstSectionId = (): string =>
+    (initialSectionId && sections.some((s) => s.sectionId === initialSectionId) ? initialSectionId : sections[0]?.sectionId) ?? '1';
+  const [selectedSectionId, setSelectedSectionId] = useState<string>(firstSectionId);
   const [localData, setLocalData] = useState<Record<string, unknown> | null>(null);
   const [originalJson, setOriginalJson] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -150,6 +192,7 @@ const SectionEditor = ({
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
   const [filterMode, setFilterMode] = useState<SelectProps.Option>({ label: 'Show all fields', value: 'none' });
   const [activeTabId, setActiveTabId] = useState('visual');
+  const [showEvaluation, setShowEvaluation] = useState(false);
   // Latest callbacks, so the load effect does not re-run when a parent re-renders.
   const loadRef = useRef(loadSection);
   loadRef.current = loadSection;
@@ -160,8 +203,12 @@ const SectionEditor = ({
 
   // Reset to the first section when switching documents.
   useEffect(() => {
-    setSelectedSectionId(sections[0]?.sectionId ?? '1');
+    setSelectedSectionId(firstSectionId());
   }, [objectKey, sections]);
+
+  useEffect(() => {
+    if (onSelectedSectionChange) onSelectedSectionChange(selectedSection?.sectionId ?? null);
+  }, [selectedSection?.sectionId]);
 
   useEffect(() => {
     if (!selectedSection) {
@@ -206,15 +253,6 @@ const SectionEditor = ({
       return true;
     }
   }, [localData, originalJson]);
-
-  useEffect(() => {
-    if (onDirtyChange) onDirtyChange(hasChanges);
-  }, [hasChanges]);
-
-  // Covers tab close AND in-app navigation. Only the former was handled, and the
-  // latter is how edits were actually lost: a route change is not a page unload,
-  // so clicking a nav link discarded everything with no prompt at all.
-  useUnsavedChangesGuard(hasChanges, unsavedChangesMessage);
 
   // Leaf paths whose value differs from what was loaded. The renderer uses this to
   // relabel the field as the reviewer's own and to drop the model's confidence,
@@ -298,8 +336,9 @@ const SectionEditor = ({
     setLocalData(updated);
   };
 
-  const handleSave = async () => {
-    if (!selectedSection || !localData) return;
+  /** Save the open section; resolves true on success. */
+  const handleSave = async (): Promise<boolean> => {
+    if (!selectedSection || !localData) return false;
     setIsSaving(true);
     setError(null);
     try {
@@ -309,13 +348,19 @@ const SectionEditor = ({
       setLocalData(saved);
       setOriginalJson(JSON.stringify(saved, null, 2));
       if (onSaved) onSaved(selectedSection.sectionId);
+      return true;
     } catch (err) {
       logger.error('Error saving section:', err);
       setError(`Failed to save: ${getErrorMessage(err)}`);
+      return false;
     } finally {
       setIsSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (onSavingChange) onSavingChange(isSaving);
+  }, [isSaving]);
 
   // Autosave: a debounce, not a poll — it fires once, autosaveMs after the last edit.
   const saveRef = useRef(handleSave);
@@ -332,7 +377,39 @@ const SectionEditor = ({
     if (originalJson !== null) {
       setLocalData(JSON.parse(originalJson));
     }
+    if (evaluation?.originalBaseline && evaluation.canEditBaseline) evaluation.setBaseline(evaluation.originalBaseline);
   };
+
+  // The baseline edits made here, compared with the baseline as loaded or last saved.
+  const baselineChanges = useMemo(
+    () => (evaluation?.baseline ? diffLeafPaths(evaluation.originalBaseline, evaluation.baseline) : new Map()),
+    [evaluation?.baseline, evaluation?.originalBaseline],
+  );
+  const isDirty = hasChanges || baselineChanges.size > 0;
+
+  useEffect(() => {
+    if (onDirtyChange) onDirtyChange(isDirty);
+  }, [isDirty]);
+
+  // Covers tab close AND in-app navigation. Only the former was handled, and the
+  // latter is how edits were actually lost: a route change is not a page unload,
+  // so clicking a nav link discarded everything with no prompt at all.
+  useUnsavedChangesGuard(isDirty, unsavedChangesMessage);
+
+  // The parent's buttons read the latest state through these.
+  const latest = useRef({ handleSave, handleDiscard, isDirty });
+  latest.current = { handleSave, handleDiscard, isDirty };
+  useEffect(() => {
+    if (!controllerRef) return undefined;
+    controllerRef.current = {
+      save: async () => (latest.current.isDirty ? latest.current.handleSave() : true),
+      discard: () => latest.current.handleDiscard(),
+      isDirty: () => latest.current.isDirty,
+    };
+    return () => {
+      controllerRef.current = null;
+    };
+  }, [controllerRef]);
 
   const handleFieldFocus = (geometry: Record<string, unknown> | null) => {
     setActiveFieldGeometry(geometry ?? null);
@@ -365,12 +442,36 @@ const SectionEditor = ({
     });
   };
 
-  const handleSectionChange = (sectionId: string) => {
-    if (confirmSectionSwitch && hasChanges && !window.confirm('You have unsaved ground truth changes. Discard them and switch sections?')) {
+  const handleSectionChange = async (sectionId: string) => {
+    if (saveOnSectionSwitch && hasChanges) {
+      // Saved first rather than discarded: the parent shows no Save to fall back on.
+      if (await handleSave()) setSelectedSectionId(sectionId);
+      return;
+    }
+    if (confirmSectionSwitch && isDirty && !window.confirm('You have unsaved ground truth changes. Discard them and switch sections?')) {
       return;
     }
     setSelectedSectionId(sectionId);
   };
+
+  // The evaluation baseline (direct edit): shown only where the document has one.
+  const baselineData = evaluation?.available ? evaluation.baseline : null;
+  const canEditBaseline = !!evaluation?.canEditBaseline && !isReadOnly && !!baselineData;
+  const baselineInference = baselineData
+    ? ((baselineData.inference_result ?? baselineData.inferenceResult ?? baselineData) as Record<string, unknown>)
+    : null;
+  const updateBaselineInference = (next: Record<string, unknown>) => {
+    if (!canEditBaseline || !baselineData || !evaluation) return;
+    const updated = { ...baselineData };
+    if (updated.inferenceResult !== undefined && updated.inference_result === undefined) updated.inferenceResult = next;
+    else updated.inference_result = next;
+    evaluation.setBaseline(updated);
+  };
+  const sectionPageNumbers = useMemo(
+    () => (selectedSection?.pageIds ?? []).map((id) => Number(id)).filter((n) => !Number.isNaN(n)),
+    [selectedSection?.pageIds],
+  );
+  const comparing = showEvaluation && !!baselineData;
 
   const ctx: SectionEditorContext = {
     data: localData,
@@ -384,12 +485,13 @@ const SectionEditor = ({
       <Header
         variant="h3"
         actions={
-          !isReadOnly && (
+          !isReadOnly &&
+          actionsPlacement === 'header' && (
             <SpaceBetween direction="horizontal" size="xs">
               <Button onClick={handleDiscard} disabled={!hasChanges || isSaving}>
                 Discard changes
               </Button>
-              <Button variant="primary" onClick={handleSave} loading={isSaving} disabled={!hasChanges}>
+              <Button variant="primary" onClick={() => void handleSave()} loading={isSaving} disabled={!hasChanges}>
                 {saveButtonText ?? 'Save changes'}
               </Button>
             </SpaceBetween>
@@ -409,7 +511,7 @@ const SectionEditor = ({
           {sections.length > 1 ? (
             <SegmentedControl
               selectedId={selectedSectionId}
-              onChange={({ detail }) => handleSectionChange(detail.selectedId)}
+              onChange={({ detail }) => void handleSectionChange(detail.selectedId)}
               options={sections.map((s) => ({
                 id: s.sectionId,
                 /* The open section's class comes from its loaded result, which may carry
@@ -461,18 +563,57 @@ const SectionEditor = ({
                   content: (
                     <SpaceBetween size="s">
                       {classSlot && classSlot(ctx)}
+                      {/* The class comparison is shown whenever a baseline exists: the
+                          per-field comparison stays behind Show Evaluation. */}
+                      {baselineData && evaluation && (
+                        <SectionClassEvaluation
+                          index={evaluation.classificationIndex}
+                          pageNumbers={sectionPageNumbers}
+                          predictedClass={documentClassType}
+                          baselineClass={(baselineData.document_class as Record<string, unknown> | undefined)?.type as string | undefined}
+                        />
+                      )}
+                      {comparing && (
+                        <Alert type="info" header="Evaluation Comparison Mode">
+                          Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
+                          and reasons.
+                        </Alert>
+                      )}
+                      {baselineData && !showEvaluation && (
+                        <Box variant="small" color="text-body-secondary">
+                          This document has an evaluation baseline. Turn on <b>Show Evaluation</b> to compare every field against it, not
+                          just the class.
+                        </Box>
+                      )}
                       {hasFieldValues ? (
                         <>
-                          <FormField label="Fields to show">
-                            <Select
-                              selectedOption={filterMode}
-                              onChange={({ detail }) => setFilterMode(detail.selectedOption)}
-                              options={[
-                                { label: 'Show all fields', value: 'none' },
-                                { label: 'Confidence alerts only', value: 'confidence-alerts' },
-                              ]}
-                            />
-                          </FormField>
+                          <SpaceBetween direction="horizontal" size="m" alignItems="end">
+                            <FormField label="Fields to show">
+                              <Select
+                                selectedOption={filterMode}
+                                onChange={({ detail }) => setFilterMode(detail.selectedOption)}
+                                options={[
+                                  { label: 'Show all fields', value: 'none' },
+                                  { label: 'Confidence alerts only', value: 'confidence-alerts' },
+                                  ...(evaluation?.available
+                                    ? [{ label: 'Evaluation mismatches only', value: 'eval-mismatches', disabled: !showEvaluation }]
+                                    : []),
+                                ]}
+                              />
+                            </FormField>
+                            {evaluation?.available && (
+                              <SpaceBetween direction="horizontal" size="xs" alignItems="center">
+                                <Toggle
+                                  checked={showEvaluation}
+                                  disabled={evaluation.loading || !baselineData}
+                                  onChange={({ detail }) => setShowEvaluation(detail.checked)}
+                                >
+                                  Show Evaluation
+                                </Toggle>
+                                {evaluation.loading && <Spinner />}
+                              </SpaceBetween>
+                            )}
+                          </SpaceBetween>
                           {/* One affordance for the selected field rather than a button on
                               every one of them: a bank statement section runs to hundreds of
                               fields, and the reviewer has already clicked the one they mean
@@ -507,6 +648,13 @@ const SectionEditor = ({
                             editedFieldPaths={predictionChanges}
                             path={[]}
                             explainabilityInfo={explainabilityInfo}
+                            mergedConfig={mergedConfig ?? null}
+                            baselineValue={comparing ? baselineInference : null}
+                            showComparison={comparing}
+                            evaluationResults={comparing ? evaluation?.evaluationResults : null}
+                            sectionId={selectedSection?.sectionId ?? null}
+                            onBaselineChange={canEditBaseline ? updateBaselineInference : undefined}
+                            baselineChanges={baselineChanges}
                             collapsedPaths={collapsedPaths}
                             onToggleCollapse={handleToggleCollapse}
                             filterMode={filterMode.value}
@@ -531,22 +679,27 @@ const SectionEditor = ({
                   content: (
                     <JSONEditorTab
                       predictionData={localData}
-                      baselineData={null}
+                      baselineData={baselineData}
                       isReadOnly={isReadOnly}
                       onPredictionChange={(data) => setLocalData(data)}
-                      showBaseline={false}
-                      isBaselineAvailable={false}
-                      loadingEvaluation={false}
+                      onBaselineChange={canEditBaseline && evaluation ? (data) => evaluation.setBaseline(data) : undefined}
+                      showBaseline={comparing}
+                      isBaselineAvailable={!!evaluation?.available}
+                      loadingEvaluation={!!evaluation?.loading}
                     />
                   ),
                 },
-                {
-                  id: 'history',
-                  // See the same tab in VisualEditorModal: these are field edits,
-                  // not revisions.
-                  label: 'Edit history',
-                  content: <EditHistoryTab predictionData={localData} baselineData={null} />,
-                },
+                ...(showHistoryTab
+                  ? [
+                      {
+                        id: 'history',
+                        // See the same tab in VisualEditorModal: these are field edits,
+                        // not revisions.
+                        label: 'Edit history',
+                        content: <EditHistoryTab predictionData={localData} baselineData={baselineData} />,
+                      },
+                    ]
+                  : []),
               ]}
             />
           )}

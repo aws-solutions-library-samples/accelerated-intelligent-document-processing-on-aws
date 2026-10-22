@@ -1,18 +1,19 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The annotation screen for a production review item: the shared SectionEditor over
-// the item's sections, edits autosaved as drafts, then Complete or Skip (give the item
-// back to its queue; the draft is kept). Only the assignee edits. Any Annotator listed
+// The unified editor for a production review item: the shared SectionEditor over the
+// item's sections, edits autosaved as drafts (and Save as Draft), then Process Changes
+// (complete the review) or Skip (give the item back to its queue; the draft is kept). Only the assignee edits. Any Annotator listed
 // on the item's queue can open it read-only, and Claim an unassigned item to work it.
-// An Admin edits an unassigned item directly: the first draft save, or Complete,
-// assigns it to them. An item assigned to someone else is view-only for an Admin
+// An Admin edits an unassigned item directly: the first draft save, or Process
+// Changes, assigns it to them. An item assigned to someone else is view-only for an Admin
 // until they Take over.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, Box, Button, Container, Link, SpaceBetween, Spinner, StatusIndicator } from '@cloudscape-design/components';
+import { Alert, Box, Button, Container, Link, Spinner, StatusIndicator } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
+import usePageThumbnails from '../../hooks/use-page-thumbnails';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
@@ -20,13 +21,18 @@ import { MY_QUEUES_PATH, productionQueuePath, reviewItemHref } from '../../route
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import ReviewPresence from '../review-queues/ReviewPresence';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
-import ReviewHistoryModal from '../review-queues/ReviewHistoryModal';
 import ReasonModal from '../common/ReasonModal';
+import { saveDocumentGrouping } from '../common/document-grouping';
+import PageGroupingEditor from '../common/PageGroupingEditor';
+import type { GroupedSection } from '../common/section-grouping';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import type { ReviewItem } from '../../graphql/generated/operation-types';
 import AnnotationFrame from './AnnotationFrame';
 import type { AnnotationAction } from './AnnotationFrame';
+import EditorHistoryModal from './EditorHistoryModal';
+import ProcessingReportModal from './ProcessingReportModal';
 import SectionEditor from './SectionEditor';
+import type { SectionEditorController } from './SectionEditor';
 import { AUTOSAVE_MS, useProductionAnnotation } from './production-adapter';
 import useAnnotationExit from './use-annotation-exit';
 
@@ -55,6 +61,28 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   const [searchParams] = useSearchParams();
   const focusField = searchParams.get('field');
   const [showHistory, setShowHistory] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [sectionData, setSectionData] = useState<Record<string, unknown> | null>(null);
+  const editor = useRef<SectionEditorController | null>(null);
+  const [regroupOpen, setRegroupOpen] = useState(false);
+  const [isSavingGrouping, setIsSavingGrouping] = useState(false);
+  const [groupingError, setGroupingError] = useState<string | null>(null);
+  const { urls: thumbnailUrls } = usePageThumbnails(adapter.pages, { enabled: regroupOpen });
+  const boardPages = useMemo(
+    () => adapter.pages.map((page) => ({ id: Number(page.Id), imageUri: thumbnailUrls[String(page.Id)] ?? null })),
+    [adapter.pages, thumbnailUrls],
+  );
+  // Every section of the document, not only those under review: a grouping covers every page.
+  const boardSections: GroupedSection[] = useMemo(
+    () =>
+      adapter.documentSections.map((s) => ({
+        sectionId: s.sectionId,
+        documentClass: s.documentClass ?? null,
+        pageIds: s.pageIds.map((id) => Number(id)),
+      })),
+    [adapter.documentSections],
+  );
   const [busy, setBusy] = useState<AnnotationAction | null>(null);
   const [askSkipReason, setAskSkipReason] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -76,7 +104,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   }, [queueId, queueName, onItemQueue]);
 
   /**
-   * Before an Admin's first draft save or Complete on an unassigned item: claim it
+   * Before an Admin's first draft save or Process Changes on an unassigned item: claim it
    * (once, however many saves are waiting) and re-read it. Resolves true when the item
    * is the caller's; false when an Annotator was assigned it first.
    */
@@ -155,7 +183,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   const terminal = !assigned && item.state !== QueueItemState.OPEN;
   const assignee = assigned ? item.ownerEmail : null;
   const assignedToMe = assigned && item.isMine;
-  // An Admin edits an unassigned item straight away; the first save or Complete assigns it to them.
+  // An Admin edits an unassigned item straight away; the first save or Process Changes assigns it to them.
   const adminOnOpen = isAdmin && item.state === QueueItemState.OPEN;
   const canEdit = assignedToMe || adminOnOpen;
   // An Admin takes over an item assigned to someone else before editing it.
@@ -166,7 +194,6 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   let lockedReason: string | undefined;
   if (terminal) lockedReason = `This item is ${stateView.label.toLowerCase()}`;
   else if (!canEdit) lockedReason = assignee ? `Assigned to ${assignee}` : 'This item is not assigned to you';
-  else if (dirty) lockedReason = 'Saving your latest edits…';
 
   const run = async (action: AnnotationAction, fn: () => Promise<void>, failure: string): Promise<boolean> => {
     setBusy(action);
@@ -184,6 +211,25 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
   };
 
   const queuePath = productionQueuePath(item.queue);
+
+  const handleSaveGrouping = async (next: GroupedSection[]) => {
+    setIsSavingGrouping(true);
+    setGroupingError(null);
+    try {
+      const result = await saveDocumentGrouping(objectKey, next);
+      if (!result.success) {
+        setGroupingError(result.message ?? 'The page grouping could not be saved.');
+        return;
+      }
+      setRegroupOpen(false);
+      if (result.message) setSuccessMessage(result.message);
+      await Promise.all([reload(), adapter.refreshDocument()]);
+    } catch (err) {
+      setGroupingError(describeApiError(err, 'save the page grouping'));
+    } finally {
+      setIsSavingGrouping(false);
+    }
+  };
 
   const handleTakeOver = async () => {
     setTakingOver(true);
@@ -234,10 +280,41 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
       setAskSkipReason(true);
       return;
     }
+    if (action === 'discard') {
+      editor.current?.discard();
+      return;
+    }
+    if (action === 'save') {
+      setBusy('save');
+      try {
+        await editor.current?.save();
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+    if (action === 'regroup') {
+      // Regrouping is part of review: like a first save, it assigns an unassigned
+      // item to the Admin opening it, since only the item's holder may regroup.
+      const ok = await run(
+        'regroup',
+        async () => {
+          if (!(await ensureAssigned())) throw new AssignedElsewhere();
+        },
+        'start editing the page grouping',
+      );
+      if (ok) {
+        setGroupingError(null);
+        setRegroupOpen(true);
+      }
+      return;
+    }
     const ok = await run(
-      'complete',
+      'process',
       async () => {
         if (!(await ensureAssigned())) throw new AssignedElsewhere();
+        // The latest edits are saved as a draft first, so the finalize run applies them.
+        if (editor.current?.isDirty() && !(await editor.current.save())) throw new Error('Your latest edits could not be saved');
         await adapter.complete();
       },
       'complete the review',
@@ -286,20 +363,22 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
       title={name}
       objectKey={item.objectKey}
       badges={<StatusIndicator type={stateView.type}>{stateView.label}</StatusIndicator>}
-      meta={
-        <SpaceBetween direction="horizontal" size="l" alignItems="center">
-          <Box variant="small" color="text-body-secondary">{`Queue ${item.queue} · ${item.profile} · priority ${item.priority}`}</Box>
-          <ReviewPresence assignee={assignee} isMe={assignedToMe} since={item.claimedAt} />
-        </SpaceBetween>
-      }
+      meta={<ReviewPresence assignee={assignee} isMe={assignedToMe} since={item.claimedAt} />}
       actions={{
-        completeDisabledReason: lockedReason,
-        completeHint: 'Apply your corrections and finish the review',
+        processDisabledReason: lockedReason ?? (saving ? 'Saving your latest edits…' : undefined),
+        processHint: 'Apply your corrections and finish the review',
         // Skip gives the item back to its queue: only its holder can.
         showSkip: assignedToMe,
         skipDisabledReason: dirty ? 'Saving your latest edits…' : undefined,
+        showDiscard: canEdit,
+        discardDisabledReason: !dirty ? 'No changes to discard' : saving ? 'Saving your latest edits…' : undefined,
+        showSave: canEdit,
+        saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your latest edits…' : undefined,
+        showRegroup: true,
+        regroupDisabledReason: lockedReason ?? (dirty ? 'Saving your latest edits…' : undefined),
         showClaim: canClaim,
         onShowHistory: () => setShowHistory(true),
+        onShowReport: () => setShowReport(true),
         busy,
         onAction: (action) => void handleAction(action),
       }}
@@ -308,7 +387,30 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
       dialogs={
         <>
           {/* Mounted only while open, so their buttons are not on the screen otherwise. */}
-          {showHistory && <ReviewHistoryModal history={detail.history} onDismiss={() => setShowHistory(false)} />}
+          {showHistory && (
+            <EditorHistoryModal visible onDismiss={() => setShowHistory(false)} sectionData={sectionData} reviewHistory={detail.history} />
+          )}
+          {showReport && <ProcessingReportModal visible onDismiss={() => setShowReport(false)} sectionData={sectionData} />}
+          {regroupOpen && (
+            <PageGroupingEditor
+              presentation="modal"
+              pages={boardPages}
+              sections={boardSections}
+              canChangeClass={false}
+              consequence={
+                <>
+                  {groupingError && <Alert type="error">{groupingError}</Alert>}
+                  Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted values and your draft edits are{' '}
+                  <b>kept</b> with their sections, and the document finishes with this grouping when you choose <b>Process Changes</b>. A
+                  section you remove takes its draft edits with it.
+                </>
+              }
+              saveLabel="Save page grouping"
+              isSaving={isSavingGrouping}
+              onSave={handleSaveGrouping}
+              onCancel={() => setRegroupOpen(false)}
+            />
+          )}
           {askSkipReason && (
             <ReasonModal
               visible
@@ -340,12 +442,16 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
           loadSection={adapter.loadSection}
           onSave={saveSection}
           onDirtyChange={setDirty}
+          onSavingChange={setSaving}
+          onDataChange={setSectionData}
+          controllerRef={editor}
+          actionsPlacement="external"
+          showHistoryTab={false}
           reloadToken={adapter.reloadToken}
           autosaveMs={canEdit ? AUTOSAVE_MS : undefined}
           confirmSectionSwitch={false}
           focusFieldPath={focusField}
           buildFieldLink={buildFieldLink}
-          saveButtonText="Save draft"
           title="Extracted fields"
         />
       )}

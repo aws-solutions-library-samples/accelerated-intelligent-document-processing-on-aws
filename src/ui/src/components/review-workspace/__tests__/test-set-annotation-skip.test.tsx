@@ -4,6 +4,7 @@
 /**
  * Skipping a Test Studio document asks why, as a Production item does: a reason from
  * the set's skip list (its queue settings), and an optional note, sent with the skip.
+ * Its History holds the field edits only.
  */
 
 import React from 'react';
@@ -84,12 +85,14 @@ describe('Skip on a Test Studio document', () => {
     await waitFor(() => expect(exit).toHaveBeenCalled());
   });
 
-  it('has no History button: a Test Studio document has no review history', () => {
+  it('has a History button with field edits only: a Test Studio document has no review activity', () => {
     render(
       <MemoryRouter>
         <TestSetAnnotation testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
     );
-    expect(buttonByText('History')).toBeUndefined();
+    buttonByText('History')!.click();
+    const tabs = createWrapper(document.body).findTabs()!;
+    expect(tabs.findTabLinks().map((t) => t.getElement().textContent)).toEqual(['Field Edits']);
   });
 });

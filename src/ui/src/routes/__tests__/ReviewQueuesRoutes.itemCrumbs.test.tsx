@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The annotation screens' breadcrumbs. What has to hold: a production item sits under
- * its queue once the item has loaded — Home › Queue Management › <queue> › <document>
- * for an Admin, Home › My Work › Queues › <queue> › <document> for an Annotator — the
- * queue crumb named as people see it and linking to that queue's page; and a Test
- * Studio item sits under its test set the same way for both roles.
+ * The unified editor's breadcrumbs in the queue contexts. What has to hold: the shape
+ * is Home › <queue or test set> › <document> for every role; a production item's queue
+ * crumb is named as people see it and links to that queue's page once the item has
+ * loaded; and a Test Studio item's crumb is the set's name once its queue has loaded,
+ * its id until then, linking to the set's queue page.
  */
 
 import React, { useEffect } from 'react';
@@ -22,12 +22,20 @@ vi.mock('../../hooks/use-notifications', () => ({ default: () => [] }));
 vi.mock('../../components/genaiidp-layout/navigation', () => ({ default: () => null }));
 vi.mock('../../components/genai-idp-top-navigation', () => ({ default: () => null }));
 vi.mock('../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
-// The screen reports its item's queue once the item has loaded.
+// The screen reports its item's queue (or test set) once it has loaded.
+const testSetName: { value: string | null | undefined } = { value: undefined };
 vi.mock('../../components/review-workspace/AnnotationScreen', () => ({
-  default: ({ onItemQueue }: { onItemQueue?: (q: { id: string; name: string }) => void }) => {
+  default: ({
+    onItemQueue,
+    onTestSet,
+  }: {
+    onItemQueue?: (q: { id: string; name: string }) => void;
+    onTestSet?: (t: { id: string; name: string | null }) => void;
+  }) => {
     useEffect(() => {
       onItemQueue?.({ id: 'high value', name: 'High Value' });
-    }, [onItemQueue]);
+      if (testSetName.value !== undefined) onTestSet?.({ id: 'ts-1', name: testSetName.value });
+    }, [onItemQueue, onTestSet]);
     return null;
   },
 }));
@@ -52,6 +60,7 @@ const renderAt = (path: string) =>
 
 beforeEach(() => {
   document.body.innerHTML = '';
+  testSetName.value = undefined;
   role.isAdmin = true;
   role.isAnnotator = false;
 });
@@ -59,38 +68,37 @@ beforeEach(() => {
 const ITEM = `/review-queues/items/${encodeURIComponent('in/W2_input-8.pdf')}`;
 
 describe('a production item’s breadcrumbs', () => {
-  it('name its queue under Queue Management for an Admin, linking to the queue’s page', async () => {
+  it('are Home › queue › document for an Admin, linking to the queue’s page', async () => {
     renderAt(ITEM);
-    await waitFor(() => expect(crumbs()).toHaveLength(4));
-    expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Queue Management', 'High Value', 'W2_input-8.pdf']);
-    expect(crumbs()[2].href).toBe('#/review-queues/queues/high%20value');
+    await waitFor(() => expect(crumbs().map((c) => c.text)).toEqual(['Home', 'High Value', 'W2_input-8.pdf']));
+    expect(crumbs()[1].href).toBe('#/review-queues/queues/high%20value');
   });
 
-  it('name its queue under My Work › Queues for an Annotator', async () => {
+  it('have the same shape for an Annotator', async () => {
     role.isAdmin = false;
     role.isAnnotator = true;
     renderAt(ITEM);
-    await waitFor(() => expect(crumbs()).toHaveLength(5));
-    expect(crumbs().map((c) => c.text)).toEqual(['Home', 'My Work', 'Queues', 'High Value', 'W2_input-8.pdf']);
-    expect(crumbs()[2].href).toBe('#/my-work/queues');
-    expect(crumbs()[3].href).toBe('#/review-queues/queues/high%20value');
+    await waitFor(() => expect(crumbs().map((c) => c.text)).toEqual(['Home', 'High Value', 'W2_input-8.pdf']));
+    expect(crumbs()[1].href).toBe('#/review-queues/queues/high%20value');
   });
 });
 
 describe('a Test Studio item’s breadcrumbs', () => {
   const TEST_ITEM = `/review-queues/test-sets/ts-1/items/${encodeURIComponent('in/a.pdf')}`;
 
-  it('name its test set under Queue Management for an Admin', () => {
+  it('name the test set once its queue has loaded', async () => {
+    testSetName.value = 'Invoices';
     renderAt(TEST_ITEM);
-    expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Queue Management', 'Test set: ts-1', 'a.pdf']);
-    expect(crumbs()[2].href).toBe('#/review-queues/test-sets/ts-1');
+    await waitFor(() => expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Invoices', 'a.pdf']));
+    expect(crumbs()[1].href).toBe('#/review-queues/test-sets/ts-1');
   });
 
-  it('name its test set under My Work › Queues for an Annotator', () => {
+  it('show the test set id before the name loads', () => {
+    testSetName.value = undefined;
     role.isAdmin = false;
     role.isAnnotator = true;
     renderAt(TEST_ITEM);
-    expect(crumbs().map((c) => c.text)).toEqual(['Home', 'My Work', 'Queues', 'Test set: ts-1', 'a.pdf']);
-    expect(crumbs()[3].href).toBe('#/review-queues/test-sets/ts-1');
+    expect(crumbs().map((c) => c.text)).toEqual(['Home', 'ts-1', 'a.pdf']);
+    expect(crumbs()[1].href).toBe('#/review-queues/test-sets/ts-1');
   });
 });

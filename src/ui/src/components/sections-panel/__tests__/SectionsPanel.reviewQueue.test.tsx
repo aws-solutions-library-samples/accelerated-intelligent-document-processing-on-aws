@@ -4,7 +4,7 @@
 /**
  * While a document is in a review queue, the Sections panel offers no way to change it.
  *
- * Edit Mode and Edit page grouping are off for every role (here an Admin, whom the
+ * Edit Mode and Edit Page Grouping are off for every role (here an Admin, whom the
  * legacy gating always let through), and Skip All Reviews is not offered, because the
  * queue item is where a queued document is reviewed, skipped and completed.
  */
@@ -52,10 +52,10 @@ const skipAllAction = () =>
 const isOff = (button: HTMLElement) => button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true';
 
 describe('SectionsPanel review-queue gating', () => {
-  it('turns Edit Mode and Edit page grouping off while the document is in a review queue', () => {
+  it('turns Edit Mode and Edit Page Grouping off while the document is in a review queue', () => {
     renderPanel('in_review');
     expect(isOff(screen.getByRole('button', { name: /^Edit Mode/i }))).toBe(true);
-    expect(isOff(screen.getByRole('button', { name: /Edit page grouping/i }))).toBe(true);
+    expect(isOff(screen.getByRole('button', { name: /Edit Page Grouping/i }))).toBe(true);
   });
 
   it('does not offer Skip All Reviews for a queued document', () => {

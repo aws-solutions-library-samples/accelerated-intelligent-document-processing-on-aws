@@ -412,7 +412,6 @@ export const createReviewQueue = /* GraphQL */ `
       timeLimitMinutes
       eligibleAnnotators
       isDefaultQueue
-      confidenceThreshold
       enabled
     }
   }
@@ -671,6 +670,7 @@ export const getAnnotationQueue = /* GraphQL */ `
   query GetAnnotationQueue($testSetId: String!, $limit: Int, $includeCompleted: Boolean) {
     getAnnotationQueue(testSetId: $testSetId, limit: $limit, includeCompleted: $includeCompleted) {
       testSetId
+      name
       claimLeaseMinutes
       skipReasons
       summaryStatus
@@ -723,6 +723,7 @@ export const getAnnotationQueueDocument = /* GraphQL */ `
   query GetAnnotationQueueDocument($testSetId: String!, $objectKey: String!) {
     getAnnotationQueue(testSetId: $testSetId, objectKey: $objectKey, includeCompleted: true) {
       testSetId
+      name
       claimLeaseMinutes
       skipReasons
       summaryStatus
@@ -1216,7 +1217,6 @@ export const getMyReviewQueues = /* GraphQL */ `
         claimedByMe
         oldestEnqueuedAt
         isDefaultQueue
-        confidenceThreshold
         enabled
         claimCap
         checklist
@@ -1372,7 +1372,6 @@ export const getReviewQueuesOverview = /* GraphQL */ `
           annotators
           oldestEnqueuedAt
           isDefaultQueue
-          confidenceThreshold
           enabled
           claimCap
           checklist
@@ -2059,7 +2058,6 @@ export const listReviewQueues = /* GraphQL */ `
       timeLimitMinutes
       eligibleAnnotators
       isDefaultQueue
-      confidenceThreshold
       enabled
     }
   }
@@ -3155,7 +3153,6 @@ export const updateReviewQueue = /* GraphQL */ `
       timeLimitMinutes
       eligibleAnnotators
       isDefaultQueue
-      confidenceThreshold
       enabled
     }
   }

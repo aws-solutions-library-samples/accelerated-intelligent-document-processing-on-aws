@@ -133,16 +133,18 @@ describe('AnnotationWorkspace version transition', () => {
     expect(SCREEN).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
 
-  it('lets Complete open the transition itself, only when none is open, and only on click', () => {
+  it('lets Process Changes open the transition itself, only when none is open, and only on click', () => {
     // HITL review queues (IDP-0002 R2-N): Complete needs no edit and no Start annotating
     // first. Choosing it is the explicit act that opens the version transition, so the
     // commitment is still never made on arrival - only from the Complete handler, and
     // only when no transition is open yet, before the sections are confirmed.
     const handler = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
-    expect(handler).toMatch(/if \(!draft\) await adapter\.openDraft\(\);\s*await adapter\.confirmSections\(remaining\);/);
+    expect(handler).toMatch(
+      /if \(!draft\) await adapter\.openDraft\(\);\s*const remaining = [^;]*;\s*if \(remaining\.length > 0\) await adapter\.confirmSections\(remaining\);/,
+    );
     // Only the role half of the editor's read-only state disables Complete.
     expect(SCREEN).not.toMatch(/completeReason = [^;]*Start annotating/);
-    expect(SCREEN).toMatch(/completeDisabledReason: completeReason/);
+    expect(SCREEN).toMatch(/processDisabledReason: completeReason/);
   });
 
   it('gates confirming labels on the transition, not only editing them', () => {

@@ -43,7 +43,7 @@ const SCREEN = readFileSync(join(__dirname, '..', '..', 'review-workspace', 'Tes
  * here. They pinned the in-page "Save & next in queue" rail, which this page no longer
  * has: it is a queue table, and each row opens the per-document annotation screen
  * (review-workspace/TestSetAnnotation.tsx), which returns to the queue (or My Work)
- * after Complete, Skip or the last section's save. There is no in-page advance, no
+ * after Process Changes, Skip or the last section's save. There is no in-page advance, no
  * local next-document choice and no local retirement of a row left to test. The
  * intent of those tests — leave the saved document at once, and never claim a
  * part-reviewed packet as reviewed — is pinned below against the screen that owns it.
@@ -55,7 +55,7 @@ describe('leaving a document does not wait for the queue reload', () => {
   it('is positioned in the source where this test expects to find it', () => {
     // Guards the assertions below from silently passing on an empty slice.
     expect(handleAction).toContain('await adapter.skip(reason, note)');
-    expect(handleSaved).toContain('setSavedSections(next)');
+    expect(handleSaved).toContain('savedSections.current.add(sectionId)');
   });
 
   it('exits as soon as the mutation lands, without awaiting a queue reload', () => {
@@ -72,10 +72,10 @@ describe('leaving a document does not wait for the queue reload', () => {
     // The server marks a document reviewed only once every section carries a human
     // verdict, so one section's save on a packet must not announce the document
     // reviewed — the claim the test set's own Review state column contradicted.
-    const everyAt = handleSaved.indexOf('if (sections.every((s) => next.has(s.sectionId)))');
+    const everyAt = handleSaved.indexOf('if (sections.every((s) => savedSections.current.has(s.sectionId)))');
     expect(everyAt).toBeGreaterThan(-1);
     expect(handleSaved.indexOf('is marked reviewed')).toBeGreaterThan(everyAt);
-    expect(handleSaved).toContain('Check the other sections, then choose Complete.');
+    expect(handleSaved).toContain('Check the other sections, then choose Process Changes.');
   });
 
   it('does not report a skipped document as reviewed', () => {

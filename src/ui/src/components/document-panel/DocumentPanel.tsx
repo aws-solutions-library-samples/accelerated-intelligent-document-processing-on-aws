@@ -50,7 +50,8 @@ import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadM
 import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
 import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
-import { reviewItemHref } from '../../routes/constants';
+import { documentEditHref, reviewItemHref } from '../../routes/constants';
+import { PROCESSING_REASON, isEditableStatus } from '../review-workspace/direct-edit-status';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
 // import { debugDocumentStructure } from '../common/debug-utils';
@@ -778,7 +779,7 @@ export const DocumentPanel = ({
   const { mergedConfig: separateVersionConfig } = useConfiguration(needsSeparateVersionFetch ? docConfigVersion : 'default');
   // Use the separate fetch result only when the version differs; otherwise reuse the default config
   const documentVersionConfig = needsSeparateVersionFetch ? separateVersionConfig : mergedConfig;
-  const { isReviewer, canWorkReviewQueues } = useUserRole();
+  const { isReviewer, canWorkReviewQueues, canWrite, canReview } = useUserRole();
 
   // Check if document can be aborted
   const canAbort = ABORTABLE_STATUSES.includes(localItem?.objectStatus);
@@ -972,6 +973,17 @@ export const DocumentPanel = ({
                       disabled={isClaimingReview}
                     >
                       Start Review
+                    </Button>
+                  )}
+                  {/* The unified editor's direct edit; it decides what is editable. */}
+                  {(canWrite || canReview) && (
+                    <Button
+                      iconName="edit"
+                      href={documentEditHref(localItem.objectKey)}
+                      disabled={!isEditableStatus(localItem.objectStatus)}
+                      disabledReason={isEditableStatus(localItem.objectStatus) ? undefined : PROCESSING_REASON}
+                    >
+                      Edit
                     </Button>
                   )}
                   <Button

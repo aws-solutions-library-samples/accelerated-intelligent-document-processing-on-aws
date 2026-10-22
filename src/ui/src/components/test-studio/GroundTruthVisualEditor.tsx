@@ -45,7 +45,7 @@ import PageGroupingEditor from '../common/PageGroupingEditor';
 import { pageIdsToIndices, pageIndicesToIds } from '../common/section-grouping';
 import type { GroupedSection } from '../common/section-grouping';
 import SectionEditor from '../review-workspace/SectionEditor';
-import type { SectionEditorContext } from '../review-workspace/SectionEditor';
+import type { SectionEditorContext, SectionEditorController } from '../review-workspace/SectionEditor';
 import type { LoadedSection, ReviewSectionRef } from '../review-workspace/types';
 import {
   CLASS_LIST_UNAVAILABLE_CONSTRAINT,
@@ -147,6 +147,21 @@ interface GroundTruthVisualEditorProps {
   buildFieldLink?: ((fieldPath: string) => string) | null;
   /** Called when the open section gains or loses unsaved changes. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Passed to SectionEditor: the unified editor's top bar drives save and discard. */
+  controllerRef?: React.MutableRefObject<SectionEditorController | null>;
+  actionsPlacement?: 'header' | 'external';
+  showHistoryTab?: boolean;
+  onSavingChange?: (saving: boolean) => void;
+  saveOnSectionSwitch?: boolean;
+  onDataChange?: (data: Record<string, unknown> | null) => void;
+  /**
+   * `structure` (the default) puts Edit Page Grouping beside the section selector and
+   * shows the board inline. `external` leaves the button to the caller, which opens the
+   * board as a modal through `regroupOpen`.
+   */
+  regroupPlacement?: 'structure' | 'external';
+  regroupOpen?: boolean;
+  onRegroupOpenChange?: (open: boolean) => void;
 }
 
 const GroundTruthVisualEditor = ({
@@ -165,7 +180,17 @@ const GroundTruthVisualEditor = ({
   focusFieldPath = null,
   buildFieldLink = null,
   onDirtyChange,
+  controllerRef,
+  actionsPlacement,
+  showHistoryTab,
+  onSavingChange,
+  saveOnSectionSwitch,
+  onDataChange,
+  regroupPlacement = 'structure',
+  regroupOpen = false,
+  onRegroupOpenChange,
 }: GroundTruthVisualEditorProps): React.JSX.Element => {
+  const externalRegroup = regroupPlacement === 'external';
   const { user } = useAppContext();
   const { pages, isLoading: pagesLoading, error: pagesError, previewUnavailable } = useTestDocPages(bucket, inputKey);
 
@@ -344,6 +369,7 @@ const GroundTruthVisualEditor = ({
 
       setRegroupedSectionIds(changed);
       setIsRegrouping(false);
+      if (onRegroupOpenChange) onRegroupOpenChange(false);
       setReloadToken((token) => token + 1);
       // The caller refreshes its queue: section ids and classes have moved, so its
       // cached refs are stale.
@@ -517,8 +543,9 @@ const GroundTruthVisualEditor = ({
         </Alert>
       )}
 
-      {isRegrouping && (
+      {(externalRegroup ? regroupOpen && canRegroup : isRegrouping) && (
         <PageGroupingEditor
+          presentation={externalRegroup ? 'modal' : 'inline'}
           pages={boardPages}
           sections={groupingForBoard(ctx.selectedSectionId)}
           classOptions={classOptions}
@@ -533,7 +560,7 @@ const GroundTruthVisualEditor = ({
           saveLabel="Save page grouping"
           isSaving={isSavingGrouping}
           onSave={handleSaveGrouping}
-          onCancel={() => setIsRegrouping(false)}
+          onCancel={() => (externalRegroup ? onRegroupOpenChange?.(false) : setIsRegrouping(false))}
         />
       )}
       {error && <Alert type="error">{error}</Alert>}
@@ -546,9 +573,10 @@ const GroundTruthVisualEditor = ({
      fix, and pairing this with the pills' own condition would have removed the only
      route to it. */
   const structureSlot = (): React.ReactNode =>
+    !externalRegroup &&
     canRegroup && (
       <Button iconName="edit" disabled={!mayChangeClass || !testSetId} onClick={() => setIsRegrouping(true)}>
-        Edit page grouping
+        Edit Page Grouping
       </Button>
     );
 
@@ -644,7 +672,11 @@ const GroundTruthVisualEditor = ({
              pills, because it rewrites the document's structure rather than this
              section's field data — so the description says where to find it instead of
              implying it is here. */
-          description="Which pages of the document this section covers, in reading order. Use Edit page grouping, above, to move or reorder pages."
+          description={
+            externalRegroup
+              ? 'Which pages of the document this section covers, in reading order. Use Edit Page Grouping at the top to move or reorder pages.'
+              : 'Which pages of the document this section covers, in reading order. Use Edit Page Grouping, above, to move or reorder pages.'
+          }
         >
           <Input value={splitPageIndices.map((index) => index + 1).join(', ')} disabled />
         </FormField>
@@ -675,7 +707,7 @@ const GroundTruthVisualEditor = ({
           </>
         ) : (
           <>
-            If the pages belong with another section instead, <b>Edit page grouping</b> can merge them rather than classifying this one
+            If the pages belong with another section instead, <b>Edit Page Grouping</b> can merge them rather than classifying this one
             separately.
           </>
         )}
@@ -691,8 +723,16 @@ const GroundTruthVisualEditor = ({
       isReadOnly={isReadOnly}
       loadSection={loadSection}
       onLoaded={handleLoaded}
-      onDataChange={setLocalData}
+      onDataChange={(data) => {
+        setLocalData(data);
+        if (onDataChange) onDataChange(data);
+      }}
       onDirtyChange={onDirtyChange}
+      controllerRef={controllerRef}
+      actionsPlacement={actionsPlacement}
+      showHistoryTab={showHistoryTab}
+      onSavingChange={onSavingChange}
+      saveOnSectionSwitch={saveOnSectionSwitch}
       onSave={handleSave}
       onSaved={(sectionId) => {
         if (onSaved) onSaved(baselineKeyFor(sectionId) ?? '');
@@ -705,7 +745,7 @@ const GroundTruthVisualEditor = ({
       headerExtras={headerExtras}
       classSlot={classSlot}
       structureSlot={structureSlot}
-      hideSectionRow={isRegrouping}
+      hideSectionRow={!externalRegroup && isRegrouping}
       emptyFieldsSlot={emptyFieldsSlot}
       pagesLoading={pagesLoading}
       pagesNotice={

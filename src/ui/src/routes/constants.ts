@@ -83,6 +83,9 @@ export const inboxHref = (tab?: 'messages' | 'preferences'): string => (tab ? `#
  * `idp_common.notifications.document_detail_link`.
  */
 export const documentDetailHref = (objectKey: string): string => `#${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
+/** The unified editor's direct edit of a document, optionally opened on one section. */
+export const documentEditHref = (objectKey: string, sectionId?: string): string =>
+  `#${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}/edit${sectionId ? `?section=${encodeURIComponent(sectionId)}` : ''}`;
 
 const MAX_INTERNAL_ROUTE_LENGTH = 1024;
 

@@ -135,11 +135,19 @@ export interface PageGroupingEditorProps {
   isSaving?: boolean;
   onSave: (sections: GroupedSection[]) => void | Promise<void>;
   onCancel: () => void;
+  /**
+   * `inline` (the default) renders the board in place, with an Expand button that opens
+   * it in a modal. `modal` opens it straight in the modal, with no Expand, and dismissing
+   * the modal cancels the edit (the unified editor's Edit Page Grouping).
+   */
+  presentation?: 'inline' | 'modal';
 }
 
 /** Column page-strip height. Taller in the modal, which is the point of expanding. */
 const INLINE_COLUMN_HEIGHT = 320;
 const EXPANDED_COLUMN_HEIGHT = 620;
+/** The dialog's minimum width: two 260px section columns and the gap between them. */
+const MODAL_MIN_WIDTH = 560;
 
 const nextSectionId = (sections: GroupedSection[]): string => {
   const numeric = sections.map((s) => Number.parseInt(s.sectionId, 10)).filter((n) => Number.isFinite(n));
@@ -459,13 +467,15 @@ const PageGroupingEditor = ({
   isSaving = false,
   onSave,
   onCancel,
+  presentation = 'inline',
 }: PageGroupingEditorProps): React.JSX.Element => {
+  const asModal = presentation === 'modal';
   // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note
   // at the top of the file.
   const [draft, setDraft] = useState<GroupedSection[]>(() => sortSectionsByFirstPage(sections));
   const [selectedPageIds, setSelectedPageIds] = useState<Set<number>>(new Set());
   const [lastTouchedPageId, setLastTouchedPageId] = useState<number | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(asModal);
   const [activePageId, setActivePageId] = useState<number | null>(null);
   const [previewPageId, setPreviewPageId] = useState<number | null>(null);
 
@@ -597,7 +607,7 @@ const PageGroupingEditor = ({
         <Button iconName="add-plus" onClick={addSection}>
           Add section
         </Button>
-        {!isExpanded && (
+        {!isExpanded && !asModal && (
           <Button iconName="expand" onClick={() => setIsExpanded(true)}>
             Expand
           </Button>
@@ -728,8 +738,9 @@ const PageGroupingEditor = ({
   if (isExpanded) {
     return (
       <>
-        <Modal visible size="max" header="Edit page grouping" onDismiss={() => setIsExpanded(false)} footer={footer}>
-          {body}
+        <Modal visible size="large" header="Edit Page Grouping" onDismiss={asModal ? onCancel : () => setIsExpanded(false)} footer={footer}>
+          {/* Wide enough for two section columns side by side; more scroll sideways. */}
+          <div style={{ minWidth: `${MODAL_MIN_WIDTH}px` }}>{body}</div>
         </Modal>
         {preview}
       </>

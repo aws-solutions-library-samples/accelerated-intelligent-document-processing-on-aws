@@ -1,15 +1,16 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The annotation screen for a Test Studio document: the ground-truth editor (the
-// test-set adapter over the shared SectionEditor), Complete and Skip. Saving a section
-// marks it reviewed; Complete confirms the sections not saved yet, so "the labels
-// are correct" and "I corrected them" end the same way, and needs no edit first.
+// The unified editor for a Test Studio document: the ground-truth editor (the
+// test-set adapter over the shared SectionEditor), Process Changes and Skip. Saving a
+// section marks it reviewed, so there is no Save as Draft here: switching sections
+// saves the open one, and Process Changes saves it and confirms the sections not saved
+// yet, so "the labels are correct" and "I corrected them" end the same way.
 // Skip gives the document back to its queue, unassigned and not reviewed, for another
 // Annotator to claim. The assignee works the document; an Admin or Author may too. An
 // Annotator listed on the set's queue can open any document read-only, and Claim an
 // unassigned one to work it.
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -43,8 +44,12 @@ import {
   draftBadgeHover,
   draftOpenedMessage,
   groundTruthAlertSuffix,
+  mayChangeClassFor,
 } from '../test-studio/annotation-edit-flags';
 import AnnotationFrame from './AnnotationFrame';
+import EditorHistoryModal from './EditorHistoryModal';
+import ProcessingReportModal from './ProcessingReportModal';
+import type { SectionEditorController } from './SectionEditor';
 import ReasonModal from '../common/ReasonModal';
 import type { AnnotationAction } from './AnnotationFrame';
 import { NOT_ASSIGNED_MESSAGE, useTestSetAnnotation } from './test-set-adapter';
@@ -52,12 +57,20 @@ import useAnnotationExit from './use-annotation-exit';
 
 type DocView = 'ground-truth' | 'source';
 
+/** The item's test set, for the breadcrumbs. */
+export interface ItemTestSet {
+  id: string;
+  name: string | null;
+}
+
 interface TestSetAnnotationProps {
   testSetId: string;
   objectKey: string;
+  /** Told the test set's name once its queue has loaded. */
+  onTestSet?: (testSet: ItemTestSet) => void;
 }
 
-const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): React.JSX.Element => {
+const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotationProps): React.JSX.Element => {
   const adapter = useTestSetAnnotation(testSetId, objectKey);
   const { doc, draft, queue, loading, loadError, reload } = adapter;
   const { setErrorMessage, setSuccessMessage } = useAppContext();
@@ -73,8 +86,23 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   const [askSkipReason, setAskSkipReason] = useState(false);
   const [isOpeningDraft, setIsOpeningDraft] = useState(false);
   const [dirty, setDirty] = useState(false);
-  // Sections saved on this screen: they already count as reviewed.
-  const [savedSections, setSavedSections] = useState<ReadonlySet<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [sectionData, setSectionData] = useState<Record<string, unknown> | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const [regroupOpen, setRegroupOpen] = useState(false);
+  const editor = useRef<SectionEditorController | null>(null);
+  // Sections saved on this screen: they already count as reviewed. A ref, so Process
+  // Changes sees a save it has just made.
+  const savedSections = useRef<Set<string>>(new Set());
+  // While Process Changes runs, a save it makes doesn't exit on its own.
+  const processing = useRef(false);
+
+  const queueName = queue?.name ?? null;
+  const queueLoaded = !!queue;
+  useEffect(() => {
+    if (queueLoaded) onTestSet?.({ id: testSetId, name: queueName });
+  }, [queueLoaded, queueName, testSetId, onTestSet]);
 
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
   const queuePath = testSetQueuePath(testSetId);
@@ -132,7 +160,6 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   const editFlags = annotationEditFlags(roles, doc, draft);
   const mayWork = doc.claimedByMe || isAdmin || isAuthor;
   const sections = doc.sections ?? [];
-  const remaining = sections.filter((s) => !savedSections.has(s.sectionId)).map((s) => s.sectionId);
 
   // Complete needs no edit and no Start annotating first: it opens the version
   // transition itself. Only the role half of the editor's read-only state applies.
@@ -147,9 +174,10 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
   let skipReason: string | undefined;
   if (isComplete) skipReason = doc.reviewed ? 'This document is already reviewed' : 'This document was already skipped';
   else if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
-  else if (dirty) skipReason = 'Save or discard your changes first';
   else if (loading) skipReason = 'Loading…';
+  // Process Changes saves the open section itself, so unsaved edits don't block it.
   let completeReason: string | undefined = skipReason;
+  if (!skipReason && dirty) skipReason = 'Save or discard your changes first';
   if (!completeReason) {
     if (!doc.reviewObjectKey && !doc.labelSource) completeReason = 'This document has no labels yet; Skip completes it';
     else if (roleCannotSave) completeReason = 'Your role cannot save these labels';
@@ -193,16 +221,30 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       setAskSkipReason(true);
       return;
     }
+    if (action === 'discard') {
+      editor.current?.discard();
+      return;
+    }
+    if (action === 'regroup') {
+      setRegroupOpen(true);
+      return;
+    }
+    if (action !== 'process') return;
     setBusy(action);
+    processing.current = true;
     try {
+      // The open section's edits are saved first (which marks it reviewed).
+      if (editor.current?.isDirty() && !(await editor.current.save())) return;
       // Idempotent server-side: the version transition this completion belongs to.
       if (!draft) await adapter.openDraft();
-      await adapter.confirmSections(remaining);
+      const remaining = sections.filter((s) => !savedSections.current.has(s.sectionId)).map((s) => s.sectionId);
+      if (remaining.length > 0) await adapter.confirmSections(remaining);
       exit(queuePath, `${objectKey} is complete and marked reviewed.`, workItemId);
     } catch (err) {
       setErrorMessage(describeApiError(err, 'complete this document'));
       void reload();
     } finally {
+      processing.current = false;
       setBusy(null);
     }
   };
@@ -224,16 +266,19 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
 
   const handleSaved = (baselineKey: string) => {
     const sectionId = sections.find((s) => s.baselineKey === baselineKey)?.sectionId;
-    const next = new Set(savedSections);
-    if (sectionId) next.add(sectionId);
-    setSavedSections(next);
+    if (sectionId) savedSections.current.add(sectionId);
+    // Process Changes finishes the document itself.
+    if (processing.current) return;
     // Saving the last section reviews the document, which ends its assignment.
-    if (sections.every((s) => next.has(s.sectionId))) {
+    if (sections.every((s) => savedSections.current.has(s.sectionId))) {
       exit(queuePath, `Saved. ${objectKey} is marked reviewed.`, workItemId);
       return;
     }
-    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Complete.`);
+    setSuccessMessage(`Section ${sectionId ?? ''} saved. Check the other sections, then choose Process Changes.`);
   };
+
+  const editorReadOnly = editFlags.isReadOnly || !mayWork;
+  const mayChangeClass = mayChangeClassFor(editFlags.canChangeClass && mayWork, editorReadOnly);
 
   const notices = (
     <>
@@ -275,7 +320,8 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       )}
       {!doc.reviewObjectKey && doc.labelSource && (
         <Alert type="info" header="Authored ground truth">
-          This document carries authored ground truth rather than a machine draft. Check its labels, correct them if needed, then Complete.
+          This document carries authored ground truth rather than a machine draft. Check its labels, correct them if needed, then choose
+          Process Changes.
           {groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}
         </Alert>
       )}
@@ -296,9 +342,6 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
       }
       meta={
         <SpaceBetween direction="horizontal" size="l" alignItems="center">
-          <Box variant="small" color="text-body-secondary">
-            In test set <Link href={`#${queuePath}`}>{testSetId}</Link>
-          </Box>
           {draft && (
             <Popover dismissButton={false} position="bottom" size="medium" triggerType="custom" content={draftBadgeHover(draft)}>
               <Badge color="blue">
@@ -310,30 +353,40 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
         </SpaceBetween>
       }
       actions={{
-        completeDisabledReason: completeReason,
-        completeHint: 'Mark the labels reviewed: saved sections as corrected, the rest as correct',
+        processDisabledReason: completeReason ?? (saving ? 'Saving your changes…' : undefined),
+        processHint: 'Mark the labels reviewed: saved and edited sections as corrected, the rest as correct',
         showSkip: true,
         skipDisabledReason: skipReason,
+        showDiscard: !editorReadOnly,
+        discardDisabledReason: !dirty ? 'No changes to discard' : saving ? 'Saving your changes…' : undefined,
+        showRegroup: true,
+        regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
         showClaim: canClaim,
+        onShowHistory: () => setShowHistory(true),
+        onShowReport: () => setShowReport(true),
         busy,
         onAction: (action) => void handleAction(action),
       }}
       notices={notices}
       dialogs={
-        // Mounted only while asked, so its buttons are not on the screen otherwise.
-        askSkipReason ? (
-          <ReasonModal
-            visible
-            header="Skip this document"
-            reasons={queue.skipReasons ?? []}
-            confirmLabel="Skip"
-            loading={busy === 'skip'}
-            onDismiss={() => setAskSkipReason(false)}
-            onConfirm={(reason, note) => void confirmSkip(reason, note)}
-          >
-            <Box>It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.</Box>
-          </ReasonModal>
-        ) : undefined
+        // Mounted only while asked, so their buttons are not on the screen otherwise.
+        <>
+          {askSkipReason && (
+            <ReasonModal
+              visible
+              header="Skip this document"
+              reasons={queue.skipReasons ?? []}
+              confirmLabel="Skip"
+              loading={busy === 'skip'}
+              onDismiss={() => setAskSkipReason(false)}
+              onConfirm={(reason, note) => void confirmSkip(reason, note)}
+            >
+              <Box>It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.</Box>
+            </ReasonModal>
+          )}
+          {showHistory && <EditorHistoryModal visible onDismiss={() => setShowHistory(false)} sectionData={sectionData} />}
+          {showReport && <ProcessingReportModal visible onDismiss={() => setShowReport(false)} sectionData={sectionData} />}
+        </>
       }
     >
       {testSetBucket && (
@@ -356,11 +409,20 @@ const TestSetAnnotation = ({ testSetId, objectKey }: TestSetAnnotationProps): Re
               sections={sections}
               /* Read-only until the version transition is open, by this document's save
                  path, and for anyone the document is not assigned to (bar Admin/Author). */
-              isReadOnly={editFlags.isReadOnly || !mayWork}
+              isReadOnly={editorReadOnly}
               canChangeClass={editFlags.canChangeClass && mayWork}
               onSave={adapter.saveSection}
               onSaved={handleSaved}
               onDirtyChange={setDirty}
+              onSavingChange={setSaving}
+              onDataChange={setSectionData}
+              controllerRef={editor}
+              actionsPlacement="external"
+              showHistoryTab={false}
+              saveOnSectionSwitch
+              regroupPlacement="external"
+              regroupOpen={regroupOpen}
+              onRegroupOpenChange={setRegroupOpen}
               saveButtonText="Save labels"
               testSetId={testSetId}
               onReextracted={() => void reload()}
