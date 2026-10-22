@@ -187,6 +187,24 @@ AWS_PROFILE=default aws logs tail "/aws/lambda/$FN" --since 15m --follow --regio
   | grep -iE "error|units|valid|migrat|traceback|pydantic"
 ```
 
+**Upgrades crossing config format 0.9 (v0.6.12 → v0.6.13 and later).** The same
+custom resource also runs the 0.8→0.9 conversion that nests the classification
+settings by model call. A stored configuration that combines a page limit
+(`maxPagesForClassification` other than `ALL`) with boundary detection is converted
+to `sectionSplitting: disabled`, and the conversion logs a warning starting
+`classification.maxPagesForClassification is ... Converted to sectionSplitting
+'disabled'` — expect it for any such profile in the log of whichever function
+reads the profile first (this config Lambda, or the classification function on the
+first document; the runtime then saves the converted profile back, while a pinned
+pre-upgrade revision logs it every time it is loaded), and do not report it as a failure (no shipped
+preset uses the combination, so a stack on the stock `default` profile prints
+none). If the test includes a **rollback**, a profile saved in v0.6.13 runs on
+v0.6.12 with v0.6.12's built-in classification defaults, because v0.6.12 recognises
+none of the nested keys; the fix is to restore that profile's last pre-upgrade
+revision in the v0.6.12 configuration editor, after the rollback. The stack-managed
+`default` profile is rebuilt by the rollback and keeps working. See
+[docs/migration-v0612-to-v0613.md](../../docs/migration-v0612-to-v0613.md#rolling-back-to-v0612).
+
 ## 7. Diagnose a failure
 
 If the update or rollback fails, the parent's failed-resource list is mostly
@@ -254,7 +272,12 @@ diff -r /tmp/upgrade-baseline /tmp/upgrade-after
 Expect the document to process to completion with comparable extracted values.
 Some drift is normal and NOT a regression: LLM non-determinism, and any
 config-shape changes the v0.5→v0.6 migration intentionally introduces (e.g.
-confidence/assessment structure, new metering fields). What you're ruling out
+confidence/assessment structure, new metering fields). Across config format 0.9 the
+two-stage section-classification metering context is `SectionClassification`;
+development builds before the release called it `Labeling`, so mapping the two
+only matters when the FROM side is a develop build that ran `strategy: two_stage`
+— a released v0.6.12 has neither key, and one-stage runs meter under
+`Classification` on both sides. What you're ruling out
 is a **functional break** — empty extractions, a workflow that errors/times
 out, classes no longer detected, or confidence collapsing to null across the
 board. Call out clearly whether the doc still processes and whether extracted
