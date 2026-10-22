@@ -5415,7 +5415,21 @@ class ClassificationService:
         )
 
         try:
-            segments, metering, errors = self._segment_document(document)
+            known = self._segments_from_file_shape(document)
+            if known is not None:
+                # The file's shape is asserted, so segmentation has nothing to
+                # find: under "one document" or "one per page" its output would
+                # be discarded by section forming anyway. Section classification
+                # still runs, once per known segment.
+                logger.info(
+                    "Skipping segmentation: sectionSplitting is %r, which fixes "
+                    "the segments (%d) without a model call.",
+                    self._file_shape().sectionSplitting,
+                    len(known),
+                )
+                segments, metering, errors = known, {}, []
+            else:
+                segments, metering, errors = self._segment_document(document)
             document.metering = utils.merge_metering_data(document.metering, metering)
             document.errors.extend(errors)
 
@@ -5474,6 +5488,24 @@ class ClassificationService:
             raise
 
         return document
+
+    def _segments_from_file_shape(self, document: Document) -> Optional[List[Segment]]:
+        """The segments a declared file shape fixes, or None to detect them.
+
+        ``disabled`` is one segment over every page; ``page`` is one segment per
+        page. ``llm_determined`` — the default — returns None, because there the
+        boundaries are exactly what segmentation exists to find.
+        """
+        splitting = self._file_shape().sectionSplitting.lower()
+        if splitting not in ("disabled", "page"):
+            return None
+        page_ids = sorted(
+            document.pages.keys(),
+            key=lambda x: int(x) if x.isdigit() else float("inf"),
+        )
+        if splitting == "disabled":
+            return [Segment(page_ids=page_ids)]
+        return [Segment(page_ids=[page_id]) for page_id in page_ids]
 
     def _segment_document(
         self, document: Document

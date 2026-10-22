@@ -877,3 +877,62 @@ class TestAPreUpgradeProfileWithEmptyStagePrompts:
             assert ClassificationService._shipped_classification_defaults() == {}
         finally:
             ClassificationService._shipped_classification_defaults.cache_clear()
+
+
+# --------------------------------------------------------------------------
+# A declared file shape fixes the segments, so segmentation is skipped
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestADeclaredFileShapeSkipsSegmentation:
+    """Under "one document" or "one per page" the segments are known before any
+    call, and section forming would discard whatever segmentation returned. At
+    packet granularity with images that is the expensive call, so it is not made.
+    """
+
+    def _run(self, service, document, router):
+        with (
+            patch("idp_common.s3.get_text_content", side_effect=_page_texts()),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=router),
+        ):
+            return service.two_stage_classify_document(document)
+
+    @staticmethod
+    def _stages(router):
+        return [stage for stage, _ in router.calls]
+
+    @pytest.mark.parametrize("granularity", ["page", "packet"])
+    def test_one_document_makes_one_section_classification_call(self, granularity):
+        service = _service(
+            granularity=granularity,
+            sectionSplitting="disabled",
+            labeling={"pages": "all"},
+        )
+        router = _Router(labels=["receipt"])
+        result = self._run(service, _document(4), router)
+
+        assert self._stages(router) == [ClassificationService.STAGE_LABELING]
+        assert [s.page_ids for s in result.sections] == [["1", "2", "3", "4"]]
+        assert result.sections[0].classification == "receipt"
+        assert not any(k.startswith("Segmentation/") for k in result.metering)
+        # The one call saw every page, because `pages: all` asked for it.
+        text = "".join(b["text"] for b in router.calls[0][1] if "text" in b)
+        assert all(f"PAGE-{i}" in text for i in range(1, 5))
+
+    def test_one_per_page_classifies_each_page_once(self):
+        service = _service(sectionSplitting="page")
+        router = _Router(labels=["invoice", "receipt", "invoice"])
+        result = self._run(service, _document(3), router)
+
+        assert self._stages(router) == [ClassificationService.STAGE_LABELING] * 3
+        assert [s.page_ids for s in result.sections] == [["1"], ["2"], ["3"]]
+
+    def test_detected_boundaries_still_run_segmentation(self):
+        """The default is untouched: there, boundaries are what segmentation is for."""
+        service = _service(sectionSplitting="llm_determined")
+        router = _Router(boundaries={"1": "start", "2": "continue"}, labels=["invoice"])
+        self._run(service, _document(2), router)
+
+        assert self._stages(router).count(ClassificationService.STAGE_SEGMENTATION) == 2
