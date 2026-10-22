@@ -189,10 +189,22 @@ write a full profile back on read, and rolling forward to v0.6.13 restores every
 setting. The stack-managed `default` profile is rebuilt from the v0.6.12 preset by
 the rollback itself, so it keeps working.
 
-If you must run v0.6.12 again on a profile saved in v0.6.13, restore that profile,
-once rolled back, from a revision saved before the upgrade (*Revision history* in
-the v0.6.12 editor) — v0.6.13 never rewrites a revision's stored body, so it is
-still in the v0.6.12 format — or upload the backup you exported before upgrading.
+**To get a profile working on v0.6.12 again, restore its last revision from
+before the upgrade.** v0.6.13 converts an old profile without recording a
+revision and never rewrites a revision's stored body, so for a profile carried
+over from v0.6.12 the newest revision saved before the upgrade holds exactly the
+settings it had, in the v0.6.12 format. After rolling back, open the profile in
+the v0.6.12 editor, choose that revision in *Revision history*, and restore it.
+Do this after the rollback, not before: restoring in the v0.6.13 editor writes the
+profile in the new format again. Two limits:
+
+- Edits made to the profile after the upgrade are not in that revision. Make them
+  again on v0.6.12, or take them from a v0.6.13 export.
+- A profile created after the upgrade has no v0.6.12 revision. Recreate it, or
+  upload a v0.6.12-format file for it.
+
+Revisions expire under the Configuration bucket's retention period
+(`DataRetentionInDays`); for a revision that has expired, use the backup below.
 
 > **Tip:** Export each custom profile before upgrading (*View/Edit Config* →
 > *Export*) as a backup in the v0.6.12 format.
