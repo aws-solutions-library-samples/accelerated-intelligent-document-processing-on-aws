@@ -148,9 +148,10 @@ interface SchemaProperty {
   // it the negation dependsOn also lacks.
   //
   // `field` resolves in the NEAREST ENCLOSING SCOPE that has it: from
-  // `classification.image.target_width`, the field `modality.images` is looked
-  // for at `classification.image.modality.images`, then
-  // `classification.modality.images`, then `modality.images`. That is what lets
+  // `classification.one_stage.llm.image.target_width`, the field
+  // `modality.images` is looked for at `...llm.image.modality.images`, then
+  // `classification.one_stage.llm.modality.images`, and so on up to
+  // `modality.images`. That is what lets
   // a condition reference a sibling object's field without spelling out the
   // whole path, which dependsOn (sibling-then-root only) cannot do.
   showWhen?: Array<{
@@ -936,7 +937,7 @@ const ConfigBuilder = ({
     //   one of its fields is edited, and `updateValue` deletes an object again
     //   once its last field is cleared. Hiding the group then makes every field
     //   inside it unreachable — the user cannot set a value because the control
-    //   is not rendered, and nothing says why. `classification.modality` is
+    //   is not rendered, and nothing says why. Each call's `modality` is
     //   permanently in that state: both its flags default to empty. Children
     //   read their own schema defaults when the parent is absent, so rendering
     //   is safe.

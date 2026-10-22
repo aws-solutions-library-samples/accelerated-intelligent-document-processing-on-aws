@@ -126,7 +126,7 @@ function appendBboxBlock(core: string, bboxBlock: string): string {
 // The preview has to do all three, because
 // the prompt a classification call actually sends is a function of FOUR settings
 // (granularity, strategy, modality, confidence.mode) and showing the raw
-// `classification.task_prompt` means showing a prompt that will not be sent —
+// task prompt means showing a prompt that will not be sent —
 // which is worse than showing nothing, since it looks authoritative.
 
 /** Splice markers for the class-confidence block (mirrors class_confidence._SPLICE_MARKERS). */

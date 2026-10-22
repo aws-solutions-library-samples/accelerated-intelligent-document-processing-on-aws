@@ -890,7 +890,7 @@ def main():
         f"plan: testset={a.testset} n={a.n} docs x {len(cells)} cell(s) "
         f"({len(models)} model(s) {models} x "
         f"{len(variants) or 1} variant(s) {variants or ['(stored config)']}), "
-        f"classification.confidence.mode={a.mode}"
+        f"class confidence mode={a.mode}"
     )
     print(f"       {len(cells) * a.n} documents total, drained one cell at a time")
     if a.estimate:

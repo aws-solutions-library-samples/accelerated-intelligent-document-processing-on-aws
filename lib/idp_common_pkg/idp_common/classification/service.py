@@ -1577,8 +1577,8 @@ class ClassificationService:
         class-confidence splice — this is the template whose placeholders the
         modality *inference* reads, so it has to be the operator's own text.
 
-        Packet granularity reads ``classification.packet.task_prompt``, and the
-        flat key is the page prompt. A pre-0.8 holistic configuration had only
+        Packet granularity reads the call's ``packet.task_prompt`` and page
+        granularity its ``page.task_prompt``. A pre-0.8 holistic configuration had only
         the flat key — ``task_prompt`` was shared by both old methods and no
         packet-shaped default ever shipped, so such a config's flat prompt IS
         its hand-written packet prompt. ``migrations.v07_to_v08`` copies it into
@@ -2575,7 +2575,7 @@ class ClassificationService:
                         # discarded (GitHub #673); `classification_reason` is
                         # asked for by the DEFAULT prompt — those output tokens
                         # were bought on every page and dropped; `candidates` is
-                        # what classification.confidence.mode=topk requests.
+                        # what confidence.mode=topk requests.
                         # Parsing is NOT gated on the mode: a custom prompt that
                         # asks for any of these is honoured, and a prompt that
                         # asks for none simply yields None/[].
