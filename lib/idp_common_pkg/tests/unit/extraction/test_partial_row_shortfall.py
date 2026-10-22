@@ -643,9 +643,19 @@ class TestTheSeverityIsOneAReaderSees:
         src = (
             _repo_root() / "src/ui/src/components/common/processing-issues-utils.ts"
         ).read_text(encoding="utf-8")
-        # An info note is NOT described as a recovery unless its code says so.
-        assert "RECOVERY_CODES" in src
-        assert "assessment_recovered_with_retries" in src
+        # Parse the set, do not grep for the identifier: `"RECOVERY_CODES" in src`
+        # holds whatever the set contains, including a version that lists this
+        # code, so it would pass in the one case worth catching.
+        recovery = re.search(
+            r"const\s+RECOVERY_CODES\s*=\s*new\s+Set\(\s*(\[[^\]]*\])\s*\)", src
+        )
+        assert recovery, "RECOVERY_CODES is no longer declared in the panel's helper"
+        recovery_codes = set(re.findall(r"'([^']+)'", recovery.group(1)))
+        assert PARTIAL not in recovery_codes, (
+            f"{PARTIAL} is listed as a recovery code, so an info severity would "
+            "render as 'Auto-recovered' — a false statement about a section that "
+            "lost rows"
+        )
         svc = _svc()
         svc._document_text = EIGHT_HUNDRED
         issue = next(

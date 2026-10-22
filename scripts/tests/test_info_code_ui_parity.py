@@ -49,6 +49,48 @@ ADVISORY_INFO_CODES = {
 }
 
 
+#: ``ProcessingIssue(...)`` call sites whose ``severity`` this file cannot resolve,
+#: as ``(path relative to the repo, the severity expression) -> (count, why it
+#: cannot be ``info``)``. A site here contributes nothing to the derived universe,
+#: so it is a hole in the closure the rest of this file asserts — and each entry
+#: carries one site's worth of reason, because whether a site can emit ``info`` is
+#: a property of that expression and not of the group.
+#:
+#: Completeness that rests on reading call sites by hand is not a property a test
+#: holds, so the set and the per-site count are pinned instead:
+#: :func:`test_no_new_unresolvable_severity_site_appears` turns red on a new site,
+#: or another call at an existing one, rather than letting the universe shrink
+#: quietly.
+UNRESOLVED_SEVERITY_SITES = {
+    ("lib/idp_common_pkg/idp_common/classification/service.py", "severities[code]"): (
+        1,
+        "the mapping it indexes declares only 'error' and 'warning'",
+    ),
+    ("lib/idp_common_pkg/idp_common/assessment/batching.py", "severity"): (
+        2,
+        'both locals are "error" if ... else "warning"',
+    ),
+    (
+        "lib/idp_common_pkg/idp_common/extraction/service.py",
+        "'error' if shortfall_action == 'fail' else 'warning'",
+    ): (1, "a conditional over two literals, neither of them 'info'"),
+    (
+        "lib/idp_common_pkg/idp_common/extraction/service.py",
+        "'error' if fail_action == 'reject' else 'warning'",
+    ): (1, "a conditional over two literals, neither of them 'info'"),
+    (
+        "lib/idp_common_pkg/idp_common/dynamodb/service.py",
+        "iss.get('severity', 'info')",
+    ): (
+        1,
+        "deserialization, not declaration: it rebuilds a stored issue and takes "
+        "its code from data too, so it introduces no code this gate could "
+        "enumerate. It can produce 'info' — and that is harmless here precisely "
+        "because the code it carries was declared at one of the literal sites.",
+    ),
+}
+
+
 def _constant_bindings(tree: ast.Module) -> dict[str, str]:
     """``NAME = "literal"`` bindings at module level **and inside class bodies**.
 
@@ -78,14 +120,13 @@ def _constant_bindings(tree: ast.Module) -> dict[str, str]:
 def _resolve_str(expr: ast.expr | None, bindings: dict[str, str]) -> str | None:
     """A string from a literal, a bare name, or an attribute like ``self.X``.
 
-    ⚠️ Resolving only ``ast.Constant`` is what made the first version of this gate
-    pass vacuously: ``ProcessingIssue(severity="info",
-    code=self.NO_OCR_EVIDENCE_CODE, ...)`` was never seen, so the one info code
-    passed by reference was absent from the derived universe and
-    ``test_every_backend_info_code_is_classified`` was green because the walk
-    never reached it. A gate whose derivation is incomplete asserts nothing about
-    what it cannot see, which is worse than having no gate, because it reads as
-    coverage.
+    ⚠️ Names and attributes must resolve, not only literals.
+    ``extraction_row_count_unverified`` is passed as
+    ``self.NO_OCR_EVIDENCE_CODE``, so a derivation that collected only
+    ``ast.Constant`` values cannot see it — and a code absent from the universe is
+    one every closure assertion below is silent about, while still reporting
+    green. An incomplete derivation reads as coverage, which is worse than no
+    gate.
     """
     if expr is None:
         return None
@@ -140,6 +181,37 @@ def _backend_info_issues() -> dict[str, tuple[Path, str]]:
             if severity != "info" or not code:
                 continue
             found.setdefault(code, (path, _literal_text(kw.get("message"))))
+    return found
+
+
+def _unresolved_severity_sites() -> dict[tuple[str, str], int]:
+    """Every ``ProcessingIssue`` call whose ``severity`` does not resolve to a string.
+
+    Keyed on the source text of the expression rather than a line number, so
+    moving code does not churn the pin.
+    """
+    found: dict[tuple[str, str], int] = {}
+    for path in BACKEND_ROOT.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+            continue
+        bindings = _constant_bindings(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name != "ProcessingIssue":
+                continue
+            sev_expr = next(
+                (k.value for k in node.keywords if k.arg == "severity"), None
+            )
+            if sev_expr is None:
+                continue
+            if _resolve_str(sev_expr, bindings) is not None:
+                continue
+            key = (str(path.relative_to(REPO)), ast.unparse(sev_expr))
+            found[key] = found.get(key, 0) + 1
     return found
 
 
@@ -216,17 +288,14 @@ def test_every_advisory_entry_still_exists_in_the_backend() -> None:
 def test_each_advisory_code_reports_an_absence_not_a_repair(code: str) -> None:
     """Non-vacuity, read off the BACKEND rather than off this file.
 
-    The first version of this test asserted the code was not in RECOVERY_CODES
-    (which duplicated the test above it) and that the dict value was non-empty
-    (which could only fail if the author typed an empty string three lines
-    earlier). Neither read the message whose wording it claimed to check, so it
-    was a ratchet label over nothing — and CLAUDE.md is explicit that a claimed
-    ratchet nothing implements reads as protection that is not there, which is
-    worse than a declared gap.
+    Reads the ``message=`` the backend passes for the code and rejects one that
+    talks about recovery. That is the condition which would mean the code belongs
+    in the UI's ``RECOVERY_CODES`` instead of here, so it is the only thing that
+    can tell a correct classification from a stale one.
 
-    It now reads the ``message=`` the backend passes for this code and rejects
-    one that talks about recovery, which is the condition that would mean the
-    code belongs in RECOVERY_CODES instead.
+    Asserting against this file's own dict value cannot do that: the value is
+    authored here, so it says whatever the author typed. The check has to read the
+    side it is classifying.
     """
     issues = _backend_info_issues()
     assert code in issues, f"{code} is no longer emitted at info severity"
@@ -241,13 +310,15 @@ def test_each_advisory_code_reports_an_absence_not_a_repair(code: str) -> None:
 
 @pytest.mark.unit
 def test_both_sides_are_derived_at_full_strength() -> None:
-    """A lower bound, not a truthiness check.
+    """A floor, not a truthiness check.
 
-    Non-emptiness passes a derivation that found 4 of 5 codes, which is exactly
-    the state this gate shipped in: the one code passed by reference was missing
-    and every other assertion was green. The sibling pins a floor for the same
-    reason. Raise these numbers when the tree gains codes; do not lower them
-    without saying which code stopped being emitted.
+    Non-emptiness is satisfied by a derivation that found 4 of the 5 codes, and
+    the missing one would be invisible to every other assertion here — each of
+    them quantifies over the derived universe, so a code outside it is not
+    unclassified, it is unseen. The sibling gate pins a floor for the same reason.
+
+    Raise these numbers when the tree gains codes; do not lower one without
+    naming the code that stopped being emitted.
     """
     backend = _backend_info_codes()
     assert len(backend) >= 5, (
@@ -256,3 +327,28 @@ def test_both_sides_are_derived_at_full_strength() -> None:
         "assertion here is weaker than it looks"
     )
     assert len(_ui_recovery_codes()) >= 1, "the UI lists no recovery codes"
+
+
+@pytest.mark.unit
+def test_no_new_unresolvable_severity_site_appears() -> None:
+    """The closure above quantifies over what this file can SEE.
+
+    A ``ProcessingIssue`` whose ``severity`` is computed — a subscript, a
+    conditional, a local — resolves to None and is dropped, so it joins neither the
+    classified nor the unclassified set. The floor does not catch that either: the
+    five literal codes still satisfy it. Pinning the known sites means the first
+    one that could carry ``info`` turns this red instead of silently narrowing
+    what every other assertion is about.
+
+    Fixing a failure here means one of two things: teach :func:`_resolve_str` the
+    new expression shape, or add the site to ``UNRESOLVED_SEVERITY_SITES`` after
+    checking it cannot emit ``info``.
+    """
+    found = _unresolved_severity_sites()
+    expected = {k: v[0] for k, v in UNRESOLVED_SEVERITY_SITES.items()}
+    assert found == expected, (
+        "the set of ProcessingIssue call sites with an unresolvable severity has "
+        f"changed.\n  found:    {dict(sorted(found.items()))}\n  expected: "
+        f"{dict(sorted(expected.items()))}\nEach such site is "
+        "invisible to this gate's closure checks."
+    )
