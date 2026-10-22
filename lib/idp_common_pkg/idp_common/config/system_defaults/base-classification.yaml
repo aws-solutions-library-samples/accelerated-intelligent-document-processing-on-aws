@@ -18,8 +18,10 @@ classification:
   fallback_class: unclassified
   # ── strategy: single_pass ────────────────────────────────────────────────
   one_stage:
+    # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.
     granularity: page
     page:
+      # Pages either side of the page being read, sent as context. Each call carries up to 2k+1 pages.
       contextPagesCount: '0'
       system_prompt: >-
         You are a multimodal document classification expert that analyzes business documents
@@ -75,23 +77,30 @@ classification:
         <document-text> {DOCUMENT_TEXT} </document-text>
         <document-images> {DOCUMENT_IMAGE} </document-images>
         <final-instructions> Split the packet above by: 1. Applying the <segmentation-instructions> across every page 2. Selecting ONLY from document types in <document-types> 3. Covering every page exactly once, in order 4. Outputting in the exact JSON format specified in <output-format> </final-instructions>
+      # Most pages one packet call covers; longer packets are windowed and merged. 0 never windows.
       window_pages: '20'
+      # Pages repeated between adjacent windows; must be smaller than window_pages.
       overlap_pages: '2'
     llm:
       model: us.amazon.nova-2-lite-v1:0
       temperature: '0.0'
       top_p: '0.0'
       top_k: '5'
+      # Optional output cap; empty uses the model's maximum.
       max_tokens: ''
+      # What this call is sent. Empty infers each flag from this call's task prompt placeholders.
       modality:
         text: ''
         images: ''
+      # Downscale page images for this call. Empty sends the image OCR produced.
       image:
         target_height: ''
         target_width: ''
+      # Re-prompt on a class outside the vocabulary; fallback_class once retries run out.
       validation:
         enforceValidClasses: true
         maxValidationRetries: '2'
+      # Confidence in the class: topk (ranked candidates), verbalized (one number) or off.
       confidence:
         mode: topk
         top_k_candidates: '3'
@@ -121,8 +130,10 @@ classification:
     segmentation:
       method: llm
       llm:
+        # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.
         granularity: page
         page:
+          # Pages either side of the page being read, sent as context. Each call carries up to 2k+1 pages.
           contextPagesCount: '0'
           system_prompt: >-
             You are a document segmentation expert. Your only task is to decide where each
@@ -140,7 +151,9 @@ classification:
             <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
             <document-image> {DOCUMENT_IMAGE} </document-image>
         packet:
+          # Most pages one packet call covers; longer packets are windowed and merged. 0 never windows.
           window_pages: '20'
+          # Pages repeated between adjacent windows; must be smaller than window_pages.
           overlap_pages: '2'
           system_prompt: >-
             You are a document segmentation expert who analyses multi-document packets. Your
@@ -163,21 +176,26 @@ classification:
             <<CACHEPOINT>>
             <document-text> {DOCUMENT_TEXT} </document-text>
             <document-images> {DOCUMENT_IMAGE} </document-images>
+        # none sends no class vocabulary; class_names sends the names only.
         boundary_hints: none
         model: us.amazon.nova-2-lite-v1:0
         temperature: '0.0'
         top_p: '0.0'
         top_k: '5'
+        # Optional output cap; empty uses the model's maximum.
         max_tokens: ''
+        # What this call is sent. Empty infers each flag from this call's task prompt placeholders.
         modality:
           text: ''
           images: ''
+        # Downscale page images for this call. Empty sends the image OCR produced.
         image:
           target_height: ''
           target_width: ''
     # One call per section, not per page.
     section_classification:
       method: llm
+      # Pages sent per section: first, first_k (k below) or all.
       pages: first_k
       k: '2'
       llm:
@@ -185,10 +203,13 @@ classification:
         temperature: '0.0'
         top_p: '0.0'
         top_k: '5'
+        # Optional output cap; empty uses the model's maximum.
         max_tokens: ''
+        # What this call is sent. Empty infers each flag from this call's task prompt placeholders.
         modality:
           text: ''
           images: ''
+        # Downscale page images for this call. Empty sends the image OCR produced.
         image:
           target_height: ''
           target_width: ''
@@ -208,9 +229,11 @@ classification:
           <<CACHEPOINT>>
           <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
           <document-image> {DOCUMENT_IMAGE} </document-image>
+        # Re-prompt on a class outside the vocabulary; fallback_class once retries run out.
         validation:
           enforceValidClasses: true
           maxValidationRetries: '2'
+        # Confidence in the class: topk (ranked candidates), verbalized (one number) or off.
         confidence:
           mode: topk
           top_k_candidates: '3'

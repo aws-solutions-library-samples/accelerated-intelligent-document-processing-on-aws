@@ -1911,8 +1911,20 @@ class ClassificationModelSettings(BaseModel):
     @field_validator("model", mode="before")
     @classmethod
     def default_empty_model(cls, v: Any) -> str:
-        """An empty model is the default model, not "no model"."""
+        """An empty model is the default model, not "no model".
+
+        Each call has its own model, so a block whose model was cleared would
+        otherwise send no model ID at all. The substitution is logged.
+        """
         if v is None or (isinstance(v, str) and not v.strip()):
+            if v is not None:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "A classification call's model is empty; using the default "
+                    "model %s. Set the model on that call to choose another.",
+                    DEFAULT_CLASSIFICATION_MODEL,
+                )
             return DEFAULT_CLASSIFICATION_MODEL
         return str(v)
 

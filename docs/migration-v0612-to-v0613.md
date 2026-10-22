@@ -112,6 +112,13 @@ Set `maxPagesForClassification: ALL` and `sectionSplitting: llm_determined` if
 you want boundary detection on every file instead. None of the presets shipped
 with the solution uses the combination.
 
+### An empty model is the default model
+
+Each call has its own `model`. A call whose model is empty — cleared in the
+editor, or left empty in a hand-written file — uses the default classification
+model, with a warning in the log, rather than sending no model ID. In v0.6.12 an
+empty classification model failed the document.
+
 ### One fallback class
 
 `invalidClassFallback` becomes `fallback_class`, the one class assigned whenever
