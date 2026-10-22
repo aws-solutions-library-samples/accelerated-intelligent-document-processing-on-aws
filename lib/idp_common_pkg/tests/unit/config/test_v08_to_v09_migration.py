@@ -670,3 +670,36 @@ class TestASaveAfterTheUpgrade:
         cls = manager.get_merged_configuration("p").classification
         assert {c.model for c in _calls(cls).values()} == {"us.amazon.nova-lite-v1:0"}
         assert not FLAT_KEYS & self._stored(manager, "p")["classification"].keys()
+
+
+# --------------------------------------------------------------------------
+# A setting written at the wrong level is named, with the right path
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestAMisplacedSettingIsReported:
+    """One stage keeps granularity, page and packet on its own block, while
+    segmentation keeps them on its ``llm`` block. A hand-written config that
+    mirrors one spelling in the other place is not read, so the unknown-key
+    report (what ``idp-cli config-validate`` prints) must name it and say where
+    it belongs."""
+
+    @pytest.mark.parametrize(
+        ("written", "belongs"),
+        [
+            (
+                {"two_stage": {"segmentation": {"granularity": "packet"}}},
+                "classification.two_stage.segmentation.llm.granularity",
+            ),
+            (
+                {"one_stage": {"llm": {"granularity": "packet"}}},
+                "classification.one_stage.granularity",
+            ),
+        ],
+    )
+    def test_the_report_names_where_it_belongs(self, written, belongs):
+        from idp_common.config.models import collect_ignored_config_keys
+
+        findings = collect_ignored_config_keys({"classification": written}, IDPConfig)
+        assert [f.suggestion for f in findings] == [belongs]

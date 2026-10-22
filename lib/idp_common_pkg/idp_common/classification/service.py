@@ -1495,8 +1495,7 @@ class ClassificationService:
     ) -> str:
         """Splice the class-confidence instruction block in, when enabled.
 
-        No-op in the default ``off`` mode, so the shipped prompt stays exactly as
-        it was. A custom prompt that already carries a ``<class-confidence>``
+        No-op when the mode is ``off``; the shipped default is ``topk``. A custom prompt that already carries a ``<class-confidence>``
         block is left alone (the splice is idempotent), and the response parser
         honours a ``confidence``/``candidates`` key regardless of this setting —
         the mode composes the *instruction*, it does not gate the *parsing*.
