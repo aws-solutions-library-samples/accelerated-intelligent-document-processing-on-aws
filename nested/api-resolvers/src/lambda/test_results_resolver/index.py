@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import gzip
 import json
 import logging
@@ -19,6 +20,8 @@ from decimal import Decimal
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
+
+from idp_common.config.migrations import migrate_config
 
 sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
@@ -2286,7 +2289,33 @@ def _get_test_run_config(test_run_id):
         else:
             return obj
 
-    return convert_decimals(config)
+    return _migrated_run_config(convert_decimals(config))
+
+
+def _migrated_run_config(config):
+    """The captured run config with its ``Config`` body in the current format.
+
+    A run captured before a config-format change stores the old shape — a run
+    from before 0.9 holds flat ``classification`` keys — so comparing it with a
+    newer run would report every moved setting as ``<missing>`` on one side.
+    Migrating on read normalises runs already stored; the stored item is not
+    rewritten. A body that cannot be migrated is returned as captured.
+    """
+    if not isinstance(config, dict):
+        return config
+    body = config.get("Config")
+    if not isinstance(body, dict) or not body:
+        return config
+    try:
+        migrated = migrate_config(copy.deepcopy(body))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not migrate captured test run config: {e}")
+        return config
+    if "config_format_version" not in body:
+        # Normalise the shape only: a body that recorded no format version is
+        # not given one, so it reads back exactly as captured when unchanged.
+        migrated.pop("config_format_version", None)
+    return {**config, "Config": migrated}
 
 
 def _build_config_comparison(configs):

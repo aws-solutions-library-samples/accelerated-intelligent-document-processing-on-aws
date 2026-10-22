@@ -4022,6 +4022,15 @@ MAX_REPORTED_IGNORED_KEYS = 20
 #: the tree, since that case is answered exactly.
 _SUGGESTION_CUTOFF = 0.8
 
+#: The block that holds a classification call's model parameters. A call setting
+#: written directly in the call's own block (``two_stage.section_classification.
+#: model``) belongs one level down in this block, and a same-depth tie with another
+#: sub-block declaring the same name (``section_classification.embeddings.model``,
+#: a different model for a method that is declared but not selectable) is settled
+#: in its favour. Only for a key written one level too shallow inside its own block:
+#: every other tie still declines.
+_CALL_SETTINGS_BLOCK = "llm"
+
 
 class IgnoredConfigKey(NamedTuple):
     """One key in a configuration that the models will not read.
@@ -4155,6 +4164,12 @@ def _suggest_path(
        written prefix first, then its parent, and so on to the root, stopping at the
        **first** prefix that has any candidate at all. Within that prefix the
        shallowest candidate wins if it is alone at that depth, and a tie declines.
+       One tie is settled rather than declined: a key one level too shallow inside
+       the block it was written in, where exactly one tied candidate sits in that
+       block's ``llm`` sub-block (``_CALL_SETTINGS_BLOCK``) —
+       ``two_stage.section_classification.model`` →
+       ``...section_classification.llm.model`` rather than nothing, because
+       ``...embeddings.model`` ties with it at the same depth.
 
        Both mistakes happen, and both are answered. Too shallow: ``ocr.dpi`` →
        ``ocr.image.dpi``. Too deep: ``ocr.image.backend`` → ``ocr.backend``, which is
@@ -4192,6 +4207,14 @@ def _suggest_path(
         closest = [path for path in candidates if len(path) == nearest]
         if len(closest) == 1:
             return ".".join(closest[0])
+        if depth == len(here) and nearest == len(written) + 1:
+            # One level too shallow inside the block it was written in: prefer
+            # the call's own settings block when exactly one candidate is in it.
+            in_call_block = [
+                path for path in closest if path[len(here)] == _CALL_SETTINGS_BLOCK
+            ]
+            if len(in_call_block) == 1:
+                return ".".join(in_call_block[0])
         break
 
     close = difflib.get_close_matches(

@@ -9,6 +9,7 @@ model trained to assign a class, so it goes to the call that assigns the class
 under the active strategy and nowhere else — segmentation keeps its own model.
 """
 
+import copy
 import importlib
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.migrations import migrate_config
 from idp_common.config.models import IDPConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -88,3 +90,41 @@ class TestCustomClassificationModelArn:
             config, {"CustomExtractionModelARN": ARN}
         )
         assert config["extraction"]["model"] == ARN
+
+
+@pytest.mark.unit
+class TestMergeFallbackMigrates:
+    """When the merge with defaults fails, the unmerged config is still migrated.
+
+    Returned raw, a flat preset keeps ``classification.model``; the ARN writer
+    then adds ``one_stage.llm.model`` beside it, and on the next read the flat
+    key wins the hybrid, so the deployed custom model is silently dropped.
+    """
+
+    @pytest.mark.parametrize(
+        "error", [FileNotFoundError("no defaults"), ValueError("x")]
+    )
+    def test_the_arn_survives_a_failed_merge(
+        self, update_config_module, monkeypatch, error
+    ):
+        def fail(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(update_config_module, "merge_config_with_defaults", fail)
+        custom = {
+            "config_format_version": "0.8",
+            "classification": {"model": "us.amazon.nova-lite-v1:0"},
+        }
+
+        config = update_config_module.merge_custom_with_defaults(
+            custom, pattern="pattern-2"
+        )
+        update_config_module.apply_custom_model_arns(
+            config, {"CustomClassificationModelARN": ARN}
+        )
+
+        assert "model" not in config["classification"]
+        reread = migrate_config(copy.deepcopy(config))
+        assert reread["classification"]["one_stage"]["llm"]["model"] == ARN
+        # The caller's dict is not mutated by the fallback.
+        assert custom["classification"] == {"model": "us.amazon.nova-lite-v1:0"}
