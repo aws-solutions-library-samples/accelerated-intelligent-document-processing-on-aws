@@ -1129,7 +1129,17 @@ classification:
 - **"ALL"** (default): Uses all pages for classification
 - **Numeric value**: Classifies only the first N pages, then applies that classification to the entire document
 
-**Important:** When using a numeric limit, the classification result from the first N pages is applied to ALL pages, effectively forcing a single class/section for the entire document.
+⚠️ **A numeric value overrides `sectionSplitting` for any file longer than N**,
+which then becomes a single section whatever `sectionSplitting` says — so a
+multi-document packet is collapsed. A file of N pages or fewer is classified and
+sectioned normally. The same setting therefore behaves differently on different
+files in one run, which is right for a corpus of known single-document files and
+wrong for packets.
+
+**Important:** When a file is longer than the numeric limit, the classification
+result from its first N pages is applied to ALL of its pages, forcing a single
+class and section for that file. A file of N pages or fewer is unaffected, as
+above.
 
 **Use Cases:**
 - Performance optimization for large documents

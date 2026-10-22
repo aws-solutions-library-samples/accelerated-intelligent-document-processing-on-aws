@@ -41,6 +41,29 @@ Chrome sends a screencast frame only when something on the page changes. A mark 
 a static screen would otherwise own no frame at all; the forced capture gives every
 segment a crisp first frame taken at the moment the agent said the step began.
 
+Why click reports are bounded
+-----------------------------
+The recorded tab can run code nobody vetted: in the unattended MR UX test it is the
+code under review. The overlay and its click binding therefore live in an isolated
+world (``ux_recorder_cdp.OVERLAY_WORLD``), where no script of the page can call the
+binding, and the overlay reports only clicks the browser marks as trusted; the
+viewport the coordinates are checked against is measured in that world too, so the
+page cannot redefine it. Each DevTools message is also bounded in size before it is
+parsed (``ux_recorder_cdp.MESSAGE_MAX_BYTES``). Behind that, a report is still
+treated as untrusted input, and :func:`parse_click` keeps only a bounded one: a JSON
+object of at most ``CLICK_PAYLOAD_MAX_CHARS`` characters whose ``kind`` is
+``click``, whose coordinates are finite numbers inside the measured viewport (or
+``CLICK_COORD_MAX`` when none was measured), and whose three labels are strings,
+cut to ``CLICK_LABEL_MAX_CHARS`` with control characters blanked. At most
+``CLICK_RATE_MAX`` clicks are kept per ``CLICK_RATE_WINDOW_SECONDS`` and
+``CLICKS_MAX_PER_SESSION`` per session. A report that arrives while a command holds
+the recorder, such as a ``mark`` waiting up to 15 s for its screenshot, waits in a
+backlog of at most ``CLICK_BACKLOG_MAX`` instead of blocking the DevTools reader,
+which is the thread that has to deliver that screenshot. Every refusal is counted
+as ``clicks_rejected`` in ``status`` and in the timeline. A forged click, should
+one ever reach the binding, could therefore at most draw a bounded, labelled marker
+at an on-screen coordinate.
+
 Usage (from the repo root; the debug Chrome from the skill must be running):
 
   ./scripts/ux_recorder.py targets
@@ -85,6 +108,8 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import deque
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -100,6 +125,109 @@ EVENTS_FILE = "events.jsonl"
 FRAMES_INDEX = "frames.jsonl"
 TIMELINE_FILE = "timeline.json"
 START_TIMEOUT = 20.0
+
+#: The longest click report read at all; the overlay's own reports are a few hundred
+#: characters.
+CLICK_PAYLOAD_MAX_CHARS = 4096
+#: The longest label kept. The overlay's labels are an element's tag and id followed
+#: by at most 60 characters of its text.
+CLICK_LABEL_MAX_CHARS = 256
+#: The coordinate bound used when the viewport was not measured, or its measurement
+#: is not a plausible screen size.
+CLICK_COORD_MAX = 16384
+#: Clicks kept per ``CLICK_RATE_WINDOW_SECONDS``, far above what anyone driving the
+#: page does and far below what a script can send.
+CLICK_RATE_MAX = 20
+CLICK_RATE_WINDOW_SECONDS = 1.0
+CLICKS_MAX_PER_SESSION = 2000
+#: Reports held while a command owns the recorder; past this, a report is refused.
+CLICK_BACKLOG_MAX = 64
+
+
+def _coordinate_bound(viewport: Mapping[str, Any], axis: str) -> float:
+    """The largest coordinate a click may report along one axis.
+
+    That is the viewport's width or height as the recorder measured it at attach,
+    in the recorder's isolated world, where the page's script cannot redefine
+    ``innerWidth``, when it is a positive number no larger than
+    ``CLICK_COORD_MAX``. A measurement that failed (an empty one) or that is
+    larger, or not a number, falls back to ``CLICK_COORD_MAX`` rather than
+    widening the bound.
+    """
+    size = viewport.get(axis)
+    if (
+        isinstance(size, (int, float))
+        and not isinstance(size, bool)
+        and 0 < size <= CLICK_COORD_MAX
+    ):
+        return size
+    return CLICK_COORD_MAX
+
+
+def _coordinate(value: object, bound: float) -> int | float | None:
+    """``value`` when it is a number from 0 to ``bound``, else None.
+
+    A ``bool`` is refused although Python counts it as an ``int``. NaN fails every
+    comparison and an infinity exceeds any bound, so the range test also refuses
+    every non-finite float. The value is returned as it came, so an ``int`` stays
+    an ``int`` in the timeline.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not 0 <= value <= bound:
+        return None
+    return value
+
+
+def _click_label(value: str) -> str:
+    """``value`` cut to ``CLICK_LABEL_MAX_CHARS``, with unprintable characters blanked.
+
+    Every character ``str.isprintable`` refuses becomes a space: control and format
+    characters, which include the bidi overrides, and the line separators. A label
+    can then neither move a terminal's cursor nor break a row of ``render``'s click
+    table.
+    """
+    return "".join(
+        char if char.isprintable() else " " for char in value[:CLICK_LABEL_MAX_CHARS]
+    )
+
+
+def parse_click(payload: object, viewport: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The fields of a click report the recorder keeps, or None for one it refuses.
+
+    The kept fields are ``x``, ``y``, ``target``, ``under`` and ``interactive``. The
+    payload arrives through a binding that exists only in the recorder's isolated
+    world, so the page's own script cannot call it; these checks are the backstop
+    behind that, and a payload is refused unless it is a string of at most
+    ``CLICK_PAYLOAD_MAX_CHARS``
+    holding a JSON object whose ``kind`` is ``click``, whose ``x`` and ``y`` are
+    numbers inside the viewport (see :func:`_coordinate_bound`), and whose three
+    labels are each a string or null. One field of the wrong type refuses the whole
+    click rather than recording the rest of it. Labels are cleaned by
+    :func:`_click_label`; every other key is dropped.
+
+    ``RecursionError`` is caught as well as ``ValueError``: CPython 3.11 and earlier
+    raise it for JSON nested about a thousand deep, well inside the length cap.
+    """
+    if not isinstance(payload, str) or len(payload) > CLICK_PAYLOAD_MAX_CHARS:
+        return None
+    try:
+        data = json.loads(payload)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != "click":
+        return None
+    x = _coordinate(data.get("x"), _coordinate_bound(viewport, "w"))
+    y = _coordinate(data.get("y"), _coordinate_bound(viewport, "h"))
+    if x is None or y is None:
+        return None
+    click: dict[str, Any] = {"x": x, "y": y}
+    for field in ("target", "under", "interactive"):
+        value = data.get(field)
+        if value is not None and not isinstance(value, str):
+            return None
+        click[field] = None if value is None else _click_label(value)
+    return click
 
 
 def repo_root() -> Path:
@@ -197,14 +325,26 @@ def send_command(
 
 
 class Recorder:
-    """Daemon-side state: the CDP session, the frames and the event log."""
+    """Daemon-side state: the CDP session, the frames and the event log.
+
+    ``clock`` stamps events and frames. ``rate_clock`` only paces the click rate
+    window, so it is monotonic, and a test can drive the window without moving the
+    timeline. ``clicks_rejected`` and the click backlog are guarded by a small lock
+    of their own rather than by :attr:`lock`, because the DevTools reader updates
+    them precisely when a command is holding :attr:`lock`.
+    """
 
     def __init__(
-        self, session_dir: Path, meta: dict[str, Any], clock: Any = time.time
+        self,
+        session_dir: Path,
+        meta: dict[str, Any],
+        clock: Any = time.time,
+        rate_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.meta = meta
         self.clock = clock
+        self.rate_clock = rate_clock
         self.events: list[dict[str, Any]] = []
         self.seq = 0
         self.paused = False
@@ -219,8 +359,19 @@ class Recorder:
         self.stop_reason: str | None = None
         self.finalized = False
         self.events_path = self.session_dir / EVENTS_FILE
+        self.clicks_rejected = 0
+        self._click_lock = threading.Lock()
+        self._click_backlog: deque[tuple[str, float]] = deque()
+        self._click_times: deque[float] = deque()
+        self._clicks_kept = 0
 
     def attach(self) -> None:
+        """Attach a DevTools session to the tab, then the overlay and the screencast.
+
+        The overlay and the viewport measurement share the recorder's isolated
+        world, so the bound :func:`parse_click` holds coordinates to is the
+        browser's own viewport rather than one the page's script reports.
+        """
         ws = cdp.WebSocketClient.connect(self.meta["ws_url"])
         self.cdp = cdp.CdpSession(ws, on_event=self._on_event)
         self.cdp.start_reader()
@@ -231,18 +382,7 @@ class Recorder:
             pass
         if self.meta.get("cursor", True):
             self.overlay_id = cdp.install_cursor_overlay(self.cdp)
-        try:
-            result = self.cdp.call(
-                "Runtime.evaluate",
-                {
-                    "expression": "({w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio, url: location.href})",
-                    "returnByValue": True,
-                },
-                timeout=10,
-            )
-            self.viewport = result.get("result", {}).get("value", {}) or {}
-        except cdp.CdpError:
-            self.viewport = {}
+        self.viewport = cdp.measure_viewport(self.cdp)
         self.screencast = cdp.Screencast(
             self.cdp,
             self.session_dir / "frames",
@@ -268,33 +408,113 @@ class Recorder:
             method == "Runtime.bindingCalled"
             and params.get("name") == cdp.CLICK_BINDING
         ):
-            self._record_click(params.get("payload") or "")
+            self._intake_click(params.get("payload") or "")
 
-    def _record_click(self, payload: str) -> None:
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
+    def _intake_click(self, payload: str) -> None:
+        """Take one click report from the DevTools reader without ever blocking it.
+
+        The reader thread is also what delivers the reply to a ``mark``'s
+        screenshot, so waiting here for a command that holds :attr:`lock` would
+        stall that mark until its screenshot timed out. When the lock is free the
+        click is recorded at once, then anything queued. When it is not, the report
+        and its arrival time join a backlog the command drains as it finishes.
+        A full backlog, or a report too long for :func:`parse_click` to read,
+        counts as rejected here instead, so the backlog never holds more than
+        ``CLICK_BACKLOG_MAX`` bounded strings.
+        """
+        if self.lock.acquire(blocking=False):
+            try:
+                self._record_click(payload)
+                self._drain_click_backlog()
+            finally:
+                self.lock.release()
             return
-        if not isinstance(data, dict) or data.get("kind") != "click":
-            return
-        off_target = None if data.get("interactive") else True
+        with self._click_lock:
+            if (
+                isinstance(payload, str)
+                and len(payload) <= CLICK_PAYLOAD_MAX_CHARS
+                and len(self._click_backlog) < CLICK_BACKLOG_MAX
+            ):
+                self._click_backlog.append((payload, self.clock()))
+                return
+            self.clicks_rejected += 1
+
+    def _drain_click_backlog(self) -> None:
+        """Record, at their arrival times, the clicks queued while a command ran.
+
+        Called with :attr:`lock` held. It takes only the reports queued when it
+        starts, so a page that keeps reporting cannot keep a command here.
+        """
+        with self._click_lock:
+            queued = list(self._click_backlog)
+            self._click_backlog.clear()
+        for payload, arrived in queued:
+            self._record_click(payload, arrived)
+
+    def _record_click(self, payload: str, arrived: float | None = None) -> None:
+        """Record one click report, or count it rejected.
+
+        A report :func:`parse_click` refuses, one past ``CLICK_RATE_MAX`` in the
+        current rate window, and one past ``CLICKS_MAX_PER_SESSION`` are all
+        rejected. A kept click is recorded with exactly the fields it always was:
+        while paused only that it happened and whether it hit nothing interactive,
+        otherwise its position and labels as well. ``arrived`` is the arrival time
+        of a click that waited in the backlog and becomes the event's ``t``; a click
+        recorded as it arrives is stamped by the event itself, so this path reads
+        :attr:`clock` exactly once.
+        """
         with self.lock:
+            click = parse_click(payload, self.viewport)
+            if click is None or not self._admit_click():
+                with self._click_lock:
+                    self.clicks_rejected += 1
+                return
+            off_target = None if click["interactive"] else True
             if self.paused:
-                self._record("click", paused=True, off_target=off_target)
+                self._record("click", t=arrived, paused=True, off_target=off_target)
                 return
             self._record(
                 "click",
-                x=data.get("x"),
-                y=data.get("y"),
-                target=data.get("target"),
-                under=data.get("under"),
-                interactive=data.get("interactive"),
+                t=arrived,
+                x=click["x"],
+                y=click["y"],
+                target=click["target"],
+                under=click["under"],
+                interactive=click["interactive"],
                 off_target=off_target,
             )
 
-    def _record(self, kind: str, **fields: Any) -> dict[str, Any]:
+    def _admit_click(self) -> bool:
+        """Whether the rate window and the session cap leave room for one more click.
+
+        The window slides: a click stops counting ``CLICK_RATE_WINDOW_SECONDS``
+        after it was kept, by :attr:`rate_clock`. A click refused here takes no
+        place in either count.
+        """
+        now = self.rate_clock()
+        with self._click_lock:
+            window = self._click_times
+            while window and now - window[0] >= CLICK_RATE_WINDOW_SECONDS:
+                window.popleft()
+            if (
+                len(window) >= CLICK_RATE_MAX
+                or self._clicks_kept >= CLICKS_MAX_PER_SESSION
+            ):
+                return False
+            window.append(now)
+            self._clicks_kept += 1
+            return True
+
+    def _record(
+        self, kind: str, *, t: float | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        """Append one event to the log; ``t`` overrides the event's own clock read."""
         with self.lock:
-            event: dict[str, Any] = {"seq": self.seq, "t": self.clock(), "type": kind}
+            event: dict[str, Any] = {
+                "seq": self.seq,
+                "t": self.clock() if t is None else t,
+                "type": kind,
+            }
             self.seq += 1
             event.update({k: v for k, v in fields.items() if v is not None})
             self.events.append(event)
@@ -320,6 +540,8 @@ class Recorder:
         last_mark = next(
             (e for e in reversed(self.events) if e["type"] == "mark"), None
         )
+        with self._click_lock:
+            clicks_rejected = self.clicks_rejected
         return {
             "ok": True,
             "session_dir": str(self.session_dir),
@@ -334,12 +556,26 @@ class Recorder:
             "clicks_off_target": sum(
                 1 for e in self.events if e["type"] == "click" and e.get("off_target")
             ),
+            "clicks_rejected": clicks_rejected,
+            "cdp_messages_dropped": self.cdp.dropped if self.cdp is not None else 0,
             "last_mark": last_mark.get("label") if last_mark else None,
             "page_url": self.meta.get("page_url"),
             "connected": bool(self.cdp and not self.cdp.closed.is_set()),
         }
 
     def handle_command(self, command: dict[str, Any]) -> dict[str, Any]:
+        """Run one control command, then record the clicks that arrived meanwhile.
+
+        The drain is in ``finally`` so a command that fails still leaves no click
+        waiting for the next one.
+        """
+        with self.lock:
+            try:
+                return self._handle_command(command)
+            finally:
+                self._drain_click_backlog()
+
+    def _handle_command(self, command: dict[str, Any]) -> dict[str, Any]:
         name = command.get("cmd")
         with self.lock:
             if name == "status":
@@ -398,6 +634,8 @@ class Recorder:
     def timeline(self, reason: str) -> dict[str, Any]:
         frames = self.screencast.count if self.screencast else 0
         frame_bytes = self.screencast.bytes if self.screencast else 0
+        with self._click_lock:
+            clicks_rejected = self.clicks_rejected
         session = {
             **session_meta_fields(self.meta),
             "started": self.started,
@@ -411,6 +649,8 @@ class Recorder:
                 k: self.meta.get(k) for k in ("quality", "max_width", "every_nth")
             },
             "stop_reason": reason,
+            "clicks_rejected": clicks_rejected,
+            "cdp_messages_dropped": self.cdp.dropped if self.cdp is not None else 0,
         }
         return {
             "version": 1,
@@ -422,6 +662,12 @@ class Recorder:
         }
 
     def finalize(self, reason: str) -> None:
+        """Close the DevTools session and write the session's outputs, once.
+
+        The click backlog is drained after the connection closes and before the
+        timeline is written, so a click that arrived during the final screenshot is
+        in ``timeline.json`` and not only in ``events.jsonl``.
+        """
         with self.lock:
             if self.finalized:
                 return
@@ -436,6 +682,7 @@ class Recorder:
                 cdp.remove_cursor_overlay(self.cdp, self.overlay_id)
             if self.cdp is not None:
                 self.cdp.close()
+            self._drain_click_backlog()
             write_session_outputs(self.session_dir, self.timeline(reason), self.meta)
             clear_current(self.session_dir.parent, self.session_dir)
             sock = self.meta.get("socket")

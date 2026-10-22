@@ -155,11 +155,21 @@ class TestAliasTable:
         assert service.config.classification.sectionSplitting == splitting
 
     def test_max_pages_for_classification_still_overrides_splitting(self):
-        """Documented pre-existing behaviour, deliberately NOT changed: a number
-        here collapses the file into one section whatever splitting says. It is
-        also deliberately still VISIBLE in the panel rather than gated, because
-        an option that is hidden while still in force is worse than one shown
-        while inert."""
+        """Documented pre-existing behaviour, deliberately NOT changed.
+
+        ⚠️ **The override is per DOCUMENT, not per configuration**, and getting
+        that backwards is how a config-level "normalisation" of
+        `sectionSplitting` nearly shipped: `_limit_pages_for_classification`
+        returns the SAME document when `len(pages) <= max_pages`, and the
+        single-section collapse is gated on `limited_document.id != document.id`.
+        So a file at or under the limit is classified and sectioned normally, and
+        only a longer one collapses. One setting, two behaviours, decided by the
+        file — which no config value can express.
+
+        The field is also deliberately still VISIBLE in the panel rather than
+        gated, because an option hidden while still in force is worse than one
+        shown while inert.
+        """
         config = _shipped_classification()
         config["maxPagesForClassification"] = "2"
         config["sectionSplitting"] = "llm_determined"

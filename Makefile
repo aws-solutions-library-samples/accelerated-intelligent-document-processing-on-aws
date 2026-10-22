@@ -1652,6 +1652,29 @@ ai-pr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 		--forge github --repo $(GH_REVIEW_REPO) --remote $(GH_REVIEW_REMOTE) \
 		$(if $(PR),--mr $(PR),--all-open) --dry-run $(EXTRA_ARGS)
 
+# The MR UX test locally (scripts/ux_runner/run_in_docker.py), in the Docker image
+# built from scripts/ux_runner/install.sh, the same toolchain definition CI runs:
+# Mac (Apple Silicon too), Windows (Docker Desktop, or call the wrapper with `py`)
+# or a Linux devbox. ai-ux-test-local builds the MR's UI in a container with no
+# credentials, then runs the CI-equivalent test as a DRY RUN: section.md and the
+# mp4 land under scratch/ux-docker/ and nothing is posted. POST=1 (or true, yes,
+# y, on) posts; any other value, POST=0 included, does not.
+# ai-ux-browser starts only the confined headless Chrome, egress proxy and
+# recorder, with DevTools on 127.0.0.1:9222, for an interactive ux-test or
+# product-demo session. Both need host AWS credentials (exported on the host and
+# passed by name), plus UX_TEST_PERSONAS and UX_TEST_AWS_ACCOUNT_ID.
+.PHONY: ai-ux-test-local ai-ux-browser
+
+ai-ux-test-local: ## Dry-run the MR UX test in the Docker runner (MR=<iid> required; POST=1 posts; STACK=idp-ux-nightly)
+	@$(if $(MR),,$(error set MR=<iid>, e.g. make ai-ux-test-local MR=812))
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py review --mr $(MR) \
+		$(if $(STACK),--stack $(STACK)) $(if $(filter 1 true yes y on,$(POST)),--post) \
+		$(EXTRA_ARGS)
+
+ai-ux-browser: ## Start the confined headless Chrome + egress proxy + recorder in Docker, CDP on 127.0.0.1:9222 (STACK=<name>)
+	@$(PYTHON) scripts/ux_runner/run_in_docker.py browser \
+		$(if $(STACK),--stack $(STACK)) $(EXTRA_ARGS)
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".
