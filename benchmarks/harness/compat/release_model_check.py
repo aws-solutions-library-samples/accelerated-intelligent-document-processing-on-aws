@@ -32,9 +32,11 @@ Exit status 1 if any config has an error.
 from __future__ import annotations
 
 import argparse
+import atexit
 import functools
 import json
 import os
+import shutil
 import subprocess  # nosec B404 - runs git and this interpreter with fixed argv
 import sys
 import tempfile
@@ -124,6 +126,8 @@ def extract_release_lib(tag: str) -> str:
     clone without tags, a mistyped tag).
     """
     dest = tempfile.mkdtemp(prefix=f"idp-release-{tag.replace('/', '-')}-")
+    # Cached for the process, removed when it exits.
+    atexit.register(shutil.rmtree, dest, ignore_errors=True)
     archive = subprocess.run(  # nosec B603 B607 - fixed argv, tag is a ref name
         ["git", "-C", _REPO, "archive", "--format=tar", tag, "lib/idp_common_pkg"],
         capture_output=True,
@@ -233,7 +237,9 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     # read by the current reader. Comparing against the whole file instead would
     # pass a flat key that disagrees with its nested block, because the current
     # reader lets the flat key win too, so both sides would agree on the wrong value.
-    sys.path.insert(0, os.path.join(_REPO, "lib", "idp_common_pkg"))
+    current_lib = os.path.join(_REPO, "lib", "idp_common_pkg")
+    if current_lib not in sys.path:
+        sys.path.insert(0, current_lib)
     import copy
 
     from idp_common.config.migrations import migrate_config

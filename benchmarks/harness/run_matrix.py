@@ -257,7 +257,9 @@ def upload_config(stack, version, path, res=None, native=False):
     idp-cli's migration. REQUIRED for older stacks: v0.5.16's assessment step reads
     a top-level `assessment` block that the migration would drop, and a release
     that predates config format 0.9 needs the flat classification keys."""
-    if native:
+    if native is not False:
+        # Any value but the default False means native mode was asked for, so an
+        # empty mapping is refused rather than falling through to idp-cli.
         if not isinstance(native, dict) or version not in native:
             raise ValueError(
                 f"native upload of {version} needs the config prepared by "
