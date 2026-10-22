@@ -1,9 +1,9 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The unified editor's History: the open section's field edits (its `_editHistory`,
-// prediction and baseline), and, for a production queue item, the item's review
-// activity (who claimed, skipped or completed it, and why).
+// The unified editor's History, in every context: the open section's Field Edits (its
+// `_editHistory`, prediction and baseline) and the Review Activity (who claimed,
+// was assigned, skipped or completed it, and why).
 import React from 'react';
 import { Box, Button, Modal, Tabs } from '@cloudscape-design/components';
 
@@ -21,7 +21,7 @@ interface EditorHistoryModalProps {
   /** The open section's result, whose `_editHistory` is listed. */
   sectionData: Record<string, unknown> | null;
   baselineData?: Record<string, unknown> | null;
-  /** The review item's activity; the Review activity tab is shown only with it. */
+  /** The review activity (claims, assignments, skips, completions); empty shows an empty state. */
   reviewHistory?: ReviewItemDetail['history'];
 }
 
@@ -58,9 +58,7 @@ const EditorHistoryModal = ({
             ),
           ),
         },
-        ...(reviewHistory
-          ? [{ id: 'review', label: 'Review Activity', content: tabBody(<ReviewHistoryTable history={reviewHistory} />) }]
-          : []),
+        { id: 'review', label: 'Review Activity', content: tabBody(<ReviewHistoryTable history={reviewHistory ?? []} />) },
       ]}
     />
   </Modal>

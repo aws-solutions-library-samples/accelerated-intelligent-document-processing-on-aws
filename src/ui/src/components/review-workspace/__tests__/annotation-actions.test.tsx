@@ -3,7 +3,7 @@
 
 /**
  * The unified editor's action bar. What has to hold: the buttons come in the order
- * History, Skip, Discard Changes, Save as Draft, Edit Page Grouping, Processing Report,
+ * History, Skip, Discard Changes, Save, Edit Page Grouping, Processing Report,
  * Complete, each only where it applies; Claim mode shows History, Processing
  * Report and Claim only; a disabled button carries its reason; while an action runs
  * every button is disabled; and each button reports its own action.
@@ -52,15 +52,7 @@ const ALL = { showSkip: true, showDiscard: true, showSave: true, showRegroup: tr
 describe('the unified editor action bar', () => {
   it('renders every action in order', () => {
     renderBar(ALL);
-    expect(labels()).toEqual([
-      'History',
-      'Skip',
-      'Discard Changes',
-      'Save as Draft',
-      'Edit Page Grouping',
-      'Processing Report',
-      'Complete',
-    ]);
+    expect(labels()).toEqual(['History', 'Skip', 'Discard Changes', 'Save', 'Edit Page Grouping', 'Processing Report', 'Complete']);
   });
 
   it('shows only History, Processing Report and Complete by default', () => {
@@ -77,7 +69,7 @@ describe('the unified editor action bar', () => {
     renderBar({ ...ALL, regroupDisabledReason: 'Not while in review', processDisabledReason: 'Assigned to someone else' });
     expect(isDisabled(button('Edit Page Grouping'))).toBe(true);
     expect(isDisabled(button('Complete'))).toBe(true);
-    expect(isDisabled(button('Save as Draft'))).toBe(false);
+    expect(isDisabled(button('Save'))).toBe(false);
     const regroup = createWrapper(document.body)
       .findAllButtons()
       .find((b) => label(b.getElement()) === 'Edit Page Grouping')!;
@@ -93,7 +85,7 @@ describe('the unified editor action bar', () => {
   it.each([
     ['Skip', 'skip'],
     ['Discard Changes', 'discard'],
-    ['Save as Draft', 'save'],
+    ['Save', 'save'],
     ['Edit Page Grouping', 'regroup'],
     ['Complete', 'process'],
   ])('%s reports %s', (name, action) => {

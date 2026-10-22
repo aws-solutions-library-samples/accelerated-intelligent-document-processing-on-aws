@@ -10,7 +10,7 @@
 
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -112,9 +112,9 @@ beforeEach(() => {
 });
 
 describe('Complete on a Test Studio document', () => {
-  it('offers no Save as Draft', () => {
+  it('offers Save', () => {
     renderScreen();
-    expect(barButtons()).toEqual(['History', 'Skip', 'Discard Changes', 'Edit Page Grouping', 'Processing Report', 'Complete']);
+    expect(barButtons()).toEqual(['History', 'Skip', 'Discard Changes', 'Save', 'Edit Page Grouping', 'Processing Report', 'Complete']);
   });
 
   it('saves the open section, then confirms the rest, and exits once', async () => {
@@ -124,6 +124,14 @@ describe('Complete on a Test Studio document', () => {
     expect(controller.save).toHaveBeenCalledTimes(1);
     expect(confirmSections).toHaveBeenCalledWith(['2']);
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(confirmSections.mock.invocationCallOrder[0]);
+  });
+
+  it('saves the open section from Save, without completing', async () => {
+    renderScreen();
+    await act(async () => (editorProps!.onDirtyChange as (d: boolean) => void)(true));
+    button('Save').click();
+    await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
+    expect(confirmSections).not.toHaveBeenCalled();
   });
 
   it('stops when the save fails', async () => {
@@ -142,19 +150,22 @@ describe('Complete on a Test Studio document', () => {
     expect(editorProps!.regroupOpen).toBe(true);
   });
 
-  it('puts the Edit | View switch in the top bar, opening on Edit', () => {
+  it('puts the Annotate | View Source Document switch under the subtitle, opening on Annotate', () => {
     renderScreen();
-    const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
-    expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View']);
-    expect(control.findSelectedSegment()!.getElement().textContent).toBe('Edit');
+    const header = createWrapper(document.body).findHeader()!;
+    expect(header.findActions()!.findSegmentedControl()).toBeNull();
+    const control = header.findDescription()!.findSegmentedControl()!;
+    expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Annotate', 'View Source Document']);
+    expect(control.findSelectedSegment()!.getElement().textContent).toBe('Annotate');
   });
 
   it('names the document and its ground truth under the title', () => {
     renderScreen();
-    expect(createWrapper(document.body).findHeader()!.findDescription()!.getElement().textContent).toBe(
-      'Document: ts-1/input/a.pdfGround Truth: a.pdf',
-    );
-    expect(editorProps).toMatchObject({ hideHeader: true });
+    const description = createWrapper(document.body).findHeader()!.findDescription()!.getElement().textContent;
+    expect(description).toContain('Document: ts-1/input/a.pdfGround Truth: a.pdf');
+    // No version-transition badge, and the editor hides its own title and provenance badges.
+    expect(document.body.textContent).not.toMatch(/v1\s*→\s*v2/);
+    expect(editorProps).toMatchObject({ hideHeader: true, hideBadges: true });
   });
 
   it('shows no notice when there is nothing to act on, and no assignment note', () => {

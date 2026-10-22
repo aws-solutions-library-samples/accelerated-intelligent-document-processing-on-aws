@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The unified editor for a Test Studio document: the ground-truth editor (the
-// test-set adapter over the shared SectionEditor), Complete and Skip. Saving a
-// section marks it reviewed, so there is no Save as Draft here: switching sections
-// saves the open one, and Complete saves it and confirms the sections not saved
-// yet, so "the labels are correct" and "I corrected them" end the same way.
+// test-set adapter over the shared SectionEditor), Save, Complete and Skip. Saving a
+// section marks it reviewed: Save and switching sections save the open one, and
+// Complete saves it and confirms the sections not saved yet, so "the labels are correct" and "I corrected them" end the same way.
 // Skip gives the document back to its queue, unassigned and not reviewed, for another
 // Annotator to claim. The assignee works the document; an Admin or Author may too. An
 // Annotator listed on the set's queue can open any document read-only, and Claim an
@@ -20,7 +19,6 @@ import {
   ContentLayout,
   Header,
   Link,
-  Popover,
   SegmentedControl,
   SpaceBetween,
   Spinner,
@@ -41,7 +39,6 @@ import {
   DRAFT_PROMPT_BODY,
   DRAFT_PROMPT_HEADER,
   annotationEditFlags,
-  draftBadgeHover,
   draftOpenedMessage,
   groundTruthAlertSuffix,
   mayChangeClassFor,
@@ -57,6 +54,20 @@ import { NOT_ASSIGNED_MESSAGE, useTestSetAnnotation } from './test-set-adapter';
 import useAnnotationExit from './use-annotation-exit';
 
 type DocView = 'ground-truth' | 'source';
+
+/**
+ * A test-set document's review activity, from what its queue row records (its
+ * assignment and verdict); the field edits are in the label's own `_editHistory`.
+ */
+export const testSetReviewHistory = (doc: {
+  assignedTo?: string | null;
+  assignedAt?: string | null;
+  reviewed?: boolean | null;
+  skipped?: boolean | null;
+}): { at: string; event: string; actor: string | null; details: string | null }[] =>
+  doc.assignedAt && doc.assignedTo
+    ? [{ at: doc.assignedAt, event: 'assigned', actor: null, details: JSON.stringify({ note: `Assigned to ${doc.assignedTo}` }) }]
+    : [];
 
 /** The item's test set, for the breadcrumbs. */
 export interface ItemTestSet {
@@ -230,6 +241,15 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
       setRegroupOpen(true);
       return;
     }
+    if (action === 'save') {
+      setBusy('save');
+      try {
+        await editor.current?.save();
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
     if (action !== 'process') return;
     setBusy(action);
     processing.current = true;
@@ -329,9 +349,22 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
     <AnnotationFrame
       title={objectKey}
       subtitle={
-        <SpaceBetween size="xxxs">
-          <span title={doc.inputKey}>Document: {doc.inputKey}</span>
-          <span title={doc.objectKey}>Ground Truth: {doc.objectKey}</span>
+        <SpaceBetween size="xs">
+          <SpaceBetween size="xxxs">
+            <span title={doc.inputKey}>Document: {doc.inputKey}</span>
+            <span title={doc.objectKey}>Ground Truth: {doc.objectKey}</span>
+          </SpaceBetween>
+          {testSetBucket && (
+            <SegmentedControl
+              label="Annotate or view the source document"
+              selectedId={docView}
+              onChange={({ detail }) => setDocView(detail.selectedId as DocView)}
+              options={[
+                { id: 'ground-truth', text: 'Annotate' },
+                { id: 'source', text: 'View Source Document' },
+              ]}
+            />
+          )}
         </SpaceBetween>
       }
       badges={
@@ -342,18 +375,7 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
           </StatusIndicator>
         </>
       }
-      meta={
-        <SpaceBetween direction="horizontal" size="l" alignItems="center">
-          {draft && (
-            <Popover dismissButton={false} position="bottom" size="medium" triggerType="custom" content={draftBadgeHover(draft)}>
-              <Badge color="blue">
-                v{draft.baseVersion} &rarr; v{draft.draftVersion}
-              </Badge>
-            </Popover>
-          )}
-          <ReviewPresence assignee={doc.assignedTo} isMe={doc.claimedByMe} since={doc.assignedAt} />
-        </SpaceBetween>
-      }
+      meta={<ReviewPresence assignee={doc.assignedTo} isMe={doc.claimedByMe} since={doc.assignedAt} />}
       actions={{
         processDisabledReason: completeReason ?? (saving ? 'Saving your changes…' : undefined),
         processHint: 'Mark the labels reviewed: saved and edited sections as corrected, the rest as correct',
@@ -361,21 +383,12 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
         skipDisabledReason: skipReason,
         showDiscard: !editorReadOnly,
         discardDisabledReason: !dirty ? 'No changes to discard' : saving ? 'Saving your changes…' : undefined,
+        // Saving a section marks it reviewed (there is no unreviewed save of test-set labels).
+        showSave: !editorReadOnly,
+        saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined,
         showRegroup: true,
         regroupDisabledReason: !mayChangeClass || !testSetId ? 'Your role cannot change this document’s page grouping' : undefined,
         showClaim: canClaim,
-        // Edit the ground truth, or view the source document.
-        leading: testSetBucket ? (
-          <SegmentedControl
-            label="Edit or view the document"
-            selectedId={docView}
-            onChange={({ detail }) => setDocView(detail.selectedId as DocView)}
-            options={[
-              { id: 'ground-truth', text: 'Edit' },
-              { id: 'source', text: 'View' },
-            ]}
-          />
-        ) : undefined,
         onShowHistory: () => setShowHistory(true),
         onShowReport: () => setShowReport(true),
         busy,
@@ -398,7 +411,14 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
               <Box>It goes back to its queue, unassigned and not reviewed, for another Annotator to claim.</Box>
             </ReasonModal>
           )}
-          {showHistory && <EditorHistoryModal visible onDismiss={() => setShowHistory(false)} sectionData={sectionData} />}
+          {showHistory && (
+            <EditorHistoryModal
+              visible
+              onDismiss={() => setShowHistory(false)}
+              sectionData={sectionData}
+              reviewHistory={testSetReviewHistory(doc)}
+            />
+          )}
           {showReport && <ProcessingReportModal visible onDismiss={() => setShowReport(false)} sectionData={sectionData} />}
         </>
       }
@@ -426,6 +446,7 @@ const TestSetAnnotation = ({ testSetId, objectKey, onTestSet }: TestSetAnnotatio
               actionsPlacement="external"
               showHistoryTab={false}
               hideHeader
+              hideBadges
               saveOnSectionSwitch
               regroupPlacement="external"
               regroupOpen={regroupOpen}

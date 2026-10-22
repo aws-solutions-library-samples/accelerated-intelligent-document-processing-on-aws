@@ -153,6 +153,8 @@ interface GroundTruthVisualEditorProps {
   showHistoryTab?: boolean;
   /** Hide the editor's own title row (the unified editor names the ground truth above). */
   hideHeader?: boolean;
+  /** Hide the label-source and class-source badges (the unified editor keeps the space for annotation). */
+  hideBadges?: boolean;
   onSavingChange?: (saving: boolean) => void;
   saveOnSectionSwitch?: boolean;
   onDataChange?: (data: Record<string, unknown> | null) => void;
@@ -186,6 +188,7 @@ const GroundTruthVisualEditor = ({
   actionsPlacement,
   showHistoryTab,
   hideHeader,
+  hideBadges = false,
   onSavingChange,
   saveOnSectionSwitch,
   onDataChange,
@@ -454,7 +457,14 @@ const GroundTruthVisualEditor = ({
     if (onSave) {
       await onSave(sectionId, dataToSave);
       logger.info('Saved ground truth via caller-supplied handler for', fullPath);
-      return dataToSave;
+      // Re-read what was stored, so the server's _editHistory entry shows in History
+      // straight away. A failed re-read doesn't undo the save.
+      try {
+        return (await loadSection(sectionId)).data as Record<string, unknown>;
+      } catch (err) {
+        logger.warn('Could not re-read the saved ground truth', err);
+        return dataToSave;
+      }
     }
 
     // Direct-to-S3 path: nothing server-side records provenance, so the editor
@@ -513,7 +523,7 @@ const GroundTruthVisualEditor = ({
     <>
       {/* Provenance is shown where the label is edited, so a machine draft cannot
           be mistaken on screen for confirmed work. */}
-      {ctx.data && (
+      {ctx.data && !hideBadges && (
         <SpaceBetween direction="horizontal" size="xs">
           {/* data is only ever set from a baseline that loaded and parsed, so a missing
               labelSource here means uploaded ground truth — not the absence of labels. */}

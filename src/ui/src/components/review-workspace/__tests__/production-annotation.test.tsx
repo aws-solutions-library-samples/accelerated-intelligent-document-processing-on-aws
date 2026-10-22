@@ -9,7 +9,7 @@
  * is sent; if an Annotator got there first the screen says so and goes view-only; an
  * Admin on someone else's item sees it view-only with Take over, which calls
  * takeOverReviewItem; there is no Reject; Skip is offered only to the assignee; and
- * the screen reports the item's queue for the breadcrumbs. The bar adds Save as Draft
+ * the screen reports the item's queue for the breadcrumbs. The bar adds Save
  * and Discard Changes (through the editor's controller), Processing Report, and an Edit
  * page grouping that stays disabled while the item is in review; History has the item's
  * review activity; and there is no "Queue · profile · priority" meta line.
@@ -369,11 +369,11 @@ describe('the actions', () => {
     server.detail = mine();
     renderScreen();
     // Disabled until the editor reports unsaved edits.
-    expect(button('Save as Draft').isDisabled()).toBe(true);
+    expect(button('Save').isDisabled()).toBe(true);
     await act(async () => {
       (editor as unknown as { onDirtyChange: (d: boolean) => void }).onDirtyChange(true);
     });
-    button('Save as Draft').click();
+    button('Save').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
     button('Discard Changes').click();
     expect(controller.discard).toHaveBeenCalledTimes(1);

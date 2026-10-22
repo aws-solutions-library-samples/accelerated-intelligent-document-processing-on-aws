@@ -127,11 +127,12 @@ describe('AnnotationWorkspace version transition', () => {
     expect(staleLinkVersion(null, DRAFT)).toBeNull();
   });
 
-  it('keeps the transition visible while working, not only at the prompt', () => {
+  it('keeps the transition visible on the queue page, not on the editor', () => {
     // Which version a correction landed in is the question asked later, when a run's
-    // score is attributed to one.
+    // score is attributed to one; the queue page shows it. The editor leaves it out to
+    // keep its space for annotation.
     expect(SOURCE).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
-    expect(SCREEN).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
+    expect(SCREEN).not.toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
 
   it('lets Complete open the transition itself, only when none is open, and only on click', () => {

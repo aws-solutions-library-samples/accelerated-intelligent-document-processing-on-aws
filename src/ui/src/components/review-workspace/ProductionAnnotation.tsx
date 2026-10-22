@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The unified editor for a production review item: the shared SectionEditor over the
-// item's sections, edits autosaved as drafts (and Save as Draft), then Complete
+// item's sections, edits autosaved as drafts (and Save), then Complete
 // (complete the review) or Skip (give the item back to its queue; the draft is kept). Only the assignee edits. Any Annotator listed
 // on the item's queue can open it read-only, and Claim an unassigned item to work it.
 // An Admin edits an unassigned item directly: the first draft save, or Process
@@ -55,7 +55,7 @@ interface ProductionAnnotationProps {
 const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationProps): React.JSX.Element => {
   const adapter = useProductionAnnotation(objectKey);
   const { detail, loadError, reload } = adapter;
-  const { setErrorMessage, setSuccessMessage } = useAppContext();
+  const { user, setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin, isAnnotator } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const exit = useAnnotationExit();
@@ -452,6 +452,7 @@ const ProductionAnnotation = ({ objectKey, onItemQueue }: ProductionAnnotationPr
           controllerRef={editor}
           actionsPlacement="external"
           showHistoryTab={false}
+          recordEditHistory={{ editedBy: user?.username || 'unknown', source: 'review-queue' }}
           reloadToken={adapter.reloadToken}
           autosaveMs={canEdit ? AUTOSAVE_MS : undefined}
           confirmSectionSwitch={false}

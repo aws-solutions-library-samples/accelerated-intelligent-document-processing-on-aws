@@ -3,8 +3,8 @@
 
 /**
  * The unified editor on a direct edit. What has to hold: the bar is History, Discard
- * Changes, Save as Draft, Edit Page Grouping, Processing Report and Complete,
- * with no Skip; Save as Draft saves through the editor; Complete confirms, then
+ * Changes, Save, Edit Page Grouping, Processing Report and Complete,
+ * with no Skip; Save saves through the editor; Complete confirms, then
  * calls processChanges with no section changes; an Author can save but not process; a
  * document in a review queue, or still processing, is read-only, and an in-review one
  * offers "Review in queue" to an Annotator; and the evaluation baseline reaches the
@@ -114,9 +114,9 @@ beforeEach(() => {
 });
 
 describe('the direct edit', () => {
-  it('offers History, Discard Changes, Save as Draft, Edit Page Grouping, Processing Report and Complete, with no Skip', async () => {
+  it('offers History, Discard Changes, Save, Edit Page Grouping, Processing Report and Complete, with no Skip', async () => {
     await renderEditor();
-    expect(bar()).toEqual(['History', 'Discard Changes', 'Save as Draft', 'Edit Page Grouping', 'Processing Report', 'Complete']);
+    expect(bar()).toEqual(['History', 'Discard Changes', 'Save', 'Edit Page Grouping', 'Processing Report', 'Complete']);
     expect(editorProps!.isReadOnly).toBe(false);
     expect(editorProps!.actionsPlacement).toBe('external');
   });
@@ -124,7 +124,7 @@ describe('the direct edit', () => {
   it('saves a draft through the editor', async () => {
     await renderEditor();
     await act(async () => (editorProps!.onDirtyChange as (d: boolean) => void)(true));
-    button('Save as Draft').click();
+    button('Save').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
     expect(processCalls()).toHaveLength(0);
   });
@@ -152,7 +152,7 @@ describe('the direct edit', () => {
   it('lets an Author save but not process, saying why', async () => {
     Object.assign(role, { isAdmin: false, isAuthor: true, canWrite: true, canReview: false, canWorkReviewQueues: false });
     await renderEditor();
-    expect(button('Save as Draft')).toBeTruthy();
+    expect(button('Save')).toBeTruthy();
     expect(disabledReason('Complete')).toBe('Complete needs the Admin or Reviewer role, because it reprocesses the document.');
   });
 
@@ -166,7 +166,7 @@ describe('the direct edit', () => {
       .findAllButtons()
       .find((b) => barLabel(b) === 'Review in queue');
     expect(review?.getElement().getAttribute('href')).toBe('#/review-queues/items/in%2Fdoc.pdf');
-    expect(disabledReason('Save as Draft')).toBe('This document is in a review queue. Choose Review to work on it there.');
+    expect(disabledReason('Save')).toBe('This document is in a review queue. Choose Review to work on it there.');
     expect(disabledReason('Edit Page Grouping')).toBe('This document is in a review queue. Choose Review to work on it there.');
     expect(disabledReason('Complete')).toBe('This document is in a review queue. Choose Review to work on it there.');
   });
@@ -182,6 +182,24 @@ describe('the direct edit', () => {
     await renderEditor();
     expect(header().findDescription()).toBeNull();
     expect(editorProps!.showHistoryTab).toBe(false);
+  });
+
+  it('lists the document review history under History › Review Activity', async () => {
+    server.doc = rawDoc({
+      HITLReviewHistory: JSON.stringify([
+        { action: 'skipped', timestamp: '2026-10-20T09:00:00Z', user: 'rev@example.com', reason: 'Duplicate document' },
+      ]),
+    });
+    await renderEditor();
+    button('History').click();
+    const tabGroup = createWrapper(document.body).findTabs()!;
+    tabGroup.findTabLinkByIndex(2)!.click();
+    const history = createWrapper(document.body)
+      .findAllModals()
+      .find((m) => m.findHeader().getElement().textContent === 'History')!;
+    const content = history.findContent().getElement().textContent;
+    expect(content).toContain('rev@example.com');
+    expect(content).toContain('Duplicate document');
   });
 
   it('passes the evaluation baseline to the editor', async () => {

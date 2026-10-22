@@ -3,7 +3,7 @@
 //
 // The direct-edit adapter of the unified editor: loads any processed document (whether
 // or not it is in review), its page images and section results; saves a section's
-// edits without reprocessing (Save as Draft); and submits the document for
+// edits without reprocessing (Save); and submits the document for
 // reprocessing (Complete).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
@@ -30,6 +30,8 @@ export interface DirectEditDocument {
   objectStatus?: string;
   evaluationStatus?: string | null;
   hitlStatus?: string;
+  /** The document's HITL review events (parsed HITLReviewHistory). */
+  hitlReviewHistory?: { action?: string; timestamp?: string; user?: string; sectionId?: string; [key: string]: unknown }[];
   hitlReviewOwner?: string;
   hitlReviewOwnerEmail?: string;
   configVersion?: string | null;

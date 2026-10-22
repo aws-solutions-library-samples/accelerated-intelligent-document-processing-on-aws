@@ -4,10 +4,10 @@
 // The frame of the unified document editor, the same for a production queue item, a
 // Test Studio item and a direct edit: the title row with the item's facts, the action
 // bar, notices, the task context and the editor. The actions, each shown where it
-// applies, are History, Skip (give the item back to its queue), Discard Changes, Save
-// as Draft, Edit Page Grouping, Processing Report and Complete, the primary action.
-// A context may put its own control first (Test Studio's Edit | View). An Annotator viewing an unassigned item sees Claim instead of the editing
-// actions. Every disabled action says why on hover.
+// applies, are History, Skip (give the item back to its queue), Discard Changes, Save,
+// Edit Page Grouping, Processing Report and Complete, the primary action. A context
+// may put its own control first. An Annotator viewing an unassigned item sees Claim
+// instead of the editing actions. Every disabled action says why on hover.
 import React from 'react';
 import { Button, Header, SpaceBetween } from '@cloudscape-design/components';
 
@@ -36,7 +36,7 @@ export interface AnnotationActionsProps {
   skipDisabledReason?: string;
   showDiscard?: boolean;
   discardDisabledReason?: string;
-  /** Offer Save as Draft: save the edits without finishing. */
+  /** Offer Save: save the edits without finishing. */
   showSave?: boolean;
   saveDisabledReason?: string;
   /** Offer Edit Page Grouping. */
@@ -118,7 +118,7 @@ const AnnotationActions = ({
       )}
       {showSave && (
         <Button disabled={!!saveReason} disabledReason={saveReason} loading={busy === 'save'} onClick={() => onAction('save')}>
-          Save as Draft
+          Save
         </Button>
       )}
       {showRegroup && (

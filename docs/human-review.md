@@ -183,7 +183,7 @@ HITL review is automatically triggered when:
    - Click **Edit Data** on a section (or **Edit** at the top of the document page)
      to open the document editor at `#/documents/<document>/edit`
    - Review and correct extracted key-value pairs
-   - Click **Save as Draft** to save your corrections. Saving does not finish the
+   - Click **Save** to save your corrections. Saving does not finish the
      review: the document stays **Review In Progress** and you stay its review owner,
      so you can come back and keep editing
 
@@ -314,7 +314,7 @@ The actions are at the top:
 |---|---|---|
 | **History** | The open section's field edits (prediction and baseline) | everyone |
 | **Discard Changes** | Reverts the unsaved edits | editors |
-| **Save as Draft** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
+| **Save** | Saves the edits (prediction and baseline) without reprocessing | Admin, Author, and a Reviewer who holds the document's review |
 | **Edit Page Grouping** | Opens the page-grouping board in a dialog | editors |
 | **Processing Report** | How the open section was extracted | everyone |
 | **Complete** | Saves the edits, confirms, then reprocesses the document (evaluation and summary) | Admin, Reviewer |
@@ -352,20 +352,20 @@ API and a Reviewer doesn't save baseline edits.
 **Prediction Editing**
 - Edit extracted field values directly in the visual editor
 - Change tracking with visual indicators (blue left border on modified fields)
-- **Save as Draft** writes the changes to S3
+- **Save** writes the changes to S3
 - **Discard Changes** reverts all unsaved edits
 
 **Evaluation Baseline Editing** (when evaluation is enabled)
 - Edit baseline (expected) values alongside predictions
 - Independent change tracking from predictions (orange left border on modified baseline fields)
-- Saved and discarded with the prediction edits, by **Save as Draft** and **Discard Changes**
+- Saved and discarded with the prediction edits, by **Save** and **Discard Changes**
 - Side-by-side comparison of predicted vs expected values
 
 **Save & Reprocess Workflow**
 
 After making edits to predictions or baselines, you can trigger reprocessing to re-run downstream steps with the updated data:
 
-1. **Save and reprocess**: Click **Complete** in the document editor. It saves your prediction and baseline edits, asks you to confirm, then reprocesses the document. (**Save as Draft** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
+1. **Save and reprocess**: Click **Complete** in the document editor. It saves your prediction and baseline edits, asks you to confirm, then reprocesses the document. (**Save** saves them without reprocessing; the document toolbar's **Reprocess** re-runs the steps later.)
 2. **Confirm**: The confirmation says which steps re-run
 3. **Automatic Pipeline Execution**: The document automatically transitions through processing stages:
    - `SUMMARIZING` → Re-generates document summary using updated extraction data

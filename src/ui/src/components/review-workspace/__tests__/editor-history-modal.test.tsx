@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The unified editor's History. What has to hold: Field Edits is always a tab;
- * Review Activity is a tab only when the item has review history, and lists it; and
+ * The unified editor's History. What has to hold: Field Edits and Review Activity
+ * are always tabs, and Review Activity lists the item's history; and
  * both tabs have the same fixed height.
  */
 
@@ -21,10 +21,14 @@ const tabs = () =>
     .map((t) => t.getElement().textContent);
 
 describe('EditorHistoryModal', () => {
-  it('shows Field Edits only without review history', () => {
+  it('always offers Field Edits and Review Activity, with an empty state when there is no activity', () => {
     render(<EditorHistoryModal visible onDismiss={() => undefined} sectionData={{ inference_result: {} }} />);
     expect(createWrapper(document.body).findModal()!.findHeader().getElement().textContent).toBe('History');
-    expect(tabs()).toEqual(['Field Edits']);
+    expect(tabs()).toEqual(['Field Edits', 'Review Activity']);
+    createWrapper(document.body).findTabs()!.findTabLinkByIndex(2)!.click();
+    expect(createWrapper(document.body).findModal()!.findContent().getElement().textContent).toContain(
+      'Nothing has happened to this item yet.',
+    );
   });
 
   it('gives both tabs the same fixed height, whatever their content', () => {

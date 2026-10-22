@@ -38,7 +38,7 @@ import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
 import EditHistoryTab from '../document-viewer/EditHistoryTab';
 import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
-import { diffLeafPaths } from './direct-edit-save';
+import { buildEditEntry, diffLeafPaths } from './direct-edit-save';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { SectionEvaluation } from './use-section-evaluation';
 
@@ -120,6 +120,11 @@ interface SectionEditorProps {
   showHistoryTab?: boolean;
   /** Hide the title row (the frame already names the document and holds the actions). */
   hideHeader?: boolean;
+  /**
+   * Append an `_editHistory` entry (who, when, which fields) to every save that changes
+   * a field, for a save path that doesn't record one itself (a review draft).
+   */
+  recordEditHistory?: { editedBy: string; source: string };
   onSavingChange?: (saving: boolean) => void;
   onSelectedSectionChange?: (sectionId: string | null) => void;
   /** Switching sections with unsaved changes saves them first, instead of asking. */
@@ -174,6 +179,7 @@ const SectionEditor = ({
   actionsPlacement = 'header',
   showHistoryTab = true,
   hideHeader = false,
+  recordEditHistory,
   onSavingChange,
   onSelectedSectionChange,
   saveOnSectionSwitch = false,
@@ -345,7 +351,14 @@ const SectionEditor = ({
     setIsSaving(true);
     setError(null);
     try {
-      const dataToSave: Record<string, unknown> = { ...localData };
+      let dataToSave: Record<string, unknown> = { ...localData };
+      if (recordEditHistory && originalJson !== null) {
+        const changes = diffLeafPaths(JSON.parse(originalJson), localData);
+        if (changes.size > 0) {
+          const entry = { ...buildEditEntry(recordEditHistory.editedBy, changes, new Map()), source: recordEditHistory.source };
+          dataToSave = { ...dataToSave, _editHistory: [...((localData._editHistory as unknown[]) ?? []), entry] };
+        }
+      }
       const stored = await onSave(selectedSection.sectionId, dataToSave);
       const saved = (stored as Record<string, unknown> | undefined) ?? dataToSave;
       setLocalData(saved);

@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// Saves a direct edit of one section (Save as Draft in the unified editor): the
+// Saves a direct edit of one section (Save in the unified editor): the
 // prediction to the section's output URI and, when it changed, the evaluation baseline
 // to the evaluation baseline bucket at the same key. Both get the same `_editHistory`
 // entry. A reviewer-only caller (no Admin or Author role) saves the prediction through

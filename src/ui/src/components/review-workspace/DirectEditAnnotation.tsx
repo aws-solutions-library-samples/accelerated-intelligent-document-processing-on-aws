@@ -3,13 +3,13 @@
 //
 // The unified editor for a direct edit of any processed document, in review or not:
 // the shared SectionEditor over its sections, with the evaluation baseline where the
-// document has one. Save as Draft writes the edits without reprocessing; Process
+// document has one. Save writes the edits without reprocessing; Process
 // Changes saves them, confirms, then reprocesses the document (evaluation and
 // summarization). Edit Page Grouping saves a new grouping.
 //
 // A document in a review queue opens read-only: it is edited from its queue item,
 // and finalizing that item would overwrite edits made here. So does a document still
-// processing. Save as Draft needs the Admin or Author role, or a Reviewer holding the
+// processing. Save needs the Admin or Author role, or a Reviewer holding the
 // document's legacy review; Complete needs the Admin or Reviewer role. The
 // server enforces both.
 import React, { useCallback, useMemo, useRef, useState } from 'react';
@@ -34,6 +34,7 @@ import AnnotationFrame from './AnnotationFrame';
 import EditorNotices from './EditorNotices';
 import type { AnnotationAction } from './AnnotationFrame';
 import { useDirectEditAnnotation } from './direct-edit-adapter';
+import type { DirectEditDocument } from './direct-edit-adapter';
 import { PROCESSING_REASON, isEditableStatus } from './direct-edit-status';
 import EditorHistoryModal from './EditorHistoryModal';
 import ProcessingReportModal from './ProcessingReportModal';
@@ -43,6 +44,25 @@ import useSectionEvaluation from './use-section-evaluation';
 
 export const PROCESS_ROLE_REASON = 'Complete needs the Admin or Reviewer role, because it reprocesses the document.';
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
+
+/** The document's HITL review events, in the shape History's Review Activity lists. */
+export const documentReviewHistory = (
+  events: DirectEditDocument['hitlReviewHistory'],
+): { at: string; event: string; actor: string | null; details: string | null }[] =>
+  (events ?? [])
+    .filter((e) => !!e.timestamp && !!e.action)
+    .map((e) => {
+      const reason = typeof e.reason === 'string' ? e.reason : undefined;
+      const note = [typeof e.note === 'string' ? e.note : undefined, e.sectionId ? `Section ${e.sectionId}` : undefined]
+        .filter(Boolean)
+        .join(' · ');
+      return {
+        at: e.timestamp as string,
+        event: e.action as string,
+        actor: e.user ?? null,
+        details: reason || note ? JSON.stringify({ reason, note: note || undefined }) : null,
+      };
+    });
 
 interface DirectEditAnnotationProps {
   objectKey: string;
@@ -263,6 +283,7 @@ const DirectEditAnnotation = ({ objectKey, initialSectionId = null }: DirectEdit
               onDismiss={() => setShowHistory(false)}
               sectionData={sectionData}
               baselineData={evaluation.baseline}
+              reviewHistory={documentReviewHistory(doc.hitlReviewHistory)}
             />
           )}
           {showReport && <ProcessingReportModal visible onDismiss={() => setShowReport(false)} sectionData={sectionData} />}

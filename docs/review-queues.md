@@ -100,17 +100,18 @@ Inbox; other users have neither.
   open them from Tasks, an Inbox message or Queue Management. The document's page
   images are shown beside its fields.
   - The actions are at the top, each shown where it applies: **History**, **Skip**,
-    **Discard Changes**, **Save as Draft**, **Edit Page Grouping**, **Processing
+    **Discard Changes**, **Save**, **Edit Page Grouping**, **Processing
     Report** and **Complete**. A disabled action says why on hover.
-  - **History** opens the **Field Edits** made to the open section and, on a
-    Production item, the item's **Review Activity**: who claimed, skipped or
-    completed it in this review, with any skip reason and note.
+  - **History** has two tabs. **Field Edits** lists every saved change to the open
+    section's fields: who, when, and each field's old and new value (a Production
+    draft save records one too). **Review Activity** lists who claimed, was
+    assigned, skipped or completed the item, with any skip reason and note.
   - **Processing Report** shows how the open section was extracted.
   - **Production item**: **Review Reason**, at the top, lists why it is in review,
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
     lists the rest and **Show fewer** collapses them again. Hover a reason chip to
     see the field, the score and the threshold. Your edits are saved as a draft as
-    you type, or straight away with **Save as Draft**. **Complete** saves
+    you type, or straight away with **Save**. **Complete** saves
     your latest edits and applies your corrections. **Edit Page Grouping** corrects
     the document's split as part of the review: the board shows every section of
     the document, and the extracted values and your drafts stay with their sections
@@ -119,9 +120,10 @@ Inbox; other users have neither.
   - **Test Studio item**: correct the labels and choose **Complete**, which
     saves the open section and confirms the rest. You can also choose it without
     changing anything, which confirms the labels as correct; it needs no **Start
-    annotating** first. There is no **Save as Draft**: saving a Test Studio section
-    marks it reviewed, so switching sections saves the open one. **Edit page
-    grouping** opens the page-grouping board in a dialog. Versioning works exactly
+    annotating** first. **Save** saves the open section, which marks it reviewed,
+    and switching sections saves it too. **Annotate | View Source Document**, under
+    the title, switches between the ground-truth editor and the source document.
+    **Edit Page Grouping** opens the page-grouping board in a dialog. Versioning works exactly
     as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
     Tasks and goes back to its queue unassigned, where another Annotator can claim

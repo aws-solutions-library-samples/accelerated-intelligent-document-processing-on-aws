@@ -194,7 +194,7 @@ For each processed document:
    - Click on a field to highlight it in the document viewer
    - Compare the extracted value against the source document
    - Correct any errors by editing the field value directly
-4. Click **Save as Draft** to save your changes — the system records every edit in the field's edit history
+4. Click **Save** to save your changes — the system records every edit in the field's edit history
 
 > **Tip**: The solution generates a confidence score for each field. To save time, you could focus on reviewing lower-confidence fields first. However, for the highest quality ground truth, review all fields.
 

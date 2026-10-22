@@ -680,7 +680,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   The breadcrumb is **Home › {queue, test set or Documents} › {document}** for every
   role. The actions are at the top, each shown where it applies: **History** (field
   edits, and a Production item's review activity), **Skip** (queue items, for the
-  assignee), **Discard Changes**, **Save as Draft** (Production items and direct
+  assignee), **Discard Changes**, **Save** (Production items and direct
   edits), **Edit Page Grouping**, **Processing Report** and **Complete**.
   Complete finishes a queue item, and on a direct edit saves the edits,
   confirms, and reprocesses the document. A direct edit also shows the evaluation
