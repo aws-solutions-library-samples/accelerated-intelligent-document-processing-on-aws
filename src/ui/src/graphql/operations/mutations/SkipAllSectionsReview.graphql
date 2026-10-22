@@ -1,5 +1,5 @@
-mutation SkipAllSectionsReview($objectKey: String!) {
-  skipAllSectionsReview(objectKey: $objectKey) {
+mutation SkipAllSectionsReview($objectKey: String!, $reason: String!, $note: String) {
+  skipAllSectionsReview(objectKey: $objectKey, reason: $reason, note: $note) {
     ObjectKey
     ObjectStatus
     HITLStatus

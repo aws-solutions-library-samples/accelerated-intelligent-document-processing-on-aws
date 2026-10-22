@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
-import { StatusIndicator } from '@cloudscape-design/components';
+import { Link, StatusIndicator } from '@cloudscape-design/components';
 
 import { normalizeHitlStatus } from './review-status';
 
@@ -11,14 +11,27 @@ interface HitlItem {
   hitlCompleted?: boolean;
 }
 
-export const renderHitlStatus = (item: HitlItem): React.JSX.Element => {
+/**
+ * `reviewHref`, when given, links an In Review status to the document's queue item, so
+ * a queued document is opened for review the same way from every place it is listed.
+ */
+export const renderHitlStatus = (item: HitlItem, reviewHref?: string): React.JSX.Element => {
   const view = normalizeHitlStatus(item.hitlStatus);
 
   // Queue-managed documents carry their status whether or not the legacy flag is set.
   if (view.queueManaged) {
-    if (view.kind === 'in_review') return <StatusIndicator type="in-progress">In review</StatusIndicator>;
-    if (view.kind === 'complete') return <StatusIndicator type="success">Review complete</StatusIndicator>;
-    return <StatusIndicator type="stopped">Rejected</StatusIndicator>;
+    if (view.kind === 'in_review') {
+      const status = <StatusIndicator type="in-progress">In Review</StatusIndicator>;
+      return reviewHref ? (
+        <Link href={reviewHref} ariaLabel="In Review: open the review queue item">
+          {status}
+        </Link>
+      ) : (
+        status
+      );
+    }
+    if (view.kind === 'complete') return <StatusIndicator type="success">Review Completed</StatusIndicator>;
+    return <StatusIndicator type="stopped">Review Rejected</StatusIndicator>;
   }
 
   if (!item.hitlTriggered) {

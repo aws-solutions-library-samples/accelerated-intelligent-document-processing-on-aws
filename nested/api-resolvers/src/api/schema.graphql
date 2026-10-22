@@ -1392,6 +1392,8 @@ type TestSetQueueSummary @aws_cognito_user_pools {
   priority: Int
   eligibleAnnotators: [String!]
   checklist: [String!]
+  # What an Annotator chooses from to give a document back unfinished (Skip).
+  skipReasons: [String!]
   claimLeaseMinutes: Int
   queueCountsAt: AWSDateTime
   updatedAt: AWSDateTime
@@ -1423,6 +1425,7 @@ type TestSetQueueSettings @aws_cognito_user_pools {
   # Annotators who work this queue; empty means none (Admins only).
   eligibleAnnotators: [String!]!
   checklist: [String!]!
+  skipReasons: [String!]!
 }
 
 input TestSetQueueSettingsInput {
@@ -1432,6 +1435,8 @@ input TestSetQueueSettingsInput {
   timeLimitMinutes: Int
   eligibleAnnotators: [String!]
   checklist: [String!]
+  # Omitted, the set keeps its list (the review queues' defaults until one is saved).
+  skipReasons: [String!]
 }
 
 # A Test Studio document assigned to the caller (My Work › Tasks).
@@ -1455,6 +1460,8 @@ type ReviewQueueDefinition @aws_cognito_user_pools {
   priority: Int!
   checklist: [String!]!
   rejectReasons: [String!]!
+  # Why an Annotator gives an item back unfinished (Skip); one is required to skip.
+  skipReasons: [String!]!
   # An assigned item still open after this long sends its Annotator a reminder.
   timeLimitMinutes: Int!
   # Annotators (by email) who work this queue; empty means none (Admins only).
@@ -1473,6 +1480,8 @@ input ReviewQueueDefinitionInput {
   priority: Int
   checklist: [String!]
   rejectReasons: [String!]
+  # An update keeps the stored list when omitted; a new queue gets the defaults.
+  skipReasons: [String!]
   timeLimitMinutes: Int
   eligibleAnnotators: [String!]
   # 0-1; a new queue defaults to 0.8, an update keeps the stored value when omitted.
@@ -1486,6 +1495,8 @@ type AnnotationQueue @aws_cognito_user_pools @aws_iam {
   # The set's time limit in minutes: an assigned document still open after this
   # long sends its Annotator a reminder. Assignments do not expire.
   claimLeaseMinutes: Int
+  # What a Skip may give as its reason (skipTestSetDocument).
+  skipReasons: [String!]
   # BUILDING while the set's document summaries are built in the background
   # (documents listed so far are returned meanwhile); READY once current.
   summaryStatus: String
@@ -1825,6 +1836,7 @@ type ReviewItemDetail @aws_cognito_user_pools {
   sections: [ReviewSectionDetail!]!
   checklist: [String!]!
   rejectReasons: [String!]!
+  skipReasons: [String!]!
   claimCap: Int!
   myClaimCount: Int!
   history: [ReviewHistoryEntry!]!
@@ -2223,7 +2235,11 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
-  skipAllSectionsReview(objectKey: String!): Document
+  skipAllSectionsReview(objectKey: String!, reason: String!, note: String): Document
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Save a reviewer's edits to one section without completing its review: the
+  # review stays In Progress until processChanges or skipAllSectionsReview.
+  saveSectionReviewEdits(objectKey: String!, sectionId: String!, editedData: AWSJSON!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   claimReview(objectKey: String!): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
@@ -2243,7 +2259,7 @@ type Mutation {
   # Hand a test-set document back to its queue: the assignment ends and the document
   # is unassigned again, not completed. Annotators may skip only documents assigned
   # to them.
-  skipTestSetDocument(testSetId: String!, objectKey: String!): TestSetDocumentSkipResult
+  skipTestSetDocument(testSetId: String!, objectKey: String!, reason: String!, note: String): TestSetDocumentSkipResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   # An Annotator listed on a set's queue takes one of its unassigned, unreviewed
   # documents: it is assigned to them and appears in My Work › Tasks.
@@ -2325,7 +2341,7 @@ type Mutation {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin"]
     )
-  releaseReviewItem(objectKey: String!, cycleId: String!): ReviewItem
+  releaseReviewItem(objectKey: String!, cycleId: String!, reason: String!, note: String): ReviewItem
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator"]
     )

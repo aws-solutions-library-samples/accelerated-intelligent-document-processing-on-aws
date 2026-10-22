@@ -1172,15 +1172,46 @@ enhanced_assessment = ground_assessment_geometry(
 Key behaviors:
 
 - **Tiered matching** of each extracted value to OCR `lines[]`: exact → value-in-line →
-  multi-line span (boxes unioned) → line fragment → token-overlap fuzzy (≥ 0.6).
+  multi-line span (boxes unioned) → line fragment covering at least half the value →
+  token-overlap fuzzy (≥ 0.6) → character similarity (≥ 0.8) → **fragment covering less
+  than half the value**, ranked last.
+
+  That last tier is the whole of
+  [#1519](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1519).
+  A fragment used to rank as an ordinary line-fragment match with no size
+  requirement, which put boxes on a single digit for a form id, on a single letter
+  for an author name, and on a different author entirely. It also *suppressed* the
+  right answer: any candidate short-circuits the fuzzy and character passes, so
+  where OCR had misread one character inside a sentence, a 29%-coverage column
+  header won and the line resembling the whole value — 0.9706 similarity — was never
+  computed.
+
+  **It is demoted rather than dropped, and that is measured.** Dropping sub-half
+  fragments removes 14 wrong boxes and 48 right ones: most of them point at a value
+  that genuinely is on the page, spread over several lines (a three-line address, a
+  specification assembled from consecutive rows). No absolute-size rule does better
+  than break-even, because short real content is indistinguishable from short junk —
+  the property that separates them is spatial. Ranking the fragment below the
+  whole-string tiers instead loses **no** box and moves 10 onto a better line, over
+  50 measured sections.
+
+  ⚠️ The cost is real and is paid elsewhere: the character-similarity pass now runs
+  whenever no whole-string candidate exists, and it is an O(n·m) dynamic program per
+  line. `_levenshtein_can_reach` is an **exact** O(1) ceiling in front of it
+  (`similarity ≤ min(len)/max(len)`, computed over the same stripping the scorer
+  applies), without which grounding went from 4.6s to 25.4s over those sections, 98%
+  of it in that one function. Keep the guard if you touch the tiers.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).
 - **Coordinates stay 0–1**: `pageData` geometry is already normalized, so grounded boxes skip
   the 0–1000 → 0–1 rescale that LLM boxes go through. No mixed scales in `explainability_info`.
-- **Additive output**: a matched field gets `geometry_source` (`"ocr"`/`"ocr-paragraph"`/
-  `"llm"`) and, when available, `ocr_confidence` (0–1). The LLM `confidence`/`confidence_reason`
-  are never modified, so HITL and confidence alerts are unaffected.
+- **Additive output**: a matched field gets `geometry_source`
+  (`"ocr"`/`"ocr-paragraph"`/`"ocr-normalized"`/`"ocr-fuzzy"`/`"ocr-weak"`/`"llm"`) and, when available,
+  `ocr_confidence` (0–1). `"ocr-weak"` marks a box whose matched line covers less than
+  half the value, which is how to count such boxes in a stored artifact without
+  re-deriving the tiers. The LLM `confidence`/`confidence_reason` are never modified,
+  so HITL and confidence alerts are unaffected.
 - **Config gate**: `extraction.geometry.mode` (`ocr_only` default | `llm_grounded` | `llm` | `off`). The legacy `assessment.ground_geometry_in_ocr: false` maps to `llm`; old configs are migrated on read.
 - **Safe fallback**: absent `pageData.json`, `geometryAvailable: false`, or no value match →
   keep the LLM-estimated box (identical to prior behavior). `pageData.json` is read from S3, so

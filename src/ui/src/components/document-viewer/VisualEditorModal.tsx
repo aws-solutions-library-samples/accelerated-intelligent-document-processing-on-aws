@@ -21,7 +21,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
-import { getFileContents, uploadDocument, completeSectionReview } from '../../graphql/generated';
+import { getFileContents, uploadDocument, saveSectionReviewEdits } from '../../graphql/generated';
 import FormFieldRenderer from './FormFieldRenderer';
 import JSONEditorTab from './JSONEditorTab';
 import type { BoxProps } from '@cloudscape-design/components';
@@ -68,7 +68,7 @@ const VisualEditorModal = ({
   const { settings } = useSettingsContext();
   // Role flags from the Cognito token (reliable regardless of how the modal was
   // opened). Reviewers (Admin/Reviewer) cannot call uploadDocument (Admin/Author
-  // only), so their edits must be saved via completeSectionReview — see handleSaveChanges.
+  // only), so their edits must be saved via saveSectionReviewEdits — see handleSaveChanges.
   const { canWrite, canReview } = useUserRole();
   const [currentPage, setCurrentPage] = useState<string | number | null>(null);
   const [activeFieldGeometry, setActiveFieldGeometry] = useState<Record<string, unknown> | null>(null);
@@ -391,7 +391,7 @@ const VisualEditorModal = ({
 
       // Reviewers are NOT authorized to call the `uploadDocument` mutation
       // (restricted to Admin/Author by RBAC). They persist HITL edits through
-      // the reviewer-permitted `completeSectionReview` mutation instead.
+      // the reviewer-permitted `saveSectionReviewEdits` mutation instead.
       // Derive this from the Cognito token (canReview && !canWrite = reviewer,
       // not Admin/Author) rather than relying solely on the `isReviewerOnly`
       // prop, which some SectionsPanel FileViewer entry points hardcode to false.
@@ -452,10 +452,11 @@ const VisualEditorModal = ({
 
         // Reviewers are NOT authorized to call the `uploadDocument` mutation
         // (restricted to Admin/Author by RBAC). They persist their HITL edits
-        // through the reviewer-permitted `completeSectionReview` mutation, which
+        // through the reviewer-permitted `saveSectionReviewEdits` mutation, which
         // writes the full JSON to the section's output URI server-side (no
-        // presigned URL needed) and records the section as reviewed. The
-        // Admin/Author presigned-upload path is preserved below.
+        // presigned URL needed). Saving does not complete the review: it stays
+        // In Progress until Process Changes or Skip. The Admin/Author
+        // presigned-upload path is preserved below.
         if (isReviewerOnly) {
           const reviewObjectKey = (sectionDocItem?.ObjectKey ||
             sectionDocItem?.objectKey ||
@@ -472,13 +473,13 @@ const VisualEditorModal = ({
             throw new Error('Cannot determine section id for saving reviewer changes');
           }
 
-          logger.info('💾 Saving prediction changes via completeSectionReview (reviewer path):', {
+          logger.info('💾 Saving prediction changes via saveSectionReviewEdits (reviewer path):', {
             objectKey: reviewObjectKey,
             sectionId: reviewSectionId,
           });
 
           const reviewResponse = await client.graphql({
-            query: completeSectionReview,
+            query: saveSectionReviewEdits,
             variables: {
               objectKey: reviewObjectKey,
               sectionId: String(reviewSectionId),
@@ -488,10 +489,10 @@ const VisualEditorModal = ({
             },
           });
 
-          if (!reviewResponse?.data?.completeSectionReview) {
-            throw new Error('completeSectionReview returned no data');
+          if (!reviewResponse?.data?.saveSectionReviewEdits) {
+            throw new Error('saveSectionReviewEdits returned no data');
           }
-          logger.info('✅ Predictions saved via completeSectionReview');
+          logger.info('✅ Predictions saved via saveSectionReviewEdits');
         } else {
           // Admin/Author path: request a presigned upload URL and write to S3 directly.
           // Use the exact same path from the original output URI

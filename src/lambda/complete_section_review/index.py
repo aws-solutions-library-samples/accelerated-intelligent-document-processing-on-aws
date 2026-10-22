@@ -12,7 +12,7 @@ import boto3
 
 from idp_common.docs_service import create_document_service
 from idp_common.models import Status
-from idp_common.review_queues.statuses import LegacyHitlStatus
+from idp_common.review_queues.statuses import SKIP_ALL_REASONS, LegacyHitlStatus
 from idp_common.review_queues.testset_docs import (
     TestSetDocStore,
     store_assigned_count,
@@ -31,6 +31,8 @@ TRACKING_TABLE_NAME = os.environ.get("TRACKING_TABLE_NAME", "")
 HITL_TABLE_NAME = os.environ.get("HITL_TABLE_NAME", "")
 OUTPUT_BUCKET = os.environ.get("OUTPUT_BUCKET", "")
 TEST_SET_BUCKET = os.environ.get("TEST_SET_BUCKET", "")
+#: Longest skip note kept, the review queues' note limit.
+MAX_SKIP_NOTE = 1000
 
 
 def handler(event, context):
@@ -100,7 +102,31 @@ def handler(event, context):
             )
         if not object_key:
             raise ValueError("objectKey is required")
-        return skip_all_sections_review(object_key, username, user_email)
+        reason = arguments.get("reason")
+        if reason not in SKIP_ALL_REASONS:
+            raise ValueError(
+                "reason is required and must be one of: " + ", ".join(SKIP_ALL_REASONS)
+            )
+        note = (arguments.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
+        return skip_all_sections_review(object_key, username, user_email, reason, note)
+
+    if field_name == "saveSectionReviewEdits":
+        # Not available to Annotator, whose Test Studio saves complete the section
+        # by design (completeSectionReview).
+        if not is_admin and "Reviewer" not in user_groups:
+            logger.warning(
+                f"Forbidden: caller {user_email} attempted saveSectionReviewEdits"
+            )
+            raise PermissionError(
+                "Only administrators and reviewers can save review edits"
+            )
+        if not object_key or not section_id:
+            raise ValueError("objectKey and sectionId are required")
+        if not edited_data:
+            raise ValueError("editedData is required")
+        return save_section_review_edits(
+            object_key, section_id, edited_data, username, is_admin
+        )
 
     if not object_key or not section_id:
         raise ValueError("objectKey and sectionId are required")
@@ -236,6 +262,64 @@ def _assert_not_queue_managed(object_key):
         )
 
 
+def _save_section_edits(document, object_key, section_id, edited_data):
+    """Write a section's edited result JSON to its output URI, or raise."""
+    section = next((s for s in document.sections if s.section_id == section_id), None)
+    if section is None:
+        raise ValueError(
+            f"Cannot save edited data: section '{section_id}' not found in "
+            f"document '{object_key}'"
+        )
+    if not section.extraction_result_uri:
+        raise ValueError(
+            f"Cannot save edited data: section '{section_id}' in document "
+            f"'{object_key}' has no output URI to write to"
+        )
+    save_edited_data_to_s3(section.extraction_result_uri, edited_data)
+
+
+def save_section_review_edits(
+    object_key, section_id, edited_data, username="", is_admin=False
+):
+    """Save a reviewer's edits to a section without completing its review.
+
+    The review stays In Progress with its owner; it completes only through
+    processChanges or skipAllSectionsReview. Only the review owner, or an Admin,
+    may save, and not once the review has finished.
+    """
+    from idp_common.review_queues.statuses import normalize_hitl_status
+
+    document_service = create_document_service(mode="dynamodb")
+    document = document_service.get_document(object_key)
+    if not document:
+        raise ValueError(f"Document {object_key} not found")
+
+    table = dynamodb.Table(TRACKING_TABLE_NAME)
+    doc = (
+        table.get_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"},
+            ProjectionExpression="HITLStatus, HITLReviewOwner",
+        ).get("Item")
+        or {}
+    )
+    if normalize_hitl_status(doc.get("HITLStatus")).kind in ("complete", "skipped"):
+        logger.warning(
+            f"Rejecting save of review edits on finished review {object_key}"
+        )
+        raise ValueError("This review is already finished; its edits are closed")
+    if not is_admin and doc.get("HITLReviewOwner", "") != username:
+        logger.warning(f"Denied: save of review edits on {object_key} by a non-owner")
+        raise PermissionError(
+            "Only the review owner or an admin can save edits; start the review first"
+        )
+
+    _save_section_edits(document, object_key, section_id, edited_data)
+    logger.info(
+        f"Saved review edits for section {section_id} of {object_key} by {username}"
+    )
+    return build_document_response(object_key)
+
+
 def complete_section_review(
     object_key, section_id, edited_data=None, username="", user_email=""
 ):
@@ -251,30 +335,11 @@ def complete_section_review(
     if not document:
         raise ValueError(f"Document {object_key} not found")
 
-    # Find the section and get its output URI
-    section_output_uri = None
-    section_found = False
-    for section in document.sections:
-        if section.section_id == section_id:
-            section_found = True
-            section_output_uri = section.extraction_result_uri
-            break
-
     # If the caller supplied edited data, we MUST be able to persist it. Fail
     # loudly instead of marking the section reviewed with the edits silently
     # dropped (which would return success while losing the reviewer's work).
     if edited_data:
-        if not section_found:
-            raise ValueError(
-                f"Cannot save edited data: section '{section_id}' not found in "
-                f"document '{object_key}'"
-            )
-        if not section_output_uri:
-            raise ValueError(
-                f"Cannot save edited data: section '{section_id}' in document "
-                f"'{object_key}' has no output URI to write to"
-            )
-        save_edited_data_to_s3(section_output_uri, edited_data)
+        _save_section_edits(document, object_key, section_id, edited_data)
         write_correction_to_test_set_baseline(
             object_key, section_id, edited_data, username, user_email
         )
@@ -361,8 +426,15 @@ def complete_section_review(
     expr_values = {":empty_history": [], ":new_history": [review_record]}
 
     if all_completed:
-        update_expr += ", HITLCompleted = :hitlCompleted"
+        # Record who finished the review, as skipAllSectionsReview and
+        # processChanges do; without it "Review Completed By" reads blank.
+        update_expr += (
+            ", HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, "
+            "HITLReviewedByEmail = :reviewedByEmail"
+        )
         expr_values[":hitlCompleted"] = True
+        expr_values[":reviewedBy"] = username or "unknown"
+        expr_values[":reviewedByEmail"] = user_email or ""
         update_expr += " REMOVE HITLPendingReview"
 
     table.update_item(
@@ -742,8 +814,14 @@ def trigger_reprocessing(object_key):
         logger.error(f"Failed to trigger reprocessing for {object_key}: {str(e)}")
 
 
-def skip_all_sections_review(object_key, username="", user_email=""):
-    """Skip all pending section reviews and mark document as complete (Admin only)."""
+def skip_all_sections_review(
+    object_key, username="", user_email="", reason=None, note=None
+):
+    """Skip all pending section reviews and mark the document complete.
+
+    ``reason`` and ``note`` say why nobody checked it, and are kept with the skip in
+    ``HITLReviewHistory``.
+    """
     logger.info(
         f"Skipping all sections review for document {object_key} by admin {username}"
     )
@@ -780,6 +858,8 @@ def skip_all_sections_review(object_key, username="", user_email=""):
         "reviewedAt": datetime.now(timezone.utc).isoformat(),
         "action": "skip_all",
         "skippedSections": list(sections_to_skip),
+        **({"reason": reason} if reason else {}),
+        **({"note": note} if note else {}),
     }
     # Appended by DynamoDB, for the same reason as in complete_section_review
     # above: a reviewer finishing a section while an admin skips the rest would

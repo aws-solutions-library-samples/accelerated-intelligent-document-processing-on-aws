@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT-0
 //
 // The frame of the annotation screen, the same for production and Test Studio items:
-// the title row with the item's facts, the action bar (Claim for an Annotator viewing
-// an unassigned item; otherwise Complete, and Skip, which gives the item back to its
-// queue), notices, the task context and the editor. Every disabled action says why on
-// hover.
+// the title row with the item's facts, the action bar (History, where the item has one;
+// then Claim for an Annotator viewing an unassigned item, otherwise Skip, which gives
+// the item back to its queue, and Complete), notices, the task context and the editor.
+// Every disabled action says why on hover.
 import React from 'react';
 import { Button, Header, SpaceBetween } from '@cloudscape-design/components';
 
@@ -29,9 +29,20 @@ export interface AnnotationActionsProps {
    * after which it can be worked. Shown instead of the other actions.
    */
   showClaim?: boolean;
+  /** Offer History: open the item's review history. Shown first, whatever the state. */
+  onShowHistory?: () => void;
   busy: AnnotationAction | null;
   onAction: (action: AnnotationAction) => void;
 }
+
+const HistoryButton = ({ onShowHistory }: { onShowHistory?: () => void }): React.JSX.Element | null =>
+  onShowHistory ? (
+    <span title="Who claimed, skipped or completed this item, and why">
+      <Button iconName="status-info" onClick={onShowHistory}>
+        History
+      </Button>
+    </span>
+  ) : null;
 
 const AnnotationActions = ({
   completeDisabledReason,
@@ -39,23 +50,28 @@ const AnnotationActions = ({
   showSkip = false,
   skipDisabledReason,
   showClaim = false,
+  onShowHistory,
   busy,
   onAction,
 }: AnnotationActionsProps): React.JSX.Element => {
   const working = busy !== null ? 'Working…' : undefined;
   if (showClaim) {
     return (
-      <span title={working ? undefined : 'Assign this item to you, then work it here or from My Work › Tasks'}>
-        <Button variant="primary" disabled={!!working && busy !== 'claim'} loading={busy === 'claim'} onClick={() => onAction('claim')}>
-          Claim
-        </Button>
-      </span>
+      <SpaceBetween direction="horizontal" size="xs">
+        <HistoryButton onShowHistory={onShowHistory} />
+        <span title={working ? undefined : 'Assign this item to you, then work it here or from My Work › Tasks'}>
+          <Button variant="primary" disabled={!!working && busy !== 'claim'} loading={busy === 'claim'} onClick={() => onAction('claim')}>
+            Claim
+          </Button>
+        </span>
+      </SpaceBetween>
     );
   }
   const completeReason = working ?? completeDisabledReason;
   const skipReason = working ?? skipDisabledReason;
   return (
     <SpaceBetween direction="horizontal" size="xs">
+      <HistoryButton onShowHistory={onShowHistory} />
       {showSkip && (
         <span title={skipReason ? undefined : SKIP_HINT}>
           <Button disabled={!!skipReason} disabledReason={skipReason} loading={busy === 'skip'} onClick={() => onAction('skip')}>
@@ -90,8 +106,10 @@ interface AnnotationFrameProps {
   actions: AnnotationActionsProps;
   /** Alerts about the item's state. */
   notices?: React.ReactNode;
-  /** The task context (why the item is here, the checklist, the version transition). */
+  /** The task context (why the item is here, the version transition). */
   context?: React.ReactNode;
+  /** Dialogs the actions open (the skip reason, the review history). */
+  dialogs?: React.ReactNode;
   /** The editor. */
   children: React.ReactNode;
 }
@@ -104,6 +122,7 @@ const AnnotationFrame = ({
   actions,
   notices,
   context,
+  dialogs,
   children,
 }: AnnotationFrameProps): React.JSX.Element => (
   <ReviewWorkspaceLayout
@@ -122,6 +141,7 @@ const AnnotationFrame = ({
     context={context}
   >
     {children}
+    {dialogs}
   </ReviewWorkspaceLayout>
 );
 

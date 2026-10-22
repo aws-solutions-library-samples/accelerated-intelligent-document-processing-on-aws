@@ -14,6 +14,8 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from idp_common.review_queues.queue_defs import DEFAULT_SKIP_REASONS
+
 TEST_SET_BUCKET = "test-set-bucket"
 TRACKING_TABLE = "tracking-table"
 TEST_SET_ID = "my-set"
@@ -206,9 +208,7 @@ def test_missing_baseline_yields_empty_sections(resolver):
 def test_unknown_test_set_rejected(resolver):
     index, _ = resolver
     with pytest.raises(Exception, match="not found"):
-        index.handler(
-            _event("getTestSetDocuments", {"testSetId": "no-such-set"}), None
-        )
+        index.handler(_event("getTestSetDocuments", {"testSetId": "no-such-set"}), None)
 
 
 @pytest.mark.unit
@@ -216,9 +216,7 @@ def test_unknown_test_set_rejected(resolver):
 def test_invalid_test_set_id_rejected(resolver, bad_id):
     index, _ = resolver
     with pytest.raises(Exception, match="Invalid test set id"):
-        index.handler(
-            _event("getTestSetDocuments", {"testSetId": bad_id}), None
-        )
+        index.handler(_event("getTestSetDocuments", {"testSetId": bad_id}), None)
 
 
 @pytest.mark.unit
@@ -324,6 +322,8 @@ def test_an_admin_updates_the_queue_settings(queues):
         "claimLeaseMinutes": 120,
         "eligibleAnnotators": [ANNOTATOR],
         "checklist": ["Check totals", "Check dates"],
+        # Never saved for this set, so the review queues' defaults.
+        "skipReasons": list(DEFAULT_SKIP_REASONS),
     }
     meta = _metadata(tracking)
     assert meta["QueuePriority"] == 70
@@ -337,6 +337,7 @@ def test_an_admin_updates_the_queue_settings(queues):
         ({"priority": 101}, "priority must be 0-100"),
         ({"eligibleAnnotators": ["not-an-email"]}, "must contain email addresses"),
         ({"checklist": [f"item {i}" for i in range(21)]}, "at most 20 items"),
+        ({"skipReasons": [f"r{i}" for i in range(21)]}, "1 to 20 reasons"),
         ({}, "Nothing to update"),
     ],
 )
@@ -480,14 +481,71 @@ def test_skipping_hands_the_document_back_to_the_queue(queues):
     )
 
     result = index.skip_test_set_document(
-        {"testSetId": TEST_SET_ID, "objectKey": "a.pdf"}, event
+        {
+            "testSetId": TEST_SET_ID,
+            "objectKey": "a.pdf",
+            "reason": "Out of time",
+            "note": "  back tomorrow  ",
+        },
+        event,
     )
 
     assert result == {"testSetId": TEST_SET_ID, "objectKey": "a.pdf", "skipped": True}
     item = hitl.get_item(Key={"PK": f"TSDOC#{TEST_SET_ID}", "SK": "D#a.pdf"})["Item"]
     assert "Assignee" not in item and "OwnerPK" not in item
+    # The skip is recorded with the document: who, why, and the note.
+    [skip] = item["SkipHistory"]
+    assert (skip["by"], skip["reason"], skip["note"]) == (
+        ANNOTATOR.lower(),
+        "Out of time",
+        "back tomorrow",
+    )
     meta = _metadata(tracking)
     assert (meta["QueueAssignedDocs"], meta["QueuePendingDocs"]) == (0, 1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reason", [None, "", "Lunch"])
+def test_a_skip_needs_a_reason_from_the_sets_list(queues, reason):
+    """Refused before the assignment ends."""
+    index, hitl, _ = queues
+    _put_doc_item(hitl, "b.pdf")
+    event = {"identity": _caller(["Annotator"], ANNOTATOR)}
+    index.claim_test_set_document(
+        {"testSetId": TEST_SET_ID, "objectKey": "b.pdf"}, event
+    )
+    with pytest.raises(ValueError, match="REASON_REQUIRED"):
+        index.skip_test_set_document(
+            {"testSetId": TEST_SET_ID, "objectKey": "b.pdf", "reason": reason}, event
+        )
+    item = hitl.get_item(Key={"PK": f"TSDOC#{TEST_SET_ID}", "SK": "D#b.pdf"})["Item"]
+    assert "Assignee" in item and "SkipHistory" not in item
+
+
+@pytest.mark.unit
+def test_a_set_with_its_own_skip_reasons_checks_against_them(queues):
+    index, hitl, _ = queues
+    index.update_test_set_queue(
+        {"input": {"testSetId": TEST_SET_ID, "skipReasons": ["Needs a tax expert"]}}
+    )
+    _put_doc_item(hitl, "c.pdf")
+    event = {"identity": _caller(["Annotator"], ANNOTATOR)}
+    index.claim_test_set_document(
+        {"testSetId": TEST_SET_ID, "objectKey": "c.pdf"}, event
+    )
+    with pytest.raises(ValueError, match="REASON_REQUIRED"):
+        index.skip_test_set_document(
+            {"testSetId": TEST_SET_ID, "objectKey": "c.pdf", "reason": "Out of time"},
+            event,
+        )
+    index.skip_test_set_document(
+        {
+            "testSetId": TEST_SET_ID,
+            "objectKey": "c.pdf",
+            "reason": "Needs a tax expert",
+        },
+        event,
+    )
 
 
 @pytest.mark.unit
