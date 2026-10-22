@@ -47,6 +47,7 @@ const def = (id: string, over: Record<string, unknown> = {}) => ({
   priority: 0,
   checklist: [],
   rejectReasons: [],
+  skipReasons: [],
   timeLimitMinutes: 60,
   eligibleAnnotators: [],
   isDefaultQueue: id === 'default',

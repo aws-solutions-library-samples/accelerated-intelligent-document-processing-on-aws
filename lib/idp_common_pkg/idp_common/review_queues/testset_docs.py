@@ -348,17 +348,32 @@ class TestSetDocStore:
             raise
         return self.view(response["Attributes"])
 
-    def unassign(self, test_set_id: str, object_key: str) -> Optional[dict]:
-        """Clear the assignment; returns the former view, or None if unassigned."""
+    def unassign(
+        self, test_set_id: str, object_key: str, skip: Optional[dict] = None
+    ) -> Optional[dict]:
+        """Clear the assignment; returns the former view, or None if unassigned.
+
+        ``skip`` (who, when, reason, note) is appended to the document's
+        ``SkipHistory`` in the same write, when the assignee gives it back (Skip).
+        """
+        update = (
+            "REMOVE Assignee, AssigneeKey, AssignedAtMs, AssignedBy, "
+            "OwnerPK, OwnerSK, SweepPK, SweepSK"
+        )
+        extra: dict[str, Any] = {}
+        if skip:
+            update = (
+                "SET SkipHistory = list_append(if_not_exists(SkipHistory, :none), "
+                ":skip) " + update
+            )
+            extra["ExpressionAttributeValues"] = {":none": [], ":skip": [skip]}
         try:
             response = self.table.update_item(
                 Key=keys.tsdoc_key(test_set_id, object_key),
-                UpdateExpression=(
-                    "REMOVE Assignee, AssigneeKey, AssignedAtMs, AssignedBy, "
-                    "OwnerPK, OwnerSK, SweepPK, SweepSK"
-                ),
+                UpdateExpression=update,
                 ConditionExpression="attribute_exists(Assignee)",
                 ReturnValues="ALL_OLD",
+                **extra,
             )
         except Exception as exc:  # noqa: BLE001
             if _conditional_failed(exc):

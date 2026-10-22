@@ -56,6 +56,17 @@ class LegacyHitlStatus(str, Enum):
     REVIEW_SKIPPED = "Review Skipped"
 
 
+#: Why a legacy review is finished without a person checking it (Skip All Reviews).
+#: Recorded in ``HITLReviewHistory`` with the skip. The web UI offers the same list
+#: (``SKIP_ALL_REASONS`` in ``src/ui/src/components/common/review-status.ts``).
+SKIP_ALL_REASONS = (
+    "Extracted values look correct",
+    "Review not needed for this document",
+    "Duplicate document",
+    "Other (see note)",
+)
+
+
 #: Legacy statuses meaning "a review is still owed".
 LEGACY_PENDING = frozenset(
     {

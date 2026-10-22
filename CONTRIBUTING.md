@@ -417,7 +417,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 79 files
-holding 186 pre-existing findings, and `[format] exclude` names 167 files that
+holding 184 pre-existing findings, and `[format] exclude` names 166 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.

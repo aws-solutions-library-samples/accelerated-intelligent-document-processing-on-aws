@@ -457,6 +457,7 @@ const AnnotationQueuePage = (): React.JSX.Element => {
         claimLeaseMinutes: ref?.claimLeaseMinutes,
         eligibleAnnotators: ref?.eligibleAnnotators,
         checklist: ref?.checklist,
+        skipReasons: ref?.skipReasons,
       });
     } catch (err) {
       setErrorMessage(describeApiError(err, 'load the queue settings'));

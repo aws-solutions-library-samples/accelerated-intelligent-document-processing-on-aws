@@ -316,6 +316,7 @@ def recorded(target, name):
         "claimReview",
         "releaseReview",
         "skipAllSectionsReview",
+        "saveSectionReviewEdits",
     ],
 )
 @pytest.mark.parametrize("group", ["Viewer", "Author", "SomeOtherGroup"])
@@ -646,18 +647,27 @@ def test_the_set_of_handler_branches_that_assert_annotator_scope_is_pinned():
     annotator. The three tests above close that, and this one closes the class — a
     fifth `fieldName` added later without the call fails here rather than shipping.
 
-    `skipAllSectionsReview` is deliberately not in the set: `Annotator` is refused
-    that operation outright a few lines earlier, so no scoped caller survives to be
-    narrowed. `completeSectionReview` is the dispatcher's fall-through rather than a
-    `field_name ==` branch, and is asserted separately below.
+    `skipAllSectionsReview` and `saveSectionReviewEdits` are deliberately not in the
+    set: `Annotator` is refused both outright at the top of their branch, so no
+    scoped caller survives to be narrowed (pinned behaviourally by
+    `test_an_annotator_may_not_skip_a_document_without_looking_at_it` and
+    `test_an_annotator_may_not_use_the_save_only_path`). `completeSectionReview` is
+    the dispatcher's fall-through rather than a `field_name ==` branch, and is
+    asserted separately below.
     """
     branches = _handler_field_branches()
-    assert set(branches) == {"claimReview", "releaseReview", "skipAllSectionsReview"}
+    assert set(branches) == {
+        "claimReview",
+        "releaseReview",
+        "skipAllSectionsReview",
+        "saveSectionReviewEdits",
+    }
     scoped = {
         field for field, calls in branches.items() if "_assert_annotator_scope" in calls
     }
     assert scoped == {"claimReview", "releaseReview"}
     assert "skip_all_sections_review" in branches["skipAllSectionsReview"]
+    assert "save_section_review_edits" in branches["saveSectionReviewEdits"]
 
 
 @pytest.mark.unit
@@ -708,7 +718,13 @@ def test_finishing_the_last_pending_section_completes_the_document_and_reprocess
         pending=["sec-2"],
         completed=["sec-1"],
     )
-    service, reprocess, _ = run_complete(mod, document, section_id="sec-2")
+    service, reprocess, _ = run_complete(
+        mod,
+        document,
+        section_id="sec-2",
+        username="rev",
+        user_email="rev@example.com",
+    )
 
     assert document.hitl_status == "Completed"
     assert document.hitl_sections_pending == []
@@ -717,6 +733,9 @@ def test_finishing_the_last_pending_section_completes_the_document_and_reprocess
     stored = read_doc(table)
     assert stored["HITLCompleted"] is True
     assert "HITLPendingReview" not in stored
+    # "Review Completed By" reads these; a completed review with neither renders blank.
+    assert stored["HITLReviewedBy"] == "rev"
+    assert stored["HITLReviewedByEmail"] == "rev@example.com"
     reprocess.assert_called_once_with(OBJECT_KEY)
 
 
@@ -819,9 +838,10 @@ def test_an_incomplete_document_does_not_gain_the_completed_flag(mod, table):
         [FakeSection("sec-1", "s3://out/1.json"), FakeSection("sec-2")],
         pending=["sec-1", "sec-2"],
     )
-    _, reprocess, _ = run_complete(mod, document, section_id="sec-1")
+    _, reprocess, _ = run_complete(mod, document, section_id="sec-1", username="rev")
     stored = read_doc(table)
     assert "HITLCompleted" not in stored
+    assert "HITLReviewedBy" not in stored
     assert stored["HITLPendingReview"] == "true"
     reprocess.assert_not_called()
 
@@ -832,6 +852,149 @@ def test_reviewing_a_document_the_loader_cannot_find_raises(mod, table):
     with patch.object(mod, "create_document_service", return_value=service):
         with pytest.raises(ValueError, match="not found"):
             mod.complete_section_review(OBJECT_KEY, "sec-1")
+
+
+# --------------------------------------------------------------------------
+# saveSectionReviewEdits: saving without completing the review
+# --------------------------------------------------------------------------
+
+EDITED_RESULT = {"inference_result": {"total": "42.00"}}
+OUTPUT_KEY = "run-7/invoice.pdf/sections/sec-1/result.json"
+
+
+def save_event(groups, *, email="rev@example.com", edited=EDITED_RESULT):
+    return event(
+        "saveSectionReviewEdits",
+        groups,
+        arguments={
+            "objectKey": OBJECT_KEY,
+            "sectionId": "sec-1",
+            "editedData": json.dumps(edited),
+        },
+        email=email,
+    )
+
+
+def run_save(mod, groups, document=None, **kwargs):
+    document = document or FakeDocument(
+        [FakeSection("sec-1", f"s3://{OUTPUT_BUCKET}/{OUTPUT_KEY}")],
+        pending=["sec-1"],
+        hitl_status="InProgress",
+    )
+    service = FakeDocumentService(document)
+    with (
+        patch.object(mod, "create_document_service", return_value=service),
+        patch.object(mod, "trigger_reprocessing") as reprocess,
+    ):
+        result = mod.handler(save_event(groups, **kwargs), None)
+    return service, reprocess, result
+
+
+@pytest.mark.unit
+def test_saving_edits_on_a_single_section_document_keeps_the_review_in_progress(
+    mod, table
+):
+    """The reported bug: one Save finished the review and left Completed By blank.
+
+    On a document whose only pending section is the one being edited, the old
+    path (completeSectionReview) emptied the pending list and completed the
+    document. Saving must write the edits and change nothing else.
+    """
+    put_doc(
+        table,
+        HITLStatus="InProgress",
+        HITLReviewOwner="rev",
+        HITLReviewOwnerEmail="rev@example.com",
+        HITLSectionsPending=["sec-1"],
+        HITLPendingReview="true",
+    )
+    service, reprocess, result = run_save(mod, ["Reviewer"])
+
+    assert s3_json(mod, OUTPUT_BUCKET, OUTPUT_KEY) == EDITED_RESULT
+    stored = read_doc(table)
+    assert stored["HITLStatus"] == "InProgress"
+    assert stored["HITLSectionsPending"] == ["sec-1"]
+    assert stored["HITLPendingReview"] == "true"
+    assert stored["HITLReviewOwner"] == "rev"
+    for absent in ("HITLCompleted", "HITLReviewedBy", "HITLReviewHistory"):
+        assert absent not in stored
+    assert service.updated == []
+    reprocess.assert_not_called()
+    assert result["HITLStatus"] == "InProgress"
+
+
+@pytest.mark.unit
+def test_saving_edits_writes_no_test_set_baseline(mod, table):
+    """Tagging a baseline reviewed-human is a completion; a save is not one."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev", TestSetId="ts-1")
+    with recorded(mod, "write_correction_to_test_set_baseline") as calls:
+        run_save(mod, ["Reviewer"])
+    assert calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("owner", ["someone-else", ""])
+def test_a_reviewer_who_does_not_own_the_review_may_not_save(mod, table, owner):
+    """Start Review assigns the review; only its owner edits it."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner=owner)
+    with pytest.raises(PermissionError, match="review owner"):
+        run_save(mod, ["Reviewer"])
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+def test_an_admin_may_save_edits_on_a_review_owned_by_someone_else(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="someone-else")
+    run_save(mod, ["Admin"], email="admin@example.com")
+    assert s3_json(mod, OUTPUT_BUCKET, OUTPUT_KEY) == EDITED_RESULT
+    assert read_doc(table)["HITLReviewOwner"] == "someone-else"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["Completed", "Review Completed", "Review Skipped"])
+def test_edits_may_not_be_saved_once_the_review_is_finished(mod, table, status):
+    put_doc(table, HITLStatus=status, HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="already finished"):
+        run_save(mod, ["Reviewer"])
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=OUTPUT_BUCKET)
+
+
+@pytest.mark.unit
+def test_an_annotator_may_not_use_the_save_only_path(mod, table):
+    """Test Studio annotation completes on save through completeSectionReview."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(PermissionError, match="administrators and reviewers"):
+        run_save(mod, ["Annotator"])
+
+
+@pytest.mark.unit
+def test_a_queue_managed_document_refuses_the_save_only_path(mod, table):
+    put_doc(table, HITLStatus="in_review", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="QUEUE_MANAGED"):
+        run_save(mod, ["Reviewer"])
+
+
+@pytest.mark.unit
+def test_saving_edits_to_a_section_with_no_output_uri_fails_loudly(mod, table):
+    """Returning success with the edits dropped would lose the reviewer's work."""
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    document = FakeDocument([FakeSection("sec-1")], hitl_status="InProgress")
+    with pytest.raises(ValueError, match="no output URI"):
+        run_save(mod, ["Reviewer"], document=document)
+
+
+@pytest.mark.unit
+def test_saving_requires_edited_data(mod, table):
+    put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev")
+    with pytest.raises(ValueError, match="editedData is required"):
+        mod.handler(
+            event(
+                "saveSectionReviewEdits",
+                ["Reviewer"],
+                arguments={"objectKey": OBJECT_KEY, "sectionId": "sec-1"},
+            ),
+            None,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -1697,6 +1860,49 @@ def test_skip_all_skips_only_the_sections_nobody_has_reviewed(mod, table):
     reprocess.assert_called_once_with(OBJECT_KEY)
 
 
+def skip_all_event(arguments):
+    return event(
+        "skipAllSectionsReview",
+        ["Reviewer"],
+        arguments={"objectKey": OBJECT_KEY, **arguments},
+    )
+
+
+@pytest.mark.unit
+def test_skip_all_records_why_nobody_checked_the_document(mod, table):
+    """The reason and note travel with the skip into the review history."""
+    put_doc(table, HITLPendingReview="true")
+    document = FakeDocument([FakeSection("sec-1")])
+    with (
+        patch.object(
+            mod, "create_document_service", return_value=FakeDocumentService(document)
+        ),
+        patch.object(mod, "trigger_reprocessing"),
+    ):
+        mod.handler(
+            skip_all_event(
+                {"reason": "Duplicate document", "note": "  same as invoice-2  "}
+            ),
+            None,
+        )
+    entry = read_doc(table)["HITLReviewHistory"][-1]
+    assert entry["action"] == "skip_all"
+    assert entry["reason"] == "Duplicate document"
+    assert entry["note"] == "same as invoice-2"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("arguments", [{}, {"reason": ""}, {"reason": "Lunch"}])
+def test_skip_all_needs_a_reason_from_the_list(mod, table, arguments):
+    """Refused before anything is read or written."""
+    put_doc(table, HITLPendingReview="true")
+    with patch.object(mod, "skip_all_sections_review") as skip:
+        with pytest.raises(ValueError, match="reason is required"):
+            mod.handler(skip_all_event(arguments), None)
+    skip.assert_not_called()
+    assert read_doc(table)["HITLPendingReview"] == "true"
+
+
 @pytest.mark.unit
 def test_skip_all_on_a_missing_document_raises(mod, table):
     with patch.object(
@@ -1914,8 +2120,11 @@ def test_a_dynamodb_string_set_is_flattened_to_a_list(mod):
     ],
 )
 def test_the_handler_routes_each_field_name_to_its_operation(mod, field_name, target):
+    arguments = {"objectKey": OBJECT_KEY, "sectionId": "sec-1"}
+    if field_name == "skipAllSectionsReview":
+        arguments["reason"] = "Other (see note)"
     with patch.object(mod, target, return_value={"ok": True}) as op:
-        result = mod.handler(event(field_name, ["Admin"]), None)
+        result = mod.handler(event(field_name, ["Admin"], arguments=arguments), None)
     assert result == {"ok": True}
     assert op.call_count == 1
 

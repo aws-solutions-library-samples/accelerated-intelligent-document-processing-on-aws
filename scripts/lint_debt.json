@@ -66,9 +66,8 @@
   },
   "lintDebt": {
     "lib/idp_common_pkg/idp_common/config/__init__.py": {
-      "F401": 21,
+      "F401": 20,
       "F541": 1,
-      "F811": 1,
       "I001": 1
     },
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py": {
@@ -376,7 +375,6 @@
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
-    "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
     "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
@@ -516,7 +514,7 @@
   ],
   "highWaterMark": {
     "lintDebtFiles": 79,
-    "lintFindings": 186,
-    "formatDebtFiles": 167
+    "lintFindings": 184,
+    "formatDebtFiles": 166
   }
 }

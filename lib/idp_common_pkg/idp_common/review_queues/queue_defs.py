@@ -48,6 +48,16 @@ DEFAULT_REJECT_REASONS = (
     "Other (see note)",
 )
 
+#: Why an Annotator gives an item back to its queue unfinished (Skip). Recorded in
+#: the item's history, so the next reviewer and the Admin can see why it came back.
+DEFAULT_SKIP_REASONS = (
+    "Needs expert review",
+    "Document unclear or incomplete",
+    "Conflict of interest",
+    "Out of time",
+    "Other (see note)",
+)
+
 QUEUE_ID_PATTERN = r"^[a-z0-9][a-z0-9_.-]{0,63}$"
 #: A queue id as an API argument names it: case and a space are tolerated, and
 #: the id is normalised before it is looked up.
@@ -74,6 +84,11 @@ class QueueDefinition(BaseModel):
         min_length=1,
         max_length=20,
     )
+    skip_reasons: List[str] = Field(
+        default_factory=lambda: list(DEFAULT_SKIP_REASONS),
+        min_length=1,
+        max_length=20,
+    )
     #: When an assigned item is still open after this long, its Annotator is reminded.
     time_limit_minutes: int = Field(default=DEFAULT_TIME_LIMIT_MINUTES, ge=1, le=10080)
     #: Annotators (by email) who work this queue; empty = none (Admins only).
@@ -96,7 +111,7 @@ class QueueDefinition(BaseModel):
     def strip_text(cls, v: Any) -> Any:
         return "" if v is None else str(v).strip()
 
-    @field_validator("checklist", "reject_reasons", mode="before")
+    @field_validator("checklist", "reject_reasons", "skip_reasons", mode="before")
     @classmethod
     def clean_list(cls, v: Any) -> List[str]:
         items = [str(x).strip() for x in (v or []) if str(x).strip()]
@@ -140,6 +155,7 @@ class QueueDefinition(BaseModel):
             "Priority": self.priority,
             "Checklist": list(self.checklist),
             "RejectReasons": list(self.reject_reasons),
+            "SkipReasons": list(self.skip_reasons),
             "TimeLimitMinutes": self.time_limit_minutes,
             "EligibleAnnotators": list(self.eligible_annotators),
             "ConfidenceThreshold": Decimal(str(self.confidence_threshold)),
@@ -158,6 +174,7 @@ class QueueDefinition(BaseModel):
             priority=int(item.get("Priority", 50)),
             checklist=list(item.get("Checklist") or []),
             reject_reasons=list(item.get("RejectReasons") or DEFAULT_REJECT_REASONS),
+            skip_reasons=list(item.get("SkipReasons") or DEFAULT_SKIP_REASONS),
             time_limit_minutes=int(
                 item.get("TimeLimitMinutes", DEFAULT_TIME_LIMIT_MINUTES)
             ),
@@ -214,6 +231,11 @@ class QueuesView:
     def reject_reasons(self) -> list[str]:
         default = self.queue(DEFAULT_QUEUE_ID)
         return list(default.reject_reasons if default else DEFAULT_REJECT_REASONS)
+
+    @property
+    def skip_reasons(self) -> list[str]:
+        default = self.queue(DEFAULT_QUEUE_ID)
+        return list(default.skip_reasons if default else DEFAULT_SKIP_REASONS)
 
 
 class QueueDefStore:
