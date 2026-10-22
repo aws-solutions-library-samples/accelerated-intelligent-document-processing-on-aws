@@ -32,7 +32,7 @@ The LambdaHook option is available for the following pipeline steps in Pattern-1
 | Step | Config Field | Description |
 |------|-------------|-------------|
 | **OCR** (Bedrock backend) | `ocr.model_id` | LLM-based OCR when `backend=bedrock` |
-| **Classification** | `classification.model` | Document type classification |
+| **Classification** | `classification.one_stage.llm.model` (or the `model` of either two-stage call) | Document type classification |
 | **Extraction** | `extraction.model` | Structured data extraction |
 | **Assessment** | `extraction.confidence.model` | Confidence scoring |
 | **Summarization** | `summarization.model` | Document summarization |

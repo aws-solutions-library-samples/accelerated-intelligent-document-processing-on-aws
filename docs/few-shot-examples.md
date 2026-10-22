@@ -383,20 +383,22 @@ Ensure your classification and extraction task prompts include the `{FEW_SHOT_EX
 **Standard Few-Shot Configuration:**
 ```yaml
 classification:
-  task_prompt: |
-    Classify this document into exactly one of these categories:
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document into exactly one of these categories:
     
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
+        <few_shot_examples>
+        {FEW_SHOT_EXAMPLES}
+        </few_shot_examples>
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    <document_content>
-    {DOCUMENT_TEXT}
-    </document_content>
+        <document_content>
+        {DOCUMENT_TEXT}
+        </document_content>
 
 extraction:
   task_prompt: |
@@ -417,24 +419,26 @@ extraction:
 **Enhanced Configuration with Image Placement:**
 ```yaml
 classification:
-  task_prompt: |
-    Classify this document into exactly one of these categories:
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document into exactly one of these categories:
     
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
+        <few_shot_examples>
+        {FEW_SHOT_EXAMPLES}
+        </few_shot_examples>
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    Now examine this new document:
-    {DOCUMENT_IMAGE}
+        Now examine this new document:
+        {DOCUMENT_IMAGE}
     
-    Document text:
-    {DOCUMENT_TEXT}
+        Document text:
+        {DOCUMENT_TEXT}
     
-    Classification:
+        Classification:
 
 extraction:
   task_prompt: |
@@ -846,11 +850,13 @@ classes:
         # No x-aws-idp-image-path - text-only example
 
 classification:
-  task_prompt: |
-    Classify this document: {CLASS_NAMES_AND_DESCRIPTIONS}
-    Examples: {FEW_SHOT_EXAMPLES}
-    <<CACHEPOINT>>
-    Document: {DOCUMENT_TEXT}
+  one_stage:
+    page:
+      task_prompt: |
+        Classify this document: {CLASS_NAMES_AND_DESCRIPTIONS}
+        Examples: {FEW_SHOT_EXAMPLES}
+        <<CACHEPOINT>>
+        Document: {DOCUMENT_TEXT}
 
 extraction:
   task_prompt: |
@@ -866,24 +872,26 @@ For production use with optimal caching:
 
 ```yaml
 classification:
-  task_prompt: |
-    You are a document classification expert. Classify the document into exactly one category.
+  one_stage:
+    page:
+      task_prompt: |
+        You are a document classification expert. Classify the document into exactly one category.
     
-    Available Categories:
-    {CLASS_NAMES_AND_DESCRIPTIONS}
+        Available Categories:
+        {CLASS_NAMES_AND_DESCRIPTIONS}
     
-    Study these examples of each category:
-    {FEW_SHOT_EXAMPLES}
+        Study these examples of each category:
+        {FEW_SHOT_EXAMPLES}
     
-    Instructions:
-    - Analyze the document layout, content, and formatting
-    - Return only the category name, no explanation
-    - Consider both visual structure and text content shown in examples
+        Instructions:
+        - Analyze the document layout, content, and formatting
+        - Return only the category name, no explanation
+        - Consider both visual structure and text content shown in examples
     
-    <<CACHEPOINT>>
+        <<CACHEPOINT>>
     
-    Document to classify:
-    {DOCUMENT_TEXT}
+        Document to classify:
+        {DOCUMENT_TEXT}
 
 extraction:
   task_prompt: |

@@ -77,7 +77,7 @@ every classification setting comes from the system defaults
 A multi-statement packet is therefore segmented from the per-page boundary
 signal. To have the model see the whole packet in one call instead — which is
 also what makes classification cost scale with documents rather than pages — set
-`classification.granularity: packet`.
+`classification.one_stage.granularity: packet`.
 
 ### Extraction Settings
 

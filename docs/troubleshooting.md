@@ -226,7 +226,7 @@ warning meaning the page had **neither** usable OCR text **nor** a loadable page
 image; a blank page normally still has an image, so this points at missing page
 artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
-was outside the configured vocabulary and was coerced to `invalidClassFallback` —
+was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
 three you are most likely to see. These are recorded on the
 `multimodalPageLevelClassification` path only.

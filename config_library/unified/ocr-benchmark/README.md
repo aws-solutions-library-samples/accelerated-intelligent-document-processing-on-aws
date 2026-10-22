@@ -71,7 +71,7 @@ explicitly — `idp-cli config-upload -f <path>`, `idp-cli deploy --custom-confi
 ### Running the fine-tuned arm
 
 `fine_tuned_config.yaml` exists to measure a **fine-tuned** Nova 2 Lite against the
-base model, on both `classification.model` and `extraction.model`. A fine-tuned model
+base model, on both `classification.one_stage.llm.model` and `extraction.model`. A fine-tuned model
 is reached through a Bedrock `custom-model-deployment` ARN, which is account-scoped: it
 resolves only in the account that owns the deployment, and from anywhere else Bedrock
 answers `AccessDeniedException` — *"the provided resource ARN is from a different

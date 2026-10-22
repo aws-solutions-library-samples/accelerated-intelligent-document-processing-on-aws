@@ -38,7 +38,8 @@ classes:
 packet in one call instead of one call per page:
 ```yaml
 classification:
-  granularity: packet
+  one_stage:
+    granularity: packet
 ```
 
 ## OCR Backend Selection

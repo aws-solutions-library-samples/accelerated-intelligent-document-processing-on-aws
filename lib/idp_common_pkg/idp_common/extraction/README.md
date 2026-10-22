@@ -1164,7 +1164,7 @@ that went unreported.
 | Reason | When | Recorded issue |
 |---|---|---|
 | `class_has_no_attributes` | The label resolves to a class in configuration that declares no properties. An authoring choice; nothing was expected from the section | none |
-| `class_unclassified` | The label is the `unclassified` sentinel, or the configured `classification.invalidClassFallback`. Classification determined no class — a blank page, a page whose classification failed, or a deployment with no document types configured | none here. The **classification** stage reports it, at the severity only it can judge |
+| `class_unclassified` | The label is the `unclassified` sentinel, or the configured `classification.fallback_class`. Classification determined no class — a blank page, a page whose classification failed, or a deployment with no document types configured | none here. The **classification** stage reports it, at the severity only it can judge |
 | `class_not_configured` | The section carries a **named** class the configuration in force does not contain: renamed or deleted while documents were in flight, or an old document reprocessed under a newer configuration | error-severity `extraction_class_not_configured` on the section and in the stub's `metadata.processing_issues` |
 
 The fault case is reported here, at the stage that discovered it, because the

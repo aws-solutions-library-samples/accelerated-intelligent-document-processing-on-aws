@@ -205,7 +205,7 @@ Three things to know before using it:
   Within that level the shallowest candidate wins if it is alone there, and a tie
   declines: `enabled` is declared at eight places one level under `extraction`, so
   `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
-  and declines rather than answering with `classification.model`. Failing that, a
+  and declines rather than answering with `summarization.model`. Failing that, a
   close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
   than none: it sends the author to edit something correct. A list step is spelled
   `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
