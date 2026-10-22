@@ -109,6 +109,23 @@ EXEMPT_SUBTREES: dict[str, str] = {
         "translator_config.yaml via handle_generate_rule_json (see the field's "
         "own description)."
     ),
+    "classification.two_stage.segmentation.boundary_model": (
+        "Declared for a boundary-detection model (#1329), not implemented: "
+        "segmentation.method offers only 'llm', so a control would edit a setting "
+        "nothing reads."
+    ),
+    "classification.two_stage.section_classification.embeddings": (
+        "Declared for embeddings classification (#1329), not implemented: "
+        "section_classification.method offers only 'llm'."
+    ),
+    "classification.two_stage.section_classification.decision_model": (
+        "Declared for an external classifier endpoint (#1329), not implemented: "
+        "section_classification.method offers only 'llm'."
+    ),
+    "classification.two_stage.section_classification.low_confidence": (
+        "Applies only to a non-LLM section classification method, none of which "
+        "is implemented yet (#1329)."
+    ),
     "rule_validation.z3_value_extraction": (
         "Notebook/standalone only — the deployed pipeline uses "
         "orchestrator._extract_z3_values_from_facts with fact_extraction settings."
@@ -185,9 +202,25 @@ NOT_USER_SETTABLE: dict[str, str] = {
     # the only reader of dpi/preprocessing (they govern PDF->raster rendering,
     # which happens once, in OCR). The per-stage panels correctly expose just
     # target_width/target_height.
-    "classification.image.dpi": "PDF-rendering knob; only read from ocr.image.",
-    "classification.image.preprocessing": (
+    "classification.one_stage.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.one_stage.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
+    ),
+    "classification.two_stage.segmentation.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.two_stage.segmentation.llm.image.preprocessing": (
+        "Binarization is applied during OCR rasterization; only read from ocr.image."
+    ),
+    "classification.two_stage.section_classification.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.two_stage.section_classification.llm.image.preprocessing": (
+        "Binarization is applied during OCR rasterization; only read from ocr.image."
+    ),
+    # --- shared confidence block, packet keys unread on section classification
+    "classification.two_stage.section_classification.llm.confidence.task_prompt_topk_packet": (
+        "Never read: section classification is one call per section, so it always "
+        "takes the page-shaped block (classification/service.py)."
+    ),
+    "classification.two_stage.section_classification.llm.confidence.task_prompt_verbalized_packet": (
+        "Never read, for the same reason as the packet Top-K block above."
     ),
     "extraction.image.dpi": "PDF-rendering knob; only read from ocr.image.",
     "extraction.image.preprocessing": (
@@ -434,7 +467,7 @@ def test_ghost_groups_are_flattened_not_dropped():
     paths = _ui_paths()
     for flattened in (
         "extraction.temperature",
-        "classification.max_tokens",
+        "classification.one_stage.llm.max_tokens",
         "summarization.reasoning_effort",
         "chat.top_p",
         "evaluation.llm_method.top_k",

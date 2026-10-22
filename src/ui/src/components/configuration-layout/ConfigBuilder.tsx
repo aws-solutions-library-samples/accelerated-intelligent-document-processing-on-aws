@@ -168,6 +168,10 @@ interface SchemaProperty {
   // with every field inside it unreachable and nothing saying why. Modality,
   // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
+  // Display text for enum values, keyed by the stored value. The stored value
+  // never changes; only what the dropdown shows does (e.g. `single_pass` reads
+  // "One stage"). A value with no entry shows as itself.
+  enumLabels?: Record<string, string>;
   // Only Admins may change this object: other users see its fields read-only.
   adminOnly?: boolean | string;
   // For nested sectionLabel objects: auto-expand the collapsible section when a
@@ -431,6 +435,12 @@ const getConstraintText = (property: Record<string, unknown>): string => {
 };
 
 // Resizable Columns Component
+/** The text an enum dropdown shows for a stored value (see `enumLabels`). */
+export const enumOptionLabel = (property: { enumLabels?: Record<string, string> }, value: string): string => {
+  const label = property.enumLabels?.[value];
+  return typeof label === 'string' && label ? label : value;
+};
+
 interface ResizableColumnsProps {
   columns: number;
   children?: React.ReactNode;
@@ -1801,11 +1811,12 @@ const ConfigBuilder = ({
         </ExtBox>
       );
     } else if (property.enum) {
+      const labelFor = (opt: string): string => enumOptionLabel(property, opt);
       input = (
         <Select
-          selectedOption={{ value: String(displayValue || ''), label: String(displayValue || '') }}
+          selectedOption={{ value: String(displayValue || ''), label: labelFor(String(displayValue || '')) }}
           onChange={({ detail }) => updateValue(path, detail.selectedOption.value)}
-          options={(property.enum as string[]).map((opt: string) => ({ value: opt, label: opt }))}
+          options={(property.enum as string[]).map((opt: string) => ({ value: opt, label: labelFor(opt) }))}
         />
       );
     } else if (

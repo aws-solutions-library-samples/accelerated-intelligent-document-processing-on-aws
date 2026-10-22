@@ -393,10 +393,25 @@ class ClassificationService:
                 f"Initialized classification service with SageMaker backend using endpoint {endpoint_name}"
             )
 
-        # Get max pages for classification (1 to ALL)
-        self.max_pages_for_classification = (
-            self.config.classification.file_shape.maxPagesForClassification
-        )
+        # Get max pages for classification (1 to ALL). A page limit gives the
+        # whole file one class from its first N pages, so it only means anything
+        # when the file is one document. With boundary detection on, it would
+        # collapse only files longer than N and section shorter ones normally —
+        # a different answer per file in one run — so it is not applied.
+        file_shape = self.config.classification.file_shape
+        self.max_pages_for_classification = file_shape.maxPagesForClassification
+        if (
+            str(self.max_pages_for_classification).upper() != "ALL"
+            and file_shape.sectionSplitting != "disabled"
+        ):
+            logger.warning(
+                "classification.file_shape.maxPagesForClassification is %r but "
+                "sectionSplitting is %r; the page limit applies only to 'disabled' "
+                "(one document per file) and is ignored.",
+                self.max_pages_for_classification,
+                file_shape.sectionSplitting,
+            )
+            self.max_pages_for_classification = "ALL"
 
         # The page-reading call's granularity: one_stage's under single_pass,
         # segmentation's under two_stage. Section classification has none.
@@ -1525,9 +1540,12 @@ class ClassificationService:
 
         if not block:
             logger.warning(
-                "classification.confidence.mode=%s but its prompt block is empty; "
-                "no confidence will be requested. Restore it from the system "
-                "defaults (base-classification.yaml).",
+                "classification.%s.confidence.mode=%s but its prompt block is "
+                "empty; no confidence will be requested. Restore it from the "
+                "system defaults (base-classification.yaml).",
+                "two_stage.section_classification.llm"
+                if stage == self.STAGE_LABELING
+                else "one_stage.llm",
                 mode,
             )
             return task_prompt
