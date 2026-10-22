@@ -5,12 +5,10 @@
 # Classification (minimal — single doc type for testing)
 # ============================================================================
 classification:
-  # No `one_stage.granularity` here on purpose. This file carried
-  # `classificationMethod: textbasedHolisticClassification` at the TOP level,
-  # outside the `classification` block, so nothing ever read it and the config
-  # ran at page granularity. Writing `granularity: packet` would switch on a
-  # setting that was inert, next to a task prompt asking for a `pages` array
-  # that neither parser reads. The notebook using this file does not classify.
+  # No `one_stage.granularity` here on purpose, so this runs at the default
+  # page granularity. The task prompt below asks for a `pages` array that
+  # neither the page nor the packet parser reads, and the notebook using this
+  # file does not classify, so the classification settings are placeholders.
   one_stage:
     llm:
       model: us.anthropic.claude-sonnet-4-6

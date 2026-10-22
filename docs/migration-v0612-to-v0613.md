@@ -173,7 +173,12 @@ the model block that decides the class under the configured strategy, and
 
 Code that writes flat keys keeps working, because they are converted on read —
 but a flat key written onto a v0.6.13 configuration overrides the nested setting
-it maps to, so prefer the nested path.
+it maps to, so prefer the nested path. Most flat settings map to every call that
+uses them: a flat `temperature`, for example, sets all three. The model is the
+exception: a flat `model` sets the one-stage call, and a two-stage call only if
+that call names no model or the same model as the one-stage call, so a stage
+model you chose is kept. `idp-cli config-validate` warns when a file still uses
+the flat layout.
 
 Two names change in outputs:
 

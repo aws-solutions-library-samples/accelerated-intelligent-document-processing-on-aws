@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from idp_common.config.configuration_manager import (
 )
 from idp_common.config.flags import flag_is_true
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.migrations import migrate_config
 
 # One definition of "strip the cross-region profile prefix", shared with the
 # retired-model registry rather than re-spelled here. That module's prefix list is
@@ -530,13 +532,28 @@ def merge_custom_with_defaults(
         return merged
 
     except FileNotFoundError as e:
-        # System defaults not available in Lambda - return config as-is
+        # System defaults not available in Lambda - return config unmerged
         logger.warning(f"System defaults not available, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
     except Exception as e:
-        # Any other error - log and return original config
+        # Any other error - log and return original config, unmerged
         logger.warning(f"Error merging with defaults, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
+
+
+def _migrated_or_original(config: Dict[str, Any]) -> Dict[str, Any]:
+    """``config`` in the current format, for the paths that skip the merge.
+
+    The merge migrates a legacy config; returning the raw one instead leaves flat
+    ``classification`` keys in place, and ``apply_custom_model_arns`` then writes
+    the custom model into a nested block beside them — a flat/nested hybrid in
+    which the flat model wins on the next read and the ARN is lost.
+    """
+    try:
+        return migrate_config(copy.deepcopy(config))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not migrate the unmerged config, using it as-is: {e}")
+        return config
 
 
 def save_configuration_bypass_manager(

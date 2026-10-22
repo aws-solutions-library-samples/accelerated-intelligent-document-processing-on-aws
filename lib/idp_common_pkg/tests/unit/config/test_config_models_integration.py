@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.config.models import IDPConfig
 
 
@@ -304,16 +305,16 @@ class TestConfigModelsIntegration:
 
     def test_config_serialization_roundtrip(self, config_root):
         """Test that configs can be serialized and deserialized"""
-        config_file = (
-            config_root / "pattern-2" / "lending-package-sample" / "config.yaml"
-        )
+        config_file = config_root / "unified" / "lending-package-sample" / "config.yaml"
+        # A shipped preset: a missing file is a broken test, not a reason to skip.
+        assert config_file.exists(), f"Config file not found: {config_file}"
 
-        if not config_file.exists():
-            pytest.skip(f"Config file not found: {config_file}")
-
-        # Load original
+        # Load original. The preset is a sparse overlay, so it is completed with
+        # the system defaults the way the stack completes it on deploy.
         with open(config_file, "r") as f:
-            original_dict = yaml.safe_load(f)
+            original_dict = merge_config_with_defaults(
+                yaml.safe_load(f), validate=False
+            )
 
         # Parse to model
         config = IDPConfig.model_validate(original_dict)
@@ -327,4 +328,8 @@ class TestConfigModelsIntegration:
         # Should be equivalent
         assert config.extraction.model == config2.extraction.model
         assert config.extraction.agentic.enabled == config2.extraction.agentic.enabled
-        assert config.classification.temperature == config2.classification.temperature
+        assert (
+            config.classification.one_stage.llm.temperature
+            == config2.classification.one_stage.llm.temperature
+        )
+        assert config.classification.one_stage.llm.temperature is not None

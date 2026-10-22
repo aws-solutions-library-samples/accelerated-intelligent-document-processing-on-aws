@@ -703,3 +703,39 @@ class TestAMisplacedSettingIsReported:
 
         findings = collect_ignored_config_keys({"classification": written}, IDPConfig)
         assert [f.suggestion for f in findings] == [belongs]
+
+
+@pytest.mark.unit
+class TestAFlatModelOnANestedTwoStageProfile:
+    """An old script setting `classification.model` on a v0.9 profile."""
+
+    def _hybrid(self, segmentation_model, section_model):
+        return {
+            "classification": {
+                "model": "flat-model",
+                "strategy": "two_stage",
+                "one_stage": {"llm": {"model": "old-model"}},
+                "two_stage": {
+                    "segmentation": {"llm": {"model": segmentation_model}},
+                    "section_classification": {"llm": {"model": section_model}},
+                },
+            }
+        }
+
+    def test_a_stage_model_the_operator_chose_is_kept(self):
+        cls = migrate_v08_to_v09(self._hybrid("seg-model", "section-model"))[
+            "classification"
+        ]
+        assert cls["one_stage"]["llm"]["model"] == "flat-model"
+        assert cls["two_stage"]["segmentation"]["llm"]["model"] == "seg-model"
+        assert (
+            cls["two_stage"]["section_classification"]["llm"]["model"]
+            == "section-model"
+        )
+
+    def test_a_stage_following_the_one_stage_model_follows_the_flat_one(self):
+        cls = migrate_v08_to_v09(self._hybrid("old-model", ""))["classification"]
+        assert cls["two_stage"]["segmentation"]["llm"]["model"] == "flat-model"
+        assert (
+            cls["two_stage"]["section_classification"]["llm"]["model"] == "flat-model"
+        )

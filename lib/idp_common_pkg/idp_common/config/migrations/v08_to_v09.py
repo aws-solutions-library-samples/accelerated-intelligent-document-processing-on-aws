@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from ._version import is_at_or_after, is_newer_than
 
@@ -176,6 +176,40 @@ def _is_page_limit(value: Any) -> bool:
         return False
 
 
+def conversion_notices(config: Any) -> List[str]:
+    """What this hop would change about ``config``, worded for the person who wrote it.
+
+    The conversion itself is silent apart from a log line, which a user
+    validating a file or importing a profile never sees. A caller that reports to
+    that user (``merge_utils.validate_config``) adds these to its warnings, so a
+    file still in the pre-0.9 layout says so, and the one conversion that changes
+    behaviour — a page limit taking boundary detection with it — is not
+    discovered later from a changed section count.
+    """
+    if not isinstance(config, dict) or not _has_flat_keys(config):
+        return []
+    flat = config["classification"]
+    notices = [
+        "classification uses the pre-0.9 flat layout and was converted to the "
+        "nested one (each setting now sits inside the call that uses it). Keys "
+        "converted: " + ", ".join(sorted(FLAT_KEYS & flat.keys())) + ". Save or "
+        "re-download the configuration to keep the new layout; see "
+        "docs/migration-v0612-to-v0613.md."
+    ]
+    limit = flat.get("maxPagesForClassification")
+    splitting = str(flat.get("sectionSplitting", "llm_determined")).strip().lower()
+    if _is_page_limit(limit) and splitting != "disabled":
+        notices.append(
+            f"classification.maxPagesForClassification is {limit!r} with "
+            f"sectionSplitting {splitting!r}; converted to file_shape."
+            "sectionSplitting 'disabled' (one document per file), because a page "
+            "limit applies only to a one-document file. A short multi-document "
+            "file is now one section. Set the page limit to ALL to keep boundary "
+            "detection."
+        )
+    return notices
+
+
 def migrate_v08_to_v09(config: Any) -> Any:
     """Convert a v0.8 (flat) classification block to the v0.9 nested shape."""
     if not isinstance(config, dict):
@@ -198,7 +232,16 @@ def migrate_v08_to_v09(config: Any) -> Any:
     packet = _dict_or_empty(flat.get("packet"))
 
     # ── Model. An empty stage model meant "inherit the flat one".
+    #
+    # In a hybrid, a stage call that already names its own model keeps it: the
+    # flat model replaces a stage model only where that stage was following the
+    # one-stage model (same value) or names none. Otherwise a flat
+    # `classification.model` written by an old script onto a two-stage profile
+    # would overwrite stage models the operator chose, which v0.8 never did.
     flat_model = flat.get("model")
+    previous_one_stage_model = _dict_or_empty(
+        _dict_or_empty(out.get("one_stage")).get("llm")
+    ).get("model")
     if flat_model is not None:
         _put(out, ONE_STAGE_LLM, "model", flat_model)
     for stage_cfg, path in (
@@ -209,7 +252,14 @@ def migrate_v08_to_v09(config: Any) -> Any:
         if isinstance(stage_model, str) and stage_model.strip():
             _put(out, path, "model", stage_model)
         elif flat_model is not None:
-            _put(out, path, "model", flat_model)
+            existing = _node(out, path).get("model")
+            follows_one_stage = (
+                not isinstance(existing, str)
+                or not existing.strip()
+                or existing == previous_one_stage_model
+            )
+            if follows_one_stage:
+                _put(out, path, "model", flat_model)
 
     # ── Parameters, modality and image: every call, unconditionally (row 1).
     for key in _PER_CALL_SETTINGS:

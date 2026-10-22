@@ -50,3 +50,62 @@ export const setClassificationModel = (classification: Record<string, unknown>, 
   }
   node.model = model;
 };
+
+/**
+ * Keys config format 0.9 moved out of `classification` (mirrors `FLAT_KEYS` in
+ * `lib/idp_common_pkg/idp_common/config/migrations/v08_to_v09.py`). A file
+ * holding any of them was written for v0.6.12 or earlier; the server converts it
+ * when it is saved.
+ */
+export const FLAT_CLASSIFICATION_KEYS = [
+  'classificationMethod',
+  'model',
+  'model_lambda_hook_arn',
+  'system_prompt',
+  'task_prompt',
+  'temperature',
+  'top_p',
+  'top_k',
+  'reasoning_effort',
+  'max_tokens',
+  'maxPagesForClassification',
+  'granularity',
+  'packet',
+  'segmentation',
+  'labeling',
+  'sectionSplitting',
+  'contextPagesCount',
+  'enforceValidClasses',
+  'maxValidationRetries',
+  'invalidClassFallback',
+  'confidence',
+  'image',
+  'modality',
+] as const;
+
+/** The pre-0.9 classification keys a configuration still carries. */
+export const flatClassificationKeysIn = (config: unknown): string[] => {
+  const classification = config && typeof config === 'object' ? (config as Record<string, unknown>).classification : undefined;
+  if (!classification || typeof classification !== 'object') return [];
+  return FLAT_CLASSIFICATION_KEYS.filter((key) => Object.hasOwn(classification as object, key));
+};
+
+/**
+ * Whether converting this file turns boundary detection into "one document per
+ * file": a page limit combined with any section splitting other than
+ * `disabled` (mirrors `conversion_notices` in `v08_to_v09.py`).
+ */
+export const pageLimitBecomesOneDocument = (config: unknown): boolean => {
+  const classification = config && typeof config === 'object' ? (config as Record<string, unknown>).classification : undefined;
+  if (!classification || typeof classification !== 'object') return false;
+  const cls = classification as Record<string, unknown>;
+  const raw = cls.maxPagesForClassification;
+  if (raw === undefined || raw === null) return false;
+  const text = String(raw).trim().toUpperCase();
+  const limit = Number(text);
+  if (text === '' || text === 'ALL' || !Number.isInteger(limit) || limit <= 0) return false;
+  const splitting = String(cls.sectionSplitting ?? 'llm_determined')
+    .trim()
+    .toLowerCase();
+  return splitting !== 'disabled';
+};
