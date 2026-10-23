@@ -19,6 +19,7 @@ Usage:
 """
 
 import difflib
+import math
 import re
 from functools import lru_cache
 from typing import (
@@ -1695,12 +1696,18 @@ class ClassificationModalityConfig(BaseModel):
         """Refuse the one combination that sends the model nothing to look at.
 
         Raised at configuration-save time (every save validates through
-        ``IDPConfig``), so the message lands in the UI next to the setting
-        rather than as a failed document an hour later. Only the *explicit*
-        pair is refused — if either flag is unset it is inferred from the
-        prompt, and a prompt with neither placeholder is a deliberate,
-        long-standing way to write a classifier that works from the class
-        descriptions alone.
+        ``IDPConfig``), so the message lands in the UI next to the setting rather
+        than as a failed document an hour later.
+
+        Only the *explicit* pair is refused **here**, and the reason is scope rather
+        than permission: this block is validated on its own and cannot see the task
+        prompt, so when a flag is unset there is nothing at this level to infer it
+        from. The equivalent inferred case — a prompt carrying neither
+        ``{DOCUMENT_TEXT}`` nor ``{DOCUMENT_IMAGE}``, with neither flag turned on to
+        make up for it — is reported by ``merge_utils.validate_config``, which does
+        see both. The two now agree that "nothing is sent" is the thing refused;
+        neither of them refuses a prompt missing one placeholder, which is the
+        documented way to get a single modality.
         """
         if self.text is False and self.images is False:
             raise ValueError(
@@ -1796,7 +1803,76 @@ _REASONING_EFFORT_DESCRIPTION = (
     "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
 )
 
-DEFAULT_CLASSIFICATION_MODEL = "us.amazon.nova-pro-v1:0"
+#: Every effort level any supported family accepts — the union of the per-family
+#: lists in :data:`_REASONING_EFFORT_DESCRIPTION`, and the same set the editor's
+#: picklist offers (asserted against the template in
+#: ``scripts/sdlc/tests/test_config_ui_schema_parity.py``). Checked as the union
+#: rather than per family because which levels a model takes is a fact about that
+#: model, and the client already drops a level the chosen model does not accept with
+#: a warning. What is caught here is a value **no** model accepts, which previously
+#: reached Bedrock verbatim.
+REASONING_EFFORT_VALUES = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
+
+DEFAULT_REASONING_EFFORT = "medium"
+
+
+def normalise_reasoning_effort(v: Any, path: str) -> str:
+    """One of :data:`REASONING_EFFORT_VALUES`; anything else is the default.
+
+    ⚠️ **Normalised rather than refused, and the reason is the same one
+    ``FileShapeConfig.parse_max_pages`` gives**: this field has never had a
+    validator, and ``save_configuration`` coerces through ``IDPConfig`` without
+    touching it, so a typo written by hand or through the API **is stored
+    verbatim today**. Raising on it would make such a profile fail validation on
+    read — and because it is the stored profile itself that no longer validates,
+    there is no resolved-config fallback to return, so every document fails at
+    config load and the editor cannot render the profile to correct it. The worst
+    case is a stack on Nova, which ignores effort entirely, running happily on a
+    misspelled value right now.
+
+    Contrast ``FileShapeConfig.validate_section_splitting``, which *does* raise:
+    that validator already normalised on the way in, so an unrecognised value was
+    never stored and raising cannot wedge anything. The two settings differ in
+    whether the bad state is reachable in stored data, which is the whole question.
+
+    The point of checking at all is that the value is forwarded to the provider as
+    written, so the typo must not reach it; substituting the default achieves that
+    and is what a family with no effort control did with it anyway.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return DEFAULT_REASONING_EFFORT
+    v_str = str(v).strip().lower()
+    if v_str not in REASONING_EFFORT_VALUES:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "%s is %r, which no model family accepts; using %s. Valid values: %s.",
+            path,
+            v,
+            DEFAULT_REASONING_EFFORT,
+            ", ".join(REASONING_EFFORT_VALUES),
+        )
+        return DEFAULT_REASONING_EFFORT
+    return v_str
+
+
+#: The model a classification call falls back to when its own ``model`` is empty.
+#:
+#: ⚠️ **It must stay equal to the model `base-classification.yaml` ships.** The YAML
+#: wins on a normal load, so a divergence here is invisible until a call's model is
+#: *cleared* — and at that moment ``default_empty_model`` moves that one call onto a
+#: different model, which is a cost and accuracy change nobody asked for, and its
+#: warning names a model the profile being edited does not use.
+#: ``test_classification_defaults_parity.py`` pins the two together.
+DEFAULT_CLASSIFICATION_MODEL = "us.amazon.nova-2-lite-v1:0"
 
 
 def _parse_float_param(v: Any) -> float:
@@ -1872,10 +1948,14 @@ class ClassificationModelSettings(BaseModel):
         ),
     )
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
+    # 0.0, not 0.1, because 0.0 is what `base-classification.yaml` ships on all
+    # three calls and a positive top_p *overrides* temperature. A field default
+    # that disagreed with the shipped value changed the sampling behaviour of any
+    # call whose top_p was cleared.
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     top_k: float = Field(default=5.0, ge=0.0)
     reasoning_effort: str = Field(
-        default="medium", description=_REASONING_EFFORT_DESCRIPTION
+        default=DEFAULT_REASONING_EFFORT, description=_REASONING_EFFORT_DESCRIPTION
     )
     max_tokens: Optional[int] = Field(
         default=None,
@@ -1908,13 +1988,30 @@ class ClassificationModelSettings(BaseModel):
     def parse_max_tokens(cls, v: Any) -> Optional[int]:
         return _parse_optional_max_tokens(v)
 
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def validate_reasoning_effort(cls, v: Any) -> str:
+        """Keep a level no model family accepts from reaching the provider.
+
+        The value is forwarded to ``bedrock.invoke_model`` as written, so an
+        unrecognised one previously reached the provider and failed the document —
+        or was dropped by a family that ignores effort entirely, leaving the typo in
+        the stored profile for the next model change to surface. See
+        :func:`normalise_reasoning_effort` for why this substitutes rather than
+        raises, and why the sibling ``sectionSplitting`` validator does raise.
+        """
+        return normalise_reasoning_effort(v, "classification reasoning_effort")
+
     @field_validator("model", mode="before")
     @classmethod
     def default_empty_model(cls, v: Any) -> str:
         """An empty model is the default model, not "no model".
 
         Each call has its own model, so a block whose model was cleared would
-        otherwise send no model ID at all. The substitution is logged.
+        otherwise send no model ID at all. The substitution is logged, and
+        :data:`DEFAULT_CLASSIFICATION_MODEL` is kept equal to the model the system
+        defaults ship so that clearing one call's model does not quietly move it
+        onto a different, differently-priced model than its siblings run.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
             if v is not None:
@@ -2222,6 +2319,30 @@ class TwoStageConfig(BaseModel):
     )
 
 
+#: The three shapes a file can be declared to have. Shared with the migration, which
+#: has to recognise ``disabled`` in a raw stored value before this validator sees it,
+#: and mirrored in ``src/ui/src/utils/classification-config.ts`` (kept in step by
+#: ``scripts/tests/test_classification_flat_keys_ui_parity.py``).
+SECTION_SPLITTING_VALUES = ("llm_determined", "disabled", "page")
+
+#: What an unset ``sectionSplitting`` means: detect the boundaries.
+DEFAULT_SECTION_SPLITTING = "llm_determined"
+
+
+def _unusable_page_limit(value: Any) -> str:
+    """``'ALL'``, plus the warning that the operator's page limit is not in force."""
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "classification.file_shape.maxPagesForClassification is %r, which is not "
+        "'ALL' and not a positive number of pages; classifying every page instead. "
+        "Set it to ALL, or to the number of opening pages whose majority class the "
+        "whole file should take.",
+        value,
+    )
+    return "ALL"
+
+
 class FileShapeConfig(BaseModel):
     """Advanced: what you already know about a file's shape.
 
@@ -2248,35 +2369,115 @@ class FileShapeConfig(BaseModel):
     @field_validator("sectionSplitting", mode="before")
     @classmethod
     def validate_section_splitting(cls, v: Any) -> str:
-        import logging
+        """One of the three values; empty is the default; anything else raises.
 
-        if isinstance(v, str):
-            v = v.lower().strip()
-        valid_values = ["disabled", "page", "llm_determined"]
-        if v not in valid_values:
-            logging.getLogger(__name__).warning(
-                "Invalid sectionSplitting value %r, using default 'llm_determined'. "
-                "Valid values: %s",
-                v,
-                ", ".join(valid_values),
+        ⚠️ **Not a silent fallback**, for the reason ``_normalise_granularity``'s
+        docstring gives about its own enum, and more so here: this setting decides
+        whether boundary detection happens at all, and the value it used to fall back
+        to — ``llm_determined`` — is the expensive one and changes where sections
+        start. A warning is the wrong instrument for that, because the reader is a
+        Lambda log nobody is watching at save time.
+
+        An **empty** value is the default and is silent, matching every sibling
+        validator here: clearing the field in the editor is "use the default", not a
+        mistake, and it used to produce a spurious "Invalid sectionSplitting value
+        ''" line.
+
+        ⚠️ **This is the only classification setting that refuses an unrecognised
+        value, and the neighbouring validators argue the opposite direction for
+        themselves — so what distinguishes it is worth stating.** Two things, and
+        they are independent. First, **there is no safe reading of an unrecognised
+        splitting mode.** Its neighbours each have one that the pipeline already
+        applied: an unusable page limit means "classify every page", and an
+        unrecognised ``reasoning_effort`` means the default, because a family with
+        no effort control did exactly that with it. A splitting mode decides whether
+        boundaries are detected at all, and every candidate answer is a different
+        document structure. Second, **a bad value here is not reachable in stored
+        data**, because the validator on this key has normalised on the way in since
+        v0.4.6 — in every release including v0.6.12, where the key was flat on
+        ``ClassificationConfig`` and ``save_configuration`` coerced the dict through
+        ``IDPConfig`` before writing it — so no save path in any shipped release could
+        persist an off-list value. That is precisely the condition
+        :func:`normalise_reasoning_effort` and :meth:`parse_max_pages` do *not* meet,
+        and the reason they normalise: ``reasoning_effort`` had no validator at all,
+        and ``maxPagesForClassification``'s stored whatever it was given.
+
+        What that costs is worth knowing: ``update_configuration`` validates through
+        these same models at deploy time, so an unrecognised value in a hand-written
+        ``CustomConfigPath`` file fails the stack operation rather than a save.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_SECTION_SPLITTING
+        v_str = str(v).strip().lower()
+        if v_str not in SECTION_SPLITTING_VALUES:
+            raise ValueError(
+                "classification.file_shape.sectionSplitting must be one of "
+                f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
+                f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
             )
-            return "llm_determined"
-        return v
+        return v_str
 
     @field_validator("maxPagesForClassification", mode="before")
     @classmethod
     def parse_max_pages(cls, v: Any) -> str:
-        """'ALL' or a page count; a legacy 0 means 'ALL'."""
+        """``'ALL'`` or a positive page count; anything unusable becomes ``'ALL'``.
+
+        ⚠️ **A ``bool`` is not a page count**, although ``bool`` is an ``int``
+        subclass — an unquoted YAML ``maxPagesForClassification: true`` used to be
+        read as a one-page limit. ``migrations/_version.py`` guards the same trap on
+        the version stamp.
+
+        Everything the runtime cannot use normalises to ``'ALL'``, with a warning,
+        rather than being stored verbatim. ``'abc'`` and ``'-3'`` used to validate and
+        be stored, then be discarded twice over at run time — by the
+        ``sectionSplitting`` check and again by ``int()`` inside a bare ``except`` —
+        so the editor showed a page limit that was never in force. ``'ALL'`` is what
+        the runtime already does with such a value, so the stored value now says what
+        will happen.
+
+        The int/string asymmetry is **narrowed, not removed**: a negative limit now
+        agrees whichever way it is spelled (``-5`` and ``'-5'`` are both no limit),
+        and a fraction below one page is no limit either way. What still differs is
+        a usable fraction — a real number is truncated, so ``2.5`` is two pages,
+        while ``'2.5'`` is refused, because a string must already spell a whole
+        number. ``_is_page_limit`` mirrors that split, and so does the editor's
+        predicate; the cases all three must agree on are the shared table in
+        ``src/ui/src/utils/__tests__/page-limit.fixtures.json``.
+
+        Normalising rather than raising is deliberate: unlike ``sectionSplitting``,
+        today's validator *stores* an unusable value, so one may already sit in a
+        stored profile, and raising would make that profile unreadable — which fails
+        every document — to correct a setting that was never in effect.
+        """
         if v is None or (isinstance(v, str) and not v.strip()):
             return "ALL"
-        if isinstance(v, (int, float)):
-            return "ALL" if v <= 0 else str(int(v))
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+            return _unusable_page_limit(v)
+        if isinstance(v, float) and not math.isfinite(v):
+            # `int(inf)` raises OverflowError, which pydantic does not convert into
+            # a ValidationError — so a `.inf` in a YAML file failed the profile's
+            # load with a raw traceback, which is exactly what this validator
+            # normalises in order to avoid.
+            return _unusable_page_limit(v)
         if isinstance(v, str):
-            v_upper = v.strip().upper()
-            if v_upper in ("ALL", "0"):
+            if v.strip().upper() == "ALL":
                 return "ALL"
-            return v.strip()
-        return str(v)
+            try:
+                v = int(v.strip())
+            except ValueError:
+                return _unusable_page_limit(v)
+        if v == 0:
+            # The long-documented legacy spelling of "ALL". Silent, like every other
+            # "this field is unset, take the default" case here.
+            return "ALL"
+        pages = int(v)
+        if pages <= 0:
+            # Negative, or a fraction below one page — which is not a page count.
+            # `0.4` used to be stored as `"0"` while the migration read it as a
+            # limit and took `sectionSplitting` to `disabled` with it, which is the
+            # bool trap above in a second spelling.
+            return _unusable_page_limit(v)
+        return str(pages)
 
 
 class ClassificationConfig(BaseModel):
@@ -2322,14 +2523,24 @@ class ClassificationConfig(BaseModel):
         ``ClassificationConfig(**flat)`` itself, which would otherwise have every
         flat key silently discarded by ``extra="ignore"`` — the same conversion,
         at a second entry point, so neither route loses a setting.
+
+        ⚠️ **The whole chain, not the last hop.** Running only ``v08_to_v09`` made
+        the two routes disagree for a v0.7 *holistic* configuration:
+        ``classificationMethod`` is not a v0.8 flat key, so it survived that hop and
+        was then dropped by ``extra="ignore"`` — leaving ``granularity: page``, and
+        with it the shipped page prompt in place of the operator's hand-written
+        packet one. ``migrate_config`` is idempotent and each hop is a no-op when its
+        marker is absent, so running all of them costs nothing a 0.8 dict notices.
         """
         if not isinstance(data, dict):
             return data
-        from .migrations.v08_to_v09 import FLAT_KEYS, migrate_v08_to_v09
+        from .migrations import migrate_config
+        from .migrations.v07_to_v08 import LEGACY_METHOD_KEY
+        from .migrations.v08_to_v09 import FLAT_KEYS
 
-        if not FLAT_KEYS & data.keys():
+        if not (FLAT_KEYS | {LEGACY_METHOD_KEY}) & data.keys():
             return data
-        return migrate_v08_to_v09({"classification": data})["classification"]
+        return migrate_config({"classification": data})["classification"]
 
     @field_validator("strategy", mode="before")
     @classmethod

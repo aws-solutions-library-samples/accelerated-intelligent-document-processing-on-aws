@@ -350,6 +350,12 @@ fewer signals than a miss.
   `task_prompt_verbalized_packet` instead, because its response is a segment list;
   section classification always takes the page-shaped block, being one call about
   one segment. Segmentation is never given a block: it decides no class.
+  Consequently the section-classification call carries **no** `_packet` blocks:
+  `base-classification.yaml` ships none there and `migrations.v08_to_v09` does not
+  copy them into it
+  (`SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS`), so the keys an operator can
+  see on that call are the ones it can actually read. The one-stage call keeps
+  both, because one stage can run at packet granularity.
 - **Resolution.** `resolve_class_and_confidence` prefers an explicit
   `confidence`, else `confidence_from_candidates`, which returns the probability
   of the class being **stored** — not the top of the list. Those differ when the

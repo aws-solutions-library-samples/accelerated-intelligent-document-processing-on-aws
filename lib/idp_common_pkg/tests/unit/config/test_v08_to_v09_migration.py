@@ -380,7 +380,13 @@ class TestThePageLimit:
         out = migrate_v08_to_v09({"classification": {"maxPagesForClassification": 2}})
         assert out["classification"]["file_shape"]["sectionSplitting"] == "disabled"
 
-    @pytest.mark.parametrize("value", ["ALL", "all", "0", 0, "", None, "abc", -1])
+    @pytest.mark.parametrize(
+        "value",
+        # 0.4 is the boolean trap in a second spelling: `0.4 > 0` answered True
+        # while the validator rendered it as no limit at all, so boundary
+        # detection was turned off by a value asking for no limit.
+        ["ALL", "all", "0", 0, "", None, "abc", -1, True, False, 0.4],
+    )
     def test_no_limit_leaves_splitting_alone(self, value, caplog):
         with caplog.at_level(logging.WARNING):
             out = migrate_v08_to_v09(
@@ -395,6 +401,116 @@ class TestThePageLimit:
             out["classification"]["file_shape"]["sectionSplitting"] == "llm_determined"
         )
         assert "maxPagesForClassification" not in caplog.text
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_a_yaml_boolean_is_not_a_page_count(self, value):
+        """⚠️ `bool` is an `int` subclass, which is the whole defect.
+
+        `maxPagesForClassification: true` answered the "is this a page limit?" test,
+        so an unquoted YAML boolean became a ONE-page limit **and** took
+        `sectionSplitting` to `disabled` with it — boundary detection turned off by a
+        value that asks for no page limit at all. `migrations/_version.py` guards the
+        same trap on the version stamp, so the codebase already knew about it.
+        """
+        out = migrate_v08_to_v09(
+            {
+                "classification": {
+                    "maxPagesForClassification": value,
+                    "sectionSplitting": "llm_determined",
+                }
+            }
+        )
+        assert (
+            out["classification"]["file_shape"]["sectionSplitting"] == "llm_determined"
+        )
+        # And it reaches the validator as "no limit" rather than as "one page".
+        assert (
+            IDPConfig(
+                classification=out["classification"]
+            ).classification.file_shape.maxPagesForClassification
+            == "ALL"
+        )
+
+    def test_a_typo_plus_a_page_limit_is_not_laundered_into_disabled(self):
+        """One typo, two outcomes, decided by an unrelated key.
+
+        The conversion compared the raw stored string to `"disabled"`, so an
+        unrecognised value was "not disabled" and was rewritten TO `disabled` — while
+        the same typo without a page limit went to the validator and was reported
+        there. The typo is now left for the validator either way.
+        """
+        out = migrate_v08_to_v09(
+            {
+                "classification": {
+                    "maxPagesForClassification": "5",
+                    "sectionSplitting": "bogus",
+                }
+            }
+        )
+        assert out["classification"]["file_shape"]["sectionSplitting"] == "bogus"
+        with pytest.raises(Exception, match="sectionSplitting"):
+            IDPConfig(classification=out["classification"])
+
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    def test_a_blank_section_splitting_still_takes_the_conversion(self, blank):
+        """⚠️ Unset is not a typo, and treating it as one drops the page limit.
+
+        A blank value means "take the default", which is `llm_determined` —
+        boundary detection on — so a page limit beside it is exactly the
+        combination the conversion exists for, and it must still become
+        `disabled` with the limit kept. Reading blank as unrecognised instead left
+        the blank to resolve to `llm_determined` and the page limit was then
+        silently ignored at run time: a limit the operator set, dropped with no
+        notice.
+        """
+        out = migrate_v08_to_v09(
+            {
+                "classification": {
+                    "maxPagesForClassification": "3",
+                    "sectionSplitting": blank,
+                }
+            }
+        )
+        shape = out["classification"]["file_shape"]
+        assert shape["sectionSplitting"] == "disabled"
+        assert (
+            IDPConfig(
+                classification=out["classification"]
+            ).classification.file_shape.maxPagesForClassification
+            == "3"
+        ), "the page limit must survive, or the conversion achieved nothing"
+
+    def test_the_two_cases_do_not_share_an_answer(self):
+        """The pair, asserted together: blank converts, a typo does not.
+
+        Stated as one assertion because the defect was that both went down the
+        same branch — each case passing on its own is what made that invisible.
+        """
+
+        def shape(value):
+            return migrate_v08_to_v09(
+                {
+                    "classification": {
+                        "maxPagesForClassification": "3",
+                        "sectionSplitting": value,
+                    }
+                }
+            )["classification"]["file_shape"]["sectionSplitting"]
+
+        assert shape("") == "disabled"
+        assert shape("bogus") == "bogus"
+
+    def test_a_recognised_value_still_takes_the_page_limit_conversion(self):
+        """The control for the test above: the documented conversion still happens."""
+        out = migrate_v08_to_v09(
+            {
+                "classification": {
+                    "maxPagesForClassification": "5",
+                    "sectionSplitting": "LLM_Determined",
+                }
+            }
+        )
+        assert out["classification"]["file_shape"]["sectionSplitting"] == "disabled"
 
 
 # --------------------------------------------------------------------------
@@ -739,3 +855,257 @@ class TestAFlatModelOnANestedTwoStageProfile:
         assert (
             cls["two_stage"]["section_classification"]["llm"]["model"] == "flat-model"
         )
+
+
+@pytest.mark.unit
+class TestAFlatParameterOnANestedTwoStageProfile:
+    """The sibling of the class above, for the rest of ``_PER_CALL_SETTINGS``.
+
+    A chosen stage **model** has been protected since `dcbbb8040`; `temperature`,
+    `top_p`, `top_k`, `reasoning_effort`, `max_tokens`, `image`, `modality` and
+    `model_lambda_hook_arn` were copied over unconditionally. Measured on a
+    0.9-stamped two-stage profile with a flat `temperature` written across it: both
+    stage models were kept and both stage temperatures were replaced.
+
+    The justification for the unconditional copy is true of a **pure flat** v0.8
+    configuration — its stages had no parameters at all, so there was nothing to
+    protect and nothing to lose — and false of a hybrid, which by definition has
+    nested stage blocks. So the condition is on the setting rather than on the
+    config: absent, blank, or equal to the one-stage value the profile already had.
+    """
+
+    def _hybrid(self, segmentation: Dict[str, Any], section: Dict[str, Any], **flat):
+        return {
+            "config_format_version": "0.9",
+            "classification": {
+                "strategy": "two_stage",
+                "one_stage": {"llm": {"temperature": 0.0, "top_k": 5}},
+                "two_stage": {
+                    "segmentation": {"llm": segmentation},
+                    "section_classification": {"llm": section},
+                },
+                **flat,
+            },
+        }
+
+    def test_a_stage_parameter_the_operator_chose_is_kept(self):
+        cls = migrate_v08_to_v09(
+            self._hybrid({"temperature": 0.7}, {"temperature": 0.9}, temperature="0.0")
+        )["classification"]
+        assert cls["one_stage"]["llm"]["temperature"] == "0.0"
+        assert cls["two_stage"]["segmentation"]["llm"]["temperature"] == 0.7
+        assert cls["two_stage"]["section_classification"]["llm"]["temperature"] == 0.9
+
+    def test_a_stage_following_the_one_stage_value_follows_the_flat_one(self):
+        """The case that makes the rule usable rather than merely safe.
+
+        The shipped defaults give all three calls the same parameters, so a hybrid
+        built on them has stages that are *equal* to the one-stage value — following
+        it, not choosing it. A flat parameter must still reach them, or setting one
+        on a two-stage profile would do nothing to two of the three calls.
+        """
+        cls = migrate_v08_to_v09(
+            self._hybrid({"temperature": 0.0}, {}, temperature="0.4")
+        )["classification"]
+        assert cls["two_stage"]["segmentation"]["llm"]["temperature"] == "0.4"
+        assert cls["two_stage"]["section_classification"]["llm"]["temperature"] == "0.4"
+
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    def test_a_blank_stage_value_is_not_a_choice(self, blank):
+        cls = migrate_v08_to_v09(
+            self._hybrid({"reasoning_effort": blank}, {}, reasoning_effort="high")
+        )["classification"]
+        assert cls["two_stage"]["segmentation"]["llm"]["reasoning_effort"] == "high"
+
+    def test_a_sub_block_is_protected_key_by_key(self):
+        """`image` and `modality` merge per key, so the protection has to as well.
+
+        A flat `image.target_width` must not reset a stage's own `target_height`, and
+        must not take a `target_width` that stage chose.
+        """
+        cls = migrate_v08_to_v09(
+            self._hybrid(
+                {"image": {"target_width": 800, "target_height": 1200}},
+                {},
+                image={"target_width": 1000},
+            )
+        )["classification"]
+        segmentation_image = cls["two_stage"]["segmentation"]["llm"]["image"]
+        assert segmentation_image["target_width"] == 800
+        assert segmentation_image["target_height"] == 1200
+        assert cls["one_stage"]["llm"]["image"]["target_width"] == 1000
+
+    def test_a_pure_flat_config_is_converted_exactly_as_before(self):
+        """The property the unconditional copy existed for, kept.
+
+        A v0.8 configuration has no nested stage blocks, so every stage value is
+        absent and takes the flat one. If this regressed, every two-stage profile
+        converted from v0.8 would silently run its stages on code defaults — which is
+        the harm the original comment describes.
+        """
+        cls = migrate_v08_to_v09(
+            {
+                "classification": {
+                    "strategy": "two_stage",
+                    "temperature": "0.3",
+                    "top_p": "0.2",
+                    "reasoning_effort": "high",
+                    "segmentation": {"model": "seg-model"},
+                    "labeling": {"model": "label-model"},
+                }
+            }
+        )["classification"]
+        for path in (
+            cls["two_stage"]["segmentation"]["llm"],
+            cls["two_stage"]["section_classification"]["llm"],
+        ):
+            assert path["temperature"] == "0.3"
+            assert path["top_p"] == "0.2"
+            assert path["reasoning_effort"] == "high"
+
+
+@pytest.mark.unit
+class TestTheUnreadablePacketConfidenceBlocksAreNotCarriedOver:
+    """Stage B is one call per section, so it can never read the per-segment block.
+
+    The flat `confidence` block was merged wholesale into both class-assigning calls,
+    which put roughly a kilobyte of prompt text into every converted profile at a
+    path nothing reads — where a reader would reasonably edit it and see no effect.
+    `base-classification.yaml` leaves the same two keys out of that block.
+    """
+
+    def _migrated(self):
+        return migrate_v08_to_v09(
+            {
+                "classification": {
+                    "confidence": {
+                        "mode": "topk",
+                        "task_prompt_topk": "PAGE",
+                        "task_prompt_topk_packet": "PER SEGMENT",
+                        "task_prompt_verbalized_packet": "PER SEGMENT VERBALIZED",
+                    }
+                }
+            }
+        )["classification"]
+
+    def test_section_classification_does_not_receive_them(self):
+        confidence = self._migrated()["two_stage"]["section_classification"]["llm"][
+            "confidence"
+        ]
+        assert "task_prompt_topk_packet" not in confidence
+        assert "task_prompt_verbalized_packet" not in confidence
+
+    def test_one_stage_still_receives_them(self):
+        """The control: one stage CAN run at packet granularity, so it needs both."""
+        confidence = self._migrated()["one_stage"]["llm"]["confidence"]
+        assert confidence["task_prompt_topk_packet"] == "PER SEGMENT"
+        assert confidence["task_prompt_verbalized_packet"] == "PER SEGMENT VERBALIZED"
+
+    def test_the_keys_both_calls_do_read_are_still_copied(self):
+        """The other control: this is a two-key carve-out, not a narrower merge."""
+        for path in (
+            ("one_stage", "llm"),
+            ("two_stage", "section_classification", "llm"),
+        ):
+            node = self._migrated()
+            for key in path:
+                node = node[key]
+            assert node["confidence"]["task_prompt_topk"] == "PAGE"
+            assert node["confidence"]["mode"] == "topk"
+
+
+# --------------------------------------------------------------------------
+# A stored value no validator ever checked must not wedge the profile
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@mock_aws
+class TestAStoredTypoDoesNotWedgeAProfile:
+    """⚠️ The hazard a stricter validator creates, and the reason this one warns.
+
+    `reasoning_effort` shipped with **no validator**, and `save_configuration`
+    coerces through `IDPConfig` without touching it — so a value written by hand or
+    through the API is stored verbatim, and a stack on a model family that ignores
+    effort entirely (Nova) is processing documents happily on a misspelled one right
+    now. Had the new check *raised*, reading that profile would fail validation; and
+    because it is the stored profile itself that no longer validates, there is no
+    resolved-config fallback to return, so `get_merged_configuration` re-raises and
+    every document fails at config load — with the editor unable to render the
+    profile to correct it.
+
+    So the check substitutes the default and reports it, and the migration repairs
+    the stored value as well. These tests are about the **read path**, which is
+    where the damage would have been; the unit-level behaviour is pinned in
+    `test_config_models.py::TestReasoningEffortIsChecked`.
+    """
+
+    TYPO = "medum"
+
+    def _plant(self, manager, profile, classification):
+        full = merge_config_with_defaults({}, validate=False)
+        full["classification"] = classification
+        item = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}", **full}
+        item["_config_format"] = "full"
+        manager.table.put_item(Item=ConfigurationManager._compress_item(item))
+
+    def _nested_with_typo(self):
+        cls = copy.deepcopy(
+            merge_config_with_defaults({}, validate=False)["classification"]
+        )
+        cls["one_stage"]["llm"]["reasoning_effort"] = self.TYPO
+        cls["two_stage"]["segmentation"]["llm"]["reasoning_effort"] = self.TYPO
+        return cls
+
+    def test_a_nested_profile_holding_a_typo_still_reads(self, monkeypatch):
+        """The 0.9-shaped case, where this hop is a no-op and only the model acts."""
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(), version="default")
+        self._plant(manager, "p", self._nested_with_typo())
+
+        resolved = manager.get_merged_configuration("p")
+
+        assert isinstance(resolved, IDPConfig), (
+            "the stored profile no longer validates, so the read path has nothing to "
+            "fall back to and every document fails at config load"
+        )
+        assert resolved.classification.one_stage.llm.reasoning_effort == "medium"
+        assert (
+            resolved.classification.two_stage.segmentation.llm.reasoning_effort
+            == "medium"
+        )
+
+    def test_a_flat_profile_holding_a_typo_is_repaired_in_the_converted_body(
+        self, monkeypatch
+    ):
+        """The pre-0.9 case, where the migration heals the value rather than
+        leaving it for the model layer to paper over on every read."""
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(), version="default")
+
+        converted = migrate_v08_to_v09(
+            {
+                "config_format_version": "0.8",
+                "classification": {"model": "m", "reasoning_effort": self.TYPO},
+            }
+        )["classification"]
+        for path in (
+            ("one_stage", "llm"),
+            ("two_stage", "segmentation", "llm"),
+            ("two_stage", "section_classification", "llm"),
+        ):
+            node = converted
+            for key in path:
+                node = node[key]
+            assert node["reasoning_effort"] == "medium", path
+
+    def test_the_profile_is_usable_rather_than_merely_readable(self, monkeypatch):
+        """Guard the guard: a profile that reads back but carries empty prompts
+        would satisfy the assertion above while still failing every document."""
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(), version="default")
+        self._plant(manager, "p", self._nested_with_typo())
+
+        cls = manager.get_merged_configuration("p").classification
+        assert cls.one_stage.page.task_prompt, "the profile's prompts did not survive"
+        assert cls.one_stage.llm.model

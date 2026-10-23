@@ -167,8 +167,15 @@ conversion to pair them.
 
 Each call has its own `model`. A call whose model is empty — cleared in the
 editor, or left empty in a hand-written file — uses the default classification
-model, with a warning in the log, rather than sending no model ID. In v0.6.12 an
-empty classification model failed the document.
+model, `us.amazon.nova-2-lite-v1:0`, with a warning in the log, rather than
+sending no model ID. In v0.6.12 an empty classification model failed the
+document.
+
+That is the same model the shipped defaults put on all three calls, so clearing
+one call's model leaves it running what the rest of the profile runs. ⚠️ It is
+**not** the same as leaving the call out: there is no "off" for a model, so if
+you want a cheaper or more capable model on one call, name it rather than
+clearing the field.
 
 ### One fallback class
 
@@ -248,12 +255,20 @@ the model block that decides the class under the configured strategy, and
 
 Code that writes flat keys keeps working, because they are converted on read —
 but a flat key written onto a v0.6.13 configuration overrides the nested setting
-it maps to, so prefer the nested path. Most flat settings map to every call that
-uses them: a flat `temperature`, for example, sets all three. The model is the
-exception: a flat `model` sets the one-stage call, and a two-stage call only if
-that call names no model or the same model as the one-stage call, so a stage
-model you chose is kept. `idp-cli config-validate` warns when a file still uses
-the flat layout.
+it maps to, so prefer the nested path.
+
+A flat setting reaches every call that uses it, **except a two-stage call that
+chose its own value for it**. A flat `model` sets the one-stage call, and a
+two-stage call only if that call names no model or the same model as the
+one-stage call. The per-call parameters — `temperature`, `top_p`, `top_k`,
+`reasoning_effort`, `max_tokens`, `image`, `modality` and
+`model_lambda_hook_arn` — follow the same rule, and `image` and `modality`
+follow it key by key, so a flat `image.target_width` leaves a stage's own
+`target_height` alone. A pure v0.6.12 configuration has no stage parameters at
+all, so every one of them takes the flat value and the conversion is exact; the
+rule only has anything to decide when a flat key is written **on top of** a
+v0.6.13 configuration, and there the value on the stage is one somebody chose.
+`idp-cli config-validate` warns when a file still uses the flat layout.
 
 Two names change in outputs:
 

@@ -59,6 +59,12 @@ logger = logging.getLogger(__name__)
 
 TARGET_VERSION = "0.8"
 
+#: The key this hop consumes. Named because it is also the marker a caller outside
+#: this module has to test for to know that this hop is still needed —
+#: ``ClassificationConfig.migrate_flat_keys`` does exactly that, and it is not one of
+#: the v0.8 flat keys.
+LEGACY_METHOD_KEY = "classificationMethod"
+
 #: The legacy value that meant "one call per packet".
 LEGACY_PACKET_METHOD = "textbasedholisticclassification"
 #: The legacy value that meant "one call per page" — the default.
@@ -75,7 +81,7 @@ def _has_legacy_markers(config: Dict[str, Any]) -> bool:
     the user's method setting to be silently dropped by the model.
     """
     classification = config.get("classification")
-    return isinstance(classification, dict) and "classificationMethod" in classification
+    return isinstance(classification, dict) and LEGACY_METHOD_KEY in classification
 
 
 def _needs_migration(config: Dict[str, Any]) -> bool:
@@ -102,8 +108,8 @@ def migrate_v07_to_v08(config: Dict[str, Any]) -> Dict[str, Any]:
     result = copy.deepcopy(config)
 
     classification = result.get("classification")
-    if isinstance(classification, dict) and "classificationMethod" in classification:
-        method = classification.pop("classificationMethod")
+    if isinstance(classification, dict) and LEGACY_METHOD_KEY in classification:
+        method = classification.pop(LEGACY_METHOD_KEY)
         normalized = str(method).strip().lower() if method is not None else ""
 
         if normalized == LEGACY_PACKET_METHOD:

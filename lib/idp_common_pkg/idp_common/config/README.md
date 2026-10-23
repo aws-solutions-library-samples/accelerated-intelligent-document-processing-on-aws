@@ -212,6 +212,35 @@ Three things to know before using it:
   mapping subtree gets findings but no suggestions, because a suggestion there would
   have to invent a key name.
 
+### `system_defaults/` and the models must describe the same settings
+
+The project rule is that `system_defaults/` is the canonical list of settings, so
+the YAML is where an operator, the configuration editor and an agent reading the
+bundled source all discover what can be set. That makes two kinds of divergence
+possible, and for classification both had shipped:
+
+- **A field with no entry in the YAML** is a live setting nobody can find. Two were
+  live on all three classification calls and absent from
+  `base-classification.yaml`, so the only way to learn they existed was to read
+  `models.py`.
+- **A key in the YAML the models do not define** is dropped during validation (see
+  above), so editing it does nothing — and the same is true of a key the *service*
+  cannot read at that path, which is how the section-classification call came to
+  ship a kilobyte of per-segment confidence prompt it never consults.
+
+A third divergence is quieter than either: **a value in the YAML that differs from
+the model's field default**. The YAML wins on a normal load, so nothing shows until
+a field is *cleared* — and then that one call falls back to the code's opinion
+instead of the value the rest of the profile is running. A cleared model field used
+to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
+profile did not use.
+
+`tests/unit/config/test_classification_defaults_parity.py` asserts all three for
+classification, with its exemptions registered in
+`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
+should eventually cover every section; `base-extraction.yaml` and its models are not
+compared yet.
+
 ## Files
 
 | File | Purpose |
