@@ -102,43 +102,68 @@ advisory `ux_review` stage runs only on a merge request that changes `src/ui/`.
 |-------|------|------|------|
 | **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
-| **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
+| **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
 
 **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
-hosting, Jobs API) run on the NIGHTLY schedule only** — not on a manually clicked
-deploy, and not on a merge request.
+hosting, Jobs API) run on their own weekly scheduled pipeline**, not on the nightly,
+not on a manually clicked deploy, and not on a merge request. The nightly runs the
+primary suite only.
 
-They are gated by `IDP_RUN_PROBES`, which `scripts/sdlc/codebuild_deployment.py`
-defaults to `false`. ⚠️ `IDP_TEST_ZAP` defaults to `true` but only filters *within*
-`run_variant_probes`, which is never called unless the outer gate is on — reading
-that inner default as the answer is the easy mistake, and it is the one that put a
-false claim in three documents. The outer gate is the one to read.
+| Pipeline | `IDP_RUN_PROBES` | Runs |
+|---|---|---|
+| Nightly schedule | not set | primary suite; updates the UX review stack |
+| Weekly variant-probe schedule | `true`, as a schedule variable | primary suite plus the probes; labelled `WEEKLY VARIANT-PROBE RUN` in the summary, the failure email and Slack; leaves the UX review stack alone |
+| Manual button, `web` or any other source | ignored | primary suite |
 
-The flag reaches the build on **S3 object metadata** (`idp-run-probes`), the same
-channel the admin email uses: `integration_test_deployment.py` sets it when
-`CI_PIPELINE_SOURCE == "schedule"`, and the buildspec reads it back. That is why it
-is scoped to the nightly rather than set in the CodeBuild project's environment —
-the project serves the manual button too, and a deploy somebody clicked to check a
-merge request wants an answer in about an hour, not five extra stacks.
+**Why a separate schedule.** A probe failure fails the run it is in. On the nightly
+it would be read as a product regression, and the nightly is the run somebody has to
+triage. On its own schedule a red run is a probe result, labelled as one.
+
+**The probes are noisy in a way serialising deploys does not fix.** The primary and
+probe stacks deploying **at once, inside one run**, burst account-wide control
+planes (CloudWatch Logs log-group create consistency, CodeBuild role-trust
+propagation, the IAM `CreatePolicy` rate limit) and produce failures unrelated to the
+code under test. The shared `resource_group: integration_deploy` serialises the
+weekly run against the nightly, which keeps two runs from overlapping, and does
+nothing about the burst within one. What bounds that is in
+`scripts/sdlc/codebuild_deployment.py`: the per-probe launch stagger
+(`IDP_PROBE_LAUNCH_STAGGER_SECS`), the concurrency cap (`IDP_PROBE_MAX_CONCURRENCY`)
+and the one-shot retry.
+
+**The trigger rule** is `variant_probes_requested` in
+`scripts/sdlc/integration_test_deployment.py`: the pipeline variable
+`IDP_RUN_PROBES=true` **and** `CI_PIPELINE_SOURCE == "schedule"`. The variable alone
+is not enough, so a project-level CI/CD variable or the "Run pipeline" form cannot
+add the probe stacks to a deploy somebody clicked to check a merge request. To run
+the probes on demand, use **Run** on the weekly schedule in **Build › Pipeline
+schedules** (GitLab starts that as a scheduled pipeline), or `make stacktest-*` for
+one probe at a time (see `.claude/skills/run-stack-tests.md`).
+
+⚠️ `IDP_TEST_ZAP` defaults to `true` but only filters *within* `run_variant_probes`,
+which is never called unless the outer `IDP_RUN_PROBES` gate is on. Reading that
+inner default as the answer is the easy mistake. The outer gate is the one to read.
+
+**The flag reaches the build on S3 object metadata** (`idp-run-probes`), the same
+channel the admin email uses: `integration_test_deployment.py` sets it on
+`deploy/code.zip`, and the buildspec in `scripts/sdlc/cfn/codepipeline-s3.yml` reads
+it back into `IDP_RUN_PROBES`. It is not set in the CodeBuild project's environment,
+because that project serves the nightly and the manual button too.
+`ci_run_options.json` also records it, as `variant_probes`, and that is what keeps
+the weekly run from updating the UX review stack a second time that day.
 
 ⚠️ **Reading the metadata needs the `None` normalisation the buildspec does.**
 `aws s3api head-object --query … --output text` prints the literal string `None`
 for an absent key rather than an empty string, and `|| echo` cannot catch it
 because the command *succeeded* — so a bare read hands the deploy script the string
-`"None"`.
+`"None"`. The buildspec turns anything that is not exactly `true` into `false`.
 
-Why this is safe now when it was not before: five concurrent extra stacks burst
-account-wide control planes (CloudWatch Logs log-group create consistency,
-CodeBuild role-trust propagation, the IAM `CreatePolicy` rate limit) and caused
-flaky failures unrelated to the code under test. That was measured when the deploy
-ran **once per merge request**, so several could overlap. The deploy is now a
-nightly schedule behind a single shared `resource_group`, so at most one runs at a
-time — the burst condition is removed rather than merely hoped against.
-
-Run them outside the nightly with `make stacktest-*` (see
-`.claude/skills/run-stack-tests.md`).
+⚠️ **The buildspec lives in a CloudFormation template**, so the
+`genaiic-sdlc-codepipeline` stack in the CI account has to be updated to the
+template on `develop` before the weekly schedule runs any probes. Until it is, a
+weekly run carries the variable, is labelled, and deploys the primary suite only;
+its summary's probe section reads "None run".
 
 ### Why fast_checks is seven jobs
 
@@ -1443,19 +1468,19 @@ not change nightly. Run it for a release check or after changing the gate.
 
 ## Additional Deployment Tests: the deployment-variant probe framework
 
-> **⚠️ Default OFF in CI (changed 2026-07).** These probes no longer run
-> automatically in the integration pipeline. Standing up the primary + 5 probe
-> stacks *at once* burst the account-wide AWS control planes — CloudWatch Logs
-> create-consistency, CodeBuild role-trust propagation, and the IAM
-> `CreatePolicy` rate limit — producing flaky pipeline failures unrelated to the
-> code under test. Since these are infra-variant *deploy smoke tests* that rarely
-> change, they now run **manually, one stack at a time**, via
-> `make stacktest-*` (see `.claude/skills/run-stack-tests.md` and
-> `scripts/sdlc/run_stacktest.py`). The CI pipeline runs the **primary shared
-> stack only** (Steps 3–14). Set `IDP_RUN_PROBES=true` to re-enable them in a pipeline
-> run. When they DO run (manual sweep or opt-in), launches are staggered
-> (`IDP_PROBE_LAUNCH_STAGGER_SECS`, default 120s) and each deploys **without** a
-> permissions boundary (only the primary suite creates + tests one — Step 13).
+> **⚠️ Off in CI except on the weekly variant-probe schedule.** The nightly and
+> the manual deploy button run the **primary shared stack only** (Steps 3–14). The
+> weekly variant-probe schedule sets `IDP_RUN_PROBES=true` and runs the probes
+> beside the primary suite; see [Pipeline stages & triggers](#pipeline-stages--triggers)
+> for the trigger rule and why the probes are not on the nightly. Standing up the
+> primary and probe stacks *at once* bursts the account-wide AWS control planes —
+> CloudWatch Logs create-consistency, CodeBuild role-trust propagation, and the IAM
+> `CreatePolicy` rate limit — so when they run, launches are staggered
+> (`IDP_PROBE_LAUNCH_STAGGER_SECS`, default 120s), capped
+> (`IDP_PROBE_MAX_CONCURRENCY`) and retried once, and each deploys **without** a
+> permissions boundary (only the primary suite creates + tests one — Step 13). To
+> run one probe by hand, one stack at a time, use `make stacktest-*` (see
+> `.claude/skills/run-stack-tests.md` and `scripts/sdlc/run_stacktest.py`).
 
 Separate from the shared-stack suite above (Steps 3–14, which run against ONE
 stack deployed with default hosting — CloudFront), a **deployment-variant probe

@@ -439,6 +439,10 @@ the deploy works.** It was automatic on `develop` and on non-Draft MRs, which pu
 nightly schedule plus a **manual play button**, available on any MR targeting
 `develop` and on a `develop` pipeline.
 
+The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and
+the deploy variants in [section 6](#6-live-stack-tiers-manual)) run on a separate
+**weekly** schedule, so a probe failure is never read as a nightly regression.
+
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
 `lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/` — because
@@ -462,7 +466,9 @@ and, being GitLab-only, the one row a GitHub pull request does not. Note when th
 job runs automatically: pushes to `develop` and non-Draft merge requests targeting
 it, and in both cases only when the change touches a deploy-affecting path, so a
 documentation or `CHANGELOG` change does not exercise it. On any other branch it is
-manual. The rest of the rows run only when a person asks.
+manual. The ZAP DAST and deploy-variant rows also run in GitLab on the weekly
+variant-probe schedule, a scheduled pipeline of its own separate from the nightly.
+The rest of the rows run only when a person asks.
 
 | Tier | What only a live stack can prove | Command | Procedure |
 |---|---|---|---|

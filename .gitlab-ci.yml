@@ -541,7 +541,16 @@ integration_tests:
   #   IDP_ACCOUNT_ID: ${IDP_ACCOUNT_ID}
 
   # The expensive (~1h) real-AWS deploy + probe suite. Trigger policy:
-  #   - the nightly schedule                     → auto
+  #   - the nightly schedule                     → auto, primary suite only
+  #   - the weekly variant-probe schedule        → auto, primary suite plus the
+  #     deployment-variant probes. The schedule carries the pipeline variable
+  #     IDP_RUN_PROBES=true, and integration_test_deployment.py
+  #     (variant_probes_requested) honours it only on a scheduled pipeline. The
+  #     probes are on their own schedule so that a probe failure fails that run
+  #     and cannot be read as a nightly product regression. The resource_group
+  #     below serialises it against the nightly; it does NOT reduce the burst of
+  #     primary + probe stacks inside the run, which codebuild_deployment.py's
+  #     launch stagger, concurrency cap and retry bound instead.
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -556,8 +565,9 @@ integration_tests:
   #
   # What it costs: a change that breaks the deploy, or any of the twelve suite steps
   # or five variant probes the deploy runs, can now MERGE and stay undetected until
-  # the next nightly run — by which time other merges may sit on top of it, so the
-  # nightly failure does not name the commit that caused it. There is no required
+  # the next nightly run (the next weekly run, for a variant probe) — by which time
+  # other merges may sit on top of it, so the failure does not name the commit
+  # that caused it. There is no required
   # status check on this repository to fall back on (issue #933), so nothing else
   # catches it either.
   #
@@ -836,9 +846,13 @@ integration_tests:
         # backslashes and newlines, and a hand-built JSON body breaks on all three.
         python3 - "$CI_JOB_STATUS" "$CI_JOB_URL" "$CI_COMMIT_SHA" > slack-payload.json <<'PY'
       import json, pathlib, sys
+      import os
 
       job_status, job_url, sha = sys.argv[1:4]
       ok = job_status == "success"
+      # The weekly variant-probe schedule posts to the same channel, so its result
+      # says so: a probe failure must not be read as a nightly regression.
+      probe_run = os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
       # monitor stopped before the pipeline reached a terminal state, on the
@@ -875,6 +889,8 @@ integration_tests:
           status = "⚠️ UNVERIFIED (monitor handed off)"
       else:
           status = "✅ PASSED"
+      if probe_run:
+          status = "🔬 WEEKLY VARIANT PROBES · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -1525,6 +1541,7 @@ nightly_notification:
       echo "⚠️ No Slack post was made by integration_tests — posting the fallback"
       python3 - "$CI_PIPELINE_URL" "$CI_COMMIT_SHA" "$SLACK_WEBHOOK_URL" <<'PY'
       import json
+      import os
       import pathlib
       import sys
       import urllib.error
@@ -1565,6 +1582,11 @@ nightly_notification:
 
       if len(body) > 2000:
           body = body[:2000] + "\n… (truncated — the rest is in the job artifacts)"
+
+      # Same label as the post in integration_tests: the weekly variant-probe
+      # schedule shares the channel, and its result must not read as the nightly's.
+      if os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true":
+          status = "🔬 WEEKLY VARIANT PROBES · " + status
 
       # Same flat, all-string contract as the post in integration_tests: these
       # four keys are declared on the Slack Workflow Builder trigger as Text, and

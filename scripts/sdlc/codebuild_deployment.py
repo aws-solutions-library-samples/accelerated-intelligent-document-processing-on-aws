@@ -8300,8 +8300,8 @@ DEFAULT_PROBE_MAX_CONCURRENCY = 8
 # limit) so the same resource types across stacks don't overlap their create
 # windows. 120s × up to 5 probes = at most ~8min added to the LAST probe's start
 # — negligible against a ~30-min deploy, and it prevents the burst rather than
-# recovering from it. Only applies when probes actually run (off by default in
-# CI now; used by `make probes-all` / IDP_RUN_PROBES=true). 0 disables.
+# recovering from it. Only applies when probes actually run (the weekly
+# variant-probe schedule, `make probes-all`, or IDP_RUN_PROBES=true). 0 disables.
 DEFAULT_PROBE_LAUNCH_STAGGER_SECS = 120
 
 
@@ -8816,6 +8816,11 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
     to say so. UX_NIGHTLY_DISABLE_ENV set to a false or an empty value in the
     build's environment turns the update off without a commit (its comment says
     where it lasts); unset, the schedule decides.
+
+    The weekly variant-probe schedule is also a scheduled run of develop, and its
+    options say ``variant_probes``. It leaves the review stack alone, so the stack
+    still moves once a night, and the probe run does not add that stack's update
+    to the burst its own probe stacks already make.
     """
     env = os.environ if environ is None else environ
     switch = str(env.get(UX_NIGHTLY_DISABLE_ENV, "true")).strip().lower()
@@ -8825,6 +8830,7 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         isinstance(options, dict)
         and options.get("pipeline_source") == "schedule"
         and options.get("ref") == "develop"
+        and options.get("variant_probes") is not True
     )
 
 
@@ -9099,6 +9105,32 @@ def publish_summary_to_s3(summary_text):
         print(f"📁 Summary uploaded to s3://{bucket}/{key}")
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Failed to upload summary to S3: {e}")
+
+
+#: Heads the consolidated summary, and marks the failure email's subject, on the
+#: weekly variant-probe run, so its result is never read as the nightly's.
+VARIANT_PROBE_RUN_LABEL = "WEEKLY VARIANT-PROBE RUN"
+
+
+def variant_probe_run(environ: dict | None = None) -> bool:
+    """Whether IDP_RUN_PROBES asks for the deployment-variant probes.
+
+    In CI the buildspec sets it from the ``idp-run-probes`` S3 object metadata,
+    which integration_test_deployment.py writes only on the weekly variant-probe
+    schedule, and normalises every other value to ``false``.
+    """
+    env = os.environ if environ is None else environ
+    return str(env.get("IDP_RUN_PROBES", "false")).strip().lower() == "true"
+
+
+def label_variant_probe_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary, headed with VARIANT_PROBE_RUN_LABEL on the weekly probe run."""
+    if not variant_probe_run(environ):
+        return summary_text
+    return (
+        f"🔬 {VARIANT_PROBE_RUN_LABEL} — the deployment-variant probes ran beside "
+        "the primary suite. This is not the nightly result.\n\n" + summary_text
+    )
 
 
 def build_consolidated_summary(
@@ -9423,18 +9455,25 @@ def main():
         # internally caps concurrent probes at the quota budget
         # (IDP_PROBE_MAX_CONCURRENCY).
         #
-        # DEFAULT OFF in CI. Standing up the primary + 5 probe stacks at once
-        # bursts the account-wide control planes (CWL log-group create
-        # consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
-        # limit) — a recurring source of flaky pipeline failures unrelated to the
-        # code under test. The deploy-variant probes are infra smoke tests that
-        # rarely change, so they now run MANUALLY via `make stacktest-*` (see
-        # scripts/sdlc/run_stacktest.py / .claude/skills/run-stack-tests.md),
-        # each on its own stack with no concurrent-burst. Set IDP_RUN_PROBES=true
-        # to re-enable them in a pipeline run. (IDP_TEST_APIGW_HOSTING is still
+        # DEFAULT OFF, and on in CI only for the WEEKLY variant-probe schedule.
+        # Standing up the primary + 5 probe stacks at once bursts the
+        # account-wide control planes (CWL log-group create consistency,
+        # CodeBuild role-trust propagation, IAM CreatePolicy rate limit) — a
+        # recurring source of flaky failures unrelated to the code under test.
+        # The burst is inside ONE run, so the shared resource_group that
+        # serialises deploys does not remove it; what bounds it is the launch
+        # stagger (IDP_PROBE_LAUNCH_STAGGER_SECS), the concurrency cap
+        # (IDP_PROBE_MAX_CONCURRENCY) and the one-shot retry. That is why the
+        # probes run on their own weekly schedule rather than the nightly: a
+        # probe failure fails that run only, and cannot be read as a nightly
+        # product regression. The weekly schedule carries IDP_RUN_PROBES=true;
+        # integration_test_deployment.py turns it into the `idp-run-probes` S3
+        # object metadata and the buildspec exports it here. Run one probe by
+        # hand with `make stacktest-*` (scripts/sdlc/run_stacktest.py /
+        # .claude/skills/run-stack-tests.md). (IDP_TEST_APIGW_HOSTING is still
         # honored as a legacy alias so an existing override keeps working.)
         probes_enabled = (
-            get_env_var("IDP_RUN_PROBES", "false").lower() == "true"
+            variant_probe_run()
             or get_env_var("IDP_TEST_APIGW_HOSTING", "false").lower() == "true"
         )
         probes_future = None
@@ -9708,6 +9747,7 @@ def main():
         startup_sweep_findings,
         ux_nightly_update=ux_nightly_outcome,
     )
+    consolidated = label_variant_probe_run(consolidated)
     print(f"\n{consolidated}\n")
 
     print("\n🤖 Generating deployment summary with Bedrock...")
@@ -9727,7 +9767,11 @@ def main():
         reason_suffix = f" — {failure_reason}" if failure_reason else ""
         print(f"💥 Stack: {stack_name} deployment failed!{reason_suffix}")
         send_failure_notification(
-            f"IDP CI failure: {stack_name}",
+            (
+                f"IDP CI failure ({VARIANT_PROBE_RUN_LABEL.lower()}): {stack_name}"
+                if variant_probe_run()
+                else f"IDP CI failure: {stack_name}"
+            ),
             f"Stack: {stack_name}\nRoot cause: {failure_reason or 'unknown'}\n\n"
             f"{full_summary or 'No summary available.'}",
         )

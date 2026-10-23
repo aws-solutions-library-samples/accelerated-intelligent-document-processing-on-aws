@@ -66,7 +66,8 @@ def test_the_options_are_written_in_the_documented_shape(itd):
         '  "version": 1,\n'
         '  "pipeline_source": "schedule",\n'
         '  "ref": "develop",\n'
-        '  "pipeline_id": "123456"\n'
+        '  "pipeline_id": "123456",\n'
+        '  "variant_probes": false\n'
         "}\n"
     )
     assert json.loads(text) == returned
@@ -82,6 +83,7 @@ def test_a_variable_gitlab_did_not_set_is_written_empty(itd):
         "pipeline_source": "",
         "ref": "",
         "pipeline_id": "",
+        "variant_probes": False,
     }
     assert json.loads(Path("elsewhere.json").read_text(encoding="utf-8")) == returned
 

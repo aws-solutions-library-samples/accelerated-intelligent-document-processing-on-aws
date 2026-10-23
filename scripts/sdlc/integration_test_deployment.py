@@ -82,6 +82,43 @@ def create_deployment_package():
     print("✅ Deployment package created")
 
 
+#: The pipeline variable the weekly variant-probe schedule carries. The same name
+#: codebuild_deployment.py reads on the build side, where the buildspec sets it
+#: from the S3 object metadata upload_to_s3 writes.
+VARIANT_PROBES_VARIABLE = "IDP_RUN_PROBES"
+
+
+def variant_probes_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly variant-probe run.
+
+    The five deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and
+    PRIVATE hosting, Jobs API) each stand up their own throwaway stack beside the
+    primary one. Two conditions, both required:
+
+    * ``IDP_RUN_PROBES=true`` as a pipeline variable, which the weekly schedule
+      carries and the nightly schedule does not. Keying on the schedule alone
+      would put the probes on the nightly, and a probe failure would then fail
+      the nightly and be read as a product regression.
+    * ``CI_PIPELINE_SOURCE == "schedule"``, so the variable set anywhere else (a
+      project-level CI/CD variable, the "Run pipeline" form) cannot add five
+      stacks to a deploy somebody clicked to check a merge request. An on-demand
+      probe run is "Run" on the weekly schedule, which GitLab starts as a
+      scheduled pipeline, or ``make stacktest-*``.
+
+    The resource_group that serialises deploys does not make the probes cheap:
+    the burst that made them flaky is the primary and the probe stacks deploying
+    at once WITHIN one run. What bounds it is codebuild_deployment.py's launch
+    stagger (IDP_PROBE_LAUNCH_STAGGER_SECS), concurrency cap
+    (IDP_PROBE_MAX_CONCURRENCY) and one-shot retry, which is why the probes run
+    weekly rather than on every nightly.
+    """
+    env = os.environ if environ is None else environ
+    return (
+        env.get("CI_PIPELINE_SOURCE", "") == "schedule"
+        and str(env.get(VARIANT_PROBES_VARIABLE, "")).strip().lower() == "true"
+    )
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -98,26 +135,15 @@ def upload_to_s3(bucket_name):
             metadata["gitlab-user-email"] = gitlab_user_email
             print(f"Adding GitLab user email to metadata: {gitlab_user_email}")
 
-        # Run the five deployment-variant probes (ZAP DAST, WAF, APIGW GLOBAL and
-        # PRIVATE hosting, Jobs API) on the NIGHTLY run only.
-        #
-        # They are disabled by default in codebuild_deployment.py because five extra
-        # stacks deploying at once burst account-wide control planes (CloudWatch Logs
-        # log-group create consistency, CodeBuild role-trust propagation, the IAM
-        # CreatePolicy rate limit) and caused flaky failures unrelated to the code
-        # under test. That was measured when the deploy ran once per MERGE REQUEST, so
-        # several could overlap; the deploy is now a nightly schedule behind a single
-        # shared resource_group, which means at most one at a time and removes the
-        # burst condition rather than merely hoping it does not recur.
-        #
-        # Scoped to the schedule rather than set in the CodeBuild project's own
-        # environment, because the project serves the manual button too: a deploy
-        # somebody clicks to check an MR wants an answer in ~1h, not five extra stacks.
-        # S3 object metadata is the existing channel for exactly this (it is how the
-        # admin email reaches the build), so this rides it instead of inventing one.
-        if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule":
+        # The deployment-variant probes run only on the weekly variant-probe
+        # schedule; see variant_probes_requested for the rule and the reasons.
+        # S3 object metadata is the channel the buildspec reads them from, the
+        # same one the admin email above reaches the build on.
+        if variant_probes_requested():
             metadata["idp-run-probes"] = "true"
-            print("Scheduled run — enabling the deployment-variant probes")
+            print(
+                "Weekly variant-probe run — enabling the deployment-variant probes"
+            )
 
         response = s3_client.put_object(
             Bucket=bucket_name,
@@ -394,10 +420,12 @@ def write_ci_run_options(
 
     codebuild_deployment.py updates the long-lived UX review stack in place only on
     the nightly schedule of develop, and CodeBuild sees only the zip, not the GitLab
-    job's environment, so the two facts travel inside it. This is a correctness
-    guard, not a security control: an MR-button run executes the MR's own
-    codebuild_deployment.py, which reads or ignores this file however its author
-    wrote it. What it does prevent is the ordinary mistake, a button press moving
+    job's environment, so the two facts travel inside it. ``variant_probes`` says
+    whether this is the weekly variant-probe run (variant_probes_requested), which
+    leaves the review stack alone: that stack moves once a night, on the nightly
+    run. This is a correctness guard, not a security control: an MR-button run
+    executes the MR's own codebuild_deployment.py, which reads or ignores this file
+    however its author wrote it. What it does prevent is the ordinary mistake, a button press moving
     the shared review stack onto an unmerged template.
 
     Written with pathlib rather than through run_command, so the zip stays
@@ -412,6 +440,7 @@ def write_ci_run_options(
         "pipeline_source": env.get("CI_PIPELINE_SOURCE", ""),
         "ref": env.get("CI_COMMIT_REF_NAME", ""),
         "pipeline_id": env.get("CI_PIPELINE_ID", ""),
+        "variant_probes": variant_probes_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
