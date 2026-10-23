@@ -124,13 +124,26 @@ def _page_spans(starts, total, documents):
 
 
 def _locate(page, spans):
-    """``(copy index, page within that copy, pages in that copy)`` for ``page``."""
+    """``(copy index, page within that copy, pages in that copy)`` for ``page``.
+
+    Raises on a page no span covers, for the same reason :func:`_page_spans` does.
+    Clamping to the last span is the tempting answer and it is wrong: it keeps the
+    span's total while letting the page number run past it, so the fourth page of a
+    3-page final statement renders "Page 4 of 3" — the file quoting a total it does
+    not have, which is precisely the output this module exists to prevent. The real
+    build out-running the measuring pass is the way that happens, and the known
+    cause of it (the two passes laying out at different top margins) is fixed, so
+    this is a residual. A silent residual in a fixture generator is scored as a
+    model result, so it fails the build instead.
+    """
     for index, (first, pages) in enumerate(spans):
         if first <= page < first + pages:
             return index, page - first + 1, pages
-    index = len(spans) - 1
-    first, pages = spans[index]
-    return index, page - first + 1, pages
+    raise RuntimeError(
+        f"page {page} falls outside every document copy's measured page span "
+        f"{spans}: the real layout produced pages the measuring pass did not. "
+        "Numbering this page would print a total the file does not have."
+    )
 
 
 def _noise(s, seq, level):

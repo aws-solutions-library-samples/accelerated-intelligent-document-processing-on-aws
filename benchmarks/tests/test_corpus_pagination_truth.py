@@ -31,6 +31,28 @@ rather than a restatement of the arguments that produced it.
 BUILDS its fixture into ``tmp_path``. Reading a committed one would pass on a
 machine that had never regenerated the corpus and would say nothing about the
 generator as it stands.
+
+Nothing here skips, deliberately
+--------------------------------
+Both dependencies — ``reportlab`` to render and ``pypdfium2`` to read back — are
+declared in ``lib/idp_common_pkg``'s ``test`` extra, so they are present wherever
+this registered root is collected, and both are imported plainly. A missing one is
+therefore an **error** naming it rather than a skip.
+
+That is the whole point rather than a detail. The first version of this file
+reached for its reader with ``pytest.importorskip``, which is the usual courtesy
+for an optional dependency and was the wrong instinct here: every page-reading case
+would have skipped in both CIs, the invariant would have been asserted nowhere that
+runs, and the job log of a suite proving nothing reads exactly like the log of one
+proving everything. ``benchmarks/tests/harness_import.py`` exists because that
+defect already shipped in this directory once, and the ``reportlab`` entry in the
+``test`` extra carries the same lesson: the remedy is to DECLARE the dependency,
+not to tolerate its absence.
+
+``pypdfium2`` is the extractor the generator itself uses, so reading with it adds no
+new PDF library to the tree. It extracts the pagination footer and the identity
+header identically to the alternative that was tried; it collapses runs of spaces
+inside a line, which neither pattern below depends on.
 """
 
 from __future__ import annotations
@@ -40,6 +62,7 @@ import json
 import os
 import re
 
+import pypdfium2
 import pytest
 
 BENCHMARKS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,13 +74,13 @@ ACCOUNT = re.compile(r"^Account Number: (\d+)")
 
 
 def _generator():
-    """Import the corpus generator, distinguishing an absent file from an absent dep.
+    """Import the corpus generator from its path, with no outcome but success.
 
-    The same three-outcome rule ``harness_import`` uses, for the same reason: a
-    generator that is not on disk or will not import is the finding, while
-    ``reportlab`` missing from a bare checkout is a genuine skip. Collapsing the
-    first case into a skip is how a suite reports ``1 skipped`` with a green exit
-    and nobody learns the file moved.
+    An absent file, a ``SyntaxError`` and a missing ``reportlab`` are all errors
+    here. The first two are findings about the tree; the third is a finding about
+    the environment, because the ``test`` extra declares it. ``harness_import``'s
+    third outcome — a skip for a genuinely optional dependency — has no member in
+    this file, so it is not offered.
     """
     if not os.path.exists(GENERATOR):
         raise RuntimeError(
@@ -69,13 +92,7 @@ def _generator():
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except ImportError as exc:
-        missing = getattr(exc, "name", None) or "a dependency"
-        if missing.split(".")[0] in ("reportlab", "pypdfium2"):
-            pytest.skip(f"the corpus generator needs {missing}, not installed here")
-        raise
+    spec.loader.exec_module(module)
     return module
 
 
@@ -84,15 +101,16 @@ def bank_statement():
     return _generator()
 
 
-@pytest.fixture(scope="module")
-def pdf_pages():
-    """``(path) -> [page text]``. Skips only if no PDF text extractor is installed."""
-    pypdf = pytest.importorskip("pypdf", reason="reading the rendered page needs pypdf")
-
-    def _read(path):
-        return [page.extract_text() or "" for page in pypdf.PdfReader(path).pages]
-
-    return _read
+def read_pages(path):
+    """``[page text]`` for a rendered PDF, read with the generator's own extractor."""
+    document = pypdfium2.PdfDocument(path)
+    try:
+        return [
+            document[index].get_textpage().get_text_bounded() or ""
+            for index in range(len(document))
+        ]
+    finally:
+        document.close()
 
 
 def _lines(page_text):
@@ -147,6 +165,25 @@ def sections_the_pagination_asserts(pages):
     return len(runs)
 
 
+def _statement_of_each_page(pages):
+    """Which statement each page belongs to, derived from the footers it carries.
+
+    Taken from the pagination rather than from arithmetic on the page count. The
+    obvious shortcut — split the file in half — is right only while the copies
+    happen to render the same number of pages, so it would silently stop testing
+    the pairing the moment a fixture's statements differed in length, which is the
+    case the pairing matters most for.
+    """
+    statements = []
+    index = -1
+    for page, _total in _footers(pages):
+        if page == 1:
+            index += 1
+        statements.append(index)
+    assert index >= 0, f"no page starts a statement: {_footers(pages)}"
+    return statements
+
+
 def _account_numbers(pages):
     """The distinct account numbers appearing on each page, in page order."""
     out = []
@@ -180,13 +217,13 @@ def _account_numbers(pages):
     ],
 )
 def test_pagination_agrees_with_expected_sections(
-    bank_statement, pdf_pages, tmp_path, label, kwargs
+    bank_statement, tmp_path, label, kwargs
 ):
     out = str(tmp_path / "fixture.pdf")
     bank_statement.build(out=out, paginate=True, **kwargs)
     truth = json.loads((tmp_path / "fixture.pdf.truth.json").read_text())
 
-    asserted = sections_the_pagination_asserts(pdf_pages(out))
+    asserted = sections_the_pagination_asserts(read_pages(out))
 
     assert asserted == truth["expected_sections"], (
         f"{label}: the pagination this document carries says {asserted} "
@@ -198,9 +235,7 @@ def test_pagination_agrees_with_expected_sections(
 
 
 @pytest.mark.unit
-def test_each_statement_restarts_its_own_page_numbering(
-    bank_statement, pdf_pages, tmp_path
-):
+def test_each_statement_restarts_its_own_page_numbering(bank_statement, tmp_path):
     """The mechanism, not only the count: two 3-page statements, each "Page k of 3".
 
     The file-wide numbering this replaced would read 1..6 of 6, which partitions
@@ -209,7 +244,7 @@ def test_each_statement_restarts_its_own_page_numbering(
     """
     out = str(tmp_path / "packet.pdf")
     bank_statement.build(out=out, rows=100, documents=2, paginate=True)
-    pages = pdf_pages(out)
+    pages = read_pages(out)
 
     assert len(pages) == 6
     assert _footers(pages) == [(1, 3), (2, 3), (3, 3), (1, 3), (2, 3), (3, 3)]
@@ -217,7 +252,7 @@ def test_each_statement_restarts_its_own_page_numbering(
 
 @pytest.mark.unit
 def test_a_single_statement_still_numbers_across_the_whole_file(
-    bank_statement, pdf_pages, tmp_path
+    bank_statement, tmp_path
 ):
     """``documents=1`` is unchanged — "Page 2 of 3" is the signal that fixture is for.
 
@@ -227,38 +262,43 @@ def test_a_single_statement_still_numbers_across_the_whole_file(
     """
     out = str(tmp_path / "single.pdf")
     bank_statement.build(out=out, rows=100, paginate=True)
-    pages = pdf_pages(out)
+    pages = read_pages(out)
 
     assert len(pages) == 3
     assert _footers(pages) == [(1, 3), (2, 3), (3, 3)]
 
 
 @pytest.mark.unit
-def test_each_statement_carries_its_own_account_number(
-    bank_statement, pdf_pages, tmp_path
-):
+def test_each_statement_carries_its_own_account_number(bank_statement, tmp_path):
     """Including on a reprinted running header, which is the other page-level signal.
 
     A running header is drawn on every page after the first, so with more than one
     statement it would otherwise reprint the FIRST statement's account number over
     the second statement's pages — the same contradiction as the footer, in the
     other piece of identity evidence the boundary rules read.
+
+    The page-to-statement pairing is read off the pagination rather than assumed
+    from the page count. ``rows`` is per statement, so the generator cannot
+    currently produce copies of unequal length and the two readings agree on this
+    fixture; deriving it is what keeps the assertion about the pairing instead of
+    about that coincidence.
     """
     out = str(tmp_path / "hdr.pdf")
     bank_statement.build(
         out=out, rows=60, documents=2, paginate=True, repeat_header=True
     )
-    pages = pdf_pages(out)
+    pages = read_pages(out)
     numbers = _account_numbers(pages)
+    statements = _statement_of_each_page(pages)
 
-    first, second = bank_statement._account_number(0), bank_statement._account_number(1)
-    assert first != second
-    midpoint = len(pages) // 2
+    assert sections_the_pagination_asserts(pages) == 2
+    assert bank_statement._account_number(0) != bank_statement._account_number(1)
     for index, page_numbers in enumerate(numbers):
-        expected = first if index < midpoint else second
+        expected = bank_statement._account_number(statements[index])
         assert page_numbers == [expected], (
-            f"page {index + 1} carries account numbers {page_numbers}, "
-            f"expected only {expected}"
+            f"page {index + 1} belongs to statement {statements[index] + 1} by its "
+            f"pagination but carries account numbers {page_numbers}, expected only "
+            f"{expected}"
         )
 
 
@@ -289,3 +329,25 @@ class TestPageMapRefusesToGuess:
     def test_an_incomplete_map_raises(self, bank_statement, starts, total, documents):
         with pytest.raises(RuntimeError, match="page map is incomplete"):
             bank_statement._page_spans(starts, total, documents)
+
+    def test_a_page_inside_a_span_is_located(self, bank_statement):
+        spans = [(1, 3), (4, 2)]
+        located = [bank_statement._locate(page, spans) for page in range(1, 6)]
+        assert located == [(0, 1, 3), (0, 2, 3), (0, 3, 3), (1, 1, 2), (1, 2, 2)]
+
+    @pytest.mark.parametrize("page", [6, 7, 99])
+    def test_a_page_past_the_last_span_raises(self, bank_statement, page):
+        """Clamping here would print "Page 6 of 2" — a total the file does not have.
+
+        The two helpers have to agree. ``_page_spans`` refuses an incomplete map
+        rather than guessing, and a page no span covers means the real build
+        out-ran the measuring pass — the same class of disagreement, one layer
+        down. Returning a number for it reinstates the defect silently, on a
+        fixture whose output is read as a model result.
+        """
+        with pytest.raises(RuntimeError, match="outside every document copy"):
+            bank_statement._locate(page, [(1, 3), (4, 2)])
+
+    def test_page_zero_raises_rather_than_counting_backwards(self, bank_statement):
+        with pytest.raises(RuntimeError, match="outside every document copy"):
+            bank_statement._locate(0, [(1, 3)])
