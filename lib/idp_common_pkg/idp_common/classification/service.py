@@ -1687,7 +1687,8 @@ class ClassificationService:
     # the prompt: the page builders, the context builder and the packet builder
     # are all shared between single-pass, Stage A and Stage B. So every one of
     # them asks these two questions instead of each deciding for itself —
-    # which is how the guarantee came to hold on one of three paths.
+    # which is how the guarantee came to be stated everywhere and delivered on
+    # no path at all, each builder withholding a different subset.
     #
     # ⚠️ Every content builder therefore takes `stage` as a KEYWORD-ONLY
     # parameter with NO default. A default would let a new call site reinstate
@@ -1943,12 +1944,15 @@ class ClassificationService:
 
         **Every vocabulary placeholder is rendered here and nowhere else**, so
         that "Stage A carries no class vocabulary" is decided once. Each of the
-        three content builders used to answer it separately and two of them
-        answered it differently, which left the guarantee holding on the page
-        path with no context pages and nowhere else. ``stage`` is keyword-only
-        and has no default for the same reason: a caller that omitted it would
-        get the full vocabulary with no type error and no failing test, which
-        is exactly the symptomless failure this arrangement exists to prevent.
+        three content builders used to answer it separately and they answered
+        it differently: the page path with no context pages withheld the plain
+        class listing and nothing else, while the attribute listing and every
+        configured few-shot example reached Stage A on all three. So the
+        guarantee held on no path, and the page/no-context one came closest.
+        ``stage`` is keyword-only and has no default for the same reason: a
+        caller that omitted it would get the full vocabulary with no type error
+        and no failing test, which is exactly the symptomless failure this
+        arrangement exists to prevent.
 
         Args:
             document_text: Resolved document/page text to substitute.

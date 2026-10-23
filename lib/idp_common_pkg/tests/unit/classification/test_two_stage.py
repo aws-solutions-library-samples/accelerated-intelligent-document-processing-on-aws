@@ -66,6 +66,9 @@ LABEL_PROMPT = (
 SEG_PROMPT_ASKING_FOR_VOCABULARY = (
     "Where does each document start?\n{BOUNDARY_HINTS}\n"
     "<document-types>\n{CLASS_NAMES_AND_DESCRIPTIONS}\n</document-types>\n"
+    "<document-types-with-attributes>\n"
+    "{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\n"
+    "</document-types-with-attributes>\n"
     "<few-shot-examples>\n{FEW_SHOT_EXAMPLES}\n</few-shot-examples>\n"
     "<document-ocr-data>\n{DOCUMENT_TEXT}\n</document-ocr-data>\n"
 )
@@ -82,6 +85,12 @@ SINGLE_PASS_PROMPT_REFERENCING_HINTS = (
 #: comes from ``_classes``, the example text from ``_classes(..., examples=True)``.
 A_CLASS_DESCRIPTION = "distinctive layout"
 A_FEW_SHOT_EXAMPLE = "EXAMPLE-PAGE-FOR"
+#: A schema attribute name, which appears only in the optional
+#: ``{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`` listing. That placeholder
+#: renders the class names AND descriptions AND their attributes, so it is more
+#: vocabulary than the plain listing, not less — and on the base tree it reached
+#: Stage A on every path including the one that withheld the plain listing.
+AN_ATTRIBUTE_NAME = "total_amount_due"
 #: The opening tag of the ``boundary_hints`` block, and the instruction inside
 #: it that a class-assigning call must never be given.
 HINTS_BLOCK_TAG = "<document-type-hints>"
@@ -105,7 +114,7 @@ def _classes(*names: str, examples: bool = False) -> List[Dict[str, Any]]:
             "x-aws-idp-document-type": name,
             "type": "object",
             "description": f"A {name} document with distinctive layout",
-            "properties": {},
+            "properties": {AN_ATTRIBUTE_NAME: {"type": "string"}},
         }
         if examples:
             # Text-only examples: no imagePath, so nothing reads S3 or the
@@ -443,17 +452,20 @@ def _stage_a_text(service, document, router) -> str:
 
 @pytest.mark.unit
 class TestStageAWithholdsTheVocabularyOnEveryPath:
-    """Stage A had three content builders and only one withheld the vocabulary.
+    """Stage A had three content builders, each withholding a different subset.
 
     ``_segment_pages`` passed an empty class listing (page granularity with no
     context pages); the context-page builder passed the full list and the packet
-    builder the full markdown table, and all three spliced every configured
-    few-shot example in at ``{FEW_SHOT_EXAMPLES}``. The shipped segmentation
-    prompts reference neither placeholder, so the leak was invisible until an
-    operator edited a prompt — and when it fired, two-stage still worked and
-    simply cost what single-pass cost, which is the failure mode with no
-    symptom. The guarantee now lives on the stage, so it holds at either
-    granularity and any ``contextPagesCount``.
+    builder the full markdown table. All three rendered the schema attribute
+    listing in full and spliced every configured few-shot example in at
+    ``{FEW_SHOT_EXAMPLES}``, so the page/no-context path withheld the plain
+    class listing and nothing else, and no path delivered the guarantee the
+    strategy is sold on. The shipped segmentation prompts reference none of
+    those placeholders, so the leak was invisible until an operator edited a
+    prompt — and when it fired, two-stage still worked and simply cost what
+    single-pass cost, which is the failure mode with no symptom. The guarantee
+    now lives on the stage, so it holds at either granularity and any
+    ``contextPagesCount``.
     """
 
     @pytest.mark.parametrize("granularity", ["page", "packet"])
@@ -485,6 +497,7 @@ class TestStageAWithholdsTheVocabularyOnEveryPath:
 
         assert A_CLASS_DESCRIPTION not in text
         assert A_FEW_SHOT_EXAMPLE not in text
+        assert AN_ATTRIBUTE_NAME not in text
 
     def test_the_examples_really_are_configured(self):
         """The positive control. Without it the test above passes on a config
@@ -540,9 +553,10 @@ class TestStageAWithholdsTheVocabularyOnEveryPath:
 
         assert HINTS_BLOCK_TAG in text
         assert "invoice" in text and "receipt" in text
-        # Names only: still no descriptions and still no examples.
+        # Names only: still no descriptions, attributes or examples.
         assert A_CLASS_DESCRIPTION not in text
         assert A_FEW_SHOT_EXAMPLE not in text
+        assert AN_ATTRIBUTE_NAME not in text
 
 
 @pytest.mark.unit
