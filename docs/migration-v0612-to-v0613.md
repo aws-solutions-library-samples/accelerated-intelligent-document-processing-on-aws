@@ -212,14 +212,23 @@ a class cannot be decided. Extraction reads it from there too.
   `CustomConfigPath` file on deploy.
 
 ⚠️ On the deploy path the conversion also **validates**, so a hand-written
-`CustomConfigPath` file is refused there rather than corrected. The one setting
-this reaches is `classification.file_shape.sectionSplitting`, which accepts only
-`llm_determined`, `disabled` or `page`: an unrecognised value fails the stack
-operation, and on an update that is a rollback. Every other converted setting is
-normalised instead — a blank takes its default and an unusable page limit becomes
-`ALL` — because a value that cannot be read still has a safe reading, whereas an
-unrecognised splitting mode does not. See
-[Combinations refused when you save](classification.md#combinations-refused-when-you-save).
+`CustomConfigPath` file is refused there rather than corrected — and on a stack
+update a refusal is a rollback, so correct the file before deploying rather than
+after.
+
+What gets refused is an unrecognised value for any of the classification
+settings that take a fixed set of values: `strategy`, either `granularity`,
+`boundary_hints`, either `method`, `section_classification.pages`, the
+class-confidence `mode`, and `file_shape.sectionSplitting`. What gets normalised
+is a value that has a safe reading — a blank takes the setting's default, and an
+unusable page limit becomes `ALL` — which is why
+`maxPagesForClassification: banana` is reported and tolerated where
+`sectionSplitting: banana` is not.
+
+No shipped preset or configuration can carry one: the editor renders each of
+these as a picklist, and every value in `config_library/` is on-list. This is
+about a hand-edited file. The full list of values each setting accepts is in
+[Configuration placement](classification.md#configuration-placement).
 
 The trigger is the presence of an old key, not the `config_format_version`
 stamp. A file that mixes old keys with new ones — for example a v0.6.12 file

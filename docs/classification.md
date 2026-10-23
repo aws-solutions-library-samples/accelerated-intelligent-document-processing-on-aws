@@ -922,9 +922,11 @@ takes the default silently, as clearing any other setting does.
 ⚠️ The same check runs on **deploy**, not only on save. A `CustomConfigPath`
 file carrying an unrecognised `sectionSplitting` fails the stack operation that
 applies it — which on an update means a rollback, so correct the value before
-deploying rather than after. No shipped preset or configuration can carry one:
-the editor offers a picklist, and every value in `config_library/` is one of the
-three.
+deploying rather than after. The same is true of every classification setting
+that takes a fixed set of values, not just this one. No shipped preset or
+configuration can carry a bad one: the editor renders them as picklists, and
+every value in `config_library/` is on-list.
+
 `maxPagesForClassification` accepts `ALL` or a positive number of pages;
 anything else — a word, a negative number, an unquoted YAML `true` — is reported
 and the file is classified in full, because that is what the pipeline does with a
