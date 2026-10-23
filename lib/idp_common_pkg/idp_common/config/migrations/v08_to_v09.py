@@ -18,11 +18,16 @@ v0.9 nests each setting inside the call that uses it:
 **Behaviour is preserved exactly**, and three rows of the mapping are what make
 that true rather than approximately true:
 
-1. ⚠️ **Model parameters, modality and image settings are copied into every
-   block, unconditionally.** The two-stage stages had no parameters of their own
-   in v0.8 — they always inherited the flat ones — so copying them only where a
-   stage's model was empty would have reset every two-stage profile that named its
-   own stage model to code defaults.
+1. ⚠️ **Model parameters, modality and image settings are copied into every block
+   that was not already carrying its own value.** A v0.8 configuration is pure flat:
+   its two-stage stages had no parameters at all, so every one of them is absent
+   here and takes the flat value — which is what made the conversion exact, and is
+   why the copy must not be conditional on the stage's *model*. The condition is on
+   the setting itself, and it is the same three-way test row 2 applies to the model:
+   absent, blank, or equal to the one-stage value the profile already had. The case
+   it protects is a **hybrid**, where by definition the stage blocks exist and may
+   hold values the operator chose; copying over those unconditionally lost them, and
+   is the harm row 2 already prevents for the model.
 2. ⚠️ **An empty stage model means "inherit"**, so it becomes the flat model. A
    stage model that was set is kept.
 3. ⚠️ **The packet window is copied into segmentation too.** Stage A read the
@@ -111,6 +116,17 @@ _PER_CALL_SETTINGS = (
     "modality",
 )
 
+#: Confidence prompt blocks the SECTION CLASSIFICATION call can never read, so they
+#: are not carried into it. That call is one call per section and returns one class,
+#: and the service picks the per-segment (``_packet``) block only for a call that
+#: returns a ``segments`` array — which section classification never does. Copying
+#: them put roughly a kilobyte of prompt text into every converted profile at a path
+#: nothing reads, where a reader would reasonably edit it and see no effect.
+#: ``base-classification.yaml`` leaves them out of that block for the same reason.
+SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS = frozenset(
+    {"task_prompt_topk_packet", "task_prompt_verbalized_packet"}
+)
+
 ONE_STAGE_LLM = ("one_stage", "llm")
 SEGMENTATION_LLM = ("two_stage", "segmentation", "llm")
 SECTION_CLASSIFICATION = ("two_stage", "section_classification")
@@ -154,6 +170,23 @@ def _dict_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _is_unset(value: Any) -> bool:
+    """Absent or blank — the two spellings of "this call chose nothing"."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _follows_one_stage(existing: Any, previous_one_stage: Any) -> bool:
+    """Whether a stage's value was *following* the one-stage value, not chosen.
+
+    The same test row 2 of the module docstring applies to the model, applied to the
+    rest of ``_PER_CALL_SETTINGS``: a stage value that is absent or blank was never
+    set, and one equal to the value the one-stage call already had was following it.
+    Either way the flat value replaces it. A stage value that differs was chosen by
+    the operator and is kept.
+    """
+    return _is_unset(existing) or existing == previous_one_stage
+
+
 def _inferred_modality(prompt: Any) -> Dict[str, bool]:
     text = prompt if isinstance(prompt, str) else ""
     return {
@@ -163,7 +196,15 @@ def _inferred_modality(prompt: Any) -> Dict[str, bool]:
 
 
 def _is_page_limit(value: Any) -> bool:
-    if value is None:
+    """True only for a value that really asks for the first N pages.
+
+    ⚠️ **A ``bool`` is not a page count.** ``bool`` is an ``int`` subclass, so an
+    unquoted YAML ``maxPagesForClassification: true`` used to answer True here and be
+    converted to a one-page limit — which also took ``sectionSplitting`` to
+    ``disabled`` with it, turning boundary detection off. ``_version.py`` guards the
+    same trap on the version stamp.
+    """
+    if value is None or isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
         return value > 0
@@ -174,6 +215,27 @@ def _is_page_limit(value: Any) -> bool:
         return int(text) > 0
     except ValueError:
         return False
+
+
+def _known_section_splitting(value: Any) -> str | None:
+    """The recognised spelling of ``value``, or ``None`` if it is not one.
+
+    The page-limit conversion below has to decide "is this already ``disabled``?"
+    about a *raw* stored value, before ``FileShapeConfig`` has seen it. Comparing the
+    raw string meant an unrecognised value — a typo — was not ``disabled`` and so was
+    rewritten to it, while the same typo without a page limit went to the validator
+    and was reported there. One typo, opposite outcomes, decided by an unrelated key.
+    So: only a recognised value is compared, and anything else is passed through
+    untouched for the validator to rule on.
+    """
+    # Imported here rather than at module scope: the enum belongs to the model that
+    # validates it, and `models` reaches this module (lazily) in the other direction.
+    from ..models import SECTION_SPLITTING_VALUES
+
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text if text in SECTION_SPLITTING_VALUES else None
 
 
 def conversion_notices(config: Any) -> List[str]:
@@ -197,8 +259,8 @@ def conversion_notices(config: Any) -> List[str]:
         "docs/migration-v0612-to-v0613.md."
     ]
     limit = flat.get("maxPagesForClassification")
-    splitting = str(flat.get("sectionSplitting", "llm_determined")).strip().lower()
-    if _is_page_limit(limit) and splitting != "disabled":
+    splitting = _known_section_splitting(flat.get("sectionSplitting", "llm_determined"))
+    if _is_page_limit(limit) and splitting is not None and splitting != "disabled":
         notices.append(
             f"classification.maxPagesForClassification is {limit!r} with "
             f"sectionSplitting {splitting!r}; converted to file_shape."
@@ -261,14 +323,35 @@ def migrate_v08_to_v09(config: Any) -> Any:
             if follows_one_stage:
                 _put(out, path, "model", flat_model)
 
-    # ── Parameters, modality and image: every call, unconditionally (row 1).
+    # ── Parameters, modality and image: every call that was not carrying its own
+    # value for the setting (row 1). Read the "previous" one-stage values before
+    # anything below writes to that block, for the same reason the model does.
+    previous_one_stage = _dict_or_empty(_dict_or_empty(out.get("one_stage")).get("llm"))
+    previous_per_call = {
+        key: copy.deepcopy(previous_one_stage.get(key)) for key in _PER_CALL_SETTINGS
+    }
+
     for key in _PER_CALL_SETTINGS:
-        if key in flat:
-            for path in (ONE_STAGE_LLM, SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
-                if isinstance(flat[key], dict):
-                    _put_merged(out, path, key, flat[key])
-                else:
-                    _put(out, path, key, flat[key])
+        if key not in flat:
+            continue
+        value = flat[key]
+        previous = previous_per_call[key]
+        if isinstance(value, dict):
+            # A sub-block merges key by key, so the protection is per inner key too:
+            # `image: {target_width: 1000}` written flat must not reset a stage's own
+            # target_height, and must not take a target_width that stage chose.
+            _put_merged(out, ONE_STAGE_LLM, key, value)
+            previous_block = _dict_or_empty(previous)
+            for path in (SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+                node = _node(out, path + (key,))
+                for inner, inner_value in value.items():
+                    if _follows_one_stage(node.get(inner), previous_block.get(inner)):
+                        node[inner] = copy.deepcopy(inner_value)
+        else:
+            _put(out, ONE_STAGE_LLM, key, value)
+            for path in (SEGMENTATION_LLM, SECTION_CLASSIFICATION_LLM):
+                if _follows_one_stage(_node(out, path).get(key), previous):
+                    _put(out, path, key, value)
 
     # ── Granularity and page input apply to one stage and to segmentation.
     if "granularity" in flat:
@@ -322,7 +405,16 @@ def migrate_v08_to_v09(config: Any) -> Any:
             _put(out, SECTION_CLASSIFICATION_LLM + ("validation",), key, flat[key])
     if isinstance(flat.get("confidence"), dict):
         _put_merged(out, ONE_STAGE_LLM, "confidence", flat["confidence"])
-        _put_merged(out, SECTION_CLASSIFICATION_LLM, "confidence", flat["confidence"])
+        _put_merged(
+            out,
+            SECTION_CLASSIFICATION_LLM,
+            "confidence",
+            {
+                k: v
+                for k, v in flat["confidence"].items()
+                if k not in SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS
+            },
+        )
 
     # ── One fallback.
     if "invalidClassFallback" in flat:
@@ -335,12 +427,13 @@ def migrate_v08_to_v09(config: Any) -> Any:
         limit = flat["maxPagesForClassification"]
         _put(out, ("file_shape",), "maxPagesForClassification", limit)
         if _is_page_limit(limit):
-            splitting = (
-                str(out["file_shape"].get("sectionSplitting", "llm_determined"))
-                .strip()
-                .lower()
+            splitting = _known_section_splitting(
+                out["file_shape"].get("sectionSplitting", "llm_determined")
             )
-            if splitting != "disabled":
+            # `None` means the value is not one of the three. It is left alone so the
+            # validator rules on it, exactly as it would without a page limit — see
+            # `_known_section_splitting`.
+            if splitting is not None and splitting != "disabled":
                 logger.warning(
                     "classification.maxPagesForClassification is %r, which gives "
                     "the whole file one class from its first pages, but "

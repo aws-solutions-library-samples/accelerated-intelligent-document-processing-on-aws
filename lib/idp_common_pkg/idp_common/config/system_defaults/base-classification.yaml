@@ -83,11 +83,16 @@ classification:
       overlap_pages: '2'
     llm:
       model: us.amazon.nova-2-lite-v1:0
+      # ARN of a custom inference Lambda, used only when model is 'LambdaHook'.
+      model_lambda_hook_arn: null
       temperature: '0.0'
       top_p: '0.0'
       top_k: '5'
       # Optional output cap; empty uses the model's maximum.
       max_tokens: ''
+      # How hard a reasoning-capable model thinks before answering. Ignored by
+      # models with no effort control (Nova, Sonnet 4.5, Haiku 4.5).
+      reasoning_effort: medium
       # What this call is sent. Empty infers each flag from this call's task prompt placeholders.
       modality:
         text: ''
@@ -179,11 +184,16 @@ classification:
         # none sends no class vocabulary; class_names sends the names only.
         boundary_hints: none
         model: us.amazon.nova-2-lite-v1:0
+        # ARN of a custom inference Lambda, used only when model is 'LambdaHook'.
+        model_lambda_hook_arn: null
         temperature: '0.0'
         top_p: '0.0'
         top_k: '5'
         # Optional output cap; empty uses the model's maximum.
         max_tokens: ''
+        # How hard a reasoning-capable model thinks before answering. Ignored by
+        # models with no effort control (Nova, Sonnet 4.5, Haiku 4.5).
+        reasoning_effort: medium
         # What this call is sent. Empty infers each flag from this call's task prompt placeholders.
         modality:
           text: ''
@@ -200,11 +210,16 @@ classification:
       k: '2'
       llm:
         model: us.amazon.nova-2-lite-v1:0
+        # ARN of a custom inference Lambda, used only when model is 'LambdaHook'.
+        model_lambda_hook_arn: null
         temperature: '0.0'
         top_p: '0.0'
         top_k: '5'
         # Optional output cap; empty uses the model's maximum.
         max_tokens: ''
+        # How hard a reasoning-capable model thinks before answering. Ignored by
+        # models with no effort control (Nova, Sonnet 4.5, Haiku 4.5).
+        reasoning_effort: medium
         # What this call is sent. Empty infers each flag from this call's task prompt placeholders.
         modality:
           text: ''
@@ -234,6 +249,9 @@ classification:
           enforceValidClasses: true
           maxValidationRetries: '2'
         # Confidence in the class: topk (ranked candidates), verbalized (one number) or off.
+        # The per-segment (`_packet`) variants of these two blocks are deliberately
+        # absent: this call is one call per section and always returns one class, so
+        # the page-shaped block is the only one it can ever read.
         confidence:
           mode: topk
           top_k_candidates: '3'
@@ -247,16 +265,6 @@ classification:
           task_prompt_verbalized: |-
             <class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
             Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
-          task_prompt_topk_packet: |-
-            <class-confidence> Each object in your "segments" array MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for THAT segment, most likely first, each with the probability that it is the correct type.
-            "candidates": [
-              {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
-              {"class": "<next most likely type>", "probability": <number between 0.0 and 1.0>}
-            ]
-            Rules: 1. Every "class" value must be one of the types listed in <document-types>. 2. The first candidate must be the same type you report in that segment's "type". 3. The probabilities for a segment must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type". 4. Score each segment independently and honestly. A short segment, or one whose evidence is thin, should not look as certain as a clearly-identified multi-page document. </class-confidence>
-          task_prompt_verbalized_packet: |-
-            <class-confidence> Each object in your "segments" array MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report for THAT segment is correct.
-            Base it on how much better the segment's pages match the type you chose than the other types in <document-types>. Do not default to a high value: a segment whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
   # ── Advanced: known file shape ───────────────────────────────────────────
   # By default every file is treated as a packet and its boundaries are
   # detected. These ASSERT the shape instead.

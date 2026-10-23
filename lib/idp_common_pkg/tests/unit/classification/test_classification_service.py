@@ -1994,20 +1994,21 @@ class TestClassificationService:
             )
 
     def test_section_splitting_invalid_value(self, mock_config):
-        """Test that invalid sectionSplitting value falls back to llm_determined."""
-        # Set invalid value
+        """An unrecognised sectionSplitting is refused, not quietly defaulted.
+
+        It used to fall back to ``llm_determined`` with a warning. That is the
+        expensive value and it changes where sections start, so picking it for the
+        operator is a cost and accuracy decision they did not make — and the warning
+        is written to a Lambda log nobody reads at save time. Every sibling
+        classification enum raises; this one now does too.
+        """
         mock_config["classification"]["sectionSplitting"] = "invalid_value"
 
         with patch("boto3.Session"):
-            service = ClassificationService(
-                region="us-west-2", config=mock_config, backend="bedrock"
-            )
-
-            # Verify fallback to default
-            assert (
-                service.config.classification.file_shape.sectionSplitting
-                == "llm_determined"
-            )
+            with pytest.raises(Exception, match="sectionSplitting"):
+                ClassificationService(
+                    region="us-west-2", config=mock_config, backend="bedrock"
+                )
 
     def test_section_splitting_page_prevents_same_type_joining(self, mock_config):
         """Test that page splitting prevents joining of same-type documents."""

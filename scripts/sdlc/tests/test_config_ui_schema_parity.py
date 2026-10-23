@@ -594,3 +594,49 @@ def test_the_two_verdicts_do_not_overlap():
         "these paths are already covered by an EXEMPT_SUBTREES prefix, so the "
         f"per-field entry is dead text: {shadowed}"
     )
+
+
+def test_the_model_field_help_names_the_default_the_code_falls_back_to():
+    """Clearing a call's model substitutes a model, so the help must name that one.
+
+    The editor's model control is a picklist with no empty entry, but the field can
+    be cleared — and an empty model is not "no model": ``default_empty_model``
+    substitutes ``DEFAULT_CLASSIFICATION_MODEL`` so the call still has an id to send.
+    The help text said nothing about that, and the constant had drifted away from the
+    model the system defaults ship, so a cleared field moved that one call onto a
+    different and more expensive model than its siblings were running.
+
+    Written as "the description contains the constant" rather than as a fixed string
+    so that changing the default moves the help with it instead of leaving a confident
+    wrong answer in the editor.
+    """
+    default = _models.DEFAULT_CLASSIFICATION_MODEL
+    schemas = [
+        schema
+        for label, schema in _schemas()
+        if label.startswith(f"{_UI_SCHEMA_TEMPLATE}::")
+    ]
+    assert schemas, (
+        f"no Schema block found in {_UI_SCHEMA_TEMPLATE}, so this check would pass "
+        "by reading nothing"
+    )
+    schema = schemas[0]
+
+    def model_controls(node, path="classification"):
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for name, child in properties.items():
+                if name == "model" and isinstance(child, dict):
+                    yield f"{path}.model", child.get("description", "")
+                yield from model_controls(child, f"{path}.{name}")
+
+    classification = schema["properties"]["classification"]
+    controls = dict(model_controls(classification))
+    assert controls, "found no model control under the classification schema"
+    silent = sorted(path for path, text in controls.items() if default not in text)
+    assert not silent, (
+        "these classification model controls do not say what clearing the field "
+        f"does, or name a model other than the code's fallback ({default}): {silent}"
+    )

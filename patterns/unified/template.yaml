@@ -1161,7 +1161,7 @@ Resources:
                       model:
                         type: string
                         title: Model
-                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference."
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                         enum:
                           - "LambdaHook"
                           - !If
@@ -1534,7 +1534,7 @@ Resources:
                           model:
                             type: string
                             title: Model
-                            description: "Model for the boundary calls. Select 'LambdaHook' to use a custom Lambda function for inference."
+                            description: "Model for the boundary calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1773,7 +1773,7 @@ Resources:
                           model:
                             type: string
                             title: Model
-                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference."
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If

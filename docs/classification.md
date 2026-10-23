@@ -28,6 +28,7 @@ classification:
     packet: {window_pages, overlap_pages, system_prompt, task_prompt}
     llm:                         # the model settings of this call
       model: us.amazon.nova-2-lite-v1:0
+      model_lambda_hook_arn      # only with model: LambdaHook
       temperature / top_p / top_k / max_tokens / reasoning_effort
       modality: {text, images}   # what this call is sent
       image: {target_width, target_height}
@@ -65,6 +66,7 @@ returns page ranges and never a class.
 | `granularity` (per page-reading call) | `page` (default) \| `packet` | **How many calls are made.** `page`: one call per page, each returning that page's verdict, with the boundaries pieced together from those verdicts. `packet`: one call per document (or per window), with the model seeing the whole packet and returning the segments directly. One stage and segmentation each have their own. |
 | `modality.text` / `modality.images` (per call) | `true` \| `false` \| empty | **What each call sees.** Empty means "infer from this call's task prompt placeholders". |
 | `file_shape.sectionSplitting` | `llm_determined` (default) \| `disabled` \| `page` | **Whether boundaries are detected at all.** `disabled` treats the file as one document and `page` treats every page as one, so neither needs a boundary from the model. See [Section Splitting Strategies](#section-splitting-strategies). |
+| `file_shape.maxPagesForClassification` | `ALL` (default) \| a positive number of pages | **How much of a one-document file is classified.** Only with `sectionSplitting: disabled`: the first N pages are classified and the whole file takes their majority class. See [Page limit configuration](configuration.md#page-limit-configuration). |
 
 The settings combine freely. Two stage with segmentation at `packet` granularity
 and page images on is one boundary call over the whole packet with its images,
@@ -805,6 +807,17 @@ classification:
     maxPagesForClassification: "3"     # Only with disabled: classify the first 3 pages
 ```
 
+Both are assertions about the file, so both are checked when you save.
+`sectionSplitting` accepts only those three values — an unrecognised one is
+**refused**, naming the setting, rather than quietly becoming `llm_determined`,
+which is the expensive value and changes where sections start. Clearing the field
+takes the default silently, as clearing any other setting does.
+`maxPagesForClassification` accepts `ALL` or a positive number of pages;
+anything else — a word, a negative number, an unquoted YAML `true` — is reported
+and the file is classified in full, because that is what the pipeline does with a
+limit it cannot read, and a stored value saying otherwise only looks like a
+setting that is in force.
+
 ### Interaction with the strategies
 
 **One stage, page granularity:**
@@ -1212,6 +1225,10 @@ class is applied to every page in the file as one section. The limit applies onl
 with `sectionSplitting: disabled`; with boundary detection on it is ignored, with
 a warning in the classification log, because a limit would collapse only files
 longer than N while sectioning shorter ones normally.
+
+⚠️ **Quote the value, or write it as a bare number.** `maxPagesForClassification:
+true` is not a page count: an unquoted YAML boolean is reported and the file is
+classified in full. `ALL` and `0` both mean "every page".
 
 ### Prompt Components
 

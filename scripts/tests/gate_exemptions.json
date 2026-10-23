@@ -391,6 +391,36 @@
       "memberKind": "path",
       "ratchetEvidence": "lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py"
     },
+    "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES": {
+      "kind": "exemption",
+      "memberKind": "dotted configuration path, matching the path and every field under it",
+      "turnsOff": "the 'every classification model field has an entry in base-classification.yaml' direction of the defaults/model parity gate, for a subtree and everything below it. The other direction -- every key in the YAML is a field the models define -- and the shipped-value-equals-field-default check exempt nothing at all",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py",
+      "reason": "Five subtrees, each with its own sentence in the constant, and subtree granularity is right for all five because the reason is a property of the whole subtree rather than of any field in it. Four are the blocks declared for unimplemented classification methods (#1329): boundary_model, embeddings, decision_model and low_confidence. One is postHook, whose contents the Feature Platform registers at install time. The premise for every member is evaluated PER MEMBER in the gate rather than written down here -- the four declared blocks are each driven through the `method` value that would reach them and the gate requires the model to refuse it, and postHook's field is required to default to an empty collection, which is a default with nothing to put in a file. Those computations do not live in scripts/tests/gate_premises.py because the facts are about this repository's configuration model rather than about paths, templates or builds, and that module is imported by the registry meta-test, which must not grow a dependency on idp_common to run. What bounds the list is the closure: the parity direction derives the universe from the model's own fields and fails by name for any field in neither the YAML nor one of the two tables, so neither table can quietly stop covering it. Two staleness checks run per member as well -- the path must still be a model field, and it must still have no entry in the YAML -- so an entry cannot outlive what it describes or pre-excuse whatever next takes the path.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_FIELDS",
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_FIELDS": {
+      "kind": "exemption",
+      "memberKind": "dotted configuration path naming exactly one leaf field",
+      "turnsOff": "the same direction of the same gate, for one exact field per entry",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py",
+      "reason": "Eight fields, no subtree: a field is the smallest thing that will do here, so no entry answers for a sibling it has not examined -- which matters most for image, where target_width and target_height ARE shipped on every classification call and only dpi and preprocessing are not. Two kinds, each with its premise computed per member. Six are ImageConfig's dpi and preprocessing on the three classification calls: ImageConfig is shared by every stage's image panel, but both govern the PDF-to-raster render that happens once during OCR, so the gate requires base-ocr.yaml to ship ocr.image.<field> -- if OCR stops shipping it the setting has no default anywhere and the recorded reason is false. Two are the per-segment confidence prompt blocks on the section-classification call, which is one call per section and returns one class: the gate composes the real Stage B prompt with a marker in the key and requires the marker not to appear, with a control that the page-shaped key's marker DOES appear, because 'the key is not read' and 'nothing was read' are indistinguishable from one assertion. Both kinds also carry the two per-member staleness checks and sit inside the same universe closure as the sibling entry. The same six image fields and the same two confidence keys are carved out of the model-to-UI parity gate for the same reasons, which is why that constant is cross-referenced: auditing one has to reach the other.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES",
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE"
+      ]
+    },
     "lib/idp_common_pkg/tests/unit/config/test_config_migration_hardening.py::_NON_CONFIG_YAMLS": {
       "kind": "exemption",
       "turnsOff": "the config-migration hardening scan, for named YAML files under config_library/ that are not IDPConfig documents",
@@ -1412,7 +1442,8 @@
       "reason": "Per subtree, and the comment justifies subtree granularity: the reason is a property of the subtree, not the field. Two of five members rest on checkable code facts; three are product decisions.",
       "crossReferences": [
         "scripts/sdlc/tests/test_config_ui_schema_parity.py::KNOWN_UI_GAPS",
-        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE"
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE",
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_SUBTREES"
       ],
       "memberKind": "config-schema path",
       "ratchetEvidence": "scripts/sdlc/tests/test_config_ui_schema_parity.py"
@@ -1440,7 +1471,8 @@
       "ratchet": "staleness",
       "reason": "Same family as its two siblings, and policed by the same staleness test. Found by comment rather than name.",
       "crossReferences": [
-        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES"
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES",
+        "lib/idp_common_pkg/tests/unit/config/test_classification_defaults_parity.py::DEFAULTS_OMISSION_EXEMPT_FIELDS"
       ],
       "memberKind": "config-schema path",
       "ratchetEvidence": "scripts/sdlc/tests/test_config_ui_schema_parity.py"

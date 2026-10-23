@@ -1234,7 +1234,15 @@ def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
 
 
 def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
-    """``(path, task_prompt)`` for each prompt the active strategy sends."""
+    """``(path, task_prompt, modality)`` for each prompt the active strategy sends.
+
+    The call's ``modality`` comes along because the placeholder rule cannot be
+    answered from the prompt alone: ``modality.images: true`` adds an image
+    placeholder to a prompt that has none, and ``modality.text: true`` does the same
+    for text, so a prompt carrying neither placeholder is correct when either flag is
+    on. Reporting it as an error regardless made ``idp-cli config-validate`` refuse a
+    configuration the editor saves and the service runs.
+    """
     merged_config = _nested_classification(merged_config)
     cls = _dict_at(merged_config, "classification")
 
@@ -1242,22 +1250,38 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
         block = _dict_at(cls, *path)
         granularity = str(block.get("granularity") or "page").strip().lower()
         side = "packet" if granularity == "packet" else "page"
+        # The prompt sits under page/packet; the modality is on the llm block, which
+        # for one stage is a sibling of them and for segmentation is `block` itself.
+        llm = block if path[-1] == "llm" else _dict_at(block, "llm")
         return (
             "classification." + ".".join(path + (side, "task_prompt")),
             _dict_at(block, side).get("task_prompt", ""),
+            _dict_at(llm, "modality"),
         )
 
     if _classification_is_two_stage(merged_config):
+        section_llm = _dict_at(cls, "two_stage", "section_classification", "llm")
         return [
             reader("two_stage", "segmentation", "llm"),
             (
                 "classification.two_stage.section_classification.llm.task_prompt",
-                _dict_at(cls, "two_stage", "section_classification", "llm").get(
-                    "task_prompt", ""
-                ),
+                section_llm.get("task_prompt", ""),
+                _dict_at(section_llm, "modality"),
             ),
         ]
     return [reader("one_stage")]
+
+
+def _modality_supplies_content(modality: Dict[str, Any]) -> bool:
+    """True when a flag is explicitly ON, so content is sent whatever the prompt says.
+
+    Only an affirmative value counts. Empty means "infer from the prompt", which is
+    exactly the case the placeholder rule is about.
+    """
+    return any(
+        str(modality.get(flag, "")).strip().lower() in ("true", "yes", "y", "on", "1")
+        for flag in ("text", "images")
+    )
 
 
 def _validate_task_prompt_placeholders(
@@ -1331,7 +1355,9 @@ def _validate_task_prompt_placeholders(
             # `_classification_task_prompts`.
             prompts = _classification_task_prompts(merged_config)
         else:
-            prompts = [(f"{section_name}.task_prompt", section.get("task_prompt", ""))]
+            prompts = [
+                (f"{section_name}.task_prompt", section.get("task_prompt", ""), {})
+            ]
 
         # Special case: OCR task_prompt is only used when backend is 'bedrock'
         if section_name == "ocr":
@@ -1346,8 +1372,13 @@ def _validate_task_prompt_placeholders(
                 # Section is explicitly disabled, skip validation
                 continue
 
-        for path, task_prompt in prompts:
+        for path, task_prompt, modality in prompts:
             if not task_prompt:
+                continue
+            if _modality_supplies_content(modality):
+                # An explicit modality flag sends the content whether the prompt
+                # asks for it or not, and the service normalises the prompt to
+                # match. See `_classification_task_prompts`.
                 continue
             # Check which placeholders are present
             present_placeholders = [
