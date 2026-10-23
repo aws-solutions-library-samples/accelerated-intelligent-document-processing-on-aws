@@ -186,21 +186,19 @@ preserving through a refactor: a call site that omitted it would get the full
 vocabulary back with no type error and no failing test, and the only symptom
 would be the bill.
 
-The UI's prompt preview (`PromptPreview.tsx`) is **intended** to apply the same
-rules about which placeholder is empty for which step, so that a step's preview
-does not promise content the call will not carry. ⚠️ **That parity is not
-tested, and it can drift silently.** The rules are restated in
-`buildSubstitutions`, a non-exported `useCallback` inside the component;
-`PromptPreview.test.tsx` exercises the exported pure helpers and never renders
-the component to inspect a substitution map, so nothing can assert on it. The
-Python half of the guarantee has a signature-introspection test
-(`TestEveryContentBuilderDemandsItsStage`); the UI half rests on review. **If
-you change which placeholders a stage renders, change that function too** — no
-gate will tell you that you didn't.
+The UI's prompt preview applies the same rules about which placeholder is empty
+for which step, so a step's preview does not promise content the call will not
+carry. They are restated in `buildSubstitutions` in
+`src/ui/src/components/configuration-layout/PromptPreview.tsx`, and asserted
+against a real render in
+`src/ui/src/components/configuration-layout/__tests__/PromptPreview.test.tsx`
+(`PromptPreview placeholder scoping by step`) — so **if you change which
+placeholders a stage renders, change that function too**, and those tests will
+tell you if you forget.
 
-Even where the rules agree, the preview is not byte-equal to the request and is
-not meant to be: it renders a shorter `<document-type-hints>` block than the
-service emits, and substitutes a descriptive marker for `{DOCUMENT_TEXT}` and
+The preview is nevertheless not byte-equal to the request, and is not meant to
+be: it renders a shorter `<document-type-hints>` block than the service emits,
+and substitutes a descriptive marker for `{DOCUMENT_TEXT}` and
 `{DOCUMENT_IMAGE}`. Read it for what a step *includes*, not as the exact bytes.
 
 ## Sequence Segmentation Approach

@@ -1078,6 +1078,18 @@ page granularity it is one call per page asking only `start` or `continue`, whic
 still makes N calls but drops the prefix from each. It has no validation or
 class confidence, because it returns no class.
 
+> ⚠️ **Writing a custom segmentation prompt: the vocabulary placeholders render
+> empty there.** `{CLASS_NAMES_AND_DESCRIPTIONS}`,
+> `{CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` and `{FEW_SHOT_EXAMPLES}` are
+> all substituted with nothing in a segmentation prompt, at either granularity
+> and whatever `contextPagesCount` is set to — that absence *is* the dropped
+> prefix, so referencing one gets you silence rather than an error.
+> `boundary_hints: class_names` is the supported way to put the class **names**
+> into this call; it renders a short `{BOUNDARY_HINTS}` block, which in turn is
+> empty in every call other than segmentation, because it tells the model to
+> report no document type. See
+> [which placeholders a stage is allowed to render](../lib/idp_common_pkg/idp_common/classification/README.md#which-placeholders-a-stage-is-allowed-to-render).
+
 Section classification is **one call per segment**, over the pages `pages`
 selects. `first_k` is the default because a document's identity is almost always
 on its opening pages, while `all` makes classifying a long segment cost what
