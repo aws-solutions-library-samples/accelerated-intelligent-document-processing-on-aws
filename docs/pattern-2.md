@@ -47,9 +47,15 @@ For the current architecture diagram, see the unified architecture in [architect
 
 The workflow consists of three main processing steps with an optional assessment step:
 1. OCR processing using Amazon Textract
-2. Document classification using Claude via Amazon Bedrock (with two available methods):
-   - Page-level classification: Classifies individual pages and groups them
-   - Holistic packet classification: Analyzes multi-document packets to identify document boundaries
+2. Document classification using Amazon Bedrock. `classification.strategy`
+   chooses between two strategies, and the page-reading call then works at one of
+   two granularities:
+   - `single_pass` (*One stage* in the configuration editor): one call returns a
+     page's or packet's boundaries and classes together
+   - `two_stage`: boundaries first, with no class vocabulary in the prompt, then
+     one call per detected section to classify it
+   - Within either, `granularity: page` makes one call per page and
+     `granularity: packet` one call per packet or window of `window_pages` pages
 3. Field extraction using Claude via Amazon Bedrock
 4. **Assessment** (optional): Confidence evaluation of extraction results using LLMs
 
@@ -336,11 +342,19 @@ The OCR service supports optional image resizing for processing optimization:
 # OCR configuration example
 ocr:
   image:
-    resize_config:
-      target_width: 951   # Target width for processing
-      target_height: 1268 # Target height for processing
+    target_width: 951     # Target width for processing
+    target_height: 1268   # Target height for processing
+    dpi: 400              # PDF-to-image rasterization DPI
     preprocessing: true   # Enable adaptive binarization preprocessing
 ```
+
+All four settings sit directly under `ocr.image`, and there is no
+`resize_config` level in the configuration — the service builds that dictionary
+itself from `target_width` and `target_height`. The `resize_config=` and `dpi=`
+constructor keywords in the Python example above are the deprecated
+back-compatibility path; pass the configuration instead and set the values
+there. When neither dimension is set, `OcrService` applies its own 2600×3600
+ceiling.
 
 ### OCR Image Processing Features
 

@@ -83,6 +83,28 @@ assessment:
   # ... other settings
 ```
 
+⚠️ **Classification has one model field per call, so a tier suffix has to be
+applied to the call that runs.** The `one_stage.llm.model` above is read only
+under `classification.strategy: single_pass` — the default, labelled *One stage*
+in the configuration editor. Under `strategy: two_stage` it is not read at all,
+and there are **two** fields to set:
+
+```yaml
+classification:
+  strategy: two_stage
+  two_stage:
+    segmentation:
+      llm:
+        model: "us.amazon.nova-2-lite-v1:0:flex"      # boundaries can wait
+    section_classification:
+      llm:
+        model: "us.amazon.nova-2-lite-v1:0:priority"  # the class gates extraction
+```
+
+The two may legitimately differ, and that pairing is the obvious mixed-tier case:
+a `:priority` labeller over a `:flex` segmenter puts the latency where it affects
+the rest of the pipeline and takes the discount on the pass that does not.
+
 ### How It Works
 
 When you specify a model ID with a service tier suffix:
@@ -100,7 +122,11 @@ When you specify a model ID with a service tier suffix:
 
 1. Navigate to the Configuration page
 2. In each operation section (Classification, Extraction, Assessment, Summarization):
-   - Find the "Model" dropdown
+   - Find the "Model" dropdown. Classification shows **one dropdown per model
+     call**: one under *One stage*, or — when **Strategy** is *Two stage*
+     (`strategy: two_stage` in the JSON and YAML views) — one under
+     *Segmentation* and one under *Section classification*. Set the tier on each
+     call you want it on
    - Select a model with the desired tier suffix:
      - Models ending in `:flex` use Flex tier
      - Models ending in `:priority` use Priority tier
@@ -174,6 +200,10 @@ assessment:
   model: "us.amazon.nova-2-lite-v1:0"
   # Standard tier for assessment
 ```
+
+Under `strategy: two_stage` the classification half becomes two decisions rather
+than one — see the note in [Using Model IDs with Service Tier
+Suffixes](#using-model-ids-with-service-tier-suffixes) above.
 
 ## Performance Expectations
 
