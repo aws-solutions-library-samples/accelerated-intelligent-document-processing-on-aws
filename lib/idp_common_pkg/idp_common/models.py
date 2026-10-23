@@ -161,7 +161,7 @@ class Page:
 
     ``None`` means NOT SCORED — no confidence signal exists for this page. That
     is the normal state: the classification prompt has to ask for a score and
-    the model has to return one (see `classification.confidence` and GitHub
+    the model has to return one (see the class-assigning call's `confidence` block and GitHub
     #673), and several code paths never produce one at all (the SageMaker
     backend returns no score; pages beyond `maxPagesForClassification` have
     their class extrapolated rather than predicted).
@@ -198,7 +198,7 @@ class Page:
     first: ``[{"class": "w2", "probability": 0.8}, {"class": "1099",
     "probability": 0.15}]``.
 
-    Produced by ``classification.confidence.mode: topk``, which asks the model to
+    Produced by a classification call's ``confidence.mode: topk``, which asks the model to
     enumerate and rank candidates rather than self-report one number — that is
     both better calibrated and the direct answer to "what else could this page
     have been?" (the question a reviewer looking at a suspicious classification

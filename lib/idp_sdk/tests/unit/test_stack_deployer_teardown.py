@@ -112,8 +112,8 @@ def _contain_the_retry_environment_mutation() -> Any:
 
     This is containment of a real side effect, not test scaffolding.
     ``_cleanup_additional_resources`` sets ``AWS_MAX_ATTEMPTS=10`` and
-    ``AWS_RETRY_MODE=adaptive`` in the process environment at
-    ``_core/stack.py:1943`` and never restores them
+    ``AWS_RETRY_MODE=adaptive`` in the process environment at the top of
+    that function and never restores them
     (``test_retry_configuration_is_set_in_the_process_environment`` pins that).
     Because this file calls that function directly in about forty tests, without
     this fixture the variables persist for the remainder of the pytest session and
@@ -238,12 +238,14 @@ def test_waiting_runs_the_additional_cleanup_for_this_stack(
     cleaned: list[str] = []
     with mock_aws():
         deployer = StackDeployer(region=REGION)
-        _create_stack(deployer, "S1", BUCKET_AND_FRIENDS)
+        stack_id = _create_stack(deployer, "S1", BUCKET_AND_FRIENDS)
         monkeypatch.setattr(
             deployer, "_cleanup_additional_resources", lambda name: cleaned.append(name)
         )
         deployer.delete_stack("S1", wait=True)
-    assert cleaned == ["S1"]
+    # The stack ID, not the name: a DELETE_COMPLETE stack answers only by ID, and
+    # the cleanup reads its resource list to find the policy it owned (#1533).
+    assert cleaned == [stack_id]
 
 
 def test_requested_buckets_are_emptied_before_the_delete(
@@ -1986,34 +1988,151 @@ def test_stack_named_resource_policies_are_deleted_whole(aws_credentials: str):
     assert names == {"OtherStack-DeliveryPolicy"}
 
 
-def test_the_stacks_cloudfront_distribution_is_disabled_for_a_later_sweep(
+DISTRIBUTION_TYPE = "AWS::CloudFront::Distribution"
+S1_ID = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+
+
+def _create_distribution(
+    cloudfront: Any, comment: str, enabled: bool = True, reference: str = ""
+) -> str:
+    config = _distribution_config(comment)
+    config["Enabled"] = enabled
+    # CloudFront keys creation on CallerReference, so two distributions with the
+    # same comment need distinct references.
+    config["CallerReference"] = reference or f"{comment}-{enabled}"
+    return cloudfront.create_distribution(DistributionConfig=config)["Distribution"][
+        "Id"
+    ]
+
+
+def _distribution_ids(cloudfront: Any) -> set[str]:
+    return {
+        d["Id"]
+        for d in cloudfront.list_distributions()
+        .get("DistributionList", {})
+        .get("Items", [])
+    }
+
+
+def test_the_stacks_own_distribution_is_disabled_for_a_later_pass(
     aws_credentials: str,
 ):
-    """A CloudFront distribution cannot be deleted until it is disabled and the
-    disable has propagated, which takes far longer than a teardown. So this
-    teardown disables it and a *later* teardown deletes it — which is why the
-    comment-based identification has to be exact in both directions."""
+    """A distribution cannot be deleted until it is disabled and the disable has
+    propagated, which takes far longer than a teardown, so this pass disables it.
+    The same-named distribution beside it stands for a stack called ``S1`` in
+    another Region: it carries the identical comment, and must stay enabled
+    because this stack's resource list does not name it."""
     with mock_aws():
         cloudfront = boto3.client("cloudfront")
-        created = cloudfront.create_distribution(
-            DistributionConfig=_distribution_config(
-                "Web app cloudfront distribution S1"
-            )
+        mine = _create_distribution(cloudfront, "Web app cloudfront distribution S1")
+        namesake = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", reference="namesake"
         )
-        dist_id = created["Distribution"]["Id"]
-        other = cloudfront.create_distribution(
-            DistributionConfig=_distribution_config(
-                "Web app cloudfront distribution OtherStack"
-            )
+        deployer = StackDeployer(region=REGION)
+        stub = _stub_stack_resources(
+            deployer, S1_ID, [(DISTRIBUTION_TYPE, mine)], calls=2
         )
-        other_id = other["Distribution"]["Id"]
+        with stub:
+            deployer._cleanup_additional_resources(S1_ID)
+        # Both reads happened: the distribution step and the policy step.
+        stub.assert_no_pending_responses()
 
+        mine_config = cloudfront.get_distribution(Id=mine)["Distribution"]
+        namesake_config = cloudfront.get_distribution(Id=namesake)["Distribution"]
+    assert mine_config["DistributionConfig"]["Enabled"] is False
+    assert namesake_config["DistributionConfig"]["Enabled"] is True
+
+
+def test_the_stacks_own_disabled_distribution_is_deleted(aws_credentials: str):
+    """The second pass: this stack's distribution, already disabled and deployed,
+    is deleted outright."""
+    with mock_aws():
+        cloudfront = boto3.client("cloudfront")
+        mine = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", enabled=False
+        )
+        deployer = StackDeployer(region=REGION)
+        with _stub_stack_resources(
+            deployer, S1_ID, [(DISTRIBUTION_TYPE, mine)], calls=2
+        ):
+            deployer._cleanup_additional_resources(S1_ID)
+        remaining = _distribution_ids(cloudfront)
+    assert mine not in remaining
+
+
+def test_another_stacks_disabled_distribution_is_never_deleted(aws_credentials: str):
+    """The defect this ownership rule closes. Teardown used to delete *any*
+    disabled, deployed ``Web app cloudfront distribution ...`` in the account,
+    whichever stack owned it -- including a live stack's in another Region that
+    had been disabled deliberately. Orphans of other stacks are
+    ``remove-deleted-stack-resources``'s job, which checks every Region first."""
+    with mock_aws():
+        cloudfront = boto3.client("cloudfront")
+        theirs = _create_distribution(
+            cloudfront, "Web app cloudfront distribution OldStack", enabled=False
+        )
+        deployer = StackDeployer(region=REGION)
+        with _stub_stack_resources(deployer, S1_ID, [], calls=2):
+            deployer._cleanup_additional_resources(S1_ID)
+        remaining = _distribution_ids(cloudfront)
+    assert theirs in remaining
+
+
+def test_an_unreadable_resource_list_touches_no_distribution(aws_credentials: str):
+    """Ownership unknown must mean touch nothing, never a fall back to the
+    comment. Under moto there is no stack ``S1``, so its resource list cannot be
+    read; its comment-matching distribution, enabled and disabled, survives."""
+    with mock_aws():
+        cloudfront = boto3.client("cloudfront")
+        enabled = _create_distribution(cloudfront, "Web app cloudfront distribution S1")
+        disabled = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", enabled=False
+        )
         StackDeployer(region=REGION)._cleanup_additional_resources("S1")
+        remaining = _distribution_ids(cloudfront)
+        enabled_now = cloudfront.get_distribution(Id=enabled)["Distribution"][
+            "DistributionConfig"
+        ]["Enabled"]
+    assert {enabled, disabled} <= remaining
+    assert enabled_now is True
 
-        mine = cloudfront.get_distribution(Id=dist_id)["Distribution"]
-        theirs = cloudfront.get_distribution(Id=other_id)["Distribution"]
-    assert mine["DistributionConfig"]["Enabled"] is False
-    assert theirs["DistributionConfig"]["Enabled"] is True
+
+def test_a_disabled_distribution_still_deploying_is_left_with_a_remedy(
+    aws_credentials: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """CloudFront refuses to delete a distribution whose disable has not finished
+    propagating, so the pass says to re-run instead of attempting it."""
+    real_client = boto3.client
+    with mock_aws():
+        cloudfront = real_client("cloudfront")
+        mine = _create_distribution(
+            cloudfront, "Web app cloudfront distribution S1", enabled=False
+        )
+
+        def in_progress(**k: Any) -> Any:
+            response = cloudfront.get_distribution(**k)
+            response["Distribution"]["Status"] = "InProgress"
+            return response
+
+        def factory(service: str, *a: Any, **k: Any) -> Any:
+            client = real_client(service, *a, **k)
+            if service == "cloudfront":
+                return PartialFake(client, {"get_distribution": in_progress})
+            return client
+
+        deployer = StackDeployer(region=REGION)
+        monkeypatch.setattr(boto3, "client", factory)
+        with caplog.at_level("INFO", logger="idp_sdk._core.stack"):
+            with _stub_stack_resources(
+                deployer, S1_ID, [(DISTRIBUTION_TYPE, mine)], calls=2
+            ):
+                deployer._cleanup_additional_resources(S1_ID)
+        remaining = _distribution_ids(cloudfront)
+    assert mine in remaining
+    assert "still deploying" in caplog.text
+    assert "Re-run this delete" in caplog.text
 
 
 def _distribution_config(comment: str) -> dict:
@@ -2038,52 +2157,102 @@ def _distribution_config(comment: str) -> dict:
     }
 
 
-def test_an_already_disabled_distribution_is_deleted(aws_credentials: str):
-    """The second half of the two-pass scheme. Any stack's disabled, deployed
-    "Web app cloudfront distribution ..." is fair game, because an enabled one is
-    never touched."""
-    with mock_aws():
-        cloudfront = boto3.client("cloudfront")
-        config = _distribution_config("Web app cloudfront distribution OldStack")
-        config["Enabled"] = False
-        created = cloudfront.create_distribution(DistributionConfig=config)
-        dist_id = created["Distribution"]["Id"]
+# CloudFront is global: `list_response_headers_policies` returns the policies of
+# every IDP stack in every Region. The teardown of one stack used to sweep that list
+# and judge each owner's liveness with a CloudFormation client bound to *this*
+# stack's Region, so a live stack elsewhere read as missing and its policy's
+# deletion was attempted (#1533). It now deletes only the policy this stack's own
+# resource list records; the account-wide sweep is
+# `idp-cli remove-deleted-stack-resources`'s job.
 
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-
-        remaining = [
-            d["Id"]
-            for d in cloudfront.list_distributions()
-            .get("DistributionList", {})
-            .get("Items", [])
-        ]
-    assert dist_id not in remaining
+POLICY_TYPE = "AWS::CloudFront::ResponseHeadersPolicy"
 
 
-def test_an_unrelated_distribution_is_never_examined(aws_credentials: str):
-    """The comment prefix is the only thing separating this solution's
-    distributions from the rest of the account's."""
-    with mock_aws():
-        cloudfront = boto3.client("cloudfront")
-        config = _distribution_config("someone else's production CDN")
-        config["Enabled"] = False
-        created = cloudfront.create_distribution(DistributionConfig=config)
-        dist_id = created["Distribution"]["Id"]
+def _client_error(code: str, operation: str) -> Exception:
+    from botocore.exceptions import ClientError
 
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-
-        remaining = [
-            d["Id"]
-            for d in cloudfront.list_distributions()
-            .get("DistributionList", {})
-            .get("Items", [])
-        ]
-    assert dist_id in remaining
+    return ClientError({"Error": {"Code": code, "Message": code}}, operation)
 
 
-def _headers_policy(name: str, policy_id: str, policy_type: str = "custom") -> dict:
+class _HeadersPolicies:
+    """The three response-headers-policy operations, which moto does not implement.
+
+    ``delete_response_headers_policy`` takes ``IfMatch`` as a REQUIRED keyword and
+    rejects a falsy one, because CloudFront does: a fake that tolerated a missing
+    ``IfMatch`` once kept this suite green over a teardown that deleted nothing.
+    ``list_response_headers_policies`` is provided because the account-wide sweep
+    this replaced reached every policy through it — a test whose fixture the old
+    code could not see would pass against it for the wrong reason.
+    """
+
+    def __init__(self, policies: dict[str, str], in_use: tuple[str, ...] = ()):
+        self.policies = dict(policies)  # id -> name
+        self.in_use = set(in_use)
+        self.read: list[str] = []
+        self.deleted: list[tuple[str, str]] = []
+
+    def list_response_headers_policies(self, **_k: Any) -> dict:
+        return {
+            "ResponseHeadersPolicyList": {
+                "Items": [
+                    _headers_policy(name, policy_id)
+                    for policy_id, name in self.policies.items()
+                ]
+            }
+        }
+
+    def get_response_headers_policy(self, Id: str, **_k: Any) -> dict:  # noqa: N803
+        self.read.append(Id)
+        if Id not in self.policies:
+            raise _client_error(
+                "NoSuchResponseHeadersPolicy", "GetResponseHeadersPolicy"
+            )
+        return {
+            "ETag": f"etag-for-{Id}",
+            "ResponseHeadersPolicy": {
+                "Id": Id,
+                "ResponseHeadersPolicyConfig": {"Name": self.policies[Id]},
+            },
+        }
+
+    def delete_response_headers_policy(self, Id: str, IfMatch: str, **_k: Any) -> None:  # noqa: N803
+        if not IfMatch:
+            raise AssertionError(
+                "delete_response_headers_policy was called with an empty IfMatch; "
+                "CloudFront answers InvalidIfMatchVersion"
+            )
+        if Id in self.in_use:
+            raise _client_error(
+                "ResponseHeadersPolicyInUse", "DeleteResponseHeadersPolicy"
+            )
+        self.deleted.append((Id, IfMatch))
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_client = boto3.client
+
+        def factory(service: str, *a: Any, **k: Any) -> Any:
+            client = real_client(service, *a, **k)
+            if service == "cloudfront":
+                return PartialFake(
+                    client,
+                    {
+                        "list_response_headers_policies": (
+                            self.list_response_headers_policies
+                        ),
+                        "get_response_headers_policy": self.get_response_headers_policy,
+                        "delete_response_headers_policy": (
+                            self.delete_response_headers_policy
+                        ),
+                    },
+                )
+            return client
+
+        monkeypatch.setattr(boto3, "client", factory)
+
+
+def _headers_policy(name: str, policy_id: str) -> dict:
     return {
-        "Type": policy_type,
+        "Type": "custom",
         "ResponseHeadersPolicy": {
             "Id": policy_id,
             "ResponseHeadersPolicyConfig": {"Name": name},
@@ -2091,250 +2260,185 @@ def _headers_policy(name: str, policy_id: str, policy_type: str = "custom") -> d
     }
 
 
-def _with_headers_policies(
-    monkeypatch: pytest.MonkeyPatch, policies: list[dict], deleted: list[str]
-) -> None:
-    """moto does not implement response-headers policies at all, so the three
-    operations are supplied while the rest of CloudFront stays real.
+def _stub_stack_resources(
+    deployer: StackDeployer,
+    stack_identifier: str,
+    resources: list[tuple[str, str]],
+    calls: int = 1,
+) -> Stubber:
+    """Answer ``list_stack_resources`` with ``(type, physical id)`` pairs.
 
-    ``delete_response_headers_policy`` takes ``IfMatch`` as a REQUIRED keyword and
-    rejects a falsy one, because that is what CloudFront does. The fake used to
-    accept ``(Id, **_k)``, which is looser than the API: the caller omitted
-    ``IfMatch`` entirely, every real call failed ``InvalidIfMatchVersion`` into a
-    warning, and this suite stayed green over a teardown that deleted nothing. A
-    fake that tolerates an argument the service demands cannot test the caller.
+    Stubbed rather than created through moto, because moto has no
+    ``AWS::CloudFront::ResponseHeadersPolicy`` provider to give a policy a physical
+    id. The Stubber validates the response against the CloudFormation service
+    model, so the shape is the service's and not this file's. ``calls`` queues the
+    same answer that many times: the whole additional cleanup reads the list once
+    for its distributions and once for its headers policy.
     """
-    real_client = boto3.client
-
-    def _delete(Id: str, IfMatch: str, **_k: Any) -> None:  # noqa: N803
-        if not IfMatch:
-            raise AssertionError(
-                "delete_response_headers_policy was called with an empty IfMatch; "
-                "CloudFront answers InvalidIfMatchVersion"
-            )
-        deleted.append(Id)
-
-    def factory(service: str, *a: Any, **k: Any) -> Any:
-        client = real_client(service, *a, **k)
-        if service == "cloudfront":
-            return PartialFake(
-                client,
-                {
-                    "list_response_headers_policies": lambda **_k: {
-                        "ResponseHeadersPolicyList": {"Items": policies}
-                    },
-                    "get_response_headers_policy": lambda Id, **_k: {  # noqa: N803
-                        "ETag": f"etag-for-{Id}"
-                    },
-                    "delete_response_headers_policy": _delete,
-                },
-            )
-        return client
-
-    monkeypatch.setattr(boto3, "client", factory)
+    stub = Stubber(deployer.cfn)
+    for _ in range(calls):
+        stub.add_response(
+            "list_stack_resources",
+            {
+                "StackResourceSummaries": [
+                    {
+                        "LogicalResourceId": f"R{index}",
+                        "PhysicalResourceId": physical_id,
+                        "ResourceType": resource_type,
+                        "LastUpdatedTimestamp": dt.datetime(
+                            2026, 1, 1, tzinfo=dt.timezone.utc
+                        ),
+                        "ResourceStatus": "DELETE_FAILED",
+                    }
+                    for index, (resource_type, physical_id) in enumerate(resources)
+                ]
+            },
+            {"StackName": stack_identifier},
+        )
+    return stub
 
 
-def test_a_headers_policy_belonging_to_a_deleted_stack_is_removed(
+def test_a_live_stack_in_another_region_keeps_its_headers_policy(
     aws_credentials: str, monkeypatch: pytest.MonkeyPatch
 ):
-    deleted: list[str] = []
-    _with_headers_policies(
-        monkeypatch,
-        [_headers_policy("GoneStack-security-headers-policy", "P-GONE")],
-        deleted,
-    )
+    """The reported defect (#1533). ``Elsewhere`` is CREATE_COMPLETE in
+    eu-central-1 and does not exist in us-east-1, which is where the stack being
+    deleted lives. Its policy is in the account-wide list, because CloudFront is
+    global, and must be neither deleted nor even read."""
+    policies = _HeadersPolicies({"P-ELSEWHERE": "Elsewhere-security-headers-policy"})
     with mock_aws():
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-    assert deleted == ["P-GONE"]
-
-
-def test_the_delete_carries_the_policys_own_etag(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
-):
-    """The ETag has to be READ, not guessed, and the read has to be per policy.
-
-    Asserted separately from the test above because that one passes on the mere fact
-    that something was deleted, which is satisfied by any ``IfMatch`` the fake will
-    accept. What made the original defect survive is that no test ever looked at the
-    value: CloudFront refuses a wrong ETag exactly as it refuses a missing one, so a
-    caller that passed a constant would fail in production and pass here.
-    """
-    seen: list[tuple[str, str]] = []
-    real_client = boto3.client
-
-    def factory(service: str, *a: Any, **k: Any) -> Any:
-        client = real_client(service, *a, **k)
-        if service == "cloudfront":
-            return PartialFake(
-                client,
-                {
-                    "list_response_headers_policies": lambda **_k: {
-                        "ResponseHeadersPolicyList": {
-                            "Items": [
-                                _headers_policy(
-                                    "AStack-security-headers-policy", "P-A"
-                                ),
-                                _headers_policy(
-                                    "BStack-security-headers-policy", "P-B"
-                                ),
-                            ]
-                        }
-                    },
-                    "get_response_headers_policy": lambda Id, **_k: {  # noqa: N803
-                        "ETag": f"etag-for-{Id}"
-                    },
-                    "delete_response_headers_policy": lambda Id, IfMatch, **_k: (
-                        seen.append(  # noqa: N803
-                            (Id, IfMatch)
-                        )
-                    ),
-                },
-            )
-        return client
-
-    monkeypatch.setattr(boto3, "client", factory)
-    with mock_aws():
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-
-    # Each policy is deleted with ITS OWN ETag, so a single read hoisted out of the
-    # loop, or a constant, does not satisfy this.
-    assert sorted(seen) == [("P-A", "etag-for-P-A"), ("P-B", "etag-for-P-B")]
-
-
-def test_a_headers_policy_belonging_to_a_live_stack_is_left_alone(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
-):
-    """Deleting it would break the security headers on a running deployment's web
-    UI, and CloudFront would serve it without a Content-Security-Policy."""
-    deleted: list[str] = []
-    with mock_aws():
+        boto3.client("cloudformation", region_name="eu-central-1").create_stack(
+            StackName="Elsewhere",
+            TemplateBody=_template({"Topic": {"Type": "AWS::SNS::Topic"}}),
+        )
         deployer = StackDeployer(region=REGION)
-        _create_stack(
-            deployer, "LiveStack", _template({"Topic": {"Type": "AWS::SNS::Topic"}})
+        stack_id = _create_stack(
+            deployer, "S1", _template({"Topic": {"Type": "AWS::SNS::Topic"}})
         )
-        _with_headers_policies(
-            monkeypatch,
-            [_headers_policy("LiveStack-security-headers-policy", "P-LIVE")],
-            deleted,
-        )
-        deployer._cleanup_additional_resources("S1")
-    assert deleted == []
+        deployer.cfn.delete_stack(StackName="S1")
+        policies.install(monkeypatch)
+
+        deployer._cleanup_additional_resources(stack_id)
+
+    assert policies.deleted == []
+    assert policies.read == []
 
 
-def test_this_stacks_own_headers_policy_is_skipped(
+def test_this_stacks_own_headers_policy_is_deleted_with_its_etag(
     aws_credentials: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """Its distribution still references it at this point, so CloudFront would
-    refuse the delete; a later teardown picks it up once the distribution is
-    gone."""
-    deleted: list[str] = []
-    _with_headers_policies(
-        monkeypatch, [_headers_policy("S1-security-headers-policy", "P-MINE")], deleted
-    )
-    with mock_aws():
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-    assert deleted == []
-
-
-@pytest.mark.parametrize(
-    "policy",
-    [
-        _headers_policy("managed-SecurityHeadersPolicy", "P-M", policy_type="managed"),
-        _headers_policy("SomeTeam-cors-policy", "P-C"),
-    ],
-)
-def test_a_policy_outside_this_solutions_naming_is_untouched(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch, policy: dict
-):
-    """A managed policy cannot be deleted at all, and a differently-named custom
-    one belongs to somebody else."""
-    deleted: list[str] = []
-    _with_headers_policies(monkeypatch, [policy], deleted)
-    with mock_aws():
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-    assert deleted == []
-
-
-@pytest.mark.parametrize(
-    "stack_status", ["CREATE_FAILED", "ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_FAILED"]
-)
-def test_a_headers_policy_of_a_stack_in_an_inconsistent_state_is_removed(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch, stack_status: str
-):
-    """A stack stuck in one of these states will never serve traffic again, so its
-    policy is debris. Treating it as live would leave a policy nothing can
-    delete once the stack is finally removed."""
-    deleted: list[str] = []
-    deployer = StackDeployer(region=REGION)
-    _with_headers_policies(
-        monkeypatch, [_headers_policy("Broken-security-headers-policy", "P-B")], deleted
-    )
-    stub = Stubber(deployer.cfn)
-    stub.add_response(
-        "describe_stacks",
+    """Every policy the stack's resource list records is deleted, each carrying the
+    ETag read for that same policy — CloudFront refuses a wrong ETag exactly as it
+    refuses a missing one. Two owned policies with distinct ETags are what make a
+    single read hoisted out of the loop, or a constant, fail here. Other
+    IDP-shaped policies in the account are left."""
+    stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+    policies = _HeadersPolicies(
         {
-            "Stacks": [
-                {
-                    "StackName": "Broken",
-                    "CreationTime": dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc),
-                    "StackStatus": stack_status,
-                }
-            ]
-        },
-        {"StackName": "Broken"},
+            "P-MINE": "S1-security-headers-policy",
+            "P-MINE-2": "S1-extra-headers-policy",
+            "P-GONE": "GoneStack-security-headers-policy",
+        }
     )
-    with mock_aws(), stub:
-        deployer._cleanup_additional_resources("S1")
-    assert deleted == ["P-B"]
-
-
-@pytest.mark.parametrize("stack_status", ["UPDATE_IN_PROGRESS", "CREATE_IN_PROGRESS"])
-def test_a_headers_policy_of_a_stack_mid_operation_is_left_alone(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch, stack_status: str
-):
-    """An in-progress stack is treated as active for safety — it may be about to
-    reach CREATE_COMPLETE and need its policy."""
-    deleted: list[str] = []
     deployer = StackDeployer(region=REGION)
-    _with_headers_policies(
-        monkeypatch, [_headers_policy("Busy-security-headers-policy", "P-B")], deleted
+    stub = _stub_stack_resources(
+        deployer,
+        stack_id,
+        [
+            ("AWS::SNS::Topic", "arn:aws:sns:topic"),
+            (POLICY_TYPE, "P-MINE"),
+            (POLICY_TYPE, "P-MINE-2"),
+        ],
     )
-    stub = Stubber(deployer.cfn)
-    stub.add_response(
-        "describe_stacks",
-        {
-            "Stacks": [
-                {
-                    "StackName": "Busy",
-                    "CreationTime": dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc),
-                    "StackStatus": stack_status,
-                }
-            ]
-        },
-        {"StackName": "Busy"},
-    )
-    with mock_aws(), stub:
-        deployer._cleanup_additional_resources("S1")
-    assert deleted == []
+    policies.install(monkeypatch)
+    with stub:
+        deployer._delete_own_response_headers_policy(stack_id)
+    assert sorted(policies.deleted) == [
+        ("P-MINE", "etag-for-P-MINE"),
+        ("P-MINE-2", "etag-for-P-MINE-2"),
+    ]
+    assert sorted(policies.read) == ["P-MINE", "P-MINE-2"]
 
 
-def test_an_unreadable_stack_state_is_treated_as_active(
+def test_a_same_named_policy_this_stack_did_not_create_is_left_alone(
     aws_credentials: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """ "Cannot tell" must mean "leave it": an AccessDenied on DescribeStacks is
-    not evidence that a stack is gone."""
-    deleted: list[str] = []
+    """A stack deployed without CloudFront hosting creates no policy, while a
+    same-named stack in another Region can hold ``S1-security-headers-policy``.
+    The name is not evidence of ownership; the resource list is."""
+    stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+    policies = _HeadersPolicies({"P-OTHER-REGION": "S1-security-headers-policy"})
     deployer = StackDeployer(region=REGION)
-    _with_headers_policies(
-        monkeypatch,
-        [_headers_policy("Unknown-security-headers-policy", "P-U")],
-        deleted,
+    stub = _stub_stack_resources(
+        deployer, stack_id, [("AWS::SNS::Topic", "arn:aws:sns:topic")]
     )
+    policies.install(monkeypatch)
+    with stub:
+        deployer._delete_own_response_headers_policy(stack_id)
+    assert policies.deleted == []
+    assert policies.read == []
+
+
+def test_a_policy_still_attached_to_its_distribution_is_reported_not_failed(
+    aws_credentials: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A distribution finishes deleting 15-20 minutes after being disabled, and
+    until then CloudFront answers ``ResponseHeadersPolicyInUse``. That is the
+    expected first-pass answer after a failed stack delete, so it is an INFO line
+    saying what to do next, not a warning."""
+    stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+    policies = _HeadersPolicies(
+        {"P-MINE": "S1-security-headers-policy"}, in_use=("P-MINE",)
+    )
+    deployer = StackDeployer(region=REGION)
+    stub = _stub_stack_resources(deployer, stack_id, [(POLICY_TYPE, "P-MINE")])
+    policies.install(monkeypatch)
+    with stub, caplog.at_level("INFO", logger="idp_sdk._core.stack"):
+        deployer._delete_own_response_headers_policy(stack_id)
+
+    assert policies.deleted == []
+    records = [r for r in caplog.records if "S1-security-headers-policy" in r.message]
+    assert [r.levelname for r in records] == ["INFO"]
+    assert "still attached" in records[0].message
+    assert "remove-deleted-stack-resources" in records[0].message
+
+
+def test_a_policy_cloudformation_already_deleted_is_skipped_quietly(
+    aws_credentials: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """After a clean DELETE_COMPLETE the recorded policy is already gone, which is
+    the common case and must not print a warning on every teardown."""
+    stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+    policies = _HeadersPolicies({})
+    deployer = StackDeployer(region=REGION)
+    stub = _stub_stack_resources(deployer, stack_id, [(POLICY_TYPE, "P-MINE")])
+    policies.install(monkeypatch)
+    with stub, caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
+        deployer._delete_own_response_headers_policy(stack_id)
+    assert policies.read == ["P-MINE"]
+    assert policies.deleted == []
+    assert caplog.records == []
+
+
+def test_an_unreadable_resource_list_deletes_no_policy(
+    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
+):
+    """ "Cannot tell what this stack owned" must mean "delete nothing", not "fall
+    back to matching names" — that fallback is the defect."""
+    stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+    policies = _HeadersPolicies({"P-MINE": "S1-security-headers-policy"})
+    deployer = StackDeployer(region=REGION)
     stub = Stubber(deployer.cfn)
-    stub.add_client_error("describe_stacks", service_error_code="AccessDenied")
-    with mock_aws(), stub:
-        deployer._cleanup_additional_resources("S1")
-    assert deleted == []
+    stub.add_client_error("list_stack_resources", service_error_code="AccessDenied")
+    policies.install(monkeypatch)
+    with stub:
+        deployer._delete_own_response_headers_policy(stack_id)
+    assert policies.deleted == []
+    assert policies.read == []
 
 
 def _bda_client(
@@ -2710,11 +2814,15 @@ def test_an_appsync_api_whose_log_group_is_already_gone_is_not_an_error(
     assert "Failed to clean up AppSync log groups" not in caplog.text
 
 
-def test_a_failed_cloudfront_listing_does_not_stop_the_iam_sweep(
+def test_a_failed_distribution_step_does_not_stop_the_iam_sweep(
     aws_credentials: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
+    """Every step of the additional cleanup is isolated, and the distribution
+    step sits before the IAM sweep. This guards the wrapper deliberately: the
+    step catches its per-distribution failures itself, so what can still escape
+    it is a failure to build the client or read the resource list."""
     real_client = boto3.client
     with mock_aws():
         real_client("iam", region_name=REGION).create_policy(
@@ -2726,72 +2834,51 @@ def test_a_failed_cloudfront_listing_does_not_stop_the_iam_sweep(
                 }
             ),
         )
-        monkeypatch.setattr(
-            boto3,
-            "client",
-            _break("cloudfront", "list_distributions", RuntimeError("AccessDenied")),
-        )
+        deployer = StackDeployer(region=REGION)
+
+        def explode(_identifier: str) -> None:
+            raise RuntimeError("AccessDenied")
+
+        monkeypatch.setattr(deployer, "_disable_or_delete_own_distributions", explode)
         with caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
-            StackDeployer(region=REGION)._cleanup_additional_resources("S1")
+            deployer._cleanup_additional_resources("S1")
         names = _iam_policy_names(real_client)
 
     assert "S1-OCRPolicy" not in names
-    assert "Failed to cleanup CloudFront distributions" in caplog.text
+    assert "Failed to cleanup CloudFront distributions: AccessDenied" in caplog.text
 
 
-def test_our_own_disabled_distribution_is_deleted_immediately(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
+def test_a_failed_policy_step_does_not_stop_the_iam_sweep(
+    aws_credentials: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ):
-    """The second pass deletes this stack's distribution outright when it is
-    already disabled, rather than disabling it again and leaving it for a third
-    teardown that may never happen.
-
-    Reaching this branch needs the listing to report a status other than
-    ``Deployed`` — otherwise the account-wide first pass has already taken it —
-    so only ``list_distributions`` is faked; the delete is real.
-    """
+    """Every step of the additional cleanup is isolated, and the policy step sits
+    before the IAM and Bedrock Data Automation sweeps, so an escape from it would
+    leak their orphans behind one generic warning."""
     real_client = boto3.client
-    config = _distribution_config("Web app cloudfront distribution S1")
-    config["Enabled"] = False
-
     with mock_aws():
-        cloudfront = real_client("cloudfront")
-        dist_id = cloudfront.create_distribution(DistributionConfig=config)[
-            "Distribution"
-        ]["Id"]
+        real_client("iam", region_name=REGION).create_policy(
+            PolicyName="S1-OCRPolicy",
+            PolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+                }
+            ),
+        )
+        deployer = StackDeployer(region=REGION)
 
-        def factory(service: str, *a: Any, **k: Any) -> Any:
-            client = real_client(service, *a, **k)
-            if service == "cloudfront":
-                return PartialFake(
-                    client,
-                    {
-                        "list_distributions": lambda **_k: {
-                            "DistributionList": {
-                                "Items": [
-                                    {
-                                        "Id": dist_id,
-                                        "Comment": "Web app cloudfront distribution S1",
-                                        "Status": "InProgress",
-                                        "Enabled": False,
-                                    }
-                                ]
-                            }
-                        }
-                    },
-                )
-            return client
+        def explode(_identifier: str) -> None:
+            raise RuntimeError("NoRegionError")
 
-        monkeypatch.setattr(boto3, "client", factory)
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
+        monkeypatch.setattr(deployer, "_delete_own_response_headers_policy", explode)
+        with caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
+            deployer._cleanup_additional_resources("S1")
+        names = _iam_policy_names(real_client)
 
-        remaining = [
-            d["Id"]
-            for d in cloudfront.list_distributions()
-            .get("DistributionList", {})
-            .get("Items", [])
-        ]
-    assert dist_id not in remaining
+    assert "S1-OCRPolicy" not in names
+    assert "Failed to cleanup CloudFront policies: NoRegionError" in caplog.text
 
 
 def test_a_failed_headers_policy_delete_is_warned_not_raised(
@@ -2799,83 +2886,23 @@ def test_a_failed_headers_policy_delete_is_warned_not_raised(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    real_client = boto3.client
+    """A failure other than ``ResponseHeadersPolicyInUse`` is a real problem and is
+    warned about, but never raised: the teardown's remaining sweeps still run."""
+    stack_id = "arn:aws:cloudformation:us-east-1:123456789012:stack/S1/guid"
+    policies = _HeadersPolicies({"P-MINE": "S1-security-headers-policy"})
 
-    def factory(service: str, *a: Any, **k: Any) -> Any:
-        client = real_client(service, *a, **k)
-        if service == "cloudfront":
-            return PartialFake(
-                client,
-                {
-                    "list_response_headers_policies": lambda **_k: {
-                        "ResponseHeadersPolicyList": {
-                            "Items": [
-                                _headers_policy(
-                                    "GoneStack-security-headers-policy", "P-G"
-                                )
-                            ]
-                        }
-                    },
-                    "delete_response_headers_policy": lambda **_k: (
-                        _ for _ in ()
-                    ).throw(RuntimeError("PreconditionFailed")),
-                },
-            )
-        return client
+    def refuse(**_k: Any) -> None:
+        raise _client_error("PreconditionFailed", "DeleteResponseHeadersPolicy")
 
-    with mock_aws():
-        monkeypatch.setattr(boto3, "client", factory)
-        with caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
-            StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-    assert "Failed to delete CloudFront policy" in caplog.text
-
-
-def test_a_policy_naming_no_stack_at_all_is_left_alone(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
-):
-    """A policy literally named ``-security-headers-policy`` yields an empty stack
-    name, which cannot be checked — so it must not be deleted on a guess."""
-    deleted: list[str] = []
-    _with_headers_policies(
-        monkeypatch, [_headers_policy("-security-headers-policy", "P-EMPTY")], deleted
-    )
-    with mock_aws():
-        StackDeployer(region=REGION)._cleanup_additional_resources("S1")
-    assert deleted == []
-
-
-def test_an_empty_describe_stacks_result_counts_the_stack_as_missing(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
-):
-    deleted: list[str] = []
+    policies.delete_response_headers_policy = refuse  # type: ignore[method-assign]
     deployer = StackDeployer(region=REGION)
-    _with_headers_policies(
-        monkeypatch, [_headers_policy("Ghost-security-headers-policy", "P-G")], deleted
+    stub = _stub_stack_resources(deployer, stack_id, [(POLICY_TYPE, "P-MINE")])
+    policies.install(monkeypatch)
+    with stub, caplog.at_level("WARNING", logger="idp_sdk._core.stack"):
+        deployer._delete_own_response_headers_policy(stack_id)
+    assert (
+        "Failed to delete CloudFront policy S1-security-headers-policy" in caplog.text
     )
-    stub = Stubber(deployer.cfn)
-    stub.add_response("describe_stacks", {"Stacks": []}, {"StackName": "Ghost"})
-    with mock_aws(), stub:
-        deployer._cleanup_additional_resources("S1")
-    assert deleted == ["P-G"]
-
-
-def test_a_non_client_error_reading_a_stacks_state_is_treated_as_active(
-    aws_credentials: str, monkeypatch: pytest.MonkeyPatch
-):
-    """Any unexpected exception — not just a ClientError — has to fail safe."""
-    deleted: list[str] = []
-    deployer = StackDeployer(region=REGION)
-    _with_headers_policies(
-        monkeypatch, [_headers_policy("Odd-security-headers-policy", "P-O")], deleted
-    )
-    monkeypatch.setattr(
-        deployer.cfn,
-        "describe_stacks",
-        lambda **_k: (_ for _ in ()).throw(RuntimeError("connection reset")),
-    )
-    with mock_aws():
-        deployer._cleanup_additional_resources("S1")
-    assert deleted == []
 
 
 def test_a_failed_bda_project_listing_still_lets_the_blueprints_be_swept(

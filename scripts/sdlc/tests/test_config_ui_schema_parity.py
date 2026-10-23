@@ -109,6 +109,23 @@ EXEMPT_SUBTREES: dict[str, str] = {
         "translator_config.yaml via handle_generate_rule_json (see the field's "
         "own description)."
     ),
+    "classification.two_stage.segmentation.boundary_model": (
+        "Declared for a boundary-detection model (#1329), not implemented: "
+        "segmentation.method offers only 'llm', so a control would edit a setting "
+        "nothing reads."
+    ),
+    "classification.two_stage.section_classification.embeddings": (
+        "Declared for embeddings classification (#1329), not implemented: "
+        "section_classification.method offers only 'llm'."
+    ),
+    "classification.two_stage.section_classification.decision_model": (
+        "Declared for an external classifier endpoint (#1329), not implemented: "
+        "section_classification.method offers only 'llm'."
+    ),
+    "classification.two_stage.section_classification.low_confidence": (
+        "Applies only to a non-LLM section classification method, none of which "
+        "is implemented yet (#1329)."
+    ),
     "rule_validation.z3_value_extraction": (
         "Notebook/standalone only — the deployed pipeline uses "
         "orchestrator._extract_z3_values_from_facts with fact_extraction settings."
@@ -185,9 +202,25 @@ NOT_USER_SETTABLE: dict[str, str] = {
     # the only reader of dpi/preprocessing (they govern PDF->raster rendering,
     # which happens once, in OCR). The per-stage panels correctly expose just
     # target_width/target_height.
-    "classification.image.dpi": "PDF-rendering knob; only read from ocr.image.",
-    "classification.image.preprocessing": (
+    "classification.one_stage.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.one_stage.llm.image.preprocessing": (
         "Binarization is applied during OCR rasterization; only read from ocr.image."
+    ),
+    "classification.two_stage.segmentation.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.two_stage.segmentation.llm.image.preprocessing": (
+        "Binarization is applied during OCR rasterization; only read from ocr.image."
+    ),
+    "classification.two_stage.section_classification.llm.image.dpi": "PDF-rendering knob; only read from ocr.image.",
+    "classification.two_stage.section_classification.llm.image.preprocessing": (
+        "Binarization is applied during OCR rasterization; only read from ocr.image."
+    ),
+    # --- shared confidence block, packet keys unread on section classification
+    "classification.two_stage.section_classification.llm.confidence.task_prompt_topk_packet": (
+        "Never read: section classification is one call per section, so it always "
+        "takes the page-shaped block (classification/service.py)."
+    ),
+    "classification.two_stage.section_classification.llm.confidence.task_prompt_verbalized_packet": (
+        "Never read, for the same reason as the packet Top-K block above."
     ),
     "extraction.image.dpi": "PDF-rendering knob; only read from ocr.image.",
     "extraction.image.preprocessing": (
@@ -434,7 +467,7 @@ def test_ghost_groups_are_flattened_not_dropped():
     paths = _ui_paths()
     for flattened in (
         "extraction.temperature",
-        "classification.max_tokens",
+        "classification.one_stage.llm.max_tokens",
         "summarization.reasoning_effort",
         "chat.top_p",
         "evaluation.llm_method.top_k",
@@ -560,4 +593,105 @@ def test_the_two_verdicts_do_not_overlap():
     assert not shadowed, (
         "these paths are already covered by an EXEMPT_SUBTREES prefix, so the "
         f"per-field entry is dead text: {shadowed}"
+    )
+
+
+def _classification_controls(field_name: str) -> dict[str, dict]:
+    """Every control called ``field_name`` under the classification schema, by path.
+
+    Carries its own non-vacuity guard: a parity test that silently reads zero
+    controls is the same defect as no parity test at all, and the loader is the part
+    most likely to stop finding anything.
+    """
+    schemas = [
+        schema
+        for label, schema in _schemas()
+        if label.startswith(f"{_UI_SCHEMA_TEMPLATE}::")
+    ]
+    assert schemas, (
+        f"no Schema block found in {_UI_SCHEMA_TEMPLATE}, so this check would pass "
+        "by reading nothing"
+    )
+
+    def walk(node, path="classification"):
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for name, child in properties.items():
+                if name == field_name and isinstance(child, dict):
+                    yield f"{path}.{name}", child
+                yield from walk(child, f"{path}.{name}")
+
+    controls = dict(walk(schemas[0]["properties"]["classification"]))
+    assert controls, (
+        f"found no {field_name!r} control under the classification schema, so this "
+        "check would pass by reading nothing"
+    )
+    return controls
+
+
+def test_the_reasoning_effort_picklist_matches_the_checked_set():
+    """The editor's levels and the ones the config layer accepts are one list.
+
+    ``REASONING_EFFORT_VALUES`` is what ``normalise_reasoning_effort`` accepts; a
+    level the editor offers and the config layer does not would be silently replaced
+    with the default the moment it was saved, and a level the config layer accepts
+    and the editor does not is unreachable from the UI. Compared as sets, per
+    control, so the three classification calls cannot drift apart from each other
+    either.
+    """
+    checked = set(_models.REASONING_EFFORT_VALUES)
+    problems = []
+    for path, control in sorted(_classification_controls("reasoning_effort").items()):
+        offered = control.get("enum")
+        if not isinstance(offered, list):
+            problems.append(f"{path}: no enum, so the editor offers free text")
+            continue
+        if set(offered) != checked:
+            problems.append(
+                f"{path}: editor offers {sorted(set(offered))}, the config layer "
+                f"accepts {sorted(checked)}"
+            )
+    assert not problems, "\n".join(problems)
+
+
+def test_the_reasoning_effort_picklist_default_is_the_one_the_code_substitutes():
+    """A cleared field takes the code's default, so the control must offer that one."""
+    expected = _models.DEFAULT_REASONING_EFFORT
+    wrong = sorted(
+        f"{path}: {control.get('default')!r}"
+        for path, control in _classification_controls("reasoning_effort").items()
+        if control.get("default") != expected
+    )
+    assert not wrong, (
+        f"these controls default to something other than {expected!r}, which is what "
+        f"the config layer substitutes for an empty or unrecognised value: {wrong}"
+    )
+
+
+def test_the_model_field_help_names_the_default_the_code_falls_back_to():
+    """Clearing a call's model substitutes a model, so the help must name that one.
+
+    The editor's model control is a picklist with no empty entry, but the field can
+    be cleared — and an empty model is not "no model": ``default_empty_model``
+    substitutes ``DEFAULT_CLASSIFICATION_MODEL`` so the call still has an id to send.
+    The help text said nothing about that, and the constant had drifted away from the
+    model the system defaults ship, so a cleared field moved that one call onto a
+    different and more expensive model than its siblings were running.
+
+    Written as "the description contains the constant" rather than as a fixed string
+    so that changing the default moves the help with it instead of leaving a confident
+    wrong answer in the editor.
+    """
+    default = _models.DEFAULT_CLASSIFICATION_MODEL
+    controls = _classification_controls("model")
+    silent = sorted(
+        path
+        for path, control in controls.items()
+        if default not in control.get("description", "")
+    )
+    assert not silent, (
+        "these classification model controls do not say what clearing the field "
+        f"does, or name a model other than the code's fallback ({default}): {silent}"
     )

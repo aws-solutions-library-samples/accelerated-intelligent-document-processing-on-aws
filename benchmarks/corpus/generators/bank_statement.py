@@ -14,6 +14,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    Flowable,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -48,6 +49,162 @@ FIELDS = {
     "Account Number": "000123456789",
     "Statement Period": "01/01/2024 - 12/31/2024",
 }
+
+
+# --- Per-copy pagination ------------------------------------------------------
+#
+# ``documents=N`` emits N complete statements in one file and the truth records
+# ``expected_sections: N``. A footer numbering pages across the WHOLE FILE
+# contradicts that: a 3-copy file reads "Page 1 of 3 / Page 2 of 3 / Page 3 of 3",
+# which is the single most decisive "this is one 3-page document" signal a page can
+# carry, and the classification boundary rules check it FIRST. A correct classifier
+# then returns 1 section against a truth file claiming 3 — a right answer scored as
+# wrong, with the model's own reason citing the footer. So pagination is scoped to
+# the copy: each statement is numbered "Page k of <its own pages>", which both
+# agrees with ``expected_sections`` and makes the combination a usable over-merge
+# fixture instead of a trap.
+#
+# The page map has to come from the real layout rather than from an assumption
+# about how many pages a copy takes, so it is recorded by a marker flowable during
+# the pass that ``paginate`` already runs to learn the total page count.
+
+
+def _account_number(index):
+    """The account number document copy ``index`` carries — distinct per copy.
+
+    A distinct number is what makes "this is a new document" recoverable from the
+    page's own evidence, which is what the boundary rules are told to look for.
+    """
+    if index == 0:
+        return FIELDS["Account Number"]
+    return f"{int(FIELDS['Account Number']) + index:012d}"
+
+
+class _CopyStart(Flowable):
+    """Zero-size marker recording which page a document copy starts on.
+
+    It keeps a reference to the caller's dict rather than its own state, so it
+    still reports into that dict through the shallow copy of every flowable that
+    the measuring pass makes.
+    """
+
+    def __init__(self, index, starts):
+        Flowable.__init__(self)
+        self._index = index
+        self._starts = starts
+
+    def wrap(self, *_args):
+        return (0, 0)
+
+    def draw(self):
+        self._starts[self._index] = self.canv.getPageNumber()
+
+
+def _page_spans(starts, total, documents):
+    """``[(first_page, pages)]`` per copy, derived from the measured layout.
+
+    Raises rather than guessing, in two ways. Every copy but the first is preceded
+    by a ``PageBreak``, so the first pages are strictly increasing and a map that
+    is not says the markers did not all draw — in which case the footers would
+    silently revert to file-wide numbering, which is the defect this exists to
+    prevent. And a copy cannot start after the last page of the layout it was
+    measured in; ``total`` disagreeing with the start pages that way is a
+    contradiction, not a short final statement.
+
+    Both refusals cover inputs that cannot arise from a correct layout, which is
+    the argument for refusing them rather than against it: there is no plausible
+    span to compute for an impossible map, so computing one only makes the
+    contradiction look like a measurement. The second check is what the arithmetic
+    below would otherwise absorb — once increasing, distinct, non-``None`` starts
+    are established, the only span that can come out non-positive is the final
+    one, and only when ``total`` is below the last start page.
+    """
+    firsts = [starts.get(index) for index in range(documents)]
+    if None in firsts or sorted(firsts) != firsts or len(set(firsts)) != documents:
+        raise RuntimeError(
+            f"pagination page map is incomplete: {documents} document copies but "
+            f"recorded start pages {firsts}. Per-copy footers cannot be numbered "
+            "from this, and numbering them across the file would contradict "
+            "expected_sections."
+        )
+    if firsts and total < firsts[-1]:
+        raise RuntimeError(
+            f"pagination page map is impossible: the last of {documents} document "
+            f"copies starts on page {firsts[-1]} of a {total}-page layout "
+            f"(recorded start pages {firsts}). Giving it a one-page span would "
+            "turn a contradictory map into a plausible-looking one, which is the "
+            "opposite of what this function is for."
+        )
+    spans = []
+    for index in range(documents):
+        after = firsts[index + 1] if index + 1 < documents else total + 1
+        spans.append((firsts[index], after - firsts[index]))
+    return spans
+
+
+def _locate(page, spans):
+    """``(copy index, page within that copy, pages in that copy)`` for ``page``.
+
+    Raises on a page no span covers, for the same reason :func:`_page_spans` does.
+    Clamping to the last span is the tempting answer and it is wrong: it keeps the
+    span's total while letting the page number run past it, so the fourth page of a
+    3-page final statement renders "Page 4 of 3" — the file quoting a total it does
+    not have, which is precisely the output this module exists to prevent.
+
+    ⚠️ This catches only the direction where the real build produces MORE pages
+    than the measuring pass. The other direction resolves inside a span and is
+    therefore invisible here: with fewer real pages, a later copy's first page
+    falls inside the previous copy's span and is stamped with that copy's number
+    and total. :func:`_verify_measured_layout` is what closes that half, after the
+    build, by re-deriving the map from the real run.
+    """
+    for index, (first, pages) in enumerate(spans):
+        if first <= page < first + pages:
+            return index, page - first + 1, pages
+    raise RuntimeError(
+        f"page {page} falls outside every document copy's measured page span "
+        f"{spans}: the real layout produced pages the measuring pass did not. "
+        "Numbering this page would print a total the file does not have."
+    )
+
+
+def _verify_measured_layout(spans, starts, total, documents, *, per_copy):
+    """Refuse if the real build did not lay out the way the measuring pass did.
+
+    The footers are drawn from a map measured in an earlier pass, so everything
+    they say is conditional on the second pass agreeing with the first. One
+    comparison settles that for both directions, which is why it is a comparison
+    rather than a widened inequality: the markers are still in the story for the
+    real build, so they re-record as it runs, and re-deriving the map from those
+    recordings and the real page tally must reproduce the map the footers used.
+
+    More real pages than measured is already caught during the build by
+    :func:`_locate`, which meets a page no span covers. FEWER is the direction that
+    needs this: every page still resolves inside some span, so a later copy's first
+    page is quietly stamped with the previous copy's number and total — a document
+    asserting a boundary where it has none, which is the whole defect this module
+    is about, reached through the guard's blind side.
+
+    ``starts`` must hold ONLY what the real build recorded. The caller clears the
+    dict between the passes for that reason: a marker that does not draw during the
+    real build leaves no entry, and :func:`_page_spans` then refuses an incomplete
+    map — whereas a surviving value from the measuring pass would reconstruct the
+    very map the footers already used and pass this comparison vacuously for that
+    copy. ``per_copy`` says whether markers were placed at all, so a run that
+    expected recordings and got none is refused as an incomplete map rather than
+    silently falling back to the single-copy reading.
+    """
+    rebuilt = (
+        _page_spans(starts, total, documents) if per_copy else [(1, max(1, total))]
+    )
+    if rebuilt != spans:
+        raise RuntimeError(
+            f"the measured layout and the real one disagree: footers were drawn "
+            f"from page spans {spans}, and the build that wrote the file produced "
+            f"{rebuilt} ({total} page(s)). Every page number and total in the file "
+            "is therefore unreliable, so the fixture is refused rather than "
+            "shipped with a ground truth its pages may contradict."
+        )
 
 
 def _noise(s, seq, level):
@@ -227,8 +384,9 @@ def build(
     number, statement period, but NOT the account holder's name and address — at the
     top of every page after the first (the #750 shape, and the boundary rules'
     known failure mode). It composes with ``paginate`` (header at the top, "Page N of
-    M" at the bottom). Meant for ``documents=1``: the header carries the FIRST
-    statement's account number on every page.
+    M" at the bottom). The header carries the account number of the copy whose page
+    it is on, so with ``documents > 1`` it reprints each statement's own identity
+    rather than the first statement's.
 
     This is the over-MERGE direction of boundary detection, and it is the case a
     naive over-split fix regresses: a prompt biased toward ``continue`` collapses
@@ -237,9 +395,10 @@ def build(
     made this worse.
 
     Each copy carries its own opening identity block (distinct account number)
-    and per-copy pagination footers, so the correct answer is unambiguous:
-    exactly ``documents`` sections. The truth records that as
-    ``expected_sections``.
+    and, under ``paginate``, its own pagination footers restarting at "Page 1 of
+    <its own pages>" — see the per-copy pagination note above for why file-wide
+    numbering made this combination unusable. So the correct answer is unambiguous:
+    exactly ``documents`` sections. The truth records that as ``expected_sections``.
     """
     styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(
@@ -258,17 +417,19 @@ def build(
     seq_ids, per_list = [], {}
     rows_typed = {}
     rpl = rows // lists
+    # Both page-drawn signals — the pagination footer and the running identity
+    # header — have to say which COPY a page belongs to once there is more than one,
+    # or they assert the opposite of `expected_sections`. Only then is the marker
+    # needed, which keeps every single-document fixture byte-identical.
+    needs_page_map = documents > 1 and (paginate or repeat_header)
+    copy_starts = {}
     for di in range(documents):
         if di:
             story.append(PageBreak())
-        # Opening identity block. A DISTINCT account number per copy is what makes
-        # "this is a new document" recoverable from the page's own evidence, which
-        # is what the boundary rules are told to look for.
-        acct = (
-            FIELDS["Account Number"]
-            if di == 0
-            else f"{int(FIELDS['Account Number']) + di:012d}"
-        )
+        if needs_page_map:
+            story.append(_CopyStart(di, copy_starts))
+        # Opening identity block.
+        acct = _account_number(di)
         story += [
             Paragraph("<b>AnyBank Monthly Statement</b>", styles["Title"]),
             Paragraph(f"Account Number: {acct}", styles["Normal"]),
@@ -317,33 +478,22 @@ def build(
             story.append(Spacer(1, 0.15 * inch))
             per_list[f"list{li + 1}"] = ids
 
-    def _running_header(canvas, _doc):
-        # The OTHER common real-world shape (#726 counter-case, #750): many statements
-        # print a running identity header — bank name, account number, statement
-        # period — at the top of EVERY page, with no addressee name or address. A
-        # boundary rule that keys on "carries an identity block => start" over-splits
-        # exactly this shape; drawn on the canvas so it does not disturb the table.
-        canvas.saveState()
-        canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
-        canvas.setFont("Helvetica", 8)
-        canvas.drawString(
-            0.4 * inch,
-            10.45 * inch,
-            f"Account Number: {FIELDS['Account Number']}    "
-            "Statement Period: 01/01/2024 - 12/31/2024",
-        )
-        canvas.restoreState()
-
     top_margin = 0.85 * inch if repeat_header else 0.5 * inch
+    total, spans = 1, []
 
-    if paginate:
+    if paginate or needs_page_map:
         # Real statements paginate, and "Page 2 of 3" is the single most decisive
         # boundary signal a page can carry — the classification boundary rules
         # check it FIRST (#653). A corpus document without it tests those rules
         # with their primary evidence removed, which is a legitimate hard case but
-        # not the common one. Two passes, because the total page count is not known
-        # until the document has been laid out once.
+        # not the common one. Two passes, because neither the total page count nor
+        # which pages belong to which copy is known until the story has been laid
+        # out once.
+        #
+        # The measuring pass uses the SAME margins as the real one. It used to lay
+        # out at the default top margin while `repeat_header` raised it for the real
+        # build, so the two passes could disagree on the page count and the footer
+        # would then quote a total the file does not have.
         from copy import copy as _shallow
 
         counter = {"total": 0}
@@ -351,18 +501,71 @@ def build(
         def _count(canvas, _doc):
             counter["total"] = max(counter["total"], canvas.getPageNumber())
 
-        doc.build([_shallow(f) for f in story], onFirstPage=_count, onLaterPages=_count)
+        SimpleDocTemplate(
+            out,
+            pagesize=letter,
+            topMargin=top_margin,
+            bottomMargin=0.5 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        ).build([_shallow(f) for f in story], onFirstPage=_count, onLaterPages=_count)
         total = counter["total"] or 1
+        spans = (
+            _page_spans(copy_starts, total, documents)
+            if needs_page_map
+            else [(1, total)]
+        )
 
-        def _footer(canvas, doc_):
+    def _running_header(canvas, _doc):
+        # The OTHER common real-world shape (#726 counter-case, #750): many statements
+        # print a running identity header — bank name, account number, statement
+        # period — at the top of EVERY page, with no addressee name or address. A
+        # boundary rule that keys on "carries an identity block => start" over-splits
+        # exactly this shape; drawn on the canvas so it does not disturb the table.
+        index = _locate(canvas.getPageNumber(), spans)[0] if spans else 0
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(
+            0.4 * inch,
+            10.45 * inch,
+            f"Account Number: {_account_number(index)}    "
+            "Statement Period: 01/01/2024 - 12/31/2024",
+        )
+        canvas.restoreState()
+
+    # The page count of the build that actually WROTE the file, which is the half
+    # of the layout agreement the measuring pass cannot speak for. The markers are
+    # still in `story`, so they re-record into `copy_starts` as this build runs.
+    #
+    # Emptied first, so what the verification reads is only what THIS build
+    # recorded. The markers overwrite and never clear, so a surviving measured
+    # value for a copy whose marker did not draw would rebuild the map the footers
+    # already used and agree with itself — a check that cannot observe one of its
+    # own failure modes. Cleared, that copy has no entry and is refused.
+    copy_starts.clear()
+    real = {"total": 0}
+
+    def _tally(canvas, _doc):
+        real["total"] = max(real["total"], canvas.getPageNumber())
+
+    if paginate:
+
+        def _footer(canvas, _doc):
+            # Numbered within the COPY, not across the file.
+            _, page, pages = _locate(canvas.getPageNumber(), spans)
             canvas.saveState()
             canvas.setFont("Helvetica", 8)
-            canvas.drawRightString(
-                7.9 * inch, 0.32 * inch, f"Page {canvas.getPageNumber()} of {total}"
-            )
+            canvas.drawRightString(7.9 * inch, 0.32 * inch, f"Page {page} of {pages}")
             canvas.restoreState()
 
+        def _first(canvas, doc_):
+            _tally(canvas, doc_)
+            _footer(canvas, doc_)
+
         def _later(canvas, doc_):
+            _tally(canvas, doc_)
             _footer(canvas, doc_)
             if repeat_header:
                 _running_header(canvas, doc_)
@@ -375,8 +578,13 @@ def build(
             leftMargin=0.4 * inch,
             rightMargin=0.4 * inch,
         )
-        doc.build(story, onFirstPage=_footer, onLaterPages=_later)
+        doc.build(story, onFirstPage=_first, onLaterPages=_later)
     elif repeat_header:
+
+        def _later_header(canvas, doc_):
+            _tally(canvas, doc_)
+            _running_header(canvas, doc_)
+
         doc = SimpleDocTemplate(
             out,
             pagesize=letter,
@@ -385,9 +593,22 @@ def build(
             leftMargin=0.4 * inch,
             rightMargin=0.4 * inch,
         )
-        doc.build(story, onLaterPages=_running_header)
+        doc.build(story, onFirstPage=_tally, onLaterPages=_later_header)
     else:
         doc.build(story)
+
+    if spans:
+        # Everything the footers and the running header asserted was conditional on
+        # the second pass laying out like the first. Settle that before the truth
+        # file is written, so a disagreement is a build failure rather than a
+        # fixture whose pages and ground truth may contradict each other.
+        _verify_measured_layout(
+            spans,
+            copy_starts,
+            real["total"],
+            documents,
+            per_copy=needs_page_map,
+        )
     truth = {
         "gen": "bank_statement",
         "repeat_header": bool(repeat_header),

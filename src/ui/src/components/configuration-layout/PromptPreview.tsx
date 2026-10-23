@@ -73,7 +73,7 @@ interface PromptPreviewProps {
 
 /** Processing steps available for prompt preview.
  *
- * `classification_segmentation` and `classification_labeling` are the two halves
+ * `classification_segmentation` and `classification_section` are the two halves
  * of `classification.strategy: two_stage`. They are listed unconditionally here
  * and FILTERED at render time (see `availableSteps`), because a step that is not
  * reachable under the current configuration would otherwise render an empty
@@ -81,9 +81,9 @@ interface PromptPreviewProps {
  * option.
  */
 const STEPS = [
-  { value: 'classification', label: 'Classification' },
-  { value: 'classification_segmentation', label: 'Classification: boundaries (Stage A)' },
-  { value: 'classification_labeling', label: 'Classification: labeling (Stage B)' },
+  { value: 'classification', label: 'Classification: one stage' },
+  { value: 'classification_segmentation', label: 'Classification: segmentation (Two stage)' },
+  { value: 'classification_section', label: 'Classification: section classification (Two stage)' },
   { value: 'extraction', label: 'Extraction' },
   { value: 'confidence', label: 'Confidence Assessment' },
   { value: 'summarization', label: 'Summarization' },
@@ -92,7 +92,7 @@ const STEPS = [
 type StepName = (typeof STEPS)[number]['value'];
 
 /** Every step that reads the classification config. */
-const CLASSIFICATION_STEPS: StepName[] = ['classification', 'classification_segmentation', 'classification_labeling'];
+const CLASSIFICATION_STEPS: StepName[] = ['classification', 'classification_segmentation', 'classification_section'];
 
 // Geometry modes in which the model is asked to emit bounding boxes (mirrors
 // idp_common.extraction.prompt_assembly.geometry_requires_llm_boxes).
@@ -126,7 +126,7 @@ function appendBboxBlock(core: string, bboxBlock: string): string {
 // The preview has to do all three, because
 // the prompt a classification call actually sends is a function of FOUR settings
 // (granularity, strategy, modality, confidence.mode) and showing the raw
-// `classification.task_prompt` means showing a prompt that will not be sent —
+// task prompt means showing a prompt that will not be sent —
 // which is worse than showing nothing, since it looks authoritative.
 
 /** Splice markers for the class-confidence block (mirrors class_confidence._SPLICE_MARKERS). */
@@ -150,6 +150,80 @@ export function appendClassConfidenceBlock(core: string, block: string, topK: nu
 export function resolveTopK(configured: number, numClasses: number): number {
   if (numClasses <= 0) return Math.max(2, configured);
   return Math.max(2, Math.min(configured, numClasses));
+}
+
+/** The three classification calls the preview can show. */
+export type ClassificationStep = 'classification' | 'classification_segmentation' | 'classification_section';
+
+/** The dict at `path` under `root`, or `{}`. */
+function objAt(root: Record<string, unknown>, ...path: string[]): Record<string, unknown> {
+  let node: unknown = root;
+  for (const key of path) {
+    node = node && typeof node === 'object' ? (node as Record<string, unknown>)[key] : undefined;
+  }
+  return node && typeof node === 'object' ? (node as Record<string, unknown>) : {};
+}
+
+/**
+ * The prompt pair, model and composed task prompt one classification call sends
+ * (config format 0.9: every setting sits inside the call that uses it).
+ *
+ * Mirrors `_stage_prompt`, `_call` and `_class_confidence_prompt` in
+ * `classification/service.py`. Section classification is not
+ * granularity-dependent — it is always one call about one section's pages —
+ * while segmentation and one stage both are. Each call applies its OWN modality
+ * and, for the two class-assigning calls, its own confidence block.
+ *
+ * A cleared stage prompt previews empty: the service then sends the shipped
+ * default, which this form does not hold.
+ */
+export function resolveClassificationStepPrompt(
+  cls: Record<string, unknown>,
+  step: ClassificationStep,
+  numClasses: number,
+): { system_prompt: string; task_prompt: string; model: string } {
+  let reader: Record<string, unknown>;
+  let call: Record<string, unknown>;
+  let system: string;
+  let task: string;
+  let isPacket = false;
+  if (step === 'classification_section') {
+    call = objAt(cls, 'two_stage', 'section_classification', 'llm');
+    system = String(call.system_prompt ?? '');
+    task = String(call.task_prompt ?? '');
+  } else {
+    reader = step === 'classification_segmentation' ? objAt(cls, 'two_stage', 'segmentation', 'llm') : objAt(cls, 'one_stage');
+    call = step === 'classification_segmentation' ? reader : objAt(reader, 'llm');
+    isPacket = String(reader.granularity ?? 'page') === 'packet';
+    const prompts = objAt(reader, isPacket ? 'packet' : 'page');
+    system = String(prompts.system_prompt ?? '');
+    task = String(prompts.task_prompt ?? '');
+  }
+
+  // The modality rewrite runs BEFORE the confidence splice for the same reason
+  // it does in Python: the splice positions its block relative to the document
+  // markers, and moving placeholders afterwards could carry content across one.
+  task = applyModalityToPrompt(task, objAt(call, 'modality'));
+
+  // Segmentation reports no class, so there is nothing to be confident about.
+  // `topk` is the model default, so an absent key previews the block the service
+  // WILL send.
+  if (step !== 'classification_segmentation') {
+    const conf = objAt(call, 'confidence');
+    const confMode = String(conf.mode ?? 'topk');
+    if (confMode !== 'off') {
+      // Section classification returns one class, so it takes the PAGE-shaped
+      // block; only a one-stage packet call gets the per-segment one.
+      if (confMode === 'topk') {
+        const block = String((isPacket ? conf.task_prompt_topk_packet : '') || conf.task_prompt_topk || '');
+        task = appendClassConfidenceBlock(task, block, resolveTopK(Number(conf.top_k_candidates ?? 3), numClasses));
+      } else {
+        const block = String((isPacket ? conf.task_prompt_verbalized_packet : '') || conf.task_prompt_verbalized || '');
+        task = appendClassConfidenceBlock(task, block, null);
+      }
+    }
+  }
+  return { system_prompt: system, task_prompt: task, model: String(call.model ?? '') };
 }
 
 /**
@@ -1067,7 +1141,7 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     const twoStage = String(cls.strategy ?? 'single_pass') === 'two_stage';
     return STEPS.filter((step) => {
       if (step.value === 'classification') return !twoStage;
-      if (step.value === 'classification_segmentation' || step.value === 'classification_labeling') {
+      if (step.value === 'classification_segmentation' || step.value === 'classification_section') {
         return twoStage;
       }
       return true;
@@ -1103,8 +1177,8 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
       let task = String(extraction.task_prompt ?? '');
       if (integrated) {
         // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
-        // the 1S-TopK template, Advanced the tool-based one. (Previously the
-        // preview showed the Advanced template for both.)
+        // the 1S-TopK template, Advanced the tool-based one. The two differ, so
+        // picking by mode is load-bearing rather than cosmetic.
         const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
         const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
         task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
@@ -1128,77 +1202,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     }
 
     if (CLASSIFICATION_STEPS.includes(selectedStep)) {
-      const cls = (formValues?.classification as Record<string, unknown>) || {};
-      const packet = (cls.packet as Record<string, unknown>) || {};
-      const segmentation = (cls.segmentation as Record<string, unknown>) || {};
-      const segPacket = (segmentation.packet as Record<string, unknown>) || {};
-      const labeling = (cls.labeling as Record<string, unknown>) || {};
-      const modality = (cls.modality as Record<string, unknown>) || {};
-      const conf = (cls.confidence as Record<string, unknown>) || {};
-      const isPacket = String(cls.granularity ?? 'page') === 'packet';
-      const sharedModel = String(cls.model ?? '');
-
-      // Which prompt pair this step sends. Mirrors `_stage_prompt`: Stage B is
-      // NOT granularity-dependent (it is always one call about one document's
-      // pages), while Stage A and single-pass both are.
-      let system: string;
-      let task: string;
-      let model: string;
-      // ⚠️ `||`, not `??`, throughout. The service falls back on TRUTHINESS
-      // (`if value:` in `_stage_prompt`), and clearing a textarea in this form
-      // yields `''` rather than undefined — so `??` would show an empty preview
-      // for a cleared stage prompt while the service sends the single-pass one,
-      // which is exactly the case its warning exists to tell the operator
-      // about. A preview that disagrees with the runtime on the setting the
-      // operator just changed is worse than no preview.
-      if (selectedStep === 'classification_labeling') {
-        system = String(labeling.system_prompt || cls.system_prompt || '');
-        task = String(labeling.task_prompt || cls.task_prompt || '');
-        model = String(labeling.model || sharedModel);
-      } else if (selectedStep === 'classification_segmentation') {
-        const source = isPacket ? segPacket : segmentation;
-        system = String(source.system_prompt || cls.system_prompt || '');
-        task = String(source.task_prompt || cls.task_prompt || '');
-        model = String(segmentation.model || sharedModel);
-      } else if (isPacket) {
-        system = String(packet.system_prompt || cls.system_prompt || '');
-        task = String(packet.task_prompt || cls.task_prompt || '');
-        model = sharedModel;
-      } else {
-        system = String(cls.system_prompt ?? '');
-        task = String(cls.task_prompt ?? '');
-        model = sharedModel;
-      }
-
-      // The modality rewrite applies to every stage, and runs BEFORE the
-      // confidence splice for the same reason it does in Python: the splice
-      // positions its block relative to the document markers, and moving
-      // placeholders afterwards could carry content across one.
-      task = applyModalityToPrompt(task, modality);
-
-      // Stage A reports no class, so there is nothing to be confident about and
-      // no block is composed for it.
-      // `topk` is `ClassificationConfidenceConfig.mode`'s default, so an absent
-      // key must preview the block the service WILL send. Defaulting to 'off'
-      // is only right when `formValues` is a merged config (where the key is
-      // always present); on a sparse one it hides a block from the preview.
-      const confMode = String(conf.mode ?? 'topk');
-      if (selectedStep !== 'classification_segmentation' && confMode !== 'off') {
-        // Stage B returns one class, so it takes the PAGE-shaped block whatever
-        // the granularity is; the packet block describes a segments array it
-        // does not return.
-        const perSegment = isPacket && selectedStep !== 'classification_labeling';
-        if (confMode === 'topk') {
-          const block = String((perSegment ? conf.task_prompt_topk_packet : '') || conf.task_prompt_topk || '');
-          const topK = resolveTopK(Number(conf.top_k_candidates ?? 3), classes.length);
-          task = appendClassConfidenceBlock(task, block, topK);
-        } else {
-          const block = String((perSegment ? conf.task_prompt_verbalized_packet : '') || conf.task_prompt_verbalized || '');
-          task = appendClassConfidenceBlock(task, block, null);
-        }
-      }
-
-      return { system_prompt: system, task_prompt: task, model };
+      return resolveClassificationStepPrompt(
+        (formValues?.classification as Record<string, unknown>) || {},
+        selectedStep as ClassificationStep,
+        classes.length,
+      );
     }
 
     const cfg = formValues?.[selectedStep];
@@ -1222,12 +1230,19 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
 
     switch (selectedStep) {
       case 'classification':
-      case 'classification_labeling':
+      case 'classification_section':
         subs.CLASS_NAMES_AND_DESCRIPTIONS = formatClassNamesAndDescriptions(classes);
         // Optional opt-in placeholder. Only materialized into the rendered
         // prompt if the template references it; substitutions for
         // unreferenced keys are no-ops.
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = formatClassAndAttributeNamesAndDescriptions(classes);
+        // {BOUNDARY_HINTS} belongs to the segmentation step alone — the block
+        // it renders tells the model to report no document type, which is the
+        // one thing these two steps exist to do — so the service substitutes
+        // empty here. It has no DOCUMENT_PLACEHOLDER_LABELS entry either, so
+        // without this the literal token would survive into the preview while
+        // the real call drops it.
+        subs.BOUNDARY_HINTS = '';
         break;
 
       case 'classification_segmentation': {
@@ -1236,10 +1251,15 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
         // a prompt costing what single-pass costs. {BOUNDARY_HINTS} carries the
         // class NAMES only, and only when boundary_hints asks for them.
         const cls = (formValues?.classification as Record<string, unknown>) || {};
-        const segmentation = (cls.segmentation as Record<string, unknown>) || {};
-        const hints = String(segmentation.boundary_hints ?? 'none');
+        const hints = String(objAt(cls, 'two_stage', 'segmentation', 'llm').boundary_hints ?? 'none');
         subs.CLASS_NAMES_AND_DESCRIPTIONS = '';
         subs.CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS = '';
+        // Stage A sends no examples either, for the same reason and at a
+        // larger saving — an example is a page shown with its class, and it
+        // carries images. Set explicitly so the generic
+        // DOCUMENT_PLACEHOLDER_LABELS marker ("will be inserted here at
+        // runtime") does not promise content this stage never sends.
+        subs.FEW_SHOT_EXAMPLES = '';
         subs.BOUNDARY_HINTS =
           hints === 'class_names' && classes.length
             ? `<document-type-hints>\n${classes.map((c) => getClassId(c)).join(', ')}\n</document-type-hints>`

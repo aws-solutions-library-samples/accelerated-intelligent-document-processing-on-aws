@@ -43,7 +43,7 @@ X_AWS_IDP_EXCLUSION_REASON = "x-aws-idp-exclusion-reason"
 # The class label classification assigns when it determined no class: a page with
 # no text and no image, a page whose classification failed, an out-of-vocabulary
 # prediction after ``maxValidationRetries`` (the default
-# ``classification.invalidClassFallback``), or a deployment with no document types
+# ``classification.fallback_class``), or a deployment with no document types
 # configured at all.
 #
 # Deliberately NOT a configurable class: no class of this name exists in a

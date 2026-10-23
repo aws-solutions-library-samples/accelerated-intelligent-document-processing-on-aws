@@ -232,6 +232,17 @@ numbers would go into a comparison. A label or a test-run pin keeps a revision f
 being pruned, not from expiring `DataRetentionInDays` after it was cut; see
 [Retention](#retention) for how to keep its configuration for longer.
 
+A revision is served in the **current** configuration format, whichever release cut
+it. A revision older than a format change was stored in the shape of its own
+release, so it is converted on the way out — the same conversion a stored profile
+gets on every read — and a download, the Revision History view and a pinned run all
+see one shape for one revision number. The stored body is never rewritten: it stays
+an immutable record of what ran, so what the conversion affects is only what is
+returned to you. The practical consequence is that comparing an old revision with a
+recent one compares settings in the same places, and `config-download --config-revision
+<n> --format minimal` reports real differences from the defaults rather than every
+relocated setting.
+
 For a test run the check happens **when the run is submitted**: `startTestRun`
 (Test Studio, `idp-cli run-inference --test-set`, a direct invocation) rejects a
 profile that does not exist and a revision whose body cannot be read — `Revision

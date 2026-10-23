@@ -919,15 +919,24 @@ class ConfigurationManager:
         return entries
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
-        """Full configuration recorded in one revision, or None if not retained."""
+        """
+        Full configuration recorded in one revision, or None if not retained.
+
+        In the current config format, like every other read of a stored
+        configuration: a revision cut before the 0.9 classification nesting is
+        stored flat, so returned raw it gives `config-download --config-revision
+        N` a different shape from `config-download` of the profile head and from
+        what Revision History shows for the same revision. The stored body is
+        never rewritten (`_read_revision_body`).
+        """
         return self._read_revision_body(profile, revision)
 
     def _read_revision_body(
         self, profile: str, revision: int
     ) -> Optional[Dict[str, Any]]:
         """
-        A revision's body, rebuilt from the profile head if it is the published
-        revision and its object has expired.
+        A revision's body in the current config format, rebuilt from the profile
+        head if it is the published revision and its object has expired.
 
         Revision bodies live in the Configuration bucket, whose lifecycle rule
         expires every object after DataRetentionInDays, while every new document is
@@ -935,11 +944,76 @@ class ConfigurationManager:
         published revision was cut more than DataRetentionInDays ago stops
         processing new documents. The head stands in only when it is provably that
         revision (`_head_is_revision`); any other missing body stays missing.
+
+        Both sources are migrated, so one revision number does not change shape
+        when its stored object expires: the head rebuild goes through
+        `ConfigurationRecord`/`IDPConfig` and is therefore already current, while a
+        stored body is in whatever format the release that cut it wrote.
+
+        Migrated **in memory only**, never written back. A revision is an immutable
+        record of the configuration that actually ran, which is why the pinned read
+        (`_load_revision_config`) migrates the same way.
         """
         body = self.revisions.get_body(profile, revision)
-        if body is not None or not self.revisions.enabled:
+        if body is None and self.revisions.enabled:
+            body = self._published_body_from_head(profile, int(revision))
+        return self._migrated_body(body)
+
+    @staticmethod
+    def _migrated_body(
+        body: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        `body` in the current config format, leaving the stored object alone.
+
+        A body the chain cannot convert is returned **as stored**, with a warning,
+        rather than raising. The revision was read; only its normalisation failed,
+        and every consumer of a converted body here is reading for the record, for
+        display or for download.
+
+        What decides it is the cost of each answer. `_capture_config` in the test
+        runner reaches a pinned revision through `get_revision` and re-raises
+        anything it throws as "Could not read revision r<n>", so raising here
+        would fail a whole `startTestRun` over a body the caller only wanted to
+        record — and the two sites that convert a *captured run* configuration
+        (`test_runner._current_format` on the way in,
+        `test_results_resolver._migrated_run_config` on the way back out) both
+        record such a body as stored, so raising would also defeat a contract they
+        state. Tolerating it, on the other hand, cannot let a document run under
+        an unconverted configuration: every path that *executes* a configuration
+        builds an `IDPConfig` (`_load_revision_config`, `restore_revision`), whose
+        validator calls the same chain and raises on the same body. So the
+        tolerance is confined to paths that only ever show or record what a
+        revision held.
+
+        ⚠️ Do not read this as the house style for `migrate_config`: callers over a
+        stored configuration do both, and most of the ones outside the captured-run
+        pair propagate. `configuration_resolver.handle_get_profile_revision`
+        converts *this same body* a layer up and answers an error response. The
+        closest precedent for tolerating is
+        `update_configuration._migrated_or_original`, which does it in this shape
+        on the deploy-time write path.
+        """
+        if body is None:
+            return None
+        from copy import deepcopy
+
+        from .migrations import migrate_config
+
+        # The deepcopy is belt-and-braces, not a guard against a known mutation:
+        # every hop in the chain already copies before it transforms and returns
+        # its input unchanged when it does not. Both of this function's callers
+        # pass a freshly deserialised body, so there is nothing to protect today.
+
+        try:
+            return migrate_config(deepcopy(body))
+        except Exception as e:  # noqa: BLE001 — a read must not fail on this
+            logger.warning(
+                f"Could not convert a stored configuration to the current format; "
+                f"returning it as stored: {e}",
+                exc_info=True,
+            )
             return body
-        return self._published_body_from_head(profile, int(revision))
 
     def _published_body_from_head(
         self, profile: str, revision: int

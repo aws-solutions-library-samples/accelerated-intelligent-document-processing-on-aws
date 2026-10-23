@@ -14,50 +14,20 @@ chat:
   enabled: true
 
 classification:
-  task_prompt: >-
-    <reasoning-guidelines>
-    When determining the document type:
-    - First identify the document's primary purpose and function
-    - Note specific visual elements (letterhead, forms, tables, signatures)
-    - Identify key textual indicators (terminology, phrases, structure)
-    - Consider the document's intended audience and use case
-    - Provide specific evidence from both visual and textual analysis
-    </reasoning-guidelines>
-
-    <document-types>
-    {CLASS_NAMES_AND_DESCRIPTIONS}
-    </document-types>
-
-    <few_shot_examples>
-    {FEW_SHOT_EXAMPLES}
-    </few_shot_examples>
-
-    <output-format>
-    Return your classification as valid JSON following this exact structure:
-    {
-      "classification_reason": "Detailed reasoning including specific visual and textual evidence that led to this classification",
-      "class": "exact_document_type_from_list"
-    }
-    </output-format>
-
-    <<CACHEPOINT>>
-
-    <document-ocr-data>
-    {DOCUMENT_TEXT}
-    </document-ocr-data>
-
-    <document-image>
-    {DOCUMENT_IMAGE}
-    </document-image>
-
-    <final-instructions>
-    Analyze the document above by:
-    1. Applying the <classification-instructions> to examine both visual and textual features
-    2. Following the <reasoning-guidelines> to build your classification rationale
-    3. Selecting ONLY from document types in <document-types>
-    4. Providing clear reasoning with specific evidence before the classification
-    5. Outputting in the exact JSON format specified in <output-format>
-    </final-instructions>
+  one_stage:
+    page:
+      task_prompt: |-
+        <reasoning-guidelines> When determining the document type: - First identify the document's primary purpose and function - Note specific visual elements (letterhead, forms, tables, signatures) - Identify key textual indicators (terminology, phrases, structure) - Consider the document's intended audience and use case - Provide specific evidence from both visual and textual analysis </reasoning-guidelines>
+        <document-types> {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>
+        <few_shot_examples> {FEW_SHOT_EXAMPLES} </few_shot_examples>
+        <output-format> Return your classification as valid JSON following this exact structure: {
+          "classification_reason": "Detailed reasoning including specific visual and textual evidence that led to this classification",
+          "class": "exact_document_type_from_list"
+        } </output-format>
+        <<CACHEPOINT>>
+        <document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
+        <document-image> {DOCUMENT_IMAGE} </document-image>
+        <final-instructions> Analyze the document above by: 1. Applying the <classification-instructions> to examine both visual and textual features 2. Following the <reasoning-guidelines> to build your classification rationale 3. Selecting ONLY from document types in <document-types> 4. Providing clear reasoning with specific evidence before the classification 5. Outputting in the exact JSON format specified in <output-format> </final-instructions>
     
 extraction:
   task_prompt: >

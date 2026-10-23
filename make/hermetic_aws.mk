@@ -125,6 +125,18 @@ PYTEST_HERMETIC = $(HERMETIC_AWS) $(FIRST_PARTY_PIN) $(PYTHON) -m pytest
 # `env` is spelled out here because, unlike $(HERMETIC_AWS), there is no `env` in
 # front of the assignment for it to attach to. The `$(if ...)` keeps
 # `FIRST_PARTY_PYTHONPATH=` from degenerating into a bare `env` with no arguments,
-# which prints the environment instead of running pytest.
-PYTEST_FIRST_PARTY = $(if $(FIRST_PARTY_PIN),env $(FIRST_PARTY_PIN)) \
-	$(PYTHON) -m pytest
+# which prints the environment instead of running the interpreter.
+#
+# RUN_FIRST_PARTY is the same pin for a target that runs a *script* rather than
+# pytest. The live-stack checks need it for the reason above and are easy to miss
+# when auditing for #1094, because none of them is a pytest invocation and the
+# import that resolves to the wrong tree is **deferred**: `make api-test` reaches
+# `idp_common` only from inside two IDOR seed helpers in
+# `scripts/api_security_cases.py`, so an unpinned run starts, authenticates,
+# passes 1133 checks and only then reports `No module named
+# idp_common.notifications` — a module this checkout has. A startup-time
+# ImportError would have been obvious; "2 could not be run" at the end of a
+# green-looking log is not.
+RUN_FIRST_PARTY = $(if $(FIRST_PARTY_PIN),env $(FIRST_PARTY_PIN)) $(PYTHON)
+
+PYTEST_FIRST_PARTY = $(RUN_FIRST_PARTY) -m pytest

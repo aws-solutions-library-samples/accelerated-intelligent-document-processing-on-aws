@@ -321,6 +321,72 @@ class TestExtractConfigParams:
         assert params["classification.modality.images"] == "infer"
         assert params["classification.granularity"] == "page"
 
+    def test_a_one_stage_config_logs_the_one_stage_call(self):
+        config = {
+            "classification": {
+                "strategy": "single_pass",
+                "one_stage": {
+                    "granularity": "packet",
+                    "page": {"task_prompt": "PAGE"},
+                    "packet": {"task_prompt": "PACKET", "system_prompt": "SYS"},
+                    "llm": {
+                        "model": "one-stage-model",
+                        "temperature": 0.0,
+                        "modality": {"text": True, "images": None},
+                    },
+                },
+                "two_stage": {
+                    "section_classification": {"llm": {"model": "unused-model"}}
+                },
+            }
+        }
+        params, prompts, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.model"] == "one-stage-model"
+        assert params["classification.temperature"] == "0.0"
+        assert params["classification.granularity"] == "packet"
+        assert params["classification.modality.text"] == "True"
+        assert params["classification.modality.images"] == "infer"
+        assert "classification.segmentation.model" not in params
+        # The prompt the active granularity sends, not the other one.
+        assert prompts["classification.task_prompt"] == "PACKET"
+        assert prompts["classification.system_prompt"] == "SYS"
+
+    def test_a_two_stage_config_logs_both_calls(self):
+        """`classification.model` is the call that assigns the class, so a run
+        is comparable with a one-stage run on that axis; the boundary call is
+        logged under its own name."""
+        config = {
+            "classification": {
+                "strategy": "two_stage",
+                "one_stage": {"llm": {"model": "unused-model"}},
+                "two_stage": {
+                    "segmentation": {
+                        "llm": {
+                            "model": "boundary-model",
+                            "granularity": "page",
+                            "page": {"task_prompt": "BOUNDARIES"},
+                        }
+                    },
+                    "section_classification": {
+                        "llm": {
+                            "model": "section-model",
+                            "task_prompt": "LABEL",
+                            "modality": {"text": False, "images": True},
+                        }
+                    },
+                },
+            }
+        }
+        params, prompts, _ = mlflow_logger._extract_config_params(config)
+        assert params["classification.strategy"] == "two_stage"
+        assert params["classification.model"] == "section-model"
+        assert params["classification.segmentation.model"] == "boundary-model"
+        assert params["classification.granularity"] == "page"
+        assert params["classification.modality.text"] == "False"
+        assert params["classification.modality.images"] == "True"
+        assert prompts["classification.task_prompt"] == "LABEL"
+        assert prompts["classification.segmentation.task_prompt"] == "BOUNDARIES"
+
     def test_the_removed_key_logs_nothing(self):
         """A config still carrying `classificationMethod` reaches this function
         only if it bypassed the migration; it must not resurrect the old

@@ -140,8 +140,8 @@ class TestConfigModels:
         assert config.extraction.confidence.enabled is True
 
         # Numbers from strings
-        assert config.classification.temperature == 0.0
-        assert config.classification.max_tokens == 4096
+        assert config.classification.one_stage.llm.temperature == 0.0
+        assert config.classification.one_stage.llm.max_tokens == 4096
 
         # Numbers from natives
         assert config.extraction.top_p == 0.1
@@ -152,25 +152,35 @@ class TestConfigModels:
         from idp_common.config.models import ClassificationConfig
 
         cfg = ClassificationConfig()
-        assert cfg.enforceValidClasses is True
-        assert cfg.maxValidationRetries == 2
-        assert cfg.invalidClassFallback == "unclassified"
+        validation = cfg.one_stage.llm.validation
+        assert validation.enforceValidClasses is True
+        assert validation.maxValidationRetries == 2
+        assert cfg.fallback_class == "unclassified"
 
     def test_classification_valid_class_enforcement_parsing(self):
         """String-typed stored config values parse into the correct types."""
         from idp_common.config.models import ClassificationConfig
 
-        cfg = ClassificationConfig(
-            enforceValidClasses="false",
-            maxValidationRetries="3",
-            invalidClassFallback="other",
+        cfg = ClassificationConfig.model_validate(
+            {
+                "enforceValidClasses": "false",
+                "maxValidationRetries": "3",
+                "invalidClassFallback": "other",
+            }
         )
-        assert cfg.enforceValidClasses is False
-        assert cfg.maxValidationRetries == 3
-        assert cfg.invalidClassFallback == "other"
+        # Flat (pre-0.9) keys passed straight to the model are migrated, not
+        # dropped: direct construction is a second entry point to protect.
+        for validation in (
+            cfg.one_stage.llm.validation,
+            cfg.two_stage.section_classification.llm.validation,
+        ):
+            assert validation.enforceValidClasses is False
+            assert validation.maxValidationRetries == 3
+        assert cfg.fallback_class == "other"
 
         # Negative retries are clamped to 0.
-        assert ClassificationConfig(maxValidationRetries="-1").maxValidationRetries == 0
+        clamped = ClassificationConfig.model_validate({"maxValidationRetries": "-1"})
+        assert clamped.one_stage.llm.validation.maxValidationRetries == 0
 
     def test_config_type_hints(self):
         """Test that config can be used as type hint"""
@@ -463,7 +473,7 @@ class TestPipelineHookPreservation:
         )
         assert len(cfg.rule_validation.postHook) == 1
         # classification still has its default model (not wiped out).
-        assert cfg.classification.model
+        assert cfg.classification.one_stage.llm.model
 
 
 @pytest.mark.unit
@@ -501,3 +511,271 @@ class TestRuleClassesMigrationIsLoud:
         assert [pc["x-aws-idp-policy-type"] for pc in cfg.policy_classes] == ["kept"]
         assert "DISCARDING 'rule_classes'" in caplog.text
         assert "policy_classes" in caplog.text
+
+
+#: The spellings an operator reaches for when they mean "no page limit", plus the two
+#: this list did not used to cover. `True` is the one that mattered: `bool` is an
+#: `int` subclass, so an unquoted YAML `maxPagesForClassification: true` was read as a
+#: one-page limit — and in the migration it took `sectionSplitting` to `disabled` with
+#: it, turning boundary detection off for a setting the operator never wrote.
+NO_PAGE_LIMIT_SPELLINGS = [
+    "ALL",
+    "all",
+    "0",
+    0,
+    "",
+    None,
+    "abc",
+    -1,
+    True,
+    False,
+    # A fraction below one page: not a page count either. It was stored as "0"
+    # while the migration read it as a limit and took boundary detection with it,
+    # which is the boolean trap in a second spelling.
+    0.4,
+    # `int(inf)` raises OverflowError, which pydantic does not turn into a
+    # ValidationError, so this failed the profile's load with a raw traceback --
+    # the outcome this validator normalises in order to avoid.
+    float("inf"),
+    float("-inf"),
+    float("nan"),
+]
+
+
+@pytest.mark.unit
+class TestTheFileShapeIsOnlyAcceptedWhenItCanBeHonoured:
+    """`file_shape` used to accept three values it could not act on.
+
+    Both settings are assertions about a file, and an assertion the pipeline cannot
+    honour is worse than a refused one: the editor shows it, the operator believes
+    it, and nothing happens. The two halves are treated differently on purpose, and
+    the asymmetry is the point of this class.
+    """
+
+    @pytest.mark.parametrize("value", NO_PAGE_LIMIT_SPELLINGS)
+    def test_a_value_that_is_not_a_page_count_classifies_every_page(self, value):
+        from idp_common.config.models import FileShapeConfig
+
+        assert (
+            FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+            == "ALL"
+        )
+
+    def test_an_unusable_page_limit_says_so_rather_than_being_stored(self, caplog):
+        """`'abc'` used to validate, be stored, and then be discarded twice over.
+
+        Once by the `sectionSplitting` check and again by an `int()` inside a bare
+        `except`, so the editor kept showing a limit that was never in force.
+        """
+        from idp_common.config.models import FileShapeConfig
+
+        with caplog.at_level(logging.WARNING):
+            shape = FileShapeConfig(maxPagesForClassification="abc")
+        assert shape.maxPagesForClassification == "ALL"
+        assert "maxPagesForClassification" in caplog.text
+
+    def test_the_legacy_zero_takes_the_default_silently(self, caplog):
+        """`0` has always meant ALL, so it is a spelling rather than a mistake."""
+        from idp_common.config.models import FileShapeConfig
+
+        with caplog.at_level(logging.WARNING):
+            shape = FileShapeConfig(maxPagesForClassification=0)
+        assert shape.maxPagesForClassification == "ALL"
+        assert "maxPagesForClassification" not in caplog.text
+
+    @pytest.mark.parametrize("value", [-5, "-5"])
+    def test_a_negative_limit_is_the_same_answer_whichever_type_it_arrives_as(
+        self, value
+    ):
+        """`-5` became ALL and `'-5'` was stored verbatim — one value, two answers."""
+        from idp_common.config.models import FileShapeConfig
+
+        assert (
+            FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+            == "ALL"
+        )
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (3, "3"),
+            ("3", "3"),
+            (" 7 ", "7"),
+            ("ALL", "ALL"),
+            # A float that truncates to a usable page count still does, which is
+            # what it has always done; only one that truncates to zero changes.
+            (2.5, "2"),
+            (2.0, "2"),
+        ],
+    )
+    def test_a_real_page_limit_is_kept(self, value, expected):
+        from idp_common.config.models import FileShapeConfig
+
+        assert (
+            FileShapeConfig(maxPagesForClassification=value).maxPagesForClassification
+            == expected
+        )
+
+    def test_an_unrecognised_section_splitting_is_refused(self):
+        """Unlike the page limit, this one raises — see the validator's docstring.
+
+        The two differ in both consequence and reachability. An unusable page limit
+        falls back to "classify every page", which is the complete answer and what
+        the runtime already did with it; an unrecognised `sectionSplitting` fell back
+        to `llm_determined`, the expensive value, and changed where sections start.
+        And a bad page limit can already sit in a stored profile because the
+        validator stored it, while a bad `sectionSplitting` cannot, because the
+        validator rewrote it before it was saved.
+        """
+        from idp_common.config.models import FileShapeConfig
+
+        with pytest.raises(ValueError, match="sectionSplitting"):
+            FileShapeConfig(sectionSplitting="bogus")
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_clearing_section_splitting_takes_the_default_silently(self, value, caplog):
+        """Every sibling validator treats empty as "use the default", and now so does
+        this one: clearing the field in the editor used to print a spurious
+        "Invalid sectionSplitting value ''"."""
+        from idp_common.config.models import FileShapeConfig
+
+        with caplog.at_level(logging.WARNING):
+            shape = FileShapeConfig(sectionSplitting=value)
+        assert shape.sectionSplitting == "llm_determined"
+        assert "sectionSplitting" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("disabled", "disabled"),
+            ("DISABLED", "disabled"),
+            (" page ", "page"),
+            ("llm_determined", "llm_determined"),
+        ],
+    )
+    def test_a_recognised_value_is_normalised(self, value, expected):
+        from idp_common.config.models import FileShapeConfig
+
+        assert FileShapeConfig(sectionSplitting=value).sectionSplitting == expected
+
+
+@pytest.mark.unit
+class TestReasoningEffortIsChecked:
+    """An unrecognised effort level used to reach Bedrock verbatim.
+
+    The legal values are family-specific, were written out in the field's own
+    description, and were enforced nowhere — so a typo was accepted, **stored**, and
+    either failed the document at the provider or was dropped by a family that
+    ignores effort, leaving the typo to surface on the next model change.
+
+    ⚠️ **It substitutes the default rather than raising, and that is not a weaker
+    version of the sibling `sectionSplitting` check — it is the opposite situation.**
+    Because this field never had a validator, a typo is already storable and may sit
+    in a profile right now; raising would make that profile fail validation on read,
+    with no fallback to return, so every document would fail at config load. The
+    `sectionSplitting` validator normalised on the way in, so a bad value could never
+    be stored and raising there cannot wedge anything. See
+    `TestAStoredTypoDoesNotWedgeAProfile` in `test_v08_to_v09_migration.py` for the
+    read path that makes this concrete.
+    """
+
+    @pytest.mark.parametrize(
+        "value", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "HIGH"]
+    )
+    def test_every_documented_level_is_accepted(self, value):
+        from idp_common.config.models import ClassificationModelSettings
+
+        assert (
+            ClassificationModelSettings(reasoning_effort=value).reasoning_effort
+            == value.lower()
+        )
+
+    def test_a_level_no_family_accepts_is_replaced_and_reported(self, caplog):
+        from idp_common.config.models import (
+            DEFAULT_REASONING_EFFORT,
+            ClassificationModelSettings,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            settings = ClassificationModelSettings(reasoning_effort="bogus")
+        assert settings.reasoning_effort == DEFAULT_REASONING_EFFORT
+        assert "reasoning_effort" in caplog.text
+        assert "bogus" in caplog.text
+
+    @pytest.mark.parametrize("value", ["", None])
+    def test_clearing_it_takes_the_default_silently(self, value, caplog):
+        from idp_common.config.models import (
+            DEFAULT_REASONING_EFFORT,
+            ClassificationModelSettings,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            settings = ClassificationModelSettings(reasoning_effort=value)
+        assert settings.reasoning_effort == DEFAULT_REASONING_EFFORT
+        assert "reasoning_effort" not in caplog.text
+
+    def test_the_checked_set_is_pinned_against_casual_change(self):
+        """A literal, and deliberately only that.
+
+        ⚠️ This does **not** establish parity with the editor's picklist — it cannot,
+        because it never opens the template. What it buys is that widening the set
+        here is a visible edit rather than a one-character change. The parity
+        assertion is `test_the_reasoning_effort_picklist_matches_the_checked_set` in
+        `scripts/sdlc/tests/test_config_ui_schema_parity.py`, which reads the
+        template's own Schema block.
+        """
+        from idp_common.config.models import REASONING_EFFORT_VALUES
+
+        assert set(REASONING_EFFORT_VALUES) == {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }
+
+
+@pytest.mark.unit
+class TestDirectConstructionRunsTheWholeMigrationChain:
+    """`ClassificationConfig(**flat)` must not lose what `IDPConfig(**flat)` keeps.
+
+    The validator's own docstring says it exists so that "neither route loses a
+    setting". It ran only the last hop, so for a v0.7 **holistic** configuration
+    `classificationMethod` survived that hop and was then dropped by
+    `extra="ignore"` — leaving `granularity: page` and the shipped page prompt in
+    place of the operator's hand-written packet one.
+    """
+
+    FLAT_HOLISTIC = {
+        "classificationMethod": "textbasedHolisticClassification",
+        "model": "us.amazon.nova-2-lite-v1:0",
+        "task_prompt": (
+            "give me segments with ordinal_start_page and ordinal_end_page "
+            "{CLASS_NAMES_AND_DESCRIPTIONS} {DOCUMENT_TEXT}"
+        ),
+        "system_prompt": "split packets",
+    }
+
+    def test_a_flat_holistic_config_becomes_packet_granularity(self):
+        from idp_common.config.models import ClassificationConfig
+
+        cfg = ClassificationConfig(**self.FLAT_HOLISTIC)
+        assert cfg.one_stage.granularity == "packet"
+        assert "ordinal_start_page" in cfg.one_stage.packet.task_prompt
+
+    def test_both_routes_now_agree(self):
+        """The property the docstring claims, asserted as an equality.
+
+        Written as a comparison rather than two expected values on purpose: what is
+        being promised is that the two entry points agree, so the assertion should
+        fail if either one moves.
+        """
+        from idp_common.config.models import ClassificationConfig
+
+        direct = ClassificationConfig(**self.FLAT_HOLISTIC).model_dump()
+        through_wrapper = IDPConfig(
+            classification=dict(self.FLAT_HOLISTIC)
+        ).classification.model_dump()
+        assert direct == through_wrapper

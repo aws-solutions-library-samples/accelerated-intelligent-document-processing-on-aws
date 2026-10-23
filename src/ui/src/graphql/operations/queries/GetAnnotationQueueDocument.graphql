@@ -1,6 +1,7 @@
 query GetAnnotationQueueDocument($testSetId: String!, $objectKey: String!) {
   getAnnotationQueue(testSetId: $testSetId, objectKey: $objectKey, includeCompleted: true) {
     testSetId
+    name
     claimLeaseMinutes
     skipReasons
     summaryStatus

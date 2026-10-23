@@ -458,19 +458,22 @@ and two of the three causes report nothing here:
   `extraction_class_not_configured` issue from the Extraction step.
 
 ⚠️ **That last case is not always rare, and which configuration you run decides
-it.** On the default `multimodalPageLevelClassification` with
-`enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
-coerced to `invalidClassFallback`, so it becomes the silent `unclassified` case
-above and the count really is bounded by configuration edits. Two other supported
-configurations store the model's invented class name verbatim —
-`textbasedHolisticClassification`, which has no enforcement loop at all, and
-`multimodalPageLevelClassification` with `enforceValidClasses: false` — and there
-the rate follows model output rather than operator action. Small, cheap
-classification models are the most prone to those predictions. On either of those
-paths expect data points proportional to throughput, and use
-`ConfidenceUnavailableThreshold` to set the volume at which it is worth paging;
-better still, define the classes the model keeps reaching for, or turn enforcement
-on. The report itself is correct either way — the section holds no data — so the
+it.** With `enforceValidClasses` on (the default) — it lives in each
+class-assigning call's `validation` block, at
+`classification.one_stage.llm.validation.enforceValidClasses` and
+`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+— every call that
+assigns a class — one stage at page or packet granularity, and two-stage section
+classification — re-prompts on an out-of-vocabulary prediction and then assigns
+`fallback_class`, so it becomes the silent `unclassified` case above and the count
+really is bounded by configuration edits. With `enforceValidClasses: false` the
+model's invented class name is stored verbatim, and there the rate follows model
+output rather than operator action. Small, cheap classification models are the most
+prone to those predictions. On that path expect data points proportional to
+throughput, and use `ConfidenceUnavailableThreshold` to set the volume at which it
+is worth paging; better still, define the classes the model keeps reaching for, or
+turn enforcement on. See
+[Enforcing a Valid Class Vocabulary](./classification.md#enforcing-a-valid-class-vocabulary-validation--retry). The report itself is correct either way — the section holds no data — so the
 parameter, not a carve-out, is the right lever.
 
 The first two report nothing at all, exactly as an
@@ -544,7 +547,7 @@ was missing. The six causes worth checking first:
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
 | No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
-| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification method and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
+| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification strategy and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
 | The same code, with a `root_cause` saying none of the section's pages are present in the document | The section lists page IDs the document does not contain, so there was no page text or image to assess against. Before this was detected the pass ran anyway and returned scores derived from nothing | Check the Classification step's section boundaries and the OCR step's page list. A warning-severity `assessment_pages_missing` (no metric) marks the partial case, where only some pages were absent |
 
 **What is lost while it is firing:** the affected sections have no confidence

@@ -14,7 +14,7 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 **Region:** us-west-2 · **Stack:** `IDPBench066`
 **Test set:** `docsplit` (DocSplit-Poly-Seq — RVL-CDIP-derived packets, 13 classes)
 · first **20 packets**, **298 pages** per model per mode, one run each, no failures
-**Config:** `config_library/unified/docsplit/config.yaml`, `classification.confidence.mode`
+**Config:** `config_library/unified/docsplit/config.yaml`, `classification.one_stage.llm.confidence.mode`
 ∈ {`topk` (`top_k_candidates: 3`), `off`}, everything else at system defaults;
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
@@ -59,8 +59,10 @@ threshold, Haiku catches **73 % of misclassifications by reviewing 11 % of pages
 errors sit at 0.95 where nothing distinguishes them from correct pages.
 
 Classification confidence therefore costs 6.4× more per page on the model where it
-is actually informative. That is the trade to decide deliberately — which is why the
-feature is opt-in and why this page exists.
+is actually informative. That is the trade to decide deliberately, rather than one
+the default can make for you — which is why this page exists. The default gives you
+the signal; whether to pay for a model that makes it actionable, or to set
+`mode: off` and keep neither, is the decision left open.
 
 ---
 
@@ -182,6 +184,19 @@ Practical consequence: on a small class vocabulary, do not assume caching soften
 cost of an Anthropic classifier. The 6.4× figure above is what you actually pay.
 
 ## 6. Guidance
+
+⚠️ **Every path on this page is the `single_pass` one, and under `two_stage` the
+block you must edit is a different one.** This study ran
+`classification.strategy: single_pass`, so `mode` and the threshold below mean
+`classification.one_stage.llm.confidence.…`. Under `classification.strategy:
+two_stage` the call that assigns a class is section classification, so the same
+settings live at
+`classification.two_stage.section_classification.llm.confidence.…` and the
+`one_stage` block is not read at all — editing it there changes nothing and
+produces no error. The segmentation call has no confidence block, because it
+assigns no class. The cost figures also assume single-pass metering: a two-stage
+run's classification spend is reported under `Segmentation/` and
+`SectionClassification/` rather than `Classification/`.
 
 1. **`topk` is on by default, and that is the right default** — ~0.5 % of the bill
    for a signal that catches 43 % of the default model's errors from 8 % of pages.

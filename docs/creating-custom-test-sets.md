@@ -189,13 +189,12 @@ This is the most important step. You'll review each document's predictions, corr
 For each processed document:
 
 1. Open the document from the document list
-2. Click **View Data** to see the extracted information
-3. Click **Edit Data** to enter edit mode
-4. Review each extracted field:
+2. Click **Edit Data** on a section (or **Edit** at the top of the document page) to open the document editor
+3. Review each extracted field:
    - Click on a field to highlight it in the document viewer
    - Compare the extracted value against the source document
    - Correct any errors by editing the field value directly
-5. **Save** your changes — the system creates a revision history of all edits
+4. Click **Save** to save your changes — the system records every edit in the field's edit history
 
 > **Tip**: The solution generates a confidence score for each field. To save time, you could focus on reviewing lower-confidence fields first. However, for the highest quality ground truth, review all fields.
 
@@ -208,7 +207,7 @@ Once you're confident the predictions are correct for a document:
 
 Repeat this for every document you want to include in your test set.
 
-For the editing interface in full — the tabbed layout, the bounding-box overlay, the confidence indicators and how baseline edits are recorded — see [Visual Editor](./human-review.md#visual-editor). For details on the evaluation baseline concept, see [Evaluation Framework](./evaluation.md).
+For the editing interface in full — the tabbed layout, the bounding-box overlay, the confidence indicators and how baseline edits are recorded — see [Document Editor](./human-review.md#document-editor). For details on the evaluation baseline concept, see [Evaluation Framework](./evaluation.md).
 
 ## Step 5: Create the Test Set
 

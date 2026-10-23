@@ -78,6 +78,7 @@ export type AnnotationQueue = {
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;
   labelJobTotal?: Maybe<Scalars['Int']['output']>;
+  name?: Maybe<Scalars['String']['output']>;
   nextObjectKey?: Maybe<Scalars['String']['output']>;
   remainingDocs: Scalars['Int']['output'];
   reviewedDocs: Scalars['Int']['output'];
@@ -2300,15 +2301,18 @@ export type ReviewEffortEstimate = {
   effortMinutesPerDoc?: Maybe<Scalars['Float']['output']>;
   estimateConfidence: Scalars['String']['output'];
   impliedCutoff?: Maybe<Scalars['Float']['output']>;
+  inspectedDocs?: Maybe<Scalars['Int']['output']>;
   qualityTier?: Maybe<Scalars['String']['output']>;
   qualityTierReason?: Maybe<Scalars['String']['output']>;
   recommendReviewAll: Scalars['Boolean']['output'];
   reliabilityTable: Array<ReliabilityBin>;
   residualError: Scalars['Float']['output'];
   sampledDocs?: Maybe<Scalars['Int']['output']>;
+  setDocs?: Maybe<Scalars['Int']['output']>;
   targetAccuracy: Scalars['Float']['output'];
   testSetId: Scalars['String']['output'];
   totalDocs: Scalars['Int']['output'];
+  wholeSetInspected?: Maybe<Scalars['Boolean']['output']>;
 };
 
 export type ReviewHistoryEntry = {
@@ -2368,7 +2372,6 @@ export type ReviewItemPage = {
 
 export type ReviewQueueDefinition = {
   checklist: Array<Scalars['String']['output']>;
-  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   description?: Maybe<Scalars['String']['output']>;
   eligibleAnnotators: Array<Scalars['String']['output']>;
   enabled?: Maybe<Scalars['Boolean']['output']>;
@@ -2383,7 +2386,6 @@ export type ReviewQueueDefinition = {
 
 export type ReviewQueueDefinitionInput = {
   checklist?: InputMaybe<Array<Scalars['String']['input']>>;
-  confidenceThreshold?: InputMaybe<Scalars['Float']['input']>;
   description?: InputMaybe<Scalars['String']['input']>;
   eligibleAnnotators?: InputMaybe<Array<Scalars['String']['input']>>;
   enabled?: InputMaybe<Scalars['Boolean']['input']>;
@@ -2406,7 +2408,6 @@ export type ReviewQueueSummary = {
   claimCap: Scalars['Int']['output'];
   claimed: Scalars['Int']['output'];
   claimedByMe: Scalars['Int']['output'];
-  confidenceThreshold?: Maybe<Scalars['Float']['output']>;
   definedInConfig: Scalars['Boolean']['output'];
   depth: Scalars['Int']['output'];
   description?: Maybe<Scalars['String']['output']>;
@@ -3154,7 +3155,7 @@ export type CreateReviewQueueMutationVariables = Exact<{
 }>;
 
 
-export type CreateReviewQueueMutation = { createReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, confidenceThreshold?: number | null, enabled?: boolean | null } | null };
+export type CreateReviewQueueMutation = { createReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null } | null };
 
 export type CreateUserMutationVariables = Exact<{
   email: Scalars['String']['input'];
@@ -3651,7 +3652,7 @@ export type UpdateReviewQueueMutationVariables = Exact<{
 }>;
 
 
-export type UpdateReviewQueueMutation = { updateReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, confidenceThreshold?: number | null, enabled?: boolean | null } | null };
+export type UpdateReviewQueueMutation = { updateReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null } | null };
 
 export type UpdateTestSetMutationVariables = Exact<{
   input: UpdateTestSetInput;
@@ -3760,7 +3761,7 @@ export type EstimateReviewEffortQueryVariables = Exact<{
 }>;
 
 
-export type EstimateReviewEffortQuery = { estimateReviewEffort?: { testSetId: string, qualityTier?: string | null, qualityTierReason?: string | null, targetAccuracy: number, configVersion?: string | null, configVersionSource?: string | null, confidenceFingerprint?: string | null, confidenceFingerprintSource?: string | null, curveSource?: string | null, docsToReview: number, docsToReviewLow: number, docsToReviewHigh: number, totalDocs: number, sampledDocs?: number | null, impliedCutoff?: number | null, residualError: number, baselineError: number, effortMinutes: number, effortMinutesPerDoc?: number | null, estimateConfidence: string, auditSampleSize: number, recommendReviewAll: boolean, calibration: { ece?: number | null, auroc?: number | null, binCoverage: number, totalObservations: number, degenerate: boolean, overconfident: boolean, undiscriminating: boolean, reliable: boolean }, burndown: Array<{ docsReviewed: number, residualErrorPct: number, cutoff?: number | null }>, reliabilityTable: Array<{ binStart: number, binEnd: number, observations: number, observedAccuracy?: number | null, blendedAccuracy?: number | null }> } | null };
+export type EstimateReviewEffortQuery = { estimateReviewEffort?: { testSetId: string, qualityTier?: string | null, qualityTierReason?: string | null, targetAccuracy: number, configVersion?: string | null, configVersionSource?: string | null, confidenceFingerprint?: string | null, confidenceFingerprintSource?: string | null, curveSource?: string | null, docsToReview: number, docsToReviewLow: number, docsToReviewHigh: number, totalDocs: number, sampledDocs?: number | null, inspectedDocs?: number | null, setDocs?: number | null, wholeSetInspected?: boolean | null, impliedCutoff?: number | null, residualError: number, baselineError: number, effortMinutes: number, effortMinutesPerDoc?: number | null, estimateConfidence: string, auditSampleSize: number, recommendReviewAll: boolean, calibration: { ece?: number | null, auroc?: number | null, binCoverage: number, totalObservations: number, degenerate: boolean, overconfident: boolean, undiscriminating: boolean, reliable: boolean }, burndown: Array<{ docsReviewed: number, residualErrorPct: number, cutoff?: number | null }>, reliabilityTable: Array<{ binStart: number, binEnd: number, observations: number, observedAccuracy?: number | null, blendedAccuracy?: number | null }> } | null };
 
 export type GetAgentJobStatusQueryVariables = Exact<{
   jobId: Scalars['ID']['input'];
@@ -3776,7 +3777,7 @@ export type GetAnnotationQueueQueryVariables = Exact<{
 }>;
 
 
-export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
+export type GetAnnotationQueueQuery = { getAnnotationQueue?: { testSetId: string, name?: string | null, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
 
 export type GetAnnotationQueueDocumentQueryVariables = Exact<{
   testSetId: Scalars['String']['input'];
@@ -3784,7 +3785,7 @@ export type GetAnnotationQueueDocumentQueryVariables = Exact<{
 }>;
 
 
-export type GetAnnotationQueueDocumentQuery = { getAnnotationQueue?: { testSetId: string, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
+export type GetAnnotationQueueDocumentQuery = { getAnnotationQueue?: { testSetId: string, name?: string | null, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null }> } | null };
 
 export type GetChatMessagesQueryVariables = Exact<{
   sessionId: Scalars['ID']['input'];
@@ -3921,7 +3922,7 @@ export type GetMyReviewQueuesQueryVariables = Exact<{
 }>;
 
 
-export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, enabledProfiles: Array<string>, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, confidenceThreshold?: number | null, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
+export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, enabledProfiles: Array<string>, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
 
 export type GetPricingQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -3938,7 +3939,7 @@ export type GetReviewItemQuery = { getReviewItem?: { queueName?: string | null, 
 export type GetReviewQueuesOverviewQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type GetReviewQueuesOverviewQuery = { getReviewQueuesOverview?: { queues: Array<{ summary: { profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, inProgress?: number | null, annotators?: number | null, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, confidenceThreshold?: number | null, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }, reviewers: Array<{ email: string, claimed: number }> }> } | null };
+export type GetReviewQueuesOverviewQuery = { getReviewQueuesOverview?: { queues: Array<{ summary: { profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, inProgress?: number | null, annotators?: number | null, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }, reviewers: Array<{ email: string, claimed: number }> }> } | null };
 
 export type GetSampleDocumentUrlQueryVariables = Exact<{
   s3Key: Scalars['String']['input'];
@@ -4151,7 +4152,7 @@ export type ListReviewQueueItemsQuery = { listReviewQueueItems?: { nextToken?: s
 export type ListReviewQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListReviewQueuesQuery = { listReviewQueues?: Array<{ id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, confidenceThreshold?: number | null, enabled?: boolean | null }> | null };
+export type ListReviewQueuesQuery = { listReviewQueues?: Array<{ id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null }> | null };
 
 export type ListSampleDocumentsQueryVariables = Exact<{ [key: string]: never; }>;
 

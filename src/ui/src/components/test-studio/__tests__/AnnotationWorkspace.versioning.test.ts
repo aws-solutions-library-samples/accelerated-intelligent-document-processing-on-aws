@@ -91,8 +91,9 @@ describe('AnnotationWorkspace version transition', () => {
     // The reassurance is the load-bearing half: the reason it is safe to agree is that
     // the current labels survive as something scoreable.
     expect(DRAFT_PROMPT_BODY).toMatch(/current labels are preserved/);
-    // The annotation screen asks, with the prompt above, until a transition is open.
-    expect(SCREEN).toMatch(/\{!draft && \(\s*<Alert\s+type="info"\s+header=\{DRAFT_PROMPT_HEADER\}/);
+    // The annotation screen asks, with the prompt above, until a transition is open
+    // (one notice in the screen's consolidated alert).
+    expect(SCREEN).toMatch(/!draft && \{\s*id: 'draft',[\s\S]*?<b>\{DRAFT_PROMPT_HEADER\}\.<\/b> \{DRAFT_PROMPT_BODY\}/);
     expect(SCREEN).toMatch(/onClick=\{\(\) => void handleOpenDraft\(\)\}>\s*Start annotating/);
   });
 
@@ -126,11 +127,12 @@ describe('AnnotationWorkspace version transition', () => {
     expect(staleLinkVersion(null, DRAFT)).toBeNull();
   });
 
-  it('keeps the transition visible while working, not only at the prompt', () => {
+  it('keeps the transition visible on the queue page, not on the editor', () => {
     // Which version a correction landed in is the question asked later, when a run's
-    // score is attributed to one.
+    // score is attributed to one; the queue page shows it. The editor leaves it out to
+    // keep its space for annotation.
     expect(SOURCE).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
-    expect(SCREEN).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
+    expect(SCREEN).not.toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
   });
 
   it('lets Complete open the transition itself, only when none is open, and only on click', () => {
@@ -139,10 +141,12 @@ describe('AnnotationWorkspace version transition', () => {
     // commitment is still never made on arrival - only from the Complete handler, and
     // only when no transition is open yet, before the sections are confirmed.
     const handler = SCREEN.slice(SCREEN.indexOf('const handleAction = async'), SCREEN.indexOf('const handleSaved ='));
-    expect(handler).toMatch(/if \(!draft\) await adapter\.openDraft\(\);\s*await adapter\.confirmSections\(remaining\);/);
+    expect(handler).toMatch(
+      /if \(!draft\) await adapter\.openDraft\(\);\s*const remaining = [^;]*;\s*if \(remaining\.length > 0\) await adapter\.confirmSections\(remaining\);/,
+    );
     // Only the role half of the editor's read-only state disables Complete.
     expect(SCREEN).not.toMatch(/completeReason = [^;]*Start annotating/);
-    expect(SCREEN).toMatch(/completeDisabledReason: completeReason/);
+    expect(SCREEN).toMatch(/processDisabledReason: completeReason/);
   });
 
   it('gates confirming labels on the transition, not only editing them', () => {

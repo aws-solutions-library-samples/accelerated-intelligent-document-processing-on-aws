@@ -4851,6 +4851,16 @@ def remove_residual_resources_from_deleted_stacks(
     3. Tracks both ACTIVE stacks (protected) and DELETED stacks (cleanup targets)
     4. Only targets resources that belong to stacks in DELETE_COMPLETE state
     5. Resources from active stacks are NEVER touched
+    6. Before deleting a global resource (CloudFront distribution, response
+       headers policy, IAM policy, S3 bucket), confirms in EVERY enabled
+       region that no stack of that name still exists. A region that cannot
+       be read leaves the resource in place and is reported as an error
+       (exit 1).
+
+    PERMISSIONS:
+    Besides delete permissions for what it cleans, the region confirmation
+    needs ec2:DescribeRegions and cloudformation:DescribeStacks in every
+    enabled region.
 
     SAFETY FEATURES:
     - Multi-region stack discovery (customizable with --check-stack-regions)
@@ -4946,8 +4956,17 @@ def remove_residual_resources_from_deleted_stacks(
                 for error in result["errors"]:
                     console.print(f"    - {error}")
 
+            # Without this a resource left alone (its stack still exists, here or
+            # in another Region, or the user declined) read as "No resources
+            # found", indistinguishable from an account with nothing there.
+            if result.get("skipped"):
+                console.print(f"  [dim]Skipped ({len(result['skipped'])}):[/dim]")
+                for item in result["skipped"]:
+                    console.print(f"    - {item}")
+
             if not any(
-                result.get(key) for key in ["deleted", "disabled", "updated", "errors"]
+                result.get(key)
+                for key in ["deleted", "disabled", "updated", "errors", "skipped"]
             ):
                 console.print("  No resources found")
 

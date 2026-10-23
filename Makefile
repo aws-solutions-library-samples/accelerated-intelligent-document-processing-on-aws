@@ -886,6 +886,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
 	cd nested/api-resolvers/src/lambda/test_runner && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running Test Studio results tests (captured-config format on both storage shapes)..."
+	@# Its own invocation: this directory defines a module named ``index`` too, so a
+	@# combined run collides with test_runner above on the basename.
+	cd nested/api-resolvers/src/lambda/test_results_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running the config-version scope suites for the six API resolvers that enforce it..."
 	@# The fail-closed UsersTable scope lookup: an absent `email` claim or a failed
 	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its
@@ -1062,7 +1066,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make api-test STACK_NAME=<stack-name> [REGION=...])
 endif
 	@echo "Running dynamic API RBAC tests against stack $(STACK_NAME)..."
-	$(PYTHON) scripts/test_api_rbac.py \
+	$(RUN_FIRST_PARTY) scripts/test_api_rbac.py \
 	    --stack-name $(STACK_NAME) \
 	    $(if $(REGION),--region $(REGION),) \
 	    --report-dir $(if $(REPORT_DIR),$(REPORT_DIR),./scratch/api-test-results) \
@@ -1083,7 +1087,7 @@ stacktest-inbox: ## Inbox live check: posts through idp_common.notifications and
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-inbox STACK_NAME=<stack-name> [REGION=...])
 endif
-	$(PYTHON) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
+	$(RUN_FIRST_PARTY) scripts/inbox_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),)
 
 # Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=<region>] [CHECK_EVENTS=1]
 # End-to-end review-queue check against a DEPLOYED stack: routes a sample document

@@ -810,8 +810,8 @@ carries few enough pages that the clamp engages only at about **101 pages**; at
 `max_concurrent_batches: 5` it is about 51, at 2 about 21, and with sharding off
 (`max_concurrent_batches: 1`) it is 11. Because `max_concurrent_batches` caps the
 number of shards as well as the parallelism, *raising* it makes each request smaller
-and the threshold higher. Holistic classification, which sends a whole packet in one
-request, is affected on the same >20-image rule.
+and the threshold higher. Classification at packet granularity is affected on the same >20-image rule,
+which is why `classification.one_stage.packet.window_pages` ships at 20.
 
 Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5,
 Opus 5.5 and Sonnet 5 it is about 20% below the resolution they would otherwise use,
@@ -1566,10 +1566,14 @@ extraction:
 > reports them, where the remedy is. A section whose *named* class is missing from
 > the configuration is **not** an exception and does publish: the section was
 > expected to hold data and holds none. How often that arrives depends on your
-> classification configuration — on the default it needs a configuration edit, but
-> `textbasedHolisticClassification` and `enforceValidClasses: false` both store an
-> out-of-vocabulary prediction verbatim, so there the rate follows model output and
-> `ConfidenceUnavailableThreshold` is the lever.
+> classification configuration — with `enforceValidClasses` on (the
+> default) every call that assigns a class re-prompts and then assigns
+> `fallback_class`, so it needs a configuration edit, but `enforceValidClasses:
+> false` stores an out-of-vocabulary prediction verbatim, so there the rate follows
+> model output and `ConfidenceUnavailableThreshold` is the lever. The setting sits
+> in each class-assigning call's own `validation` block
+> (`classification.one_stage.llm.validation.enforceValidClasses`, and
+> `classification.two_stage.section_classification.llm.validation.enforceValidClasses`).
 > `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
@@ -1688,6 +1692,15 @@ advisory).
 on multiple rows (e.g. a repeated amount in a table), the i-th assessed list item
 maps to the i-th occurrence in reading order.
 
+**A line resembling the whole value beats a fragment of it.** Matching is tiered,
+and a line that is only a short *piece* of the value — one word of a sentence, one
+figure from a specification — is ranked **last**, below the fuzzy and
+character-similarity passes. It is still used when nothing better is found, so a
+value split across several OCR lines keeps a box; it just no longer outranks a line
+that resembles the value as a whole. Without that ordering, a value whose OCR text
+carried a single misread character could be matched to an unrelated column header
+that happened to share one word with it, and the box would land on the header.
+
 **Format-aware matching.** Extraction often canonicalizes a value to a schema
 format that differs from how it appears in the document (a date extracted as
 `2022-04-04` but printed `04/04/2022`; an amount `1234.00` printed `$1,234.00`; a
@@ -1770,7 +1783,7 @@ S3 and matches each extracted value to an OCR line.
 For each assessed leaf field, the service:
 
 1. Loads `pageData.json` for the section's pages via `Page.ocr_page_data_uri` (older documents without this artifact are skipped — see fallback).
-2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **single-line fragment** → **token-overlap fuzzy** (Jaccard ≥ 0.6).
+2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **multi-line span** (boxes unioned) → **fragment covering at least half the value** → **token-overlap fuzzy** (Jaccard ≥ 0.6) → **character similarity** (≥ 0.8) → **fragment covering less than half the value** (last).
 3. **Disambiguates repeated values spatially** (for `llm_grounded`): all candidates are collected and the one whose box center is nearest the LLM-estimated box is chosen. Without a usable LLM reference box, an ambiguous match keeps the LLM box rather than risk attaching the wrong row's geometry.
 4. On a confident match, **replaces** the field's `geometry` with the real OCR box and adds provenance keys.
 
@@ -1791,7 +1804,7 @@ For each assessed leaf field, the service:
 }
 ```
 
-- **`geometry_source`** — `"ocr"` (grounded in a real OCR line), `"ocr-paragraph"` (grounded in a paragraph-level box shared by sibling lines, as the Mistral hook produces), `"ocr-normalized"` / `"ocr-fuzzy"` (format-bridged / Levenshtein matches), or `"llm"` (kept the LLM-estimated box).
+- **`geometry_source`** — `"ocr"` (grounded in a real OCR line), `"ocr-paragraph"` (grounded in a paragraph-level box shared by sibling lines, as the Mistral hook produces), `"ocr-normalized"` / `"ocr-fuzzy"` (format-bridged / Levenshtein matches), `"ocr-weak"` (the matched line covers less than half the value — the weakest evidence of location, used only when nothing better matched, so treat the highlight as approximate), or `"llm"` (kept the LLM-estimated box).
 - **`ocr_confidence`** — the matched OCR line's confidence (0–1), when available. **Informational only**; the LLM `confidence`/`confidence_reason` are never overwritten, so HITL triggering and threshold alerts are unaffected.
 
 **Safe fallback (backward compatibility).** Grounding degrades to exactly the
@@ -2260,8 +2273,10 @@ text, so they are unaffected by the backend.
 on such a backend `extraction_row_count_unverified` will be common.** Two UI
 surfaces count issues without reading severity, so an `info` issue moves them
 exactly as a warning would: the section's status indicator goes from **OK** to the
-generic info label **Auto-recovered** (the same label `extraction_sparse` gets),
-and the document list's **Processing Issues** count becomes non-zero. Both happen
+neutral info label **Info** (the same label `extraction_sparse` gets — **Auto-recovered**
+is reserved for the one `info` code that reports an actual repair,
+`assessment_recovered_with_retries`), and the document list's **Processing Issues**
+count becomes non-zero. Both happen
 on every section holding a 30-or-more-row object list, including sections where
 nothing is wrong — which is the trade for being able to tell "could not check"
 from "checked and found complete" at all.

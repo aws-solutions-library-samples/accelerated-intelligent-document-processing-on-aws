@@ -119,18 +119,18 @@ class TestTristateParsing:
         config = IDPConfig(
             **{"classification": {"modality": {"text": value, "images": value}}}
         )
-        assert config.classification.modality.text is None
-        assert config.classification.modality.images is None
+        assert config.classification.one_stage.llm.modality.text is None
+        assert config.classification.one_stage.llm.modality.images is None
 
     @pytest.mark.parametrize("value", [True, "true", "True", "yes", "on", "1", 1])
     def test_truthy_spellings_parse_to_true(self, value):
         config = IDPConfig(**{"classification": {"modality": {"images": value}}})
-        assert config.classification.modality.images is True
+        assert config.classification.one_stage.llm.modality.images is True
 
     @pytest.mark.parametrize("value", [False, "false", "False", "no", "off", "0", 0])
     def test_falsy_spellings_parse_to_false(self, value):
         config = IDPConfig(**{"classification": {"modality": {"images": value}}})
-        assert config.classification.modality.images is False
+        assert config.classification.one_stage.llm.modality.images is False
 
     def test_an_unreadable_value_raises_rather_than_defaulting(self):
         """Either default would be wrong and silent: 'infer' and 'send nothing'
@@ -139,8 +139,8 @@ class TestTristateParsing:
             IDPConfig(**{"classification": {"modality": {"images": "maybe"}}})
 
     def test_the_default_config_leaves_both_unset(self):
-        assert IDPConfig().classification.modality.text is None
-        assert IDPConfig().classification.modality.images is None
+        assert IDPConfig().classification.one_stage.llm.modality.text is None
+        assert IDPConfig().classification.one_stage.llm.modality.images is None
 
 
 # --------------------------------------------------------------------------
@@ -167,7 +167,7 @@ class TestRefusedCombinations:
         config = IDPConfig(
             **{"classification": {"task_prompt": "Pick a class.", "modality": {}}}
         )
-        assert config.classification.modality.text is None
+        assert config.classification.one_stage.llm.modality.text is None
 
     def test_ocr_none_with_images_off_is_refused(self):
         """No OCR text is produced and no images are sent, so classification
@@ -187,7 +187,7 @@ class TestRefusedCombinations:
                 "classification": {"modality": {"images": True}},
             }
         )
-        assert config.classification.modality.images is True
+        assert config.classification.one_stage.llm.modality.images is True
 
     def test_a_real_ocr_backend_with_images_off_is_allowed(self):
         config = IDPConfig(
@@ -196,7 +196,7 @@ class TestRefusedCombinations:
                 "classification": {"modality": {"images": False}},
             }
         )
-        assert config.classification.modality.images is False
+        assert config.classification.one_stage.llm.modality.images is False
 
 
 # --------------------------------------------------------------------------
@@ -288,7 +288,11 @@ class TestRequestContent:
         service = _service(modality={"images": False})
         config = service._get_classification_config()
         content = service._build_content(
-            config["task_prompt"], "page text", "invoice: An invoice", _png()
+            config["task_prompt"],
+            "page text",
+            "invoice: An invoice",
+            _png(),
+            stage=config["stage"],
         )
         assert _image_count(content) == 0
         assert "page text" in _text_of(content)
@@ -297,7 +301,11 @@ class TestRequestContent:
         service = _service(modality={"text": False})
         config = service._get_classification_config()
         content = service._build_content(
-            config["task_prompt"], "page text", "invoice: An invoice", _png()
+            config["task_prompt"],
+            "page text",
+            "invoice: An invoice",
+            _png(),
+            stage=config["stage"],
         )
         assert "page text" not in _text_of(content)
         assert _image_count(content) == 1
@@ -306,7 +314,11 @@ class TestRequestContent:
         service = _service()
         config = service._get_classification_config()
         content = service._build_content(
-            config["task_prompt"], "page text", "invoice: An invoice", _png()
+            config["task_prompt"],
+            "page text",
+            "invoice: An invoice",
+            _png(),
+            stage=config["stage"],
         )
         assert "page text" in _text_of(content)
         assert _image_count(content) == 1
@@ -409,11 +421,12 @@ class TestContextPathDefects:
         placeholder was put in the default prompt to prevent."""
         service = _service(classes=self.EXAMPLES_CLASSES, contextPagesCount=1)
         content = service._build_context_content(
-            task_prompt_template=service.config.classification.task_prompt,
+            task_prompt_template=service.config.classification.one_stage.page.task_prompt,
             document_text="current page text",
             image_content=_png(),
             before_images=[_png("red")],
             after_images=[_png("blue")],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         text = _text_of(content)
         assert "{FEW_SHOT_EXAMPLES}" not in text
@@ -432,6 +445,7 @@ class TestContextPathDefects:
             image_content=_png(),
             before_images=[_png("red"), _png("blue")],
             after_images=[_png("blue")],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert _image_count(content) == 0
         assert "current page text" in _text_of(content)
@@ -439,11 +453,12 @@ class TestContextPathDefects:
     def test_the_context_path_still_sends_images_when_the_prompt_asks(self):
         service = _service(contextPagesCount=1)
         content = service._build_context_content(
-            task_prompt_template=service.config.classification.task_prompt,
+            task_prompt_template=service.config.classification.one_stage.page.task_prompt,
             document_text="current page text",
             image_content=_png(),
             before_images=[_png("red")],
             after_images=[_png("blue")],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         # One context page either side plus the page itself.
         assert _image_count(content) == 3
@@ -458,6 +473,7 @@ class TestContextPathDefects:
             image_content=None,
             before_images=[],
             after_images=[],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert all(block.get("text", "x").strip() for block in content)
 
@@ -469,6 +485,7 @@ class TestContextPathDefects:
             image_content=_png(),
             before_images=[],
             after_images=[],
+            stage=ClassificationService.STAGE_CLASSIFICATION,
         )
         assert _image_count(content) == 1
         assert "{DOCUMENT_IMAGE}" not in _text_of(content)

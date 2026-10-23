@@ -91,7 +91,7 @@ const answer = (name: string) => ({
     getConfigVersion: {
       success: true,
       Schema: JSON.stringify({ type: 'object', properties: {} }),
-      Default: JSON.stringify({ classification: { model: `${name}-classifier` } }),
+      Default: JSON.stringify({ classification: { one_stage: { llm: { model: `${name}-classifier` } } } }),
       Custom: JSON.stringify({}),
     },
   },

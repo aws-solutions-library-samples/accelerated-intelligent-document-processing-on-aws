@@ -1,0 +1,41 @@
+{
+  "$comment": [
+    "Shared cases for 'is this maxPagesForClassification a page limit?', exercised on",
+    "BOTH sides: by vitest against `isPageLimit` in ../classification-config.ts, and by",
+    "scripts/tests/test_classification_flat_keys_ui_parity.py against `_is_page_limit` in",
+    "lib/idp_common_pkg/idp_common/config/migrations/v08_to_v09.py.",
+    "",
+    "WHY A SHARED TABLE AND NOT TWO SUITES. The TypeScript predicate exists to tell an",
+    "operator importing an old file what the conversion will do to it, so the only thing",
+    "that makes it useful is agreeing with the Python one. The parity test beside it",
+    "compares the two VALUE LISTS by reading the TypeScript with a regex, which cannot see",
+    "a semantic divergence -- and one had already happened: the TypeScript stringified its",
+    "input before testing it, so an unquoted `2.5` answered false while Python truncates it",
+    "to a two-page limit and performs the conversion. The dialog said nothing and boundary",
+    "detection went off.",
+    "",
+    "`json` holds the value as it arrives from a parsed JSON/YAML document, so a bare",
+    "number here is a real number on both sides. `limit` is what both predicates must",
+    "answer. Add a case here rather than to either suite."
+  ],
+  "cases": [
+    { "json": 3, "limit": true, "why": "the ordinary spelling" },
+    { "json": "3", "limit": true, "why": "stored configurations are string-typed" },
+    { "json": " 7 ", "limit": true, "why": "surrounding space is not a value" },
+    { "json": 2.5, "limit": true, "why": "a real number is truncated: two pages" },
+    { "json": 2.0, "limit": true, "why": "an integer-valued real number" },
+    { "json": 0.4, "limit": false, "why": "a fraction below one page is not a page count" },
+    { "json": 0, "limit": false, "why": "the legacy spelling of ALL" },
+    { "json": "0", "limit": false, "why": "the same, string-typed" },
+    { "json": "ALL", "limit": false, "why": "every page" },
+    { "json": "all", "limit": false, "why": "case does not matter" },
+    { "json": "", "limit": false, "why": "cleared in the editor" },
+    { "json": null, "limit": false, "why": "absent" },
+    { "json": "abc", "limit": false, "why": "not a number at all" },
+    { "json": -1, "limit": false, "why": "not a number of pages" },
+    { "json": "-3", "limit": false, "why": "the same, string-typed" },
+    { "json": "2.5", "limit": false, "why": "a STRING must already spell a whole number; int('2.5') raises in Python" },
+    { "json": true, "limit": false, "why": "a boolean is not a page count, in either language" },
+    { "json": false, "limit": false, "why": "the same" }
+  ]
+}

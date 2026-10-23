@@ -51,7 +51,8 @@ import { calculateTotalCosts, priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
 import { isProfileReadable } from '../../utils/readable-profile';
 import { isInReviewQueue, lastSkipAllReason, normalizeHitlStatus } from '../common/review-status';
-import { reviewItemHref } from '../../routes/constants';
+import { documentEditHref, reviewItemHref } from '../../routes/constants';
+import { PROCESSING_REASON, isEditableStatus } from '../review-workspace/direct-edit-status';
 import { ABORTABLE_STATUSES, SLOW_POLL_STATUSES, TERMINAL_STATUSES } from '../common/document-statuses';
 // Uncomment the line below to enable debugging
 // import { debugDocumentStructure } from '../common/debug-utils';
@@ -282,11 +283,11 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     contextGroups[item.context].push(item);
   });
 
-  // Sort contexts in pipeline order. 'Segmentation' and 'Labeling' are the two
+  // Sort contexts in pipeline order. 'Segmentation' and 'SectionClassification' are the two
   // halves of two-stage classification (classification.strategy: two_stage) and
   // appear in place of 'Classification', never alongside it — they sit where it
   // sits so the cost table reads in pipeline order either way.
-  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Segmentation', 'Labeling', 'Extraction', 'Summarization'];
+  const contextOrder = ['BDAProject', 'OCR', 'Classification', 'Segmentation', 'SectionClassification', 'Extraction', 'Summarization'];
   const sortedContexts = Object.keys(contextGroups).sort((a, b) => {
     const aIndex = contextOrder.indexOf(a);
     const bIndex = contextOrder.indexOf(b);
@@ -769,7 +770,7 @@ export const DocumentPanel = ({
     wasTerminalRef.current = isTerminalStatus;
   }, [isTerminalStatus, objectKey, getDocumentDetailsFromIds]);
 
-  const { isReviewer, canWorkReviewQueues, allowedConfigVersions, loading: roleLoading } = useUserRole();
+  const { isReviewer, canWorkReviewQueues, canWrite, canReview, allowedConfigVersions, loading: roleLoading } = useUserRole();
   // Fetch active configuration for dynamic confidence threshold (used by sections panel, etc.)
   const { mergedConfig } = useConfiguration(
     isProfileReadable('default', versions, { allowedConfigVersions, loading: roleLoading }) ? 'default' : null,
@@ -795,8 +796,9 @@ export const DocumentPanel = ({
   const hitlView = normalizeHitlStatus(localItem?.hitlStatus);
   const hasPendingHITL = localItem?.hitlTriggered && !isHitlCompleted && !isHitlSkipped && !hitlView.queueManaged;
   const showStartReview = isReviewer && hasPendingHITL && !hasReviewOwner;
-  // One way in for a queued document, for everyone who can work queue items.
-  const showReviewInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
+  // One way in for a queued document: Edit opens its queue item, for everyone who can
+  // work queue items; anyone else gets the direct edit, which opens it read-only.
+  const editInQueue = isInReviewQueue(localItem?.hitlStatus) && canWorkReviewQueues;
 
   // Handle Start Review button click
   const handleStartReview = async () => {
@@ -956,16 +958,6 @@ export const DocumentPanel = ({
               variant="h2"
               actions={
                 <SpaceBetween direction="horizontal" size="xs">
-                  {showReviewInQueue && (
-                    <Button
-                      iconName="user-profile"
-                      variant="primary"
-                      href={reviewItemHref(localItem.objectKey)}
-                      ariaLabel="Review this document in its review queue"
-                    >
-                      Review
-                    </Button>
-                  )}
                   {showStartReview && (
                     <Button
                       iconName="user-profile"
@@ -976,6 +968,29 @@ export const DocumentPanel = ({
                     >
                       Start Review
                     </Button>
+                  )}
+                  {/* The unified editor: the queue item for a queued document, otherwise
+                      the direct edit, which decides what is editable. */}
+                  {editInQueue ? (
+                    <Button
+                      iconName="edit"
+                      variant="primary"
+                      href={reviewItemHref(localItem.objectKey)}
+                      ariaLabel="Edit this document in its review queue"
+                    >
+                      Edit
+                    </Button>
+                  ) : (
+                    (canWrite || canReview) && (
+                      <Button
+                        iconName="edit"
+                        href={documentEditHref(localItem.objectKey)}
+                        disabled={!isEditableStatus(localItem.objectStatus)}
+                        disabledReason={isEditableStatus(localItem.objectStatus) ? undefined : PROCESSING_REASON}
+                      >
+                        Edit
+                      </Button>
+                    )
                   )}
                   <Button
                     iconName="gen-ai"

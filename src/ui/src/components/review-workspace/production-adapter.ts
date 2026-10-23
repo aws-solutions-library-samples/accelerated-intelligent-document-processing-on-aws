@@ -43,7 +43,12 @@ export interface ProductionAnnotation {
   reload: () => Promise<ReviewItemDetail | null>;
   pages: ReviewPage[];
   pagesLoading: boolean;
+  /** The sections under review. */
   sections: ReviewSectionRef[];
+  /** Every section of the document (the page-grouping board needs them all). */
+  documentSections: ReviewSectionRef[];
+  /** Re-read the document's pages and sections (after a regroup). */
+  refreshDocument: () => Promise<void>;
   /** Bumped when the open section must be re-read (a newer draft arrived). */
   reloadToken: number;
   loadSection: (sectionId: string) => Promise<LoadedSection>;
@@ -57,6 +62,7 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
   const [loadError, setLoadError] = useState<unknown>(null);
   const [pages, setPages] = useState<ReviewPage[]>([]);
   const [pagesLoading, setPagesLoading] = useState(true);
+  const [documentSections, setDocumentSections] = useState<ReviewSectionRef[]>([]);
   const [reloadToken, setReloadToken] = useState(0);
   // The latest draft revision per section, so a save names the revision it edits.
   const revisionsRef = useRef<Record<string, number>>({});
@@ -91,30 +97,45 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
 
   usePolling(poll, { enabled: !!objectKey, intervalMs: REVIEW_ITEM_POLL_INTERVAL_MS, immediate: true });
 
+  // The latest document read wins: a refresh after a regroup supersedes the first load.
+  const documentRead = useRef(0);
+  const refreshDocument = useCallback(async (): Promise<void> => {
+    const read = ++documentRead.current;
+    try {
+      const result = await client.graphql({ query: getDocumentQuery, variables: { objectKey } });
+      if (read !== documentRead.current) return;
+      const doc = result.data?.getDocument;
+      setPages(
+        (doc?.Pages ?? [])
+          .filter((p): p is NonNullable<typeof p> => !!p && p.Id != null && !!p.ImageUri)
+          .map((p) => ({ Id: String(p.Id), ImageUri: p.ImageUri as string })),
+      );
+      setDocumentSections(
+        (doc?.Sections ?? [])
+          .filter((s): s is NonNullable<typeof s> => !!s && s.Id != null)
+          .map((s) => ({
+            sectionId: String(s.Id),
+            documentClass: s.Class ?? null,
+            resultUri: s.OutputJSONUri ?? '',
+            pageIds: (s.PageIds ?? []).map(String),
+          })),
+      );
+    } catch (err) {
+      logger.error('getDocument failed', err);
+    } finally {
+      if (read === documentRead.current) setPagesLoading(false);
+    }
+  }, [objectKey]);
+
   useEffect(() => {
-    let cancelled = false;
     setPagesLoading(true);
     setPages([]);
-    (async () => {
-      try {
-        const result = await client.graphql({ query: getDocumentQuery, variables: { objectKey } });
-        const docPages = result.data?.getDocument?.Pages ?? [];
-        if (cancelled) return;
-        setPages(
-          docPages
-            .filter((p): p is NonNullable<typeof p> => !!p && p.Id != null && !!p.ImageUri)
-            .map((p) => ({ Id: String(p.Id), ImageUri: p.ImageUri as string })),
-        );
-      } catch (err) {
-        logger.error('getDocument failed', err);
-      } finally {
-        if (!cancelled) setPagesLoading(false);
-      }
-    })();
+    setDocumentSections([]);
+    void refreshDocument();
     return () => {
-      cancelled = true;
+      documentRead.current += 1;
     };
-  }, [objectKey]);
+  }, [refreshDocument]);
 
   const sections: ReviewSectionRef[] = useMemo(
     () =>
@@ -169,5 +190,18 @@ export const useProductionAnnotation = (objectKey: string): ProductionAnnotation
     [item],
   );
 
-  return { detail, loadError, reload, pages, pagesLoading, sections, reloadToken, loadSection, saveSection, complete };
+  return {
+    detail,
+    loadError,
+    reload,
+    pages,
+    pagesLoading,
+    sections,
+    documentSections,
+    refreshDocument,
+    reloadToken,
+    loadSection,
+    saveSection,
+    complete,
+  };
 };

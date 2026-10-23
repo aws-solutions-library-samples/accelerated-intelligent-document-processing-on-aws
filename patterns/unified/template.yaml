@@ -1046,495 +1046,1002 @@ Resources:
             collapsible: true
             defaultExpanded: false
             sectionLabel: Classification
-            # Kept to one sentence, matching the other top-level sections (OCR,
-            # Extraction and Summarization are 80-230 chars). The detail that
-            # used to live here belongs on the fields it describes, where it is
-            # read next to the control it affects.
+            # Kept to one sentence, matching the other top-level sections. Every
+            # setting below sits inside the call that uses it, so a block the selected
+            # strategy does not run is not shown. docs/classification.md has the detail.
             #
-            # ⚠️ Do NOT restore the old claim that classification "is skipped
-            # when only a single class is defined, or when a document name
-            # matches a RegEx rule". That stopped being true in 0.6.7 (#686,
-            # #705): under the default llm_determined splitting a multi-page
-            # file is still classified, because knowing WHAT a packet contains
-            # says nothing about WHERE each record starts.
-            description: "Splits the file into documents and assigns a class to each. Granularity sets how many calls are made, Modality what each call sees; the two are independent."
+            # ⚠️ Do NOT restore the old claim that classification "is skipped when only a
+            # single class is defined, or when a document name matches a RegEx rule".
+            # Under the default boundary detection a multi-page file is still classified,
+            # because knowing WHAT a packet contains says nothing about WHERE each record
+            # starts.
+            description: "Splits the file into documents and assigns a class to each. Strategy decides how many model calls are made; each call's settings sit inside it."
             dependsOn: { field: "use_bda", value: false }
-            required:
-              - model
-              - temperature
-              - top_k
-              - top_p
-              - system_prompt
-              - task_prompt
             properties:
-              granularity:
-                type: string
-                title: Granularity
-                # A UI tagline, not a reference entry. The cost reasoning that
-                # used to be here is in docs/classification.md, which the panel
-                # cannot hold without becoming unreadable.
-                description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new document. 'packet': one call for the whole document, paying the class list and examples once instead of per page. Image tokens are the same either way."
-                enum: ["page", "packet"]
-                default: "page"
-                order: 0
-              modality:
-                type: object
-                sectionLabel: Modality
-                collapsible: false
-                # Both flags default to empty, and the form deletes an object
-                # once its last field is cleared — so this group's key is often
-                # absent from a stored configuration. `sectionLabel` is what
-                # makes the group render anyway; see the renderField note in
-                # ConfigBuilder.tsx. Nothing extra is needed here.
-                description: "What each call sees. Applies to both granularities. Leave a flag empty to infer it from the Task prompt's placeholders. Both off is refused when you save."
-                order: 0.1
-                properties:
-                  text:
-                    type: string
-                    title: Send page text
-                    description: "Sends each page's OCR text. Empty infers it from whether the Task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
-                    enum: ["", "true", "false"]
-                    default: ""
-                    order: 0
-                  images:
-                    type: string
-                    title: Send page images
-                    description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether the Task prompt contains {DOCUMENT_IMAGE}."
-                    enum: ["", "true", "false"]
-                    default: ""
-                    order: 1
-              image:
-                type: object
-                sectionLabel: Image Processing Settings
-                description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
-                order: 0.6
-                showWhen: [{ field: "modality.images", notValues: ["false"] }]
-                properties:
-                  target_width:
-                    type: number
-                    description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
-                    minimum: 100
-                    maximum: 3500
-                    order: 0
-                  target_height:
-                    type: number
-                    description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
-                    minimum: 100
-                    maximum: 3500
-                    order: 1
-              packet:
-                type: object
-                sectionLabel: Packet settings
-                collapsible: true
-                defaultExpanded: false
-                description: "How large a window each packet call covers, and the prompts it uses. The prompts are separate from the page-level ones because a packet call is asked for a list of segments rather than one class."
-                order: 0.7
-                showWhen: [{ field: "granularity", value: "packet" }]
-                properties:
-                  window_pages:
-                    type: integer
-                    title: Window size (pages)
-                    description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution."
-                    minimum: 0
-                    maximum: 200
-                    default: 20
-                    order: 0
-                  overlap_pages:
-                    type: integer
-                    title: Window overlap (pages)
-                    description: "Pages repeated between adjacent windows, so a boundary at a window edge is still seen with the pages before it. Must be smaller than the window size. Adds this many pages to every window after the first."
-                    minimum: 0
-                    maximum: 50
-                    default: 2
-                    order: 1
-                  system_prompt:
-                    type: string
-                    title: Packet system prompt
-                    format: textarea
-                    description: "System prompt for packet calls. Empty falls back to the page-level System prompt below."
-                    order: 2
-                  task_prompt:
-                    type: string
-                    title: Packet task prompt
-                    format: textarea
-                    description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type — a different output shape from the page prompt, which is why it is a separate field. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching."
-                    order: 3
-              model:
-                type: string
-                title: Model
-                description: "Model identifier. Select 'LambdaHook' to use a custom Lambda function for inference."
-                enum:
-                  - "LambdaHook"
-                  - !If
-                    - HasCustomClassificationModelARN
-                    - !Ref CustomClassificationModelARN
-                    - !Ref AWS::NoValue
-                  - "us.amazon.nova-lite-v1:0"
-                  - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-2-lite-v1:0"
-                  - "us.amazon.nova-2-lite-v1:0:priority"
-                  - "us.amazon.nova-2-lite-v1:0:flex"
-                  - "global.amazon.nova-2-lite-v1:0"
-                  - "global.amazon.nova-2-lite-v1:0:priority"
-                  - "global.amazon.nova-2-lite-v1:0:flex"
-                  - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  - "us.anthropic.claude-haiku-5-5"
-                  - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                  - "us.anthropic.claude-sonnet-4-6"
-                  - "us.anthropic.claude-sonnet-4-6:1m"
-                  - "us.anthropic.claude-sonnet-5"
-                  - "us.anthropic.claude-sonnet-5:1m"
-                  - "us.anthropic.claude-sonnet-5-5"
-                  - "us.anthropic.claude-opus-4-5-20251101-v1:0"
-                  - "us.anthropic.claude-opus-4-6-v1"
-                  - "us.anthropic.claude-opus-4-6-v1:1m"
-                  - "us.anthropic.claude-opus-4-7"
-                  - "us.anthropic.claude-opus-4-7:1m"
-                  - "us.anthropic.claude-opus-4-8"
-                  - "us.anthropic.claude-opus-4-8:1m"
-                  - "us.anthropic.claude-opus-5"
-                  - "us.anthropic.claude-opus-5:1m"
-                  - "us.anthropic.claude-opus-5-5"
-                  - "us.anthropic.claude-opus-5-5:1m"
-                  - "openai.gpt-5.4"
-                  - "openai.gpt-5.5"
-                  - "openai.gpt-5.6-sol"
-                  - "openai.gpt-5.6-terra"
-                  - "openai.gpt-5.6-luna"
-                  - "eu.amazon.nova-lite-v1:0"
-                  - "ca.amazon.nova-lite-v1:0"
-                  - "eu.amazon.nova-pro-v1:0"
-                  - "eu.amazon.nova-2-lite-v1:0"
-                  - "eu.amazon.nova-2-lite-v1:0:priority"
-                  - "eu.amazon.nova-2-lite-v1:0:flex"
-                  - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  - "eu.anthropic.claude-haiku-5-5"
-                  - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                  - "eu.anthropic.claude-sonnet-4-6"
-                  - "eu.anthropic.claude-sonnet-4-6:1m"
-                  - "eu.anthropic.claude-sonnet-5"
-                  - "eu.anthropic.claude-sonnet-5:1m"
-                  - "eu.anthropic.claude-sonnet-5-5"
-                  - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
-                  - "eu.anthropic.claude-opus-4-6-v1"
-                  - "eu.anthropic.claude-opus-4-6-v1:1m"
-                  - "eu.anthropic.claude-opus-4-7"
-                  - "eu.anthropic.claude-opus-4-7:1m"
-                  - "eu.anthropic.claude-opus-4-8"
-                  - "eu.anthropic.claude-opus-4-8:1m"
-                  - "eu.anthropic.claude-opus-5"
-                  - "eu.anthropic.claude-opus-5:1m"
-                  - "eu.anthropic.claude-opus-5-5"
-                  - "eu.anthropic.claude-opus-5-5:1m"
-                  - "qwen.qwen3-vl-235b-a22b"
-                  - "us.meta.llama4-maverick-17b-instruct-v1:0"
-                  - "us.meta.llama4-scout-17b-instruct-v1:0"
-                  - "us.xai.grok-4.6"
-                  - "us.openai.gpt-6-astra"
-                  - "google.gemma-3-27b-it"
-                  - "nvidia.nemotron-nano-12b-v2"
-                  - "global.amazon.nova-2-lite-v1:0"
-                  - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-                  - "global.anthropic.claude-haiku-5-5"
-                  - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-                  - "global.anthropic.claude-sonnet-4-6"
-                  - "global.anthropic.claude-sonnet-4-6:1m"
-                  - "global.anthropic.claude-sonnet-5"
-                  - "global.anthropic.claude-sonnet-5:1m"
-                  - "global.anthropic.claude-sonnet-5-5"
-                  - "global.anthropic.claude-opus-4-5-20251101-v1:0"
-                  - "global.anthropic.claude-opus-4-6-v1"
-                  - "global.anthropic.claude-opus-4-6-v1:1m"
-                  - "global.anthropic.claude-opus-4-7"
-                  - "global.anthropic.claude-opus-4-7:1m"
-                  - "global.anthropic.claude-opus-4-8"
-                  - "global.anthropic.claude-opus-4-8:1m"
-                  - "global.anthropic.claude-opus-5"
-                  - "global.anthropic.claude-opus-5:1m"
-                  - "global.anthropic.claude-opus-5-5"
-                  - "global.anthropic.claude-opus-5-5:1m"
-                  - "global.xai.grok-4.6"
-                  - "global.openai.gpt-6-astra"
-                order: 1
-              model_lambda_hook_arn:
-                type: string
-                title: Model Lambda hook ARN
-                description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
-                default: ""
-                order: 3
-                dependsOn: { field: "model", value: "LambdaHook" }
-              model_params:
-                type: object
-                title: Model parameters
-                sectionLabel: Model parameters
-                # ghostGroup => children save at the PARENT path (classification.temperature,
-                # classification.max_tokens, ...), so this is a purely visual grouping.
-                ghostGroup: true
-                collapsible: true
-                defaultExpanded: false
-                description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
-                order: 2
-                properties:
-                  temperature:
-                    type: number
-                    title: Temperature
-                    minimum: 0
-                    maximum: 1
-                    description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
-                    order: 1
-                  top_k:
-                    type: integer
-                    title: Top K
-                    minimum: 1
-                    description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
-                    order: 2
-                  top_p:
-                    type: number
-                    title: Top P
-                    description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
-                    order: 3
-                  max_tokens:
-                    type: number
-                    title: Max tokens
-                    description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
-                    order: 4
-                  reasoning_effort:
-                    type: string
-                    title: Reasoning effort
-                    enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-                    default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
-                    order: 5
-                    dependsOn: { field: "model", reasoningCapable: true }
-              # `classificationMethod` was removed in config format 0.8. It is
-              # migrated to `granularity` on every config read (see
-              # idp_common/config/migrations/v07_to_v08.py), which also relocates
-              # a holistic config's hand-written flat prompts into
-              # `classification.packet`. Removed rather than hidden: a dropdown
-              # reading "deprecated, ignored when granularity is set" is a worse
-              # UI than no dropdown, and two readable homes for one setting needs
-              # a precedence rule every future reader has to learn.
               strategy:
                 type: string
                 title: Strategy
-                description: "'single_pass': one call returns both the boundaries and the classes. 'two_stage': find the boundaries first with no class list in the prompt, then label each document with one call — cheaper on long documents with few sections, and it tells a wrong boundary apart from a wrong label. Metered as separate Segmentation and Labeling lines."
+                description: "'One stage' (stored as strategy: single_pass): one call returns both the document boundaries and the classes — best for single-page files and short packets. 'Two stage' (stored as strategy: two_stage): first find the boundaries with no class list in the prompt, then make one classification call per section — cheaper on long documents with few sections, lets each stage use its own model, and tells a wrong boundary apart from a wrong class. The labels are what this form shows; the JSON and YAML views and an uploaded file use the stored values. [Choosing a strategy](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#choosing-granularity-modality-and-strategy)"
                 enum: ["single_pass", "two_stage"]
+                enumLabels: { single_pass: "One stage", two_stage: "Two stage" }
                 default: "single_pass"
-                order: 0.2
-              segmentation:
+                order: 0
+              fallback_class:
+                type: string
+                title: Fallback class
+                description: "The class assigned when a class cannot be decided — for example once validation retries run out. One of your classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction. Extraction reads it too."
+                default: "unclassified"
+                order: 0.5
+              one_stage:
                 type: object
-                sectionLabel: Stage A — Segmentation (two-stage)
-                collapsible: true
-                defaultExpanded: true
-                description: "Finds where each document starts and ends, reusing Granularity, Modality and the Image settings. Not the same as Section splitting below, which turns the result into sections and applies to both strategies."
-                order: 0.3
-                showWhen: [{ field: "strategy", value: "two_stage" }]
+                sectionLabel: One stage
+                collapsible: false
+                description: "One call returns both where each document starts and its class."
+                order: 1
+                showWhen: [{ field: "strategy", notValues: ["two_stage"] }]
                 properties:
-                  model:
+                  granularity:
                     type: string
-                    title: Stage A model
-                    description: "Model for the boundary calls. Empty uses the Classification model above. Naming one per stage is most of the point: finding boundaries and naming a clean document are different problems."
-                    default: ""
+                    title: Granularity
+                    description: "How many calls are made. 'page': one call per page, each saying whether that page starts a new document; pages run in parallel and each gets its own confidence score. 'packet': one call for the whole document, paying the class list and examples once instead of per page and letting the model see the whole packet when placing boundaries. Image tokens are the same either way."
+                    enum: ["page", "packet"]
+                    default: "page"
                     order: 0
-                  boundary_hints:
-                    type: string
-                    title: Boundary hints
-                    description: "Whether the boundary calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a document's first page is titled like one of your classes."
-                    enum: ["none", "class_names"]
-                    default: "none"
-                    order: 1
-                  system_prompt:
-                    type: string
-                    title: Stage A system prompt (page)
-                    format: textarea
-                    description: "System prompt for the per-page boundary calls."
-                    order: 2
-                    showWhen: [{ field: "granularity", notValues: ["packet"] }]
-                  task_prompt:
-                    type: string
-                    title: Stage A task prompt (page)
-                    format: textarea
-                    description: "Asks only whether this page starts a new document; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here."
-                    order: 3
-                    showWhen: [{ field: "granularity", notValues: ["packet"] }]
-                  packet:
+                  page:
                     type: object
-                    sectionLabel: Stage A packet prompts
+                    sectionLabel: Page settings
                     collapsible: false
-                    description: "Prompts used when Granularity is packet: ask for page ranges only, with no type per range."
-                    order: 4
-                    showWhen: [{ field: "granularity", value: "packet" }]
+                    description: "One classification call per page."
+                    order: 1
+                    showWhen: [{ field: "granularity", notValues: ["packet"] }]
                     properties:
+                      contextPagesCount:
+                        type: integer
+                        title: Context pages
+                        description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens."
+                        minimum: 0
+                        maximum: 5
+                        default: 0
+                        order: 0
                       system_prompt:
                         type: string
-                        title: Stage A system prompt (packet)
+                        title: System prompt (page)
                         format: textarea
-                        description: "System prompt for the packet boundary call."
-                        order: 0
+                        description: "System prompt for page calls."
+                        order: 1
                       task_prompt:
                         type: string
-                        title: Stage A task prompt (packet)
+                        title: Task prompt (page)
                         format: textarea
-                        description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown."
+                        description: "Asks for one page's class plus whether that page starts a new document. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off."
+                        order: 2
+                  packet:
+                    type: object
+                    sectionLabel: Packet settings
+                    collapsible: false
+                    description: "One classification call per packet, or per window of a long packet."
+                    order: 1.5
+                    showWhen: [{ field: "granularity", value: "packet" }]
+                    properties:
+                      window_pages:
+                        type: integer
+                        title: Window size (pages)
+                        description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution."
+                        minimum: 0
+                        maximum: 200
+                        default: 20
+                        order: 0
+                      overlap_pages:
+                        type: integer
+                        title: Window overlap (pages)
+                        description: "Pages repeated between adjacent windows, so a boundary at a window edge is still seen with the pages before it. Must be smaller than the window size. Adds this many pages to every window after the first."
+                        minimum: 0
+                        maximum: 50
+                        default: 2
                         order: 1
-              labeling:
+                      system_prompt:
+                        type: string
+                        title: System prompt (packet)
+                        format: textarea
+                        description: "System prompt for packet calls. Empty uses the shipped default."
+                        order: 2
+                      task_prompt:
+                        type: string
+                        title: Task prompt (packet)
+                        format: textarea
+                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching."
+                        order: 3
+                  llm:
+                    type: object
+                    sectionLabel: Model
+                    collapsible: false
+                    description: "The model this call uses, what it is sent, and how its class is checked and scored."
+                    order: 2
+                    properties:
+                      model:
+                        type: string
+                        title: Model
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                        enum:
+                          - "LambdaHook"
+                          - !If
+                            - HasCustomClassificationModelARN
+                            - !Ref CustomClassificationModelARN
+                            - !Ref AWS::NoValue
+                          - "us.amazon.nova-lite-v1:0"
+                          - "us.amazon.nova-pro-v1:0"
+                          - "us.amazon.nova-2-lite-v1:0"
+                          - "us.amazon.nova-2-lite-v1:0:priority"
+                          - "us.amazon.nova-2-lite-v1:0:flex"
+                          - "global.amazon.nova-2-lite-v1:0"
+                          - "global.amazon.nova-2-lite-v1:0:priority"
+                          - "global.amazon.nova-2-lite-v1:0:flex"
+                          - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                          - "us.anthropic.claude-haiku-5-5"
+                          - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                          - "us.anthropic.claude-sonnet-4-6"
+                          - "us.anthropic.claude-sonnet-4-6:1m"
+                          - "us.anthropic.claude-sonnet-5"
+                          - "us.anthropic.claude-sonnet-5:1m"
+                          - "us.anthropic.claude-sonnet-5-5"
+                          - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                          - "us.anthropic.claude-opus-4-6-v1"
+                          - "us.anthropic.claude-opus-4-6-v1:1m"
+                          - "us.anthropic.claude-opus-4-7"
+                          - "us.anthropic.claude-opus-4-7:1m"
+                          - "us.anthropic.claude-opus-4-8"
+                          - "us.anthropic.claude-opus-4-8:1m"
+                          - "us.anthropic.claude-opus-5"
+                          - "us.anthropic.claude-opus-5:1m"
+                          - "us.anthropic.claude-opus-5-5"
+                          - "us.anthropic.claude-opus-5-5:1m"
+                          - "openai.gpt-5.4"
+                          - "openai.gpt-5.5"
+                          - "openai.gpt-5.6-sol"
+                          - "openai.gpt-5.6-terra"
+                          - "openai.gpt-5.6-luna"
+                          - "eu.amazon.nova-lite-v1:0"
+                          - "ca.amazon.nova-lite-v1:0"
+                          - "eu.amazon.nova-pro-v1:0"
+                          - "eu.amazon.nova-2-lite-v1:0"
+                          - "eu.amazon.nova-2-lite-v1:0:priority"
+                          - "eu.amazon.nova-2-lite-v1:0:flex"
+                          - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                          - "eu.anthropic.claude-haiku-5-5"
+                          - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                          - "eu.anthropic.claude-sonnet-4-6"
+                          - "eu.anthropic.claude-sonnet-4-6:1m"
+                          - "eu.anthropic.claude-sonnet-5"
+                          - "eu.anthropic.claude-sonnet-5:1m"
+                          - "eu.anthropic.claude-sonnet-5-5"
+                          - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                          - "eu.anthropic.claude-opus-4-6-v1"
+                          - "eu.anthropic.claude-opus-4-6-v1:1m"
+                          - "eu.anthropic.claude-opus-4-7"
+                          - "eu.anthropic.claude-opus-4-7:1m"
+                          - "eu.anthropic.claude-opus-4-8"
+                          - "eu.anthropic.claude-opus-4-8:1m"
+                          - "eu.anthropic.claude-opus-5"
+                          - "eu.anthropic.claude-opus-5:1m"
+                          - "eu.anthropic.claude-opus-5-5"
+                          - "eu.anthropic.claude-opus-5-5:1m"
+                          - "qwen.qwen3-vl-235b-a22b"
+                          - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                          - "us.meta.llama4-scout-17b-instruct-v1:0"
+                          - "us.xai.grok-4.6"
+                          - "us.openai.gpt-6-astra"
+                          - "google.gemma-3-27b-it"
+                          - "nvidia.nemotron-nano-12b-v2"
+                          - "global.amazon.nova-2-lite-v1:0"
+                          - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                          - "global.anthropic.claude-haiku-5-5"
+                          - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                          - "global.anthropic.claude-sonnet-4-6"
+                          - "global.anthropic.claude-sonnet-4-6:1m"
+                          - "global.anthropic.claude-sonnet-5"
+                          - "global.anthropic.claude-sonnet-5:1m"
+                          - "global.anthropic.claude-sonnet-5-5"
+                          - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                          - "global.anthropic.claude-opus-4-6-v1"
+                          - "global.anthropic.claude-opus-4-6-v1:1m"
+                          - "global.anthropic.claude-opus-4-7"
+                          - "global.anthropic.claude-opus-4-7:1m"
+                          - "global.anthropic.claude-opus-4-8"
+                          - "global.anthropic.claude-opus-4-8:1m"
+                          - "global.anthropic.claude-opus-5"
+                          - "global.anthropic.claude-opus-5:1m"
+                          - "global.anthropic.claude-opus-5-5"
+                          - "global.anthropic.claude-opus-5-5:1m"
+                          - "global.xai.grok-4.6"
+                          - "global.openai.gpt-6-astra"
+                        order: 0
+                      model_lambda_hook_arn:
+                        type: string
+                        title: Model Lambda hook ARN
+                        description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
+                        default: ""
+                        order: 0.1
+                        dependsOn: { field: "model", value: "LambdaHook" }
+                      modality:
+                        type: object
+                        sectionLabel: Modality
+                        collapsible: false
+                        description: "What each classification call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                        order: 1
+                        properties:
+                          text:
+                            type: string
+                            title: Send page text
+                            description: "Sends each page's OCR text. Empty infers it from whether this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                            enum: ["", "true", "false"]
+                            default: ""
+                            order: 0
+                          images:
+                            type: string
+                            title: Send page images
+                            description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether this call's task prompt contains {DOCUMENT_IMAGE}."
+                            enum: ["", "true", "false"]
+                            default: ""
+                            order: 1
+                      image:
+                        type: object
+                        sectionLabel: Image settings
+                        description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
+                        order: 2
+                        showWhen: [{ field: "modality.images", notValues: ["false"] }]
+                        properties:
+                          target_width:
+                            type: number
+                            description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                            minimum: 100
+                            maximum: 3500
+                            order: 0
+                          target_height:
+                            type: number
+                            description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                            minimum: 100
+                            maximum: 3500
+                            order: 1
+                      model_params:
+                        type: object
+                        title: Model parameters
+                        sectionLabel: Model parameters
+                        # ghostGroup => children save at the PARENT path (this call's
+                        # temperature, max_tokens, ...), so this is a purely visual grouping.
+                        ghostGroup: true
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
+                        order: 3
+                        properties:
+                          temperature:
+                            type: number
+                            title: Temperature
+                            minimum: 0
+                            maximum: 1
+                            description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                            order: 1
+                          top_k:
+                            type: integer
+                            title: Top K
+                            minimum: 1
+                            description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                            order: 2
+                          top_p:
+                            type: number
+                            title: Top P
+                            description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                            order: 3
+                          max_tokens:
+                            type: number
+                            title: Max tokens
+                            description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                            order: 4
+                          reasoning_effort:
+                            type: string
+                            title: Reasoning effort
+                            enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                            default: "medium"
+                            description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
+                            order: 5
+                            dependsOn: { field: "model", reasoningCapable: true }
+                      validation:
+                        type: object
+                        sectionLabel: Class validation
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "Re-prompt when the model returns a class that is not one of yours. Costs nothing unless the model goes out of vocabulary."
+                        order: 4
+                        properties:
+                          enforceValidClasses:
+                            type: boolean
+                            title: Enforce valid classes
+                            description: "Re-prompt the model when it returns a class that is not one of yours, and assign the Fallback class after the retries run out. When off, an unknown class is used as-is."
+                            default: true
+                            order: 0
+                          maxValidationRetries:
+                            type: integer
+                            title: Max validation retries
+                            description: "How many times to re-prompt. 0 sends a single invalid prediction straight to the Fallback class. Each retry resends the full request, including the images."
+                            minimum: 0
+                            maximum: 5
+                            default: 2
+                            order: 1
+                            dependsOn: { field: "enforceValidClasses", value: true }
+                      confidence:
+                        type: object
+                        sectionLabel: Class confidence
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per page at page granularity, one per document at packet. Costs output tokens on every call."
+                        order: 5
+                        properties:
+                          mode:
+                            type: string
+                            title: Class confidence mode
+                            description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the page could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                            enum: ["topk", "verbalized", "off"]
+                            default: "topk"
+                            order: 0
+                          top_k_candidates:
+                            type: integer
+                            title: Candidates to request
+                            description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
+                            minimum: 2
+                            maximum: 10
+                            default: 3
+                            order: 1
+                            dependsOn: { field: "mode", value: "topk" }
+                          task_prompt_topk:
+                            type: string
+                            title: Top-K instruction block
+                            format: textarea
+                            description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                            order: 2
+                            dependsOn: { field: "mode", value: "topk" }
+                          task_prompt_verbalized:
+                            type: string
+                            title: Verbalized instruction block
+                            format: textarea
+                            description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                            order: 3
+                            dependsOn: { field: "mode", value: "verbalized" }
+                          task_prompt_topk_packet:
+                            type: string
+                            title: Top-K instruction block (packet)
+                            format: textarea
+                            description: "The 'topk' block used at packet granularity, where the unit is a document rather than a page. Empty falls back to the page block above."
+                            order: 4
+                            dependsOn: { field: "mode", value: "topk" }
+                            showWhen: [{ field: "granularity", value: "packet" }]
+                          task_prompt_verbalized_packet:
+                            type: string
+                            title: Verbalized instruction block (packet)
+                            format: textarea
+                            description: "The 'verbalized' block used at packet granularity, on the same per-document rules as the packet Top-K block."
+                            order: 5
+                            dependsOn: { field: "mode", value: "verbalized" }
+                            showWhen: [{ field: "granularity", value: "packet" }]
+              two_stage:
                 type: object
-                sectionLabel: Stage B — Labeling (two-stage)
-                collapsible: true
-                defaultExpanded: true
-                description: "Names each document Stage A found. One call per document, not per page. Skipped for a document whose class a name RegEx already decided."
-                order: 0.4
+                sectionLabel: Two stage
+                collapsible: false
+                description: "Segmentation finds where each document starts and ends, with no class list in the prompt; section classification then gives each section one class. When Advanced — known file shape declares the shape, segmentation makes no calls. [How two stage works](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/classification/#two-stage-classification-segmentation-then-section-classification)"
+                order: 2
                 showWhen: [{ field: "strategy", value: "two_stage" }]
                 properties:
-                  method:
-                    type: string
-                    title: Labeling method
-                    description: "How each document gets its class. 'llm' makes one call per document with the class list and examples. Embeddings and external classifier endpoints are planned (GitHub issue #1329)."
-                    enum: ["llm"]
-                    default: "llm"
+                  segmentation:
+                    type: object
+                    sectionLabel: Segmentation
+                    collapsible: true
+                    defaultExpanded: true
+                    description: "Finds where each document starts and ends. Returns page ranges only — no class — so its calls carry no class list, descriptions or examples."
                     order: 0
-                  model:
-                    type: string
-                    title: Stage B model
-                    description: "Model for the labelling calls. Empty uses the Classification model above. This is the call that carries the class list and examples, once per document."
-                    default: ""
+                    properties:
+                      method:
+                        type: string
+                        title: Segmentation method
+                        description: "How boundaries are found. 'llm' is the only method today; a boundary-detection model endpoint is planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show a 'boundary_model' block with defaults: it belongs to that planned method and is ignored today."
+                        enum: ["llm"]
+                        default: "llm"
+                        order: 0
+                      llm:
+                        type: object
+                        sectionLabel: LLM segmentation
+                        collapsible: false
+                        description: "The boundary calls: how many are made, their prompts, and the model they use."
+                        order: 1
+                        showWhen: [{ field: "method", value: "llm" }]
+                        properties:
+                          granularity:
+                            type: string
+                            title: Granularity
+                            description: "How many boundary calls are made. 'page': one per page, each saying whether that page starts a new document; pages run in parallel. 'packet': one for the whole document, returning page ranges, so the model sees the whole packet when placing boundaries."
+                            enum: ["page", "packet"]
+                            default: "page"
+                            order: 0
+                          boundary_hints:
+                            type: string
+                            title: Boundary hints
+                            description: "Whether the boundary calls are told the class names as a hint. 'none' sends no vocabulary at all, which is the saving. 'class_names' sends the names only — worth it when a document's first page is titled like one of your classes."
+                            enum: ["none", "class_names"]
+                            default: "none"
+                            order: 0.5
+                          page:
+                            type: object
+                            sectionLabel: Page settings
+                            collapsible: false
+                            description: "One boundary call per page."
+                            order: 1
+                            showWhen: [{ field: "granularity", notValues: ["packet"] }]
+                            properties:
+                              contextPagesCount:
+                                type: integer
+                                title: Context pages
+                                description: "Also send k pages either side of the page being read, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens."
+                                minimum: 0
+                                maximum: 5
+                                default: 0
+                                order: 0
+                              system_prompt:
+                                type: string
+                                title: System prompt (page)
+                                format: textarea
+                                description: "System prompt for the per-page boundary calls. Empty uses the shipped default."
+                                order: 1
+                              task_prompt:
+                                type: string
+                                title: Task prompt (page)
+                                format: textarea
+                                description: "Asks only whether this page starts a new document; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here."
+                                order: 2
+                          packet:
+                            type: object
+                            sectionLabel: Packet settings
+                            collapsible: false
+                            description: "One boundary call per packet, or per window of a long packet."
+                            order: 1.5
+                            showWhen: [{ field: "granularity", value: "packet" }]
+                            properties:
+                              window_pages:
+                                type: integer
+                                title: Window size (pages)
+                                description: "Most pages one call covers; a longer document is split into overlapping windows and merged. 0 never windows, which fails above the model's context limit. Above 20 images in one request Bedrock shrinks every image to 2,000px, so a wider window with images on loses page resolution."
+                                minimum: 0
+                                maximum: 200
+                                default: 20
+                                order: 0
+                              overlap_pages:
+                                type: integer
+                                title: Window overlap (pages)
+                                description: "Pages repeated between adjacent windows, so a boundary at a window edge is still seen with the pages before it. Must be smaller than the window size. Adds this many pages to every window after the first."
+                                minimum: 0
+                                maximum: 50
+                                default: 2
+                                order: 1
+                              system_prompt:
+                                type: string
+                                title: System prompt (packet)
+                                format: textarea
+                                description: "System prompt for the packet boundary calls. Empty uses the shipped default."
+                                order: 2
+                              task_prompt:
+                                type: string
+                                title: Task prompt (packet)
+                                format: textarea
+                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown."
+                                order: 3
+                          model:
+                            type: string
+                            title: Model
+                            description: "Model for the boundary calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            enum:
+                              - "LambdaHook"
+                              - !If
+                                - HasCustomClassificationModelARN
+                                - !Ref CustomClassificationModelARN
+                                - !Ref AWS::NoValue
+                              - "us.amazon.nova-lite-v1:0"
+                              - "us.amazon.nova-pro-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0:priority"
+                              - "us.amazon.nova-2-lite-v1:0:flex"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.amazon.nova-2-lite-v1:0:priority"
+                              - "global.amazon.nova-2-lite-v1:0:flex"
+                              - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "us.anthropic.claude-haiku-5-5"
+                              - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "us.anthropic.claude-sonnet-4-6"
+                              - "us.anthropic.claude-sonnet-4-6:1m"
+                              - "us.anthropic.claude-sonnet-5"
+                              - "us.anthropic.claude-sonnet-5:1m"
+                              - "us.anthropic.claude-sonnet-5-5"
+                              - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "us.anthropic.claude-opus-4-6-v1"
+                              - "us.anthropic.claude-opus-4-6-v1:1m"
+                              - "us.anthropic.claude-opus-4-7"
+                              - "us.anthropic.claude-opus-4-7:1m"
+                              - "us.anthropic.claude-opus-4-8"
+                              - "us.anthropic.claude-opus-4-8:1m"
+                              - "us.anthropic.claude-opus-5"
+                              - "us.anthropic.claude-opus-5:1m"
+                              - "us.anthropic.claude-opus-5-5"
+                              - "us.anthropic.claude-opus-5-5:1m"
+                              - "openai.gpt-5.4"
+                              - "openai.gpt-5.5"
+                              - "openai.gpt-5.6-sol"
+                              - "openai.gpt-5.6-terra"
+                              - "openai.gpt-5.6-luna"
+                              - "eu.amazon.nova-lite-v1:0"
+                              - "ca.amazon.nova-lite-v1:0"
+                              - "eu.amazon.nova-pro-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0:priority"
+                              - "eu.amazon.nova-2-lite-v1:0:flex"
+                              - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "eu.anthropic.claude-haiku-5-5"
+                              - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "eu.anthropic.claude-sonnet-4-6"
+                              - "eu.anthropic.claude-sonnet-4-6:1m"
+                              - "eu.anthropic.claude-sonnet-5"
+                              - "eu.anthropic.claude-sonnet-5:1m"
+                              - "eu.anthropic.claude-sonnet-5-5"
+                              - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "eu.anthropic.claude-opus-4-6-v1"
+                              - "eu.anthropic.claude-opus-4-6-v1:1m"
+                              - "eu.anthropic.claude-opus-4-7"
+                              - "eu.anthropic.claude-opus-4-7:1m"
+                              - "eu.anthropic.claude-opus-4-8"
+                              - "eu.anthropic.claude-opus-4-8:1m"
+                              - "eu.anthropic.claude-opus-5"
+                              - "eu.anthropic.claude-opus-5:1m"
+                              - "eu.anthropic.claude-opus-5-5"
+                              - "eu.anthropic.claude-opus-5-5:1m"
+                              - "qwen.qwen3-vl-235b-a22b"
+                              - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                              - "us.meta.llama4-scout-17b-instruct-v1:0"
+                              - "us.xai.grok-4.6"
+                              - "us.openai.gpt-6-astra"
+                              - "google.gemma-3-27b-it"
+                              - "nvidia.nemotron-nano-12b-v2"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "global.anthropic.claude-haiku-5-5"
+                              - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "global.anthropic.claude-sonnet-4-6"
+                              - "global.anthropic.claude-sonnet-4-6:1m"
+                              - "global.anthropic.claude-sonnet-5"
+                              - "global.anthropic.claude-sonnet-5:1m"
+                              - "global.anthropic.claude-sonnet-5-5"
+                              - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "global.anthropic.claude-opus-4-6-v1"
+                              - "global.anthropic.claude-opus-4-6-v1:1m"
+                              - "global.anthropic.claude-opus-4-7"
+                              - "global.anthropic.claude-opus-4-7:1m"
+                              - "global.anthropic.claude-opus-4-8"
+                              - "global.anthropic.claude-opus-4-8:1m"
+                              - "global.anthropic.claude-opus-5"
+                              - "global.anthropic.claude-opus-5:1m"
+                              - "global.anthropic.claude-opus-5-5"
+                              - "global.anthropic.claude-opus-5-5:1m"
+                              - "global.xai.grok-4.6"
+                              - "global.openai.gpt-6-astra"
+                            order: 2
+                          model_lambda_hook_arn:
+                            type: string
+                            title: Model Lambda hook ARN
+                            description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
+                            default: ""
+                            order: 2.1
+                            dependsOn: { field: "model", value: "LambdaHook" }
+                          modality:
+                            type: object
+                            sectionLabel: Modality
+                            collapsible: false
+                            description: "What each boundary call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            order: 3
+                            properties:
+                              text:
+                                type: string
+                                title: Send page text
+                                description: "Sends each page's OCR text. Empty infers it from whether this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                enum: ["", "true", "false"]
+                                default: ""
+                                order: 0
+                              images:
+                                type: string
+                                title: Send page images
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether this call's task prompt contains {DOCUMENT_IMAGE}."
+                                enum: ["", "true", "false"]
+                                default: ""
+                                order: 1
+                          image:
+                            type: object
+                            sectionLabel: Image settings
+                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
+                            order: 4
+                            showWhen: [{ field: "modality.images", notValues: ["false"] }]
+                            properties:
+                              target_width:
+                                type: number
+                                description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 0
+                              target_height:
+                                type: number
+                                description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 1
+                          model_params:
+                            type: object
+                            title: Model parameters
+                            sectionLabel: Model parameters
+                            # ghostGroup => children save at the PARENT path (this call's
+                            # temperature, max_tokens, ...), so this is a purely visual grouping.
+                            ghostGroup: true
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
+                            order: 5
+                            properties:
+                              temperature:
+                                type: number
+                                title: Temperature
+                                minimum: 0
+                                maximum: 1
+                                description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 1
+                              top_k:
+                                type: integer
+                                title: Top K
+                                minimum: 1
+                                description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 2
+                              top_p:
+                                type: number
+                                title: Top P
+                                description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 3
+                              max_tokens:
+                                type: number
+                                title: Max tokens
+                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                order: 4
+                              reasoning_effort:
+                                type: string
+                                title: Reasoning effort
+                                enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                                default: "medium"
+                                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
+                                order: 5
+                                dependsOn: { field: "model", reasoningCapable: true }
+                  section_classification:
+                    type: object
+                    sectionLabel: Section classification
+                    collapsible: true
+                    defaultExpanded: true
+                    description: "Gives each section segmentation found one class. One call per section, not per page. Skipped for a section whose class a name RegEx already decided."
                     order: 1
-                  pages:
-                    type: string
-                    title: Pages per segment
-                    description: "Which pages represent a document when labelling it. 'first_k' (the default) sends its opening pages, where a document's identity almost always is. 'all' gives back the saving on a long document."
-                    enum: ["first", "first_k", "all"]
-                    default: "first_k"
-                    order: 2
-                  k:
-                    type: integer
-                    title: Pages to send (k)
-                    description: "How many opening pages to send. A shorter document sends what it has."
-                    minimum: 1
-                    maximum: 20
-                    default: 2
-                    order: 3
-                    dependsOn: { field: "pages", value: "first_k" }
-                  system_prompt:
-                    type: string
-                    title: Stage B system prompt
-                    format: textarea
-                    description: "System prompt for the labelling calls."
-                    order: 4
-                  task_prompt:
-                    type: string
-                    title: Stage B task prompt
-                    format: textarea
-                    description: "Given one document's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}."
-                    order: 5
-              maxPagesForClassification:
-                type: string
-                title: Pages to classify
-                description: "Classify only the first N pages and give the whole file their majority class. ⚠️ A number here overrides Section splitting **for a file longer than N**: that file becomes one section, so a multi-document packet is collapsed. A file of N pages or fewer is classified and sectioned normally, so the same setting behaves differently on different files in one run. Right for a known single-document file, wrong for a packet."
-                enum: ["ALL", "1", "2", "3", "5", "10"]
-                order: 4
-              sectionSplitting:
-                type: string
-                title: Section splitting
-                description: "How the documents found become sections, at either granularity and either strategy. 'llm_determined': one section each. 'page': one per page, which stops two adjacent documents of the same class being joined. 'disabled': the whole file as one section, class by majority vote. ⚠️ 'disabled' does not skip classification — use Pages to classify for that. ⚠️ Ignored for any file longer than Pages to classify, which collapses that file to one section whatever this says — so check both settings together. Not the same as Stage A — Segmentation above, which finds the documents in the first place and applies to two-stage only."
-                enum: ["disabled", "page", "llm_determined"]
-                default: "llm_determined"
-                order: 5
-              contextPagesCount:
-                type: integer
-                title: Context pages
-                description: "Also send k pages either side of the page being classified, so an ambiguous page can be judged against its neighbours. ⚠️ Each call then carries up to 2k+1 pages — 3x at k=1, 5x at k=2, in both text and image tokens. The most expensive setting here per unit of change."
-                minimum: 0
-                maximum: 5
-                default: 0
-                order: 6
-                showWhen: [{ field: "granularity", notValues: ["packet"] }]
-              enforceValidClasses:
-                type: boolean
-                title: Enforce valid classes
-                description: "Re-prompt the model when it returns a class that is not one of yours, and fall back after the retries run out. When off, an unknown class is used as-is. Costs nothing unless the model goes out of vocabulary."
-                default: true
-                order: 7
-              maxValidationRetries:
-                type: integer
-                title: Max validation retries
-                description: "How many times to re-prompt. 0 sends a single invalid prediction straight to the fallback. Each retry resends the full request, including the images."
-                minimum: 0
-                maximum: 5
-                default: 2
-                order: 8
-                dependsOn: { field: "enforceValidClasses", value: true }
-              invalidClassFallback:
-                type: string
-                title: Invalid class fallback
-                description: "The class assigned once the retries are exhausted. One of your classes, or the built-in 'unclassified'. It carries no confidence score, because it is not a prediction."
-                default: "unclassified"
-                order: 9
-                dependsOn: { field: "enforceValidClasses", value: true }
-              confidence:
+                    properties:
+                      method:
+                        type: string
+                        title: Section classification method
+                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show 'embeddings', 'decision_model' and 'low_confidence' blocks with defaults: they belong to those planned methods and are ignored today."
+                        enum: ["llm"]
+                        default: "llm"
+                        order: 0
+                      pages:
+                        type: string
+                        title: Pages per section
+                        description: "Which pages are sent to classify a section. 'First page': its first page only. 'First k pages' (default): its opening pages, where a document's identity almost always is. 'All pages': every page — most accurate on an ambiguous section, but a long section then costs what page-level classification would."
+                        enum: ["first", "first_k", "all"]
+                        enumLabels: { first: "First page", first_k: "First k pages (default)", all: "All pages" }
+                        default: "first_k"
+                        order: 1
+                      k:
+                        type: integer
+                        title: Pages to send (k)
+                        description: "How many opening pages to send. A shorter section sends what it has."
+                        minimum: 1
+                        maximum: 20
+                        default: 2
+                        order: 2
+                        dependsOn: { field: "pages", value: "first_k" }
+                      llm:
+                        type: object
+                        sectionLabel: LLM section classification
+                        collapsible: false
+                        description: "The call that names each section: its prompts, its model, and how its class is checked and scored."
+                        order: 3
+                        showWhen: [{ field: "method", value: "llm" }]
+                        properties:
+                          system_prompt:
+                            type: string
+                            title: System prompt
+                            format: textarea
+                            description: "System prompt for the section classification calls. Empty uses the shipped default."
+                            order: 6
+                          task_prompt:
+                            type: string
+                            title: Task prompt
+                            format: textarea
+                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default."
+                            order: 7
+                          model:
+                            type: string
+                            title: Model
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            enum:
+                              - "LambdaHook"
+                              - !If
+                                - HasCustomClassificationModelARN
+                                - !Ref CustomClassificationModelARN
+                                - !Ref AWS::NoValue
+                              - "us.amazon.nova-lite-v1:0"
+                              - "us.amazon.nova-pro-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0"
+                              - "us.amazon.nova-2-lite-v1:0:priority"
+                              - "us.amazon.nova-2-lite-v1:0:flex"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.amazon.nova-2-lite-v1:0:priority"
+                              - "global.amazon.nova-2-lite-v1:0:flex"
+                              - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "us.anthropic.claude-haiku-5-5"
+                              - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "us.anthropic.claude-sonnet-4-6"
+                              - "us.anthropic.claude-sonnet-4-6:1m"
+                              - "us.anthropic.claude-sonnet-5"
+                              - "us.anthropic.claude-sonnet-5:1m"
+                              - "us.anthropic.claude-sonnet-5-5"
+                              - "us.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "us.anthropic.claude-opus-4-6-v1"
+                              - "us.anthropic.claude-opus-4-6-v1:1m"
+                              - "us.anthropic.claude-opus-4-7"
+                              - "us.anthropic.claude-opus-4-7:1m"
+                              - "us.anthropic.claude-opus-4-8"
+                              - "us.anthropic.claude-opus-4-8:1m"
+                              - "us.anthropic.claude-opus-5"
+                              - "us.anthropic.claude-opus-5:1m"
+                              - "us.anthropic.claude-opus-5-5"
+                              - "us.anthropic.claude-opus-5-5:1m"
+                              - "openai.gpt-5.4"
+                              - "openai.gpt-5.5"
+                              - "openai.gpt-5.6-sol"
+                              - "openai.gpt-5.6-terra"
+                              - "openai.gpt-5.6-luna"
+                              - "eu.amazon.nova-lite-v1:0"
+                              - "ca.amazon.nova-lite-v1:0"
+                              - "eu.amazon.nova-pro-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0"
+                              - "eu.amazon.nova-2-lite-v1:0:priority"
+                              - "eu.amazon.nova-2-lite-v1:0:flex"
+                              - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "eu.anthropic.claude-haiku-5-5"
+                              - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "eu.anthropic.claude-sonnet-4-6"
+                              - "eu.anthropic.claude-sonnet-4-6:1m"
+                              - "eu.anthropic.claude-sonnet-5"
+                              - "eu.anthropic.claude-sonnet-5:1m"
+                              - "eu.anthropic.claude-sonnet-5-5"
+                              - "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "eu.anthropic.claude-opus-4-6-v1"
+                              - "eu.anthropic.claude-opus-4-6-v1:1m"
+                              - "eu.anthropic.claude-opus-4-7"
+                              - "eu.anthropic.claude-opus-4-7:1m"
+                              - "eu.anthropic.claude-opus-4-8"
+                              - "eu.anthropic.claude-opus-4-8:1m"
+                              - "eu.anthropic.claude-opus-5"
+                              - "eu.anthropic.claude-opus-5:1m"
+                              - "eu.anthropic.claude-opus-5-5"
+                              - "eu.anthropic.claude-opus-5-5:1m"
+                              - "qwen.qwen3-vl-235b-a22b"
+                              - "us.meta.llama4-maverick-17b-instruct-v1:0"
+                              - "us.meta.llama4-scout-17b-instruct-v1:0"
+                              - "us.xai.grok-4.6"
+                              - "us.openai.gpt-6-astra"
+                              - "google.gemma-3-27b-it"
+                              - "nvidia.nemotron-nano-12b-v2"
+                              - "global.amazon.nova-2-lite-v1:0"
+                              - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                              - "global.anthropic.claude-haiku-5-5"
+                              - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                              - "global.anthropic.claude-sonnet-4-6"
+                              - "global.anthropic.claude-sonnet-4-6:1m"
+                              - "global.anthropic.claude-sonnet-5"
+                              - "global.anthropic.claude-sonnet-5:1m"
+                              - "global.anthropic.claude-sonnet-5-5"
+                              - "global.anthropic.claude-opus-4-5-20251101-v1:0"
+                              - "global.anthropic.claude-opus-4-6-v1"
+                              - "global.anthropic.claude-opus-4-6-v1:1m"
+                              - "global.anthropic.claude-opus-4-7"
+                              - "global.anthropic.claude-opus-4-7:1m"
+                              - "global.anthropic.claude-opus-4-8"
+                              - "global.anthropic.claude-opus-4-8:1m"
+                              - "global.anthropic.claude-opus-5"
+                              - "global.anthropic.claude-opus-5:1m"
+                              - "global.anthropic.claude-opus-5-5"
+                              - "global.anthropic.claude-opus-5-5:1m"
+                              - "global.xai.grok-4.6"
+                              - "global.openai.gpt-6-astra"
+                            order: 0
+                          model_lambda_hook_arn:
+                            type: string
+                            title: Model Lambda hook ARN
+                            description: "Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-."
+                            default: ""
+                            order: 0.1
+                            dependsOn: { field: "model", value: "LambdaHook" }
+                          modality:
+                            type: object
+                            sectionLabel: Modality
+                            collapsible: false
+                            description: "What each section classification call is sent. Both on is the recommended start. Leave a flag empty to infer it from this call's task prompt placeholders. Both off is refused when you save."
+                            order: 1
+                            properties:
+                              text:
+                                type: string
+                                title: Send page text
+                                description: "Sends each page's OCR text. Empty infers it from whether this call's task prompt contains {DOCUMENT_TEXT}. An OCR backend of 'none' produces no text to send."
+                                enum: ["", "true", "false"]
+                                default: ""
+                                order: 0
+                              images:
+                                type: string
+                                title: Send page images
+                                description: "Sends each page's image — usually the largest input cost per page, so turning it off is the main cost lever. Empty infers it from whether this call's task prompt contains {DOCUMENT_IMAGE}."
+                                enum: ["", "true", "false"]
+                                default: ""
+                                order: 1
+                          image:
+                            type: object
+                            sectionLabel: Image settings
+                            description: "Downscales the page image before sending it. Fewer pixels means proportionally fewer image tokens. Can only make the image smaller than OCR produced, never larger."
+                            order: 2
+                            showWhen: [{ field: "modality.images", notValues: ["false"] }]
+                            properties:
+                              target_width:
+                                type: number
+                                description: "Target image width in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 0
+                              target_height:
+                                type: number
+                                description: "Target image height in pixels. Images larger than this will be resized. No resize by default: the page image produced by OCR is used as-is, so ocr.image settings act as the upper bound. Set this only to send a smaller image than OCR produced."
+                                minimum: 100
+                                maximum: 3500
+                                order: 1
+                          model_params:
+                            type: object
+                            title: Model parameters
+                            sectionLabel: Model parameters
+                            # ghostGroup => children save at the PARENT path (this call's
+                            # temperature, max_tokens, ...), so this is a purely visual grouping.
+                            ghostGroup: true
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "Advanced inference tuning (sampling + output limits). Defaults are sensible; most users never change these."
+                            order: 3
+                            properties:
+                              temperature:
+                                type: number
+                                title: Temperature
+                                minimum: 0
+                                maximum: 1
+                                description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 1
+                              top_k:
+                                type: integer
+                                title: Top K
+                                minimum: 1
+                                description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 2
+                              top_p:
+                                type: number
+                                title: Top P
+                                description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
+                                order: 3
+                              max_tokens:
+                                type: number
+                                title: Max tokens
+                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                order: 4
+                              reasoning_effort:
+                                type: string
+                                title: Reasoning effort
+                                enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+                                default: "medium"
+                                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
+                                order: 5
+                                dependsOn: { field: "model", reasoningCapable: true }
+                          validation:
+                            type: object
+                            sectionLabel: Class validation
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "Re-prompt when the model returns a class that is not one of yours. Costs nothing unless the model goes out of vocabulary."
+                            order: 4
+                            properties:
+                              enforceValidClasses:
+                                type: boolean
+                                title: Enforce valid classes
+                                description: "Re-prompt the model when it returns a class that is not one of yours, and assign the Fallback class after the retries run out. When off, an unknown class is used as-is."
+                                default: true
+                                order: 0
+                              maxValidationRetries:
+                                type: integer
+                                title: Max validation retries
+                                description: "How many times to re-prompt. 0 sends a single invalid prediction straight to the Fallback class. Each retry resends the full request, including the images."
+                                minimum: 0
+                                maximum: 5
+                                default: 2
+                                order: 1
+                                dependsOn: { field: "enforceValidClasses", value: true }
+                          confidence:
+                            type: object
+                            sectionLabel: Class confidence
+                            collapsible: true
+                            defaultExpanded: false
+                            description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per section. Costs output tokens on every call."
+                            order: 5
+                            properties:
+                              mode:
+                                type: string
+                                title: Class confidence mode
+                                description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the section could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
+                                enum: ["topk", "verbalized", "off"]
+                                default: "topk"
+                                order: 0
+                              top_k_candidates:
+                                type: integer
+                                title: Candidates to request
+                                description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
+                                minimum: 2
+                                maximum: 10
+                                default: 3
+                                order: 1
+                                dependsOn: { field: "mode", value: "topk" }
+                              task_prompt_topk:
+                                type: string
+                                title: Top-K instruction block
+                                format: textarea
+                                description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                                order: 2
+                                dependsOn: { field: "mode", value: "topk" }
+                              task_prompt_verbalized:
+                                type: string
+                                title: Verbalized instruction block
+                                format: textarea
+                                description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                                order: 3
+                                dependsOn: { field: "mode", value: "verbalized" }
+              file_shape:
                 type: object
-                sectionLabel: Class confidence
-                description: "How much confidence the classifier reports in the class it chose — not in the extracted fields, which is Extraction > Confidence. One score per page at page granularity, one per document at packet. Costs output tokens on every call."
-                order: 10
+                sectionLabel: Advanced — known file shape
+                collapsible: true
+                defaultExpanded: false
+                description: "By default every file is treated as a packet and its document boundaries are detected. Set these only when you already know a file's shape."
+                order: 3
                 properties:
-                  mode:
+                  sectionSplitting:
                     type: string
-                    title: Class confidence mode
-                    description: "'topk' asks for ranked candidates with probabilities ('80% W-2, 15% 1099') — better calibrated than one self-reported number, and it shows what else the page could have been. 'verbalized' asks for a single 0-1 number: cheapest and the most overconfident. 'off' asks for nothing. How useful the score is depends strongly on the model — measure it on your own documents before routing work on it."
-                    enum: ["topk", "verbalized", "off"]
-                    default: "topk"
+                    title: Section splitting
+                    description: "'Detect boundaries': one section per document found. 'One document': the whole file is one section, class by majority vote. 'One per page': every page is its own section, which stops two adjacent documents of the same class being joined. Applies to both strategies."
+                    enum: ["llm_determined", "disabled", "page"]
+                    enumLabels: { llm_determined: "Detect boundaries (default)", disabled: "One document", page: "One per page" }
+                    default: "llm_determined"
                     order: 0
-                  top_k_candidates:
-                    type: integer
-                    title: Candidates to request
-                    description: "How many ranked candidate classes to ask for in 'topk' mode. Automatically reduced to the number of classes you have defined. At least 2 — the calibration benefit comes from the model having to rank alternatives."
-                    minimum: 2
-                    maximum: 10
-                    default: 3
+                  maxPagesForClassification:
+                    type: string
+                    title: Pages to classify
+                    description: "Classify only the first N pages and give the whole file their majority class. Applies only to 'One document'."
+                    enum: ["ALL", "1", "2", "3", "5", "10"]
+                    default: "ALL"
                     order: 1
-                    dependsOn: { field: "mode", value: "topk" }
-                  task_prompt_topk:
-                    type: string
-                    title: Top-K instruction block
-                    format: textarea
-                    description: "The instruction spliced into the classification Task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix, which matters because classification runs per page). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a Task prompt that already contains one is left alone, which is how you take over the wording completely."
-                    order: 2
-                    dependsOn: { field: "mode", value: "topk" }
-                  task_prompt_verbalized:
-                    type: string
-                    title: Verbalized instruction block
-                    format: textarea
-                    description: "The instruction spliced into the classification Task prompt in 'verbalized' mode, on the same rules as the Top-K block."
-                    order: 3
-                    dependsOn: { field: "mode", value: "verbalized" }
-                  task_prompt_topk_packet:
-                    type: string
-                    title: Top-K instruction block (packet)
-                    format: textarea
-                    description: "The 'topk' block used at packet granularity, where the unit is a document rather than a page. Empty falls back to the page block above."
-                    order: 4
-                    dependsOn: { field: "mode", value: "topk" }
-                    showWhen: [{ field: "granularity", value: "packet" }]
-                  task_prompt_verbalized_packet:
-                    type: string
-                    title: Verbalized instruction block (packet)
-                    format: textarea
-                    description: "The 'verbalized' block used at packet granularity, on the same per-document rules as the packet Top-K block."
-                    order: 5
-                    dependsOn: { field: "mode", value: "verbalized" }
-                    showWhen: [{ field: "granularity", value: "packet" }]
-              system_prompt:
-                type: string
-                title: System prompt
-                format: textarea
-                description: "System prompt for page-level calls. At packet granularity the Packet system prompt is used instead, and two-stage Stage B falls back to this one if its own is cleared."
-                order: 15
-              task_prompt:
-                type: string
-                title: Task prompt
-                format: textarea
-                description: "Asks for one page's class plus whether that page starts a new document. At packet granularity the Packet task prompt is used instead. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off."
-                order: 16
+                    showWhen: [{ field: "sectionSplitting", value: "disabled" }]
               postHook:
                 type: array
                 collapsible: true
@@ -2402,12 +2909,11 @@ Resources:
               confidence_threshold:
                 type: number
                 title: Confidence threshold
-                description: "Confidence threshold (0.0-1.0). Fields scoring below this trigger HITL review and show confidence alerts."
+                description: "Confidence threshold (0.0-1.0) used for a field with no threshold of its own. Fields scoring below their threshold raise confidence alerts; with HITL enabled they send the document to review."
                 minimum: 0.0
                 maximum: 1.0
                 default: 0.8
                 order: 1
-                hideWhen: { field: "hitl.enabled", value: false }
               notifications:
                 type: object
                 order: 2

@@ -205,12 +205,41 @@ Three things to know before using it:
   Within that level the shallowest candidate wins if it is alone there, and a tie
   declines: `enabled` is declared at eight places one level under `extraction`, so
   `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
-  and declines rather than answering with `classification.model`. Failing that, a
+  and declines rather than answering with `summarization.model`. Failing that, a
   close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
   than none: it sends the author to edit something correct. A list step is spelled
   `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
   mapping subtree gets findings but no suggestions, because a suggestion there would
   have to invent a key name.
+
+### `system_defaults/` and the models must describe the same settings
+
+The project rule is that `system_defaults/` is the canonical list of settings, so
+the YAML is where an operator, the configuration editor and an agent reading the
+bundled source all discover what can be set. That makes two kinds of divergence
+possible, and for classification both had shipped:
+
+- **A field with no entry in the YAML** is a live setting nobody can find. Two were
+  live on all three classification calls and absent from
+  `base-classification.yaml`, so the only way to learn they existed was to read
+  `models.py`.
+- **A key in the YAML the models do not define** is dropped during validation (see
+  above), so editing it does nothing — and the same is true of a key the *service*
+  cannot read at that path, which is how the section-classification call came to
+  ship a kilobyte of per-segment confidence prompt it never consults.
+
+A third divergence is quieter than either: **a value in the YAML that differs from
+the model's field default**. The YAML wins on a normal load, so nothing shows until
+a field is *cleared* — and then that one call falls back to the code's opinion
+instead of the value the rest of the profile is running. A cleared model field used
+to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
+profile did not use.
+
+`tests/unit/config/test_classification_defaults_parity.py` asserts all three for
+classification, with its exemptions registered in
+`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
+should eventually cover every section; `base-extraction.yaml` and its models are not
+compared yet.
 
 ## Files
 
@@ -457,6 +486,19 @@ Two deliberate choices:
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
+- **A revision is returned in the current config format.** A revision cut before a
+  format change was stored in the shape of the release that cut it, so
+  `_read_revision_body()` converts it on the way out, through the same
+  `migrate_config()` chain every other read of a stored configuration uses. Both of
+  its sources are converted — the stored body and, below, the rebuild from the head
+  — so one revision number does not change shape when its stored body expires. The
+  conversion is **in memory only; the stored body is never rewritten**, because a
+  revision is an immutable record of the configuration that actually ran. Callers
+  that construct an `IDPConfig` from the result (`_load_revision_config()`,
+  `restore_revision()`) convert again through its validator, which is a no-op: the
+  chain is idempotent. What depends on this is shape agreement between the surfaces
+  that serve one revision — `get_revision()` behind `idp-cli config-download
+  --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.

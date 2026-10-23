@@ -94,6 +94,9 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     `listTestSetQueues` and `claimTestSetDocument` for Test Studio queues. Each is
     limited to the queues that list the caller (otherwise `NOT_A_MEMBER` or
     `NOT_ELIGIBLE`), and only the holder may release an item (`NOT_LEASE_HOLDER`).
+    `claimTestSetDocument` is Annotator-only, at the gateway as well as in the
+    resolver: Admins assign test-set documents (`assignTestSetDocuments`) rather than
+    claim them. A user in both Admin and Annotator may claim.
   - Their work: `listMyReviewWork`, `getReviewItem`, `saveReviewDraft`,
     `completeReviewItem` and `rejectReviewItem`. `getReviewItem` is read-only for an
     item the caller doesn't hold; saving and the dispositions need the claim.
@@ -116,9 +119,10 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - A queue's **Eligible Annotators** list is its membership: an Annotator sees,
     claims and is assigned only in queues that list them. An empty list means no
     Annotators; Admins work every queue.
-  - Only members of the Cognito `Annotator` group can claim or be assigned work;
-    both the production and the Test Studio checks use the group, not the
-    UsersTable persona, so a user who is Admin and Annotator can be assigned.
+  - Only members of the Cognito `Annotator` group can claim a Test Studio document or
+    be assigned work. An Admin can claim and work Production items without being an
+    Annotator; a user who is Admin and Annotator can also be assigned. Both the
+    production and the Test Studio checks use the group, not the UsersTable persona.
   - The owner key is taken from the verified claims. An Annotator keeps the items
     they hold even after being taken off a queue's list.
   - `allowedConfigVersions` limits which profiles' Production items an Annotator

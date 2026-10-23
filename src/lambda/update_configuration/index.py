@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from idp_common.config.configuration_manager import (
 )
 from idp_common.config.flags import flag_is_true
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.migrations import migrate_config
 
 # One definition of "strip the cross-region profile prefix", shared with the
 # retired-model registry rather than re-spelled here. That module's prefix list is
@@ -459,6 +461,38 @@ def detect_pattern_from_config(config: Dict[str, Any]) -> str:
     return "pattern-2"
 
 
+def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) -> None:
+    """Write the stack's custom/fine-tuned model ARNs into a merged config.
+
+    ``CustomClassificationModelARN`` replaces the model of the call that assigns
+    the class under the active strategy — ``one_stage.llm`` for a single pass,
+    ``two_stage.section_classification.llm`` for two stages. Segmentation keeps
+    its own model: it only finds boundaries, which is not what a classification
+    model was trained to do. ``CustomExtractionModelARN`` replaces
+    ``extraction.model``. An empty or absent ARN changes nothing.
+    """
+    from idp_common.config.models import class_assigning_llm_path
+
+    classification_arn = str(properties.get("CustomClassificationModelARN") or "")
+    if classification_arn.strip() and isinstance(config.get("classification"), dict):
+        classification = config["classification"]
+        path = class_assigning_llm_path(classification)
+        node = classification
+        for key in path:
+            if not isinstance(node.get(key), dict):
+                node[key] = {}
+            node = node[key]
+        node["model"] = classification_arn
+        logger.info(
+            "Updated classification.%s.model to: %s", ".".join(path), classification_arn
+        )
+
+    extraction_arn = str(properties.get("CustomExtractionModelARN") or "")
+    if extraction_arn.strip() and isinstance(config.get("extraction"), dict):
+        config["extraction"]["model"] = extraction_arn
+        logger.info("Updated extraction model to: %s", extraction_arn)
+
+
 def merge_custom_with_defaults(
     custom_config: Dict[str, Any],
     pattern: str = None,
@@ -498,13 +532,28 @@ def merge_custom_with_defaults(
         return merged
 
     except FileNotFoundError as e:
-        # System defaults not available in Lambda - return config as-is
+        # System defaults not available in Lambda - return config unmerged
         logger.warning(f"System defaults not available, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
     except Exception as e:
-        # Any other error - log and return original config
+        # Any other error - log and return original config, unmerged
         logger.warning(f"Error merging with defaults, using config as-is: {e}")
-        return custom_config
+        return _migrated_or_original(custom_config)
+
+
+def _migrated_or_original(config: Dict[str, Any]) -> Dict[str, Any]:
+    """``config`` in the current format, for the paths that skip the merge.
+
+    The merge migrates a legacy config; returning the raw one instead leaves flat
+    ``classification`` keys in place, and ``apply_custom_model_arns`` then writes
+    the custom model into a nested block beside them — a flat/nested hybrid in
+    which the flat model wins on the next read and the ARN is lost.
+    """
+    try:
+        return migrate_config(copy.deepcopy(config))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not migrate the unmerged config, using it as-is: {e}")
+        return config
 
 
 def save_configuration_bypass_manager(
@@ -839,31 +888,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
 
                 # Apply custom model ARNs if provided
                 if isinstance(resolved_default, dict):
-                    # Replace classification model if CustomClassificationModelARN is provided and not empty
-                    if (
-                        "CustomClassificationModelARN" in properties
-                        and properties["CustomClassificationModelARN"].strip()
-                    ):
-                        if "classification" in resolved_default:
-                            resolved_default["classification"]["model"] = properties[
-                                "CustomClassificationModelARN"
-                            ]
-                            logger.info(
-                                f"Updated classification model to: {properties['CustomClassificationModelARN']}"
-                            )
-
-                    # Replace extraction model if CustomExtractionModelARN is provided and not empty
-                    if (
-                        "CustomExtractionModelARN" in properties
-                        and properties["CustomExtractionModelARN"].strip()
-                    ):
-                        if "extraction" in resolved_default:
-                            resolved_default["extraction"]["model"] = properties[
-                                "CustomExtractionModelARN"
-                            ]
-                            logger.info(
-                                f"Updated extraction model to: {properties['CustomExtractionModelARN']}"
-                            )
+                    apply_custom_model_arns(resolved_default, properties)
 
                 configurations["Config#default#System Default"] = resolved_default
 
