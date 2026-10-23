@@ -458,6 +458,24 @@ substitutions = {
 formatted_prompt = client.format_prompt(template, substitutions)
 ```
 
+Substitution is done with the `%` operator rather than `str.format`, so that a
+brace sequence in the operator's own prompt text — a JSON example, or a
+`{NAME}` the caller offers no value for — is left alone instead of raising
+`KeyError`. `format_prompt` escapes every `%` in the template to a literal
+before it rewrites `{KEY}` to `%(KEY)s`, which is the ordering that matters: a
+prompt saying "over 90% confident" renders as written, a `%(FOO)s` the author
+typed survives as prompt text, and an already-doubled `%%` still renders as one
+`%`. Escaping after the rewrite instead would double-escape the conversions the
+function itself introduced and emit `%(DOCUMENT_TEXT)s` where the value belongs.
+
+Values are not re-scanned — they are inserted by the `%` operator, which does
+not re-read what it wrote — so a `%` arriving from a class description, an
+attribute description or an OCR page needs no handling at the call site.
+
+`required_placeholders` is a check on the **template**, not on the substitutions
+dict: it asks whether the prompt offers a slot the caller needs to fill, and
+raises `ValueError` naming the missing ones.
+
 ### Response Text Extraction
 
 ```python

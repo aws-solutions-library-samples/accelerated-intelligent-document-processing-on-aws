@@ -1298,7 +1298,20 @@ same setting would give different answers for different files in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that lets you see the actual prompts sent to the LLM for each processing step (Classification, Extraction, Assessment, Summarization) with your configuration values filled in. This is useful for optimizing document class schemas and prompt templates — you can see exactly how your class names, descriptions, and JSON Schema attributes appear in the prompt that the LLM receives. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `single_pass` it offers *Classification: one stage*, and under `two_stage` it offers *Classification: segmentation* and *Classification: section classification* instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+
+## A `%` in a prompt is literal text
+
+Prompt templates are filled in by name — `{DOCUMENT_TEXT}`, `{DOCUMENT_CLASS}`
+and the other placeholders each page lists — and every other character is passed
+through as written. So "answer only when you are over 90% confident" and "95%
+certainty" mean what they say, and need no escaping. The same holds for a
+`%`-shaped sequence that is not an IDP placeholder, such as `%(FOO)s` or `100%s`:
+those are prompt text, not substitutions. A doubled `%%` is accepted too and
+renders as a single `%`.
+
+A `{NAME}` the step does not recognise is also left as written rather than
+emptied, so a prompt can refer to literal brace-wrapped text.
 
 ## Prompt Optimization
 
