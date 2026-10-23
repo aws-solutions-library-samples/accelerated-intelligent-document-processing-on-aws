@@ -43,39 +43,36 @@ defaults, so a run against it would use a configuration nobody chose.
 So, before anything else, census both. For a stack you can reach (read-only):
 
 ```python
-import os
-
-import boto3
 from idp_common.config.configuration_manager import ConfigurationManager
-from idp_common.config.constants import ACTIVE_POINTER_KEY
+from idp_common.config.constants import CONFIG_TYPE_CONFIG
 from idp_common.config.migrations._version import is_at_or_after
 
 manager = ConfigurationManager()      # needs CONFIGURATION_TABLE_NAME and CONFIGURATION_BUCKET
-table = boto3.resource("dynamodb").Table(os.environ["CONFIGURATION_TABLE_NAME"])
 
-# Heads. Read the item and decompress it: get_raw_configuration() relocates
-# keys and restamps the version, so it reports the CURRENT format for a head
-# stored at an older one.
-for row in table.scan(ProjectionExpression="Configuration").get("Items", []):
-    key = str(row.get("Configuration", ""))
-    # `Config#<profile>` only. A bare startswith("Config") also matches the
-    # `ConfigRevIndex#<profile>` index rows and the `Config#__active` pointer,
-    # none of which carries config_format_version — so each would print a
-    # finding indistinguishable from the one that must stop the release.
-    if not key.startswith("Config#") or key == ACTIVE_POINTER_KEY:
-        continue
-    item = table.get_item(Key={"Configuration": key}).get("Item")
-    stored = ConfigurationManager._decompress_item(item or {})
-    if not is_at_or_after(stored.get("config_format_version"), "0.9"):
-        print("HEAD", key, stored.get("config_format_version"))
-
-# Revision bodies.
+# ⚠️ Both halves walk the SAME profile list, and it must be this one. A DynamoDB
+# scan returns at most 1 MB per call, so a hand-rolled `table.scan()` without a
+# LastEvaluatedKey loop reports a clean census on a stack whose later profiles it
+# never looked at. `list_config_versions()` paginates (see its own comment), and
+# it also excludes the `ConfigRevIndex#<profile>` index rows and the
+# `Config#__active` pointer — neither of which carries config_format_version, so
+# a raw scan both truncates sooner and prints findings for records that have no
+# stamp to read.
 for profile in manager.list_config_versions():
     name = profile["versionName"]
+
+    # The head. Read the item and decompress it: get_raw_configuration()
+    # relocates keys and restamps the version, so it reports the CURRENT format
+    # for a head stored at an older one.
+    key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{name}"}
+    head = ConfigurationManager._decompress_item(manager.table.get_item(Key=key).get("Item") or {})
+    if not is_at_or_after(head.get("config_format_version"), "0.9"):
+        print("HEAD", name, head.get("config_format_version"))
+
+    # Its revision bodies.
     for entry in manager.list_revisions(name):
         # The STORED body, deliberately. `get_revision()` cannot see the stamp
-        # this audit is looking for: it converts on read, and for an expired
-        # body it answers with the profile HEAD. `get_body()` is the raw reader.
+        # this audit is looking for: for an expired body it answers with the
+        # profile HEAD. `get_body()` is the raw reader.
         body = manager.revisions.get_body(name, entry["revision"])
         if body is None:
             continue              # expired or pruned: nothing stored to convert
@@ -88,24 +85,23 @@ before running it. ⚠️ **Each half has a reader that gives a confidently clea
 answer, and neither is the obvious one.**
 
 - For a **revision**, do not substitute `get_revision()` — which is what the
-  revision-history panel and `config-download --config-revision` use. It gives a
-  clean answer for two independent reasons:
-  - **It answers an expired body with the profile head.** When a revision's
-    stored object is gone and that revision is the profile's published and
-    latest *and* provably still what the head holds, `_read_revision_body` falls
-    back to `_published_body_from_head`. So a pruned pre-0.9 revision reports
-    whatever its head carries now — and a head is the object most likely to have
-    been converted already. `revisions.get_body()` returns `None` there, which
-    is the answer this census needs, because nothing is stored to convert.
-    ⚠️ This holds on every release, and it is the reason that does not go away.
-  - **And from the release that made `_read_revision_body` migrate, it converts
-    on the way out**, so the stamp it reports is the current format for every
-    revision and the condition above is never true. Before that release
-    `get_revision` returned the stored shape, the revision-history panel's
-    conversion was applied by its own resolver, and `config-download
-    --config-revision` applied none — so whether this second reason bites
-    depends on which release you are reading. Do not spend time working out
-    which: the first reason already requires the raw reader.
+  revision-history panel and `config-download --config-revision` use, **because
+  it answers an expired body with the profile head.** When a revision's stored
+  object is gone and that revision is the profile's published and latest *and*
+  provably still what the head holds, `_read_revision_body` falls back to
+  `_published_body_from_head`. So a pruned pre-0.9 revision reports whatever its
+  head carries now — and a head is the object most likely to have been converted
+  already. `revisions.get_body()` returns `None` there, which is the answer this
+  census needs, because nothing is stored to convert.
+
+  `get_revision()` does not itself convert: it returns the stored shape. The
+  revision-history panel's conversion is applied by its own resolver
+  (`configuration_resolver/index.py`, which calls `migrate_config` on what
+  `get_revision` hands back), and `config-download --config-revision` applies
+  none. ⚠️ If a later release makes `_read_revision_body` convert on read, that
+  becomes a second and independent reason to use the raw reader — but the head
+  fallback above already requires it, so this check does not depend on which
+  release you are reading.
 - For a **head**, do not substitute `get_raw_configuration()`. "Raw" there means
   "no Pydantic defaults", not "the stored bytes": it runs the migration chain to
   relocate keys and restamps `config_format_version`, so it reports the current
