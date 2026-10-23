@@ -1268,7 +1268,7 @@ classification:
 - **Multiple Same-Type Forms**: Use `page` for deterministic splitting (resolves Issue #146)
 - **Complex Multi-Document Packets**: Use `llm_determined` for intelligent boundary detection
 
-For more details on classification methods and section splitting, see [classification.md](classification.md).
+For more details on the classification strategies, the two granularities and section splitting, see [classification.md](classification.md).
 
 ### Page Limit Configuration
 
@@ -1477,7 +1477,7 @@ classes:
 ### Classification Logic
 
 1. **Document Name Matching**: If `document_name_regex` matches the document filename, all pages are classified as that type without LLM processing
-2. **Page Content Matching**: During multimodal page-level classification, if `document_page_content_regex` matches page text, that page is classified without LLM processing
+2. **Page Content Matching**: At page granularity, if `document_page_content_regex` matches page text, that page is classified without LLM processing
 3. **Fallback**: If no regex matches, standard LLM classification is used
 
 ### Benefits

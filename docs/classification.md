@@ -156,7 +156,7 @@ In Pipeline mode, one-stage classification works at one of two granularities:
 
 ##### Sequence Segmentation Approach
 
-The multimodal page-level classification implements a sophisticated sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
+Page granularity implements a sophisticated sequence segmentation approach similar to BIO (Begin-Inside-Outside) tagging commonly used in NLP. This enables accurate segmentation of multi-document packets where a single file may contain multiple distinct documents.
 
 **How It Works:**
 
@@ -191,7 +191,7 @@ The system automatically creates three sections, properly separating the two inv
 
 ##### Page Context for Classification
 
-The multimodal page-level classification supports including surrounding pages as context to improve classification accuracy. This is particularly useful when a single page doesn't contain enough information to determine its document type or boundary status.
+Page granularity supports including surrounding pages as context to improve classification accuracy. This is particularly useful when a single page doesn't contain enough information to determine its document type or boundary status.
 
 **Configuration:**
 
@@ -1858,7 +1858,7 @@ in a "for ambiguous cases, consult the schema fields" sub-section.
 
 ## Setting Up Few Shot Examples in Pattern 2
 
-Pattern 2's multimodal page-level classification supports few-shot example prompting, which can significantly improve classification accuracy by providing concrete document examples. This feature is available when you select the 'few_shot_example_with_multimodal_page_classification' configuration.
+Classification supports few-shot example prompting at either granularity and under either strategy, which can significantly improve classification accuracy by providing concrete document examples. The `rvl-cdip-with-few-shot-examples` preset in `config_library/unified/` is a worked example; examples are defined on a class, so no preset is required to use them.
 
 ### Benefits of Few-Shot Examples
 
